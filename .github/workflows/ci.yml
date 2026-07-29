@@ -130,3 +130,62 @@ jobs:
             echo "===== $f ====="
             tail -60 "$f"
           done
+
+  # Run the suites on aarch64. This is the leg that matters most for the
+  # alignment class: #225 was an unaligned varlena-header read that is benign on
+  # x86_64 and faults on a strict-alignment target, and until this job existed the
+  # only evidence for the fix was a UBSAN report on the architecture that does not
+  # care. docs/limitations.md claims the extension "runs on any architecture
+  # PostgreSQL supports"; this is the first thing that tests it.
+  #
+  # aarch64 is little-endian, so this covers alignment and not byte order.
+  # Big-endian remains untested and is documented as such.
+  suites-arm:
+    name: suites (PG 17, aarch64)
+    runs-on: ubuntu-24.04-arm
+    needs: build
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 17, codec headers, and pyarrow
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            postgresql-17 postgresql-server-dev-17 \
+            liblz4-dev libzstd-dev zlib1g-dev python3-pip
+          pip3 install --break-system-packages --quiet pyarrow || pip3 install --quiet pyarrow
+
+      - name: Confirm this is actually aarch64
+        # A job that silently ran on x86_64 would report the same green and prove
+        # nothing, which is the whole failure mode this job exists to avoid.
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          echo "uname -m: $arch"
+          [ "$arch" = "aarch64" ] || { echo "::error::expected aarch64, got $arch"; exit 1; }
+
+      - name: Stop the packaged cluster
+        run: sudo systemctl stop postgresql || true
+
+      - name: Run the suite matrix on aarch64
+        run: |
+          set -euo pipefail
+          sudo -E env "PATH=$PATH" PGC_SKIP_TIMING=1 PGC_JOBS=4 \
+            bash test/run_all_versions.sh /usr/lib/postgresql/17/bin/pg_config
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          for f in /tmp/pgcolumnar-matrix-*/*.log; do
+            [ -e "$f" ] || continue
+            echo "===== $f ====="
+            tail -60 "$f"
+          done
