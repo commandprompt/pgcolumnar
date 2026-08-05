@@ -12,6 +12,7 @@
  *-------------------------------------------------------------------------
  */
 #include "columnar.h"
+#include "optimizer/optimizer.h"
 
 #include "access/multixact.h"
 #include "access/genam.h"
@@ -1409,6 +1410,66 @@ pgcolumnar_relation_copy_for_cluster(COLUMNAR_COPY_FOR_CLUSTER_ARGS)
 }
 
 /*
+ * pgcolumnar_index_projected_columns
+ *		The 0-based set of table columns an index build actually reads, from the
+ *		IndexInfo the callback is already given (issue #413).
+ *
+ *		ii_IndexAttrNumbers covers key and INCLUDE columns; a zero there marks an
+ *		expression column, whose Vars come from ii_Expressions. A partial index
+ *		also evaluates ii_Predicate per row, and reading a predicate column that
+ *		was not projected would test it against an unset slot value, so the
+ *		predicate's columns are needed exactly as much as the key's.
+ *
+ *		Returns NULL for "all columns" on a whole-row or system-column reference,
+ *		matching pgcolumnar_projected_columns in columnar_customscan.c. The two
+ *		compute the same thing from different sources and share the convention
+ *		deliberately.
+ */
+static Bitmapset *
+pgcolumnar_index_projected_columns(struct IndexInfo *index_info, int natts)
+{
+	Bitmapset  *needed = NULL;
+	Bitmapset  *projected = NULL;
+	int			i;
+	int			attno;
+
+	if (index_info == NULL)
+		return NULL;
+
+	for (i = 0; i < index_info->ii_NumIndexAttrs; i++)
+	{
+		AttrNumber	att = index_info->ii_IndexAttrNumbers[i];
+
+		/* 0 marks an expression column; its Vars are pulled below */
+		if (att == InvalidAttrNumber)
+			continue;
+		if (att < 0)
+			return NULL;		/* a system column: read everything */
+		needed = bms_add_member(needed,
+								att - FirstLowInvalidHeapAttributeNumber);
+	}
+
+	/* index expressions and a partial index's predicate reference varno 1 */
+	pull_varattnos((Node *) index_info->ii_Expressions, 1, &needed);
+	pull_varattnos((Node *) index_info->ii_Predicate, 1, &needed);
+
+	for (attno = FirstLowInvalidHeapAttributeNumber + 1; attno <= 0; attno++)
+	{
+		if (bms_is_member(attno - FirstLowInvalidHeapAttributeNumber, needed))
+			return NULL;		/* whole-row or system column */
+	}
+
+	for (attno = 1; attno <= natts; attno++)
+	{
+		if (bms_is_member(attno - FirstLowInvalidHeapAttributeNumber, needed))
+			projected = bms_add_member(projected, attno - 1);
+	}
+
+	/* nothing referenced at all: read everything, correct if wasteful */
+	return projected;
+}
+
+/*
  * pgcolumnar_index_build_range_scan
  *		Scan every live row of the columnar table and hand it to the index
  *		build callback, so CREATE INDEX (btree or hash) works over a columnar
@@ -1480,6 +1541,17 @@ pgcolumnar_index_build_range_scan(Relation table_rel, Relation index_rel,
 		readState = pgcolumnar_scan_read_state((PgColumnarScanDesc) scan,
 											 RelationGetDescr(table_rel));
 		ownReadState = false;
+
+		/*
+		 * The scan was opened through the table-AM interface, which has nowhere
+		 * to carry a projection, so this reader would decode every column. We
+		 * know better here: narrow it before the first read (#413). Each
+		 * participant in a parallel build computes the same set from the same
+		 * IndexInfo, so they agree.
+		 */
+		PgColumnarReadSetProjection(readState,
+									pgcolumnar_index_projected_columns(index_info,
+										RelationGetDescr(table_rel)->natts));
 	}
 	else
 	{
@@ -1490,7 +1562,10 @@ pgcolumnar_index_build_range_scan(Relation table_rel, Relation index_rel,
 		else
 			snapshot = GetTransactionSnapshot();
 
-		readState = PgColumnarBeginRead(table_rel, snapshot, NULL, NULL, 0, NULL);
+		readState = PgColumnarBeginRead(table_rel, snapshot, NULL,
+										pgcolumnar_index_projected_columns(index_info,
+											RelationGetDescr(table_rel)->natts),
+										0, NULL);
 		ownReadState = true;
 	}
 

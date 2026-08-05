@@ -615,6 +615,8 @@ extern void PgColumnarParquetCheckExportable(Relation rel);
  * stripe indices, so several workers scanning the same relation each claim
  * distinct stripes. Set by the custom scan's DSM init callbacks.
  */
+extern void PgColumnarReadSetProjection(PgColumnarReadState *readState,
+										Bitmapset *projectedColumns);
 extern void PgColumnarReadSetParallelCounter(PgColumnarReadState *readState,
 										   pg_atomic_uint32 *counter);
 

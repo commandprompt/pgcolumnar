@@ -1565,6 +1565,43 @@ PgColumnarReadSetParallelCounter(PgColumnarReadState *readState,
  *		nothing" and is what the aggregate path relies on when every group is
  *		clean.
  */
+/*
+ * PgColumnarReadSetProjection
+ *		Narrow an already-opened reader to a set of columns (issue #413).
+ *
+ *		The table-AM scan interface has nowhere to put a projection, so a reader
+ *		opened through pgcolumnar_scan_begin reads every column. A caller that
+ *		does know which columns it needs -- an index build knows, from IndexInfo
+ *		-- can say so here instead.
+ *
+ *		Only legal before the first read. colWanted drives what the group loader
+ *		decodes, and a group already loaded under a wider projection would be
+ *		reused under a narrower one, so changing it mid-scan would silently
+ *		return unset values rather than fail. The caller is expected to do this
+ *		immediately after obtaining the reader; the assertion states the rule and
+ *		the early return keeps a release build honest.
+ *
+ *		A NULL set means "all columns", matching PgColumnarBeginRead.
+ */
+void
+PgColumnarReadSetProjection(PgColumnarReadState *readState,
+							Bitmapset *projectedColumns)
+{
+	int			pc;
+
+	Assert(!readState->started);
+	if (readState->started)
+		return;
+
+	bms_free(readState->projectedColumns);
+	readState->projectedColumns = bms_copy(projectedColumns);
+	readState->allColumnsWanted = (projectedColumns == NULL ||
+								   !pgcolumnar_enable_column_projection);
+	for (pc = 0; pc < readState->natts; pc++)
+		readState->colWanted[pc] = readState->allColumnsWanted ||
+			bms_is_member(pc, projectedColumns);
+}
+
 void
 PgColumnarReadRestrictToGroups(PgColumnarReadState *readState,
 							 const uint64 *groupNumbers, int ngroups)

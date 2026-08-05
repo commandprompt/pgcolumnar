@@ -189,4 +189,70 @@ check "parallel scan, qual on unselected column" \
 	"$(par "SELECT sum(v) FROM t WHERE k < 500")" \
 	"$(val on "SELECT sum(v) FROM h WHERE k < 500")"
 
+# ---- index build: the projection reaches a path the custom scan cannot (#413) ----
+#
+# Everything above tests the scan path, where the custom scan node computes the
+# projection from the plan. CREATE INDEX does not go through it: the table-AM
+# callback opens its own reader, and the reader had no projection, so building an
+# index on one column of a wide table decoded all of them. The callback is told
+# which columns it needs (IndexInfo), so it can say so.
+#
+# The metric here is a RATIO rather than the buffer counts used above, and the
+# reason is worth stating: EXPLAIN does not cover CREATE INDEX, and
+# pg_statio_user_tables counts the heap fork, which is nearly empty for a columnar
+# table, so neither exact source is available for this operation.
+#
+# What is asserted instead is the property itself, which a timing threshold would
+# not be: building the SAME single-column index on a narrow and a wide table with
+# identical row counts must cost about the same. Two operations, same machine,
+# same run, so the ratio does not depend on how fast the box is.
+# Measured: 1.0x and 1.2x with projection on, 4.4x and 5.5x with it off.
+IDXROWS=${PGC_PROJ_IDX_ROWS:-200000}
+wcols=$(for i in $(seq 1 19); do printf ", a%d text" $i; done)
+wvals=$(for i in $(seq 1 19); do printf ", repeat(chr(48+%d),80)" $i; done)
+psql_run "DROP TABLE IF EXISTS pnarrow; DROP TABLE IF EXISTS pwide;
+	CREATE TABLE pnarrow (k int, a1 text) USING pgcolumnar;
+	INSERT INTO pnarrow SELECT g, repeat('1',80) FROM generate_series(1,$IDXROWS) g;
+	CREATE TABLE pwide (k int$wcols) USING pgcolumnar;
+	INSERT INTO pwide SELECT g$wvals FROM generate_series(1,$IDXROWS) g;
+	CREATE TABLE pwide_h (k int$wcols);
+	INSERT INTO pwide_h SELECT * FROM pwide;" >/dev/null
+
+idx_ms() {  # projection-setting, table, index-name
+	local s e
+	psql_run "DROP INDEX IF EXISTS $3;" >/dev/null 2>&1
+	s=$(date +%s%N)
+	psql_run "SET $GUC=$1; CREATE INDEX $3 ON $2 (k);" >/dev/null 2>&1
+	e=$(date +%s%N); echo $(( (e - s) / 1000000 ))
+}
+on_n=$(idx_ms on pnarrow pn_k);  on_w=$(idx_ms on pwide pw_k)
+off_n=$(idx_ms off pnarrow pn_k); off_w=$(idx_ms off pwide pw_k)
+echo "-- #413 index build: projection on ${on_n}/${on_w} ms, off ${off_n}/${off_w} ms (narrow/wide)"
+
+check_timing "an index build does not scale with columns it does not reference (#413)" \
+	"$(awk -v a="$on_w" -v b="$on_n" 'BEGIN { print (b > 0 && a / b < 2.5) ? "yes" : "no" }')" \
+	"yes"
+# and the control: with projection off it DOES scale, so the check above is not
+# passing because the fixture is too small to tell the two apart
+check_timing "and with projection off it does scale, so that check discriminates (#413)" \
+	"$(awk -v a="$off_w" -v b="$off_n" 'BEGIN { print (b > 0 && a / b > 2.5) ? "yes" : "no" }')" \
+	"yes"
+
+# ---- and the index must still be right, which matters more than the speed ------
+psql_run "CREATE INDEX pw_e ON pwide ((a1 || a2));
+	CREATE INDEX pwh_e ON pwide_h ((a1 || a2));
+	CREATE INDEX pw_p ON pwide (k) WHERE a19 > CHR(48);
+	CREATE INDEX pwh_p ON pwide_h (k) WHERE a19 > CHR(48);
+	CREATE INDEX pwh_k ON pwide_h (k);
+	ANALYZE pwide; ANALYZE pwide_h;" >/dev/null
+check "plain index over a projected build matches heap (#413)" \
+	"$(val on "SET enable_seqscan=off; SET enable_bitmapscan=off; SELECT count(*) FROM pwide WHERE k BETWEEN 100 AND 5000")" \
+	"$(val on "SET enable_seqscan=off; SET enable_bitmapscan=off; SELECT count(*) FROM pwide_h WHERE k BETWEEN 100 AND 5000")"
+check "expression index over a projected build matches heap (#413)" \
+	"$(val on "SET enable_seqscan=off; SET enable_bitmapscan=off; SELECT count(*) FROM pwide WHERE (a1 || a2) = repeat('1',80)||repeat('2',80)")" \
+	"$(val on "SET enable_seqscan=off; SET enable_bitmapscan=off; SELECT count(*) FROM pwide_h WHERE (a1 || a2) = repeat('1',80)||repeat('2',80)")"
+check "partial index over a projected build matches heap (#413)" \
+	"$(val on "SET enable_seqscan=off; SET enable_bitmapscan=off; SELECT count(*) FROM pwide WHERE k < 900 AND a19 > CHR(48)")" \
+	"$(val on "SET enable_seqscan=off; SET enable_bitmapscan=off; SELECT count(*) FROM pwide_h WHERE k < 900 AND a19 > CHR(48)")"
+
 pgc_summary

@@ -14,6 +14,18 @@ which was true until that script existed.
 
 ### Changed
 
+- Building an index on a columnar table reads only the columns the index needs
+  (#413). The table-AM scan interface has nowhere to carry a projection, so the
+  index-build callback opened a reader that decoded every column: on a 20-column
+  table, creating an index on one `int` column took 517 ms against heap's 442,
+  slower than heap at the shape columnar storage should win. The callback is
+  handed an `IndexInfo`, which names the key and `INCLUDE` columns and carries
+  the expression and predicate trees, so it now says which columns it needs. The
+  same build takes 72 ms, and build cost no longer scales with columns the index
+  does not reference. Expression and partial indexes project their expression and
+  predicate columns too, since a predicate evaluated against an unread column
+  would test an unset value.
+
 - The unsupported-rewrite error names `REPACK` on PostgreSQL 19 (#399). `REPACK`
   replaces `CLUSTER` and `VACUUM FULL` in 19 and dispatches through the same
   copy-for-cluster path, which pgColumnar does not implement, so a 19 user who
