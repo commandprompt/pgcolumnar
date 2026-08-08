@@ -3161,6 +3161,7 @@ pgcolumnar_native_batch_fold(PgColumnarAggScanState *state, Relation rel,
 		const bool *skipVec;
 		const uint32 *vecStart;
 		int			vcount;
+		int			curVec = 0;
 		uint64		r;
 
 		PgColumnarReadFoldGroupInfo(rs, &nrows, &dmask, &dlen,
@@ -3230,6 +3231,34 @@ pgcolumnar_native_batch_fold(PgColumnarAggScanState *state, Relation rel,
 				   (dmask[r >> 3] & (1 << (r & 7))) != 0);
 			if (del)
 				continue;			/* value slots already consumed above */
+
+			/*
+			 * Vectors the zone maps ruled out (#512). Like the deleted-row case
+			 * above, the value slots have already been consumed by the gather,
+			 * so the cursor stays aligned and only the fold is skipped.
+			 *
+			 * This cannot change an answer. A vector is skipped only when a
+			 * predicate proves no row in it can match, and those predicates come
+			 * from the same scan keys this loop re-checks below -- possibly a
+			 * subset, since pgcolumnar_make_predicates drops keys it cannot
+			 * evaluate against min/max, and a subset of a conjunction is still a
+			 * necessary condition. Every row skipped here would have failed
+			 * `pass` a few lines down.
+			 *
+			 * It is not only an optimisation. Until now the fold read every
+			 * vector and got the right answer because it re-checked every value,
+			 * which is why making decode honour the skip vector would have had
+			 * it re-check UNINITIALISED memory. Honouring it here is what makes
+			 * that change safe to write (#452 phase 1b).
+			 */
+			if (skipVec != NULL && vecStart != NULL)
+			{
+				while (curVec + 1 < vcount &&
+					   r >= (uint64) vecStart[curVec + 1])
+					curVec++;
+				if (skipVec[curVec])
+					continue;
+			}
 
 			for (k = 0; k < nkeys; k++)
 			{
