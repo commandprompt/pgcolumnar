@@ -180,4 +180,126 @@ check "non-selective parity" \
 # A predicate no group satisfies is fully skipped and returns nothing.
 check "out-of-range returns nothing" "$(q 'SELECT count(*) FROM n WHERE id > 1000000;')" "0"
 
+# ---- an anchored LIKE is a range, and should prune like one (#426) -----------
+#
+# `t LIKE 'abc%'` matches exactly the strings that start with those bytes, so
+# every match satisfies `t >= 'abc'` and a zone map can skip any group whose max
+# is below it. It pruned nothing, because `~~` has no btree opfamily strategy and
+# the clause was dropped by pgcolumnar_clause_to_scankey before any zone map saw
+# it.
+#
+# COLLATE "C" is not incidental, it is the correctness condition. Under any other
+# collation "starts with these bytes" does not imply "sorts at or after them" --
+# ignorable characters are the usual counterexample -- so the range would not be
+# conservative and could skip a group that really matches. The stored min/max are
+# ordered under the column's own collation, so both have to be C.
+psql_run "CREATE TABLE hl (t text COLLATE \"C\");"
+psql_run "CREATE TABLE nl (t text COLLATE \"C\") USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('nl', stripe_row_limit => 2048, chunk_group_row_limit => 1024);"
+NSK_LGEN="SELECT 'k' || lpad(g::text, 8, '0') FROM generate_series(1, 20480) g"
+psql_run "INSERT INTO hl $NSK_LGEN;"
+psql_run "INSERT INTO nl $NSK_LGEN;"
+
+# Premise, and the one that makes the rest mean anything: the hand-written range
+# the LIKE is equivalent to DOES prune on this fixture. Without it, a LIKE that
+# prunes nothing could be an unprunable layout rather than a dropped operator.
+check "premise: the equivalent hand-written range prunes (#426)" \
+	"$(gt0 "$(skipped "SELECT t FROM nl WHERE t >= 'k00005000' AND t < 'k00005001'")")" "yes"
+
+check "anchored LIKE result parity (#426)" \
+	"$(pgc_set_hash "SELECT t FROM nl WHERE t LIKE 'k00005000%'")" \
+	"$(pgc_set_hash "SELECT t FROM hl WHERE t LIKE 'k00005000%'")"
+
+check "anchored LIKE prunes groups (#426)" \
+	"$(gt0 "$(skipped "SELECT t FROM nl WHERE t LIKE 'k00005000%'")")" "yes"
+
+# The negative, which is the half that matters for correctness: an unanchored
+# pattern has no fixed prefix, so there is no range to derive and pruning it
+# would be WRONG rather than merely unhelpful. Parity is asserted alongside,
+# because "did not prune" and "returned the right rows" are different claims.
+check "unanchored LIKE does not prune (#426)" \
+	"$(gt0 "$(skipped "SELECT t FROM nl WHERE t LIKE '%5000%'")")" "no"
+check "unanchored LIKE result parity (#426)" \
+	"$(pgc_set_hash "SELECT t FROM nl WHERE t LIKE '%5000%'")" \
+	"$(pgc_set_hash "SELECT t FROM hl WHERE t LIKE '%5000%'")"
+
+# An escaped wildcard is a literal, so the prefix must not stop early at it and
+# must not treat it as a wildcard. No row matches; the check is that the answer
+# agrees with heap rather than that it is empty.
+check "escaped-wildcard LIKE result parity (#426)" \
+	"$(pgc_set_hash "SELECT t FROM nl WHERE t LIKE 'k0000\\%50%'")" \
+	"$(pgc_set_hash "SELECT t FROM hl WHERE t LIKE 'k0000\\%50%'")"
+
+# A trailing single-character wildcard, which is the case that catches a prefix
+# scanner that does not stop at '_'.
+#
+# '%' cannot catch it on this fixture and that is why this check exists: '%' is
+# 0x25, below every byte in the data, so a bogus prefix of '%5000%' yields a
+# lower bound every row already satisfies and nothing is lost. '_' is 0x5F, ABOVE
+# the digits it would sit next to, so a scanner that swallowed it would derive
+# `>= 'k0000500_'` and exclude exactly the ten rows that match. Parity is the
+# assertion with teeth here; the pruning check beside it is the useful half.
+check "trailing _ wildcard result parity (#426)" \
+	"$(pgc_set_hash "SELECT t FROM nl WHERE t LIKE 'k0000500_'")" \
+	"$(pgc_set_hash "SELECT t FROM hl WHERE t LIKE 'k0000500_'")"
+check "trailing _ wildcard still prunes on its prefix (#426)" \
+	"$(gt0 "$(skipped "SELECT t FROM nl WHERE t LIKE 'k0000500_'")")" "yes"
+
+# The one that actually discriminates, and it took two attempts to find.
+#
+# A wrong scan key cannot lose rows unless it prunes a WHOLE GROUP, because the
+# executor re-applies the qual to everything a surviving group returns. So the
+# bogus prefix has to exceed a group's maximum, not merely some rows. With four
+# wildcards it does: swallowed, the prefix becomes 'k0000____' and 0x5F outranks
+# every digit, so every group holding a match has a maximum below it and is
+# skipped -- all 9,999 matching rows disappear. The correct prefix is 'k0000',
+# which prunes nothing here and returns them all.
+check "swallowed _ wildcards would prune away every match (#426)" \
+	"$(pgc_set_hash "SELECT t FROM nl WHERE t LIKE 'k0000____'")" \
+	"$(pgc_set_hash "SELECT t FROM hl WHERE t LIKE 'k0000____'")"
+
+# A prefix at the LOW end of the data, which only an upper bound can prune.
+#
+# `>= 'k00000001'` is satisfied by every row in the table, so a lower bound alone
+# skips nothing here however anchored the pattern is. Everything the scan can
+# avoid comes from knowing the match cannot exceed the prefix's successor. That
+# makes this the check that distinguishes a half-derived range from a whole one,
+# rather than a second instance of the check above.
+check "low-end prefix parity (#426)" \
+	"$(pgc_set_hash "SELECT t FROM nl WHERE t LIKE 'k00000001%'")" \
+	"$(pgc_set_hash "SELECT t FROM hl WHERE t LIKE 'k00000001%'")"
+check "low-end prefix prunes, which needs the upper bound (#426)" \
+	"$(gt0 "$(skipped "SELECT t FROM nl WHERE t LIKE 'k00000001%'")")" "yes"
+
+# The collation guard, which is the line that makes any of this safe and which
+# nothing above reaches: every table so far is COLLATE "C", so deleting the guard
+# would not redden a single check. This column takes the database default
+# collation instead, and the prefix bound must NOT be derived for it.
+#
+# The bound is only conservative under byte ordering. Under a collation with
+# ignorable characters, a value starting with the prefix bytes can sort BEFORE
+# the prefix, so `>= prefix` would skip a group that really matches and the scan
+# would silently lose rows. Declining to prune costs a full read; pruning wrongly
+# costs correctness, so this side is the one to be sure of.
+#
+# Deliberately conservative in a second way, worth stating so it is not read as a
+# bug: this database is initdb'd --locale=C, so the default collation IS byte
+# ordering underneath, and the guard still refuses it because the column's
+# collation OID is the default rather than C. Recognising that case needs a
+# stable "is this collation C" test across five majors, which the server headers
+# do not export; refusing is the safe half of that trade.
+psql_run "CREATE TABLE hd (t text);"
+psql_run "CREATE TABLE nd (t text) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('nd', stripe_row_limit => 2048, chunk_group_row_limit => 1024);"
+psql_run "INSERT INTO hd $NSK_LGEN;"
+psql_run "INSERT INTO nd $NSK_LGEN;"
+
+check "premise: the range prunes on the default-collation table too (#426)" \
+	"$(gt0 "$(skipped "SELECT t FROM nd WHERE t >= 'k00005000' AND t < 'k00005001'")")" "yes"
+check "anchored LIKE does not prune without COLLATE \"C\" (#426)" \
+	"$(gt0 "$(skipped "SELECT t FROM nd WHERE t LIKE 'k00005000%'")")" "no"
+check "default-collation LIKE result parity (#426)" \
+	"$(pgc_set_hash "SELECT t FROM nd WHERE t LIKE 'k00005000%'")" \
+	"$(pgc_set_hash "SELECT t FROM hd WHERE t LIKE 'k00005000%'")"
+
 pgc_summary
