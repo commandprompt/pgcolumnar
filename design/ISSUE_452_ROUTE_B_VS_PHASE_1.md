@@ -61,17 +61,33 @@ between them is close to pure M plus E.
 
 ### Method change, recorded before any measurement was taken
 
-**`perf` cannot sample on this box, so the symbol-bucket attribution below is not
-available.** Established by performing it, not by reading #505:
+**CORRECTED 2026-08-08: `perf` DOES sample on this box. The claim below was
+wrong, and it was wrong because my probe could not have succeeded.**
 
-    perf stat -e cycles true   ->  "No supported events found. The cycles event is not supported."
-    perf record -e cpu-clock   ->  writes /tmp/p.data, 21,400 bytes, "has no samples!"
-    /proc/sys/kernel/perf_event_paranoid = -1   (already permissive; not a permissions fix)
+What I originally wrote, and why it is false:
 
-Note the shape: `perf record` **succeeded**, produced a non-empty file, and
-contained nothing. An instrument reporting success while measuring nothing, which
-is the same failure this session has now met nine times, and which #505 predicted
-for this host.
+    perf stat -e cycles true   ->  "The cycles event is not supported."     TRUE, no PMU
+    perf record -e cpu-clock -- sleep 1   ->  file written, "has no samples!"
+
+`sleep 1` consumes no CPU. A `cpu-clock` profile of a sleeping process has no
+samples whether or not the profiler works, so the experiment could not have
+distinguished the two outcomes. Re-run against a CPU-burning workload on the same
+box, unchanged settings:
+
+    # Samples: 1K of event 'cpu-clock'      Total Lost Samples: 0
+
+So: **hardware events are unavailable (no PMU, `cycles` genuinely unsupported),
+software events work.** #505's note about the PMU is right; my extension of it to
+"cannot sample at all" was not.
+
+This is the rule this session wrote down, committed by the person writing it: a
+probe must be able to produce the outcome it is testing for. The `-B`-instead-of
+`-A` grep, a rebuild after appending a comment, and this are the same mistake.
+
+**The differential method below stands on its own merits** -- it measures the
+milliseconds each route would remove rather than attributing symbols and
+inferring a saving -- but it was chosen for a reason that was false, and the
+symbol attribution it replaced was available all along.
 
 **Replaced with a differential design, which is better evidence for this
 decision anyway** — it measures the cost each route would *remove*, in
@@ -97,7 +113,7 @@ millisecond saved.
 Ratios are reported with their baselines, per the standing rule, since the two
 tables have different absolute times by construction.
 
-**Superseded plan, kept because it is why the method changed:**
+**The originally planned attribution, which was in fact available:**
 `perf` symbol buckets, from `bench/run_profile.sh`'s probe
 (non-assert `pg18n`, DWARF unwind, whatever event the box exposes; #505 records
 that this host has no hardware PMU, so the profiler's own report of event and
