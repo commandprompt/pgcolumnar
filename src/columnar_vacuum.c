@@ -25,6 +25,8 @@
 #include "columnar_write_state.h"
 #include "columnar_compat.h"
 
+#include <math.h>
+
 #include "fmgr.h"
 #include "access/genam.h"
 #include "access/xact.h"
@@ -875,10 +877,10 @@ pgcolumnar_compact_rewrite(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 				 errmsg("table name cannot be null")));
-	if (minFrac < 0.0 || minFrac > 1.0)
+	if (isnan(minFrac) || minFrac < 0.0 || minFrac > 1.0)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("min_deleted_fraction must be between 0 and 1")));
+				 errmsg("min_deleted_fraction must be a number between 0 and 1")));
 
 	PgColumnarRequireTableOwnerByOid(relid);
 

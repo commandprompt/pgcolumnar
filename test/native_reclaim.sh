@@ -64,6 +64,17 @@ check "reused-block data matches heap mirror" \
 # Reuse survives a delete + rewrite cycle too, with correct data.
 psql_run "DELETE FROM h WHERE id % 4 = 0;"
 psql_run "DELETE FROM n WHERE id % 4 = 0;"
+
+# NaN passes both ordinary range comparisons. Refuse it explicitly, or the
+# candidate predicate is false for every group and compaction silently does no
+# work despite an accepted threshold.
+if psql_run "SELECT pgcolumnar.compact_rewrite('n', 'NaN'::float8);" >/dev/null 2>&1; then
+	nan_result="accepted"
+else
+	nan_result="rejected"
+fi
+check "compact_rewrite rejects a NaN threshold" "$nan_result" "rejected"
+
 psql_run "SELECT pgcolumnar.compact_rewrite('n', 0.0);"
 psql_run "SELECT pgcolumnar.recluster('n', 'id');"
 check "data correct after delete + compact_rewrite + recluster" \
