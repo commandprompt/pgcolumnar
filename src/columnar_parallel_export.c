@@ -606,6 +606,7 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 				cur;
 	int64		total = 0;
 	int			failed = -1;
+	char		pathProbe[MAXPGPATH];
 
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
 		ereport(ERROR,
@@ -699,6 +700,20 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("relation \"%s\" is not a columnar table or a partitioned table with columnar partitions",
 						RelationGetRelationName(rel))));
+
+	/*
+	 * Worker paths cross DSM in MAXPGPATH buffers and add a generated part
+	 * name. Refuse a destination that cannot hold the longest possible name;
+	 * truncating it would publish a differently named object and still stamp
+	 * _SUCCESS over an unreadable export.
+	 */
+	if (snprintf(pathProbe, sizeof(pathProbe), "%s/part-%04d.parquet",
+				 dir, INT_MAX) >= (int) sizeof(pathProbe))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("parallel export destination is too long"),
+				 errdetail("The destination and generated part name must fit in %d bytes.",
+						   MAXPGPATH)));
 
 	pexport_prepare_dir(dir);
 

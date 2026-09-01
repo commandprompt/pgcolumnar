@@ -191,6 +191,26 @@ check "the retry writes a fresh _SUCCESS marker" \
 	"$([ -f "$DCX/_SUCCESS" ] && echo yes || echo no)" yes
 
 # ---- error cases ------------------------------------------------------------
+# Worker destinations cross DSM in MAXPGPATH buffers and then gain a generated
+# part name. A path that fits by itself but not with that suffix used to be
+# silently truncated: the function returned success and wrote _SUCCESS beside
+# part-0000.parqu, which read_parquet ignores. Reject it before creating the
+# destination or any misleading output.
+LONG_PARENT="$PGC_WORKDIR/long_path"
+mkdir -p "$LONG_PARENT"
+long_piece="$(printf 'a%.0s' {1..120})"
+while [ ${#LONG_PARENT} -lt 980 ]; do
+	LONG_PARENT="$LONG_PARENT/$long_piece"
+	mkdir -p "$LONG_PARENT"
+done
+chmod 777 "$LONG_PARENT"
+LONG_DIR="$LONG_PARENT/target"
+long_out="$(err_of "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$LONG_DIR', 2)")"
+check "reject a destination whose generated part path would truncate" \
+	"$(grep -qi 'destination is too long' <<<"$long_out" && echo error || echo ok)" error
+check "long destination is rejected before it is created" \
+	"$([ -e "$LONG_DIR" ] && echo created || echo absent)" absent
+
 # st_1 was written above, so it is non-empty
 expect_error "reject a non-empty output directory" \
 	"SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PGC_WORKDIR/st_1', 2)"
