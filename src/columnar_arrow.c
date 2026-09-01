@@ -1541,24 +1541,44 @@ imp_scalar_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
 			case A_DATE32:
 				{
 					int32		v;
+					int64		d;
 
 					memcpy(&v, vp, 4);
-					return DateADTGetDatum((DateADT) (v - PG_TO_UNIX_DAYS));
+					d = (int64) v - PG_TO_UNIX_DAYS;
+					if (!IS_VALID_DATE(d))
+						ereport(ERROR,
+								(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+								 errmsg("columnar.import_arrow: date value is out of range")));
+					return DateADTGetDatum((DateADT) d);
 				}
 			case A_TIME64:
 				{
 					int64		v;
 
 					memcpy(&v, vp, 8);
+					if (v < 0 || v >= USECS_PER_DAY)
+						ereport(ERROR,
+								(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+								 errmsg("columnar.import_arrow: time value is out of range")));
 					return TimeADTGetDatum(v);
 				}
 			case A_TIMESTAMP:
 			case A_TIMESTAMPTZ:
 				{
 					int64		v;
+					Timestamp	ts;
 
 					memcpy(&v, vp, 8);
-					return TimestampGetDatum((Timestamp) (v - PG_TO_UNIX_USECS));
+					if (v < PG_INT64_MIN + PG_TO_UNIX_USECS)
+						ereport(ERROR,
+								(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+								 errmsg("columnar.import_arrow: timestamp value is out of range")));
+					ts = (Timestamp) (v - PG_TO_UNIX_USECS);
+					if (!IS_VALID_TIMESTAMP(ts))
+						ereport(ERROR,
+								(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+								 errmsg("columnar.import_arrow: timestamp value is out of range")));
+					return TimestampGetDatum(ts);
 				}
 			case A_UUID:
 				{

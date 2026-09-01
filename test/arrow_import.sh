@@ -144,6 +144,34 @@ with ipc.new_stream(pa.OSFile(sys.argv[1], 'wb'), t.schema) as w:
 PY
 	psql_run "CREATE TABLE ri_d (c text) USING pgcolumnar;"
 	expect_error "reject dictionary-encoded file" "SELECT pgcolumnar.import_arrow('ri_d', '$DICTF');"
+
+	# Arrow temporal values span the integer carrier's full range, while
+	# PostgreSQL's date, time, and timestamp types have narrower valid ranges.
+	# Import must reject those values instead of overflowing or storing an
+	# invalid internal Datum.
+	python3 - "$PGC_WORKDIR" <<'PY'
+import os, struct, sys, pyarrow as pa, pyarrow.ipc as ipc
+out = sys.argv[1]
+cases = {
+    'date_oob.arrows': (pa.date32(), struct.pack('<i', -(2**31))),
+    'time_oob.arrows': (pa.time64('us'), struct.pack('<q', -1)),
+    'timestamp_oob.arrows': (pa.timestamp('us'), struct.pack('<q', -(2**63))),
+}
+for name, (typ, raw) in cases.items():
+    arr = pa.Array.from_buffers(typ, 1, [None, pa.py_buffer(raw)])
+    table = pa.table({'v': arr})
+    with ipc.new_stream(pa.OSFile(os.path.join(out, name), 'wb'), table.schema) as w:
+        w.write_table(table)
+PY
+	psql_run "CREATE TABLE ri_date_oob (v date) USING pgcolumnar;
+	          CREATE TABLE ri_time_oob (v time) USING pgcolumnar;
+	          CREATE TABLE ri_timestamp_oob (v timestamp) USING pgcolumnar;"
+	expect_error "reject out-of-range Arrow date" \
+		"SELECT pgcolumnar.import_arrow('ri_date_oob', '$PGC_WORKDIR/date_oob.arrows');"
+	expect_error "reject out-of-range Arrow time" \
+		"SELECT pgcolumnar.import_arrow('ri_time_oob', '$PGC_WORKDIR/time_oob.arrows');"
+	expect_error "reject overflowing Arrow timestamp" \
+		"SELECT pgcolumnar.import_arrow('ri_timestamp_oob', '$PGC_WORKDIR/timestamp_oob.arrows');"
 fi
 
 IXFILE="$PGC_WORKDIR/ix_roundtrip.arrows"
