@@ -45,6 +45,13 @@ fifo_release() { exec 9<>"$1" 2>/dev/null; exec 9>&- 2>/dev/null; }
 have_pyarrow=1
 python3 -c 'import pyarrow' 2>/dev/null || have_pyarrow=0
 
+# One name per arm, used by the arm and by its unrunnable counterpart below, so
+# the two cannot drift apart.
+OOB_DATE_ARM="reject out-of-range Arrow date as 22008"
+OOB_TIME_ARM="reject out-of-range Arrow time as 22008"
+OOB_TS_LOW_ARM="reject underflowing Arrow timestamp as 22008"
+OOB_TS_RANGE_ARM="reject Arrow timestamp before the PostgreSQL minimum as 22008"
+
 expect_error() {
 	local label="$1" sql="$2"
 	if psql_run "$sql" >/dev/null 2>&1; then
@@ -149,13 +156,43 @@ PY
 	# PostgreSQL's date, time, and timestamp types have narrower valid ranges.
 	# Import must reject those values instead of overflowing or storing an
 	# invalid internal Datum.
-	python3 - "$PGC_WORKDIR" <<'PY'
+	#
+	# "it failed" is not the claim. The claim is that the value is refused as OUT
+	# OF RANGE, which is ERRCODE_DATETIME_VALUE_OUT_OF_RANGE = 22008. An arm that
+	# only asserts a non-zero exit also passes for a wrong path, a missing table,
+	# a malformed IPC stream, a different pyarrow, or this file's own
+	# dictionary-encoding rejection -- none of which is the property under test.
+	# These fixtures are hand-built buffers (pa.Array.from_buffers), so that
+	# difference is not theoretical. Assert the SQLSTATE.
+	#
+	# Four values for four guards, one value per guard, so a revert of any single
+	# guard reddens exactly one arm:
+	#   date_oob       INT32_MIN days   -> !IS_VALID_DATE
+	#   time_oob       -1 usec          -> v < 0 || v >= USECS_PER_DAY
+	#   timestamp_oob  INT64_MIN usec   -> v < PG_INT64_MIN + PG_TO_UNIX_USECS
+	#   timestamp_pre_min  -2^60 usec   -> !IS_VALID_TIMESTAMP, on its LOWER bound.
+	#
+	# IS_VALID_TIMESTAMP's upper bound is not reachable through this path and no
+	# fixture can cover it: ts >= END_TIMESTAMP needs v >= 9224318016000000000,
+	# which exceeds INT64_MAX, so any such Arrow value underflows the subtraction
+	# first and is caught by the guard above. -2^60 is chosen because it is below
+	# MIN_TIMESTAMP after the epoch shift yet nowhere near the underflow
+	# threshold (v < -9222425352054775808), so it pins the range guard alone.
+	# 2^62 does NOT work here and was measured doing so: it is a perfectly valid
+	# PostgreSQL timestamp (about year 148000) and imports successfully.
+	#
+	# The fixture is a premise, not a printout: if the writer fails or pyarrow
+	# stops accepting these buffers, the arms below would assert a SQLSTATE
+	# against a file that does not exist and report a plausible wrong answer. Gate
+	# on it and stop.
+	if ! python3 - "$PGC_WORKDIR" <<'PY'
 import os, struct, sys, pyarrow as pa, pyarrow.ipc as ipc
 out = sys.argv[1]
 cases = {
     'date_oob.arrows': (pa.date32(), struct.pack('<i', -(2**31))),
     'time_oob.arrows': (pa.time64('us'), struct.pack('<q', -1)),
     'timestamp_oob.arrows': (pa.timestamp('us'), struct.pack('<q', -(2**63))),
+    'timestamp_pre_min.arrows': (pa.timestamp('us'), struct.pack('<q', -(2**60))),
 }
 for name, (typ, raw) in cases.items():
     arr = pa.Array.from_buffers(typ, 1, [None, pa.py_buffer(raw)])
@@ -163,15 +200,46 @@ for name, (typ, raw) in cases.items():
     with ipc.new_stream(pa.OSFile(os.path.join(out, name), 'wb'), table.schema) as w:
         w.write_table(table)
 PY
+	then
+		echo "arrow_import.sh: could not build the out-of-range temporal fixtures" >&2
+		exit 1
+	fi
+	for oob_fixture in date_oob time_oob timestamp_oob timestamp_pre_min; do
+		if [ ! -s "$PGC_WORKDIR/$oob_fixture.arrows" ]; then
+			echo "arrow_import.sh: fixture $oob_fixture.arrows is missing or empty" >&2
+			exit 1
+		fi
+	done
+
 	psql_run "CREATE TABLE ri_date_oob (v date) USING pgcolumnar;
 	          CREATE TABLE ri_time_oob (v time) USING pgcolumnar;
-	          CREATE TABLE ri_timestamp_oob (v timestamp) USING pgcolumnar;"
-	expect_error "reject out-of-range Arrow date" \
-		"SELECT pgcolumnar.import_arrow('ri_date_oob', '$PGC_WORKDIR/date_oob.arrows');"
-	expect_error "reject out-of-range Arrow time" \
-		"SELECT pgcolumnar.import_arrow('ri_time_oob', '$PGC_WORKDIR/time_oob.arrows');"
-	expect_error "reject overflowing Arrow timestamp" \
-		"SELECT pgcolumnar.import_arrow('ri_timestamp_oob', '$PGC_WORKDIR/timestamp_oob.arrows');"
+	          CREATE TABLE ri_timestamp_oob (v timestamp) USING pgcolumnar;
+	          CREATE TABLE ri_timestamp_pre_min (v timestamp) USING pgcolumnar;"
+	# sqlstate_or_hang prints the bare 5-char SQLSTATE, or HANG, or nothing at all
+	# when the statement SUCCEEDED. check_text refuses an empty side outright, so
+	# "the guard is gone and the value imported" cannot read as anything but red.
+	check_text "$OOB_DATE_ARM" \
+		"$(sqlstate_or_hang "SELECT pgcolumnar.import_arrow('ri_date_oob', '$PGC_WORKDIR/date_oob.arrows')")" \
+		"22008"
+	check_text "$OOB_TIME_ARM" \
+		"$(sqlstate_or_hang "SELECT pgcolumnar.import_arrow('ri_time_oob', '$PGC_WORKDIR/time_oob.arrows')")" \
+		"22008"
+	check_text "$OOB_TS_LOW_ARM" \
+		"$(sqlstate_or_hang "SELECT pgcolumnar.import_arrow('ri_timestamp_oob', '$PGC_WORKDIR/timestamp_oob.arrows')")" \
+		"22008"
+	check_text "$OOB_TS_RANGE_ARM" \
+		"$(sqlstate_or_hang "SELECT pgcolumnar.import_arrow('ri_timestamp_pre_min', '$PGC_WORKDIR/timestamp_pre_min.arrows')")" \
+		"22008"
+else
+	# These four arms live inside the pyarrow block. Without pyarrow they do not
+	# run, and an arm that silently does not run while the suite still reports
+	# PASSED is the failure mode this file has had before. Name them as the third
+	# state instead; the suite then exits INCOMPLETE rather than claiming a pass
+	# for a question nobody asked. (The pre-existing dictionary-encoding arm above
+	# has the same exposure; it is left alone here because it is not this change.)
+	for oob_arm in "$OOB_DATE_ARM" "$OOB_TIME_ARM" "$OOB_TS_LOW_ARM" "$OOB_TS_RANGE_ARM"; do
+		check_unrunnable "$oob_arm" MISSING_DEPENDENCY "pyarrow is not importable"
+	done
 fi
 
 IXFILE="$PGC_WORKDIR/ix_roundtrip.arrows"

@@ -475,6 +475,11 @@ Inserts the rows of an Arrow IPC stream file at `path` into the existing table
 `rel`. The column types of the table define the types that the function accepts. Returns the number of
 rows inserted.
 
+Arrow carries `date32`, `time64`, and `timestamp` as bare integers. Their range
+is wider than what PostgreSQL's `date`, `time`, and `timestamp` hold. A value
+the target type cannot represent raises `22008` (`datetime_field_overflow`).
+The import fails and stores nothing.
+
 ### pgcolumnar.import_parquet(rel regclass, path text) returns bigint
 
 Inserts the rows of a Parquet file at `path` into the existing table `rel`. The

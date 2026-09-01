@@ -35,6 +35,45 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.import_arrow` rejects an out-of-range Arrow temporal value instead
+  of storing an invalid `Datum` (#862).
+
+  Arrow carries `date32`, `time64`, and `timestamp` as bare integers over the
+  carrier's full range. PostgreSQL's `date`, `time`, and `timestamp` are
+  narrower. The importer converted without checking, so a foreign file could put
+  a value into a columnar table that no PostgreSQL operator can read back.
+  Import now raises `22008` (`ERRCODE_DATETIME_VALUE_OUT_OF_RANGE`) on four
+  conditions:
+
+  - a `date32` outside `IS_VALID_DATE`,
+  - a `time64` outside `[0, USECS_PER_DAY)`,
+  - a `timestamp` whose epoch shift would underflow `int64`,
+  - a `timestamp` outside `IS_VALID_TIMESTAMP` after that shift.
+
+  **The suite asserts the SQLSTATE, not merely that it failed.** `22008` is the
+  claim. "The statement errored" is also true of a wrong path, a missing table,
+  or a malformed IPC stream. It is true of this file's own dictionary-encoding
+  rejection too. So each arm was measured red with its own guard reverted. Each
+  was green with the other three guards intact. The four runs used four
+  separately fingerprinted builds. Each red reports an absent SQLSTATE, not a
+  different one.
+
+  Two things the arms measured along the way. First, `IS_VALID_TIMESTAMP`'s
+  **upper** bound is unreachable through this path. `ts >= END_TIMESTAMP` needs
+  an Arrow value of at least 9224318016000000000. That exceeds `INT64_MAX`, so
+  any such value underflows the subtraction first and the underflow guard takes
+  it. Only the lower bound is testable, and the arm uses it.
+
+  Second, the underflow guard is not merely hygiene against undefined behaviour.
+  With it removed, the `INT64_MIN` row imports successfully and reads back as
+  `294247-01-10 04:00:54.775808`. That is measured, not derived. Whatever the
+  wrapped subtraction produced, `IS_VALID_TIMESTAMP` accepted it. The guard is
+  the only thing between a hostile file and a stored garbage date.
+
+  When pyarrow is absent the four arms cannot run, so they report `UNRUN`
+  (`MISSING_DEPENDENCY`) and the suite exits `INCOMPLETE`. They previously would
+  have vanished inside a suite still reporting `PASSED`.
+
 - A shebang and the execute bit go together, and every directory that documents
   a command is swept (#856). Two things were left over from #852.
 
