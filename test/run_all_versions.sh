@@ -112,6 +112,7 @@ SUITES=(
 	index_delete_liveness
 	index_fetch_penalty_width
 	index_only
+	inheritance
 	int8_agg_int128
 	isolation
 	local_open_race_free
