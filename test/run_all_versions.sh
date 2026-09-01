@@ -40,6 +40,7 @@ set -uo pipefail
 # lines and merge cleanly. Do not re-flow this into one line to save space.
 SUITES=(
 	advisory_lock_class
+	alter_am_cleanup
 	alter_column_type
 	analyze_differential
 	analyze_function
