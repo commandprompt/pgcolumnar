@@ -150,6 +150,35 @@ true until the next version shipped.
   own range-table entry has `inh` false: the resulting plan is an `Append` of
   two `PgColumnarScan` nodes with pushdown intact, not a fallback to `Seq Scan`.
 
+- Both compaction thresholds are validated, in both entry points (#860).
+  `pgcolumnar.compact_rewrite` accepted `NaN` for `min_deleted_fraction`, because
+  `NaN < 0.0` and `NaN > 1.0` are each false. The call then matched no row group
+  and reclaimed nothing while reporting success.
+
+  `pgcolumnar.maintenance_due` is the gate the `pgcolumnar.autovacuum` daemon
+  consults before it ever calls `compact_rewrite`, and it validated nothing at
+  all. Measured on a table with 10000 of 20000 rows deleted: `NaN` and `2.0` both
+  reported `compact_rewrite_due = f`, suppressing the work for good, and `-1.0`
+  reported `t`, which makes the daemon believe compaction is always due and
+  rewrite every columnar table on every sweep. `NULL` behaved like `NaN`, because
+  the daemon reads a NULL verdict as "not due". Both thresholds now raise
+  `invalid_parameter_value` (SQLSTATE `22023`) for all four, matching
+  `compact_rewrite`.
+
+  0 and 1 remain legal on every threshold, and `test/native_reclaim.sh` now pins
+  both endpoints as accepted. That is the direction a bounds fix usually breaks,
+  and nothing could see it: the suite's only call at 0 was a bare `psql_run`
+  whose exit status nothing read, so a rejected 0 reached nothing but the server
+  log. Measured with `minFrac < 0.0` changed to `minFrac <= 0.0`: exactly one arm
+  fails, the new one, and the other 32 pass. The same mutation applied to
+  `compact_due_fraction` reddens the matching `maintenance_due` arm and nothing
+  else.
+
+  Every deny arm asserts the SQLSTATE, not "it failed". Four calls that satisfy
+  "it failed" without touching the guard are pinned as controls: a missing
+  function and a wrong-arity call (`42883`), a null table name (`22004`) and
+  `1/0` (`22012`).
+
 - A shebang and the execute bit go together, and every directory that documents
   a command is swept (#856). Two things were left over from #852.
 

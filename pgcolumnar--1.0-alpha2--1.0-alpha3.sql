@@ -296,3 +296,118 @@ COMMENT ON FUNCTION pgcolumnar.sort_status(regclass)
 
 COMMENT ON FUNCTION pgcolumnar.vacuum_sorted(regclass, name[])
 	IS 'compact a columnar table, storing rows sorted ascending (NULLS LAST) on the given columns. With no columns, applies the table''s declared sort_by key from set_options (#288), like a bare CLUSTER re-applying a remembered index; errors if none is declared. Supports any btree-orderable column including text and numeric, unlike Z-order cluster(), which takes integer, date/time, boolean and floating-point columns only. One-shot: not auto-maintained.';
+
+-- pgcolumnar.maintenance_due(): validate both threshold parameters (#860).
+-- Unvalidated, a NaN or above-1 threshold silently suppressed all
+-- maintenance and a negative one made every table permanently "due", in the
+-- gate the autovacuum daemon consults before calling compact_rewrite.
+-- The body below is verbatim from pgcolumnar--1.0-alpha3.sql.
+CREATE OR REPLACE FUNCTION pgcolumnar.maintenance_due(
+	rel regclass,
+	compact_due_fraction float8 DEFAULT 0.2,
+	recluster_due_fraction float8 DEFAULT 0.05,
+	OUT total_rows bigint,
+	OUT deleted_rows bigint,
+	OUT deleted_fraction float8,
+	OUT sort_key name[],
+	OUT appended_groups bigint,
+	OUT appended_rows bigint,
+	OUT appended_fraction float8,
+	OUT compact_rewrite_due boolean,
+	OUT recluster_due boolean,
+	OUT recommendation text)
+	RETURNS record
+	-- SECURITY DEFINER, mirroring stats(): the report reads pgcolumnar's internal
+	-- catalogs through sort_status(), which ordinary roles cannot SELECT, so an
+	-- invoker-rights function false-denied every non-superuser caller -- the
+	-- cron/monitoring role this report is for. require_caller_select (inside
+	-- stats()) still gates the REAL caller via GetOuterUserId(), so definer rights
+	-- do not widen who may read a table's statistics. search_path is pinned as a
+	-- definer function must.
+	LANGUAGE plpgsql STABLE SECURITY DEFINER
+	SET search_path = pg_catalog, pg_temp
+	AS $maintenance_due$
+DECLARE
+	st_rows bigint;
+	st_del  bigint;
+	ss      record;
+BEGIN
+	-- Validate both thresholds before reading anything (#860). Neither one was
+	-- checked, and this is the gate the autovacuum daemon consults BEFORE it ever
+	-- calls compact_rewrite, which does check its own. Four ways an unchecked
+	-- threshold goes wrong, none of which raises anything:
+	--   NaN   -- `fraction >= NaN` is false in IEEE, so nothing is ever due and
+	--            the work is suppressed silently and permanently.
+	--   > 1   -- the same outcome for any fraction: never due.
+	--   < 0   -- `fraction >= -1` is true for EVERY table, so the daemon believes
+	--            compaction is always due and rewrites every columnar table on
+	--            every pass. This is the dangerous direction: not a suppressed
+	--            report but a permanent, self-renewing rewrite.
+	--   NULL  -- the verdict is NULL, and the daemon reads a NULL verdict as
+	--            "not due" (SPI_getbinval isnull), so it is the NaN case again.
+	-- 0.0 and 1.0 are LEGAL and stay legal: 0.0 means "any decay at all is worth
+	-- acting on", 1.0 means "only a fully dead table". The bounds are inclusive,
+	-- matching pgcolumnar.compact_rewrite's own guard, and test/native_reclaim.sh
+	-- pins both endpoints as ACCEPTED so this guard cannot quietly become
+	-- over-broad, which is how a bounds check usually breaks.
+	--
+	-- The explicit NaN test is redundant with `> 1.0` today, because PostgreSQL
+	-- float8 ordering is not IEEE ordering: it sorts NaN above every other value.
+	-- It is written out anyway so the intent survives an edit to the bounds.
+	IF compact_due_fraction IS NULL
+	   OR compact_due_fraction = 'NaN'::float8
+	   OR compact_due_fraction < 0.0
+	   OR compact_due_fraction > 1.0 THEN
+		RAISE EXCEPTION 'compact_due_fraction must be a number between 0 and 1'
+			USING ERRCODE = 'invalid_parameter_value';
+	END IF;
+	IF recluster_due_fraction IS NULL
+	   OR recluster_due_fraction = 'NaN'::float8
+	   OR recluster_due_fraction < 0.0
+	   OR recluster_due_fraction > 1.0 THEN
+		RAISE EXCEPTION 'recluster_due_fraction must be a number between 0 and 1'
+			USING ERRCODE = 'invalid_parameter_value';
+	END IF;
+
+	-- stats() enforces require_caller_select(rel) before it returns a row, so a
+	-- caller without SELECT on rel is refused here rather than reported to.
+	SELECT COALESCE(sum(s.rowcount), 0), COALESCE(sum(s.deletedrows), 0)
+	  INTO st_rows, st_del
+	  FROM pgcolumnar.stats(rel) s;
+
+	SELECT * INTO ss FROM pgcolumnar.sort_status(rel);
+
+	total_rows   := st_rows;
+	deleted_rows := st_del;
+	deleted_fraction := CASE WHEN st_rows > 0
+							 THEN st_del::float8 / st_rows ELSE 0 END;
+
+	sort_key        := ss.sort_key;
+	appended_groups := ss.appended_groups;
+	appended_rows   := ss.appended_rows;
+	appended_fraction := CASE WHEN (ss.sorted_rows + ss.appended_rows) > 0
+							  THEN ss.appended_rows::float8
+								   / (ss.sorted_rows + ss.appended_rows)
+							  ELSE 0 END;
+
+	compact_rewrite_due := (deleted_fraction >= compact_due_fraction);
+	-- A sorted RUN must exist for recluster to mean anything. sort_status()
+	-- reports a never-ordered table as entirely appended (no run), and
+	-- vacuum_sorted() establishes a run without setting options.sort_by, so the
+	-- run -- sorted_groups > 0 -- is the signal, not the sort_by label (sort_key
+	-- is reported for information and may be NULL on an ordered table).
+	recluster_due := (ss.sorted_groups > 0
+					  AND ss.appended_groups > 0
+					  AND appended_fraction >= recluster_due_fraction);
+
+	recommendation := NULLIF(
+		concat_ws(', ',
+			CASE WHEN compact_rewrite_due THEN 'compact_rewrite' END,
+			CASE WHEN recluster_due THEN 'recluster' END),
+		'');
+	RETURN;
+END;
+$maintenance_due$;
+
+COMMENT ON FUNCTION pgcolumnar.maintenance_due(regclass, float8, float8)
+	IS 'report whether an online maintenance verb (compact_rewrite, recluster) is worth running, from table statistics alone; thresholds are parameters with defaults measured on #415, each required to be a number between 0 and 1 inclusive (#860); pure report, takes no lock and rewrites nothing (#415)';

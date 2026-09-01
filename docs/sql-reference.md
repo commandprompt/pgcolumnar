@@ -200,6 +200,12 @@ Rewrites partially-deleted row groups, those whose deleted fraction is at least
 `ShareUpdateExclusiveLock`. `max_groups` caps how many groups a single call
 rewrites; 0 means no cap. Returns the number of groups rewritten.
 
+`min_deleted_fraction` must be a number from 0 to 1, both ends included. The
+function rejects `NaN`, a negative value and a value above 1. Each raises SQLSTATE
+`22023`, `invalid_parameter_value`. `NaN` needs a test of its own because it
+compares false against every bound. An accepted `NaN` would match no row group, so
+the call would reclaim nothing and still report success.
+
 ```sql
 SELECT pgcolumnar.compact_rewrite('events', 0.3);
 ```
@@ -389,9 +395,17 @@ monitoring query. Returns one row:
 | `recluster_due` | boolean | True when a sorted run exists and `appended_fraction` reaches `recluster_due_fraction`. |
 | `recommendation` | text | The verbs to run, comma-separated, or NULL when nothing is due. |
 
-The two thresholds default to the values the daemon uses. The function is
-`SECURITY DEFINER` and checks that the caller may `SELECT` the table. A monitoring
-role that owns the table can therefore call it without superuser rights.
+The two thresholds default to the values the daemon uses. Each must be a number
+from 0 to 1, both ends included. The function rejects `NaN`, `NULL`, a negative
+value and a value above 1. Each raises SQLSTATE `22023`, the same code and the
+same bounds as `pgcolumnar.compact_rewrite`. An unchecked threshold fails silently
+rather than loudly. `NaN`, `NULL` or a value above 1 reports nothing as due, which
+suppresses maintenance for good. A negative value reports every table as due on
+every sweep.
+
+The function is `SECURITY DEFINER` and checks that the caller may `SELECT` the
+table. A monitoring role that owns the table can therefore call it without
+superuser rights.
 
 ```sql
 SELECT recommendation FROM pgcolumnar.maintenance_due('events');
