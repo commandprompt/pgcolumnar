@@ -2876,7 +2876,9 @@ pgcolumnar_flush_row_group(PgColumnarWriteState *writeState)
  * reusing the base stripe encoder (PgColumnarWriteRow + pgcolumnar_flush_row_group).
  * The base row number is stored as a leading int8 column so the projection can
  * be joined back to the base; deletes/visibility come from the base delete_vector, so
- * only INSERT fans out (see design/gaps/26-IMPL-projections-phase2-plan.md).
+ * DELETE does not rewrite the projection. UPDATE is delete-old plus insert-new
+ * and must fan the new number out or a covering projection scan will miss it
+ * (see design/gaps/26-IMPL-projections-phase2-plan.md).
  * ------------------------------------------------------------------------- */
 
 /* one buffered projection row: [rownumber, projcol1..projcolK] */

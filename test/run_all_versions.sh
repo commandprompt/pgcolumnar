@@ -238,6 +238,7 @@ SUITES=(
 	planner_choice_quality
 	preimage_rewrite
 	projection_privilege
+	projection_update
 	projections
 	pushdown_report
 	qual_order_selectivity

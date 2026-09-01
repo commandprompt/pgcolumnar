@@ -1563,6 +1563,16 @@ pgcolumnar_tuple_update(COLUMNAR_TUPLE_UPDATE_ARGS)
 								 slot->tts_isnull);
 
 	/*
+	 * The new version is a new row number. Projections store that number as
+	 * their join key and skip deleted base numbers via the delete vector, so
+	 * DELETE needs no fan-out. UPDATE does: without it the projection still
+	 * holds the old number, the delete vector hides that number, and a covering
+	 * projection scan (or read_projection) answers as if the row is gone.
+	 */
+	PgColumnarProjectionFanoutRow(rel, writeState, rowNumber, slot->tts_values,
+								slot->tts_isnull);
+
+	/*
 	 * The new row version makes its block not all-visible, exactly as a plain
 	 * insert does (gap 28). This half of update-as-delete-plus-insert was the
 	 * only write path not clearing the bit, while PgColumnarVMClearForRow's own
