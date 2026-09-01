@@ -170,6 +170,31 @@ PgColumnarVMClearForRow(Relation rel, uint64 rowNumber)
 }
 
 /*
+ * PgColumnarVMClearForRowRange
+ *		Clear the all-visible bit for every synthetic block covering
+ *		[firstRowNumber, firstRowNumber + rowCount). Used when a whole live
+ *		row group is retired (pgcolumnar.expire) so an index-only scan cannot
+ *		keep answering from the VM after the group's catalog rows are gone.
+ */
+void
+PgColumnarVMClearForRowRange(Relation rel, uint64 firstRowNumber, uint64 rowCount)
+{
+	uint64		last;
+	BlockNumber b0;
+	BlockNumber b1;
+	BlockNumber blk;
+
+	if (rowCount == 0)
+		return;
+
+	last = firstRowNumber + rowCount - 1;
+	b0 = (BlockNumber) (firstRowNumber / COLUMNAR_VALID_ITEMPOINTER_OFFSETS);
+	b1 = (BlockNumber) (last / COLUMNAR_VALID_ITEMPOINTER_OFFSETS);
+	for (blk = b0; blk <= b1; blk++)
+		PgColumnarVMClearVisible(rel, blk);
+}
+
+/*
  * PgColumnarVMIsVisible
  *		True if `blk` is marked all-visible in the VM fork. Thin wrapper over the
  *		stock reader (the same call the index-only-scan executor makes).

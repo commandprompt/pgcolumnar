@@ -2041,6 +2041,17 @@ pgcolumnar_cluster(PG_FUNCTION_ARGS)
  *		by group rather than by row, and it is the safe direction: the
  *		alternative drops rows that are still inside the retention.
  *
+ *		A NULL in the retention column is the same kind of straddle. The zone
+ *		map's maximum covers only the non-NULL timestamps, so a group whose
+ *		timestamps are all past the cutoff can still hold rows whose retention
+ *		is unknown. Dropping it would delete those rows.
+ *
+ *		Retiring a live group also clears the visibility-map bits covering its
+ *		row numbers. VACUUM may already have marked the group all-visible, and
+ *		an index-only scan would then return the expired keys from the index
+ *		without fetching. A fetch would correctly fail once the catalog rows
+ *		are gone; skipping the fetch is what made the ghosts visible.
+ *
  *		This is called by name and never runs on its own. It deletes rows, and an
  *		operation a user runs for maintenance must not do that silently, so it is
  *		not wired into vacuum, compact or autovacuum.
@@ -2165,6 +2176,14 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 		if (z == NULL || !z->hasMinMax)
 			continue;
 
+		/*
+		 * Keep any group that stored a NULL in the retention column. The
+		 * maximum cannot speak for those rows, and treating "every timestamp
+		 * we can see is expired" as "the group is expired" drops them.
+		 */
+		if (z->nullCount > 0)
+			continue;
+
 		cur = (char *) z->maximum;
 		maxv = PgColumnarDecodeValue(att, &cur, z->maximum + z->maximumLen,
 									 CurrentMemoryContext);
@@ -2173,6 +2192,7 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 										   att->attcollation, maxv, cutoff));
 		if (c < 0)
 		{
+			PgColumnarVMClearForRowRange(rel, rg->firstRowNumber, rg->rowCount);
 			PgColumnarRetireGroup(storageId, rg->groupNumber);
 			retired++;
 		}
