@@ -36,6 +36,7 @@
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
+#include "common/int.h"
 #include "executor/tuptable.h"
 #include "lib/stringinfo.h"
 #include "catalog/pg_authid_d.h"
@@ -74,6 +75,25 @@ PG_FUNCTION_INFO_V1(pgcolumnar_import_arrow);
 #define ARROW_TYPE_Date			8
 #define ARROW_TYPE_Time			9
 #define ARROW_TYPE_Timestamp	10
+
+/*
+ * Arrow DateUnit and TimeUnit (Schema.fbs).
+ *
+ * A FlatBuffers writer omits any field equal to its schema default, and two of
+ * these defaults are not zero: Date.unit defaults to MILLISECOND, and Time.unit
+ * to MILLISECOND with bitWidth 32. pyarrow therefore writes date64 and time32[ms]
+ * with no unit field at all. Reading an absent field as 0 is what made a date64
+ * file decode as a day count (#864).
+ */
+#define ARROW_DU_DAY		0
+#define ARROW_DU_MILLI		1		/* Date.unit default */
+#define ARROW_TU_SECOND		0		/* Timestamp.unit default */
+#define ARROW_TU_MILLI		1		/* Time.unit default */
+#define ARROW_TU_MICRO		2
+#define ARROW_TU_NANO		3
+
+/* milliseconds in a day, for the date64 carrier */
+#define ARROW_MSECS_PER_DAY	INT64CONST(86400000)
 #define ARROW_TYPE_List			12
 #define ARROW_TYPE_Struct		13
 #define ARROW_TYPE_FixedSizeBinary 15
@@ -1207,6 +1227,11 @@ fbr_u32(const uint8 *b, uint32 len, uint32 pos)
 	memcpy(&v, b + pos, 4);
 	return v;
 }
+static int16
+fbr_i16(const uint8 *b, uint32 len, uint32 pos)
+{
+	return (int16) fbr_u16(b, len, pos);
+}
 static int32
 fbr_i32(const uint8 *b, uint32 len, uint32 pos)
 {
@@ -1320,8 +1345,9 @@ typedef struct ImpNode
 {
 	ArrowKind	kind;
 	Oid			typid;
-	int			width;
-	int			scale;
+	int			width;			/* carrier bytes IN THE FILE, not in PostgreSQL */
+	int			scale;			/* decimal scale; not a temporal unit */
+	int			srcUnit;		/* Arrow DateUnit/TimeUnit, -1 if the file said nothing */
 	int32		atttypmod;
 	bool		needsInput;
 	FmgrInfo	inFinfo;
@@ -1351,6 +1377,7 @@ imp_build_node(ImpNode *n, Oid typid, int32 typmod, bool *ok)
 	n->typid = typid;
 	n->atttypmod = typmod;
 	n->validBuf = n->offBuf = n->dataBuf = -1;
+	n->srcUnit = -1;
 
 	elemtype = get_element_type(typid);
 	if (OidIsValid(elemtype))
@@ -1448,6 +1475,183 @@ imp_assign_buffers(ImpNode *n, int *bufcur)
 }
 
 /* decode a scalar leaf value at index i (caller checked non-null) */
+/*
+ * Convert a stored TIME/TIMESTAMP value to the microseconds PostgreSQL stores,
+ * per the unit the FILE declares. Returns false if the conversion overflows.
+ *
+ * This mirrors pq_scale_to_usecs in columnar_parquet_reader.c, and deliberately
+ * makes the same two calls: NANOS is divided rather than refused, because
+ * PostgreSQL has no nanosecond timestamp and truncating yields the right instant
+ * whereas reading nanoseconds as microseconds is wrong by a factor of 1000; and
+ * a unit the file did not declare is read as microseconds, which is what our own
+ * exporter writes. Arrow adds a SECOND unit that Parquet does not have.
+ *
+ * If one reader's policy changes the other must change with it.
+ */
+/*
+ * Floor division. C division truncates toward zero, which for a negative value
+ * names the unit AFTER the one it falls in: -1500 nanoseconds is 1.5us before
+ * the epoch, and -1500/1000 == -1 places it 1us before instead. Every narrowing
+ * here floors, so the date arm and the timestamp arm cannot disagree about which
+ * day or microsecond an instant belongs to.
+ */
+static int64
+arrow_floordiv(int64 num, int64 den)
+{
+	int64		q = num / den;
+
+	if (num % den != 0 && (num < 0) != (den < 0))
+		q--;
+	return q;
+}
+
+static bool
+arrow_scale_to_usecs(int unit, int64 v, int64 *out)
+{
+	switch (unit)
+	{
+		case ARROW_TU_SECOND:
+			return !pg_mul_s64_overflow(v, INT64CONST(1000000), out);
+		case ARROW_TU_MILLI:
+			return !pg_mul_s64_overflow(v, INT64CONST(1000), out);
+		case ARROW_TU_NANO:
+			*out = arrow_floordiv(v, INT64CONST(1000));
+			return true;
+		case ARROW_TU_MICRO:
+		default:
+			*out = v;
+			return true;
+	}
+}
+
+/*
+ * Apply what the file's Field table declares onto an import node.
+ *
+ * imp_build_node knows only what PostgreSQL wants. The carrier width and the
+ * temporal unit live in the file and the target type does not imply either:
+ * Arrow gives date32 and date64 the same type tag (8) and time32 and time64 the
+ * same tag (9), so the tag alone never settles the width.
+ *
+ * An absent field means its FlatBuffers default, which is not zero for Date or
+ * Time -- see the ARROW_DU_/ARROW_TU_ comment above.
+ *
+ * Recursion is driven by the node tree, which comes from the target type, so a
+ * file cannot drive it deeper than the column's own nesting.
+ */
+static void
+imp_temporal_mismatch(const char *arrowtype, Oid typid)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_DATATYPE_MISMATCH),
+			 errmsg("Arrow field is %s, which columnar.import_arrow cannot read into type %s",
+					arrowtype, format_type_be(typid))));
+}
+
+static void
+imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
+{
+	uint32		pos;
+	uint32		tt;
+	uint8		typetag;
+
+	if (field == 0)
+		return;
+
+	pos = pgc_fb_field(meta, metaLen, field, 2);	/* type_type (u8) */
+	typetag = pos ? fbr_u8(meta, metaLen, pos) : 0;
+	pos = pgc_fb_field(meta, metaLen, field, 3);	/* type (offset) */
+	tt = pos ? pgc_fb_indirect(meta, metaLen, pos) : 0;
+
+	if (tt != 0)
+	{
+		/*
+		 * Stamp a node ONLY when the file's tag matches the kind the target type
+		 * gave it. n->width is both the stride and the divisor in
+		 * imp_check_bounds, while every non-temporal decode arm memcpy's a size
+		 * fixed by its kind. Taking a width from a tag the target does not share
+		 * severs those two, and a Date-tagged field would set width 4 under an
+		 * A_INT64 node that still reads 8 bytes -- passing the bounds check and
+		 * reading off the end of the body. A temporal tag under a target that
+		 * cannot hold it is refused by name. Leaving it alone kept a pre-existing
+		 * silent corruption: measured on unpatched main, a time64 file into a date
+		 * column stored 687342-02-27 and a timestamp file into one stored
+		 * 2722128-09-17, both from the low 4 bytes of an 8-byte carrier. A
+		 * NON-temporal tag is still left alone, so an int64 file into a timestamp
+		 * column keeps working exactly as it does today.
+		 */
+		switch (typetag)
+		{
+			case ARROW_TYPE_Date:
+				if (n->kind != A_DATE32)
+					imp_temporal_mismatch("a date", n->typid);
+				pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
+				n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_DU_MILLI;
+				if (n->srcUnit != ARROW_DU_DAY && n->srcUnit != ARROW_DU_MILLI)
+					IMPORT_CORRUPT("unknown Arrow DateUnit");
+				n->width = (n->srcUnit == ARROW_DU_DAY) ? 4 : 8;
+				break;
+			case ARROW_TYPE_Time:
+				{
+					int32		bits;
+
+					if (n->kind != A_TIME64)
+						imp_temporal_mismatch("a time", n->typid);
+					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
+					n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_TU_MILLI;
+					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* bitWidth (i32) */
+					bits = pos ? fbr_i32(meta, metaLen, pos) : 32;
+					if (bits != 32 && bits != 64)
+						IMPORT_CORRUPT("Arrow Time bitWidth is neither 32 nor 64");
+
+					/*
+					 * The spec pairs the two: Time32 is s or ms, Time64 is us or
+					 * ns. Refuse a mismatched pair rather than scale a carrier by
+					 * a unit that cannot belong to it.
+					 */
+					if (bits == 32 && n->srcUnit != ARROW_TU_SECOND &&
+						n->srcUnit != ARROW_TU_MILLI)
+						IMPORT_CORRUPT("Arrow Time32 unit is neither second nor millisecond");
+					if (bits == 64 && n->srcUnit != ARROW_TU_MICRO &&
+						n->srcUnit != ARROW_TU_NANO)
+						IMPORT_CORRUPT("Arrow Time64 unit is neither microsecond nor nanosecond");
+					n->width = bits / 8;
+					break;
+				}
+			case ARROW_TYPE_Timestamp:
+				if (n->kind != A_TIMESTAMP && n->kind != A_TIMESTAMPTZ)
+					imp_temporal_mismatch("a timestamp", n->typid);
+				pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
+				n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_TU_SECOND;
+				if (n->srcUnit < ARROW_TU_SECOND || n->srcUnit > ARROW_TU_NANO)
+					IMPORT_CORRUPT("unknown Arrow TimeUnit");
+				n->width = 8;
+				break;
+			default:
+				break;
+		}
+	}
+
+	/* a list or struct carries its element types as children (Field slot 5) */
+	if (n->nchildren > 0)
+	{
+		uint32		vec;
+		uint32		cnt;
+		int			i;
+
+		pos = pgc_fb_field(meta, metaLen, field, 5);
+		if (pos == 0)
+			return;
+		vec = pgc_fb_indirect(meta, metaLen, pos);
+		cnt = fbr_u32(meta, metaLen, vec);
+		if (cnt != (uint32) n->nchildren)
+			IMPORT_CORRUPT("Arrow field child count does not match the target type");
+		for (i = 0; i < n->nchildren; i++)
+			imp_apply_field(&n->children[i], meta, metaLen,
+							pgc_fb_indirect(meta, metaLen,
+											vec + 4 + (uint32) i * 4));
+	}
+}
+
 static Datum
 imp_scalar_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
 			  const int64 *bufLen, int64 i)
@@ -1540,25 +1744,90 @@ imp_scalar_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
 				}
 			case A_DATE32:
 				{
-					int32		v;
+					int64		days;
 
-					memcpy(&v, vp, 4);
-					return DateADTGetDatum((DateADT) (v - PG_TO_UNIX_DAYS));
+					if (n->width == 8)
+					{
+						int64		ms;
+
+						/* date64: milliseconds from the Unix epoch */
+						memcpy(&ms, vp, 8);
+						days = ms / ARROW_MSECS_PER_DAY;
+
+						/*
+						 * C division truncates toward zero, which names the day
+						 * AFTER the one an instant before the epoch falls on.
+						 * Floor instead, so every instant reports the date it is in.
+						 */
+						if (ms % ARROW_MSECS_PER_DAY != 0 && ms < 0)
+							days--;
+					}
+					else
+					{
+						int32		v;
+
+						memcpy(&v, vp, 4);
+						days = v;
+					}
+					days -= PG_TO_UNIX_DAYS;
+					if (!IS_VALID_DATE(days))
+						ereport(ERROR,
+								(errcode(ERRCODE_DATETIME_FIELD_OVERFLOW),
+								 errmsg("columnar: Arrow date value out of range for type date")));
+					return DateADTGetDatum((DateADT) days);
 				}
 			case A_TIME64:
 				{
-					int64		v;
+					int64		raw;
+					int64		us;
 
-					memcpy(&v, vp, 8);
-					return TimeADTGetDatum(v);
+					if (n->width == 4)
+					{
+						int32		v;
+
+						memcpy(&v, vp, 4);
+						raw = v;
+					}
+					else
+						memcpy(&raw, vp, 8);
+
+					/*
+					 * TimeADT is microseconds since midnight; nothing else is a
+					 * time.
+					 *
+					 * The sign is tested on the STORED value. Flooring already
+					 * carries a negative count to a negative microsecond count, so
+					 * this guard is redundant today and reddens no test on its own
+					 * -- measured. It is kept because it does not depend on the
+					 * narrowing rule: truncation toward zero would take -500ns to
+					 * exactly 0, and a check on the scaled result would then store
+					 * midnight for a malformed input.
+					 */
+					if (raw < INT64CONST(0) ||
+						!arrow_scale_to_usecs(n->srcUnit, raw, &us) ||
+						us > USECS_PER_DAY)
+						ereport(ERROR,
+								(errcode(ERRCODE_DATETIME_FIELD_OVERFLOW),
+								 errmsg("columnar: Arrow time value out of range for type time")));
+					return TimeADTGetDatum((TimeADT) us);
 				}
 			case A_TIMESTAMP:
 			case A_TIMESTAMPTZ:
 				{
-					int64		v;
+					int64		raw;
+					int64		us;
+					int64		t;
 
-					memcpy(&v, vp, 8);
-					return TimestampGetDatum((Timestamp) (v - PG_TO_UNIX_USECS));
+					memcpy(&raw, vp, 8);
+					if (!arrow_scale_to_usecs(n->srcUnit, raw, &us) ||
+						pg_sub_s64_overflow(us, PG_TO_UNIX_USECS, &t) ||
+						!IS_VALID_TIMESTAMP((Timestamp) t))
+						ereport(ERROR,
+								(errcode(ERRCODE_DATETIME_FIELD_OVERFLOW),
+								 errmsg("columnar: Arrow timestamp value out of range for type %s",
+										n->kind == A_TIMESTAMP ? "timestamp"
+										: "timestamp with time zone")));
+					return TimestampGetDatum((Timestamp) t);
 				}
 			case A_UUID:
 				{
@@ -1918,6 +2187,16 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 						(errcode(ERRCODE_DATATYPE_MISMATCH),
 						 errmsg("Arrow file has %u columns, target table has %d",
 								nfields, ncols)));
+
+			/*
+			 * Take the carrier width and temporal unit from the file. Before this
+			 * the Schema was only counted, so every temporal column was decoded as
+			 * whatever the target type happened to be (#864, #865).
+			 */
+			for (i = 0; i < ncols; i++)
+				imp_apply_field(&tops[i], meta, metaLen,
+								pgc_fb_indirect(meta, metaLen,
+												fieldsVec + 4 + (uint32) i * 4));
 			sawSchema = true;
 		}
 		else if (headerType == ARROW_MSG_RecordBatch)

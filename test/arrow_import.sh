@@ -144,6 +144,217 @@ with ipc.new_stream(pa.OSFile(sys.argv[1], 'wb'), t.schema) as w:
 PY
 	psql_run "CREATE TABLE ri_d (c text) USING pgcolumnar;"
 	expect_error "reject dictionary-encoded file" "SELECT pgcolumnar.import_arrow('ri_d', '$DICTF');"
+
+	# ---- temporal carriers and units (#864, #865) -----------------------------
+	#
+	# Arrow gives Date two carriers (DAY on 4 bytes, MILLISECOND on 8) and gives
+	# Timestamp and Time four units each (s, ms, us, ns). The reader decoded every
+	# one of them as though it were the single shape our own exporter writes, so a
+	# VALID file in any other shape imported as a different, valid-looking value:
+	#
+	#     date64        2000-01-01  ->  4908285-05-04
+	#     timestamp(s)  2000-01-01  ->  1970-01-01 00:15:46.6848
+	#     timestamp(ms) 2000-01-01  ->  1970-01-11 22:58:04.8
+	#     timestamp(ns) 2000-01-01  ->  31969-04-01
+	#     time64(ns)    12:00:00    ->  12000:00:00
+	#
+	# These assert the VALUE, not that an error was raised. A wrong value cannot
+	# satisfy them for an unrelated reason the way a deny arm can: a missing
+	# fixture or a renamed table gives an empty result, not the right timestamp.
+	# Every file below holds a value that is valid in its own unit, so nothing here
+	# is testing overflow handling -- that is what the out-of-range arms are for.
+	python3 - "$PGC_WORKDIR" <<'PY'
+import os, struct, sys, pyarrow as pa, pyarrow.ipc as ipc
+out = sys.argv[1]
+S2000 = 946684800                      # 2000-01-01T00:00:00Z in seconds
+NOON  = 12 * 3600                      # 12:00:00 in seconds
+cases = {
+    'tu_date32':  (pa.date32(),               S2000 // 86400),
+    'tu_date64':  (pa.date64(),               S2000 * 1000),
+    'tu_ts_s':    (pa.timestamp('s'),         S2000),
+    'tu_ts_ms':   (pa.timestamp('ms'),        S2000 * 1000),
+    'tu_ts_us':   (pa.timestamp('us'),        S2000 * 1000000),
+    'tu_ts_ns':   (pa.timestamp('ns'),        S2000 * 1000000000),
+    'tu_t64_us':  (pa.time64('us'),           NOON * 1000000),
+    'tu_t64_ns':  (pa.time64('ns'),           NOON * 1000000000),
+    'tu_t32_s':   (pa.time32('s'),            NOON),
+    'tu_t32_ms':  (pa.time32('ms'),           NOON * 1000),
+    # guard inputs: each is valid for its carrier and wrong for PostgreSQL
+    'tu_ts_s_ovf':   (pa.timestamp('s'),  2**63 - 1),        # x1e6 overflows int64
+    'tu_ts_ms_far':  (pa.timestamp('ms'), -300000000000000),  # far past, below MIN_TIMESTAMP
+    'tu_d64_frac':   (pa.date64(),        86400001),         # not a whole day
+    'tu_d64_neg':    (pa.date64(),        -1),               # 1969-12-31T23:59:59.999
+    'tu_t64_ns_ovf': (pa.time64('ns'),    25 * 3600 * 10**9),# past midnight
+    'tu_ts_ns_trunc':(pa.timestamp('ns'), S2000 * 10**9 + 1500),  # 1.5us past the epoch
+    'tu_t64_ns_neg': (pa.time64('ns'),    -500),              # narrows to 0us: not midnight
+    'tu_ts_ns_neg':  (pa.timestamp('ns'), -1500),             # 1.5us BEFORE the epoch
+    # a temporal carrier whose tag no other temporal target can hold
+    'tu_t64_plain':  (pa.time64('us'),    NOON * 10**6),
+}
+for name, (typ, v) in cases.items():
+    raw = struct.pack('<i' if typ.bit_width == 32 else '<q', v)
+    arr = pa.Array.from_buffers(typ, 1, [None, pa.py_buffer(raw)])
+    tab = pa.table({'v': arr})
+    with ipc.new_stream(pa.OSFile(os.path.join(out, name + '.arrows'), 'wb'), tab.schema) as w:
+        w.write_table(tab)
+PY
+
+	python3 - "$PGC_WORKDIR" <<'PY'
+import os, sys, pyarrow as pa, pyarrow.ipc as ipc
+out = sys.argv[1]
+t = pa.table({'v': pa.array([946684800 * 10**6], pa.int64())})
+with ipc.new_stream(pa.OSFile(os.path.join(out, 'tu_int64_ts.arrows'), 'wb'), t.schema) as w:
+    w.write_table(t)
+# Three date32 rows: a 12-byte data buffer. A decoder reading 8 bytes at stride 4
+# runs off the end of it, which is what the width/kind cross-check prevents.
+t = pa.table({'v': pa.array([10957, 10958, 10959], pa.date32())})
+with ipc.new_stream(pa.OSFile(os.path.join(out, 'tu_d32_3.arrows'), 'wb'), t.schema) as w:
+    w.write_table(t)
+PY
+
+	# Nested temporal carriers. The unit lives on the CHILD field, so these fail
+	# unless the schema walk recurses. The struct puts its timestamp SECOND: a list
+	# only ever reaches children[0], so it cannot catch an error in the child
+	# vector's index arithmetic, and a struct at index 1 can.
+	python3 - "$PGC_WORKDIR" <<'PY'
+import os, sys, pyarrow as pa, pyarrow.ipc as ipc
+out = sys.argv[1]
+S2000 = 946684800
+ns = S2000 * 10**9
+
+lst = pa.array([[ns]], type=pa.list_(pa.timestamp('ns')))
+with ipc.new_stream(pa.OSFile(os.path.join(out, 'tu_list_ns.arrows'), 'wb'),
+                    pa.schema([pa.field('v', lst.type)])) as w:
+    w.write_table(pa.table({'v': lst}))
+
+st = pa.array([{'a': 7, 'b': ns}],
+              type=pa.struct([('a', pa.int32()), ('b', pa.timestamp('ns'))]))
+with ipc.new_stream(pa.OSFile(os.path.join(out, 'tu_struct_ns.arrows'), 'wb'),
+                    pa.schema([pa.field('v', st.type)])) as w:
+    w.write_table(pa.table({'v': st}))
+PY
+
+	tu_value() {	# tu_value FIXTURE PGTYPE -> the stored value, or the empty string
+		psql_run "DROP TABLE IF EXISTS tu_t; CREATE TABLE tu_t (v $2) USING pgcolumnar;" \
+			>/dev/null 2>&1
+		psql_run "SELECT pgcolumnar.import_arrow('tu_t', '$PGC_WORKDIR/$1.arrows');" \
+			>/dev/null 2>&1 || { echo "IMPORT-FAILED"; return; }
+		q "SELECT v::text FROM tu_t LIMIT 1;"
+	}
+
+	# PREMISE. The unit our own exporter writes must still round-trip, or every
+	# check below could pass on a reader that rejects everything.
+	check "premise: the exporter's own timestamp unit still imports correctly" \
+		"$(tu_value tu_ts_us timestamp)" "2000-01-01 00:00:00"
+	check "premise: and its own time unit does too" \
+		"$(tu_value tu_t64_us time)" "12:00:00"
+	check "premise: and a date32 carrier, which shares Arrow's tag 8 with date64" \
+		"$(tu_value tu_date32 date)" "2000-01-01"
+
+	check "a date64 carrier decodes to the date it holds (#864)" \
+		"$(tu_value tu_date64 date)" "2000-01-01"
+
+	check "a timestamp in seconds decodes to the instant it holds (#865)" \
+		"$(tu_value tu_ts_s timestamp)" "2000-01-01 00:00:00"
+	check "a timestamp in milliseconds decodes to the instant it holds (#865)" \
+		"$(tu_value tu_ts_ms timestamp)" "2000-01-01 00:00:00"
+	check "a timestamp in nanoseconds decodes to the instant it holds (#865)" \
+		"$(tu_value tu_ts_ns timestamp)" "2000-01-01 00:00:00"
+
+	check "a time64 in nanoseconds decodes to the time it holds (#865)" \
+		"$(tu_value tu_t64_ns time)" "12:00:00"
+	check "a time32 in seconds decodes to the time it holds (#865)" \
+		"$(tu_value tu_t32_s time)" "12:00:00"
+	check "a time32 in milliseconds decodes to the time it holds (#865)" \
+		"$(tu_value tu_t32_ms time)" "12:00:00"
+
+	# ---- the guards the unit fix introduced -------------------------------
+	#
+	# Scaling a coarse unit up can leave the value outside what PostgreSQL can
+	# store, and in C a signed overflow is undefined behaviour rather than a
+	# wraparound, so each of these has to be refused before the multiply lands.
+	# 22008 is datetime_field_overflow.
+	tu_import_state() {	# tu_import_state FIXTURE PGTYPE -> SQLSTATE, 00000 on success
+		psql_run "DROP TABLE IF EXISTS tu_t; CREATE TABLE tu_t (v $2) USING pgcolumnar;" \
+			>/dev/null 2>&1
+		local st
+		st="$(sqlstate_or_hang "SELECT pgcolumnar.import_arrow('tu_t', '$PGC_WORKDIR/$1.arrows')")"
+		[ -z "$st" ] && st=00000
+		printf '%s\n' "$st"
+	}
+
+	check "premise: a well-formed import reports 00000, so the probe reads success" \
+		"$(tu_import_state tu_ts_us timestamp)" "00000"
+
+	check "a second count that overflows on scaling is refused, not wrapped" \
+		"$(tu_import_state tu_ts_s_ovf timestamp)" "22008"
+	# Far PAST, not far future. The two bounds are not symmetric here: exceeding
+	# END_TIMESTAMP needs 9224318016000000000 microseconds, which is larger than
+	# INT64_MAX, so for every unit the overflow guard fires before the range check
+	# can. Only the lower bound is reachable, so only it can be asserted.
+	check "a timestamp before PostgreSQL's range is refused" \
+		"$(tu_import_state tu_ts_ms_far timestamp)" "22008"
+	check "a time past midnight is refused" \
+		"$(tu_import_state tu_t64_ns_ovf time)" "22008"
+
+	# date64 is milliseconds, so an instant need not land on midnight. The date
+	# it falls IN is the floor, and C division truncates toward zero: without a
+	# floor correction a pre-epoch instant reports the day after the one it is in.
+	check "a date64 instant mid-day reports the day it falls in" \
+		"$(tu_value tu_d64_frac date)" "1970-01-02"
+	check "a date64 instant before the epoch floors rather than truncating" \
+		"$(tu_value tu_d64_neg date)" "1969-12-31"
+
+	# PostgreSQL has no nanosecond timestamp, so sub-microsecond precision cannot
+	# survive; truncating keeps the instant, where reading ns as us is 1000x wrong.
+	check "a nanosecond timestamp truncates to microseconds" \
+		"$(tu_value tu_ts_ns_trunc timestamp)" "2000-01-01 00:00:00.000001"
+
+	# Narrowing floors rather than truncating toward zero, so an instant before
+	# the epoch reports the microsecond and the day it is IN. Truncation would
+	# move both of these forward, and would disagree with the date64 arm above.
+	check "a nanosecond timestamp before the epoch floors rather than truncating" \
+		"$(tu_value tu_ts_ns_neg timestamp)" "1969-12-31 23:59:59.999998"
+	check "a negative nanosecond time is refused, not narrowed into midnight" \
+		"$(tu_import_state tu_t64_ns_neg time)" "22008"
+
+	# ---- the file's declared type must match the target's -------------------
+	#
+	# n->width is both the decode stride and the divisor in the row-count bounds
+	# check, while each non-temporal decode arm reads a size fixed by its kind.
+	# Taking a width from a tag the target does not share separates the two: a
+	# Date-tagged field under a bigint node gave stride 4 to an arm reading 8,
+	# which passed the bounds check and read past the body. Every arm below is
+	# refused on unpatched main with XX001; these pin that it stays refused.
+	for tu_target in bigint uuid time "numeric(20,4)" timestamp; do
+		check "a date32 file is refused for a $tu_target column, not read past its buffer" \
+			"$(tu_import_state tu_d32_3 "$tu_target")" "42804"
+	done
+
+	# The other direction, and the reason the refusal is by name rather than a
+	# bounds error. These three were ACCEPTED on unpatched main, storing the low
+	# 4 bytes of an 8-byte carrier as a plausible value: 687342-02-27,
+	# 2722128-09-17, and 1970-01-11 22:58:04.8 respectively.
+	check "a time64 file is refused for a date column, not stored as year 687342" \
+		"$(tu_import_state tu_t64_plain date)" "42804"
+	check "a timestamp file is refused for a date column" \
+		"$(tu_import_state tu_ts_us date)" "42804"
+	check "a date64 file is refused for a timestamp column" \
+		"$(tu_import_state tu_date64 timestamp)" "42804"
+
+	# A NON-temporal tag is still left alone: an int64 file keeps importing into
+	# a timestamp column as raw microseconds, exactly as it did before.
+	check "control: a non-temporal tag is not caught by the temporal refusal" \
+		"$(tu_import_state tu_int64_ts timestamp)" "00000"
+
+	# ---- the unit on a nested field ---------------------------------------
+	check "a list element's nanosecond unit is honoured, not just the top level" \
+		"$(tu_value tu_list_ns 'timestamp[]')" "{\"2000-01-01 00:00:00\"}"
+
+	psql_run "DROP TYPE IF EXISTS tu_st CASCADE; CREATE TYPE tu_st AS (a int, b timestamp);" \
+		>/dev/null 2>&1
+	check "a struct field's nanosecond unit is honoured at child index 1" \
+		"$(tu_value tu_struct_ns tu_st)" "(7,\"2000-01-01 00:00:00\")"
 fi
 
 IXFILE="$PGC_WORKDIR/ix_roundtrip.arrows"

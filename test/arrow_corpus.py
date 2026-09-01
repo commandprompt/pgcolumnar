@@ -40,6 +40,19 @@ PGTYPE = {
     "bool": "bool",
     "string": "text",
     "binary": "bytea",
+    # Temporal carriers. Both Date widths and both Time widths map to one
+    # PostgreSQL type each, so the file's declared unit is the only thing that
+    # says how wide a value is -- which is what the mutations here get to attack.
+    "date32[day]": "date",
+    "date64[ms]": "date",
+    "time32[s]": "time",
+    "time32[ms]": "time",
+    "time64[us]": "time",
+    "time64[ns]": "time",
+    "timestamp[s]": "timestamp",
+    "timestamp[ms]": "timestamp",
+    "timestamp[us]": "timestamp",
+    "timestamp[ns]": "timestamp",
 }
 
 
@@ -100,6 +113,33 @@ def main():
     w(outdir, "bool", [batch([("c0", pa.array([i % 2 == 0 for i in range(n)], pa.bool_()))])])
     w(outdir, "string", [batch([("c0", pa.array(["v%d" % i for i in range(n)]))])])
     w(outdir, "binary", [batch([("c0", pa.array([b"\x00\x01%d" % i for i in range(n)], pa.binary()))])])
+
+    # --- temporal carriers and units. The decoder takes its stride and its
+    # scale factor from the file's own Date/Time/Timestamp tables, so a mutation
+    # in those bytes reaches arithmetic no other seed exercises. Without these
+    # the unit-aware decode path was unreachable from this corpus entirely.
+    S2000 = 946684800
+    NOON = 12 * 3600
+    w(outdir, "date32", [batch([("c0", pa.array(
+        [S2000 // 86400 + i for i in range(n)], pa.date32()))])])
+    w(outdir, "date64", [batch([("c0", pa.array(
+        [(S2000 + i * 86400) * 1000 for i in range(n)], pa.date64()))])])
+    w(outdir, "time32_s", [batch([("c0", pa.array(
+        [(NOON + i) % 86400 for i in range(n)], pa.time32("s")))])])
+    w(outdir, "time32_ms", [batch([("c0", pa.array(
+        [((NOON + i) % 86400) * 1000 for i in range(n)], pa.time32("ms")))])])
+    w(outdir, "time64_us", [batch([("c0", pa.array(
+        [((NOON + i) % 86400) * 10**6 for i in range(n)], pa.time64("us")))])])
+    w(outdir, "time64_ns", [batch([("c0", pa.array(
+        [((NOON + i) % 86400) * 10**9 for i in range(n)], pa.time64("ns")))])])
+    w(outdir, "ts_s", [batch([("c0", pa.array(
+        [S2000 + i for i in range(n)], pa.timestamp("s")))])])
+    w(outdir, "ts_ms", [batch([("c0", pa.array(
+        [(S2000 + i) * 1000 for i in range(n)], pa.timestamp("ms")))])])
+    w(outdir, "ts_us", [batch([("c0", pa.array(
+        [(S2000 + i) * 10**6 for i in range(n)], pa.timestamp("us")))])])
+    w(outdir, "ts_ns", [batch([("c0", pa.array(
+        [(S2000 + i) * 10**9 for i in range(n)], pa.timestamp("ns")))])])
 
     # --- null shapes: the validity bitmap is a separate buffer and a separate
     # decode path from the values.

@@ -35,6 +35,49 @@ true until the next version shipped.
 
 ### Fixed
 
+- Arrow import reads the temporal unit and carrier width the file declares,
+  rather than assuming the ones our own exporter writes (#864, #865).
+
+  **A file could say what it meant and be read as something else.** The importer
+  built its decode plan from the target column type alone and never opened the
+  Arrow `Field` table, so the unit went unread. A `date64` column holding
+  2000-01-01 was decoded as a day count and stored as `4908285-05-04`; a
+  `timestamp` in seconds became `1970-01-01 00:15:46.6848`, in milliseconds
+  `1970-01-11 22:58:04.8`, and in nanoseconds `31969-04-01`. A `time64` in
+  nanoseconds holding noon stored `12000:00:00`, a legal PostgreSQL time. None
+  raised an error. `time32` could not be imported at all, failing with "value
+  buffer too small for the row count".
+
+  Only microsecond timestamps and times, and `date32` dates, were read
+  correctly, and those are exactly what `export_arrow` writes -- so a round trip
+  through our own exporter never showed the defect.
+
+  The import now reads `Date.unit`, `Time.unit`, `Time.bitWidth` and
+  `Timestamp.unit` from the file and scales to PostgreSQL's units, treating an
+  absent field as its FlatBuffers default. That last part matters: a writer omits
+  any field equal to its default, and two of these defaults are not zero, so
+  pyarrow emits `date64` and `time32[ms]` with no unit field at all. Reading an
+  absent field as zero is what produced the `date64` result above.
+
+  Scaling a coarse unit up can leave PostgreSQL's range, so each conversion is
+  overflow-checked and refused with `22008` rather than wrapped. Nanoseconds are
+  narrowed to microseconds, which PostgreSQL cannot store beyond: narrowing keeps
+  the instant, where reading nanoseconds as microseconds is wrong by a factor of
+  1000. Every narrowing floors, so an instant before the epoch reports the day and
+  the microsecond it falls in rather than the one after.
+
+  The unit is applied to nested fields too, so a `timestamp[]` or a composite
+  with a temporal member is read by its own declared unit.
+
+  Reading the file's declared type also closed a third case, found while fixing
+  these two and present since Arrow import shipped: a temporal file whose type
+  the target column cannot hold was read anyway, taking the low four bytes of an
+  eight-byte carrier. A `time64` file imported into a `date` column stored
+  `687342-02-27`, and a `timestamp` file into the same column stored
+  `2722128-09-17`. Both are now refused with `42804`, naming the Arrow type and
+  the column type. A file whose type is not temporal is unaffected, so importing
+  a plain `int64` file into a `timestamp` column still works.
+
 - A shebang and the execute bit go together, and every directory that documents
   a command is swept (#856). Two things were left over from #852.
 
