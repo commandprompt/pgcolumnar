@@ -190,27 +190,158 @@ check "retry into the cleaned directory succeeds" \
 check "the retry writes a fresh _SUCCESS marker" \
 	"$([ -f "$DCX/_SUCCESS" ] && echo yes || echo no)" yes
 
-# ---- error cases ------------------------------------------------------------
-# Worker destinations cross DSM in MAXPGPATH buffers and then gain a generated
-# part name. A path that fits by itself but not with that suffix used to be
-# silently truncated: the function returned success and wrote _SUCCESS beside
-# part-0000.parqu, which read_parquet ignores. Reject it before creating the
-# destination or any misleading output.
-LONG_PARENT="$PGC_WORKDIR/long_path"
-mkdir -p "$LONG_PARENT"
-long_piece="$(printf 'a%.0s' {1..120})"
-while [ ${#LONG_PARENT} -lt 980 ]; do
-	LONG_PARENT="$LONG_PARENT/$long_piece"
-	mkdir -p "$LONG_PARENT"
-done
-chmod 777 "$LONG_PARENT"
-LONG_DIR="$LONG_PARENT/target"
-long_out="$(err_of "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$LONG_DIR', 2)")"
-check "reject a destination whose generated part path would truncate" \
-	"$(grep -qi 'destination is too long' <<<"$long_out" && echo error || echo ok)" error
-check "long destination is rejected before it is created" \
-	"$([ -e "$LONG_DIR" ] && echo created || echo absent)" absent
+# ---- destination-length guard (#863) ----------------------------------------
+# A destination that fits by itself but not with a generated suffix used to be
+# silently truncated: the export returned success and stamped _SUCCESS beside a
+# clipped part name, which read_parquet ignores.
+#
+# The guard has to probe the LONGEST path this file builds into a fixed
+# MAXPGPATH buffer, and that is NOT the final part name. pexport_remove_outputs()
+# composes "%s/%s" from the directory and a directory entry, and the entries it
+# unlinks include the sink's in-flight form part-NNNN.parquet.tmp.<pid>:
+#
+#     final part name   "/part-2147483647.parquet"           dir + 24
+#     cleanup scan      "/part-0000.parquet.tmp.1234567"     dir + 30
+#
+# 7-digit pids are reachable here (/proc/sys/kernel/pid_max is 4194304), so a
+# guard that probes only the part name accepts dir lengths 994..999 while the
+# cleanup scan's buffer truncates a path it then unlinks. The probe must be the
+# longest constructed form, "/part-<int>.parquet.tmp.<int>", which is 39 bytes
+# at INT_MAX for both numbers -- so the longest acceptable destination is
+# MAXPGPATH - 1 - 39.
+#
+# Both boundaries are asserted: one byte under must still export (this class of
+# fix breaks by becoming over-broad and rejecting legal paths) and one byte over
+# must be refused with ERRCODE_PROGRAM_LIMIT_EXCEEDED, by SQLSTATE -- "it
+# failed" also passes for a typo, a missing table or a dead server.
 
+PEXPORT_TOO_LONG_SQLSTATE=54000		# ERRCODE_PROGRAM_LIMIT_EXCEEDED
+
+# premise 1: the arithmetic is written for MAXPGPATH == 1024.
+PGC_MAXPGPATH="$(sed -n 's/^#define[[:space:]]\{1,\}MAXPGPATH[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p' \
+	"$("$PGC_PG_CONFIG" --includedir-server)/pg_config_manual.h" | head -1)"
+if [ "$PGC_MAXPGPATH" != "1024" ]; then
+	echo "PREMISE FAILED: MAXPGPATH is [$PGC_MAXPGPATH]; these arms are written for 1024" >&2
+	exit 1
+fi
+
+# premise 2: the cleanup scan still builds dir + "/" + entry into a fixed
+# buffer, and the sink still appends ".tmp.<pid>" to the part name. If either
+# moves, the +30 above is stale and these lengths measure nothing.
+pexport_anchor="$(grep -c 'snprintf(fp, sizeof(fp), "%s/%s", dir, de->d_name);' \
+	"$PGC_SRCDIR/src/columnar_parallel_export.c")"
+sink_anchor="$(grep -c 'psprintf("%s.tmp.%d", path, MyProcPid)' \
+	"$PGC_SRCDIR/src/columnar_sink.c")"
+if [ "$pexport_anchor" != "1" ] || [ "$sink_anchor" != "1" ]; then
+	echo "PREMISE FAILED: cleanup-scan anchor [$pexport_anchor] sink .tmp anchor [$sink_anchor], wanted 1 and 1" >&2
+	exit 1
+fi
+
+# Longest destination that still holds the longest generated path, and the
+# shortest destination at which the cleanup scan's "%s/%s" truncates with a
+# 7-digit pid (len("/part-0000.parquet.tmp.1234567") == 30).
+PEXPORT_LEN_OK=$(( PGC_MAXPGPATH - 1 - 39 ))		# 984
+PEXPORT_LEN_OVER=$(( PEXPORT_LEN_OK + 1 ))		# 985
+PEXPORT_LEN_WINDOW=$(( PGC_MAXPGPATH - 30 ))		# 994
+
+# Build a directory path of an EXACT length and create its parents 777, so the
+# server (running as postgres) can create the final component itself. Sets
+# LP_PATH; it does not echo, because an exit inside a command substitution would
+# leave the suite running with an ungated premise.
+LP_PATH=""
+path_of_len() {
+	local want="$1" p="$PGC_WORKDIR/lp" rem
+	while [ $(( want - ${#p} - 1 )) -gt 255 ]; do
+		p="$p/$(printf 'a%.0s' $(seq 1 200))"
+	done
+	rem=$(( want - ${#p} - 1 ))
+	if [ "$rem" -lt 1 ]; then
+		echo "PREMISE FAILED: cannot build a ${want}-byte path under $PGC_WORKDIR" >&2
+		exit 1
+	fi
+	p="$p/$(printf 'a%.0s' $(seq 1 "$rem"))"
+	if [ "${#p}" -ne "$want" ]; then
+		echo "PREMISE FAILED: built a ${#p}-byte path, wanted $want" >&2
+		exit 1
+	fi
+	mkdir -p "$(dirname "$p")" || { echo "PREMISE FAILED: mkdir -p for $want failed" >&2; exit 1; }
+	chmod -R 777 "$PGC_WORKDIR/lp" || { echo "PREMISE FAILED: chmod for $want failed" >&2; exit 1; }
+	if [ ! -d "$(dirname "$p")" ] || [ -e "$p" ]; then
+		echo "PREMISE FAILED: parent missing or target already present for $want" >&2
+		exit 1
+	fi
+	LP_PATH="$p"
+}
+
+# Run one statement ONCE and record its 5-char SQLSTATE, "none" when it
+# succeeded, or HANG on the wall-clock cap. VERBOSITY verbose puts the SQLSTATE
+# and the message on the same ERROR line, so one run yields both, and a caller
+# can assert the message without executing the statement a second time -- a
+# second run of an accepted export hits the require-empty check and returns a
+# DIFFERENT sqlstate (55000), which is exactly how "it failed" lies.
+#
+# Sets globals rather than echoing: a global assigned inside $( ) is assigned in
+# a subshell and never reaches the caller, so SQLSTATE_LAST_OUT would arrive
+# empty and its message check would silently compare nothing.
+SQLSTATE_LAST=""
+SQLSTATE_LAST_OUT=""
+run_sqlstate() {
+	local rc
+	SQLSTATE_LAST=""
+	SQLSTATE_LAST_OUT="$(timeout -s KILL 180 env PATH="$PGC_BINDIR:$PATH" psql \
+		-h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	rc=$?
+	if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then SQLSTATE_LAST=HANG; return; fi
+	if grep -q '^ERROR:' <<<"$SQLSTATE_LAST_OUT"; then
+		SQLSTATE_LAST="$(printf '%s\n' "$SQLSTATE_LAST_OUT" |
+			sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\):.*/\1/p' | head -1)"
+	else
+		SQLSTATE_LAST=none
+	fi
+}
+
+# -- accepted boundary: one byte under the limit must still export ------------
+path_of_len "$PEXPORT_LEN_OK"
+PEXPORT_DIR_OK="$LP_PATH"
+check_num "accepted boundary: the destination is exactly MAXPGPATH-40 bytes" \
+	"${#PEXPORT_DIR_OK}" "$PEXPORT_LEN_OK"
+run_sqlstate "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PEXPORT_DIR_OK', 2)"
+check "accepted boundary: a ${PEXPORT_LEN_OK}-byte destination still exports" "$SQLSTATE_LAST" none
+check_num "accepted boundary: it wrote both part files" "$(nfiles "$PEXPORT_DIR_OK")" 2
+check "accepted boundary: it wrote a _SUCCESS marker" \
+	"$([ -f "$PEXPORT_DIR_OK/_SUCCESS" ] && echo yes || echo no)" yes
+
+# -- rejected boundary: one byte over the limit --------------------------------
+path_of_len "$PEXPORT_LEN_OVER"
+PEXPORT_DIR_OVER="$LP_PATH"
+check_num "rejected boundary: the destination is exactly MAXPGPATH-39 bytes" \
+	"${#PEXPORT_DIR_OVER}" "$PEXPORT_LEN_OVER"
+run_sqlstate "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PEXPORT_DIR_OVER', 2)"
+check "rejected boundary: a ${PEXPORT_LEN_OVER}-byte destination raises 54000" \
+	"$SQLSTATE_LAST" "$PEXPORT_TOO_LONG_SQLSTATE"
+check "rejected boundary: the destination was not created" \
+	"$([ -e "$PEXPORT_DIR_OVER" ] && echo created || echo absent)" absent
+
+# -- the window the part-name-only probe left open ----------------------------
+# dir + 30 overruns the cleanup scan's MAXPGPATH buffer here, while
+# dir + 24 (the final part name) still fits, so the old probe accepted this.
+path_of_len "$PEXPORT_LEN_WINDOW"
+PEXPORT_DIR_WINDOW="$LP_PATH"
+check_num "cleanup-scan window: the destination is exactly MAXPGPATH-30 bytes" \
+	"${#PEXPORT_DIR_WINDOW}" "$PEXPORT_LEN_WINDOW"
+run_sqlstate "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PEXPORT_DIR_WINDOW', 2)"
+check "cleanup-scan window: a ${PEXPORT_LEN_WINDOW}-byte destination raises 54000" \
+	"$SQLSTATE_LAST" "$PEXPORT_TOO_LONG_SQLSTATE"
+check "cleanup-scan window: and it is OUR message, not another 54000" \
+	"$(grep -qi 'destination is too long' <<<"$SQLSTATE_LAST_OUT" && echo ours || echo other)" ours
+check "cleanup-scan window: the destination was not created" \
+	"$([ -e "$PEXPORT_DIR_WINDOW" ] && echo created || echo absent)" absent
+
+# ---- error cases ------------------------------------------------------------
 # st_1 was written above, so it is non-empty
 expect_error "reject a non-empty output directory" \
 	"SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PGC_WORKDIR/st_1', 2)"

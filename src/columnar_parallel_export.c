@@ -706,13 +706,26 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	 * name. Refuse a destination that cannot hold the longest possible name;
 	 * truncating it would publish a differently named object and still stamp
 	 * _SUCCESS over an unreadable export.
+	 *
+	 * The longest such name is NOT the final part name. pexport_remove_outputs()
+	 * composes "%s/%s" from this directory and a directory entry into a
+	 * MAXPGPATH buffer, and the entries it acts on include the sink's in-flight
+	 * form part-NNNN.parquet.tmp.<pid>. Measured: "/part-0000.parquet.tmp.PID"
+	 * with a 7-digit pid (this platform's pid_max is 4194304) is dir + 30, while
+	 * the final part name "/part-2147483647.parquet" is only dir + 24, so
+	 * probing the part name alone left a window -- dir lengths 994..999 at
+	 * MAXPGPATH 1024 -- where the destination was accepted and the cleanup scan
+	 * then truncated a path it unlinks. Probe the longest form this file
+	 * constructs instead. The part index and the pid are both ints, so INT_MAX
+	 * bounds each, and the probe is 39 bytes wide against the part name's 24.
 	 */
-	if (snprintf(pathProbe, sizeof(pathProbe), "%s/part-%04d.parquet",
-				 dir, INT_MAX) >= (int) sizeof(pathProbe))
+	if (snprintf(pathProbe, sizeof(pathProbe), "%s/part-%04d.parquet.tmp.%d",
+				 dir, INT_MAX, INT_MAX) >= (int) sizeof(pathProbe))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("parallel export destination is too long"),
-				 errdetail("The destination and generated part name must fit in %d bytes.",
+				 errdetail("The destination, the generated part name and the "
+						   "in-flight temporary suffix must fit in %d bytes.",
 						   MAXPGPATH)));
 
 	pexport_prepare_dir(dir);

@@ -208,6 +208,24 @@ true until the next version shipped.
   "it failed" without touching the guard are pinned as controls: a missing
   function and a wrong-arity call (`42883`), a null table name (`22004`) and
   `1/0` (`22012`).
+- A parallel export destination is measured against the longest name the export
+  actually builds, not against the final part name (#863).
+
+  **The guard probed a shorter path than the code composes.** It measured
+  `dir + "/part-2147483647.parquet"`, 24 bytes past the directory, and accepted
+  anything that fit. `pexport_remove_outputs` then composes `"%s/%s"` from the same
+  directory and a directory entry into a `MAXPGPATH` buffer, and the entries it
+  acts on include the sink's in-flight form `part-NNNN.parquet.tmp.<pid>` -- 30
+  bytes past the directory with a 7-digit pid.
+
+  So a destination between 994 and 999 bytes long passed the guard, and the
+  cleanup scan then truncated a path it goes on to unlink. The probe now uses the
+  longest form the file constructs, 39 bytes wide, and the error names the
+  temporary suffix as well as the part name.
+
+  A destination in that range is refused where it was previously accepted. The
+  export it would have produced was already unreadable, since the part names it
+  wrote were the truncated ones.
 
 - A shebang and the execute bit go together, and every directory that documents
   a command is swept (#856). Two things were left over from #852.
