@@ -35,6 +35,33 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.import_arrow` reads an absent Arrow schema field as that field's
+  own default, so a float16 file is no longer accepted for a `float8` column
+  (#861).
+
+  A RecordBatch buffer carries no type, so the Schema message is the only thing
+  that says what the bytes mean. The check for a `float8` target read
+  `FloatingPoint.precision` with a fallback of DOUBLE. `Schema.fbs` declares
+  `enum Precision : short { HALF, SINGLE, DOUBLE }` with no explicit default, so
+  an omitted precision means HALF, and a FlatBuffers writer omits any field that
+  equals its default: pyarrow writes float16 with no precision field at all.
+  Such a file passed the check and its 2-byte values were then read with the
+  target's 8-byte width. The fallback is now HALF, which is what the format
+  says, and the arm requires DOUBLE.
+
+  `test/arrow_import.sh` gained the arms that hold the whole per-kind parameter
+  block, not just this one line. Each imports a real pyarrow file that shares
+  its target's Arrow type tag and differs in one parameter (uint64 for `bigint`,
+  timestamp[ms] for `timestamp`, date64 for `date`, decimal128(10,2) for
+  `numeric(20,4)`, and six more), and asserts SQLSTATE 42804 exactly. A file
+  that gets past the schema check and is caught later by a buffer bound reports
+  XX001 instead, so an arm asserting only "it failed" passes on the broken
+  build. Nine matching files are imported as the control, so a build that
+  refused every foreign file could not pass either. Disabling the parameter
+  block left the suite green before; it now reddens 13 checks.
+
+### Fixed
+
 - A shebang and the execute bit go together, and every directory that documents
   a command is swept (#856). Two things were left over from #852.
 

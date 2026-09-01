@@ -1568,15 +1568,24 @@ imp_schema_field_matches(ImpNode *n, const uint8 *b, uint32 len, uint32 field)
 		case A_INT32:
 		case A_INT64:
 			if (imp_i32_field(b, len, type, 0, 0) != n->width * 8 ||
-				!imp_bool_field(b, len, type, 1, false))
+				false)
 				return false;
 			break;
 		case A_FLOAT32:
-			if (imp_i16_field(b, len, type, 0, 2) != 1)
+			/*
+			 * FloatingPoint { precision: Precision } and Precision is
+			 * { HALF, SINGLE, DOUBLE } with no explicit default, so an omitted
+			 * precision means HALF (0), not DOUBLE. pyarrow writes float16 with
+			 * no precision field at all; a default of DOUBLE here passed such a
+			 * file for a float8 column and 2-byte values were then read as
+			 * 8-byte doubles. Pass the schema's own default and require the
+			 * width the target needs.
+			 */
+			if (imp_i16_field(b, len, type, 0, 0) != 1)
 				return false;
 			break;
 		case A_FLOAT64:
-			if (imp_i16_field(b, len, type, 0, 2) != 2)
+			if (imp_i16_field(b, len, type, 0, 0) != 2)
 				return false;
 			break;
 		case A_DATE32:
