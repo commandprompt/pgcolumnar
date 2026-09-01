@@ -841,10 +841,30 @@ pgcolumnar_relation_estimate_size(Relation rel, int32 *attr_widths,
 	 * planner from mis-costing scans (spec 6, 9).
 	 */
 	snapshot = ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
-	rowGroupList = PgColumnarReadRowGroupList(storageId, PgColumnarCatalogSnapshot(snapshot));
+	snapshot = PgColumnarCatalogSnapshot(snapshot);
+	rowGroupList = PgColumnarReadRowGroupList(storageId, snapshot);
 
-	foreach(lc, rowGroupList)
-		liveRows += (double) ((NativeRowGroupMetadata *) lfirst(lc))->rowCount;
+	/*
+	 * row_group.row_count is the physical occupancy, including rows later
+	 * marked in delete_vector. The planner uses this callback instead of
+	 * pg_class.reltuples, so leaving those rows in *tuples prices every scan
+	 * as if DELETE had not happened.
+	 */
+	{
+		bool		anyDeletes = PgColumnarStorageHasDeleteVector(storageId, snapshot);
+
+		foreach(lc, rowGroupList)
+		{
+			NativeRowGroupMetadata *rg = (NativeRowGroupMetadata *) lfirst(lc);
+			uint64		deleted = 0;
+
+			if (anyDeletes)
+				deleted = PgColumnarGroupDeletedCount(storageId, rg, snapshot);
+			if (deleted > rg->rowCount)
+				deleted = rg->rowCount;
+			liveRows += (double) (rg->rowCount - deleted);
+		}
+	}
 
 	*pages = Max(nblocks, 1);
 	*tuples = Max(liveRows, 0);

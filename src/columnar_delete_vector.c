@@ -497,3 +497,52 @@ PgColumnarDeleteVectorPromoteSubXact(SubTransactionId subid, SubTransactionId pa
 			buf->subid = parent;
 	}
 }
+
+/*
+ * PgColumnarGroupDeletedCount
+ *		How many of this row group's rows are deleted, under the given catalog
+ *		snapshot. A group can have several delete_vector rows, whose bitmaps
+ *		overlap, so they are OR'd before counting rather than summed -- summing
+ *		deletedCount across entries would double-count a row deleted twice (spec
+ *		7.5, and the same combining the reader does when it builds a group's mask).
+ *		Bits past the group's row count are ignored.
+ */
+uint64
+PgColumnarGroupDeletedCount(uint64 storageId, NativeRowGroupMetadata *rg,
+						  Snapshot snapshot)
+{
+	uint32		want = (uint32) ((rg->rowCount + 7) / 8);
+	char	   *mask;
+	List	   *rml;
+	ListCell   *mc;
+	uint64		deleted = 0;
+	uint32		b;
+
+	rml = PgColumnarReadDeleteVectorList(storageId, rg->groupNumber, snapshot);
+	if (rml == NIL)
+		return 0;
+
+	mask = palloc0(want > 0 ? want : 1);
+	foreach(mc, rml)
+	{
+		DeleteVectorMetadata *rm = (DeleteVectorMetadata *) lfirst(mc);
+
+		if (rm->bitmap == NULL || rm->bitmapLen == 0)
+			continue;
+		for (b = 0; b < rm->bitmapLen && b < want; b++)
+			mask[b] |= rm->bitmap[b];
+	}
+
+	for (b = 0; b < want; b++)
+	{
+		uint64		base = (uint64) b * 8;
+		int			i;
+
+		for (i = 0; i < 8; i++)
+			if (base + i < rg->rowCount && ((mask[b] >> i) & 1))
+				deleted++;
+	}
+
+	pfree(mask);
+	return deleted;
+}
