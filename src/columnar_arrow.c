@@ -1212,6 +1212,11 @@ fbr_i32(const uint8 *b, uint32 len, uint32 pos)
 {
 	return (int32) fbr_u32(b, len, pos);
 }
+static int16
+fbr_i16(const uint8 *b, uint32 len, uint32 pos)
+{
+	return (int16) fbr_u16(b, len, pos);
+}
 static int64
 fbr_i64(const uint8 *b, uint32 len, uint32 pos)
 {
@@ -1241,6 +1246,8 @@ pgc_fb_field(const uint8 *b, uint32 len, uint32 tab, int i)
 	voff = fbr_u16(b, len, (uint32) vt + slot);
 	if (voff == 0)
 		return 0;
+	if ((uint64) tab + voff >= len)
+		IMPORT_CORRUPT("table field out of bounds");
 	return tab + voff;
 }
 
@@ -1248,7 +1255,11 @@ pgc_fb_field(const uint8 *b, uint32 len, uint32 tab, int i)
 static uint32
 pgc_fb_indirect(const uint8 *b, uint32 len, uint32 pos)
 {
-	return pos + fbr_u32(b, len, pos);
+	uint64		target = (uint64) pos + fbr_u32(b, len, pos);
+
+	if (target > UINT32_MAX || target + 4 > len)
+		IMPORT_CORRUPT("offset target out of bounds");
+	return (uint32) target;
 }
 
 /* Build a numeric input string for a 128-bit unscaled value at the given scale
@@ -1321,6 +1332,7 @@ typedef struct ImpNode
 	ArrowKind	kind;
 	Oid			typid;
 	int			width;
+	int			precision;
 	int			scale;
 	int32		atttypmod;
 	bool		needsInput;
@@ -1402,6 +1414,7 @@ imp_build_node(ImpNode *n, Oid typid, int32 typmod, bool *ok)
 			return;
 		}
 		n->width = width;
+		n->precision = precision;
 		n->scale = scale;
 		n->needsInput = (n->kind == A_UTF8);
 		if (n->needsInput)
@@ -1412,6 +1425,208 @@ imp_build_node(ImpNode *n, Oid typid, int32 typmod, bool *ok)
 			fmgr_info(infunc, &n->inFinfo);
 		}
 	}
+}
+
+/*
+ * Return element i of a FlatBuffers vector of table offsets. The vector length
+ * and every element slot are file-controlled, so validate the whole vector
+ * before using one of its offsets.
+ */
+static uint32
+imp_vector_table_at(const uint8 *b, uint32 len, uint32 vec, uint32 i)
+{
+	uint32		n = fbr_u32(b, len, vec);
+	uint64		slot;
+
+	if ((uint64) n * 4 > (uint64) len - vec - 4)
+		IMPORT_CORRUPT("table vector runs past metadata");
+	if (i >= n)
+		IMPORT_CORRUPT("table vector index out of range");
+	slot = (uint64) vec + 4 + (uint64) i * 4;
+	return pgc_fb_indirect(b, len, (uint32) slot);
+}
+
+static int32
+imp_i32_field(const uint8 *b, uint32 len, uint32 tab, int field, int32 def)
+{
+	uint32		pos = pgc_fb_field(b, len, tab, field);
+
+	return pos ? fbr_i32(b, len, pos) : def;
+}
+
+static int16
+imp_i16_field(const uint8 *b, uint32 len, uint32 tab, int field, int16 def)
+{
+	uint32		pos = pgc_fb_field(b, len, tab, field);
+
+	return pos ? fbr_i16(b, len, pos) : def;
+}
+
+static bool
+imp_bool_field(const uint8 *b, uint32 len, uint32 tab, int field, bool def)
+{
+	uint32		pos = pgc_fb_field(b, len, tab, field);
+
+	return pos ? fbr_u8(b, len, pos) != 0 : def;
+}
+
+/* True when a FlatBuffers string field is present and non-empty. */
+static bool
+imp_string_field_nonempty(const uint8 *b, uint32 len, uint32 tab, int field)
+{
+	uint32		pos = pgc_fb_field(b, len, tab, field);
+	uint32		str;
+	uint32		n;
+
+	if (pos == 0)
+		return false;
+	str = pgc_fb_indirect(b, len, pos);
+	n = fbr_u32(b, len, str);
+	if ((uint64) n + 1 > (uint64) len - str - 4)
+		IMPORT_CORRUPT("string runs past metadata");
+	return n > 0;
+}
+
+/*
+ * Validate one Arrow schema Field against the PostgreSQL target node.
+ *
+ * RecordBatch buffers do not carry their types. Decoding them from the target
+ * tuple descriptor without checking the preceding Schema silently reinterprets
+ * equal-width values (for example float64 as int64), and mismatched nested
+ * layouts can assign every later buffer to the wrong column. Check the complete
+ * field tree before accepting any batch.
+ */
+static bool
+imp_schema_field_matches(ImpNode *n, const uint8 *b, uint32 len, uint32 field)
+{
+	uint32		tagpos = pgc_fb_field(b, len, field, 2);
+	uint32		typepos = pgc_fb_field(b, len, field, 3);
+	uint32		type;
+	uint32		childrenpos = pgc_fb_field(b, len, field, 5);
+	uint32		children = 0;
+	uint32		nchildren = 0;
+	uint8		tag;
+	uint8		wanttag;
+	int			i;
+
+	if (tagpos == 0 || typepos == 0)
+		IMPORT_CORRUPT("schema field has no type");
+	tag = fbr_u8(b, len, tagpos);
+	type = pgc_fb_indirect(b, len, typepos);
+
+	switch (n->kind)
+	{
+		case A_INT16:
+		case A_INT32:
+		case A_INT64:
+			wanttag = ARROW_TYPE_Int;
+			break;
+		case A_FLOAT32:
+		case A_FLOAT64:
+			wanttag = ARROW_TYPE_FloatingPoint;
+			break;
+		case A_BINARY:
+			wanttag = ARROW_TYPE_Binary;
+			break;
+		case A_UTF8:
+			wanttag = ARROW_TYPE_Utf8;
+			break;
+		case A_BOOL:
+			wanttag = ARROW_TYPE_Bool;
+			break;
+		case A_DECIMAL128:
+			wanttag = ARROW_TYPE_Decimal;
+			break;
+		case A_DATE32:
+			wanttag = ARROW_TYPE_Date;
+			break;
+		case A_TIME64:
+			wanttag = ARROW_TYPE_Time;
+			break;
+		case A_TIMESTAMP:
+		case A_TIMESTAMPTZ:
+			wanttag = ARROW_TYPE_Timestamp;
+			break;
+		case A_LIST:
+			wanttag = ARROW_TYPE_List;
+			break;
+		case A_STRUCT:
+			wanttag = ARROW_TYPE_Struct;
+			break;
+		case A_UUID:
+			wanttag = ARROW_TYPE_FixedSizeBinary;
+			break;
+		default:
+			return false;
+	}
+	if (tag != wanttag)
+		return false;
+
+	switch (n->kind)
+	{
+		case A_INT16:
+		case A_INT32:
+		case A_INT64:
+			if (imp_i32_field(b, len, type, 0, 0) != n->width * 8 ||
+				!imp_bool_field(b, len, type, 1, false))
+				return false;
+			break;
+		case A_FLOAT32:
+			if (imp_i16_field(b, len, type, 0, 2) != 1)
+				return false;
+			break;
+		case A_FLOAT64:
+			if (imp_i16_field(b, len, type, 0, 2) != 2)
+				return false;
+			break;
+		case A_DATE32:
+			if (imp_i16_field(b, len, type, 0, 1) != 0)
+				return false;
+			break;
+		case A_TIME64:
+			if (imp_i16_field(b, len, type, 0, 1) != 2 ||
+				imp_i32_field(b, len, type, 1, 32) != 64)
+				return false;
+			break;
+		case A_TIMESTAMP:
+		case A_TIMESTAMPTZ:
+			if (imp_i16_field(b, len, type, 0, 0) != 2)
+				return false;
+			if (imp_string_field_nonempty(b, len, type, 1) !=
+				(n->kind == A_TIMESTAMPTZ))
+				return false;
+			break;
+		case A_UUID:
+			if (imp_i32_field(b, len, type, 0, 0) != UUID_LEN)
+				return false;
+			break;
+		case A_DECIMAL128:
+			if (imp_i32_field(b, len, type, 0, 0) != n->precision ||
+				imp_i32_field(b, len, type, 1, 0) != n->scale ||
+				imp_i32_field(b, len, type, 2, 128) != 128)
+				return false;
+			break;
+		default:
+			break;
+	}
+
+	if (childrenpos != 0)
+	{
+		children = pgc_fb_indirect(b, len, childrenpos);
+		nchildren = fbr_u32(b, len, children);
+		if ((uint64) nchildren * 4 > (uint64) len - children - 4)
+			IMPORT_CORRUPT("schema children vector runs past metadata");
+	}
+	if (nchildren != (uint32) n->nchildren)
+		return false;
+	for (i = 0; i < n->nchildren; i++)
+	{
+		uint32		child = imp_vector_table_at(b, len, children, (uint32) i);
+
+		if (!imp_schema_field_matches(&n->children[i], b, len, child))
+			return false;
+	}
+	return true;
 }
 
 /* assign RecordBatch buffer indices to a node subtree, pre-order */
@@ -1918,6 +2133,18 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 						(errcode(ERRCODE_DATATYPE_MISMATCH),
 						 errmsg("Arrow file has %u columns, target table has %d",
 								nfields, ncols)));
+			for (i = 0; i < ncols; i++)
+			{
+				uint32		field = imp_vector_table_at(meta, metaLen, fieldsVec,
+													  (uint32) i);
+
+				if (!imp_schema_field_matches(&tops[i], meta, metaLen, field))
+					ereport(ERROR,
+							(errcode(ERRCODE_DATATYPE_MISMATCH),
+							 errmsg("Arrow column %d does not match target column \"%s\"",
+									i + 1,
+									NameStr(TupleDescAttr(tupdesc, i)->attname))));
+			}
 			sawSchema = true;
 		}
 		else if (headerType == ARROW_MSG_RecordBatch)

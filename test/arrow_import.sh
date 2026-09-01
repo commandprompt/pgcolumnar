@@ -144,6 +144,28 @@ with ipc.new_stream(pa.OSFile(sys.argv[1], 'wb'), t.schema) as w:
 PY
 	psql_run "CREATE TABLE ri_d (c text) USING pgcolumnar;"
 	expect_error "reject dictionary-encoded file" "SELECT pgcolumnar.import_arrow('ri_d', '$DICTF');"
+
+	# RecordBatch buffers carry no type tags. The Schema must be checked before
+	# decoding, or equal-width values are silently reinterpreted (float64 bits as
+	# bigint here) and a nested mismatch shifts the buffer assignment of later
+	# columns.
+	MISMATCHF="$PGC_WORKDIR/type_mismatch.arrows"
+	python3 - "$MISMATCHF" <<'PY'
+import sys, pyarrow as pa, pyarrow.ipc as ipc
+t = pa.table({
+    'a': pa.array([1.5, 2.5], pa.float64()),
+    'b': pa.array([[1, 2], [3]], pa.list_(pa.int32())),
+})
+with ipc.new_stream(pa.OSFile(sys.argv[1], 'wb'), t.schema) as w:
+    w.write_table(t)
+PY
+	psql_run "CREATE TABLE ri_type_mismatch (a bigint, b int[]) USING pgcolumnar;"
+	expect_error "reject equal-width scalar type mismatch" \
+		"SELECT pgcolumnar.import_arrow('ri_type_mismatch', '$MISMATCHF');"
+
+	psql_run "CREATE TABLE ri_nested_mismatch (a float8, b text) USING pgcolumnar;"
+	expect_error "reject nested schema mismatch" \
+		"SELECT pgcolumnar.import_arrow('ri_nested_mismatch', '$MISMATCHF');"
 fi
 
 IXFILE="$PGC_WORKDIR/ix_roundtrip.arrows"
