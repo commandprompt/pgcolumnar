@@ -2528,6 +2528,14 @@ PgColumnarSetRelPathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
 	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION)
 		return;
 	/*
+	 * TABLESAMPLE must reach the AM sample callbacks, which raise 0A000.
+	 * Without this, the custom scan replaces Sample Scan and returns every
+	 * row. docs/limitations.md states the error; the AM already implements
+	 * it. The hook was the hole.
+	 */
+	if (rte->tablesample != NULL)
+		return;
+	/*
 	 * A partition is RELOPT_OTHER_MEMBER_REL, not RELOPT_BASEREL, and excluding
 	 * it cost the custom scan entirely: no column projection, no zone-map
 	 * pruning, no index-fetch penalty, and a fall back to a sequential scan

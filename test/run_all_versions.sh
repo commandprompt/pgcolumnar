@@ -260,6 +260,7 @@ SUITES=(
 	sorted_pathkeys
 	sorted_projection
 	stats_privilege
+	tablesample
 	temporal
 	ttl_expire
 	ungrouped_vector_agg
