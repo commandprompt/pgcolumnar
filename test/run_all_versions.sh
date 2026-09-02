@@ -802,7 +802,12 @@ pgc_classify_suite_rc() {	# pgc_classify_suite_rc RC LOGFILE -> PASS|SKIP|INCOMP
 }
 
 	skipped_names=""
-	suites_incomplete=${suites_incomplete:-0}
+	# Reset, not a `set -u` guard. suites_ran and suites_skipped are zeroed
+	# unconditionally above; this line used to read ${suites_incomplete:-0},
+	# which KEEPS whatever the previous major left. On a five-major matrix
+	# PG16 would report PG15's incomplete suites in its own summary line and
+	# still print PASS, because verfail is per major and this count was not.
+	suites_incomplete=0
 	for s in "${SUITES[@]}"; do
 		_rc="$(cat "$builddir/${s}.rc" 2>/dev/null)"
 		_verdict="$(pgc_classify_suite_rc "$_rc" "$builddir/${s}.log")"
