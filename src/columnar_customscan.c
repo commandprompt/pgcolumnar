@@ -2536,6 +2536,18 @@ PgColumnarSetRelPathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
 	if (rte->tablesample != NULL)
 		return;
 	/*
+	 * A legacy inheritance parent is a plain RELKIND_RELATION with rte->inh
+	 * set. set_rel_pathlist_hook still runs on that appendrel after core has
+	 * built the Append of its children, and a Custom Scan added here reads
+	 * only the parent's storage. Measured: parent 1 row, child 5000 rows,
+	 * SELECT count(*) FROM parent returned 1 (the heap mirror returned 5001)
+	 * from a plan with no Append. Leave the tree to Append. Children and
+	 * the parent-as-member still receive this scan: those RTEs have inh
+	 * false. Grouped vector aggregation already refuses the same shape.
+	 */
+	if (rte->inh)
+		return;
+	/*
 	 * A partition is RELOPT_OTHER_MEMBER_REL, not RELOPT_BASEREL, and excluding
 	 * it cost the custom scan entirely: no column projection, no zone-map
 	 * pruning, no index-fetch penalty, and a fall back to a sequential scan

@@ -961,6 +961,15 @@ PgColumnarCreateUpperPaths(PlannerInfo *root, UpperRelationKind stage,
 		return;
 	if (rte->tablesample != NULL)
 		return;
+	/*
+	 * A legacy inheritance parent is a plain RELKIND_RELATION with rte->inh set;
+	 * its children hold rows this single-relation scan would never see. Leave the
+	 * whole tree to the ordinary Append + Agg plan. The grouped path already
+	 * refuses this; the ungrouped path did not, so SELECT count(*) FROM parent
+	 * returned only the parent's own rows.
+	 */
+	if (rte->inh)
+		return;
 	if (!OidIsValid(rte->relid) || !PgColumnarIsColumnarRelation(rte->relid))
 		return;
 	relid = rte->relid;
