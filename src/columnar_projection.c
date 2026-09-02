@@ -368,6 +368,17 @@ pgcolumnar_drop_projection(PG_FUNCTION_ARGS)
 	/* and forget the declaration, so a later rebuild does not resurrect it (#266) */
 	PgColumnarDeleteProjectionDeclaration(relid, projname);
 
+	/*
+	 * The same latched cache as add_projection's, in the other direction. A
+	 * write earlier in this transaction cached a writer for the projection just
+	 * deleted, and without this the writes that follow keep appending to it: the
+	 * rows land in a projection storage whose catalog rows are already gone, and
+	 * the transaction commits with an orphan. Measured 1 orphan storage id when
+	 * the drop happens mid-transaction, 0 when it has the transaction to itself,
+	 * which is what pins it to the cache rather than to the deletes above.
+	 */
+	PgColumnarResetProjectionWritersForRelation(relid);
+
 	table_close(rel, ShareUpdateExclusiveLock);
 	PG_RETURN_VOID();
 }

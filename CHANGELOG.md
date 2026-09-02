@@ -130,6 +130,12 @@ true until the next version shipped.
   now drops that cache, after the back-fill, so the writes that follow rebuild
   it from the catalog.
 
+  **`drop_projection` had the same defect in the other direction.** A writer
+  cached before the drop kept taking rows, which landed in a projection storage
+  whose catalog rows were already deleted and committed as an orphan: one orphan
+  storage id when the drop happened mid-transaction, none when it had the
+  transaction to itself. It drops the cache too.
+
 - An Arrow import reads the width, sign and scale the FILE declares (#881).
 
   **`imp_apply_field` inspected only `Date`, `Time` and `Timestamp`.** For every

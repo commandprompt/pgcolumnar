@@ -405,4 +405,36 @@ check "and the base table still took every row" \
 check "a projection dropped mid-transaction is gone, not still being written" \
 	"$(proj_sqlstate "SELECT pgcolumnar.read_projection('dt','dp')")" "42704"
 
+# The arm above only proves the DECLARATION went. The writes are the other half:
+# a writer cached before the drop keeps taking rows, which land in a projection
+# storage whose catalog rows are already deleted and commit as an orphan. Count
+# row-group storage ids that no projection row names.
+#
+# Do NOT also exclude ids present in pgcolumnar.storage: a projection's storage
+# is registered there too, so that filter hides exactly the row this arm is for.
+# It cost me a "cannot reproduce" before the control below showed otherwise.
+# Scoped to ONE relation. A database-wide count is not independent: the first
+# arm's orphan is still there when the control runs, so the control would fail
+# for the previous arm's reason and read as if it had caught its own.
+proj_orphans() {
+	q "SELECT count(*) FROM (SELECT DISTINCT rg.storage_id
+	                         FROM pgcolumnar.row_group rg
+	                         JOIN pgcolumnar.storage s ON s.storage_id = rg.storage_id
+	                         WHERE s.relation_oid = '$1'::regclass) x
+	   WHERE NOT EXISTS (SELECT 1 FROM pgcolumnar.projection p
+	                     WHERE p.proj_storage_id = x.storage_id);"
+}
+check "a mid-transaction drop leaves no orphan projection storage" \
+	"$(proj_orphans dt)" "0"
+
+# The control that pins it to the CACHE rather than to drop_projection's own
+# cleanup: the same drop with the transaction to itself was always 0.
+psql_run "CREATE TABLE dt2 (a int, c int) USING pgcolumnar;
+	  SELECT pgcolumnar.add_projection('dt2', 'dp2', ARRAY['a','c'], ARRAY['c']);
+	  INSERT INTO dt2 SELECT g, g FROM generate_series(1, 50) g;"
+psql_run "SELECT pgcolumnar.drop_projection('dt2', 'dp2');"
+psql_run "INSERT INTO dt2 SELECT g, g FROM generate_series(200, 300) g;"
+check "control: a drop in its own transaction never left one" \
+	"$(proj_orphans dt2)" "0"
+
 pgc_summary
