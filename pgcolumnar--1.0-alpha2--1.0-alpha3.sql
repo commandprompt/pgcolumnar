@@ -232,7 +232,7 @@ CREATE FUNCTION pgcolumnar.expire(tablename regclass)
 	AS 'MODULE_PATHNAME', 'pgcolumnar_expire';
 
 COMMENT ON FUNCTION pgcolumnar.expire(regclass)
-	IS 'drop row groups whose rows are all older than the retention declared by set_options(ttl_column, ttl_interval), without reading or rewriting them (#403)';
+	IS 'drop row groups whose rows are all older than the retention declared by set_options(ttl_column, ttl_interval), without rewriting them (#403)';
 
 CREATE FUNCTION pgcolumnar.parallel_copy(target regclass, filename text,
 										 workers int DEFAULT NULL,

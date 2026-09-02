@@ -43,7 +43,9 @@ true until the next version shipped.
   A group holding a row with a `NULL` retention value could be retired, taking
   live rows with it. `expire` now keeps any group whose retention column has a
   LIVE `NULL`, because a `NULL` has no age and the group cannot be known to be
-  wholly expired.
+  wholly expired. Deciding that reads the retention column of a candidate
+  group, on a table that has any deletes. A table with no deletes still decides
+  from row-group metadata alone. Nothing is rewritten either way.
 
   Live is the operative word. The zone map's null count is recorded when the
   group is written and never revised, so it still counts rows a later `DELETE`

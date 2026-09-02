@@ -191,16 +191,21 @@ The retention column must be `timestamp` or `timestamptz`. The table must have
 both `ttl_column` and `ttl_interval` declared, or the function raises an error
 rather than reporting that it did nothing.
 
-`expire` works on whole row groups. It never reads or rewrites them, so it drops
-a group only when every row in it is past the retention. A group that straddles
-the cutoff stays whole, and rows older than the retention survive in it.
+`expire` works on whole row groups and never rewrites them, so it drops a group
+only when every row in it is past the retention. A group that straddles the
+cutoff stays whole, and rows older than the retention survive in it.
+
+It decides from row-group metadata alone on a table with no deletes. On a table
+that has any deletes it reads the retention column of a candidate group. The
+recorded `NULL` count is written once, so a `NULL` that has since been deleted
+must not go on pinning the group. Nothing is rewritten either way.
 
 One live `NULL` in the retention column pins its entire row group. A `NULL` has
 no age, so the group cannot be known to be wholly expired. Deleting the `NULL`
-rows releases the group, and the next `expire` can drop it. This is stronger than the straddling rule
-above. A straddling group is released once its newest row ages past the cutoff.
-A group holding a `NULL` never is. Keep the retention column `NOT NULL` if you
-want `expire` to reclaim the space.
+rows releases the group, and the next `expire` can drop it. This is stronger
+than the straddling rule above. A straddling group is released once its newest
+row ages past the cutoff. A group holding a `NULL` never is. Keep the retention
+column `NOT NULL` if you want `expire` to reclaim the space.
 
 ```sql
 SELECT pgcolumnar.set_options('events', ttl_column => 'ts',
