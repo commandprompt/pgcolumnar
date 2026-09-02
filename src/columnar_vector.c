@@ -2943,60 +2943,6 @@ pgcolumnar_agg_finalize(PgColumnarAggSpec *spec, bool *isnull)
 }
 
 /*
- * pgcolumnar_group_deleted_count
- *		How many of this row group's rows are deleted, under the given catalog
- *		snapshot. A group can have several delete_vector rows, whose bitmaps
- *		overlap, so they are OR'd before counting rather than summed -- summing
- *		deletedCount across entries would double-count a row deleted twice (spec
- *		7.5, and the same combining the reader does when it builds a group's mask).
- *		Bits past the group's row count are ignored.
- */
-static uint64
-pgcolumnar_group_deleted_count(uint64 storageId, NativeRowGroupMetadata *rg,
-							 Snapshot snap)
-{
-	uint32		want = (uint32) ((rg->rowCount + 7) / 8);
-	char	   *mask;
-	List	   *rml;
-	ListCell   *mc;
-	uint64		deleted = 0;
-	uint32		b;
-
-	rml = PgColumnarReadDeleteVectorList(storageId, rg->groupNumber, snap);
-	if (rml == NIL)
-		return 0;
-
-	mask = palloc0(want > 0 ? want : 1);
-	foreach(mc, rml)
-	{
-		DeleteVectorMetadata *rm = (DeleteVectorMetadata *) lfirst(mc);
-
-		if (rm->bitmap == NULL || rm->bitmapLen == 0)
-			continue;
-		for (b = 0; b < rm->bitmapLen && b < want; b++)
-			mask[b] |= rm->bitmap[b];
-	}
-
-	/*
-	 * Count set bits only up to rowCount. The last byte of the bitmap can carry
-	 * bits beyond the group's final row, and counting those would report more
-	 * rows deleted than the group holds.
-	 */
-	for (b = 0; b < want; b++)
-	{
-		uint64		base = (uint64) b * 8;
-		int			i;
-
-		for (i = 0; i < 8; i++)
-			if (base + i < rg->rowCount && ((mask[b] >> i) & 1))
-				deleted++;
-	}
-
-	pfree(mask);
-	return deleted;
-}
-
-/*
  * pgcolumnar_fill_native_metadata_agg
  *		Answer an ungrouped, unfiltered aggregate over a native (PGCN v1) table
  *		from its whole-chunk zone maps (native spec 7.1, D5b): count(*) from
@@ -3078,7 +3024,7 @@ pgcolumnar_fill_native_metadata_agg(PgColumnarAggScanState *state, int *ndirty)
 		int			a;
 
 		if (anyDeletes)
-			deleted = pgcolumnar_group_deleted_count(storageId, rg, snap);
+			deleted = PgColumnarGroupDeletedCount(storageId, rg, snap);
 
 		if (deleted > 0)
 		{

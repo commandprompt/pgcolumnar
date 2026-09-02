@@ -497,3 +497,60 @@ PgColumnarDeleteVectorPromoteSubXact(SubTransactionId subid, SubTransactionId pa
 			buf->subid = parent;
 	}
 }
+
+/*
+ * PgColumnarGroupDeletedCount
+ *		How many of this row group's rows are deleted, under the given catalog
+ *		snapshot. Bits past the group's row count are ignored.
+ *
+ *		This walks the group's mask the same way the reader does when it builds
+ *		one (spec 7.5), which is why it lives beside that code rather than being
+ *		reimplemented at each caller.
+ *
+ *		It does NOT do so to avoid double-counting. An earlier version of this
+ *		comment said a group can have several delete_vector rows whose bitmaps
+ *		overlap, so summing deletedCount would count a row deleted twice. The
+ *		catalog forbids it: delete_vector carries a unique index on
+ *		(storage_id, group_number), so there is at most one row per group and
+ *		nothing to OR together. The planner estimate now sums deleted_count over
+ *		the storage in one scan for exactly that reason.
+ */
+uint64
+PgColumnarGroupDeletedCount(uint64 storageId, NativeRowGroupMetadata *rg,
+						  Snapshot snapshot)
+{
+	uint32		want = (uint32) ((rg->rowCount + 7) / 8);
+	char	   *mask;
+	List	   *rml;
+	ListCell   *mc;
+	uint64		deleted = 0;
+	uint32		b;
+
+	rml = PgColumnarReadDeleteVectorList(storageId, rg->groupNumber, snapshot);
+	if (rml == NIL)
+		return 0;
+
+	mask = palloc0(want > 0 ? want : 1);
+	foreach(mc, rml)
+	{
+		DeleteVectorMetadata *rm = (DeleteVectorMetadata *) lfirst(mc);
+
+		if (rm->bitmap == NULL || rm->bitmapLen == 0)
+			continue;
+		for (b = 0; b < rm->bitmapLen && b < want; b++)
+			mask[b] |= rm->bitmap[b];
+	}
+
+	for (b = 0; b < want; b++)
+	{
+		uint64		base = (uint64) b * 8;
+		int			i;
+
+		for (i = 0; i < 8; i++)
+			if (base + i < rg->rowCount && ((mask[b] >> i) & 1))
+				deleted++;
+	}
+
+	pfree(mask);
+	return deleted;
+}

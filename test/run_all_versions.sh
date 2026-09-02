@@ -77,6 +77,7 @@ SUITES=(
 	encode_effort
 	encode_invariants
 	entry_point_privilege
+	estimate_deleted
 	export_sink
 	fk_referencing
 	fsst_margin

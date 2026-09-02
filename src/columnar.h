@@ -552,6 +552,8 @@ extern Snapshot PgColumnarCatalogSnapshot(Snapshot base);
 extern List *PgColumnarReadDeleteVectorList(uint64 storageId, uint64 stripeId,
 									 Snapshot snapshot);
 extern void PgColumnarUpsertDeleteVector(uint64 storageId, DeleteVectorMetadata *rm);
+extern uint64 PgColumnarGroupDeletedCount(uint64 storageId, NativeRowGroupMetadata *rg,
+									  Snapshot snapshot);
 
 /* -------------------------------------------------------------------------
  * writer (pgcolumnar_write_state.c)
