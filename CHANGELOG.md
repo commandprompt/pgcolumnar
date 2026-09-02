@@ -42,8 +42,18 @@ true until the next version shipped.
 
   A group holding a row with a `NULL` retention value could be retired, taking
   live rows with it. `expire` now keeps any group whose retention column has a
-  `NULL`, because a `NULL` has no age and the group can never be known to be
+  LIVE `NULL`, because a `NULL` has no age and the group cannot be known to be
   wholly expired.
+
+  Live is the operative word. The zone map's null count is recorded when the
+  group is written and never revised, so it still counts rows a later `DELETE`
+  marked. Reading it as the live count keeps a group whose every live row is
+  past retention and whose `NULL` rows have all been deleted, and keeps it
+  permanently, because nothing rewrites a zone map on delete. That trades data
+  loss for silent over-retention. `expire` now checks the live rows, and only
+  for a group that has both recorded `NULL`s and deletes: with no delete vector
+  the recorded count is still exact, so the metadata-only path is unchanged and
+  `expire` still reads nothing.
 
   A negative `ttl_interval` put the cutoff in the future, so `expire` retired
   groups that were entirely inside their retention. `set_options` range-checked

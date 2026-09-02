@@ -195,9 +195,9 @@ rather than reporting that it did nothing.
 a group only when every row in it is past the retention. A group that straddles
 the cutoff stays whole, and rows older than the retention survive in it.
 
-One `NULL` in the retention column pins its entire row group, permanently. A
-`NULL` has no age, so the group can never be known to be wholly expired, and no
-later `expire` will drop it. This is stronger than the straddling rule
+One live `NULL` in the retention column pins its entire row group. A `NULL` has
+no age, so the group cannot be known to be wholly expired. Deleting the `NULL`
+rows releases the group, and the next `expire` can drop it. This is stronger than the straddling rule
 above. A straddling group is released once its newest row ages past the cutoff.
 A group holding a `NULL` never is. Keep the retention column `NOT NULL` if you
 want `expire` to reclaim the space.

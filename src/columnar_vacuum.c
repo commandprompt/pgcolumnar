@@ -204,6 +204,8 @@ PgColumnarRequireTableOwnerByOid(Oid relid)
 
 /* Z-order helpers (defined later, used by the online recluster below) */
 static bool cluster_type_supported(Oid typid);
+static bool group_has_live_null(Relation rel, NativeRowGroupMetadata *rg,
+								AttrNumber attno);
 static bytea *cluster_zorder_key(Datum *values, bool *isnull, AttrNumber *atts,
 								 int ncols, TupleDesc tupdesc);
 /* Names an ordering rewrite records as its key (defined later, #415) */
@@ -2114,6 +2116,7 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 	TypeCacheEntry *tce;
 	uint64		storageId;
 	List	   *groups;
+	bool		anyDeletes;
 	ListCell   *lc;
 	int64		retired = 0;
 	int			i;
@@ -2201,6 +2204,15 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 	storageId = PgColumnarStorageId(rel);
 	groups = PgColumnarReadRowGroupList(storageId, GetActiveSnapshot());
 
+	/*
+	 * One probe for the whole storage, not one per group. With no delete vector
+	 * anywhere, a zone map's write-time nullCount is still exact, so expire
+	 * keeps its metadata-only path and reads nothing at all -- which is what it
+	 * promises. Only a table that has deletes can have a stale nullCount, and
+	 * only groups in such a table are looked at.
+	 */
+	anyDeletes = PgColumnarStorageHasDeleteVector(storageId, GetActiveSnapshot());
+
 	foreach(lc, groups)
 	{
 		NativeRowGroupMetadata *rg = (NativeRowGroupMetadata *) lfirst(lc);
@@ -2221,12 +2233,26 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 			continue;
 
 		/*
-		 * Keep any group that stored a NULL in the retention column. The
-		 * maximum cannot speak for those rows, and treating "every timestamp
-		 * we can see is expired" as "the group is expired" drops them.
+		 * Keep any group that holds a LIVE NULL in the retention column. The
+		 * maximum cannot speak for those rows, and treating "every timestamp we
+		 * can see is expired" as "the group is expired" drops them.
+		 *
+		 * z->nullCount is recorded at WRITE time and never revised, so it still
+		 * counts rows a later DELETE marked. Reading it as the live count keeps
+		 * a group whose every live row is past retention and whose NULL rows
+		 * have all been deleted -- and keeps it FOREVER, because nothing
+		 * rewrites a zone map on delete. That trades data loss for permanent
+		 * over-retention, which is quieter and not better.
+		 *
+		 * With no deletes the two counts agree, so the metadata answer stands
+		 * and expire still reads nothing. Only a group with recorded NULLs AND
+		 * deletes is ambiguous, and only that group is looked at.
 		 */
 		if (z->nullCount > 0)
-			continue;
+		{
+			if (!anyDeletes || group_has_live_null(rel, rg, attno))
+				continue;
+		}
 
 		cur = (char *) z->maximum;
 		maxv = PgColumnarDecodeValue(att, &cur, z->maximum + z->maximumLen,
@@ -2246,6 +2272,47 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 	table_close(rel, NoLock);
 
 	PG_RETURN_INT64(retired);
+}
+
+/*
+ * group_has_live_null
+ *		Does any LIVE row of this group hold a NULL in the retention column?
+ *
+ * The zone map's nullCount is recorded at WRITE time and is never revised, so it
+ * still counts rows that a later DELETE marked. It answers "were any NULLs ever
+ * written here", which is not the question expire has to ask.
+ *
+ * Nothing in the metadata says WHICH rows were null, so when the group has both
+ * recorded NULLs and deletes the only way to tell is to look. This reads one
+ * column of one group through the ordinary reader, which merges the delete
+ * vector, so every row it yields is live.
+ */
+static bool
+group_has_live_null(Relation rel, NativeRowGroupMetadata *rg, AttrNumber attno)
+{
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	Datum	   *values = palloc(sizeof(Datum) * tupdesc->natts);
+	bool	   *isnull = palloc(sizeof(bool) * tupdesc->natts);
+	PgColumnarReadState *rs;
+	uint64		rowNumber;
+	bool		found = false;
+
+	rs = PgColumnarBeginRead(rel, GetActiveSnapshot(), NULL, NULL, 0, NULL);
+	PgColumnarReadRestrictToGroups(rs, &rg->groupNumber, 1);
+	while (PgColumnarReadNextRow(rs, values, isnull, &rowNumber))
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (isnull[attno - 1])
+		{
+			found = true;
+			break;
+		}
+	}
+	PgColumnarEndRead(rs);
+
+	pfree(values);
+	pfree(isnull);
+	return found;
 }
 
 Datum

@@ -253,4 +253,77 @@ check "control: and a positive one is still accepted" \
 check "control: and the rows are all still there" \
 	"$(q 'SELECT count(*) FROM ttl_neg')" "100"
 
+# ---- a NULL that has been DELETED must stop pinning its group ---------------
+#
+# z->nullCount is recorded at WRITE time and never revised, so it still counts
+# rows a later DELETE marked. Reading it as the live count keeps a group whose
+# every live row is past retention and whose NULL rows have all been deleted --
+# and keeps it FOREVER, because nothing rewrites a zone map on delete. That
+# trades data loss for permanent over-retention, which is quieter and not
+# better.
+#
+# Measured on both trees before the guard read a live-row property:
+#
+#   main 53224e4        expire 1, rows left 0     (right, but by dropping the
+#                                                  live NULL rows in arm L too)
+#   the null-count guard  expire 0, rows left 810 (REFUSED, and would never
+#                                                  retire this group again)
+#
+# ONE INSERT statement, not two. Two statements flush two row groups, the NULLs
+# never share a group with the rows under test, and every arm below answers a
+# question nobody asked. The group count is asserted rather than assumed for
+# exactly that reason.
+
+psql_run "CREATE TABLE ttl_dn (id int, ts timestamptz, v text) USING pgcolumnar;"
+psql_run "INSERT INTO ttl_dn
+          SELECT g,
+                 CASE WHEN g % 10 = 0 THEN NULL
+                      ELSE now() - interval '400 days' END,
+                 'v' || g
+          FROM generate_series(1,900) g;"
+psql_run "SELECT pgcolumnar.set_options('ttl_dn', ttl_column => 'ts',
+                                        ttl_interval => '90 days');"
+
+check "premise: the fixture is ONE row group, so the NULLs share it" \
+	"$(q "SELECT count(*) FROM pgcolumnar.row_group rg
+	      JOIN pgcolumnar.storage s ON s.storage_id = rg.storage_id
+	      WHERE s.relation_oid = 'ttl_dn'::regclass")" "1"
+
+# Delete every NULL row. The zone map is not rewritten, so nullCount still
+# counts them -- which is the whole point.
+psql_run "DELETE FROM ttl_dn WHERE ts IS NULL;"
+
+check "premise: no LIVE row holds a NULL retention value any more" \
+	"$(q 'SELECT count(*) FROM ttl_dn WHERE ts IS NULL')" "0"
+check "premise: but the zone map still records the deleted NULLs" \
+	"$(q "SELECT CASE WHEN sum(z.null_count) > 0 THEN 'still recorded' ELSE 'gone' END
+	      FROM pgcolumnar.zone_map z
+	      JOIN pgcolumnar.storage s ON s.storage_id = z.storage_id
+	      WHERE s.relation_oid = 'ttl_dn'::regclass")" "still recorded"
+check "premise: and every live row is past the retention" \
+	"$(q "SELECT count(*) FROM ttl_dn WHERE ts >= now() - interval '90 days'")" "0"
+
+DN_RETIRED="$(q "SELECT pgcolumnar.expire('ttl_dn')")"
+check "a group whose only NULLs have been deleted is retired" "$DN_RETIRED" "1"
+check "and its rows are gone" "$(q 'SELECT count(*) FROM ttl_dn')" "0"
+
+# Control: the live-NULL case must still be refused, or the fix above is just
+# "retire everything" wearing a delete.
+psql_run "CREATE TABLE ttl_dl (id int, ts timestamptz, v text) USING pgcolumnar;"
+psql_run "INSERT INTO ttl_dl
+          SELECT g,
+                 CASE WHEN g % 10 = 0 THEN NULL
+                      ELSE now() - interval '400 days' END,
+                 'v' || g
+          FROM generate_series(1,900) g;"
+psql_run "SELECT pgcolumnar.set_options('ttl_dl', ttl_column => 'ts',
+                                        ttl_interval => '90 days');"
+# One row deleted, so the table HAS a delete vector and takes the same path as
+# ttl_dn above -- but the NULLs are still live.
+psql_run "DELETE FROM ttl_dl WHERE id = 1;"
+DL_RETIRED="$(q "SELECT pgcolumnar.expire('ttl_dl')")"
+check "control: a group whose NULLs are still live is NOT retired" "$DL_RETIRED" "0"
+check "control: and those NULL rows survive" \
+	"$(q 'SELECT count(*) FROM ttl_dl WHERE ts IS NULL')" "90"
+
 pgc_summary
