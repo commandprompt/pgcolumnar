@@ -117,6 +117,22 @@ true until the next version shipped.
   `rte->tablesample` is set, so the query reaches the callbacks and raises. An
   unsampled query on the same table still takes the custom scan.
 
+- A custom scan no longer hides the children of an `INHERITS` hierarchy (#871).
+
+  A legacy inheritance parent is an ordinary `RELKIND_RELATION` carrying
+  `rte->inh`. `set_rel_pathlist_hook` still runs on that appendrel after core
+  has built the `Append` over its children, and a custom scan added there reads
+  only the parent's own storage. Every child's rows became invisible, with no
+  error and no warning. Measured with a heap mirror as the oracle, parent 1 row
+  and child 5000: `SELECT count(*) FROM parent` returned **1 where 5001 is
+  right**, from a plan containing no `Append`. The ungrouped vector aggregate
+  path had the same hole; the grouped path already refused this shape.
+
+  Both hooks now decline when `rte->inh` is set, leaving the hierarchy to the
+  ordinary `Append` plan. The children keep the custom scan, because a child's
+  own range-table entry has `inh` false: the resulting plan is an `Append` of
+  two `PgColumnarScan` nodes with pushdown intact, not a fallback to `Seq Scan`.
+
 - A shebang and the execute bit go together, and every directory that documents
   a command is swept (#856). Two things were left over from #852.
 
