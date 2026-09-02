@@ -501,11 +501,19 @@ PgColumnarDeleteVectorPromoteSubXact(SubTransactionId subid, SubTransactionId pa
 /*
  * PgColumnarGroupDeletedCount
  *		How many of this row group's rows are deleted, under the given catalog
- *		snapshot. A group can have several delete_vector rows, whose bitmaps
- *		overlap, so they are OR'd before counting rather than summed -- summing
- *		deletedCount across entries would double-count a row deleted twice (spec
- *		7.5, and the same combining the reader does when it builds a group's mask).
- *		Bits past the group's row count are ignored.
+ *		snapshot. Bits past the group's row count are ignored.
+ *
+ *		This walks the group's mask the same way the reader does when it builds
+ *		one (spec 7.5), which is why it lives beside that code rather than being
+ *		reimplemented at each caller.
+ *
+ *		It does NOT do so to avoid double-counting. An earlier version of this
+ *		comment said a group can have several delete_vector rows whose bitmaps
+ *		overlap, so summing deletedCount would count a row deleted twice. The
+ *		catalog forbids it: delete_vector carries a unique index on
+ *		(storage_id, group_number), so there is at most one row per group and
+ *		nothing to OR together. The planner estimate now sums deleted_count over
+ *		the storage in one scan for exactly that reason.
  */
 uint64
 PgColumnarGroupDeletedCount(uint64 storageId, NativeRowGroupMetadata *rg,

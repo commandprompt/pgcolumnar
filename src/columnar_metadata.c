@@ -1424,6 +1424,55 @@ PgColumnarStorageHasDeleteVector(uint64 storageId, Snapshot snapshot)
 }
 
 /*
+ * PgColumnarStorageDeletedCount
+ *		Total rows marked deleted across the whole storage, read from
+ *		delete_vector.deleted_count.
+ *
+ *		One index scan over the storage's delete_vector rows, summing a stored
+ *		integer, rather than one scan and a bitmap walk per row group. The
+ *		planner calls this on every plan of a columnar relation, so the cost is
+ *		paid per plan and not per query.
+ *
+ *		deleted_count is the number of set bits in that row's bitmap, maintained
+ *		where the bitmap is written, so summing it is exact rather than an
+ *		approximation -- the unique index on (storage_id, group_number) means
+ *		one row per group, so no two summands can count the same row.
+ */
+uint64
+PgColumnarStorageDeletedCount(uint64 storageId, Snapshot snapshot)
+{
+	Relation	rel = open_columnar_table("delete_vector", AccessShareLock);
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tup;
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	uint64		total = 0;
+	Oid			dvIdx = pgcolumnar_index_oid("delete_vector_pkey");
+
+	ScanKeyInit(&key[0], Anum_delete_vector_storage_id, BTEqualStrategyNumber,
+				F_INT8EQ, Int64GetDatum((int64) storageId));
+	scan = systable_beginscan(rel, dvIdx, OidIsValid(dvIdx), snapshot, 1, key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		bool		isnull;
+		Datum		d = heap_getattr(tup, Anum_delete_vector_deleted_count,
+									 tupdesc, &isnull);
+
+		if (!isnull)
+		{
+			int32		n = DatumGetInt32(d);
+
+			if (n > 0)
+				total += (uint64) n;
+		}
+	}
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+	return total;
+}
+
+/*
  * delete_vector_chunk_lock_key
  *		Mix the identity of a chunk group into a 64-bit advisory-lock key. The
  *		triple (storage_id, stripe_id, chunk_id) uniquely names a chunk group

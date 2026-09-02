@@ -35,6 +35,23 @@ true until the next version shipped.
 
 ### Fixed
 
+- The planner estimate counts live rows, and reads the delete count in one
+  catalog scan rather than one per row group.
+
+  **`row_group.row_count` is physical occupancy.** It still counts rows that a
+  later `DELETE` marked in the delete vector, and the planner uses this callback
+  instead of `pg_class.reltuples`, so every scan of a heavily deleted table was
+  priced as if the deletes had not happened.
+
+  The count now comes from one indexed scan summing
+  `delete_vector.deleted_count` over the storage. The earlier shape walked each
+  group's bitmap a bit at a time, once per row group, on every plan of a
+  columnar relation.
+
+  Summing is exact rather than an approximation. `delete_vector` carries a
+  unique index on `(storage_id, group_number)`, so there is one row per group
+  and no two summands can count the same row. The comment that justified the
+  per-group fold said the opposite, and the schema forbids what it described.
 - `UPDATE` now fans the new row version out to every covering projection, so a
   projection scan stops answering as if the updated rows were gone.
 

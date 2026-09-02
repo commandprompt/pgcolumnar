@@ -95,5 +95,6 @@ extern void PgColumnarDeleteProjectionDeclaration(Oid relid, const char *name);
 extern void PgColumnarDeleteProjectionDeclarationsForRel(Oid relid);
 
 extern bool PgColumnarStorageHasDeleteVector(uint64 storageId, Snapshot snapshot);
+extern uint64 PgColumnarStorageDeletedCount(uint64 storageId, Snapshot snapshot);
 
 #endif							/* PGCOLUMNAR_METADATA_H */

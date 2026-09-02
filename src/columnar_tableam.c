@@ -851,19 +851,42 @@ pgcolumnar_relation_estimate_size(Relation rel, int32 *attr_widths,
 	 * as if DELETE had not happened.
 	 */
 	{
-		bool		anyDeletes = PgColumnarStorageHasDeleteVector(storageId, snapshot);
+		uint64		physicalRows = 0;
+		uint64		deleted;
 
 		foreach(lc, rowGroupList)
 		{
 			NativeRowGroupMetadata *rg = (NativeRowGroupMetadata *) lfirst(lc);
-			uint64		deleted = 0;
 
-			if (anyDeletes)
-				deleted = PgColumnarGroupDeletedCount(storageId, rg, snapshot);
-			if (deleted > rg->rowCount)
-				deleted = rg->rowCount;
-			liveRows += (double) (rg->rowCount - deleted);
+			physicalRows += rg->rowCount;
 		}
+
+		/*
+		 * One catalog scan summing delete_vector.deleted_count, not one scan
+		 * and a bitmap walk per row group. This runs on every plan of a
+		 * columnar relation, so a per-group fold is paid per plan.
+		 *
+		 * Summing is exact, not an approximation: the unique index on
+		 * (storage_id, group_number) means one delete_vector row per group, so
+		 * no two summands can count the same row. An earlier comment here
+		 * justified the per-group fold by saying a group can have several
+		 * delete_vector rows whose bitmaps overlap. The catalog forbids that,
+		 * and the expensive path was defended by a premise the schema rules
+		 * out.
+		 *
+		 * The clamp is against the storage total rather than per group, which
+		 * is what the per-group clamp was doing in aggregate. It matters only
+		 * if the count is ever inconsistent with the row groups, and an
+		 * estimate must not go negative.
+		 *
+		 * Both reads take the same catalog snapshot as the row-group list
+		 * above, deliberately, so the count cannot straddle two snapshots and
+		 * report more deletes than there are rows.
+		 */
+		deleted = PgColumnarStorageDeletedCount(storageId, snapshot);
+		if (deleted > physicalRows)
+			deleted = physicalRows;
+		liveRows = (double) (physicalRows - deleted);
 	}
 
 	*pages = Max(nblocks, 1);
