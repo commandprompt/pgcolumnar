@@ -223,6 +223,29 @@ uint64_cmp(const void *a, const void *b)
 	return (x < y) ? -1 : (x > y) ? 1 : 0;
 }
 
+/*
+ * A retired group and the row numbers it held. Recluster needs both: the number
+ * to lock and retire in ascending order, and the range to clear from the
+ * visibility map, because those row numbers are being reassigned. Carried in
+ * one struct rather than parallel arrays so the sort below cannot separate a
+ * group from its range.
+ */
+typedef struct RetiredGroup
+{
+	uint64		groupNumber;
+	uint64		firstRowNumber;
+	uint64		rowCount;
+}			RetiredGroup;
+
+static int
+retired_group_cmp(const void *a, const void *b)
+{
+	uint64		x = ((const RetiredGroup *) a)->groupNumber;
+	uint64		y = ((const RetiredGroup *) b)->groupNumber;
+
+	return (x < y) ? -1 : (x > y) ? 1 : 0;
+}
+
 /* -------------------------------------------------------------------------
  * Online rewrite of partially-deleted row groups (Phase F3b)
  *
@@ -313,7 +336,12 @@ rewrite_one_group(Relation rel, PgColumnarIndexInsertState *ris, uint64 storageI
 	PgColumnarFlushWriteStateForRelation(relid);
 
 	/* atomically (same transaction) the new group is now in the catalog; drop the
-	 * old one. Heap MVCC keeps the old group readable to older snapshots. */
+	 * old one. Heap MVCC keeps the old group readable to older snapshots.
+	 *
+	 * The rows just moved carry NEW row numbers, so the old numbers' visibility
+	 * map bits must go with the group. Without this an index-only scan answers
+	 * from the index for a TID whose group no longer exists. */
+	PgColumnarVMClearForRowRange(rel, firstRow, rowCount);
 	PgColumnarRetireGroup(storageId, groupNumber);
 
 	PopActiveSnapshot();
@@ -541,7 +569,7 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 	Snapshot	listSnap;
 	List	   *rgList;
 	ListCell   *lc;
-	uint64	   *oldGroups;
+	RetiredGroup *oldGroups;
 	int			nGroups = 0;
 	int			i;
 	Snapshot	snap;
@@ -571,12 +599,16 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 	/* capture the current groups (retired at the end, after the new ones exist) */
 	listSnap = RegisterSnapshot(GetLatestSnapshot());
 	rgList = PgColumnarReadRowGroupList(storageId, listSnap);
-	oldGroups = palloc(sizeof(uint64) * (list_length(rgList) > 0 ? list_length(rgList) : 1));
+	oldGroups = palloc(sizeof(RetiredGroup) *
+					   (list_length(rgList) > 0 ? list_length(rgList) : 1));
 	foreach(lc, rgList)
 	{
 		NativeRowGroupMetadata *rg = (NativeRowGroupMetadata *) lfirst(lc);
 
-		oldGroups[nGroups++] = rg->groupNumber;
+		oldGroups[nGroups].groupNumber = rg->groupNumber;
+		oldGroups[nGroups].firstRowNumber = rg->firstRowNumber;
+		oldGroups[nGroups].rowCount = rg->rowCount;
+		nGroups++;
 	}
 	UnregisterSnapshot(listSnap);
 
@@ -590,7 +622,7 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 				 errhint("Use pgcolumnar.cluster() for a one-shot reorg of a very large table.")));
 
 	/* lock every group in ascending order (deadlock-safe), held to commit */
-	qsort(oldGroups, nGroups, sizeof(uint64), uint64_cmp);
+	qsort(oldGroups, nGroups, sizeof(RetiredGroup), retired_group_cmp);
 
 	/*
 	 * Self-gate (#415): if the whole live relation is already the Z-order run
@@ -629,8 +661,8 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 			}
 		}
 		if (sameKey && sfrom >= 0 && sthrough >= 0 &&
-			(int64) oldGroups[0] >= sfrom &&
-			(int64) oldGroups[nGroups - 1] <= sthrough)
+			(int64) oldGroups[0].groupNumber >= sfrom &&
+			(int64) oldGroups[nGroups - 1].groupNumber <= sthrough)
 		{
 			pfree(oldGroups);
 			/* no active snapshot pushed yet at this point -- see below */
@@ -639,7 +671,7 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 	}
 
 	for (i = 0; i < nGroups; i++)
-		PgColumnarLockChunkGroup(storageId, oldGroups[i]);
+		PgColumnarLockChunkGroup(storageId, oldGroups[i].groupNumber);
 
 	/* read all live rows into a Morton-keyed tuplesort (as in eager cluster).
 	 * Register the snapshot (not just push active) so the catalog snapshot copies
@@ -717,9 +749,21 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 	tuplesort_end(tsort);
 	ExecDropSingleTupleTableSlot(augSlot);
 
-	/* retire the old groups; heap MVCC keeps them readable to older snapshots */
+	/*
+	 * Retire the old groups; heap MVCC keeps them readable to older snapshots.
+	 *
+	 * Clear the visibility map over the row numbers each retired group held.
+	 * Recluster reassigns those rows fresh numbers, so an index-only scan that
+	 * answers from the index for an old TID would answer for a group that is
+	 * gone. That is the same rule expire follows, and it holds wherever LIVE
+	 * rows are renumbered rather than only where they expire.
+	 */
 	for (i = 0; i < nGroups; i++)
-		PgColumnarRetireGroup(storageId, oldGroups[i]);
+	{
+		PgColumnarVMClearForRowRange(rel, oldGroups[i].firstRowNumber,
+									 oldGroups[i].rowCount);
+		PgColumnarRetireGroup(storageId, oldGroups[i].groupNumber);
+	}
 
 	/* record how far the reordered run reaches (#311) and BY WHAT (#415) */
 	record_online_sorted_extent(rel, storageId, writeState, stripeMark,

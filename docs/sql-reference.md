@@ -38,6 +38,10 @@ only by [`pgcolumnar.expire`](#pgcolumnarexpiretablename-regclass-returns-bigint
 which you run yourself. Declaring a retention does not delete anything on its
 own. Both are needed: either one alone means no retention.
 
+`ttl_interval` must be a positive interval. Zero and negative intervals raise
+`22023`. A negative interval would put the cutoff in the future, so `expire`
+would drop rows that are still inside their retention.
+
 ```sql
 SELECT pgcolumnar.set_options('events', sort_by => ARRAY['customer_id','ts']);
 SELECT pgcolumnar.reset_options('events', sort_by => true);   -- clear it
@@ -186,6 +190,17 @@ toward keeping data. A smaller `stripe_row_limit` narrows the boundary.
 The retention column must be `timestamp` or `timestamptz`. The table must have
 both `ttl_column` and `ttl_interval` declared, or the function raises an error
 rather than reporting that it did nothing.
+
+`expire` works on whole row groups. It never reads or rewrites them, so it drops
+a group only when every row in it is past the retention. A group that straddles
+the cutoff stays whole, and rows older than the retention survive in it.
+
+One `NULL` in the retention column pins its entire row group, permanently. A
+`NULL` has no age, so the group can never be known to be wholly expired, and no
+later `expire` will drop it. This is stronger than the straddling rule
+above. A straddling group is released once its newest row ages past the cutoff.
+A group holding a `NULL` never is. Keep the retention column `NOT NULL` if you
+want `expire` to reclaim the space.
 
 ```sql
 SELECT pgcolumnar.set_options('events', ttl_column => 'ts',
