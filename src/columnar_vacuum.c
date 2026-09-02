@@ -2211,21 +2211,33 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 	 * promises. Only a table that has deletes can have a stale nullCount, and
 	 * only groups in such a table are looked at.
 	 *
-	 * This is COARSE on purpose, and the cost is recorded here so that changing
-	 * it later is a decision rather than a rediscovery. A per-group deleted
-	 * count would skip the read for a null-bearing group carrying no deletes;
-	 * this probe makes one delete anywhere in the storage send every such group
-	 * down the read path. Measured on PG 17.10, 200,000 rows at
-	 * stripe_row_limit 10000, both arms retiring all 20 groups so they differ
-	 * only in the path:
+	 * This is COARSE on purpose, and what it costs is recorded here so that
+	 * changing it later is a decision rather than a rediscovery. A per-group
+	 * deleted count would skip the read for a null-bearing group carrying no
+	 * deletes; this probe makes one delete anywhere in the storage send every
+	 * such group down the read path.
 	 *
-	 *     read path      16 ms   11 ms   11 ms
-	 *     metadata path    1 ms    2 ms    3 ms
+	 * Measured on PG 17.10 at 10000 rows a group, six repetitions, arm order
+	 * alternated, every point asserting both arms retired all N groups so they
+	 * differ only in the path:
 	 *
-	 * about +0.5 ms per row group. An independent run at 40 groups gave +0.3 ms
-	 * per group, so the figure is the right order and not exact. NEITHER
-	 * transfers to the shipped stripe_row_limit of 150000, where a group holds
-	 * fifteen times these rows; nobody has measured it there.
+	 *      5 groups   read 3-7 ms     metadata 1-2 ms
+	 *     40 groups   read 21-37 ms   metadata 2-5 ms
+	 *
+	 * THOSE ARE TOTALS, AND THEY ARE NOT A RATE. Do not divide by the group
+	 * count and multiply back up. Two independent sweeps on this same box, at
+	 * this same geometry, agree on the totals and disagree on the decomposition:
+	 * fitting a + b*groups gives roughly 0.7 ms fixed with 0.59 ms per group
+	 * from one, and 2.6 ms fixed with 0.27 ms per group from the other. Neither
+	 * dataset determines which, because the repetition spread (21 to 37 ms at 40
+	 * groups) is comparable to the difference being fitted. A reader who took
+	 * 0.5 ms per group and multiplied by a table of several thousand groups
+	 * would get seconds, and nothing here supports that.
+	 *
+	 * What IS supported: at these sizes the whole thing is milliseconds, and the
+	 * read arm is under 40 ms for a 400,000-row table. Nothing has been measured
+	 * at the shipped stripe_row_limit of 150000, where a group holds fifteen
+	 * times these rows.
 	 *
 	 * It is kept because of what kind of path this is. relation_estimate_size
 	 * runs on every plan of every query, and a per-group fold there was worth
