@@ -29,8 +29,18 @@
 # all-visible over those blocks and an arm there cannot fail. The arms below
 # therefore VACUUM first, delete only the FRONT of the target group, and assert
 # over the group's LATER blocks -- all-visible on the way in, and reachable only
-# by the rewrite's clear. Every arm is paired with a control block in a group the
-# operation does not touch, so a clear that wiped the whole fork fails too.
+# by the rewrite's clear.
+#
+# THE TWO CONTROLS DIFFER IN STRENGTH, and the difference is measured rather than
+# assumed. Part 1's control is a group in the SAME table the rewrite does not
+# touch, so widening that clear to the whole relation reddens it -- measured, 16
+# passed + 1 failed with the range replaced by (rel, 1, 100000000). Part 2 has NO
+# in-table control available, because recluster renumbers every group and leaves
+# nothing untouched to compare against. Its control is a second relation, which
+# catches a clear reaching beyond the relation it was called on, NOT an
+# over-broad range: the same widening at :765 leaves the suite 17 passed + 0
+# failed. That is a real limit of this half, stated here rather than left for a
+# reader to infer from an arm that looks like Part 1's.
 #
 # Usage:  test/vm_clear_on_renumber.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -124,7 +134,8 @@ check "premise: group 3 is gone from the catalog, so its rows were renumbered" \
 check "rewrite_one_group cleared the retired group's late block (#877)" \
 	"$(vis cw "$CW_TARGET_BLK")" "f"
 
-# THE CONTROL. A clear that wiped the whole fork would satisfy the arm above.
+# THE CONTROL, and it is load-bearing: replace this site's range with the whole
+# relation and this arm goes red while the arm above stays green.
 check "control: a group the rewrite did not touch keeps its all-visible bit" \
 	"$(vis cw "$CW_CTRL_BLK")" "t"
 
@@ -133,9 +144,15 @@ check "control: a group the rewrite did not touch keeps its all-visible bit" \
 # ---------------------------------------------------------------------------
 #
 # Recluster renumbers every live row and takes no group limit, so there is no
-# untouched group to use as an in-table control. A second columnar table,
-# vacuumed the same way and never reclustered, carries that half: it fails a
-# clear that reached beyond the relation it was called on.
+# untouched group to use as an in-table control, and this half has none. A second
+# columnar table, vacuumed the same way and never reclustered, carries what is
+# left: it fails a clear that reached beyond the RELATION it was called on.
+#
+# It does NOT fail an over-broad RANGE, and the arms below must not be read as if
+# it did. PgColumnarVMClearForRowRange takes `rel`, so widening the range cannot
+# make a clear on rc touch rcctl -- measured: with this site's range replaced by
+# (rel, 1, 100000000) the suite is 17 passed + 0 failed. A helper rewritten to
+# clear globally WOULD be caught here; a wrong row range would not.
 
 for t in rc rcctl; do
 	psql_run "CREATE TABLE $t (id int, x int, y int) USING pgcolumnar;"
@@ -180,7 +197,8 @@ check "recluster_online cleared the old numbers' early block (#877)" \
 check "recluster_online cleared the old numbers' late block (#877)" \
 	"$(vis rc "$RC_LATE_BLK")" "f"
 
-# THE CONTROL, the half that fails an over-broad clear.
+# THE CONTROL for this half: a clear that escaped its relation. See the note
+# above for what it does not cover.
 check "control: a relation that was not reclustered keeps its all-visible bits" \
 	"$(vis rcctl "$RC_EARLY_BLK")" "t"
 check "control: and its late block too" \

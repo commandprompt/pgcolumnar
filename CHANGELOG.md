@@ -44,9 +44,15 @@ true until the next version shipped.
   group made compactable is already not-all-visible there and an arm placed on it
   cannot fail. These arms `VACUUM` first, delete only the front of the target
   group, and assert over the group's later blocks, which are all-visible on the
-  way in and reachable only by the rewrite. Each is paired with a control -- an
-  untouched group for the rewrite, an un-reclustered relation for recluster -- so
-  a clear that wiped the whole fork fails too.
+  way in and reachable only by the rewrite.
+
+  **The two controls differ in strength and the suite says so.** The rewrite's
+  control is a group in the same table, and widening that clear to the whole
+  relation reddens it. Recluster renumbers every group, so that half has no
+  in-table control; its control is a second relation, which catches a clear
+  reaching beyond the relation it was called on but NOT an over-broad range --
+  the same widening leaves it green. That limit is measured and recorded in the
+  file rather than left for a reader to infer.
 
 - `MERGE` is documented as working, which it has been all along. It needs no
   index on the columnar target and takes every arm, including
