@@ -18,6 +18,42 @@ true until the next version shipped.
 
 ### Added
 
+- The two visibility-map clears that no test held are now held (#877).
+
+  **Three paths retire a row group and give its live rows new row numbers**, and
+  each must clear the all-visible bits over the OLD numbers, or an index-only
+  scan answers from the index for a TID whose group no longer exists. Only
+  `pgcolumnar.expire`'s clear was covered, because only its absence had been
+  reported as data loss. Deleting the other two -- `rewrite_one_group`
+  (`src/columnar_vacuum.c:346`, reached through `pgcolumnar.compact_rewrite`) and
+  `pgcolumnar_recluster_online` (`:765`, through `pgcolumnar.recluster`) -- left
+  319 checks across 14 suites green.
+
+  `test/vm_clear_on_renumber.sh` is the two missing arms. Neuter the clear at
+  `:346` and one arm reddens; neuter the one at `:765` and two redden; neither
+  mutation reddens the other's arms.
+
+  **The instrument is why this was not covered earlier.**
+  `pg_class.relallvisible` is a statistic `VACUUM` refreshes, and clearing a bit
+  does not touch it, so an arm reading it reports the same number with the clear
+  and without. `pgcolumnar.vm_is_visible(rel, blk)` reads the fork through
+  `visibilitymap_get_status`, which is the call the index-only-scan executor
+  makes.
+
+  **And a `DELETE` clears the bits of the blocks holding the deleted rows**, so a
+  group made compactable is already not-all-visible there and an arm placed on it
+  cannot fail. These arms `VACUUM` first, delete only the front of the target
+  group, and assert over the group's later blocks, which are all-visible on the
+  way in and reachable only by the rewrite.
+
+  **The two controls differ in strength and the suite says so.** The rewrite's
+  control is a group in the same table, and widening that clear to the whole
+  relation reddens it. Recluster renumbers every group, so that half has no
+  in-table control; its control is a second relation, which catches a clear
+  reaching beyond the relation it was called on but NOT an over-broad range --
+  the same widening leaves it green. That limit is measured and recorded in the
+  file rather than left for a reader to infer.
+
 - `MERGE` is documented as working, which it has been all along. It needs no
   index on the columnar target and takes every arm, including
   `WHEN MATCHED ... DELETE`, `WHEN NOT MATCHED BY SOURCE`, and
