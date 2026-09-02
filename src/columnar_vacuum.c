@@ -2239,6 +2239,16 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 	 * at the shipped stripe_row_limit of 150000, where a group holds fifteen
 	 * times these rows.
 	 *
+	 * AND THE INSTRUMENT IS WALL CLOCK ON A SHARED, CONTENDED HOST, which is the
+	 * likeliest reason the two sweeps decomposed differently at all: the same 40
+	 * groups timed 21-37 ms in one and 12-21 ms in the other, taken while a
+	 * second tenant was building and running suites on the same eight cores.
+	 * That difference is larger than the effect either fit was resolving. These
+	 * numbers bound the MAGNITUDE and cannot support a shape. If the shape ever
+	 * matters, measure instructions retired by the backend (perf stat -p on the
+	 * backend pid) rather than elapsed time: contention moves the clock and does
+	 * not move the instruction count.
+	 *
 	 * It is kept because of what kind of path this is. relation_estimate_size
 	 * runs on every plan of every query, and a per-group fold there was worth
 	 * removing. expire is a maintenance function called by name, where a few
