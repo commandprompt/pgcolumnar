@@ -248,7 +248,8 @@ SELECT pgcolumnar.add_projection(
 ```
 
 When you add the projection, pgColumnar fills it with the rows that exist. New inserts write to
-the base table and its projections. Projection scans are on by default
+the base table and its projections. Updates write there too, because an update
+creates a new row version. Projection scans are on by default
 (`pgcolumnar.enable_projection_scan`). Drop a projection with
 `pgcolumnar.drop_projection`.
 
@@ -261,7 +262,8 @@ it built. A second run builds nothing. A physical backup (`pg_basebackup`)
 preserves the projections themselves, which `test/replication.sh` verifies
 against a standby.
 
-A projection adds write cost and storage, because inserts write it too. Add one
+A projection adds write cost and storage, because inserts and updates both write
+it. Add one
 for a query pattern that a covering, sorted column subset serves, and measure the
 result. Confirm the plan uses it with `EXPLAIN`, which names the chosen projection.
 

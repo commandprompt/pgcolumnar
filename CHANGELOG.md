@@ -35,6 +35,28 @@ true until the next version shipped.
 
 ### Fixed
 
+- `UPDATE` now fans the new row version out to every covering projection, so a
+  projection scan stops answering as if the updated rows were gone.
+
+  **A projection stored the base row number, and `UPDATE` never gave it the new
+  one.** A projection joins back to the base table on the row number and takes
+  visibility from the base delete vector, so `DELETE` needs no rewrite: the
+  vector hides the old number from the projection too. `UPDATE` is delete-old
+  plus insert-new, and only the delete half reached the projection. The
+  projection kept the old number, the delete vector hid it, and the new number
+  was nowhere. `read_projection` returned no rows, and a covering projection
+  scan (projected columns with a sort-key qual) answered as if the updated rows
+  had been removed.
+
+  The base table was always correct. The loss was confined to reads the planner
+  served from a projection, which makes it the worse shape: the same query
+  returns different answers depending on whether the projection is chosen.
+
+  `tuple_update` now calls the same fan-out that insert calls.
+
+  `docs/features.md`, `docs/administration.md` and `docs/how-to.md` said only
+  that inserts write projections. All three now say updates do too, and say why
+  a delete does not.
 - Arrow import reads the temporal unit and carrier width the file declares,
   rather than assuming the ones our own exporter writes (#864, #865).
 

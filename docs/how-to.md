@@ -148,8 +148,8 @@ SELECT pgcolumnar.add_projection(
 EXPLAIN SELECT sum(amount) FROM events WHERE customer_id = 42;
 ```
 
-Adding a projection fills it from the existing rows. Later inserts write to the
-base table and to every projection, so each projection adds write cost. Drop one
+Adding a projection fills it from the existing rows. Later inserts and updates write to
+the base table and to every projection, so each projection adds write cost. Drop one
 with `pgcolumnar.drop_projection('events', 'events_by_customer')`.
 
 **Tuning.** Add a projection only for a hot access pattern the base sort order
