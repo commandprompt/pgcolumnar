@@ -183,4 +183,74 @@ check "and dropping it after SET ACCESS METHOD heap leaves no orphan" \
 check "the pre-extension table's options row is gone" \
 	"$(aac_dbq aac_pre "SELECT count(*) FROM pgcolumnar.options")" "0"
 
+# ---- the gate is on the OPTIONS TABLE, not on the schema --------------------
+#
+# The hook gates on pgcolumnar.options resolving rather than on the pgcolumnar
+# schema resolving. Measured on this tree rather than reasoned about: after
+# DROP EXTENSION pgcolumnar the schema is STILL in pg_namespace and
+# pgcolumnar.options is NOT in pg_class. The schema outlives the extension
+# because it is not one of its members -- nothing depends on it with deptype
+# 'e' -- while every catalog table in it is.
+#
+# So a gate on the schema opens a catalog that has gone, and an ERROR raised in
+# an object_access hook aborts the command that called it. Not only DROP TABLE:
+# every rewrite drops a transient pg_temp_<oid> through this hook, so VACUUM
+# FULL, CLUSTER, ALTER COLUMN TYPE and CREATE MATERIALIZED VIEW go too, and
+# vacuumdb --full --all fails cluster-wide.
+#
+# aac_nocx above cannot hold this. It has neither the schema nor the tables, so
+# a schema gate declines there for the same reason an options gate does and
+# every one of its arms stays green. A database where the extension was
+# installed and then dropped is the only place the two gates disagree, and this
+# is that database.
+
+psql_admin "DROP DATABASE IF EXISTS aac_dropx;" >/dev/null 2>&1
+psql_admin "CREATE DATABASE aac_dropx;" >/dev/null 2>&1
+check "premise: the extension installs in a third database" \
+	"$(aac_dbrun aac_dropx 'CREATE EXTENSION pgcolumnar;')" "rc=0"
+check "premise: with a columnar table carrying both relid-keyed catalog rows" \
+	"$(aac_dbrun aac_dropx "CREATE TABLE dx (id int, a int, b text) USING pgcolumnar;
+	                        SELECT pgcolumnar.set_options('dx', stripe_row_limit => 5000);
+	                        SELECT pgcolumnar.add_projection('dx','p1',ARRAY['a','b'],ARRAY['a']);")" "rc=0"
+check "premise: those rows are really there before the extension goes" \
+	"$(aac_dbq aac_dropx "SELECT (SELECT count(*) FROM pgcolumnar.options) || '/' ||
+	                             (SELECT count(*) FROM pgcolumnar.projection_declaration)")" "1/1"
+
+# DROP EXTENSION drops options and projection_declaration as ordinary
+# relations, each of them through this same hook, and drops the columnar table
+# through it too. The member skip is what stops the hook opening a sibling
+# catalog that DROP EXTENSION has already removed -- which would abort the
+# DROP EXTENSION itself, leaving no way to remove the extension at all.
+check "DROP EXTENSION succeeds with those catalogs populated" \
+	"$(aac_dbrun aac_dropx 'DROP EXTENSION pgcolumnar CASCADE;')" "rc=0"
+
+check "premise: DROP EXTENSION left the schema behind" \
+	"$(aac_dbq aac_dropx "SELECT count(*) FROM pg_namespace WHERE nspname='pgcolumnar'")" "1"
+check "premise: and took pgcolumnar.options with it" \
+	"$(aac_dbq aac_dropx "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+	                      WHERE n.nspname = 'pgcolumnar' AND c.relname = 'options'")" "0"
+
+check "a plain table is created after DROP EXTENSION" \
+	"$(aac_dbrun aac_dropx 'CREATE TABLE dxh (i int primary key, t text);')" "rc=0"
+check "and dropped there" \
+	"$(aac_dbrun aac_dropx 'DROP TABLE dxh;')" "rc=0"
+check "an explicit DROP of a temp table succeeds after DROP EXTENSION" \
+	"$(aac_dbrun aac_dropx 'CREATE TEMP TABLE dxt (i int); DROP TABLE dxt;')" "rc=0"
+
+check "premise: a table to rewrite exists after DROP EXTENSION" \
+	"$(aac_dbrun aac_dropx 'CREATE TABLE dxr (i int primary key, t text);
+	                        INSERT INTO dxr SELECT g, g::text FROM generate_series(1,100) g;')" "rc=0"
+check "VACUUM FULL succeeds after DROP EXTENSION" \
+	"$(aac_dbrun aac_dropx 'VACUUM FULL dxr;')" "rc=0"
+check "CLUSTER succeeds after DROP EXTENSION" \
+	"$(aac_dbrun aac_dropx 'CLUSTER dxr USING dxr_pkey;')" "rc=0"
+check "ALTER COLUMN TYPE succeeds after DROP EXTENSION" \
+	"$(aac_dbrun aac_dropx 'ALTER TABLE dxr ALTER COLUMN t TYPE varchar(64);')" "rc=0"
+check "CREATE MATERIALIZED VIEW succeeds after DROP EXTENSION" \
+	"$(aac_dbrun aac_dropx 'CREATE MATERIALIZED VIEW dxm AS SELECT * FROM dxr;')" "rc=0"
+check "and REFRESH MATERIALIZED VIEW does too" \
+	"$(aac_dbrun aac_dropx 'REFRESH MATERIALIZED VIEW dxm;')" "rc=0"
+check "TRUNCATE succeeds after DROP EXTENSION" \
+	"$(aac_dbrun aac_dropx 'TRUNCATE dxr;')" "rc=0"
+
 pgc_summary
