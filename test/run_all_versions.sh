@@ -276,6 +276,7 @@ SUITES=(
 	vacuum_stripe_count
 	vector_agg_rescan_memory
 	vector_agg_tlist_shape
+	vm_clear_on_renumber
 	vm_privilege
 	wal_envelope
 	write_fsst_compressed
