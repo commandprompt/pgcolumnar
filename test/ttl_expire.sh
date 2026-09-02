@@ -25,6 +25,15 @@
 # data disappears would pass just as well on an implementation that dropped
 # everything.
 #
+# Two more ways a "the maximum is expired" reading is not "every row is
+# expired":
+#   * a NULL in the retention column. The zone map's max covers only non-NULL
+#     timestamps, so a group of old timestamps plus NULLs looks fully expired
+#     and would drop the NULLs.
+#   * an index-only scan after VACUUM. expire retires live groups without
+#     going through the delete vector, so the VM bits VACUUM set stay on and
+#     the scan answers from the index without fetching the (now missing) group.
+#
 # Usage:  test/ttl_expire.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -126,5 +135,195 @@ psql_run "INSERT INTO ttl_none SELECT g, now() FROM generate_series(1,10) g;"
 ERR="$(q "SELECT pgcolumnar.expire('ttl_none')")"
 check "a table with no declared retention is an error, not a silent success" \
 	"$(grep -qiE 'ERROR|no retention|ttl' <<<"$ERR" && echo "refused" || echo "ACCEPTED ($ERR)")" "refused"
+
+# ---- NULL in the retention column is a straddle, not an expiry ------------
+psql_run "CREATE TABLE ttl_null (id int, ts timestamptz, v text) USING pgcolumnar;"
+psql_run "INSERT INTO ttl_null
+          SELECT g,
+                 CASE WHEN g <= 10 THEN NULL
+                      ELSE now() - interval '10 days' END,
+                 'v'||g
+          FROM generate_series(1,1000) g;"
+psql_run "SELECT pgcolumnar.set_options('ttl_null', ttl_column => 'ts',
+                                        ttl_interval => '3 days');"
+NULL_BEFORE="$(q "SELECT count(*) FROM ttl_null WHERE ts IS NULL")"
+check "premise: the table holds NULL retention rows at all" "$NULL_BEFORE" "10"
+# The arm below is about a GROUP that mixes expired rows with NULL ones. A
+# table-level count cannot see a row group, and passes just as readily on a
+# fixture where the NULL rows sit in a group of their own -- which is the
+# arrangement the premise exists to exclude. Count the groups that hold both.
+check "premise: and the SAME row group holds expired rows and NULL ones" \
+	"$(q "SELECT count(*) FROM (
+	        SELECT z.group_number
+	        FROM pgcolumnar.zone_map z
+	        JOIN pgcolumnar.storage s ON s.storage_id = z.storage_id
+	        WHERE s.relation_oid = 'ttl_null'::regclass
+	          AND z.null_count > 0
+	        GROUP BY z.group_number) g")" "1"
+NULL_RETIRED="$(q "SELECT pgcolumnar.expire('ttl_null')")"
+NULL_AFTER="$(q "SELECT count(*) FROM ttl_null WHERE ts IS NULL")"
+NULL_ROWS="$(q "SELECT count(*) FROM ttl_null")"
+check "expire does not retire a group that still holds NULL retention rows" \
+	"$NULL_RETIRED" "0"
+check "and those NULL rows are still there" "$NULL_AFTER" "10"
+check "and the expired timestamps sharing the group were kept with them" \
+	"$NULL_ROWS" "1000"
+
+# ---- index-only scan must not return rows expire already retired ----------
+psql_run "CREATE TABLE ttl_ios (id int, ts timestamptz) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('ttl_ios', stripe_row_limit => 16384);"
+psql_run "INSERT INTO ttl_ios SELECT g, now() - interval '10 days'
+          FROM generate_series(1,8000) g;"
+psql_run "CREATE INDEX ttl_ios_id ON ttl_ios (id);"
+psql_run "ALTER DATABASE $PGC_DB SET pgcolumnar.enable_index_only_scan = on;"
+psql_run "ALTER DATABASE $PGC_DB SET pgcolumnar.enable_custom_scan = off;"
+psql_run "ALTER DATABASE $PGC_DB SET enable_seqscan = off;"
+psql_run "ALTER DATABASE $PGC_DB SET enable_bitmapscan = off;"
+psql_run "VACUUM ttl_ios;"
+psql_run "SELECT pgcolumnar.set_options('ttl_ios', ttl_column => 'ts',
+                                        ttl_interval => '3 days');"
+ios_plan_before="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+	-U postgres -d "$PGC_DB" -Atq -c \
+	"EXPLAIN (COSTS OFF) SELECT id FROM ttl_ios WHERE id BETWEEN 1 AND 8000;")"
+check "premise: an index-only scan is chosen on the all-visible table" \
+	"$(printf '%s' "$ios_plan_before" | grep -c 'Index Only Scan')" "1"
+# The plan shape is decided by pg_class.relallvisible and by enable_seqscan and
+# enable_bitmapscan being off -- NOT by the visibility-map bit the fix clears.
+# Stop PgColumnarVMSetVisibleForRelation writing bits and the plan is unchanged,
+# so the arm above cannot fail for the thing under test. Assert the bit itself.
+check "premise: and VACUUM really did set visibility-map bits to clear" \
+	"$(q "SELECT CASE WHEN relallvisible > 0 THEN 'set' ELSE 'none' END
+	      FROM pg_class WHERE oid = 'ttl_ios'::regclass")" "set"
+IOS_VM_BEFORE="$(q "SELECT relallvisible FROM pg_class WHERE oid = 'ttl_ios'::regclass")"
+IOS_RETIRED="$(q "SELECT pgcolumnar.expire('ttl_ios')")"
+check "expire retires the all-visible expired group" \
+	"$([ "${IOS_RETIRED:-0}" -gt 0 ] && echo retired || echo "RETIRED NOTHING ($IOS_RETIRED)")" \
+	"retired"
+# Seqscan is the catalog truth: the group is gone.
+SEQ_AFTER="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+	-U postgres -d "$PGC_DB" -Atq -c \
+	"SET enable_seqscan = on; SET pgcolumnar.enable_custom_scan = on;
+	 SELECT count(*) FROM ttl_ios;")"
+check "seqscan agrees the expired rows are gone" "$(printf '%s' "$SEQ_AFTER" | tail -1)" "0"
+ios_plan_after="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+	-U postgres -d "$PGC_DB" -Atq -c \
+	"EXPLAIN (COSTS OFF) SELECT id FROM ttl_ios WHERE id BETWEEN 1 AND 8000;")"
+check "the index-only scan is still the plan after expire" \
+	"$(printf '%s' "$ios_plan_after" | grep -c 'Index Only Scan')" "1"
+IOS_AFTER="$(q "SELECT count(*) FROM ttl_ios WHERE id BETWEEN 1 AND 8000")"
+check "index-only scan does not return rows expire already retired" "$IOS_AFTER" "0"
+
+# NOT asserted here: that the visibility-map bits were CLEARED, as opposed to
+# the consequence above. I tried and the arm was wrong -- pg_class.relallvisible
+# is a statistic that VACUUM refreshes, and clearing a VM bit does not touch it,
+# so the arm read "still 2 of 2" on a tree where the clear demonstrably works.
+# Reading the fork itself needs pg_visibility, which is not built in this
+# environment (no pg_visibility.control under the prefix's extension directory).
+#
+# So the clear is asserted through its consequence, with the premise above
+# pinning the thing that was previously assumed: that VACUUM really did set bits
+# for this table. That was the reviewer's ask, and it is what makes the
+# index-only arm able to fail for the reason it names.
+
+# ---- a negative retention must be refused, not applied ----------------------
+#
+# A negative ttl_interval puts the cutoff in the FUTURE, so expire finds
+# `maximum < cutoff` true for groups entirely inside their retention and retires
+# them: live rows dropped, which is the failure this suite is named for.
+# SQLSTATE, not message text -- 22023 comes from the range check, while a
+# missing function would be 42883 and a non-owner 42501.
+ttl_state() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -Atq -v VERBOSITY=sqlstate -c "$1" 2>&1 \
+		| sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
+}
+psql_run "CREATE TABLE ttl_neg (id int, ts timestamptz) USING pgcolumnar;"
+psql_run "INSERT INTO ttl_neg SELECT g, now() FROM generate_series(1,100) g;"
+check "a negative ttl_interval is refused with 22023" \
+	"$(ttl_state "SELECT pgcolumnar.set_options('ttl_neg', ttl_column => 'ts',
+	                                            ttl_interval => '-3 days');")" "22023"
+check "and a zero ttl_interval is refused too" \
+	"$(ttl_state "SELECT pgcolumnar.set_options('ttl_neg', ttl_column => 'ts',
+	                                            ttl_interval => '0 seconds');")" "22023"
+# Control: without this pair, a guard that refused EVERY interval would look
+# identical to one that refuses only the dangerous ones.
+check "control: and a positive one is still accepted" \
+	"$(ttl_state "SELECT pgcolumnar.set_options('ttl_neg', ttl_column => 'ts',
+	                                            ttl_interval => '3 days');")" ""
+check "control: and the rows are all still there" \
+	"$(q 'SELECT count(*) FROM ttl_neg')" "100"
+
+# ---- a NULL that has been DELETED must stop pinning its group ---------------
+#
+# z->nullCount is recorded at WRITE time and never revised, so it still counts
+# rows a later DELETE marked. Reading it as the live count keeps a group whose
+# every live row is past retention and whose NULL rows have all been deleted --
+# and keeps it FOREVER, because nothing rewrites a zone map on delete. That
+# trades data loss for permanent over-retention, which is quieter and not
+# better.
+#
+# Measured on both trees before the guard read a live-row property:
+#
+#   main 53224e4        expire 1, rows left 0     (right, but by dropping the
+#                                                  live NULL rows in arm L too)
+#   the null-count guard  expire 0, rows left 810 (REFUSED, and would never
+#                                                  retire this group again)
+#
+# ONE INSERT statement, not two. Two statements flush two row groups, the NULLs
+# never share a group with the rows under test, and every arm below answers a
+# question nobody asked. The group count is asserted rather than assumed for
+# exactly that reason.
+
+psql_run "CREATE TABLE ttl_dn (id int, ts timestamptz, v text) USING pgcolumnar;"
+psql_run "INSERT INTO ttl_dn
+          SELECT g,
+                 CASE WHEN g % 10 = 0 THEN NULL
+                      ELSE now() - interval '400 days' END,
+                 'v' || g
+          FROM generate_series(1,900) g;"
+psql_run "SELECT pgcolumnar.set_options('ttl_dn', ttl_column => 'ts',
+                                        ttl_interval => '90 days');"
+
+check "premise: the fixture is ONE row group, so the NULLs share it" \
+	"$(q "SELECT count(*) FROM pgcolumnar.row_group rg
+	      JOIN pgcolumnar.storage s ON s.storage_id = rg.storage_id
+	      WHERE s.relation_oid = 'ttl_dn'::regclass")" "1"
+
+# Delete every NULL row. The zone map is not rewritten, so nullCount still
+# counts them -- which is the whole point.
+psql_run "DELETE FROM ttl_dn WHERE ts IS NULL;"
+
+check "premise: no LIVE row holds a NULL retention value any more" \
+	"$(q 'SELECT count(*) FROM ttl_dn WHERE ts IS NULL')" "0"
+check "premise: but the zone map still records the deleted NULLs" \
+	"$(q "SELECT CASE WHEN sum(z.null_count) > 0 THEN 'still recorded' ELSE 'gone' END
+	      FROM pgcolumnar.zone_map z
+	      JOIN pgcolumnar.storage s ON s.storage_id = z.storage_id
+	      WHERE s.relation_oid = 'ttl_dn'::regclass")" "still recorded"
+check "premise: and every live row is past the retention" \
+	"$(q "SELECT count(*) FROM ttl_dn WHERE ts >= now() - interval '90 days'")" "0"
+
+DN_RETIRED="$(q "SELECT pgcolumnar.expire('ttl_dn')")"
+check "a group whose only NULLs have been deleted is retired" "$DN_RETIRED" "1"
+check "and its rows are gone" "$(q 'SELECT count(*) FROM ttl_dn')" "0"
+
+# Control: the live-NULL case must still be refused, or the fix above is just
+# "retire everything" wearing a delete.
+psql_run "CREATE TABLE ttl_dl (id int, ts timestamptz, v text) USING pgcolumnar;"
+psql_run "INSERT INTO ttl_dl
+          SELECT g,
+                 CASE WHEN g % 10 = 0 THEN NULL
+                      ELSE now() - interval '400 days' END,
+                 'v' || g
+          FROM generate_series(1,900) g;"
+psql_run "SELECT pgcolumnar.set_options('ttl_dl', ttl_column => 'ts',
+                                        ttl_interval => '90 days');"
+# One row deleted, so the table HAS a delete vector and takes the same path as
+# ttl_dn above -- but the NULLs are still live.
+psql_run "DELETE FROM ttl_dl WHERE id = 1;"
+DL_RETIRED="$(q "SELECT pgcolumnar.expire('ttl_dl')")"
+check "control: a group whose NULLs are still live is NOT retired" "$DL_RETIRED" "0"
+check "control: and those NULL rows survive" \
+	"$(q 'SELECT count(*) FROM ttl_dl WHERE ts IS NULL')" "90"
 
 pgc_summary

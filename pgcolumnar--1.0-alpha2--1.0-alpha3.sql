@@ -146,6 +146,30 @@ BEGIN
 	END IF;
 
 	/*
+	 * A negative retention puts the cutoff in the FUTURE, so expire finds
+	 * `maximum < cutoff` true for groups that are entirely inside their
+	 * retention and retires them. That drops live rows, which is the failure
+	 * this option exists to prevent. Every other option here is range-checked
+	 * and this one was not.
+	 *
+	 * Zero is refused too. It is not a data-loss shape -- the cutoff is now, so
+	 * only groups already wholly in the past go -- but "expire everything older
+	 * than nothing" has no reading a caller means on purpose, and accepting it
+	 * silently makes a typo indistinguishable from an instruction.
+	 *
+	 * ERRCODE is explicit for the reason the relkind guard above gives: this
+	 * tree's suites assert SQLSTATE rather than message text, and plpgsql would
+	 * otherwise default to P0001.
+	 */
+	IF ttl_interval IS NOT NULL AND ttl_interval <= interval '0' THEN
+		RAISE EXCEPTION 'ttl_interval must be a positive interval, not %', ttl_interval
+			USING ERRCODE = 'invalid_parameter_value',
+				HINT = 'A negative retention puts the cutoff in the future, '
+				'so pgcolumnar.expire() would retire groups whose rows are '
+				'still within their retention.';
+	END IF;
+
+	/*
 	 * sort_by declares the physical sort key applied by vacuum_sorted() with no
 	 * explicit columns (#288). This is a cheap early check only: each named
 	 * column must exist, not be dropped, and not be a VIRTUAL generated column
@@ -208,7 +232,7 @@ CREATE FUNCTION pgcolumnar.expire(tablename regclass)
 	AS 'MODULE_PATHNAME', 'pgcolumnar_expire';
 
 COMMENT ON FUNCTION pgcolumnar.expire(regclass)
-	IS 'drop row groups whose rows are all older than the retention declared by set_options(ttl_column, ttl_interval), without reading or rewriting them (#403)';
+	IS 'drop row groups whose rows are all older than the retention declared by set_options(ttl_column, ttl_interval), without rewriting them (#403)';
 
 CREATE FUNCTION pgcolumnar.parallel_copy(target regclass, filename text,
 										 workers int DEFAULT NULL,

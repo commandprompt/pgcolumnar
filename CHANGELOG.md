@@ -35,6 +35,45 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.expire()` no longer drops live rows, and every path that renumbers
+  live rows now clears the visibility map (#403).
+
+  **Three separate ways to lose data or read a row that is gone.**
+
+  A group holding a row with a `NULL` retention value could be retired, taking
+  live rows with it. `expire` now keeps any group whose retention column has a
+  LIVE `NULL`, because a `NULL` has no age and the group cannot be known to be
+  wholly expired. Deciding that reads the retention column of a candidate
+  group, on a table that has any deletes. A table with no deletes still decides
+  from row-group metadata alone. Nothing is rewritten either way.
+
+  Live is the operative word. The zone map's null count is recorded when the
+  group is written and never revised, so it still counts rows a later `DELETE`
+  marked. Reading it as the live count keeps a group whose every live row is
+  past retention and whose `NULL` rows have all been deleted, and keeps it
+  permanently, because nothing rewrites a zone map on delete. That trades data
+  loss for silent over-retention. `expire` now checks the live rows, and only
+  for a group that has both recorded `NULL`s and deletes: with no delete vector
+  the recorded count is still exact, so the metadata-only path is unchanged and
+  `expire` still reads nothing.
+
+  A negative `ttl_interval` put the cutoff in the future, so `expire` retired
+  groups that were entirely inside their retention. `set_options` range-checked
+  every other option it accepts and not this one. Zero and negative intervals
+  now raise `22023`.
+
+  Retiring a group leaves its old row numbers in the visibility map, so an
+  index-only scan answers from the index for a row group that is gone. `expire`
+  cleared them; `pgcolumnar.recluster()` and the partial-group rewrite behind
+  `pgcolumnar.compact_rewrite()` did not, and both renumber live rows through
+  the same retire. All three clear now. The rule is that visibility-map bits go
+  wherever row numbers are reassigned, not only where rows expire.
+
+  `docs/sql-reference.md` gains the accepted range for `ttl_interval` and the
+  `NULL` rule, which is stronger than the straddling behaviour the page already
+  described: a straddling group is released once its newest row ages past the
+  cutoff, and a group holding a `NULL` never is.
+
 - The matrix runner counts incomplete suites per major, not per run, and the
   INCOMPLETE dispatch is now testable end to end (#858).
 

@@ -385,6 +385,8 @@ extern uint64 PgColumnarItemPointerToRowNumber(ItemPointer tid);
  * visibility map for index-only scans (pgcolumnar_visibilitymap.c, gap 28)
  * ------------------------------------------------------------------------- */
 extern void PgColumnarVMClearForRow(Relation rel, uint64 rowNumber);
+extern void PgColumnarVMClearForRowRange(Relation rel, uint64 firstRowNumber,
+										 uint64 rowCount);
 extern uint64 PgColumnarVMSetVisibleForRelation(Relation rel);
 
 /* index maintenance for callers that insert rows without an executor (#153) */

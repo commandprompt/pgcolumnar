@@ -204,6 +204,8 @@ PgColumnarRequireTableOwnerByOid(Oid relid)
 
 /* Z-order helpers (defined later, used by the online recluster below) */
 static bool cluster_type_supported(Oid typid);
+static bool group_has_live_null(Relation rel, NativeRowGroupMetadata *rg,
+								AttrNumber attno);
 static bytea *cluster_zorder_key(Datum *values, bool *isnull, AttrNumber *atts,
 								 int ncols, TupleDesc tupdesc);
 /* Names an ordering rewrite records as its key (defined later, #415) */
@@ -219,6 +221,29 @@ uint64_cmp(const void *a, const void *b)
 {
 	uint64		x = *(const uint64 *) a;
 	uint64		y = *(const uint64 *) b;
+
+	return (x < y) ? -1 : (x > y) ? 1 : 0;
+}
+
+/*
+ * A retired group and the row numbers it held. Recluster needs both: the number
+ * to lock and retire in ascending order, and the range to clear from the
+ * visibility map, because those row numbers are being reassigned. Carried in
+ * one struct rather than parallel arrays so the sort below cannot separate a
+ * group from its range.
+ */
+typedef struct RetiredGroup
+{
+	uint64		groupNumber;
+	uint64		firstRowNumber;
+	uint64		rowCount;
+}			RetiredGroup;
+
+static int
+retired_group_cmp(const void *a, const void *b)
+{
+	uint64		x = ((const RetiredGroup *) a)->groupNumber;
+	uint64		y = ((const RetiredGroup *) b)->groupNumber;
 
 	return (x < y) ? -1 : (x > y) ? 1 : 0;
 }
@@ -313,7 +338,12 @@ rewrite_one_group(Relation rel, PgColumnarIndexInsertState *ris, uint64 storageI
 	PgColumnarFlushWriteStateForRelation(relid);
 
 	/* atomically (same transaction) the new group is now in the catalog; drop the
-	 * old one. Heap MVCC keeps the old group readable to older snapshots. */
+	 * old one. Heap MVCC keeps the old group readable to older snapshots.
+	 *
+	 * The rows just moved carry NEW row numbers, so the old numbers' visibility
+	 * map bits must go with the group. Without this an index-only scan answers
+	 * from the index for a TID whose group no longer exists. */
+	PgColumnarVMClearForRowRange(rel, firstRow, rowCount);
 	PgColumnarRetireGroup(storageId, groupNumber);
 
 	PopActiveSnapshot();
@@ -541,7 +571,7 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 	Snapshot	listSnap;
 	List	   *rgList;
 	ListCell   *lc;
-	uint64	   *oldGroups;
+	RetiredGroup *oldGroups;
 	int			nGroups = 0;
 	int			i;
 	Snapshot	snap;
@@ -571,12 +601,16 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 	/* capture the current groups (retired at the end, after the new ones exist) */
 	listSnap = RegisterSnapshot(GetLatestSnapshot());
 	rgList = PgColumnarReadRowGroupList(storageId, listSnap);
-	oldGroups = palloc(sizeof(uint64) * (list_length(rgList) > 0 ? list_length(rgList) : 1));
+	oldGroups = palloc(sizeof(RetiredGroup) *
+					   (list_length(rgList) > 0 ? list_length(rgList) : 1));
 	foreach(lc, rgList)
 	{
 		NativeRowGroupMetadata *rg = (NativeRowGroupMetadata *) lfirst(lc);
 
-		oldGroups[nGroups++] = rg->groupNumber;
+		oldGroups[nGroups].groupNumber = rg->groupNumber;
+		oldGroups[nGroups].firstRowNumber = rg->firstRowNumber;
+		oldGroups[nGroups].rowCount = rg->rowCount;
+		nGroups++;
 	}
 	UnregisterSnapshot(listSnap);
 
@@ -590,7 +624,7 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 				 errhint("Use pgcolumnar.cluster() for a one-shot reorg of a very large table.")));
 
 	/* lock every group in ascending order (deadlock-safe), held to commit */
-	qsort(oldGroups, nGroups, sizeof(uint64), uint64_cmp);
+	qsort(oldGroups, nGroups, sizeof(RetiredGroup), retired_group_cmp);
 
 	/*
 	 * Self-gate (#415): if the whole live relation is already the Z-order run
@@ -629,8 +663,8 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 			}
 		}
 		if (sameKey && sfrom >= 0 && sthrough >= 0 &&
-			(int64) oldGroups[0] >= sfrom &&
-			(int64) oldGroups[nGroups - 1] <= sthrough)
+			(int64) oldGroups[0].groupNumber >= sfrom &&
+			(int64) oldGroups[nGroups - 1].groupNumber <= sthrough)
 		{
 			pfree(oldGroups);
 			/* no active snapshot pushed yet at this point -- see below */
@@ -639,7 +673,7 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 	}
 
 	for (i = 0; i < nGroups; i++)
-		PgColumnarLockChunkGroup(storageId, oldGroups[i]);
+		PgColumnarLockChunkGroup(storageId, oldGroups[i].groupNumber);
 
 	/* read all live rows into a Morton-keyed tuplesort (as in eager cluster).
 	 * Register the snapshot (not just push active) so the catalog snapshot copies
@@ -717,9 +751,21 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts)
 	tuplesort_end(tsort);
 	ExecDropSingleTupleTableSlot(augSlot);
 
-	/* retire the old groups; heap MVCC keeps them readable to older snapshots */
+	/*
+	 * Retire the old groups; heap MVCC keeps them readable to older snapshots.
+	 *
+	 * Clear the visibility map over the row numbers each retired group held.
+	 * Recluster reassigns those rows fresh numbers, so an index-only scan that
+	 * answers from the index for an old TID would answer for a group that is
+	 * gone. That is the same rule expire follows, and it holds wherever LIVE
+	 * rows are renumbered rather than only where they expire.
+	 */
 	for (i = 0; i < nGroups; i++)
-		PgColumnarRetireGroup(storageId, oldGroups[i]);
+	{
+		PgColumnarVMClearForRowRange(rel, oldGroups[i].firstRowNumber,
+									 oldGroups[i].rowCount);
+		PgColumnarRetireGroup(storageId, oldGroups[i].groupNumber);
+	}
 
 	/* record how far the reordered run reaches (#311) and BY WHAT (#415) */
 	record_online_sorted_extent(rel, storageId, writeState, stripeMark,
@@ -2041,6 +2087,17 @@ pgcolumnar_cluster(PG_FUNCTION_ARGS)
  *		by group rather than by row, and it is the safe direction: the
  *		alternative drops rows that are still inside the retention.
  *
+ *		A NULL in the retention column is the same kind of straddle. The zone
+ *		map's maximum covers only the non-NULL timestamps, so a group whose
+ *		timestamps are all past the cutoff can still hold rows whose retention
+ *		is unknown. Dropping it would delete those rows.
+ *
+ *		Retiring a live group also clears the visibility-map bits covering its
+ *		row numbers. VACUUM may already have marked the group all-visible, and
+ *		an index-only scan would then return the expired keys from the index
+ *		without fetching. A fetch would correctly fail once the catalog rows
+ *		are gone; skipping the fetch is what made the ghosts visible.
+ *
  *		This is called by name and never runs on its own. It deletes rows, and an
  *		operation a user runs for maintenance must not do that silently, so it is
  *		not wired into vacuum, compact or autovacuum.
@@ -2059,6 +2116,7 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 	TypeCacheEntry *tce;
 	uint64		storageId;
 	List	   *groups;
+	bool		anyDeletes;
 	ListCell   *lc;
 	int64		retired = 0;
 	int			i;
@@ -2146,6 +2204,60 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 	storageId = PgColumnarStorageId(rel);
 	groups = PgColumnarReadRowGroupList(storageId, GetActiveSnapshot());
 
+	/*
+	 * One probe for the whole storage, not one per group. With no delete vector
+	 * anywhere, a zone map's write-time nullCount is still exact, so expire
+	 * keeps its metadata-only path and reads nothing at all -- which is what it
+	 * promises. Only a table that has deletes can have a stale nullCount, and
+	 * only groups in such a table are looked at.
+	 *
+	 * This is COARSE on purpose, and what it costs is recorded here so that
+	 * changing it later is a decision rather than a rediscovery. A per-group
+	 * deleted count would skip the read for a null-bearing group carrying no
+	 * deletes; this probe makes one delete anywhere in the storage send every
+	 * such group down the read path.
+	 *
+	 * Measured on PG 17.10 at 10000 rows a group, six repetitions, arm order
+	 * alternated, every point asserting both arms retired all N groups so they
+	 * differ only in the path:
+	 *
+	 *      5 groups   read 3-7 ms     metadata 1-2 ms
+	 *     40 groups   read 21-37 ms   metadata 2-5 ms
+	 *
+	 * THOSE ARE TOTALS, AND THEY ARE NOT A RATE. Do not divide by the group
+	 * count and multiply back up. Two independent sweeps on this same box, at
+	 * this same geometry, agree on the totals and disagree on the decomposition:
+	 * fitting a + b*groups gives roughly 0.7 ms fixed with 0.59 ms per group
+	 * from one, and 2.6 ms fixed with 0.27 ms per group from the other. Neither
+	 * dataset determines which, because the repetition spread (21 to 37 ms at 40
+	 * groups) is comparable to the difference being fitted. A reader who took
+	 * 0.5 ms per group and multiplied by a table of several thousand groups
+	 * would get seconds, and nothing here supports that.
+	 *
+	 * What IS supported: at these sizes the whole thing is milliseconds, and the
+	 * read arm is under 40 ms for a 400,000-row table. Nothing has been measured
+	 * at the shipped stripe_row_limit of 150000, where a group holds fifteen
+	 * times these rows.
+	 *
+	 * AND THE INSTRUMENT IS WALL CLOCK ON A SHARED, CONTENDED HOST, which is the
+	 * likeliest reason the two sweeps decomposed differently at all: the same 40
+	 * groups timed 21-37 ms in one and 12-21 ms in the other, taken while a
+	 * second tenant was building and running suites on the same eight cores.
+	 * That difference is larger than the effect either fit was resolving. These
+	 * numbers bound the MAGNITUDE and cannot support a shape. If the shape ever
+	 * matters, measure instructions retired by the backend (perf stat -p on the
+	 * backend pid) rather than elapsed time: contention moves the clock and does
+	 * not move the instruction count.
+	 *
+	 * It is kept because of what kind of path this is. relation_estimate_size
+	 * runs on every plan of every query, and a per-group fold there was worth
+	 * removing. expire is a maintenance function called by name, where a few
+	 * milliseconds is a different class of problem -- and the per-group count is
+	 * only exposed in a header by a separate PR, so using it would couple this
+	 * fix to that one landing first.
+	 */
+	anyDeletes = PgColumnarStorageHasDeleteVector(storageId, GetActiveSnapshot());
+
 	foreach(lc, groups)
 	{
 		NativeRowGroupMetadata *rg = (NativeRowGroupMetadata *) lfirst(lc);
@@ -2165,6 +2277,28 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 		if (z == NULL || !z->hasMinMax)
 			continue;
 
+		/*
+		 * Keep any group that holds a LIVE NULL in the retention column. The
+		 * maximum cannot speak for those rows, and treating "every timestamp we
+		 * can see is expired" as "the group is expired" drops them.
+		 *
+		 * z->nullCount is recorded at WRITE time and never revised, so it still
+		 * counts rows a later DELETE marked. Reading it as the live count keeps
+		 * a group whose every live row is past retention and whose NULL rows
+		 * have all been deleted -- and keeps it FOREVER, because nothing
+		 * rewrites a zone map on delete. That trades data loss for permanent
+		 * over-retention, which is quieter and not better.
+		 *
+		 * With no deletes the two counts agree, so the metadata answer stands
+		 * and expire still reads nothing. Only a group with recorded NULLs AND
+		 * deletes is ambiguous, and only that group is looked at.
+		 */
+		if (z->nullCount > 0)
+		{
+			if (!anyDeletes || group_has_live_null(rel, rg, attno))
+				continue;
+		}
+
 		cur = (char *) z->maximum;
 		maxv = PgColumnarDecodeValue(att, &cur, z->maximum + z->maximumLen,
 									 CurrentMemoryContext);
@@ -2173,6 +2307,7 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 										   att->attcollation, maxv, cutoff));
 		if (c < 0)
 		{
+			PgColumnarVMClearForRowRange(rel, rg->firstRowNumber, rg->rowCount);
 			PgColumnarRetireGroup(storageId, rg->groupNumber);
 			retired++;
 		}
@@ -2182,6 +2317,47 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 	table_close(rel, NoLock);
 
 	PG_RETURN_INT64(retired);
+}
+
+/*
+ * group_has_live_null
+ *		Does any LIVE row of this group hold a NULL in the retention column?
+ *
+ * The zone map's nullCount is recorded at WRITE time and is never revised, so it
+ * still counts rows that a later DELETE marked. It answers "were any NULLs ever
+ * written here", which is not the question expire has to ask.
+ *
+ * Nothing in the metadata says WHICH rows were null, so when the group has both
+ * recorded NULLs and deletes the only way to tell is to look. This reads one
+ * column of one group through the ordinary reader, which merges the delete
+ * vector, so every row it yields is live.
+ */
+static bool
+group_has_live_null(Relation rel, NativeRowGroupMetadata *rg, AttrNumber attno)
+{
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	Datum	   *values = palloc(sizeof(Datum) * tupdesc->natts);
+	bool	   *isnull = palloc(sizeof(bool) * tupdesc->natts);
+	PgColumnarReadState *rs;
+	uint64		rowNumber;
+	bool		found = false;
+
+	rs = PgColumnarBeginRead(rel, GetActiveSnapshot(), NULL, NULL, 0, NULL);
+	PgColumnarReadRestrictToGroups(rs, &rg->groupNumber, 1);
+	while (PgColumnarReadNextRow(rs, values, isnull, &rowNumber))
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (isnull[attno - 1])
+		{
+			found = true;
+			break;
+		}
+	}
+	PgColumnarEndRead(rs);
+
+	pfree(values);
+	pfree(isnull);
+	return found;
 }
 
 Datum
