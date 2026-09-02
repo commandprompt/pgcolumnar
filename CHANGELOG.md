@@ -78,6 +78,23 @@ true until the next version shipped.
   the column type. A file whose type is not temporal is unaffected, so importing
   a plain `int64` file into a `timestamp` column still works.
 
+- `TABLESAMPLE` on a columnar table is refused rather than silently ignored
+  (#866).
+
+  The AM's sample callbacks have always raised `0A000`, and
+  `docs/limitations.md` has always said so. The planner hooks never let a query
+  reach them: `set_rel_pathlist_hook` added a custom scan in place of the Sample
+  Scan, and the vectorized aggregate paths did the same for an aggregate. The
+  sample was then not applied at all. Measured on 10,000 rows with a heap mirror
+  as the oracle: `TABLESAMPLE BERNOULLI (10)` returned 1030 rows from the heap
+  table and **all 10,000** from the columnar one, and `sum(id)` came back as the
+  whole table's sum rather than a sample's. `SYSTEM` behaved the same way.
+
+  A wrong answer is worse than a refusal, and the refusal is the documented
+  behaviour. All three hooks that read the range-table entry now decline when
+  `rte->tablesample` is set, so the query reaches the callbacks and raises. An
+  unsampled query on the same table still takes the custom scan.
+
 - A shebang and the execute bit go together, and every directory that documents
   a command is swept (#856). Two things were left over from #852.
 
