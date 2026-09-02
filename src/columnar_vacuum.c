@@ -2210,6 +2210,29 @@ pgcolumnar_expire(PG_FUNCTION_ARGS)
 	 * keeps its metadata-only path and reads nothing at all -- which is what it
 	 * promises. Only a table that has deletes can have a stale nullCount, and
 	 * only groups in such a table are looked at.
+	 *
+	 * This is COARSE on purpose, and the cost is recorded here so that changing
+	 * it later is a decision rather than a rediscovery. A per-group deleted
+	 * count would skip the read for a null-bearing group carrying no deletes;
+	 * this probe makes one delete anywhere in the storage send every such group
+	 * down the read path. Measured on PG 17.10, 200,000 rows at
+	 * stripe_row_limit 10000, both arms retiring all 20 groups so they differ
+	 * only in the path:
+	 *
+	 *     read path      16 ms   11 ms   11 ms
+	 *     metadata path    1 ms    2 ms    3 ms
+	 *
+	 * about +0.5 ms per row group. An independent run at 40 groups gave +0.3 ms
+	 * per group, so the figure is the right order and not exact. NEITHER
+	 * transfers to the shipped stripe_row_limit of 150000, where a group holds
+	 * fifteen times these rows; nobody has measured it there.
+	 *
+	 * It is kept because of what kind of path this is. relation_estimate_size
+	 * runs on every plan of every query, and a per-group fold there was worth
+	 * removing. expire is a maintenance function called by name, where a few
+	 * milliseconds is a different class of problem -- and the per-group count is
+	 * only exposed in a header by a separate PR, so using it would couple this
+	 * fix to that one landing first.
 	 */
 	anyDeletes = PgColumnarStorageHasDeleteVector(storageId, GetActiveSnapshot());
 
