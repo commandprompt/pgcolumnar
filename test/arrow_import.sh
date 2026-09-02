@@ -126,6 +126,121 @@ check "non-finite imported as null" "$nulls" "1"
 keep="$(q "SELECT count(*) FROM ri_nf2 WHERE id=2 AND dt='2020-01-01' AND num=1.25;")"
 check "finite row preserved" "$keep" "1"
 
+# --- 3b. documented lossy mapping: nanosecond -> microsecond, and it is REPORTED
+#
+# PostgreSQL timestamps and times are int64 MICROSECONDS; Arrow parameterises the
+# unit in the type. Of the four Arrow units, second, millisecond and microsecond
+# all widen or match exactly, so only nanosecond can lose anything -- and only for
+# values that are not already on a microsecond boundary. A pandas datetime64[ns]
+# column built from second- or millisecond-resolution data is nanosecond-TYPED and
+# entirely lossless to convert.
+#
+# The contract is: never refuse over this. Narrow it, keep every row, and say how
+# many values actually lost digits. Silence would make an import that changed the
+# data indistinguishable from one that did not -- and truncation does more than
+# reduce precision, it can make distinct rows EQUAL, which is what a later UNIQUE
+# violation would be reporting without explaining.
+#
+# The two controls are the point of the section: an ns-typed file whose values are
+# all on a microsecond boundary must report NOTHING, and a microsecond file must
+# report nothing, or the counter is measuring the unit rather than the loss.
+if [ "$have_pyarrow" = 1 ]; then
+	echo "-- nanosecond narrowing is reported, never refused"
+	psql_c() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -At -c "$1" 2>&1; }
+
+	NSLOSSY="$PGC_WORKDIR/ns_lossy.arrows"
+	NSEXACT="$PGC_WORKDIR/ns_exact.arrows"
+	USPLAIN="$PGC_WORKDIR/us_plain.arrows"
+	NSDEEP="$PGC_WORKDIR/ns_deep.arrows"
+	python3 - "$NSLOSSY" "$NSEXACT" "$USPLAIN" "$NSDEEP" <<'PY'
+import sys, pyarrow as pa, pyarrow.ipc as ipc
+S2000 = 946684800
+def w(path, a, b):
+    t = pa.table({'ts': a, 'ts2': b})
+    with ipc.new_stream(pa.OSFile(path, 'wb'), t.schema) as o:
+        o.write_table(t)
+# TWO temporal columns over four rows, so the number of VALUES that lose digits
+# (8) differs from the number of ROWS (4). With one column the two coincide and
+# an arm cannot tell which one the message is reporting.
+def ns(off):
+    return pa.array([(S2000 + i) * 10**9 + off for i in range(4)], pa.timestamp('ns'))
+# every value carries 123ns past a microsecond boundary: all EIGHT truncate
+w(sys.argv[1], ns(123), ns(123))
+# nanosecond-TYPED but microsecond-exact: nothing is lost, nothing to report
+w(sys.argv[2], ns(0), ns(0))
+# a different unit entirely: the counter must not fire on it
+us = lambda: pa.array([(S2000 + i) * 10**6 for i in range(4)], pa.timestamp('us'))
+w(sys.argv[3], us(), us())
+# The counter is reached from TWO call sites -- the time arm and the timestamp
+# arm -- and is threaded through the list and struct recursion. A file with only
+# a top-level timestamp column leaves the other three paths unmeasured: passing
+# NULL at the time site, or dropping the counter from the nested recursion,
+# would not move a single arm above. This file covers them.
+#   time64[ns]                  4 values, all 123ns past a boundary
+#   list<timestamp[ns]> x2      8 values, likewise
+#                              12 total
+NOON = 12 * 3600
+tm = pa.array([(NOON + i) * 10**9 + 123 for i in range(4)], pa.time64('ns'))
+lst = pa.array([[(S2000 + i) * 10**9 + 123, (S2000 + i + 1) * 10**9 + 123]
+                for i in range(4)], pa.list_(pa.timestamp('ns')))
+deep = pa.table({'tm': tm, 'lst': lst})
+with ipc.new_stream(pa.OSFile(sys.argv[4], 'wb'), deep.schema) as o:
+    o.write_table(deep)
+PY
+
+	psql_run "CREATE TABLE ri_nsl (ts timestamp, ts2 timestamp) USING pgcolumnar;"
+	psql_run "CREATE TABLE ri_nse (ts timestamp, ts2 timestamp) USING pgcolumnar;"
+	psql_run "CREATE TABLE ri_usp (ts timestamp, ts2 timestamp) USING pgcolumnar;"
+
+	nsl_out="$(psql_c "SELECT pgcolumnar.import_arrow('ri_nsl', '$NSLOSSY');")"
+	nse_out="$(psql_c "SELECT pgcolumnar.import_arrow('ri_nse', '$NSEXACT');")"
+	usp_out="$(psql_c "SELECT pgcolumnar.import_arrow('ri_usp', '$USPLAIN');")"
+
+	# THE CONTRACT: not one row refused, on any of the three.
+	check "a lossy nanosecond file imports every row" \
+		"$(q "SELECT count(*) FROM ri_nsl;")" "4"
+	check "so does a microsecond-exact nanosecond file" \
+		"$(q "SELECT count(*) FROM ri_nse;")" "4"
+	check "and a microsecond file" \
+		"$(q "SELECT count(*) FROM ri_usp;")" "4"
+
+	# THE ARM: the loss is counted and reported, once, with the number -- and the
+	# number is the count of VALUES (8), not of rows (4). The fixture has two
+	# temporal columns precisely so those two differ: with one column they
+	# coincide, and an arm matching "4" is satisfied by either, which is how an
+	# earlier revision of this suite passed a build whose counter reported the
+	# wrong population entirely.
+	check "the narrowing reports the number of VALUES that lost digits, not rows" \
+		"$(printf '%s' "$nsl_out" | grep -c 'columnar.import_arrow: 8 values lost sub-microsecond precision')" "1"
+	check "and does not report the row count instead" \
+		"$(printf '%s' "$nsl_out" | grep -c 'import_arrow: 4 values lost')" "0"
+
+	# The other three paths that reach the counter. Without this arm, passing
+	# NULL for nsTrunc at the time call site, or dropping it from the list or
+	# struct recursion, leaves every arm above green.
+	psql_run "CREATE TABLE ri_nsd (tm time, lst timestamp[]) USING pgcolumnar;"
+	nsd_out="$(psql_c "SELECT pgcolumnar.import_arrow('ri_nsd', '$NSDEEP');")"
+	check "a time64 column and a nested list are counted too, not just a top-level timestamp" \
+		"$(printf '%s' "$nsd_out" | grep -c 'columnar.import_arrow: 12 values lost sub-microsecond precision')" "1"
+	check "and that file imports every row as well" \
+		"$(q "SELECT count(*) FROM ri_nsd;")" "4"
+
+	# THE CONTROLS: no report when nothing was lost.
+	check "control: an ns file on microsecond boundaries reports nothing" \
+		"$(printf '%s' "$nse_out" | grep -ci 'sub-microsecond')" "0"
+	check "control: a microsecond file reports nothing" \
+		"$(printf '%s' "$usp_out" | grep -ci 'sub-microsecond')" "0"
+
+	# The conversion itself is unchanged: floor to the microsecond, not rounded
+	# and not refused. 123ns past the boundary lands ON the boundary.
+	check "the narrowed values are floored to the microsecond" \
+		"$(q "SELECT string_agg(ts::text, ',' ORDER BY ts) FROM ri_nsl;")" \
+		"2000-01-01 00:00:00,2000-01-01 00:00:01,2000-01-01 00:00:02,2000-01-01 00:00:03"
+else
+	echo "-- pyarrow not available; skipping nanosecond narrowing checks"
+fi
+
 # --- 4. error cases ---------------------------------------------------------
 echo "-- argument validation"
 psql_run "CREATE TABLE ri_heap (a bigint, b float8, c text) USING heap;"
