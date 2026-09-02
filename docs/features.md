@@ -97,8 +97,10 @@ coverage.
   `pgcolumnar.add_projection(table, name, columns, sort_key)` declares an extra
   physical copy of a subset of the columns. That copy has its own sort order. It
   shares the row identity of the table. Every insert fans
-  out to each projection. A projection stored sorted has tight per-chunk minimum
-  and maximum ranges.
+  out to each projection. So does every update, because an update writes a new
+  row version with a new row number. A delete needs no fan-out, because the base
+  delete vector hides the old row number from projection scans. A projection
+  stored sorted has tight per-chunk minimum and maximum ranges.
 - The planner scans a projection instead of the base table when it covers the
   query's columns and its leading sort column is restricted. `EXPLAIN` shows
   `Columnar Projection: <name>`. Deletes and MVCC visibility come from the base,
