@@ -42,6 +42,10 @@ true until the next version shipped.
   sub-microsecond digits are counted. The remainder is not extra work:
   `arrow_floordiv` already computes it to decide the rounding direction.
 
+  The counter is reached from the time arm as well as the timestamp arm, and is
+  threaded through the list and struct recursion, so a nested `timestamp[]` and a
+  `time64[ns]` column are counted the same way.
+
   **Nothing is refused.** `NOTICE`, not `WARNING` or `ERROR`: a bulk load must
   not fail on the last row of a large file for a conversion the caller may have
   intended. Out-of-range values are still refused with `22008`, unchanged.

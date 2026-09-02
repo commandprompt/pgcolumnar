@@ -152,7 +152,8 @@ if [ "$have_pyarrow" = 1 ]; then
 	NSLOSSY="$PGC_WORKDIR/ns_lossy.arrows"
 	NSEXACT="$PGC_WORKDIR/ns_exact.arrows"
 	USPLAIN="$PGC_WORKDIR/us_plain.arrows"
-	python3 - "$NSLOSSY" "$NSEXACT" "$USPLAIN" <<'PY'
+	NSDEEP="$PGC_WORKDIR/ns_deep.arrows"
+	python3 - "$NSLOSSY" "$NSEXACT" "$USPLAIN" "$NSDEEP" <<'PY'
 import sys, pyarrow as pa, pyarrow.ipc as ipc
 S2000 = 946684800
 def w(path, a, b):
@@ -171,6 +172,21 @@ w(sys.argv[2], ns(0), ns(0))
 # a different unit entirely: the counter must not fire on it
 us = lambda: pa.array([(S2000 + i) * 10**6 for i in range(4)], pa.timestamp('us'))
 w(sys.argv[3], us(), us())
+# The counter is reached from TWO call sites -- the time arm and the timestamp
+# arm -- and is threaded through the list and struct recursion. A file with only
+# a top-level timestamp column leaves the other three paths unmeasured: passing
+# NULL at the time site, or dropping the counter from the nested recursion,
+# would not move a single arm above. This file covers them.
+#   time64[ns]                  4 values, all 123ns past a boundary
+#   list<timestamp[ns]> x2      8 values, likewise
+#                              12 total
+NOON = 12 * 3600
+tm = pa.array([(NOON + i) * 10**9 + 123 for i in range(4)], pa.time64('ns'))
+lst = pa.array([[(S2000 + i) * 10**9 + 123, (S2000 + i + 1) * 10**9 + 123]
+                for i in range(4)], pa.list_(pa.timestamp('ns')))
+deep = pa.table({'tm': tm, 'lst': lst})
+with ipc.new_stream(pa.OSFile(sys.argv[4], 'wb'), deep.schema) as o:
+    o.write_table(deep)
 PY
 
 	psql_run "CREATE TABLE ri_nsl (ts timestamp, ts2 timestamp) USING pgcolumnar;"
@@ -199,6 +215,16 @@ PY
 		"$(printf '%s' "$nsl_out" | grep -c 'columnar.import_arrow: 8 values lost sub-microsecond precision')" "1"
 	check "and does not report the row count instead" \
 		"$(printf '%s' "$nsl_out" | grep -c 'import_arrow: 4 values lost')" "0"
+
+	# The other three paths that reach the counter. Without this arm, passing
+	# NULL for nsTrunc at the time call site, or dropping it from the list or
+	# struct recursion, leaves every arm above green.
+	psql_run "CREATE TABLE ri_nsd (tm time, lst timestamp[]) USING pgcolumnar;"
+	nsd_out="$(psql_c "SELECT pgcolumnar.import_arrow('ri_nsd', '$NSDEEP');")"
+	check "a time64 column and a nested list are counted too, not just a top-level timestamp" \
+		"$(printf '%s' "$nsd_out" | grep -c 'columnar.import_arrow: 12 values lost sub-microsecond precision')" "1"
+	check "and that file imports every row as well" \
+		"$(q "SELECT count(*) FROM ri_nsd;")" "4"
 
 	# THE CONTROLS: no report when nothing was lost.
 	check "control: an ns file on microsecond boundaries reports nothing" \
