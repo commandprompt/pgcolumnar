@@ -35,6 +35,36 @@ true until the next version shipped.
 
 ### Fixed
 
+- `DROP` after `ALTER TABLE ... SET ACCESS METHOD heap` now takes the
+  relid-keyed catalog rows with it, and the hook that does it stays out of the
+  way in databases that have no extension.
+
+  **Two catalogs are keyed by relid rather than by storage id.**
+  `pgcolumnar.options` and `pgcolumnar.projection_declaration` survive the
+  rewrite onto heap storage, which drops only the storage-id catalogs. The drop
+  hook then looked at the access method, saw heap, and returned before touching
+  them. `config_dump` emits a bare oid for a relid that no longer resolves, and
+  `rebuild_projections()` aborts on an orphan declaration, taking every other
+  table in the database with it. That is the blast radius #304 closed for a
+  plain `DROP` of a still-columnar table, reached instead through access-method
+  conversion.
+
+  **The hook runs in every database of the cluster, because the library is
+  preloaded rather than loaded by `CREATE EXTENSION`.** So it must reach the
+  columnar catalogs only where they exist. It now gates on
+  `pgcolumnar.options` resolving, not on the schema: `DROP EXTENSION` leaves the
+  schema behind and takes its tables, so a schema test passes in exactly the
+  case where the catalogs have gone.
+
+  It also skips the extension's own member relations rather than everything in
+  the extension's schema. A user table that merely lives in `pgcolumnar` is not
+  a member, and it gets cleaned up like any other.
+
+  This matters beyond `DROP TABLE`. Every table rewrite drops a transient
+  relation through the same hook, so `VACUUM FULL`, `CLUSTER`,
+  `ALTER TABLE ... ALTER COLUMN TYPE` and `CREATE MATERIALIZED VIEW` take the
+  path too, and `vacuumdb --full --all` visits every database in the cluster.
+
 - `pgcolumnar.expire()` no longer drops live rows, and every path that renumbers
   live rows now clears the visibility map (#403).
 

@@ -31,6 +31,7 @@
 #include "catalog/pg_class.h"
 #include "catalog/storage.h"
 #include "commands/defrem.h"
+#include "commands/extension.h"
 #include "commands/vacuum.h"
 #include "executor/executor.h"
 #include "executor/tuptable.h"
@@ -2627,11 +2628,46 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 		 * as ordinary relations, and opening options or projection_declaration
 		 * while they are themselves being dropped would fail.
 		 */
-		if (rel->rd_rel->relnamespace !=
-			get_namespace_oid(COLUMNAR_SCHEMA_NAME, true))
 		{
-			PgColumnarDeleteOptions(objectId);
-			PgColumnarDeleteProjectionDeclarationsForRel(objectId);
+			Oid			columnarNsp = get_namespace_oid(COLUMNAR_SCHEMA_NAME, true);
+			Oid			optionsOid = OidIsValid(columnarNsp) ?
+				get_relname_relid("options", columnarNsp) : InvalidOid;
+			Oid			extOid = get_extension_oid("pgcolumnar", true);
+
+			/*
+			 * This hook is armed in EVERY database of the cluster, because the
+			 * library is preloaded rather than loaded by CREATE EXTENSION. So it
+			 * fires in a database where the extension was never installed and in
+			 * one where it has been dropped. PgColumnarDeleteOptions opens the
+			 * catalog through get_namespace_oid(..., false), which ERRORs there,
+			 * and an ERROR raised in an object-access hook aborts the DROP that
+			 * called it. That is not confined to DROP TABLE: every REWRITE drops
+			 * a transient pg_temp_<oid> through this hook, so VACUUM FULL,
+			 * CLUSTER, ALTER TABLE ... ALTER COLUMN TYPE and CREATE MATERIALIZED
+			 * VIEW take the same path.
+			 *
+			 * Gate on the OPTIONS TABLE resolving, not on the schema. DROP
+			 * EXTENSION leaves the schema behind and takes its tables, so a
+			 * schema test passes in exactly the case where the catalogs have
+			 * gone -- which is why the two failures read differently ("schema
+			 * pgcolumnar does not exist" where it was never installed,
+			 * "columnar metadata table pgcolumnar.options does not exist"
+			 * afterwards).
+			 *
+			 * Skip the extension's OWN MEMBERS rather than everything in its
+			 * schema. DROP EXTENSION drops those as ordinary relations, and
+			 * opening options while options is itself being dropped would fail.
+			 * A user table that merely lives in the pgcolumnar schema is not a
+			 * member, so it is still cleaned up -- which the schema test got
+			 * wrong, leaking a row per such table.
+			 */
+			if (OidIsValid(optionsOid) &&
+				(!OidIsValid(extOid) ||
+				 getExtensionOfObject(RelationRelationId, objectId) != extOid))
+			{
+				PgColumnarDeleteOptions(objectId);
+				PgColumnarDeleteProjectionDeclarationsForRel(objectId);
+			}
 		}
 
 		relation_close(rel, NoLock);
