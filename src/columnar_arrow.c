@@ -1505,8 +1505,22 @@ arrow_floordiv(int64 num, int64 den)
 	return q;
 }
 
+/*
+ * Scale an Arrow temporal value onto PostgreSQL's microseconds.
+ *
+ * Of the four Arrow units, second, millisecond and microsecond all widen or
+ * match, so only nanosecond can lose anything -- and only for a value that is
+ * not already on a microsecond boundary. A pandas datetime64[ns] column built
+ * from second- or millisecond-resolution data is nanosecond-TYPED and entirely
+ * lossless to convert, which is why the loss is counted per VALUE and not
+ * refused per TYPE.
+ *
+ * nsTrunc, when not NULL, is incremented once per value that actually lost
+ * digits. The remainder is not extra work: arrow_floordiv already computes it
+ * to decide the rounding direction.
+ */
 static bool
-arrow_scale_to_usecs(int unit, int64 v, int64 *out)
+arrow_scale_to_usecs(int unit, int64 v, int64 *out, int64 *nsTrunc)
 {
 	switch (unit)
 	{
@@ -1515,6 +1529,8 @@ arrow_scale_to_usecs(int unit, int64 v, int64 *out)
 		case ARROW_TU_MILLI:
 			return !pg_mul_s64_overflow(v, INT64CONST(1000), out);
 		case ARROW_TU_NANO:
+			if (nsTrunc != NULL && v % INT64CONST(1000) != 0)
+				(*nsTrunc)++;
 			*out = arrow_floordiv(v, INT64CONST(1000));
 			return true;
 		case ARROW_TU_MICRO:
@@ -1654,7 +1670,7 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
 
 static Datum
 imp_scalar_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
-			  const int64 *bufLen, int64 i)
+			  const int64 *bufLen, int64 i, int64 *nsTrunc)
 {
 	if (n->kind == A_BOOL)
 	{
@@ -1804,7 +1820,7 @@ imp_scalar_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
 					 * midnight for a malformed input.
 					 */
 					if (raw < INT64CONST(0) ||
-						!arrow_scale_to_usecs(n->srcUnit, raw, &us) ||
+						!arrow_scale_to_usecs(n->srcUnit, raw, &us, nsTrunc) ||
 						us > USECS_PER_DAY)
 						ereport(ERROR,
 								(errcode(ERRCODE_DATETIME_FIELD_OVERFLOW),
@@ -1819,7 +1835,7 @@ imp_scalar_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
 					int64		t;
 
 					memcpy(&raw, vp, 8);
-					if (!arrow_scale_to_usecs(n->srcUnit, raw, &us) ||
+					if (!arrow_scale_to_usecs(n->srcUnit, raw, &us, nsTrunc) ||
 						pg_sub_s64_overflow(us, PG_TO_UNIX_USECS, &t) ||
 						!IS_VALID_TIMESTAMP((Timestamp) t))
 						ereport(ERROR,
@@ -1859,7 +1875,7 @@ imp_scalar_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
 /* reconstruct a node's value at index i (recursively for list/struct) */
 static Datum
 imp_value_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
-			 const int64 *bufLen, int64 i, bool *isnull)
+			 const int64 *bufLen, int64 i, bool *isnull, int64 *nsTrunc)
 {
 	*isnull = imp_is_null(body, bufOff[n->validBuf], bufLen[n->validBuf], i);
 	if (*isnull)
@@ -1885,7 +1901,7 @@ imp_value_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
 		enulls = (nelem > 0) ? palloc(sizeof(bool) * nelem) : NULL;
 		for (k = 0; k < nelem; k++)
 			elems[k] = imp_value_at(&n->children[0], body, bufOff, bufLen,
-									start + k, &enulls[k]);
+									start + k, &enulls[k], nsTrunc);
 		dims[0] = nelem;
 		arr = construct_md_array(elems, enulls, 1, dims, lbs, n->elemtype,
 								 n->elemlen, n->elembyval, n->elemalign);
@@ -1907,12 +1923,13 @@ imp_value_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
 				fn[a] = true;
 				continue;
 			}
-			fv[a] = imp_value_at(&n->children[ci++], body, bufOff, bufLen, i, &fn[a]);
+			fv[a] = imp_value_at(&n->children[ci++], body, bufOff, bufLen, i,
+								 &fn[a], nsTrunc);
 		}
 		tup = heap_form_tuple(n->structDesc, fv, fn);
 		return HeapTupleGetDatum(tup);
 	}
-	return imp_scalar_at(n, body, bufOff, bufLen, i);
+	return imp_scalar_at(n, body, bufOff, bufLen, i, nsTrunc);
 }
 
 /*
@@ -2036,6 +2053,7 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	CommandId	cid;
 	MemoryContext rowCtx;
 	int64		total = 0;
+	int64		nsTrunc = 0;	/* values that lost sub-microsecond digits */
 	bool		sawSchema = false;
 	int			i;
 
@@ -2267,7 +2285,8 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 						bool		isnull;
 
 						slot->tts_values[i] = imp_value_at(&tops[i], body, bufOff,
-														   bufLen, r, &isnull);
+														   bufLen, r, &isnull,
+														   &nsTrunc);
 						slot->tts_isnull[i] = isnull;
 					}
 					ExecStoreVirtualTuple(slot);
@@ -2319,5 +2338,27 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	 * INSERT.
 	 */
 	table_close(rel, NoLock);
+
+	/*
+	 * Report the narrowing rather than refuse it. An import that changed the
+	 * data must not be indistinguishable from one that did not: truncation to
+	 * the microsecond can make rows that were distinct in the file EQUAL here,
+	 * so a later UNIQUE violation or a lost ORDER BY tie-break has its cause
+	 * stated where it was introduced instead of surfacing as a mystery.
+	 *
+	 * NOTICE, not WARNING or ERROR: nothing is malformed and nothing is
+	 * refused, and a bulk load must not die on the last row of a large file for
+	 * a conversion the caller may well have intended. Counted per VALUE, so a
+	 * nanosecond-TYPED file whose values all sit on microsecond boundaries --
+	 * which is what pandas produces from second- or millisecond-resolution data
+	 * -- says nothing at all.
+	 */
+	if (nsTrunc > 0)
+		ereport(NOTICE,
+				(errmsg("columnar.import_arrow: " INT64_FORMAT " of " INT64_FORMAT
+						" values lost sub-microsecond precision", nsTrunc, total),
+				 errdetail("PostgreSQL timestamps and times hold microseconds; this Arrow file declares nanoseconds."),
+				 errhint("Import the raw nanoseconds into a bigint column if the extra digits are significant.")));
+
 	PG_RETURN_INT64(total);
 }

@@ -18,6 +18,39 @@ true until the next version shipped.
 
 ### Added
 
+- A nanosecond Arrow import says how many values lost precision, and still
+  imports every row.
+
+  **`pgcolumnar.import_arrow` narrows nanoseconds to microseconds and always
+  did.** PostgreSQL timestamps and times are int64 microseconds; Arrow
+  parameterises the unit in the type. Of Arrow's four units, second,
+  millisecond and microsecond all widen or match exactly, so only nanosecond can
+  lose anything, and only for a value that is not already on a microsecond
+  boundary.
+
+  The narrowing was silent, and that is what changed. An import now ends with
+
+      NOTICE:  columnar.import_arrow: 5 of 10 values lost sub-microsecond precision
+      DETAIL:  PostgreSQL timestamps and times hold microseconds; this Arrow file
+               declares nanoseconds.
+      HINT:    Import the raw nanoseconds into a bigint column if the extra digits
+               are significant.
+
+  **Counted per value, not per type.** A pandas `datetime64[ns]` column built
+  from second- or millisecond-resolution data is nanosecond-TYPED and entirely
+  lossless to convert; it reports nothing. Only values that actually carried
+  sub-microsecond digits are counted. The remainder is not extra work:
+  `arrow_floordiv` already computes it to decide the rounding direction.
+
+  **Nothing is refused.** `NOTICE`, not `WARNING` or `ERROR`: a bulk load must
+  not fail on the last row of a large file for a conversion the caller may have
+  intended. Out-of-range values are still refused with `22008`, unchanged.
+
+  Truncation does more than reduce precision -- it can make rows that were
+  distinct in the file compare EQUAL here, so a `UNIQUE` violation or a lost
+  `ORDER BY` tie-break now has its cause stated at the point it was introduced
+  rather than surfacing later as a mystery.
+
 - The two visibility-map clears that no test held are now held (#877).
 
   **Three paths retire a row group and give its live rows new row numbers**, and

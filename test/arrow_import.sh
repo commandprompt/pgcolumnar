@@ -126,6 +126,82 @@ check "non-finite imported as null" "$nulls" "1"
 keep="$(q "SELECT count(*) FROM ri_nf2 WHERE id=2 AND dt='2020-01-01' AND num=1.25;")"
 check "finite row preserved" "$keep" "1"
 
+# --- 3b. documented lossy mapping: nanosecond -> microsecond, and it is REPORTED
+#
+# PostgreSQL timestamps and times are int64 MICROSECONDS; Arrow parameterises the
+# unit in the type. Of the four Arrow units, second, millisecond and microsecond
+# all widen or match exactly, so only nanosecond can lose anything -- and only for
+# values that are not already on a microsecond boundary. A pandas datetime64[ns]
+# column built from second- or millisecond-resolution data is nanosecond-TYPED and
+# entirely lossless to convert.
+#
+# The contract is: never refuse over this. Narrow it, keep every row, and say how
+# many values actually lost digits. Silence would make an import that changed the
+# data indistinguishable from one that did not -- and truncation does more than
+# reduce precision, it can make distinct rows EQUAL, which is what a later UNIQUE
+# violation would be reporting without explaining.
+#
+# The two controls are the point of the section: an ns-typed file whose values are
+# all on a microsecond boundary must report NOTHING, and a microsecond file must
+# report nothing, or the counter is measuring the unit rather than the loss.
+if [ "$have_pyarrow" = 1 ]; then
+	echo "-- nanosecond narrowing is reported, never refused"
+	psql_c() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -At -c "$1" 2>&1; }
+
+	NSLOSSY="$PGC_WORKDIR/ns_lossy.arrows"
+	NSEXACT="$PGC_WORKDIR/ns_exact.arrows"
+	USPLAIN="$PGC_WORKDIR/us_plain.arrows"
+	python3 - "$NSLOSSY" "$NSEXACT" "$USPLAIN" <<'PY'
+import sys, pyarrow as pa, pyarrow.ipc as ipc
+S2000 = 946684800
+def w(path, arr):
+    t = pa.table({'ts': arr})
+    with ipc.new_stream(pa.OSFile(path, 'wb'), t.schema) as o:
+        o.write_table(t)
+# every value carries 123ns past a microsecond boundary: all four truncate
+w(sys.argv[1], pa.array([(S2000 + i) * 10**9 + 123 for i in range(4)], pa.timestamp('ns')))
+# nanosecond-TYPED but microsecond-exact: nothing is lost, nothing to report
+w(sys.argv[2], pa.array([(S2000 + i) * 10**9 for i in range(4)], pa.timestamp('ns')))
+# a different unit entirely: the counter must not fire on it
+w(sys.argv[3], pa.array([(S2000 + i) * 10**6 for i in range(4)], pa.timestamp('us')))
+PY
+
+	psql_run "CREATE TABLE ri_nsl (ts timestamp) USING pgcolumnar;"
+	psql_run "CREATE TABLE ri_nse (ts timestamp) USING pgcolumnar;"
+	psql_run "CREATE TABLE ri_usp (ts timestamp) USING pgcolumnar;"
+
+	nsl_out="$(psql_c "SELECT pgcolumnar.import_arrow('ri_nsl', '$NSLOSSY');")"
+	nse_out="$(psql_c "SELECT pgcolumnar.import_arrow('ri_nse', '$NSEXACT');")"
+	usp_out="$(psql_c "SELECT pgcolumnar.import_arrow('ri_usp', '$USPLAIN');")"
+
+	# THE CONTRACT: not one row refused, on any of the three.
+	check "a lossy nanosecond file imports every row" \
+		"$(q "SELECT count(*) FROM ri_nsl;")" "4"
+	check "so does a microsecond-exact nanosecond file" \
+		"$(q "SELECT count(*) FROM ri_nse;")" "4"
+	check "and a microsecond file" \
+		"$(q "SELECT count(*) FROM ri_usp;")" "4"
+
+	# THE ARM: the loss is counted and reported, once, with the number.
+	check "the narrowing is reported, and names how many values lost digits" \
+		"$(printf '%s' "$nsl_out" | grep -c 'NOTICE.*4 .*sub-microsecond')" "1"
+
+	# THE CONTROLS: no report when nothing was lost.
+	check "control: an ns file on microsecond boundaries reports nothing" \
+		"$(printf '%s' "$nse_out" | grep -ci 'sub-microsecond')" "0"
+	check "control: a microsecond file reports nothing" \
+		"$(printf '%s' "$usp_out" | grep -ci 'sub-microsecond')" "0"
+
+	# The conversion itself is unchanged: floor to the microsecond, not rounded
+	# and not refused. 123ns past the boundary lands ON the boundary.
+	check "the narrowed values are floored to the microsecond" \
+		"$(q "SELECT string_agg(ts::text, ',' ORDER BY ts) FROM ri_nsl;")" \
+		"2000-01-01 00:00:00,2000-01-01 00:00:01,2000-01-01 00:00:02,2000-01-01 00:00:03"
+else
+	echo "-- pyarrow not available; skipping nanosecond narrowing checks"
+fi
+
 # --- 4. error cases ---------------------------------------------------------
 echo "-- argument validation"
 psql_run "CREATE TABLE ri_heap (a bigint, b float8, c text) USING heap;"
