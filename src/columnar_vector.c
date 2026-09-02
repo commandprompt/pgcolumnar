@@ -959,6 +959,8 @@ PgColumnarCreateUpperPaths(PlannerInfo *root, UpperRelationKind stage,
 	if (rte == NULL || rte->rtekind != RTE_RELATION ||
 		rte->relkind != RELKIND_RELATION)
 		return;
+	if (rte->tablesample != NULL)
+		return;
 	if (!OidIsValid(rte->relid) || !PgColumnarIsColumnarRelation(rte->relid))
 		return;
 	relid = rte->relid;
@@ -1780,6 +1782,8 @@ PgColumnarTryGroupAggPath(PlannerInfo *root, RelOptInfo *input_rel,
 	rte = root->simple_rte_array[input_rel->relid];
 	if (rte == NULL || rte->rtekind != RTE_RELATION ||
 		rte->relkind != RELKIND_RELATION)
+		return;
+	if (rte->tablesample != NULL)
 		return;
 	/*
 	 * A legacy inheritance parent is a plain RELKIND_RELATION with rte->inh set;
