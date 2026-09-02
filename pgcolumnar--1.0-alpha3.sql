@@ -1788,6 +1788,43 @@ DECLARE
 	st_del  bigint;
 	ss      record;
 BEGIN
+	-- Validate both thresholds before reading anything (#860). Neither one was
+	-- checked, and this is the gate the autovacuum daemon consults BEFORE it ever
+	-- calls compact_rewrite, which does check its own. Four ways an unchecked
+	-- threshold goes wrong, none of which raises anything:
+	--   NaN   -- `fraction >= NaN` is false in IEEE, so nothing is ever due and
+	--            the work is suppressed silently and permanently.
+	--   > 1   -- the same outcome for any fraction: never due.
+	--   < 0   -- `fraction >= -1` is true for EVERY table, so the daemon believes
+	--            compaction is always due and rewrites every columnar table on
+	--            every pass. This is the dangerous direction: not a suppressed
+	--            report but a permanent, self-renewing rewrite.
+	--   NULL  -- the verdict is NULL, and the daemon reads a NULL verdict as
+	--            "not due" (SPI_getbinval isnull), so it is the NaN case again.
+	-- 0.0 and 1.0 are LEGAL and stay legal: 0.0 means "any decay at all is worth
+	-- acting on", 1.0 means "only a fully dead table". The bounds are inclusive,
+	-- matching pgcolumnar.compact_rewrite's own guard, and test/native_reclaim.sh
+	-- pins both endpoints as ACCEPTED so this guard cannot quietly become
+	-- over-broad, which is how a bounds check usually breaks.
+	--
+	-- The explicit NaN test is redundant with `> 1.0` today, because PostgreSQL
+	-- float8 ordering is not IEEE ordering: it sorts NaN above every other value.
+	-- It is written out anyway so the intent survives an edit to the bounds.
+	IF compact_due_fraction IS NULL
+	   OR compact_due_fraction = 'NaN'::float8
+	   OR compact_due_fraction < 0.0
+	   OR compact_due_fraction > 1.0 THEN
+		RAISE EXCEPTION 'compact_due_fraction must be a number between 0 and 1'
+			USING ERRCODE = 'invalid_parameter_value';
+	END IF;
+	IF recluster_due_fraction IS NULL
+	   OR recluster_due_fraction = 'NaN'::float8
+	   OR recluster_due_fraction < 0.0
+	   OR recluster_due_fraction > 1.0 THEN
+		RAISE EXCEPTION 'recluster_due_fraction must be a number between 0 and 1'
+			USING ERRCODE = 'invalid_parameter_value';
+	END IF;
+
 	-- stats() enforces require_caller_select(rel) before it returns a row, so a
 	-- caller without SELECT on rel is refused here rather than reported to.
 	SELECT COALESCE(sum(s.rowcount), 0), COALESCE(sum(s.deletedrows), 0)
@@ -1829,4 +1866,4 @@ END;
 $maintenance_due$;
 
 COMMENT ON FUNCTION pgcolumnar.maintenance_due(regclass, float8, float8)
-	IS 'report whether an online maintenance verb (compact_rewrite, recluster) is worth running, from table statistics alone; thresholds are parameters with defaults measured on #415; pure report, takes no lock and rewrites nothing (#415)';
+	IS 'report whether an online maintenance verb (compact_rewrite, recluster) is worth running, from table statistics alone; thresholds are parameters with defaults measured on #415, each required to be a number between 0 and 1 inclusive (#860); pure report, takes no lock and rewrites nothing (#415)';
