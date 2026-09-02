@@ -306,6 +306,29 @@ cases = {
     # a temporal carrier whose tag no other temporal target can hold
     'tu_t64_plain':  (pa.time64('us'),    NOON * 10**6),
 }
+# #881 fixtures. These go through pa.array rather than the raw-byte packing
+# below, because that builder derives its struct format from bit_width and can
+# express neither a uint64 above 2^63, nor a float, nor a 128-bit decimal.
+import decimal
+extra = {
+    'tu_u64': pa.array([2**63 + 5], pa.uint64()),
+    'tu_i32': pa.array([7], pa.int32()),
+    'tu_i64': pa.array([7], pa.int64()),
+    'tu_f32': pa.array([1.5], pa.float32()),
+    'tu_f64': pa.array([1.5], pa.float64()),
+    'tu_d102': pa.array([decimal.Decimal('1.25')], pa.decimal128(10, 2)),
+    'tu_d204': pa.array([decimal.Decimal('1.25')], pa.decimal128(20, 4)),
+    # A WIDER fixed-size binary is the case the buffer-length check cannot see:
+    # 32 bytes per row is more than uuid's 16, so the buffer is long enough and
+    # the reader would take the first half of each value.
+    'tu_fsb32': pa.array([b'0123456789abcdef0123456789abcdef'], pa.binary(32)),
+    'tu_fsb16': pa.array([b'0123456789abcdef'], pa.binary(16)),
+}
+for name, arr in extra.items():
+    tab = pa.table({'v': arr})
+    with ipc.new_stream(pa.OSFile(os.path.join(out, name + '.arrows'), 'wb'), tab.schema) as w:
+        w.write_table(tab)
+
 for name, (typ, v) in cases.items():
     raw = struct.pack('<i' if typ.bit_width == 32 else '<q', v)
     arr = pa.Array.from_buffers(typ, 1, [None, pa.py_buffer(raw)])
@@ -456,6 +479,52 @@ PY
 		"$(tu_import_state tu_ts_us date)" "42804"
 	check "a date64 file is refused for a timestamp column" \
 		"$(tu_import_state tu_date64 timestamp)" "42804"
+
+	# ---- the file's own Int/Float/Decimal parameters (#881) ----------------
+	#
+	# The stride, the sign and the scale all came from the TARGET column, so a
+	# file that declared something else was decoded as though it had not:
+	#
+	#     uint64 2^63+5      into bigint          -> -9223372036854775803
+	#     int64  1,2,3,4     into int             -> 0,0,1,2
+	#     decimal(10,2) 1.25 into numeric(20,4)   -> 0.0125
+	#
+	# Every one imported without an error. They are refused now. The controls
+	# below are the matching files, which must still import, or the refusal is
+	# just "no Arrow file works".
+	check "a uint64 file is refused for bigint (#881)" \
+		"$(tu_import_state tu_u64 bigint)" "42804"
+	check "an int64 file is refused for a 4-byte int (#881)" \
+		"$(tu_import_state tu_i64 int)" "42804"
+	check "an int32 file is refused for bigint (#881)" \
+		"$(tu_import_state tu_i32 bigint)" "42804"
+	check "a float32 file is refused for float8 (#881)" \
+		"$(tu_import_state tu_f32 float8)" "42804"
+	check "control: a matching int64 file imports into bigint" \
+		"$(tu_import_state tu_i64 bigint)" "00000"
+	check "control: a matching int32 file imports into int" \
+		"$(tu_import_state tu_i32 int)" "00000"
+	check "control: a matching float64 file imports into float8" \
+		"$(tu_import_state tu_f64 float8)" "00000"
+	check "control: a matching float32 file imports into float4" \
+		"$(tu_import_state tu_f32 float4)" "00000"
+	# A NARROWER carrier is already caught by the buffer-length check, so it
+	# cannot tell this guard from its absence. A WIDER one can: the buffer is
+	# long enough and the reader would silently take the first 16 bytes.
+	check "a wider fixed-size binary is refused for uuid (#881)" \
+		"$(tu_import_state tu_fsb32 uuid)" "42804"
+	check "control: a 16-byte fixed-size binary imports into uuid" \
+		"$(tu_import_state tu_fsb16 uuid)" "00000"
+	check "a decimal at another scale is refused (#881)" \
+		"$(tu_import_state tu_d102 'numeric(20,4)')" "42804"
+	check "control: a matching decimal imports" \
+		"$(tu_import_state tu_d204 'numeric(20,4)')" "00000"
+
+	# A refusal must leave nothing behind: an arm that only reads the SQLSTATE
+	# would pass for a fix that errored after writing the row.
+	tu_import_state tu_u64 bigint >/dev/null
+	check "and a refused import leaves the target empty" \
+		"$(q "SELECT count(*) FROM tu_t;")" "0"
 
 	# A NON-temporal tag is still left alone: an int64 file keeps importing into
 	# a timestamp column as raw microseconds, exactly as it did before.

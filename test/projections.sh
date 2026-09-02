@@ -326,4 +326,83 @@ check "and it removed the orphan" \
 	"$(q "SELECT count(*) FROM pgcolumnar.projection_declaration WHERE name = 'ghost';")" "0"
 psql_run "DROP TABLE IF EXISTS od2;" >/dev/null 2>&1
 
+# ---------------------------------------------------------------------------
+# A projection created mid-transaction must receive the writes that follow it
+# (#875).
+#
+# PgColumnarProjectionFanoutRow builds the write state's projection-writer list
+# on first use and latches it -- INCLUDING when the list comes back empty. So a
+# write before add_projection() latches an empty list, add_projection() then
+# back-fills the rows that already existed, and every later write in that
+# transaction skips the projection with no error. The rows are in the base table
+# and absent from the projection, and a covering projection scan answers as if
+# they were never inserted.
+#
+# The leading write is the whole trigger, so the control is the same transaction
+# without it: that path already worked, and an arm that only ran the broken
+# shape could not tell a fix from a change that broke both.
+# ---------------------------------------------------------------------------
+echo "-- a projection added mid-transaction receives later writes (#875)"
+
+# This suite had no SQLSTATE helper; same form as test/export_sink.sh's. Assert
+# the code, not the message: "does not exist" is also what a typo in the table
+# name produces.
+proj_sqlstate() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
+\\set VERBOSITY sqlstate
+$1;
+SQLEOF
+}
+
+psql_run "CREATE TABLE nt (a int, c int) USING pgcolumnar;
+	  INSERT INTO nt SELECT g, g FROM generate_series(1, 100) g;"
+psql_run "BEGIN;
+	  INSERT INTO nt SELECT g, g FROM generate_series(101, 105) g;
+	  SELECT pgcolumnar.add_projection('nt', 'np', ARRAY['a','c'], ARRAY['c']);
+	  INSERT INTO nt SELECT g, g FROM generate_series(200, 210) g;
+	  COMMIT;"
+
+check "premise: the base table holds every committed row" \
+	"$(q "SELECT count(*) FROM nt;")" "116"
+check "a projection added after a write in the same transaction gets the later rows" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_projection('nt','np');")" "116"
+
+# Not just the count. A count alone is satisfied by a projection holding 116 of
+# the WRONG rows, so compare the sets: read_projection renders its columns
+# joined by '|', which is the idiom the phase-2 arms above use.
+check "and they are the right rows, not merely the right number" \
+	"$(pgc_set_hash "SELECT pgcolumnar.read_projection('nt','np')")" \
+	"$(pgc_set_hash "SELECT a::text||'|'||c::text FROM nt")"
+
+# The control: the same transaction with no leading write. This path was already
+# correct, and it must stay correct.
+psql_run "CREATE TABLE ct (a int, c int) USING pgcolumnar;
+	  INSERT INTO ct SELECT g, g FROM generate_series(1, 100) g;"
+psql_run "BEGIN;
+	  SELECT pgcolumnar.add_projection('ct', 'cp', ARRAY['a','c'], ARRAY['c']);
+	  INSERT INTO ct SELECT g, g FROM generate_series(200, 210) g;
+	  COMMIT;"
+check "control: with no write before add_projection the projection was always right" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_projection('ct','cp');")" "111"
+
+# The same latch in the other direction: a projection dropped mid-transaction
+# must stop receiving writes. Same cache, opposite sign.
+psql_run "CREATE TABLE dt (a int, c int) USING pgcolumnar;
+	  SELECT pgcolumnar.add_projection('dt', 'dp', ARRAY['a','c'], ARRAY['c']);
+	  INSERT INTO dt SELECT g, g FROM generate_series(1, 50) g;"
+psql_run "BEGIN;
+	  INSERT INTO dt SELECT g, g FROM generate_series(51, 55) g;
+	  SELECT pgcolumnar.drop_projection('dt', 'dp');
+	  INSERT INTO dt SELECT g, g FROM generate_series(200, 210) g;
+	  COMMIT;"
+check "premise: the drop really removed the projection" \
+	"$(q "SELECT count(*) FROM pgcolumnar.projection_declaration WHERE name = 'dp';")" "0"
+check "and the base table still took every row" \
+	"$(q "SELECT count(*) FROM dt;")" "66"
+# The arm: reading a dropped projection must fail as undefined, not return rows
+# written to a writer the cache was still holding.
+check "a projection dropped mid-transaction is gone, not still being written" \
+	"$(proj_sqlstate "SELECT pgcolumnar.read_projection('dt','dp')")" "42704"
+
 pgc_summary

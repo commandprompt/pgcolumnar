@@ -1347,6 +1347,7 @@ typedef struct ImpNode
 	Oid			typid;
 	int			width;			/* carrier bytes IN THE FILE, not in PostgreSQL */
 	int			scale;			/* decimal scale; not a temporal unit */
+	int			precision;		/* decimal precision; 0 when not a decimal */
 	int			srcUnit;		/* Arrow DateUnit/TimeUnit, -1 if the file said nothing */
 	int32		atttypmod;
 	bool		needsInput;
@@ -1430,6 +1431,7 @@ imp_build_node(ImpNode *n, Oid typid, int32 typmod, bool *ok)
 		}
 		n->width = width;
 		n->scale = scale;
+		n->precision = precision;
 		n->needsInput = (n->kind == A_UTF8);
 		if (n->needsInput)
 		{
@@ -1555,7 +1557,7 @@ arrow_scale_to_usecs(int unit, int64 v, int64 *out, int64 *nsTrunc)
  * file cannot drive it deeper than the column's own nesting.
  */
 static void
-imp_temporal_mismatch(const char *arrowtype, Oid typid)
+imp_field_mismatch(const char *arrowtype, Oid typid)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_DATATYPE_MISMATCH),
@@ -1599,7 +1601,7 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
 		{
 			case ARROW_TYPE_Date:
 				if (n->kind != A_DATE32)
-					imp_temporal_mismatch("a date", n->typid);
+					imp_field_mismatch("a date", n->typid);
 				pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
 				n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_DU_MILLI;
 				if (n->srcUnit != ARROW_DU_DAY && n->srcUnit != ARROW_DU_MILLI)
@@ -1611,7 +1613,7 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
 					int32		bits;
 
 					if (n->kind != A_TIME64)
-						imp_temporal_mismatch("a time", n->typid);
+						imp_field_mismatch("a time", n->typid);
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
 					n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_TU_MILLI;
 					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* bitWidth (i32) */
@@ -1633,9 +1635,98 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
 					n->width = bits / 8;
 					break;
 				}
+			case ARROW_TYPE_Int:
+				{
+					int32		bits;
+					bool		isSigned;
+
+					/*
+					 * Only when the target is the same FAMILY. A file whose tag
+					 * does not match the column's family at all -- an int64 read
+					 * into a timestamp as raw microseconds -- is long-standing
+					 * accepted behaviour with its own control in
+					 * test/arrow_import.sh, and #881 is about values corrupted
+					 * WITHIN a family, not about changing that.
+					 */
+					if (n->kind != A_INT16 && n->kind != A_INT32 &&
+						n->kind != A_INT64)
+						break;
+					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* bitWidth */
+					bits = pos ? fbr_i32(meta, metaLen, pos) : 0;
+					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* is_signed */
+					isSigned = pos ? (fbr_u8(meta, metaLen, pos) != 0) : false;
+
+					/*
+					 * The stride comes from the TARGET column, so a file whose
+					 * carrier is a different width is read at the wrong offsets:
+					 * int64 into int returned 0,0,1,2 for 1,2,3,4. And every
+					 * PostgreSQL integer is signed, so a uint64 carrying a value
+					 * above 2^63 reads as negative. Both were silent.
+					 */
+					if (bits != n->width * 8)
+						imp_field_mismatch("an integer of a different width",
+										   n->typid);
+					if (!isSigned)
+						imp_field_mismatch("an unsigned integer", n->typid);
+					break;
+				}
+			case ARROW_TYPE_FloatingPoint:
+				{
+					int16		prec;
+
+					if (n->kind != A_FLOAT32 && n->kind != A_FLOAT64)
+						break;		/* cross-family: see the Int case */
+					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* precision */
+					prec = pos ? fbr_i16(meta, metaLen, pos) : 0;
+					/* 0 HALF, 1 SINGLE, 2 DOUBLE; HALF has no PostgreSQL type */
+					if (prec != ((n->kind == A_FLOAT32) ? 1 : 2))
+						imp_field_mismatch("a float of a different width",
+										   n->typid);
+					break;
+				}
+			case ARROW_TYPE_FixedSizeBinary:
+				{
+					int32		bw;
+
+					if (n->kind != A_UUID)
+						break;		/* cross-family: see the Int case */
+					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* byteWidth */
+					bw = pos ? fbr_i32(meta, metaLen, pos) : 0;
+					if (bw != 16)
+						imp_field_mismatch("a fixed-size binary of another width",
+										   n->typid);
+					break;
+				}
+			case ARROW_TYPE_Decimal:
+				{
+					int32		fprec;
+					int32		fscale;
+
+					if (n->kind != A_DECIMAL128)
+						break;		/* cross-family: see the Int case */
+					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* precision */
+					fprec = pos ? fbr_i32(meta, metaLen, pos) : 0;
+					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* scale */
+					fscale = pos ? fbr_i32(meta, metaLen, pos) : 0;
+
+					/*
+					 * The unscaled integer is read as-is and the TARGET's scale
+					 * is then applied, so a file at another scale is wrong by a
+					 * power of ten: decimal128(10,2) into numeric(20,4) stored
+					 * 0.0125 for 1.25. Precision is checked too, because a file
+					 * that can hold more digits than the column can is not
+					 * representable even when the scales agree.
+					 */
+					if (fscale != n->scale)
+						imp_field_mismatch("a decimal at another scale", n->typid);
+					if (n->precision > 0 && fprec > n->precision)
+						imp_field_mismatch("a decimal of greater precision",
+										   n->typid);
+					break;
+				}
 			case ARROW_TYPE_Timestamp:
 				if (n->kind != A_TIMESTAMP && n->kind != A_TIMESTAMPTZ)
-					imp_temporal_mismatch("a timestamp", n->typid);
+					imp_field_mismatch("a timestamp", n->typid);
 				pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
 				n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_TU_SECOND;
 				if (n->srcUnit < ARROW_TU_SECOND || n->srcUnit > ARROW_TU_NANO)

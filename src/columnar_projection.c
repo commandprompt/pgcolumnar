@@ -264,6 +264,19 @@ pgcolumnar_add_projection(PG_FUNCTION_ARGS)
 										sortArr ? sortArr :
 										construct_empty_array(TEXTOID));
 
+	/*
+	 * An open write state on this relation cached its projection-writer list on
+	 * its first row and latched it, including when the list was empty because no
+	 * projection existed yet. The projection set has just changed, so drop that
+	 * cache: without this, every later write in the same transaction skips the
+	 * projection just created and does so silently (#875).
+	 *
+	 * After the back-fill, not before. The back-fill populates the projection
+	 * from the rows that already exist; resetting first would change what it
+	 * sees rather than what follows it.
+	 */
+	PgColumnarResetProjectionWritersForRelation(relid);
+
 	table_close(rel, ShareLock);
 	PG_RETURN_VOID();
 }
@@ -328,7 +341,12 @@ pgcolumnar_drop_projection(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("projection \"%s\" does not exist on \"%s\"",
-						projname, get_rel_name(relid))));
+						projname, get_rel_name(relid)),
+				 errhint("A rewrite -- TRUNCATE, vacuum, recluster -- mints a new "
+						 "storage id while the projection rows keep the old one, "
+						 "so a projection that is still declared can read as "
+						 "absent (#876). pgcolumnar.rebuild_projections() "
+						 "re-records them.")));
 	if (targetId == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -453,7 +471,12 @@ pgcolumnar_read_projection(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("projection \"%s\" does not exist on \"%s\"",
-						projname, get_rel_name(relid))));
+						projname, get_rel_name(relid)),
+				 errhint("A rewrite -- TRUNCATE, vacuum, recluster -- mints a new "
+						 "storage id while the projection rows keep the old one, "
+						 "so a projection that is still declared can read as "
+						 "absent (#876). pgcolumnar.rebuild_projections() "
+						 "re-records them.")));
 
 	ncols = proj->columnsLen;
 
@@ -639,7 +662,12 @@ pgcolumnar_reconstruct_via_projection(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("projection \"%s\" does not exist on \"%s\"",
-						projname, get_rel_name(relid))));
+						projname, get_rel_name(relid)),
+				 errhint("A rewrite -- TRUNCATE, vacuum, recluster -- mints a new "
+						 "storage id while the projection rows keep the old one, "
+						 "so a projection that is still declared can read as "
+						 "absent (#876). pgcolumnar.rebuild_projections() "
+						 "re-records them.")));
 
 	ncols = proj->columnsLen;
 
