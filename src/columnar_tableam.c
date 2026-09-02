@@ -815,7 +815,7 @@ pgcolumnar_relation_set_new_filelocator(Relation rel,
 	 */
 	oldsrel = RelationGetSmgr(rel);
 	if (smgrexists(oldsrel, MAIN_FORKNUM) &&
-		smgrnblocks(oldsrel, MAIN_FORKNUM) >= 2) /* metapage + reserved */
+		smgrnblocks(oldsrel, MAIN_FORKNUM) >= COLUMNAR_INITIALIZED_NBLOCKS)
 	{
 		pgcolumnar_delete_storage_tree(PgColumnarStorageId(rel));
 

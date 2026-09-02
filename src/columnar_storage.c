@@ -33,9 +33,12 @@
 #include "storage/read_stream.h"
 #endif
 
-/* the metapage struct lives right after the page header on block 0 */
-#define COLUMNAR_METAPAGE_BLOCKNO 0
-#define COLUMNAR_EMPTY_BLOCKNO 1
+/*
+ * COLUMNAR_METAPAGE_BLOCKNO, COLUMNAR_EMPTY_BLOCKNO and the derived
+ * COLUMNAR_INITIALIZED_NBLOCKS are in columnar_storage.h: the metapage struct
+ * lives right after the page header on block 0, and columnar_tableam.c needs
+ * the block count to recognise an already-initialised fork.
+ */
 #define PgColumnarMetapagePointer(page) ((PgColumnarMetapage *) PageGetContents(page))
 
 /*
