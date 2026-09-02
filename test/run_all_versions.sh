@@ -265,6 +265,7 @@ SUITES=(
 	stats_privilege
 	tablesample
 	temporal
+	truncate_cleanup
 	ttl_expire
 	ungrouped_vector_agg
 	unique_conc

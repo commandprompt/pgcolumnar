@@ -762,6 +762,31 @@ pgcolumnar_finish_bulk_insert(Relation rel, COLUMNAR_TABLE_OPTIONS options)
  * DDL callbacks
  * ------------------------------------------------------------------------- */
 
+/*
+ * pgcolumnar_delete_storage_tree
+ *		Drop catalog rows for one storage id and any projections hanging off it.
+ *		Options and projection declarations are keyed by relation OID and are
+ *		left to the caller: they still apply after a rewrite, and they must go
+ *		on DROP.
+ */
+static void
+pgcolumnar_delete_storage_tree(uint64 storageId)
+{
+	List	   *projs = PgColumnarListProjections(storageId);
+	ListCell   *lc;
+
+	foreach(lc, projs)
+	{
+		PgColumnarProjection *p = (PgColumnarProjection *) lfirst(lc);
+
+		if (p->projStorageId != storageId)
+			PgColumnarDeleteMetadata(p->projStorageId);
+		PgColumnarDeleteProjectionRow(storageId, p->projectionId);
+	}
+
+	PgColumnarDeleteMetadata(storageId);
+}
+
 static void
 pgcolumnar_relation_set_new_filelocator(Relation rel,
 									  const RelFileLocator *newrlocator,
@@ -770,6 +795,7 @@ pgcolumnar_relation_set_new_filelocator(Relation rel,
 									  MultiXactId *minmulti)
 {
 	SMgrRelation srel;
+	SMgrRelation oldsrel;
 	uint64		storageId;
 
 	*freezeXid = InvalidTransactionId;
@@ -779,6 +805,40 @@ pgcolumnar_relation_set_new_filelocator(Relation rel,
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("unlogged columnar tables are not supported")));
+
+	/*
+	 * CREATE TABLE calls this with no existing main fork. TRUNCATE and other
+	 * rewrites call it while the old fork is still attached, so the metapage
+	 * still names the storage id whose catalog rows would otherwise remain
+	 * after the new file is installed. DROP only deletes the current id, so
+	 * a TRUNCATE-then-DROP left every previous storage behind.
+	 */
+	oldsrel = RelationGetSmgr(rel);
+	if (smgrexists(oldsrel, MAIN_FORKNUM) &&
+		smgrnblocks(oldsrel, MAIN_FORKNUM) >= COLUMNAR_INITIALIZED_NBLOCKS)
+	{
+		pgcolumnar_delete_storage_tree(PgColumnarStorageId(rel));
+
+		/*
+		 * And drop the cached write state, which still names the storage id
+		 * whose rows were just deleted. Without this, a transaction that
+		 * writes, truncates and writes again COMMITS into storage nothing
+		 * reads: the second insert reuses the stale state, flushes into the
+		 * retired storage id, and the relation then reads the new one and
+		 * finds it empty.
+		 *
+		 * Before the delete above existed, the retired storage's catalog rows
+		 * survived and the stale flush collided with them on the primary key,
+		 * so the transaction ERRORed and rolled back. That collision was the
+		 * only thing making this safe, and deleting the rows removed it. A
+		 * loud failure became silent loss of committed data, which is why this
+		 * call belongs in the same branch rather than anywhere else.
+		 *
+		 * Forget rather than flush: the rows this state buffers are exactly the
+		 * rows the rewrite is discarding.
+		 */
+		PgColumnarForgetWriteStateForRelation(RelationGetRelid(rel));
+	}
 
 	srel = PgColumnarRelationCreateStorage(*newrlocator, persistence);
 	storageId = PgColumnarNextStorageId();
@@ -791,6 +851,16 @@ pgcolumnar_relation_nontransactional_truncate(Relation rel)
 	uint64		storageId = PgColumnarStorageId(rel);
 
 	PgColumnarDeleteMetadata(storageId);
+
+	/*
+	 * The same stale-write-state hazard as the rewrite path above, reached the
+	 * other way: ExecuteTruncateGuts calls heap_truncate_one_rel, and so this
+	 * callback, when the relation got its filelocator in the current
+	 * subtransaction. The metapage keeps its storage id here, but the buffered
+	 * rows are still the ones being truncated away.
+	 */
+	PgColumnarForgetWriteStateForRelation(RelationGetRelid(rel));
+
 	RelationTruncate(rel, 2);
 	PgColumnarResetMetapage(rel);
 }
@@ -2531,8 +2601,6 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 		if (rel->rd_tableam == &pgcolumnar_am_methods)
 		{
 			uint64		storageId = PgColumnarStorageId(rel);
-			List	   *projs = PgColumnarListProjections(storageId);
-			ListCell   *lc;
 
 			/*
 			 * A projection keeps its own storage, so dropping the table has to
@@ -2543,16 +2611,7 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 			 * drop. This is the same loop pgcolumnar_vacuum.c runs when it
 			 * rewrites into fresh storage.
 			 */
-			foreach(lc, projs)
-			{
-				PgColumnarProjection *p = (PgColumnarProjection *) lfirst(lc);
-
-				if (p->projStorageId != storageId)
-					PgColumnarDeleteMetadata(p->projStorageId);
-				PgColumnarDeleteProjectionRow(storageId, p->projectionId);
-			}
-
-			PgColumnarDeleteMetadata(storageId);
+			pgcolumnar_delete_storage_tree(storageId);
 			PgColumnarDeleteOptions(objectId);
 			/*
 			 * And the projection declarations, for the same reason and in the
