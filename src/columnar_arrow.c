@@ -2352,11 +2352,17 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	 * nanosecond-TYPED file whose values all sit on microsecond boundaries --
 	 * which is what pandas produces from second- or millisecond-resolution data
 	 * -- says nothing at all.
+	 *
+	 * No denominator. nsTrunc counts VALUES and total counts ROWS, so "N of M"
+	 * divides one population by another: three nanosecond columns over four rows
+	 * printed "12 of 4 values", both numbers true and the sentence joining them
+	 * false. A correct denominator would need a second counter for temporal
+	 * values converted, and the count alone is what the reader acts on.
 	 */
 	if (nsTrunc > 0)
 		ereport(NOTICE,
-				(errmsg("columnar.import_arrow: " INT64_FORMAT " of " INT64_FORMAT
-						" values lost sub-microsecond precision", nsTrunc, total),
+				(errmsg("columnar.import_arrow: " INT64_FORMAT
+						" values lost sub-microsecond precision", nsTrunc),
 				 errdetail("PostgreSQL timestamps and times hold microseconds; this Arrow file declares nanoseconds."),
 				 errhint("Import the raw nanoseconds into a bigint column if the extra digits are significant.")));
 

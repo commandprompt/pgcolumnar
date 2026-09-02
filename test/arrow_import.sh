@@ -155,21 +155,27 @@ if [ "$have_pyarrow" = 1 ]; then
 	python3 - "$NSLOSSY" "$NSEXACT" "$USPLAIN" <<'PY'
 import sys, pyarrow as pa, pyarrow.ipc as ipc
 S2000 = 946684800
-def w(path, arr):
-    t = pa.table({'ts': arr})
+def w(path, a, b):
+    t = pa.table({'ts': a, 'ts2': b})
     with ipc.new_stream(pa.OSFile(path, 'wb'), t.schema) as o:
         o.write_table(t)
-# every value carries 123ns past a microsecond boundary: all four truncate
-w(sys.argv[1], pa.array([(S2000 + i) * 10**9 + 123 for i in range(4)], pa.timestamp('ns')))
+# TWO temporal columns over four rows, so the number of VALUES that lose digits
+# (8) differs from the number of ROWS (4). With one column the two coincide and
+# an arm cannot tell which one the message is reporting.
+def ns(off):
+    return pa.array([(S2000 + i) * 10**9 + off for i in range(4)], pa.timestamp('ns'))
+# every value carries 123ns past a microsecond boundary: all EIGHT truncate
+w(sys.argv[1], ns(123), ns(123))
 # nanosecond-TYPED but microsecond-exact: nothing is lost, nothing to report
-w(sys.argv[2], pa.array([(S2000 + i) * 10**9 for i in range(4)], pa.timestamp('ns')))
+w(sys.argv[2], ns(0), ns(0))
 # a different unit entirely: the counter must not fire on it
-w(sys.argv[3], pa.array([(S2000 + i) * 10**6 for i in range(4)], pa.timestamp('us')))
+us = lambda: pa.array([(S2000 + i) * 10**6 for i in range(4)], pa.timestamp('us'))
+w(sys.argv[3], us(), us())
 PY
 
-	psql_run "CREATE TABLE ri_nsl (ts timestamp) USING pgcolumnar;"
-	psql_run "CREATE TABLE ri_nse (ts timestamp) USING pgcolumnar;"
-	psql_run "CREATE TABLE ri_usp (ts timestamp) USING pgcolumnar;"
+	psql_run "CREATE TABLE ri_nsl (ts timestamp, ts2 timestamp) USING pgcolumnar;"
+	psql_run "CREATE TABLE ri_nse (ts timestamp, ts2 timestamp) USING pgcolumnar;"
+	psql_run "CREATE TABLE ri_usp (ts timestamp, ts2 timestamp) USING pgcolumnar;"
 
 	nsl_out="$(psql_c "SELECT pgcolumnar.import_arrow('ri_nsl', '$NSLOSSY');")"
 	nse_out="$(psql_c "SELECT pgcolumnar.import_arrow('ri_nse', '$NSEXACT');")"
@@ -183,9 +189,16 @@ PY
 	check "and a microsecond file" \
 		"$(q "SELECT count(*) FROM ri_usp;")" "4"
 
-	# THE ARM: the loss is counted and reported, once, with the number.
-	check "the narrowing is reported, and names how many values lost digits" \
-		"$(printf '%s' "$nsl_out" | grep -c 'NOTICE.*4 .*sub-microsecond')" "1"
+	# THE ARM: the loss is counted and reported, once, with the number -- and the
+	# number is the count of VALUES (8), not of rows (4). The fixture has two
+	# temporal columns precisely so those two differ: with one column they
+	# coincide, and an arm matching "4" is satisfied by either, which is how an
+	# earlier revision of this suite passed a build whose counter reported the
+	# wrong population entirely.
+	check "the narrowing reports the number of VALUES that lost digits, not rows" \
+		"$(printf '%s' "$nsl_out" | grep -c 'columnar.import_arrow: 8 values lost sub-microsecond precision')" "1"
+	check "and does not report the row count instead" \
+		"$(printf '%s' "$nsl_out" | grep -c 'import_arrow: 4 values lost')" "0"
 
 	# THE CONTROLS: no report when nothing was lost.
 	check "control: an ns file on microsecond boundaries reports nothing" \

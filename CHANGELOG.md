@@ -30,7 +30,7 @@ true until the next version shipped.
 
   The narrowing was silent, and that is what changed. An import now ends with
 
-      NOTICE:  columnar.import_arrow: 5 of 10 values lost sub-microsecond precision
+      NOTICE:  columnar.import_arrow: 12 values lost sub-microsecond precision
       DETAIL:  PostgreSQL timestamps and times hold microseconds; this Arrow file
                declares nanoseconds.
       HINT:    Import the raw nanoseconds into a bigint column if the extra digits
