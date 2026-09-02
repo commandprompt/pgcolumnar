@@ -209,6 +209,33 @@ true until the next version shipped.
   function and a wrong-arity call (`42883`), a null table name (`22004`) and
   `1/0` (`22012`).
 
+- A parallel export refuses a destination too long to hold the names it generates
+  (#863).
+
+  **`pgcolumnar.parallel_export_parquet` checked the destination's length not at
+  all.** Worker paths cross shared memory in `MAXPGPATH` buffers and have a
+  generated name appended, and `snprintf` truncates rather than failing, so a long
+  destination produced short names and the export completed as though nothing had
+  happened.
+
+  Two distinct failures, both silent. A destination of 1000 bytes or more truncated
+  the part names themselves: the run wrote `part-0000.parqu` instead of
+  `part-0000.parquet`, stamped `_SUCCESS` beside it, and reported success for an
+  export `pgcolumnar.read_parquet` does not recognise. A destination of 994 to 999
+  bytes wrote correct part names but truncated the path that
+  `pexport_remove_outputs` composes for its cleanup scan -- `"%s/%s"` from the same
+  directory and the sink's in-flight `part-NNNN.parquet.tmp.<pid>`, which is 30
+  bytes past the directory with a seven-digit pid -- so the scan unlinked a
+  truncated path and left the temporary file behind.
+
+  The destination is now probed against the longest name the file constructs,
+  `"/part-%04d.parquet.tmp.%d"` at `INT_MAX` for both, which is 39 bytes past the
+  directory against the final part name's 24. Anything that does not fit is refused
+  with `54000` before the destination directory is created, because a truncated run
+  publishes a differently named object and still stamps `_SUCCESS` over it.
+
+  The sink itself was never at risk and is unchanged: `columnar_sink.c` builds its
+  temporary name with `psprintf`, which allocates.
 - A shebang and the execute bit go together, and every directory that documents
   a command is swept (#856). Two things were left over from #852.
 
