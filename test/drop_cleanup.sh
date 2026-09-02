@@ -36,10 +36,22 @@
 # this file is the one to run for that call site, which is not obvious from
 # either file's subject: alter_am_cleanup is named for SET ACCESS METHOD.
 #
-# Note the shape of the five. The first four are relative -- each compares a
-# snapshot against the previous one, so they cascade once the first leaks. Only
-# "no storage row refers to a missing relation" is absolute (got [25] want [0]),
-# and it is the one that would still redden if the baselines degraded together.
+# Note the shape of the five. Four of them re-capture `base` immediately before
+# their own work. Grep `base="$(snapshot)"` to find them, once per arm: a line
+# number cited here shifts every time this comment is edited, which is how the
+# first draft of this paragraph came to cite four lines that had moved.
+#
+# So each of the four measures the increment its own step adds rather than
+# inheriting an earlier failure. They do NOT cascade: a leak that has already
+# happened is absorbed into the next baseline. That is why all four redden
+# under the mutation instead of one reddening and three following -- every drop
+# leaks and each arm detects its own. The `want` values show it: each is the
+# previous `got`.
+#
+# The fifth, "no storage row refers to a missing relation", is absolute
+# (got [25] want [0]). It covers the case the other four cannot see by
+# construction: a STANDING leak that no single step increases gives every
+# relative arm a zero increment, so all four pass and only this one fires.
 #
 # Usage:  test/drop_cleanup.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
