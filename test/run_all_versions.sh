@@ -801,6 +801,75 @@ pgc_classify_suite_rc() {	# pgc_classify_suite_rc RC LOGFILE -> PASS|SKIP|INCOMP
 	fi
 }
 
+# Tally one suite's verdict into the per-major counters (#858).
+#
+# A function, not four branches in the middle of a loop, for the same reason
+# the classifier is one: the selftest evals THIS TEXT and drives it. #859's
+# regression was not in the classifier. The classifier returned INCOMPLETE
+# correctly and the CALLER threw the answer away into a write-only flag -- and
+# nothing could reach the caller, because the caller was a branch buried in a
+# loop that needs a suite list and a populated build directory to run at all.
+# Extracted, the whole chain is drivable end to end, which is what selftest 330
+# does.
+#
+# It writes the CALLER'S counters on purpose, and must never declare them
+# local. verfail, suites_ran, suites_skipped, suites_incomplete, results and
+# skipped_names belong to the per-major scope; a `local` on any of them here
+# would leave every count at zero while every arm that drives this function
+# still passed -- the same shape of defect as the write-only flag, and just as
+# invisible to a green run.
+pgc_tally_suite() {	# pgc_tally_suite NAME VERDICT LOGFILE
+	local _name="$1" _verdict="$2" _log="$3"
+	if [ "$_verdict" = PASS ]; then
+		echo "  PASS  $_name"
+		results+="$_name=PASS "
+		suites_ran=$((suites_ran + 1))
+	elif [ "$_verdict" = INCOMPLETE ]; then
+		echo "  INCOMPLETE  $_name (a check could not be evaluated)"
+		grep -E '^UNRUN' "$_log" | sed 's/^/      >> /'
+		results+="$_name=INCOMPLETE "
+		suites_ran=$((suites_ran + 1))
+		suites_incomplete=$((suites_incomplete + 1))
+		[ "$(pgc_verdict_fails_major "$_verdict")" = yes ] && verfail=1
+	elif [ "$_verdict" = SKIP ]; then
+		# Exit 66 is pgc_summary's third state: the suite ran no checks (#447).
+		# Not a pass, because it asserted nothing. Not a failure, because a
+		# major without the feature and a box without an optional dependency
+		# are both supported. Counted, so the total below can say so.
+		echo "  SKIP  $_name (ran no checks)"
+		results+="$_name=SKIP "
+		suites_skipped=$((suites_skipped + 1))
+		skipped_names="$skipped_names $_name"
+	else
+		echo "  FAIL  $_name"
+		# The failing check first, then the tail. A suite that prints a
+		# diagnostic and a server-log dump on failure pushes its own FAIL
+		# lines out of a 20-line tail, which is how an intermittent
+		# replication failure stayed unreadable across many matrices: the
+		# evidence was in the log and the summary showed everything but.
+		if grep -qE '^FAIL' "$_log"; then
+			grep -E '^FAIL' "$_log" | sed 's/^/      >> /'
+		fi
+		# 60, not 20: a suite that prints a failure diagnostic and a
+		# server-log dump needs more room than 20 lines, and truncating it
+		# is how the replication failures stayed unreadable.
+		tail -60 "$_log" | sed 's/^/      /'
+		results+="$_name=FAIL "
+		# A failed suite RAN. Counting only passes here made the tally
+		# contradict itself in the one case that matters. The five-major
+		# matrix reported
+		#
+		#     PG19  suites that ran: 121 of 122 (skipped: 0)
+		#
+		# with temporal failing: 121 + 0 is not 122, and the failing suite was
+		# in neither bucket of the count that exists to say what ran. Four
+		# majors hid it, because a tally only disagrees with itself once
+		# something actually fails.
+		suites_ran=$((suites_ran + 1))
+		verfail=1
+	fi
+}
+
 	skipped_names=""
 	# Reset, not a `set -u` guard. suites_ran and suites_skipped are zeroed
 	# unconditionally above; this line used to read ${suites_incomplete:-0},
@@ -811,54 +880,7 @@ pgc_classify_suite_rc() {	# pgc_classify_suite_rc RC LOGFILE -> PASS|SKIP|INCOMP
 	for s in "${SUITES[@]}"; do
 		_rc="$(cat "$builddir/${s}.rc" 2>/dev/null)"
 		_verdict="$(pgc_classify_suite_rc "$_rc" "$builddir/${s}.log")"
-		if [ "$_verdict" = PASS ]; then
-			echo "  PASS  $s"
-			results+="$s=PASS "
-			suites_ran=$((suites_ran + 1))
-		elif [ "$_verdict" = INCOMPLETE ]; then
-			echo "  INCOMPLETE  $s (a check could not be evaluated)"
-			grep -E '^UNRUN' "$builddir/${s}.log" | sed 's/^/      >> /'
-			results+="$s=INCOMPLETE "
-			suites_ran=$((suites_ran + 1))
-			suites_incomplete=$((suites_incomplete + 1))
-			[ "$(pgc_verdict_fails_major "$_verdict")" = yes ] && verfail=1
-		elif [ "$_verdict" = SKIP ]; then
-			# Exit 2 is pgc_summary's third state: the suite ran no checks (#447).
-			# Not a pass, because it asserted nothing. Not a failure, because a
-			# major without the feature and a box without an optional dependency
-			# are both supported. Counted, so the total below can say so.
-			echo "  SKIP  $s (ran no checks)"
-			results+="$s=SKIP "
-			suites_skipped=$((suites_skipped + 1))
-			skipped_names="$skipped_names $s"
-		else
-			echo "  FAIL  $s"
-			# The failing check first, then the tail. A suite that prints a
-			# diagnostic and a server-log dump on failure pushes its own FAIL
-			# lines out of a 20-line tail, which is how an intermittent
-			# replication failure stayed unreadable across many matrices: the
-			# evidence was in the log and the summary showed everything but.
-			if grep -qE '^FAIL' "$builddir/${s}.log"; then
-				grep -E '^FAIL' "$builddir/${s}.log" | sed 's/^/      >> /'
-			fi
-			# 60, not 20: a suite that prints a failure diagnostic and a
-			# server-log dump needs more room than 20 lines, and truncating it
-			# is how the replication failures stayed unreadable.
-			tail -60 "$builddir/${s}.log" | sed 's/^/      /'
-			results+="$s=FAIL "
-			# A failed suite RAN. Counting only passes here made the tally
-			# contradict itself in the one case that matters. The five-major
-			# matrix reported
-			#
-			#     PG19  suites that ran: 121 of 122 (skipped: 0)
-			#
-			# with temporal failing: 121 + 0 is not 122, and the failing suite was
-			# in neither bucket of the count that exists to say what ran. Four
-			# majors hid it, because a tally only disagrees with itself once
-			# something actually fails.
-			suites_ran=$((suites_ran + 1))
-			verfail=1
-		fi
+		pgc_tally_suite "$s" "$_verdict" "$builddir/${s}.log"
 	done
 
 	# How many suites actually asserted something, said out loud (#447).
