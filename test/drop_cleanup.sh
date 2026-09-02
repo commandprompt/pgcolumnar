@@ -20,6 +20,27 @@
 # rows are "mostly gone" would pass on a leak of one row per drop, which is
 # exactly the size of this one.
 #
+# WHICH CALL SITE THESE ARMS HOLD, for whoever is picking a gate list after
+# touching the object-access hook. Remove the DROP hook's call to
+# pgcolumnar_delete_storage_tree() -- src/columnar_tableam.c, in the
+# OAT_DROP arm of pgcolumnar_object_access(), :2615 as of 815dd0a -- and five
+# of these eight arms redden, measured on pg18a:
+#
+#   a plain table leaves nothing behind
+#   dropping it takes the projection's metadata too
+#   two projections, one dropped by hand, leave nothing
+#   ten create-and-drop cycles leave nothing
+#   no storage row refers to a missing relation
+#
+# The same mutation reddens four of test/alter_am_cleanup.sh's forty-five. So
+# this file is the one to run for that call site, which is not obvious from
+# either file's subject: alter_am_cleanup is named for SET ACCESS METHOD.
+#
+# Note the shape of the five. The first four are relative -- each compares a
+# snapshot against the previous one, so they cascade once the first leaks. Only
+# "no storage row refers to a missing relation" is absolute (got [25] want [0]),
+# and it is the one that would still redden if the baselines degraded together.
+#
 # Usage:  test/drop_cleanup.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
