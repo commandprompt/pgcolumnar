@@ -35,6 +35,36 @@ true until the next version shipped.
 
 ### Fixed
 
+- The matrix runner counts incomplete suites per major, not per run, and the
+  INCOMPLETE dispatch is now testable end to end (#858).
+
+  **`suites_incomplete=${suites_incomplete:-0}` is a `set -u` guard, not an
+  initialiser.** It keeps whatever the previous major left, while `suites_ran`
+  and `suites_skipped` on the lines above it are zeroed unconditionally, and
+  `verfail` is reset per major too. On the five-major matrix the count
+  accumulated: PG16 would report PG15's incomplete suites in its own summary
+  line and still print `PASS`, because the one number in a per-major report
+  belonged to the whole run.
+
+  Latent today. `check_unrunnable` has no production call site, so no real suite
+  can reach the INCOMPLETE state in a matrix run yet.
+
+  **The tally is now a function, `pgc_tally_suite`, rather than four branches in
+  the middle of the per-major loop.** The regression #859 shipped was not in the
+  classifier: it returned INCOMPLETE correctly and the caller threw the answer
+  away into a write-only flag. Nothing could reach the caller, because a loop
+  that needs a suite list and a populated build directory is not something a
+  selftest can drive. Extracted, the whole chain is drivable, and
+  `test/selftest/330-the-incomplete-path-must-run-whole.sh` drives it: a real
+  suite exits 67, the runner's own classifier reads the files that suite wrote,
+  the runner's own tally consumes the classifier's verdict, the runner's own
+  collect loop runs over both fixtures, and the runner's own major-verdict
+  branch decides PASS or FAIL.
+
+  The arm that earns the file reads the loop's own text. Every behavioural arm
+  stays green if the runner defines the tally and never calls it, which is the
+  defect class the file exists to prevent.
+
 - The planner estimate counts live rows, and reads the delete count in one
   catalog scan rather than one per row group.
 
