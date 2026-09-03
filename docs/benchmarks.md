@@ -1,5 +1,10 @@
 # Benchmarks
 
+These harnesses ship with the source, not with the distribution. A PGXN
+distribution does not carry `bench/`. The harnesses build and install other
+database engines to compare against. Clone
+<https://github.com/commandprompt/pgcolumnar> to run them.
+
 `bench/` holds three harnesses. Each builds and installs the extension into a
 throwaway cluster, loads a dataset, and reports timings:
 
