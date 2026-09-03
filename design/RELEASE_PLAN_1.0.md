@@ -27,7 +27,7 @@ both change the bytes on disk, so both belong in an alpha.
 | `v1.0-dev` | yes | the first published marker |
 | `v1.0-alpha` | 2026-08-04 | native format, scan, maintenance, Arrow and Parquet |
 | `v1.0-alpha2` | 2026-08-18 | object storage, Apache Iceberg, parallel bulk ingest and export |
-| `1.0-alpha3` | **not tagged** | retention, `parallel_copy` deduplication, `sort_status` reporting `sorted_kind` |
+| `1.0-alpha3` | 2026-09-02 | retention, `parallel_copy` deduplication, `sort_status` reporting `sorted_kind` |
 
 The observed cadence is 14 days, from one tag to the next. The dates below keep
 it. They are a cadence, not a commitment, and each is the date the tag is cut
