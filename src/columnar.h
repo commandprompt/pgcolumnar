@@ -569,6 +569,7 @@ extern void PgColumnarProjectionFanoutRow(Relation rel, PgColumnarWriteState *ba
 										uint64 rowNumber, Datum *values,
 										bool *nulls);
 extern void PgColumnarFlushWriteStateForRelation(Oid relid);
+extern void PgColumnarResetProjectionWritersForRelation(Oid relid);
 
 /* -------------------------------------------------------------------------
  * delete vector / delete tracking (pgcolumnar_delete_vector.c, spec 7.5, 9)

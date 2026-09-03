@@ -3350,6 +3350,38 @@ flush_ws_projections(PgColumnarWriteState *ws)
 }
 
 /*
+ * PgColumnarResetProjectionWritersForRelation
+ *		Drop the cached projection-writer list for `relid` so the next write
+ *		rebuilds it from the catalog.
+ *
+ * PgColumnarProjectionFanoutRow builds that list on first use and latches it,
+ * including when it comes back EMPTY. That is correct while the projection set
+ * cannot change under an open write state, and add_projection() is exactly the
+ * operation that changes it: a write before it latches an empty list, the
+ * back-fill then populates the new projection from the rows that already exist,
+ * and every later write in the same transaction skips it silently (#875).
+ *
+ * Buffered projection rows are flushed before the list is dropped, or they would
+ * be lost with the writers that hold them.
+ */
+void
+PgColumnarResetProjectionWritersForRelation(Oid relid)
+{
+	ListCell   *lc;
+
+	foreach(lc, PgColumnarWriteStates)
+	{
+		PgColumnarWriteState *writeState = (PgColumnarWriteState *) lfirst(lc);
+
+		if (writeState->relid != relid)
+			continue;
+		flush_ws_projections(writeState);
+		writeState->projWriters = NIL;
+		writeState->projInited = false;
+	}
+}
+
+/*
  * PgColumnarFlushWriteStateForRelation
  *		Flush any pending partial stripe for a single relation. Used at scan
  *		start so data written earlier in this transaction is persisted.

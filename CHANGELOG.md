@@ -108,6 +108,64 @@ true until the next version shipped.
 
 ### Fixed
 
+- A projection created mid-transaction receives the writes that follow it
+  (#875).
+
+  **A write before `pgcolumnar.add_projection()` in the same transaction made
+  every later write in that transaction skip the new projection.** The rows
+  landed in the base table and never reached the projection, with no error, and
+  a covering projection scan then answered as though they had not been inserted.
+
+      BEGIN;
+        INSERT INTO t ...;                       -- any write will do
+        SELECT pgcolumnar.add_projection('t', ...);
+        INSERT INTO t ...;                       -- these rows were lost to it
+      COMMIT;
+
+  Measured: 116 rows in the base table, 105 in the projection.
+
+  `PgColumnarProjectionFanoutRow` builds the write state's projection-writer
+  list on first use and latches it, **including when the list comes back
+  empty** -- which is what it is before the projection exists. `add_projection`
+  now drops that cache, after the back-fill, so the writes that follow rebuild
+  it from the catalog.
+
+  **`drop_projection` had the same defect in the other direction.** A writer
+  cached before the drop kept taking rows, which landed in a projection storage
+  whose catalog rows were already deleted and committed as an orphan: one orphan
+  storage id when the drop happened mid-transaction, none when it had the
+  transaction to itself. It drops the cache too.
+
+- An Arrow import reads the width, sign and scale the FILE declares (#881).
+
+  **`imp_apply_field` inspected only `Date`, `Time` and `Timestamp`.** For every
+  other tag the stride and the interpretation came from the TARGET column, so a
+  file that declared something else was decoded as though it had not:
+
+      uint64 2^63+5        into bigint          ->  -9223372036854775803
+      int64  1,2,3,4       into int             ->  0,0,1,2
+      decimal(10,2) 1.25   into numeric(20,4)   ->  0.0125
+      fixed_size_binary(32) into uuid           ->  the first 16 bytes
+
+  All four imported without an error. They are refused now with `42804`.
+
+  The buffer-length check already caught the cases where the file's carrier is
+  NARROWER than the target; these are the ones where it is the same width or
+  wider, so the buffer is long enough and nothing complained.
+
+  **Scope is within a family.** A tag that does not match the column's family at
+  all -- an `int64` read into a `timestamp` as raw microseconds -- is
+  long-standing accepted behaviour with its own test, and is unchanged.
+
+- `read_projection` explains itself after a rewrite (#876).
+
+  A rewrite mints a new storage id while `pgcolumnar.projection` keeps the old
+  one, so a projection that is still declared reads as absent. The error said
+  only `projection "p" does not exist on "t"`, which is not true -- the
+  declaration is intact. It now carries a hint naming
+  `pgcolumnar.rebuild_projections()`, which recovers it. The underlying
+  re-recording is still open as #876.
+
 - `DROP` after `ALTER TABLE ... SET ACCESS METHOD heap` now takes the
   relid-keyed catalog rows with it, and the hook that does it stays out of the
   way in databases that have no extension.
@@ -169,7 +227,8 @@ true until the next version shipped.
   index-only scan answers from the index for a row group that is gone. `expire`
   cleared them; `pgcolumnar.recluster()` and the partial-group rewrite behind
   `pgcolumnar.compact_rewrite()` did not, and both renumber live rows through
-  the same retire. All three clear now. The rule is that visibility-map bits go
+  the same retire. All three clear now, and as of #878 all three are held by
+  tests; before it, only expire's clear was. The rule is that visibility-map bits go
   wherever row numbers are reassigned, not only where rows expire.
 
   `docs/sql-reference.md` gains the accepted range for `ttl_interval` and the
