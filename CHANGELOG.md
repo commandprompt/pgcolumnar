@@ -14,7 +14,7 @@ installed, `1.0-alpha`, and `1.0-alpha2`), so a single
 notes in this file describe `default_version` as pinned at an earlier version, each
 true until the next version shipped.
 
-## [Unreleased]
+## [1.0-alpha3] - 2026-09-02
 
 ### Added
 
@@ -224,12 +224,15 @@ true until the next version shipped.
   now raise `22023`.
 
   Retiring a group leaves its old row numbers in the visibility map, so an
-  index-only scan answers from the index for a row group that is gone. `expire`
-  cleared them; `pgcolumnar.recluster()` and the partial-group rewrite behind
-  `pgcolumnar.compact_rewrite()` did not, and both renumber live rows through
-  the same retire. All three clear now, and as of #878 all three are held by
-  tests; before it, only expire's clear was. The rule is that visibility-map bits go
-  wherever row numbers are reassigned, not only where rows expire.
+  index-only scan answers from the index for a row group that is gone. **None of
+  the three paths cleared them.** `expire`'s absence is the one that was
+  reported; `pgcolumnar.recluster()` and the partial-group rewrite behind
+  `pgcolumnar.compact_rewrite()` renumber live rows through the same retire and
+  had the same gap, with no report against either.
+
+  All three clear now. As of #878 all three are held by tests; before it, only
+  expire's clear was. The rule is that visibility-map bits go wherever row
+  numbers are reassigned, not only where rows expire.
 
   `docs/sql-reference.md` gains the accepted range for `ttl_interval` and the
   `NULL` rule, which is stronger than the straddling behaviour the page already
