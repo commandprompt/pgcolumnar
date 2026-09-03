@@ -2,9 +2,13 @@
 
 ## Release status
 
-pgColumnar is pre-release. The version marker is `1.0-alpha3`, recorded in `VERSION`.
-That version is in development and is not tagged. The latest published pre-release
-is `v1.0-alpha2`.
+pgColumnar is pre-release. The version marker is `1.0-alpha3`, recorded in `VERSION`,
+and it is tagged `v1.0-alpha3`.
+
+On PGXN the same release is `1.0.0-alpha.3`. The two differ because PGXN requires a
+semantic version. A semantic version has three integer components, and `1.0-alpha3`
+has two. The pre-release identifier is dot-separated so that a tenth alpha sorts
+after a third. `CREATE EXTENSION` reports the control file's version.
 
 An alpha is still an alpha: treat a columnar table as reloadable and keep the source
 the data was loaded from. The extension is appropriate today for evaluation, for analytical

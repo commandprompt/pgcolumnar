@@ -1,5 +1,13 @@
 # Testing
 
+These harnesses ship with the source, not with the distribution. The paths
+below are in the git repository. A PGXN distribution carries the extension, its
+documentation and the regression fixtures. It does not carry the test harness.
+The suite needs several PostgreSQL installs and a container. It cannot run from
+an unpacked tarball. From a distribution, use `make installcheck`. That runs the
+`pg_regress` and isolation suites, which do ship. For everything below, clone
+<https://github.com/commandprompt/pgcolumnar>.
+
 The test suite builds and installs the extension, starts a throwaway cluster,
 exercises the access method, and checks results. Each script takes a `pg_config`
 and is self-contained:

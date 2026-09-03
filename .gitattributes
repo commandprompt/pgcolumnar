@@ -1,0 +1,75 @@
+# What a released distribution carries, and what it does not.
+#
+# `git archive` reads these from the tree it archives, so a tag must contain
+# this file for the rules to apply to that tag's archive.
+#
+# The rule for deciding: ship what someone INSTALLING the extension needs, plus
+# what lets them verify it. Leave out what only someone DEVELOPING it needs.
+# Anything the Makefile reads stays, or the archive does not build.
+
+# Internal design records and planning, 1.1M. Two files stay, because the
+# documents a consumer actually reads link to them:
+#
+#   NATIVE_FORMAT_AND_INTERFACE_SPEC.md   README.md, PROVENANCE.md and four
+#                                         pages under docs/ reference it, and
+#                                         README is the page PGXN renders
+#   ROADMAP.md                            CHANGELOG.md and the spec link to it
+#
+# Named per-path, not as `design/`: export-ignore on the directory prunes it
+# before git archive descends, so the exceptions would never be reached. Same
+# shape as the test/ rules below.
+#
+# KNOWN AND ACCEPTED: ROADMAP.md links onward to EXTERNAL_AUDIT_2026_07.md,
+# POSTGRESQL_VERSION_ADOPTION.md and gaps/, which do not ship. Those four links
+# are dead inside the distribution. Following the closure would ship nearly all
+# of design/ and there would be no trim left. The line is drawn so that the
+# files a reader arrives at -- README and CHANGELOG -- resolve, and the dead
+# links are confined to one internal planning document.
+#
+# This was found by resolving every relative link in the archive, not by judging
+# which documents looked internal. That first judgement dropped the format spec
+# and left a dead link on the rendered README.
+design/*.md                                 export-ignore
+design/NATIVE_FORMAT_AND_INTERFACE_SPEC.md  -export-ignore
+design/ROADMAP.md                           -export-ignore
+design/gaps/                                export-ignore
+
+# Benchmark harnesses, including builds of other engines to compare against.
+bench/            export-ignore
+
+# CI configuration; meaningless outside this repository.
+.github/          export-ignore
+
+# The project's own gate. It needs several PostgreSQL installs and a container,
+# so it cannot be run from an unpacked distribution, and it is 5.1M of 9M.
+#
+# Named piece by piece rather than as `test/`, because export-ignore on a
+# DIRECTORY prunes it before git archive descends, so an exception inside it can
+# never be reached. Measured: `test/ export-ignore` plus
+# `test/isolation/ -export-ignore` shipped zero isolation specs, and so did
+# `test/**` plus `test/isolation/**`. 269 files sit directly under test/, all
+# .sh or .py, and four directories, of which isolation is the one that stays.
+test/*.sh         export-ignore
+test/*.py         export-ignore
+test/fixtures/    export-ignore
+test/pbt/         export-ignore
+test/selftest/    export-ignore
+
+# test/isolation/ is NOT ignored: the Makefile globs test/isolation/specs/*.spec
+# into ISOLATION and points ISOLATION_OPTS at it, so `make installcheck` runs
+# the race specs from an unpacked distribution. 56K.
+
+# Superseded by CHANGELOG.md; both describe the PREVIOUS release.
+ANNOUNCEMENT_1.0-alpha2.md   export-ignore
+RELEASE_NOTES_1.0-alpha2.md  export-ignore
+
+# Orientation for someone working ON the repository, not with the extension.
+CONTEXT.md        export-ignore
+
+# Documentation-site build config; docs/ itself ships.
+mkdocs.yml        export-ignore
+
+# Repository mechanics.
+.gitignore        export-ignore
+.mailmap          export-ignore
+.gitattributes    export-ignore
