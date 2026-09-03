@@ -1,0 +1,52 @@
+{
+   "name": "pgcolumnar",
+   "abstract": "Analytic column storage for PostgreSQL, built as a native table access method",
+   "description": "pgColumnar is a columnar storage table access method for PostgreSQL, written as a clean-room, MIT-licensed implementation. It reads and writes its own native format, PGCN v1, and supports chunk-group skipping from zone maps and bloom filters, vectorized aggregation, projections, retention, online compaction and reclustering, parallel bulk ingest and export, Apache Arrow and Parquet import and export, Apache Iceberg, and object storage.",
+   "version": "1.0.0alpha3",
+   "maintainer": [
+      "Joshua D. Drake <jd@commandprompt.com>"
+   ],
+   "license": "mit",
+   "release_status": "unstable",
+   "provides": {
+      "pgcolumnar": {
+         "file": "pgcolumnar--1.0-alpha3.sql",
+         "docfile": "docs/index.md",
+         "version": "1.0.0alpha3",
+         "abstract": "Analytic column storage for PostgreSQL, built as a native table access method"
+      }
+   },
+   "prereqs": {
+      "runtime": {
+         "requires": {
+            "PostgreSQL": "15.0.0"
+         }
+      }
+   },
+   "resources": {
+      "homepage": "https://commandprompt.github.io/pgcolumnar/",
+      "bugtracker": {
+         "web": "https://github.com/commandprompt/pgcolumnar/issues"
+      },
+      "repository": {
+         "url": "https://github.com/commandprompt/pgcolumnar.git",
+         "web": "https://github.com/commandprompt/pgcolumnar",
+         "type": "git"
+      }
+   },
+   "generated_by": "Command Prompt, Inc.",
+   "tags": [
+      "columnar",
+      "analytics",
+      "table access method",
+      "olap",
+      "compression",
+      "parquet",
+      "arrow",
+      "iceberg"
+   ],
+   "meta-spec": {
+      "version": "1.0.0",
+      "url": "https://pgxn.org/meta/spec.txt"
+   }
+}
