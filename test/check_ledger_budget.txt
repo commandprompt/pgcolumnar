@@ -34,4 +34,4 @@ suites_not_covered 250
 #   Without that it is a hand-maintained count that drifts, which is the failure
 #   this repository has spent a day proving. It is not a ceiling; it is a
 #   measurement that must be true.
-checks_never_observed_red 762
+checks_never_observed_red 765

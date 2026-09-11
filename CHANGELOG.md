@@ -407,6 +407,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgc_ledger.py gate` refuses a census that contradicts its own ledger (#952).
+
+  It printed `never observed red=N` and never compared that N to
+  `checks_never_observed_red`. A 20-row ledger with a budget claiming 5 returned
+  rc=0. Two PRs that each rewrote the census from the same base composed into a
+  ledger holding both sets of rows while the budget kept whichever side won, and
+  the tool certified the pair.
+
+  The census is not a ceiling and this does not make it one. The refusal is only
+  that the two numbers describe the same file and disagree, which needs no prior.
+  A matching pair still passes.
+
 - A loop that never ran asserted nothing, and half of that was already refused by a
   mechanism nobody had recorded covered it (#432).
 

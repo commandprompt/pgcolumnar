@@ -432,3 +432,38 @@ def test_a_reconciling_log_with_a_red_is_not_evidence_on_its_own(tmp_path, expec
     green = _w(tmp_path, "green.log", GREEN)
     expect.num(_run("merge", "--ledger", led4, "--date", "2026-09-10", green)[1], 0,
                "control: an all-PASS log still merges with no flag at all")
+
+def test_the_gate_refuses_a_census_that_contradicts_its_ledger(tmp_path, expect):
+    """#952: reporting the census is not enforcing it.
+
+    `gate` prints `ledger census: rows=N | never observed red=N` and never
+    compares that N to `checks_never_observed_red` in the budget. Measured on
+    main: a 20-row ledger with a budget claiming 5 returned rc=0. Found by
+    @OffgridwithJD composing #943 and #947: the ledger took both sets of rows
+    while the budget kept whichever side won, and the tool certified the lie.
+
+    The census is not a ceiling and must not become one. The refusal is only
+    that these two numbers describe the same file and disagree, which is
+    decidable from the two inputs with no prior.
+    """
+    lines = ["demo\tp\tc%02d\tnever\t-\n" % i for i in range(20)]
+    ledger = _w(tmp_path, "l.tsv", "".join(lines))
+    log = _w(tmp_path, "g.log",
+             "".join("RESULT\tdemo\tp\tc%02d\tPASS\t\n" % i for i in range(20))
+             + "checks run: 20\n")
+    reg = _w(tmp_path, "reg", "demo\n")
+
+    lie = _w(tmp_path, "lie.txt",
+              "suites_not_covered 0\nchecks_never_observed_red 5\n")
+    out, rc = _run("gate", "--ledger", ledger, "--budget", lie,
+                   "--registered", reg, log)
+    expect.num(rc, 1, "a budget that understates the ledger census is refused")
+    expect.at_least(out.count("5"), 1, "and the refusal names the budget value")
+    expect.at_least(out.count("20"), 1, "and it names the ledger value")
+
+    ok = _w(tmp_path, "ok.txt",
+             "suites_not_covered 0\nchecks_never_observed_red 20\n")
+    expect.num(_run("gate", "--ledger", ledger, "--budget", ok,
+                    "--registered", reg, log)[1], 0,
+               "control: the same ledger passes when the census matches")
+

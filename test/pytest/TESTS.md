@@ -2150,6 +2150,18 @@ If they disagree, one was edited by hand. `suites_not_covered` is 250 of 251, so
 gate cannot refuse a new check in 250 suites — a real limit, counted rather than hidden,
 which falls as suites are seeded.
 
+### `test_the_gate_refuses_a_census_that_contradicts_its_ledger`
+
+`gate` printed the census and did not compare it to the budget. A 20-row ledger
+with `checks_never_observed_red 5` returned rc=0. Composing two PRs that each
+rewrote the census from the same base left the ledger holding both sets of rows
+while the budget kept whichever side won, and the tool certified the lie (#952).
+
+The census is not a ceiling — bounding it deadlocks. The refusal is only that the
+two numbers describe the same file and disagree. An all-matching pair still
+passes, which is the control. Independent of the shell fixture, which uses six
+rows claiming two.
+
 
 ## 24. test_loop_coverage_premise.py: a loop that never ran asserted nothing
 

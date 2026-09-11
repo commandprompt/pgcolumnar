@@ -35,6 +35,10 @@ for -- existing checks are grandfathered, a new one is named and refused until t
 ledger is regenerated, which is a reviewable one-line diff and the INTENDED action
 rather than a forbidden one.
 
+A budget whose `checks_never_observed_red` disagrees with the ledger it was handed.
+Printing the census is not enforcing it (#952). The census is not a ceiling; the
+refusal is only that the two numbers describe the same file and disagree.
+
 WHAT FEEDS IT
 -------------
 `run_all_versions.sh` merges every suite's log before it removes the build
@@ -560,6 +564,23 @@ def cmd_gate(args):
     never = sum(1 for v in rows.values() if v[0] == NEVER)
     print(f"  ledger census: rows={len(rows)} | never observed red={never}, "
           f"ever red={len(rows) - never}, new this run={len(unknown)}")
+
+    # A CENSUS MUST MATCH THE LEDGER IT DESCRIBES (#952). Printing the count is
+    # not enforcing it: a 20-row ledger with a budget claiming 5 returned rc=0,
+    # and composing two PRs that each rewrote the census from the same base left
+    # the ledger holding both sets of rows while the budget kept whichever side
+    # won. The comparison lives one layer out today, in the selftest arm, so a
+    # merge commit is what first notices. The tool that CI runs should refuse
+    # the pair itself.
+    #
+    # Not a ceiling. Bounding this number deadlocks; the refusal is only that
+    # these two numbers describe the same file and disagree, which needs no prior.
+    # A budget that omits the key is left to the committed-file arm; the lie this
+    # closes is a number that is present and wrong.
+    stated = budget.get("checks_never_observed_red")
+    if stated is not None and stated != never:
+        print(f"    checks_never_observed_red: budget states {stated}, ledger has {never}")
+        rc = 1
 
     if not args.registered:
         raise LedgerError(

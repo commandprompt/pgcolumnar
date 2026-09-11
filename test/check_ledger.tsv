@@ -607,6 +607,7 @@ harness_selftest	400-a-check-result-must-be-machine	the sweep finds a check insi
 harness_selftest	410-a-check-must-have-been-red	--mutation across two failing checks in one run is refused	never	-
 harness_selftest	410-a-check-must-have-been-red	a before-log and an after-log together are refused, not silently empty	never	-
 harness_selftest	410-a-check-must-have-been-red	a budget that does not exist at the prior is a note, not a refusal	never	-
+harness_selftest	410-a-check-must-have-been-red	a budget that understates the ledger census is refused	never	-
 harness_selftest	410-a-check-must-have-been-red	a check in an UNCOVERED suite is not refused	never	-
 harness_selftest	410-a-check-must-have-been-red	a check merely added is not reported as a rename	never	-
 harness_selftest	410-a-check-must-have-been-red	a check observed red gains the date it was seen	never	-
@@ -666,6 +667,7 @@ harness_selftest	410-a-check-must-have-been-red	and the comparison passes when t
 harness_selftest	410-a-check-must-have-been-red	and the history it is about to lose travels with it	never	-
 harness_selftest	410-a-check-must-have-been-red	and the message says how to fix it, because regenerating is the intended action	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal names both values	never	-
+harness_selftest	410-a-check-must-have-been-red	and the refusal names both values the budget and the ledger hold	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal names how many failed, so the author can narrow the run	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal names the check that reddened	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal names the raise	never	-
@@ -677,6 +679,7 @@ harness_selftest	410-a-check-must-have-been-red	both failure arms fail the major
 harness_selftest	410-a-check-must-have-been-red	but that suite is counted as not covered, which is the debt	never	-
 harness_selftest	410-a-check-must-have-been-red	control: a well-formed log still merges	never	-
 harness_selftest	410-a-check-must-have-been-red	control: an all-PASS log still merges with no flag at all	never	-
+harness_selftest	410-a-check-must-have-been-red	control: the same ledger passes when the census matches	never	-
 harness_selftest	410-a-check-must-have-been-red	control: the same log merges with a different reason, so the refusal above is --mutation-across-two-checks and not the log	never	-
 harness_selftest	410-a-check-must-have-been-red	each says what was wrong with the input	never	-
 harness_selftest	410-a-check-must-have-been-red	every committed row has five fields	never	-

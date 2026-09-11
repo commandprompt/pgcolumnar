@@ -691,3 +691,36 @@ check "and a genuine observation says so with --reds-are-real" \
 check "control: an all-PASS log still merges with no flag at all" \
 	"$(_led_rc merge --ledger "$_r946/d.tsv" --date 2026-09-10 "$_r946/green.log")" "0"
 unset _r946
+
+# ---- the gate must refuse a census that contradicts its ledger (#952) --------
+#
+# `gate` prints `ledger census: rows=N | never observed red=N` and does not
+# compare that N to the budget. A six-row ledger with a budget claiming 2 is
+# a four-row lie; today it is rc=0. The composed-tree case @OffgridwithJD
+# measured was 775 rows against a budget of 769, same shape.
+#
+# The census is not a ceiling. The refusal is only that the two numbers
+# describe the same file and disagree.
+
+_r952="$PGC_WORKDIR/r952"; mkdir -p "$_r952"
+: > "$_r952/l.tsv"
+: > "$_r952/g.log"
+i=0
+while [ "$i" -lt 6 ]; do
+	printf 'demo\tq\trow-%s\tnever\t-\n' "$i" >> "$_r952/l.tsv"
+	printf 'RESULT\tdemo\tq\trow-%s\tPASS\t\n' "$i" >> "$_r952/g.log"
+	i=$((i + 1))
+done
+printf 'checks run: 6\n' >> "$_r952/g.log"
+printf 'demo\n' > "$_r952/reg"
+printf 'suites_not_covered 0\nchecks_never_observed_red 2\n' > "$_r952/lie.txt"
+printf 'suites_not_covered 0\nchecks_never_observed_red 6\n' > "$_r952/ok.txt"
+
+check "a budget that understates the ledger census is refused" \
+	"$(_led_rc gate --ledger "$_r952/l.tsv" --budget "$_r952/lie.txt" --registered "$_r952/reg" "$_r952/g.log")" "1"
+check "and the refusal names both values the budget and the ledger hold" \
+	"$(_led_run gate --ledger "$_r952/l.tsv" --budget "$_r952/lie.txt" --registered "$_r952/reg" "$_r952/g.log" \
+		| grep -c 'budget states 2, ledger has 6')" "1"
+check "control: the same ledger passes when the census matches" \
+	"$(_led_rc gate --ledger "$_r952/l.tsv" --budget "$_r952/ok.txt" --registered "$_r952/reg" "$_r952/g.log")" "0"
+unset _r952
