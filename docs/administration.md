@@ -55,6 +55,12 @@ each fetch expensive. Lower this setting for a table that takes many point
 lookups. `pgcolumnar.chunk_group_row_limit` does not change this cost. Use
 `stripe_row_limit` for this, not `chunk_group_row_limit`.
 
+Do not lower `pgcolumnar.stripe_row_limit` below **1024**. A vector is a fixed 1024
+values, so a smaller row group never fills one and FSST is not applied to text
+columns. Measured at the
+accepted minimum of 1000, a text column stored at 106.4% of its raw bytes against
+54.7% at 1200 (#1017). Lower it to 1024 or above, not to the floor.
+
 Measured on 500,000 rows of 1 KiB incompressible data, which is the shape where
 the effect is largest:
 

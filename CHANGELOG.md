@@ -358,6 +358,45 @@ true until the next version shipped.
   it cannot in a suite it has never seen -- otherwise adding PG20 would redden every check
   at once, which is a gate somebody turns off. It tightens the moment one run on that
   major is merged, and it says out loud when it is not enforcing.
+- The docs name 1024 as the floor for `stripe_row_limit` (#1017).
+
+  A vector is a fixed 1024 values, so a row group smaller than one never fills it and
+  the chunk-shared FSST symbol table is not built. Measured on 200,000 rows of a text
+  column, `compression = none`, against 12,800,000 raw bytes, two identical passes:
+
+      stripe_row_limit 1000   0 FSST tables    13,625,000   106.4% of raw
+      stripe_row_limit 1200   166 of 167        6,998,031    54.7% of raw
+      stripe_row_limit 2000   100 of 100        6,990,641    54.6% of raw
+
+  At 1000 the column costs more than storing the bytes uncompressed. THE ACCEPTED
+  MINIMUM IS 1000, enforced in `set_options`, so the most aggressive legal setting is
+  the one that pays this -- and `docs/administration.md` tells a reader to LOWER this
+  setting for point-lookup-heavy tables, which is the path in. The warning now sits in
+  that block rather than in a reference table.
+
+  Documentation only. The minimum is unchanged: whether to raise it, make FSST work
+  below a vector, or warn at `set_options` is still open on #1017.
+
+  The chunk-group limit does not affect this, and that is now measured rather than
+  assumed: `chunk_group_row_limit` at its floor of 100 stores 7,086,080 bytes, the same
+  byte count as 1024 and 10000. Measured by @OffgridwithJD.
+
+  THE GUARD WAS BORN GREEN TWICE BEFORE IT WORKED, and the measurement is why it does
+  now. A blank-line block reader passed on main, because `configuration.md`'s GUC table
+  has no blank lines and `stripe_row_limit`'s row shares a block with
+  `chunk_group_row_limit`'s "fixed 1024-value vectors". A three-line proximity window
+  passed for the same reason. One line naming both is 0 on all three pages on main, and
+  it is also a claim about the prose: the floor has to be stated in a sentence.
+
+  The two harnesses disagreed while that was being found -- the awk arm used paragraph
+  mode and passed on main for two pages, the python twin split on blank lines and did
+  not -- which is the argument for keeping both halves, paid back the day it was written.
+
+  AND ONE LINE SAYS NOTHING ABOUT WHERE. Moving the line out of the advice block to the
+  end of administration.md, 402 lines away, left the arm passing while its name claimed
+  the floor was stated beside the advice. Reported by @OffgridwithJD. The arm now
+  asserts the SECTION: the floor and the lowering advice must sit under one `## `
+  heading. A heading is a declared boundary, which is what the paragraph reader lacked.
 
 - A check record names the PostgreSQL major it was observed under (#1010).
 

@@ -19,7 +19,7 @@ pgColumnar has two kinds of settings:
 
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
-| `pgcolumnar.stripe_row_limit` | integer | `150000` | Maximum rows per row group. The row group is the unit of write and the granularity at which whole segments are appended. Range 1000 to INT_MAX. |
+| `pgcolumnar.stripe_row_limit` | integer | `150000` | Maximum rows per row group. The row group is the unit of write and the granularity at which whole segments are appended. Range 1000 to INT_MAX, but see the note below: a value under 1024 costs text compression. |
 | `pgcolumnar.chunk_group_row_limit` | integer | `10000` | Maximum rows per chunk group. The chunk group is the band a scan skips as a unit when a filter cannot match its minimum and maximum. Within a chunk group each column is encoded in fixed 1024-value vectors. Range 100 to INT_MAX. |
 | `pgcolumnar.encoding_sample_rows` | integer | `2048` | The number of rows that the writer samples to select the value encoding of a vector. The writer estimates each candidate on a sample of windows. The windows contain consecutive values and have an equal distance between them. Thus the sample shows the global shape and also the local runs. The writer then applies only the two best candidates to the full vector. A value of `0` applies each candidate to each vector. This is the behaviour of earlier versions. The writer changes a value below 128 to `0`, because a smaller sample cannot put the candidates in order. This setting changes the write speed. It can also change the compression ratio. It does not change correctness. |
 
@@ -155,13 +155,29 @@ SELECT pgcolumnar.set_options(
 | --- | --- | --- |
 | `table_name` | regclass | The columnar table to change. Anything that is not an ordinary table using the `pgcolumnar` access method is rejected, including a partitioned table. |
 | `chunk_group_row_limit` | integer | Per-table override of `pgcolumnar.chunk_group_row_limit`. |
-| `stripe_row_limit` | integer | Per-table override of `pgcolumnar.stripe_row_limit`. |
+| `stripe_row_limit` | integer | Per-table override of `pgcolumnar.stripe_row_limit`. See the note below: a value under 1024 costs text compression. |
 | `compression` | name | One of `none`, `pglz`, `lz4`, `zstd`. |
 | `compression_level` | integer | Level for the `zstd` codec, 1 to 22. |
 | `encode_effort` | name | `full` (default) or `fast`. How much work the writer spends choosing an encoding. See below. |
 | `sort_by` | name[] | Declared physical sort key (#288), applied by `pgcolumnar.vacuum_sorted(t)` with no columns. Column names, so it survives `pg_dump`/restore. Not auto-maintained; re-run after inserts. Cannot name a virtual generated column. Clear with `reset_options(t, sort_by => true)`. |
 | `ttl_column` | name | The `timestamp` or `timestamptz` column a retention is measured on. Set it with `ttl_interval`; neither works alone. Nothing is deleted until you call `pgcolumnar.expire(t)` by name. |
 | `ttl_interval` | interval | How long a row is kept, measured from `ttl_column`. `pgcolumnar.expire(t)` then drops row groups whose rows are all older than this. A group with one live row is kept whole. |
+
+**A `stripe_row_limit` below 1024 disables FSST on text columns.** A vector is a
+fixed 1024 values. A row group smaller than that never fills one, so the
+chunk-shared FSST symbol table is not built. Measured on 200,000 rows of a text
+column, `compression = none`, against 12,800,000 raw bytes:
+
+| `stripe_row_limit` | FSST tables | stored | of raw |
+| --- | --- | --- | --- |
+| 1000 | 0 | 13,625,000 | **106.4%** |
+| 1200 | 166 of 167 | 6,998,031 | 54.7% |
+| 2000 | 100 of 100 | 6,990,641 | 54.6% |
+
+At 1000 the column costs more than storing the bytes uncompressed. The accepted
+minimum is 1000 and the vector is 1024, so **the most aggressive legal setting is
+the one that pays this cost**. Use 1024 or more unless you have measured that you
+want the opposite (#1017).
 
 The function does not change an argument that keeps its default value of
 `NULL`. The function refuses a value that is outside the permitted range of a

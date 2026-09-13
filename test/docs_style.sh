@@ -148,6 +148,60 @@ PY
 check "best-practices names clustering on the join key" \
 	"$(_practices_jk)" "yes"
 
+# ---- the stripe floor is below a vector, and the pages must say so (#1017) ----
+#
+# A vector is a fixed 1024 values (COLUMNAR_NATIVE_VECTOR_LENGTH). A row group
+# smaller than one never fills it and FSST is not applied to text columns.
+# Measured, 200,000 rows, compression=none, against 12,800,000 raw bytes:
+#
+#     stripe_row_limit 1000   0 FSST tables   13,625,000   106.4% of raw
+#     stripe_row_limit 1200   166 tables       6,998,031    54.7% of raw
+#
+# The ACCEPTED MINIMUM IS 1000, so the most aggressive legal setting is the one
+# that pays this, and administration.md tells a reader to LOWER the setting for
+# point lookups. The warning has to sit in the block that gives that advice, not
+# in a reference table three pages away -- so these arms are scoped to the block
+# and not to the page. An earlier version grepped whole pages and passed on main,
+# which already says 1024 and FSST elsewhere.
+# ONE LINE CARRYING BOTH, AND FOR administration.md THE RIGHT SECTION TOO.
+#
+# One line, because a blank-line block and a three-line window are both green on
+# main: configuration.md's GUC table has no blank lines, so stripe_row_limit's row
+# shares a block with chunk_group_row_limit's "fixed 1024-value vectors", and those
+# rows are adjacent. One line naming both is 0 on all three pages on main, and it
+# makes the prose state the floor in a sentence, which is what a warning needs.
+#
+# THE SECTION, because one line alone says nothing about WHERE. @OffgridwithJD moved
+# the line out of the advice block to the end of administration.md, 402 lines away,
+# and the page-wide arm still passed while its name claimed the floor was stated
+# "beside the advice to lower the setting". Reproduced before changing anything.
+#
+# A `## ` heading is the boundary, not a blank line. That is what the paragraph
+# reader got wrong: blank lines are absent inside a markdown table and arbitrary in
+# prose, while a heading is declared.
+_floor_line() {	# _floor_line FILE -- yes if one line names the setting and the floor
+	if grep -qE 'stripe_row_limit.*1024|1024.*stripe_row_limit' "$1"; then
+		echo yes
+	else
+		echo no
+	fi
+}
+_floor_same_section() {	# _floor_same_section FILE ADVICE -- yes if both are under one `## `
+	awk -v advice="$2" '
+		/^## / { h = substr($0, 4) }
+		{
+			if (index(tolower($0), tolower(advice))) a[h] = 1
+			if (/stripe_row_limit/ && /1024/) f[h] = 1
+		}
+		END { for (k in a) if (k in f) { print "yes"; exit } print "no" }' "$1"
+}
+check "configuration.md states the 1024 floor where it documents the setting" \
+	"$(_floor_line "$SRCDIR/docs/configuration.md")" "yes"
+check "administration.md states it in the section that says to lower the setting" \
+	"$(_floor_same_section "$SRCDIR/docs/administration.md" "Lower this setting")" "yes"
+check "best-practices.md carries it with the load-sizing advice" \
+	"$(_floor_line "$SRCDIR/docs/best-practices.md")" "yes"
+
 # ---- a document that quotes the version must quote the current one ----------
 #
 # Nothing reads the VERSION file mechanically: no Makefile rule, no CI step. Two

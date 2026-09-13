@@ -36,15 +36,22 @@
 # test_mutation_ledger.py. That is the mechanism doing its job rather than a nuisance: had
 # it not moved, the job would have failed with "collected 274 test(s) but expected 272" and
 # named the drift instead of running a different suite than the one declared.
-# 277 -> 280: three arms in test_docs_cover_the_corpus.py about duplicated entries in
-# VACUITY_MODES.md. Re-derived by collection rather than by adding three, per the recipe
-# above: `280 tests collected`.
-# 287 -> 295 when test_compare_to_bash.py landed: eight arms over the parity tool's
-# own extractors. Re-derived by collection, per the recipe above: `295 tests
-# collected`.
-guard_tests 295
-# 282 -> 284: two arms about TESTS.md's own numbering, added with the fix for the
-# out-of-order contents list #1023's merge left behind. Re-derived by collection.
+# 277 -> 290, across four changes that landed arms over the published pages and over
+# TESTS.md itself. WORTH THE PARAGRAPH, because the obvious resolution is wrong twice over.
+#
+# Three branches each added three arms to 277 and each derived 280, correctly, against a
+# tree holding only its own three. No number was a typo and no side was stale. Keeping
+# either side of such a merge ships a value no tree collects, and so does adding the deltas
+# up, because the deltas were measured against different trees.
+#
+# RE-DERIVE BY COLLECTION on the merged tree. That is the only resolution this file has, and
+# `--pgc-expect-tests` compares against exactly what collection reports:
+#
+#     290 tests collected
+# 290 -> 298 when test_compare_to_bash.py landed: eight arms over the parity tool's own
+# extractors. Re-derived by collection on the merged tree, per the recipe above:
+# `298 tests collected`.
+guard_tests 298
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -60,13 +67,11 @@ guard_tests 295
 # which is the argument for gating it rather than a detail about it.
 # 166 -> 177 when test_native_ownership.py landed: nine parametrized refusal arms,
 # the owner control, and the check-ordering arm.
-# 205 -> 217 when test_projection_privilege.py landed: twelve arms over the two
-# projection read helpers, parametrised per function. Re-derived by collection.
+# 177 -> 205 across test_stats_privilege.py and the differential suite's growth, on top of
+# test_native_ownership.py's 166 -> 177. DERIVED by collection on the merged tree, never by
+# addition: several branches bumped this from 166 at once, and arithmetic on any one of
+# them lands on a number no tree collects.
+# 205 -> 217 when test_projection_privilege.py landed: twelve arms over the two projection
+# read helpers, parametrised per function so each carries the bash suite's own check name.
+# Re-derived by collection.
 cluster_tests 217
-# 177 -> 180 when test_stats_privilege.py landed, on top of
-# test_native_ownership.py's 166 -> 177. DERIVED by collection on the merged
-# tree, not 169 + 11: both branches bumped this from 166 and the union left two
-# lines, which is exactly the staleness #1018's enforcement exists to catch.
-# The rate is the point. The ungated half grew by 67 tests in the time #1016 took to review,
-# which was the argument for gating it. It is gated now, and 166 -> 182 is the first move made
-# with the gate actually watching: this number and the tests land in one commit.

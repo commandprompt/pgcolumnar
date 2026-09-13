@@ -79,8 +79,9 @@ behaviour, the source of that number is named.
 - [31. test_native_ownership.py: every maintenance function is owner-only](#31-test_native_ownershippy-every-maintenance-function-is-owner-only)
 - [32. test_stats_privilege.py: stats is readable only by a caller who may read the table](#32-test_stats_privilegepy-stats-is-readable-only-by-a-caller-who-may-read-the-table)
 - [33. test_docs_table_structure.py: a table must stay a table](#33-test_docs_table_structurepy-a-table-must-stay-a-table)
-- [34. test_projection_privilege.py: the projection read helpers are a privilege boundary](#34-test_projection_privilegepy-the-projection-read-helpers-are-a-privilege-boundary)
-- [35. test_compare_to_bash.py: the parity tool reads the NAME](#35-test_compare_to_bashpy-the-parity-tool-reads-the-name)
+- [34. test_docs_stripe_floor.py: the stripe floor is below a vector](#34-test_docs_stripe_floorpy-the-stripe-floor-is-below-a-vector)
+- [35. test_projection_privilege.py: the projection read helpers are a privilege boundary](#35-test_projection_privilegepy-the-projection-read-helpers-are-a-privilege-boundary)
+- [36. test_compare_to_bash.py: the parity tool reads the NAME](#36-test_compare_to_bashpy-the-parity-tool-reads-the-name)
 
 ## 1. How to read a test in here
 
@@ -3206,7 +3207,77 @@ report that cannot say where is one somebody has to re-derive.
 gate's own scope, and 5 elsewhere in the tree. All five are real: 3 in this file and 2 in a
 design document, none of which the gate covers.
 
-## 34. test_projection_privilege.py: the projection read helpers are a privilege boundary
+## 34. test_docs_stripe_floor.py: the stripe floor is below a vector
+
+A vector is a fixed 1024 values (`COLUMNAR_NATIVE_VECTOR_LENGTH`). A row group
+smaller than one never fills it, so the chunk-shared FSST symbol table is not built
+and a text column is stored plain.
+
+Measured on 200,000 rows, one text column, `compression = none`, against 12,800,000
+raw bytes, two identical passes:
+
+| `stripe_row_limit` | FSST tables | stored | of raw |
+| --- | --- | --- | --- |
+| 1000 | 0 | 13,625,000 | **106.4%** |
+| 1200 | 166 of 167 | 6,998,031 | 54.7% |
+| 2000 | 100 of 100 | 6,990,641 | 54.6% |
+
+**The accepted minimum is 1000**, enforced in `set_options`, so the most aggressive
+legal setting is the one that pays this — and at it the column costs more than
+storing the bytes uncompressed. `docs/administration.md` tells a reader to *lower*
+this setting for point-lookup-heavy tables, which is the path in, so the warning has
+to sit in the block that gives the advice rather than in a reference table.
+
+### Why one line, and why the section as well
+
+Three signals were tried. Two were born green on `main`:
+
+| signal | on `main` |
+| --- | --- |
+| blank-line block | **passes** — `configuration.md`'s GUC table has no blank lines, so `stripe_row_limit`'s row shares a block with `chunk_group_row_limit`'s "fixed 1024-value vectors" |
+| three-line window | **passes** — those rows are adjacent |
+| one line naming both | **0 on all three pages** |
+
+One line is also a claim about the prose: the floor has to be stated in a sentence,
+not inferred from two neighbouring tokens. That is why `best-practices.md` names the
+setting and the number together.
+
+**And one line alone says nothing about WHERE.** @OffgridwithJD moved the line out of
+the advice block to the end of `administration.md` — **402 lines away** — and the arm
+still passed while its name claimed the floor was stated "beside the advice to lower
+the setting". Reproduced here before anything changed.
+
+So the `administration.md` arm asserts the **section**: the floor and the lowering
+advice must sit under one `## ` heading, both under `## Row-group sizing` today. A
+heading is a declared boundary, which is exactly what the paragraph reader lacked —
+blank lines are absent inside a markdown table and arbitrary in prose.
+
+| test | what it pins |
+| --- | --- |
+| `test_configuration_states_the_floor_where_it_documents_the_setting` | the floor is on the setting's own line |
+| `test_administration_states_it_in_the_section_that_says_to_lower_it` | it is in the **same section** as the advice that leads there |
+| `test_best_practices_carries_the_floor_with_the_load_sizing_advice` | the load-sizing guidance states it too |
+
+### Removal proof, three ways
+
+| mutation | result |
+| --- | --- |
+| `main`'s three pages | all three arms red |
+| the floor line moved 402 lines from the advice | the administration arm red, the other two green |
+| the branch as it stands | all three green |
+
+The second row is the one the page-wide version could not produce.
+
+**The proof itself broke once and said so.** `git stash` on the three pages stopped
+reverting them the moment the change was committed rather than staged, so the
+"restore main's pages" step was restoring the branch's own pages and every arm passed.
+Checking the files out from `origin/main` explicitly is what makes the row mean
+anything.
+
+The shell twin is three arms in `docs_style.sh`: `grep` for the two one-line pages and
+an awk heading walker for `administration.md`. The two halves share no code.
+
+## 35. test_projection_privilege.py: the projection read helpers are a privilege boundary
 
 `read_projection()` and `reconstruct_via_projection()` opened a caller-supplied regclass
 and returned its contents with no privilege check, and `CREATE FUNCTION` grants EXECUTE to
@@ -3276,7 +3347,7 @@ Five mutations, each asserted to apply at both call sites before the run:
 The fourth row is the one that says the ordering arms measure an ordering rather than the
 presence of a check. The fifth is the disclosure itself, printed.
 
-## 35. test_compare_to_bash.py: the parity tool reads the NAME
+## 36. test_compare_to_bash.py: the parity tool reads the NAME
 
 `compare_to_bash.py` decides whether a port is one-for-one with its bash suite, which is
 #432's definition of done. It was reading the wrong argument.
