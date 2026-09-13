@@ -1892,6 +1892,20 @@ pgcolumnar_scan_decode_shape(RelOptInfo *rel, Index rti, Oid relid,
  *
  * decode_per_group is one group's cost: its pages read once, plus the per-value
  * decode of R rows across the columns the scan needs.
+ *
+ * That is not the whole fetch. Even after the group is in the statement-scoped
+ * cache, each row still pays tuple reconstruction and group location that a heap
+ * fetch does not. Without a per-row term the clustered penalty is independent of
+ * how many rows are fetched, so a 50,000-row correlated range stays on the index
+ * while doing about 27x the work of the custom scan (#913). cpu_tuple_cost is the
+ * same unit core already uses for a heap tuple; decodeUnits is the projection in
+ * #503's 4-byte-column units. Do not scale this from heap instructions-per-cost:
+ * #766 showed that conversion predicts the wrong winner.
+ *
+ * Cap the per-row term at half a group. Uncapped it grows with the whole table
+ * and costs a clustered ORDER BY off its index, which #355 must not do. Half a
+ * group is enough to move the 50,000-row range and small enough to leave the
+ * ordered scan on the index.
  */
 static Cost
 pgcolumnar_index_fetch_penalty(RelOptInfo *rel, Oid relid, double rows, double rho,
@@ -1954,7 +1968,22 @@ pgcolumnar_index_fetch_penalty(RelOptInfo *rel, Oid relid, double rows, double r
 
 	if (groups_decoded < 0)
 		groups_decoded = 0;
-	return groups_decoded * decode_per_group;
+	/*
+	 * Per fetched row, after the group decode is paid once (#913). On a
+	 * clustered key, groups_decoded is ceil(rows/R) and does not grow through
+	 * the first group, so this is the term that moves a 50,000-row range off
+	 * the index without costing a point lookup out of it. Cap at half a
+	 * group so a clustered ORDER BY of the whole table stays on the index
+	 * (#355).
+	 */
+	{
+		Cost		per_row = cpu_tuple_cost * rows * decodeUnits;
+		Cost		half_group = 0.5 * decode_per_group;
+
+		if (per_row > half_group)
+			per_row = half_group;
+		return groups_decoded * decode_per_group + per_row;
+	}
 }
 
 /*

@@ -189,4 +189,7 @@ guard_tests 341
 # and not a pair -- `objstore_endpoint_userinfo.sh` does not exist; these assert the
 # same properties through the python harness independently.
 # Re-derived by collection: `325 tests collected`.
-cluster_tests 325
+# 325 -> 326 when test_index_fetch_penalty_crossover.py landed (#913):
+# the plan-choice arm. Re-derived by collection on the rebased tree, never
+# by adding one: `326 tests collected`.
+cluster_tests 326
