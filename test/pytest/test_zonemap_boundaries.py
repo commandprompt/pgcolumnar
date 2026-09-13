@@ -48,7 +48,8 @@ def test_exact_zonemap_boundaries(pgc_conn, expect):
             "SELECT count(*) FROM pgcolumnar.row_group "
             "WHERE storage_id=pgcolumnar.get_storage_id('zb_c')"
         )
-        expect.num(cur.fetchone()[0], 2, "premise: fixture has two row groups")
+        expect.num(cur.fetchone()[0], 2,
+                   "premise: the boundary fixture has two row groups")
 
     expect.num(
         _removed(_plan(pgc_conn, "v < 1001")), 1,
@@ -80,3 +81,13 @@ def test_exact_zonemap_boundaries(pgc_conn, expect):
         _removed(_plan(pgc_conn, "v = 1001")), 1,
         "= excludes the group lying wholly below the constant",
     )
+    # THE LIVENESS PREMISE, last, as in the bash suite.
+    #
+    # Every arm above reads a plan or a row set, and a backend that died partway through
+    # would leave the arms that already ran green and the rest unrun. `pgc_summary`
+    # accounting catches a missing arm, but only this says the session that produced the
+    # answers was still the one answering at the end. It is cheap and it is the difference
+    # between "the arms passed" and "the arms passed on a live server".
+    with pgc_conn.cursor() as cur:
+        cur.execute("SELECT 1")
+        expect.num(cur.fetchone()[0], 1, "backend alive")

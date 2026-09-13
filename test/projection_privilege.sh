@@ -67,6 +67,15 @@ for r in t_prjexec t_prjsel; do
 done
 psql_run "GRANT SELECT ON secret TO t_prjsel;"
 
+# A table EVERY role may read. It carries no projection, which is what lets the
+# arms below attribute a refusal to a LAYER without reading the message: a caller
+# stopped by the SQL grant never reaches the projection lookup, and one that gets
+# past the grant does. See test/pytest/test_projection_privilege.py, which decides
+# the same two questions the same way in a different language.
+psql_run "CREATE TABLE prjopen (id int) USING pgcolumnar;"
+psql_run "INSERT INTO prjopen SELECT generate_series(1,10);"
+psql_run "GRANT SELECT ON prjopen TO t_prjnone, t_prjexec, t_prjsel;"
+
 as() {  # as <role> <sql>
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" \
 		-d "$PGC_DB" -At -c "$2" 2>&1
@@ -80,6 +89,22 @@ count_as() {  # count_as <role> <function>
 		''|*[!0-9]*) echo refused ;;
 		*) echo "$out" ;;
 	esac
+}
+
+# state_as <role> <sql> -> the SQLSTATE, or the literal noerror.
+#
+# VERBOSITY is set with -v, NOT with -c "\\set ...". psql treats a -c argument
+# beginning with a backslash as a meta-command and takes a different code path,
+# which is how a sibling suite ended up with deny arms that could never go green.
+# The SQLSTATE is read from the ERROR line because psql prefixes it, and it is
+# extracted into a variable rather than tested through a pipeline whose STATUS
+# would be the answer.
+state_as() {  # state_as <role> <sql>
+	local out _sqlstate
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" \
+		-d "$PGC_DB" -At -v VERBOSITY=sqlstate -v ON_ERROR_STOP=0 -c "$2" 2>&1)"
+	_sqlstate="$(sed -n 's/^.*ERROR:[[:space:]]*\([0-9A-Z]\{5\}\).*$/\1/p' <<<"$out" | head -1)"
+	if [ -n "$_sqlstate" ]; then printf '%s\n' "$_sqlstate"; else echo noerror; fi
 }
 
 # ---- premises: the fixture, and that the functions WORK ----------------------
@@ -125,11 +150,19 @@ check "and is refused reconstruct_via_projection" \
 # WHICH layer refused, not merely that one did. Both layers reject this role, so
 # a bare "refused" stays true if the REVOKE is deleted and the C check catches it
 # instead -- measured: with the REVOKE removed this suite still passed 14 of 14.
-# The error text is the only thing that attributes the refusal, so it is asserted
-# here to tell the layers apart rather than in place of behaviour.
-check "and the refusal comes from the SQL grant, naming the function" \
-	"$(as t_prjnone "SELECT count(*) FROM pgcolumnar.read_projection('secret','p1');" | grep -c 'permission denied for function')" \
-	"1"
+#
+# THE ERROR TEXT USED TO BE THE ONLY THING THAT COULD ATTRIBUTE IT, because both
+# layers raise 42501. It is not, once the call names a table every role may read
+# and a projection that does not exist: a caller stopped by the SQL grant never
+# runs the body, so it never reaches the lookup, and one that gets past the grant
+# does. The two outcomes are then different SQLSTATEs and the wording is free to
+# change without moving the arm.
+check "the no-EXECUTE role never reaches the body, so the grant is what stopped it" \
+	"$(state_as t_prjnone "SELECT count(*) FROM pgcolumnar.read_projection('prjopen','no_such_proj');")" \
+	"42501"
+check "while the EXECUTE role reaches the projection lookup on the same call" \
+	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.read_projection('prjopen','no_such_proj');")" \
+	"42704"
 
 # ---- layer two: the C check, reached only because EXECUTE was granted --------
 #
@@ -150,9 +183,20 @@ check "a role with EXECUTE but no SELECT is refused read_projection" \
 	"$(count_as t_prjexec read_projection)" "refused"
 check "and is refused reconstruct_via_projection, which leaks non-covered columns" \
 	"$(count_as t_prjexec reconstruct_via_projection)" "refused"
-check "and THAT refusal names the table, so it is the C check and not the grant" \
-	"$(as t_prjexec "SELECT count(*) FROM pgcolumnar.read_projection('secret','p1');" | grep -c 'permission denied for table')" \
-	"1"
+check "and THAT refusal is the C check, which raises 42501 from aclcheck_error" \
+	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.read_projection('secret','p1');")" \
+	"42501"
+
+# AN ORDERING THE SOURCE ASSERTS AND NOTHING TESTED. The ACL check is the first
+# statement of the body; the projection lookup is well below it. Swapped, a caller
+# with no SELECT would learn whether a named projection exists on a table it may
+# not read -- existence disclosure, from a function whose purpose is to stop
+# disclosure. The arm above is the control: the same role, the same bogus name, on
+# a table it MAY read, returns 42704, so 42501 here is the ACL check winning rather
+# than the lookup being unreachable.
+check "the base ACL is checked before the projection name is looked up" \
+	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.read_projection('secret','no_such_proj');")" \
+	"42501"
 
 # ---- the bar is SELECT, not ownership ---------------------------------------
 #
@@ -185,8 +229,25 @@ check "read_projection now refuses a policy-restricted caller (#563)" \
 	"$(count_as t_prjsel read_projection)" "refused"
 check "and so does reconstruct_via_projection" \
 	"$(count_as t_prjsel reconstruct_via_projection)" "refused"
-check "and the refusal names row-level security, not the table ACL" \
-	"$(as t_prjsel "SELECT count(*) FROM pgcolumnar.read_projection('secret','p1');" | grep -c '^ERROR:.*row-level security')" \
-	"1"
+# 0A000, not a phrase. PgColumnarRequireNoRowSecurity raises
+# ERRCODE_FEATURE_NOT_SUPPORTED, which is a different SQLSTATE CLASS from either
+# ACL refusal -- 0A against 42 -- so no rewording of any message can confuse them.
+check "and the refusal says the feature is not supported, not that a privilege is missing" \
+	"$(state_as t_prjsel "SELECT count(*) FROM pgcolumnar.read_projection('secret','p1');")" \
+	"0A000"
+
+# THE SECOND ORDERING, recorded in src/columnar_vacuum.c as a correction made in
+# review. RLS is checked AFTER the relation ACL. With it first, a caller holding
+# no privilege at all was told the table has RLS enabled, which ordinary SQL does
+# not disclose and which disagrees with core. Measured there:
+#
+#	RLS on, no-select, ordinary SQL     -> permission denied for table
+#	RLS on, no-select, read_projection  -> row-level security is in force
+#
+# The arm above is its control: same table, same policy, a role that DOES hold
+# SELECT, and 0A000. So 42501 here is the ordering, not RLS being switched off.
+check "a caller with no SELECT is told a privilege is missing, not that RLS is in force" \
+	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.read_projection('secret','p1');")" \
+	"42501"
 
 pgc_summary

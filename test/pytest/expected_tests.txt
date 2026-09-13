@@ -48,7 +48,10 @@
 # `--pgc-expect-tests` compares against exactly what collection reports:
 #
 #     290 tests collected
-guard_tests 290
+# 290 -> 298 when test_compare_to_bash.py landed: eight arms over the parity tool's own
+# extractors. Re-derived by collection on the merged tree, per the recipe above:
+# `298 tests collected`.
+guard_tests 298
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -68,4 +71,7 @@ guard_tests 290
 # test_native_ownership.py's 166 -> 177. DERIVED by collection on the merged tree, never by
 # addition: several branches bumped this from 166 at once, and arithmetic on any one of
 # them lands on a number no tree collects.
-cluster_tests 205
+# 205 -> 217 when test_projection_privilege.py landed: twelve arms over the two projection
+# read helpers, parametrised per function so each carries the bash suite's own check name.
+# Re-derived by collection.
+cluster_tests 217
