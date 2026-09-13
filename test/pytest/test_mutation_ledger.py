@@ -444,6 +444,197 @@ def test_the_committed_ledger_and_budget_agree(expect):
                "and the ceiling matches the suites with no rows")
 
 
+def test_the_ledger_refuses_two_rows_sharing_one_key(tmp_path, expect):
+    """The same class one level down, found while building the arm above.
+
+    `read_ledger` does `rows[(f[0], f[1], f[2])] = [...]`, so a duplicated key in the
+    TRACKED file collapsed silently and the LAST line won. Measured on a two-line
+    fixture, both orders:
+
+        never first, then 2026-09-01   survivor last_red='2026-09-01'
+        2026-09-01 first, then never   survivor last_red='never'   <- the red is GONE
+
+    So line order decides whether a recorded red observation survives, and a merge that
+    keeps both sides of a changed row can turn `ever red` back into `never`. That is the
+    exact corruption #918 and #925 exist to prevent, arriving from the opposite direction
+    to #982's.
+
+    NOTHING CAUGHT IT, and bounding the census cannot. `checks_never_observed_red` is a
+    CENSUS and the budget file says it must not become a ceiling, because every new check
+    enters as `never` and bounding it deadlocks. The gate only checks that the budget's
+    number equals the ledger's, and both are derived from the collapsed dict, so they
+    agree. Measured: with the budget regenerated alongside, the erasure passes at rc=0.
+    """
+    dup = _w(tmp_path, "l.tsv",
+             "demo\tpart1\ta check\t18\t2026-09-01\tmut-A\n"
+             "demo\tpart1\ta check\t18\tnever\t-\n")
+    budget = _w(tmp_path, "b.txt", "suites_not_covered 0\n")
+    reg = _w(tmp_path, "reg", "demo\n")
+    log = _w(tmp_path, "r.log",
+             "RESULT\tdemo\tpart1\ta check\tPASS\t18\t\nchecks run: 1\n")
+    out, rc = _run("gate", "--ledger", dup, "--budget", budget, "--registered", reg, log)
+    expect.num(int("a ledger row repeats a key" in out), 1,
+               "a duplicated ledger key is refused by name")
+    expect.num(int("a check" in out), 1, "and the row is named")
+    expect.num(rc, 2, "as an integrity failure, not a gate verdict")
+
+
+def test_a_ledger_with_no_duplicate_key_still_loads(tmp_path, expect):
+    """The false-positive budget, and the premise the refusal above needs.
+
+    Two rows that differ only in the NAME are two checks and must load, which is the
+    ordinary case for every part in the tree.
+    """
+    ok = _w(tmp_path, "l.tsv",
+            "demo\tpart1\tfirst check\t18\tnever\t-\n"
+            "demo\tpart1\tsecond check\t18\t2026-09-01\tmut-A\n"
+            "demo\tpart2\tfirst check\t18\tnever\t-\n")
+    budget = _w(tmp_path, "b.txt", "suites_not_covered 0\n")
+    reg = _w(tmp_path, "reg", "demo\n")
+    log = _w(tmp_path, "r.log",
+             "RESULT\tdemo\tpart1\tfirst check\tPASS\t18\t\nchecks run: 1\n")
+    out, rc = _run("gate", "--ledger", ok, "--budget", budget, "--registered", reg, log)
+    expect.num(int("a ledger row repeats a key" in out), 0,
+               "three distinct keys are not a duplicate")
+    expect.num(int("ledger census: rows=3" in out), 1,
+               "and all three rows loaded, so the refusal did not eat one")
+
+
+def test_the_gate_refuses_two_checks_sharing_one_ledger_key(tmp_path, expect):
+    """#982's remaining half. `merge` PRINTS this and nothing fails on it.
+
+    A ledger row is keyed on (suite, part, name), so two checks with the same name in
+    one part share a row. Neither is mis-recorded while both pass. The hazard is
+    conditional and exact: if one goes red the row records `ever red`, and its
+    namesake inherits a red observation nothing attacked -- which is the census
+    `checks_never_observed_red` exists to make trustworthy.
+
+    THE GATE WAS STRUCTURALLY BLIND TO IT, which is why the note was not enough.
+    `cmd_gate` builds its records as `sorted({(s, p, n, m) for ...})`, and a set
+    collapses the duplicate before any arm can count it. The same canonicalisation
+    that makes the rest of the gate correct made this one class unreachable.
+
+    Measured on main at `03c6c9c8`: a real `harness_selftest` run emits 934 RESULT
+    records over 934 distinct keys, 0 collisions, so this refusal is green on the tree
+    it lands in. The instance #982 reported was fixed by `c3b13aed`; this is the
+    mechanism that stops the next one.
+    """
+    # THE FIXTURE HAS TO DEFEAT THREE OTHER ROUTES TO rc=1, and an arm asserting rc == 1
+    # is worth nothing until it has. Each was measured reaching 1 on its own.
+    #
+    #   1. THE COVERAGE CEILING. With `suites_not_covered 0` the gate returns 1 for
+    #      `suites_not_covered: 1 exceeds the ceiling of 0`. The budget names 1 instead.
+    #
+    #   2. THE NEW-CHECK REFUSAL, which is the route I missed and @jdatcmd found by
+    #      mutation. The ledger must NAME `shared name`, not merely some other check in
+    #      the part. With only `some other check` listed, `demo` is a covered suite whose
+    #      log carries a check the ledger has never seen, and the pre-existing refusal
+    #      sets rc by itself:
+    #
+    #          not in the ledger: demo   part1   shared name   (on major 18)
+    #
+    #      Measured: with `rc = 1` deleted from the shared-key block, the old fixture's
+    #      arm STILL PASSED and this one fails. That is the whole difference between an
+    #      arm about this refusal and an arm about the gate returning 1.
+    #
+    #   3. AN UNHANDLED EXCEPTION, which also exits 1 -- an earlier draft referenced
+    #      `covered_suites` before it was defined, which compiles and fails at runtime.
+    #      Hence the `Traceback` arm below.
+    #
+    # The ledger covering the suite is NOT why it is shaped this way: the refusal applies
+    # to every suite, which the next arm asserts.
+    ledger = _w(tmp_path, "l.tsv",
+                "demo\tpart1\tsome other check\t18\tnever\t-\n"
+                "demo\tpart1\tshared name\t18\tnever\t-\n")
+    budget = _w(tmp_path, "b.txt", "suites_not_covered 1\n")
+    reg = _w(tmp_path, "reg", "demo\n")
+    dup = _w(tmp_path, "dup.log",
+             "RESULT\tdemo\tpart1\tshared name\tPASS\t18\t\n"
+             "RESULT\tdemo\tpart1\tshared name\tPASS\t18\t\n"
+             "checks run: 2\n")
+    out, rc = _run("gate", "--ledger", ledger, "--budget", budget,
+                   "--registered", reg, dup)
+    expect.at_least(len(out), 20, "premise: the gate produced output to read")
+    expect.num(out.count("one ledger key covers 2 checks"), 1,
+               "a key covering two checks in one run is refused, and named")
+    expect.num(int("part1" in out), 1, "with the part, since the part is half the key")
+    expect.num(rc, 1, "and the gate fails rather than noting it")
+    expect.num(int("Traceback" in out), 0,
+               "premise: rc came from the refusal, not from a crash")
+
+
+def test_a_shared_key_is_refused_in_a_suite_the_ledger_does_not_cover(expect, tmp_path):
+    """The refusal covers EVERY suite, deliberately unlike the new-check refusal.
+
+    `test_the_gate_refuses_a_new_check_only_in_a_suite_it_covers` is restricted because
+    it cannot know which of an uncovered suite's checks are new. This one needs no
+    history at all: two records, one key, one log is decidable from the log alone.
+
+    WHY THAT MATTERS rather than being a detail. The ledger covers four suites of 253, so
+    a refusal restricted the same way would close the class in four places and leave the
+    next collision to arrive in one of the other 249 and sit there until that suite is
+    seeded. This arm is what stops the restriction being copied in by habit.
+
+    MEASURED BEFORE WIDENING IT, because a gate that reddens 250 unmeasured suites is a
+    gate somebody turns off. A full PG 18 matrix with this refusal armed for every suite:
+    247 suites ran, RC=0, ALL VERSIONS PASSED, zero shared keys. Check names are static,
+    so one major's matrix measures this class completely rather than sampling it.
+    """
+    ledger = _w(tmp_path, "l.tsv", "")          # covers NOTHING
+    budget = _w(tmp_path, "b.txt", "suites_not_covered 1\n")
+    reg = _w(tmp_path, "reg", "demo\n")
+    dup = _w(tmp_path, "dup.log",
+             "RESULT\tdemo\tpart1\tshared name\tPASS\t18\t\n"
+             "RESULT\tdemo\tpart1\tshared name\tPASS\t18\t\n"
+             "checks run: 2\n")
+    out, rc = _run("gate", "--ledger", ledger, "--budget", budget,
+                   "--registered", reg, dup)
+    expect.num(out.count("one ledger key covers 2 checks"), 1,
+               "a shared key in an uncovered suite is named")
+    expect.num(rc, 1, "and refused, with no row in the ledger for that suite")
+    expect.num(int("Traceback" in out), 0,
+               "premise: rc came from the refusal, not from a crash")
+    expect.num(out.count("not in the ledger:"), 0,
+               "premise: and not from the new-check refusal, which this suite escapes")
+
+
+def test_the_same_check_in_two_runs_is_not_a_shared_key(tmp_path, expect):
+    """The control the refusal needs, and the distinction it must not lose.
+
+    One check observed on two days is two records for one key and is the NORMAL case --
+    it is how the ledger accumulates evidence at all. Only a repeat WITHIN one log is a
+    collision. Without this arm the refusal could be written as a count over all logs
+    together and would reject every multi-day merge.
+    """
+    ledger = _w(tmp_path, "l.tsv", "demo\tpart1\tshared name\t18;19\tnever\t-\n")
+    budget = _w(tmp_path, "b.txt", "suites_not_covered 0\n")
+    reg = _w(tmp_path, "reg", "demo\n")
+    one = _w(tmp_path, "a.log",
+             "RESULT\tdemo\tpart1\tshared name\tPASS\t18\t\nchecks run: 1\n")
+    two = _w(tmp_path, "b.log",
+             "RESULT\tdemo\tpart1\tshared name\tPASS\t19\t\nchecks run: 1\n")
+    out, rc = _run("gate", "--ledger", ledger, "--budget", budget,
+                   "--registered", reg, one, two)
+    expect.num(out.count("one ledger key covers"), 0,
+               "the same check in two logs is not a shared key")
+    expect.num(rc, 0, "so a two-run merge is not refused")
+
+
+def test_a_clean_run_is_not_refused_for_a_shared_key(tmp_path, expect):
+    """The false-positive budget: two DIFFERENT names in one part must pass."""
+    ledger = _w(tmp_path, "l.tsv",
+                "demo\tpart1\tfirst check\t18\tnever\t-\n"
+                "demo\tpart1\tsecond check\t18\tnever\t-\n")
+    budget = _w(tmp_path, "b.txt", "suites_not_covered 0\n")
+    reg = _w(tmp_path, "reg", "demo\n")
+    clean = _w(tmp_path, "c.log", GREEN)
+    out, rc = _run("gate", "--ledger", ledger, "--budget", budget,
+                   "--registered", reg, clean)
+    expect.num(out.count("one ledger key covers"), 0,
+               "two distinct names in one part are not a shared key")
+    expect.num(rc, 0, "and a clean run passes the gate")
+
+
 def test_the_gate_refuses_a_census_that_contradicts_its_own_ledger(tmp_path, expect):
     """#952. The gate PRINTED the census and never compared it, so rc=0 on a lie.
 

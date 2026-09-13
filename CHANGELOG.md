@@ -18,6 +18,98 @@ true until the next version shipped.
 
 ### Added
 
+- The gate refuses two checks that share one ledger key, instead of printing a note
+  about them (#982).
+
+  AND THE SAME CLASS ONE LEVEL DOWN, found while building the arm for the first. `read_ledger`
+  did `rows[(f[0], f[1], f[2])] = [...]`, so a duplicated key in the TRACKED file collapsed
+  silently and the last line won. Measured on a two-line fixture, both orders:
+
+      never first, then 2026-09-01   survivor last_red='2026-09-01'
+      2026-09-01 first, then never   survivor last_red='never'      the red is GONE
+
+  Line order decided whether a recorded red observation survived. A merge that keeps both
+  sides of a changed row turns `ever red` back into `never`. That is what #918 and #925 exist
+  to prevent, arriving from the opposite direction.
+
+  NOTHING ELSE COULD CATCH IT, and bounding the census cannot. `check_ledger_budget.txt` says
+  `checks_never_observed_red` is a CENSUS and must not become a ceiling, because every new
+  check enters as `never` and bounding it deadlocks. The gate compares the budget's number
+  with the ledger's, and both come from the same dict, so they agree either way. Measured:
+  with the budget regenerated alongside, an erased red passes the gate at rc=0.
+
+  It is refused as an INTEGRITY FAILURE (rc=2) rather than a gate verdict, beside the other
+  inputs that do not parse. A ledger that cannot be trusted is not a gate result.
+
+  So the two halves are the same shape at two levels. A SET hid two checks in one run; a DICT
+  hid two rows in one file. The question that found both is what the input canonicalises
+  before the guard sees it.
+
+  AND A THIRD, IN THE ARM THAT POLICES THE OTHER TRACKED KEY-VALUE FILE.
+  `test_harness_deps.py` read `expected_tests.txt` with `nums[f[0]] = int(f[1])`, so a
+  duplicated key collapsed and the last line won, exactly as `read_ledger` did. Measured on
+  one fixture read both ways:
+
+      the line form   names guard_tests as duplicated
+      the dict form   sees two keys and keeps 280, the LAST line
+
+  THIS IS NOT HYPOTHETICAL. Three PRs were open at once, each moving `guard_tests`, and
+  resolving all three keep-both produced three of those lines. `ci.yml` reads the value with
+  `awk '$1=="guard_tests"{print $2}'`, which prints one line per match. So `WANT` becomes
+  multi-line, `test -n "$WANT"` still passes, and the flag refuses it at exit 4:
+
+      pytest: error: argument --pgc-expect-tests: invalid int value: '284\n280\n283'
+
+  It FAILS CLOSED, so this is legibility rather than a hole. What exit 4 does not say is that a
+  line is duplicated. Two arms now say it. The removal proof on the real file reddens the new
+  arm and leaves the pre-existing one green, which is the point.
+
+  Keep-both is right for a changelog and wrong for a key-value file. Nothing in the tree said
+  so.
+
+  `cluster_tests` 205 -> 207, not `guard_tests`: `test_harness_deps.py` DEFINES `NO_CLUSTER`
+  and is not in it. I got that wrong first and the mechanism caught it, which is the argument
+  for the mechanism.
+
+  A ledger row is keyed on `(suite, part, name)`, so two checks with the same name in one
+  part share a row. Nothing is mis-recorded while both pass. The hazard is exact: when one
+  goes red the row records `ever red`, and its namesake inherits a red observation nothing
+  attacked. `checks_never_observed_red` then falls by one for a check nobody attacked, and
+  that census is what #918 and #925 exist to make trustworthy.
+
+  `merge` has detected this since #982 was filed, and returns 0. That is how three of them
+  sat in one part of `selftest/400` for a day. The instance was fixed by `c3b13aed`; this is
+  the mechanism, which that issue called the more valuable half.
+
+  THE GATE COULD NOT SEE IT AT ALL, and the reason is worth recording. `cmd_gate` builds its
+  records as `sorted({(s, p, n, m) for ...})`. A set collapses the duplicate before any arm
+  can count it. So the same canonicalisation that makes the rest of the gate correct made
+  this one class unreachable. The count now comes from the raw records through `_by_run`.
+
+  PER LOG, because one check observed in two logs is two RUNS of it. That is the normal case
+  and the way the ledger accumulates evidence at all. Only a repeat inside one log is a
+  collision. An arm pins the distinction, because written over the logs together the refusal
+  would reject every multi-day merge.
+
+  EVERY SUITE, DELIBERATELY UNLIKE THE NEW-CHECK REFUSAL. That one is restricted to suites
+  the ledger covers because it cannot know which of an uncovered suite's checks are new.
+  This one needs no history: two records, one key, one log is decidable from the log alone.
+  The ledger covers four suites of 253. Copying the restriction would close the class in four
+  places only. The next collision would then sit in one of the other 249 until that suite was
+  seeded.
+
+  MEASURED BEFORE WIDENING IT, because a gate that reddens 250 unmeasured suites is a gate
+  somebody turns off. A full PG 18 matrix run with the refusal armed for every suite:
+
+      suites that ran                       247   (6 skipped, 0 incomplete)
+      matrix verdict                        ALL VERSIONS PASSED, RC=0
+      shared ledger keys found                0
+
+  Check names are static, so one major's matrix measures this class completely rather than
+  sampling it. A real `harness_selftest` log says the same end to end. Run against the
+  COMMITTED ledger and budget, the gate returns 0 with no shared-key line, over 934 records
+  and 934 distinct keys.
+
 - A UNIQUE-constraint check passed on any psql failure, and a recursive sweep passed on a
   tree it never read (#1033).
 

@@ -311,7 +311,34 @@ def read_ledger(path):
                     f"{path}:{n}: major {m!r} is neither a number nor "
                     f"{MAJOR_UNKNOWN!r}, so this row names no version it applies to")
         muts = set() if f[5] == NONE else {m for m in f[5].split(";") if m}
-        rows[(f[0], f[1], f[2])] = [majors, f[4] or NEVER, muts]
+        key = (f[0], f[1], f[2])
+        # A REPEATED KEY, REFUSED RATHER THAN OVERWRITTEN. This was
+        # `rows[key] = [...]`, so a duplicated row collapsed silently and the LAST line
+        # won. Measured on a two-line fixture, both orders:
+        #
+        #     never first, then 2026-09-01   survivor last_red='2026-09-01'
+        #     2026-09-01 first, then never   survivor last_red='never'  <- the red is GONE
+        #
+        # So line order decided whether a recorded red observation survived, and a merge
+        # that keeps both sides of a changed row turns `ever red` back into `never` --
+        # the corruption #918 and #925 exist to prevent.
+        #
+        # NOTHING ELSE CAN CATCH IT, and bounding the census cannot. The budget file says
+        # `checks_never_observed_red` is a CENSUS and must not become a ceiling, because
+        # every new check enters as `never` and bounding it deadlocks. The gate compares
+        # the budget's number with the ledger's, and both come from this dict, so they
+        # agree either way. Measured: with the budget regenerated alongside, an erased red
+        # passes the gate at rc=0.
+        #
+        # The same shape as the shared-key refusal in `cmd_gate`, one level down: there a
+        # set hid two checks in one RUN, here a dict hid two rows in one FILE.
+        if key in rows:
+            raise LedgerError(
+                f"{path}:{n}: a ledger row repeats a key already in this file: "
+                f"{f[0]}\t{f[1]}\t{f[2]}. One key is one check, and the later row would "
+                f"silently replace the earlier -- which loses a recorded red if the later "
+                f"row says {NEVER!r}. Keep one row per check.")
+        rows[key] = [majors, f[4] or NEVER, muts]
     return rows
 
 
@@ -866,6 +893,60 @@ def cmd_gate(args):
 
     rc = 0
 
+    covered_suites = {k[0] for k in rows}
+    # AND THE SAME ARGUMENT FOR THE MAJOR (#1010). The gate cannot refuse a new check on a
+    # major it holds no rows for, for the identical reason it cannot in a suite it has
+    # never seen: it has no idea which of that major's checks are new. Adding PG20 to the
+    # matrix would otherwise redden every check at once, which is a gate somebody turns
+    # off -- the failure this issue family exists to prevent. It tightens on its own the
+    # moment one run on that major is merged.
+    covered_majors = set().union(*(v[0] for v in rows.values())) if rows else set()
+
+    # TWO CHECKS SHARING ONE LEDGER KEY, refused rather than noted (#982).
+    #
+    # A row is keyed on (suite, part, name), so two checks with the same name in one
+    # part share a row. Nothing is mis-recorded while both pass, and the hazard is
+    # exact: when one goes red the row records `ever red` and its namesake inherits a
+    # red observation nothing attacked. `checks_never_observed_red` then falls by one
+    # for a check nobody attacked, and that census is what #918 and #925 exist to make
+    # trustworthy.
+    #
+    # `merge` has printed this since #982 was filed and returns 0, which is how three
+    # of them sat in one part of selftest/400 for a day. THE GATE COULD NOT SEE IT AT
+    # ALL: `records` above is a set, and a set collapses the duplicate before any arm
+    # can count it. The same canonicalisation that makes the rest of this function
+    # correct made this one class unreachable, so the count comes from the raw records.
+    #
+    # PER LOG, via _by_run, because one check observed in two logs is two RUNS of it --
+    # the normal case, and how the ledger accumulates evidence at all. Only a repeat
+    # inside one log is a collision.
+    #
+    # EVERY SUITE, DELIBERATELY UNLIKE THE NEW-CHECK REFUSAL BELOW. That one is
+    # restricted to suites the ledger covers because it cannot know which of an
+    # uncovered suite's checks are new. This one needs no history: two records, one
+    # key, one log is decidable from the log alone. Refusing everywhere is what makes
+    # the class impossible rather than impossible in the four suites seeded so far, and
+    # the next collision is likelier to arrive in one of the other 249.
+    #
+    # MEASURED BEFORE WIDENING IT, because a gate that reddens 250 unmeasured suites is
+    # a gate somebody turns off. A full PG 18 matrix run with this refusal armed for
+    # every suite: 247 suites ran, RC=0, ALL VERSIONS PASSED, zero shared keys. Check
+    # names are static, so one major's matrix is a complete measurement of this class
+    # rather than a sample of it.
+    shared = []
+    for path, seen in _by_run(args.logs):
+        for (suite, part, name), verdicts in sorted(seen.items()):
+            if len(verdicts) > 1:
+                shared.append((path, suite, part, name, [v for v, _m in verdicts]))
+    for path, suite, part, name, verdicts in shared:
+        print(f"    one ledger key covers {len(verdicts)} checks in {path}: "
+              f"{suite}\t{part}\t{name}\t({', '.join(verdicts)})")
+    if shared:
+        print(f"    {len(shared)} ledger key(s) cover more than one check. Give each "
+              f"check a name that says which it is; a shared key records one check's "
+              f"red against the other.")
+        rc = 1
+
     # THE REFUSAL: a check the committed ledger has never seen, IN A SUITE THE
     # LEDGER COVERS.
     #
@@ -878,14 +959,6 @@ def cmd_gate(args):
     #
     # It tightens on its own as suites are seeded, and the ceiling is what forces
     # that direction.
-    covered_suites = {k[0] for k in rows}
-    # AND THE SAME ARGUMENT FOR THE MAJOR (#1010). The gate cannot refuse a new check on a
-    # major it holds no rows for, for the identical reason it cannot in a suite it has
-    # never seen: it has no idea which of that major's checks are new. Adding PG20 to the
-    # matrix would otherwise redden every check at once, which is a gate somebody turns
-    # off -- the failure this issue family exists to prevent. It tightens on its own the
-    # moment one run on that major is merged.
-    covered_majors = set().union(*(v[0] for v in rows.values())) if rows else set()
     unknown = []
     for key in records:
         if key[0] not in covered_suites or key[3] not in covered_majors:

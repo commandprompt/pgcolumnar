@@ -980,6 +980,83 @@ def test_both_pytest_jobs_assert_how_many_tests_they_collected(expect):
                "and each guards the read, because an empty value would fail open")
 
 
+# A TRACKED KEY-VALUE FILE MUST NOT REPEAT A KEY, and the arm above could not see one.
+# It builds `nums[f[0]] = int(f[1])`, so a duplicated key collapses and the last line
+# wins -- the same shape as `read_ledger` before #982, one file over. A seam so the rule
+# has fixtures, because the real file has no duplicate to redden on.
+def _count_lines(text):
+    """-> [(key, value)] for every `name N` line, REPEATS INCLUDED."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith("#"):
+            continue
+        f = line.split()
+        if len(f) == 2 and f[1].isdigit():
+            out.append((f[0], int(f[1])))
+    return out
+
+
+def test_each_expected_count_is_stated_exactly_once(expect):
+    """A merge that keeps both sides of this file duplicates a key, and CI says something
+    unrecognisable instead of saying that.
+
+    `ci.yml` reads the value with `awk '$1=="guard_tests"{print $2}'`, which prints one
+    line per match. Two matches make `WANT` multi-line, `test -n "$WANT"` still passes,
+    and the flag then refuses it. Measured, with two and with three duplicated lines:
+
+        pytest: error: argument --pgc-expect-tests: invalid int value: '284\n280\n283'
+        exit 4
+
+    SO IT FAILS CLOSED, which is why this is an arm about legibility rather than a hole.
+    Exit 4 reddens the job. What it does not do is say that a line is duplicated, and the
+    person reading it has to work back from an int parse error to a merge resolution.
+
+    THIS IS NOT HYPOTHETICAL. Three PRs of mine were open at once, each moving
+    `guard_tests`, and a keep-both resolution across all three produced exactly this:
+
+        guard_tests 284
+        guard_tests 280
+        guard_tests 283
+        cluster_tests 205
+
+    Keep-both is the right resolution for a changelog and the wrong one for a key-value
+    file, and nothing in the tree said so.
+    """
+    counts = HERE / "expected_tests.txt"
+    pairs = _count_lines(counts.read_text())
+    expect.at_least(len(pairs), 2, "premise: the file states counts to check")
+    keys = [k for k, _v in pairs]
+    dupes = sorted({k for k in keys if keys.count(k) > 1})
+    expect.text(", ".join(dupes) or "none", "none",
+                "no key is stated twice in expected_tests.txt")
+    expect.num(len(keys), len(set(keys)),
+               "so the lines and the distinct keys are the same count")
+
+
+def test_a_duplicated_count_is_caught_and_the_dict_form_is_not(expect):
+    """The removal proof, and it shows WHY the arm above is not the one that existed.
+
+    The older reading collapses the duplicate into a dict and reports a healthy file, so
+    the two forms are run side by side on the same fixture.
+    """
+    fixture = ("# a comment\n"
+               "guard_tests 284\n"
+               "guard_tests 280\n"
+               "cluster_tests 205\n")
+    pairs = _count_lines(fixture)
+    keys = [k for k, _v in pairs]
+    expect.num(len(pairs), 3, "premise: the line reading sees all three lines")
+    expect.text(", ".join(sorted({k for k in keys if keys.count(k) > 1})), "guard_tests",
+                "the duplicated key is named")
+
+    collapsed = {}
+    for k, v in pairs:
+        collapsed[k] = v
+    expect.num(len(collapsed), 2, "while the dict form sees only two keys")
+    expect.num(collapsed["guard_tests"], 280,
+               "and keeps the LAST line, which is how the duplicate stayed invisible")
+
+
 def test_the_job_installs_no_database_driver(expect):
     """The job's value is that it runs where there is no database.
 
