@@ -402,6 +402,9 @@ as the failure.
 | `test_num_accepts_real_numbers` | **control**: a genuine numeric comparison still passes |
 | `test_text_refuses_an_empty_expectation` | an empty expected string, which anything empty satisfies |
 | `test_at_least_refuses_a_non_number` | a bound taken from text |
+| `test_rows_refuses_a_flag_where_it_documents_a_reason` | `allow_empty=True` satisfied a truthiness test and carried nothing, so the escape hatch cost LESS to type than the honest assertion |
+| `test_rows_accepts_a_reason` | **control**: the documented form still works, or the refusal above is a wall |
+| `test_row_set_inherits_the_reason_requirement` | `row_set` delegates to `rows`, so it inherits the refusal rather than routing around it |
 | `test_at_least_refuses_a_floor_of_zero` | a floor every possible value clears |
 | `test_at_least_accepts_a_real_bound` | **control**: `at_least(7, 3, …)` passes |
 | `test_plan_node_refuses_no_criteria` | called with neither `node_type` nor `provider` |
@@ -418,6 +421,22 @@ as the failure.
 | `test_plan_marker_refuses_an_absence_claim_over_an_empty_plan` | the hole under both arms |
 | `test_refusal_itself_refuses_an_empty_pattern_list` | the new helper must not become the defect it removes |
 | `test_the_empty_plan_refusal_precedes_the_arms_it_protects` | the refusal's **position**: no arm may answer ahead of it |
+
+**`allow_empty` documented a rule the code did not enforce (#1031).** `rows` documents the
+argument as taking *"a REASON, not a flag"*. The sentence gives the rationale too: the hatch
+should cost more to type than the honest assertion. One line below sits a truthiness test. So
+`allow_empty=True` passed and carried nothing, and the hatch cost less rather than more.
+
+Measured before the refusal: `allow_empty=True` and `allow_empty=1` both passed, 3 passed.
+`row_set` forwards the argument, so it inherited the hole, which is why it has its own arm.
+
+The check fires whenever the argument is given, not only when both sides turn out empty.
+Otherwise a flag form in a test whose sides happen to be non-empty passes today and refuses on
+the day the data changes. That is the worst moment to learn it.
+
+Two live sites used the flag form and **both were substantively correct**. Each had its
+population premise on the line above, and one stated the argument in a comment. They now carry
+that reason in the argument, where an audit of `allow_empty=` can read it.
 
 ### plan_marker, and the three ways it could not fail
 

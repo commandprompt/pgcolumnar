@@ -18,6 +18,35 @@ true until the next version shipped.
 
 ### Added
 
+- `allow_empty` documented a rule the code did not enforce (#1031).
+
+  `Expect.rows` documents the argument as taking *"a REASON, not a flag"*. The sentence even
+  gives the rationale: the hatch should cost more to type than the honest assertion. One line
+  below it sits a truthiness test:
+
+      if _empty(got) and _empty(want) and not allow_empty:
+
+  So `allow_empty=True` satisfied it and carried nothing, and the hatch cost LESS than the
+  assertion rather than more. Measured before the refusal: `allow_empty=True` and
+  `allow_empty=1` both passed, 3 passed. `row_set` forwards the argument, so it inherited the
+  hole and now has its own arm asserting it does not route around the refusal.
+
+  THE CHECK FIRES WHENEVER THE ARGUMENT IS GIVEN, not only when both sides turn out to be
+  empty. Otherwise a flag form in a test whose sides happen to be non-empty passes today and
+  refuses on the day the data changes. That is the worst moment to learn it.
+
+  TWO LIVE SITES USED THE FLAG FORM AND BOTH WERE SUBSTANTIVELY CORRECT. Each had its
+  population premise on the line above. `test_check_records.py` even stated the argument in a
+  comment: *"an empty offender list is the answer to both, and only one of them is good news."*
+
+  So this is not a defect hiding behind the hatch. The cost fell on the next reader. The hatch
+  exists so every empty-on-both-sides comparison carries its justification where an audit of
+  `allow_empty=` can read it, and half of them carried none. Both now do.
+
+  Pinned in `test_guards_pinned.py`, which exists so a refusal is asserted by its message rather
+  than by "something failed". That file was built after a census found 12 of 17 guards deletable
+  with the suite still green.
+
 - A UNIQUE-constraint check passed on any psql failure, and a recursive sweep passed on a
   tree it never read (#1033).
 

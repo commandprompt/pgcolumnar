@@ -654,6 +654,27 @@ class Expect:
         the escape hatch costs more to type than the honest assertion.
         """
         self._refuse_failed_query(name, got, want)
+        # THE REASON IS ENFORCED, not merely documented (#1031). This read
+        # `not allow_empty`, a truthiness test, so `allow_empty=True` satisfied it and
+        # carried nothing -- which made the escape hatch cost LESS to type than the honest
+        # assertion, the opposite of what the docstring above argues for. Measured before
+        # this check: `allow_empty=True` and `allow_empty=1` both passed.
+        #
+        # CHECKED WHENEVER IT IS GIVEN, not only when both sides turn out to be empty. A
+        # flag form in a test whose sides happen to be non-empty would otherwise pass
+        # today and refuse on the day the data changes, which is the worst moment to
+        # learn it.
+        #
+        # `row_set` forwards this argument, so it inherits the refusal rather than
+        # offering a way around it.
+        if allow_empty is not None and not (isinstance(allow_empty, str)
+                                            and allow_empty.strip()):
+            raise VacuityError(
+                f"{name}: allow_empty takes a REASON, not a flag, and got "
+                f"{allow_empty!r}. The hatch exists so an empty-on-both-sides "
+                f"comparison carries its justification where someone auditing "
+                f"allow_empty= can read it. Pass allow_empty='why it is empty'."
+            )
         if _empty(got) and _empty(want) and not allow_empty:
             raise VacuityError(
                 f"{name}: both sides are empty, so this comparison could not have "

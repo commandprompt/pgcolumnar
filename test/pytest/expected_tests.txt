@@ -48,7 +48,15 @@
 # `--pgc-expect-tests` compares against exactly what collection reports:
 #
 #     290 tests collected
-guard_tests 290
+# 290 -> 293: three arms in test_guards_pinned.py pinning that `allow_empty` takes a REASON
+# and not a flag (#1031), with the accepted form as the control and `row_set` asserted to
+# inherit the refusal rather than route around it.
+#
+# RE-DERIVE THIS AFTER EVERY REBASE, not once. Two branches can each derive a number
+# correctly against a tree holding only their own arms and both be wrong for the merge --
+# measured by @jdatcmd on #1022, where two independent derivations of 280 had 283 as the
+# merged truth. Derived here by collection: `293 tests collected`.
+guard_tests 293
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

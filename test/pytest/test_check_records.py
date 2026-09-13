@@ -308,7 +308,8 @@ def test_every_refusal_precedes_its_record(expect):
     # answer to both, and only one of them is good news.
     expect.at_least(len(scanned), 15, "premise: the scan found the recording methods")
     expect.rows(offenders, [], "no refusal is raised after its record is taken",
-                allow_empty=True)
+                allow_empty="an empty offender list is the pass, and the at_least above "
+                            "is the population premise that makes it mean something")
 
 
 def test_every_recording_method_resolves_its_verdict(expect):
@@ -344,7 +345,8 @@ def test_every_recording_method_resolves_its_verdict(expect):
         if not getattr(getattr(pgc_vacuity.Expect, nm), "_pgc_resolves_verdict", False)
     )
     expect.rows(unwrapped, [], "every method that takes a record resolves its verdict",
-                allow_empty=True)
+                allow_empty="an empty unwrapped list is the pass, and the at_least above "
+                            "is the population premise that makes it mean something")
 
 
 def test_wrapping_a_method_twice_changes_nothing(expect):

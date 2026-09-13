@@ -56,6 +56,43 @@ def test_text_refuses_an_empty_expectation(pytester, expect):
         '''), "text refuses an empty expectation", "the expected text is empty")
 
 
+def test_rows_refuses_a_flag_where_it_documents_a_reason(pytester, expect):
+    """`rows` says `allow_empty` takes a REASON, not a flag, and accepted a flag (#1031).
+
+    The escape hatch exists so a both-sides-empty comparison carries its justification
+    where someone auditing `allow_empty=` can read it. A bare `True` satisfies the
+    truthiness test and carries nothing, so the hatch cost less to type than the honest
+    assertion -- the opposite of what the docstring argues for.
+
+    Measured before this refusal: `allow_empty=True` and `allow_empty=1` both passed, 3
+    passed. `row_set` forwards the argument, so it inherited the hole.
+    """
+    expect.refusal(_inner(pytester, """
+        def test_flag_not_reason(expect):
+            expect.rows([], [], "both sides empty, declared with a flag", allow_empty=True)
+        """), "rows refuses a flag where it documents a reason", "not a flag")
+
+
+def test_rows_accepts_a_reason(pytester, expect):
+    """**control**: the documented form still works, or the refusal above is a wall."""
+    r = _inner(pytester, """
+        def test_reason(expect):
+            expect.rows([], [], "empty after truncate", allow_empty="the table was truncated")
+        """)
+    expect.outcomes(r, "a reason is accepted", passed=1, failed=0)
+
+
+def test_row_set_inherits_the_reason_requirement(pytester, expect):
+    """`row_set` delegates to `rows`, so it must inherit the refusal rather than be a way
+    around it. Delegating an assertion does not delegate its refusals when the delegation
+    transforms the data, which `row_set` already records as a trap for the sentinel case.
+    """
+    expect.refusal(_inner(pytester, """
+        def test_set_flag(expect):
+            expect.row_set([], [], "two empty sets, declared with a flag", allow_empty=True)
+        """), "row_set refuses a flag too", "not a flag")
+
+
 def test_at_least_refuses_a_non_number(pytester, expect):
     expect.refusal(_inner(pytester, '''
         def test_bound_text(expect):
