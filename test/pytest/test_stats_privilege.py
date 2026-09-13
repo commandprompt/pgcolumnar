@@ -82,10 +82,20 @@ def test_the_premises_each_role_is_what_the_suite_assumes(pgc_cluster, pgc_conn,
     """Each premise is run BY the role it is about, which is why real logins matter."""
     with pgc_conn.cursor() as cur:
         schema = _fixture(cur)
+    # WRITTEN OUT, NOT LOOPED, and the names are the bash suite's character for
+    # character. The loop that was here passed `f"premise: {r} can open a session"`,
+    # which compare_to_bash.py reads as the template `premise: {} can open a session`
+    # -- matching neither bash name, so both properties were reported MISSING from a
+    # port that asserts them. A name held in a variable is unreadable to the parity
+    # tool by design: guessing at it would report the wrong string as PRESENT.
+    sessions = {}
     for r in (OWNER, NONE, SEL):
         rows, err = _as(pgc_cluster, r, 'SELECT 1', schema)
         assert err is None, f"{r} could not connect: {err}"
-        expect.num(rows[0][0], 1, f"premise: {r} can open a session")
+        sessions[r] = rows[0][0]
+    expect.num(sessions[OWNER], 1, "premise: the owner can open a session")
+    expect.num(sessions[NONE], 1, "premise: the no-privilege role can open a session")
+    expect.num(sessions[SEL], 1, "premise: the granted role can open a session")
 
     with pgc_conn.cursor() as cur:
         cur.execute("SELECT relowner::regrole::text FROM pg_class WHERE relname = 'st_t'")

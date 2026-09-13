@@ -79,6 +79,8 @@ behaviour, the source of that number is named.
 - [31. test_native_ownership.py: every maintenance function is owner-only](#31-test_native_ownershippy-every-maintenance-function-is-owner-only)
 - [32. test_stats_privilege.py: stats is readable only by a caller who may read the table](#32-test_stats_privilegepy-stats-is-readable-only-by-a-caller-who-may-read-the-table)
 - [33. test_docs_table_structure.py: a table must stay a table](#33-test_docs_table_structurepy-a-table-must-stay-a-table)
+- [34. test_projection_privilege.py: the projection read helpers are a privilege boundary](#34-test_projection_privilegepy-the-projection-read-helpers-are-a-privilege-boundary)
+- [35. test_compare_to_bash.py: the parity tool reads the NAME](#35-test_compare_to_bashpy-the-parity-tool-reads-the-name)
 
 ## 1. How to read a test in here
 
@@ -3203,3 +3205,150 @@ report that cannot say where is one somebody has to re-derive.
 **Measured before landing**, which is what a static guard in this tree owes. 0 across the
 gate's own scope, and 5 elsewhere in the tree. All five are real: 3 in this file and 2 in a
 design document, none of which the gate covers.
+
+## 34. test_projection_privilege.py: the projection read helpers are a privilege boundary
+
+`read_projection()` and `reconstruct_via_projection()` opened a caller-supplied regclass
+and returned its contents with no privilege check, and `CREATE FUNCTION` grants EXECUTE to
+PUBLIC. `reconstruct` rebuilds NON-COVERED columns from the base by row number, so the
+projection was never the bound on what leaked: one projection on any column exposed the
+whole row (#562). A caller holding SELECT but restricted by an RLS policy received every
+row (#563).
+
+### Four refusals, four SQLSTATEs, and why the bash suite needed the message
+
+`projection_privilege.sh` decided four things by matching error text, and two of them were
+load-bearing rather than decorative. Its own comment says why:
+
+> Both layers reject this role, so a bare "refused" stays true if the REVOKE is deleted and
+> the C check catches it instead -- measured: with the REVOKE removed this suite still
+> passed 14 of 14.
+
+Both ACL layers raise 42501, so the code alone does not separate them. What separates them
+is the fixture:
+
+| the caller | the call | outcome |
+| --- | --- | --- |
+| no EXECUTE | a projection that does not exist, on a table it MAY read | `42501` -- the body never ran |
+| EXECUTE | the same call | `42704` -- it ran and reached the lookup |
+| EXECUTE, no SELECT | a real projection on a table it may NOT read | `42501` -- the base ACL |
+| SELECT, under a policy | the same | `0A000` -- `ERRCODE_FEATURE_NOT_SUPPORTED` |
+
+The refusal is attributed by what the code REACHED. That is a fact about execution, and no
+rephrasing of either message can move it. Both harnesses now do this: the shell half reads
+the SQLSTATE through `psql -v VERBOSITY=sqlstate`.
+
+### Two orderings the source asserts and nothing tested
+
+| arm | what breaks without it |
+| --- | --- |
+| `test_the_base_acl_is_checked_before_the_projection_is_looked_up` | a caller with no SELECT learns whether a named projection exists on a table it may not read |
+| `test_the_acl_is_checked_before_rls_so_no_privilege_discloses_no_rls_state` | a caller with no privilege is told the table has RLS enabled, which ordinary SQL does not disclose |
+
+### Every arm
+
+| test | what it holds |
+| --- | --- |
+| `test_the_premises_the_fixture_is_what_the_suite_assumes` | each role opens its own session, the owner gets rows from both helpers, and reconstruct really does return the non-covered column |
+| `test_a_role_with_only_schema_usage_is_refused` | layer one, the SQL grant, per function |
+| `test_a_role_with_execute_but_no_select_is_refused` | layer two, the C check, reached only because EXECUTE was granted |
+| `test_which_layer_refused_without_reading_the_message` | which of the two, decided by what the code reached rather than by wording |
+| `test_the_base_acl_is_checked_before_the_projection_is_looked_up` | the first ordering |
+| `test_a_role_with_select_still_reads` | THE CONTROL: a bar that refused everyone is not a fix |
+| `test_a_policy_restricted_caller_is_refused` | RLS, as `0A000` rather than a phrase |
+| `test_the_acl_is_checked_before_rls_so_no_privilege_discloses_no_rls_state` | the second ordering |
+
+The second is a correction `src/columnar_vacuum.c` records being made in review. Neither
+had a test in either harness.
+
+### Removal proof
+
+Five mutations, each asserted to apply at both call sites before the run:
+
+| mutation | pytest | shell |
+| --- | --- | --- |
+| drop the base ACL check | 4 arms red | -- |
+| drop the RLS refusal | 2 arms red | -- |
+| RLS **before** the ACL check | the RLS-ordering arm alone | the RLS-ordering arm alone |
+| ACL below the projection lookup but above its raise | no arm red, correctly: 42501 still wins | same |
+| ACL below the not-found **raise** | both ordering arms | both, reporting `got [42704] want [42501]` |
+
+The fourth row is the one that says the ordering arms measure an ordering rather than the
+presence of a check. The fifth is the disclosure itself, printed.
+
+## 35. test_compare_to_bash.py: the parity tool reads the NAME
+
+`compare_to_bash.py` decides whether a port is one-for-one with its bash suite, which is
+#432's definition of done. It was reading the wrong argument.
+
+The python side was matched with `expect\.\w+\([^)]*?"([^"]+)"...`, and `[^)]*?` is lazy,
+so it stopped at the FIRST quoted argument:
+
+| call | name read |
+| --- | --- |
+| `expect.num(got, 1, NAME)` | `NAME` -- correct, which is why it looked right |
+| `expect.sqlstate(err, "42501", NAME)` | `"42501"` |
+| `expect.text(got, "none", NAME)` | `"none"` |
+
+So every SQLSTATE assertion was read as the literal `42501`, reported as an "extra" the
+bash suite lacks, while the real property was reported MISSING. #432's ports are exactly
+the ones replacing a grep on a message with a SQLSTATE assertion, so **the tool went blind
+in proportion to the work being done well.**
+
+### Measured over the tree
+
+| pair | missing before | after |
+| --- | --- | --- |
+| differential | 6 | 0 |
+| hilbert_locality | 13 | 0 |
+| native_ownership | 1 | 0 |
+| native_projection | 0 | 0 |
+| projection_privilege | 23 | 0 |
+| stats_privilege | 9 | 0 |
+| zonemap_boundaries | 9 | 0 |
+| **total** | **61** | **0** |
+
+Of the 61, 34 were never missing. The rest were real, and four of them are closed here:
+`stats_privilege` had invented a name for a property the bash suite already named, and
+`zonemap_boundaries` was missing its liveness premise outright. Neither was visible while
+the tool was reporting the wrong string.
+
+### What the parser reads
+
+| shape | read as |
+| --- | --- |
+| the last string argument | the name |
+| an f-string | a `{}` template, matched against bash interpolations reduced the same way |
+| `"a" if cond else "b"` | both arms |
+| `@pytest.mark.parametrize("func,name", ROWS)` | the `name` column, resolved through module constants |
+| anything else | nothing -- absent is better than wrong |
+
+`$1` is the commonest interpolation in a bash check name and the first version of the
+template reducer missed every one of them, because its pattern required `[A-Za-z_]` after
+the dollar.
+
+### Removal proof
+
+| mutation | red |
+| --- | --- |
+| take the first string argument, as the regex did | the regression arm, the unreadable-name arm, and the whole-tree arm |
+| drop the conditional-name case | its own arm, and the whole-tree arm |
+| drop parametrize resolution | its own arm, and the whole-tree arm |
+| read the name column by position instead of by its declared name | its own arm, and the whole-tree arm |
+
+`test_the_ported_suites_in_this_tree_are_graded_one_for_one` catches all four. It is the
+arm that matters: a guard over invented sources proves the extractor reads python, not that
+the tool grades THIS tree.
+
+### Every arm
+
+| test | what it holds |
+| --- | --- |
+| `test_the_name_is_the_last_argument_not_the_first_string` | the regression, over three helpers, one of which always worked |
+| `test_a_call_whose_name_is_not_a_literal_contributes_nothing` | absent beats wrong: a false green on a parity tool loses a property in both harnesses |
+| `test_an_fstring_name_becomes_a_template` | a runtime-built name is compared by shape |
+| `test_a_conditional_name_carries_both_of_its_arms` | `"a" if c else "b"` states two properties |
+| `test_a_parametrized_name_is_resolved_from_the_decorator` | the idiom a repeated bash property should be ported to, with a no-`name` decorator as the control |
+| `test_the_parametrize_reader_takes_the_column_called_name` | the declared column, not position |
+| `test_the_two_harnesses_interpolations_land_on_one_template` | bash and python spell interpolation differently and must meet |
+| `test_the_ported_suites_in_this_tree_are_graded_one_for_one` | the standing arm: every pair in the tree, graded |

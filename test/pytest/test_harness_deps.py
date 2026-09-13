@@ -106,6 +106,9 @@ NO_CLUSTER = [
     # no driver: the public seam is the published page.
     "test_docs_join_clustering.py",
     "test_docs_table_structure.py",
+    # The parity tool is python and reads python. No cluster and no driver: its input
+    # is a source file and its output is a verdict about two source files.
+    "test_compare_to_bash.py",
 ]
 
 

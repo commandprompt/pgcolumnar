@@ -18,6 +18,59 @@ true until the next version shipped.
 
 ### Added
 
+- `projection_privilege.sh` has a pytest twin, and both halves now attribute a refusal
+  by SQLSTATE instead of by error text (#432, #562, #563).
+
+  The bash suite decided four things by matching the message, and two of them were
+  load-bearing rather than decorative. Its own comment says why: both ACL layers raise
+  42501, so a bare "refused" stays true if the SQL `REVOKE` is deleted and the C check
+  catches it instead. Measured there: with the `REVOKE` removed the suite still passed
+  14 of 14.
+
+  The fixture is what separates them, not the wording. Called with a projection name
+  that does not exist, on a table the role may read, a caller stopped by the SQL grant
+  never runs the body and gets 42501; one that gets past the grant reaches the lookup
+  and gets 42704. The refusal is attributed by what the code REACHED. RLS is a third
+  code again, `0A000` from `ERRCODE_FEATURE_NOT_SUPPORTED`, which is a different
+  SQLSTATE class from either ACL refusal.
+
+  Two orderings that `src/columnar_projection.c` and `src/columnar_vacuum.c` assert had
+  no test in either harness: the base ACL is checked before the projection is looked
+  up, so a caller with no SELECT cannot learn whether a projection exists on a table it
+  may not read; and the ACL is checked before RLS, so a caller with no privilege is not
+  told the table has row-level security enabled. The second is a correction the source
+  records being made in review.
+
+  Five mutations, each asserted to apply at both call sites. Moving the ACL check below
+  the projection lookup but above its raise reddens nothing, correctly -- 42501 still
+  wins. Moving it below the raise reddens both ordering arms, and the shell half prints
+  the disclosure: `got [42704] want [42501]`.
+
+- `compare_to_bash.py` reads the assertion's NAME (#432, #897).
+
+  The parity tool decides whether a port is one-for-one with its bash suite, which is
+  #432's definition of done, and it was reading the wrong argument. The python side was
+  matched with `expect\.\w+\([^)]*?"([^"]+)"`, whose lazy `[^)]*?` stops at the FIRST
+  quoted argument. For `expect.num(got, 1, NAME)` that is the name, so the tool looked
+  correct. For `expect.sqlstate(err, "42501", NAME)` it is `42501`.
+
+  Every SQLSTATE assertion was therefore read as the literal `42501`, reported as an
+  "extra" name the bash suite does not have, while the real property was reported
+  MISSING. #432's ports are exactly the ones replacing a grep on a message with a
+  SQLSTATE assertion, so the tool went blind in proportion to the work being done well.
+
+  It parses with `ast` now and takes the last string argument, resolving f-strings to
+  templates, both arms of a conditional, and the `name` column of a
+  `@pytest.mark.parametrize`. Bash interpolations reduce to the same template, including
+  `$1`, which is the commonest one in a check name and which the first version of the
+  reducer missed because its pattern required a letter after the dollar.
+
+  Measured over every pair in the tree: **61 bash properties reported missing, now 0.**
+  34 were never missing. The rest were real and are closed here: `stats_privilege` had
+  invented a name for a property the bash suite already named, and `zonemap_boundaries`
+  was missing its `backend alive` premise outright. Neither was visible while the tool
+  was reporting the wrong string.
+
 - A UNIQUE-constraint check passed on any psql failure, and a recursive sweep passed on a
   tree it never read (#1033).
 
