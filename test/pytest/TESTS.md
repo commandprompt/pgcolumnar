@@ -85,6 +85,7 @@ behaviour, the source of that number is named.
 - [37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface](#37-test_iceberg_fdwpy-the-iceberg-fdws-pruning-surface)
 - [38. test_objstore_endpoint_userinfo.py: userinfo in an object-store endpoint](#38-test_objstore_endpoint_userinfopy-userinfo-in-an-object-store-endpoint)
 - [39. test_hilbert_cluster.py: the Hilbert clustering SQL surface](#39-test_hilbert_clusterpy-the-hilbert-clustering-sql-surface)
+- [40. test_parallel_am_scan.py: a table-AM parallel scan must share work](#40-test_parallel_am_scanpy-a-table-am-parallel-scan-must-share-work)
 
 ## 1. How to read a test in here
 
