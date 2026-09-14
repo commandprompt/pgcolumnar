@@ -1616,6 +1616,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- An index fetch silently returned a row when `page_length` was 2^32 too large.
+
+  `NativeColumnChunkMetadata.pageLength` is `uint64`. Both decode entry points
+  cast `(pageLength - validityBytes)` to `uint32`. Adding 2^32 to the catalog
+  value leaves the low 32 bits unchanged, so a btree fetch reconstructed the
+  original stream and returned the row. A sequential scan already refused: the
+  chunk no longer fitted its row group, so containment raised XX001. The fetch
+  path never had that check.
+
+  The value-stream length is now required to fit in `uint32` before either path
+  decodes. Adding 2^32 is refused with XX001 on the fetch and on the scan. New
+  twins `native_chunk_length_bound` and `test_native_chunk_length_bound.py`.
+
 - The standing parity arm graded a hand-written list, and nothing enforced it
   (#432, #1046).
 

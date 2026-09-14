@@ -83,6 +83,7 @@ behaviour, the source of that number is named.
 - [35. test_projection_privilege.py: the projection read helpers are a privilege boundary](#35-test_projection_privilegepy-the-projection-read-helpers-are-a-privilege-boundary)
 - [36. test_compare_to_bash.py: the parity tool reads the NAME](#36-test_compare_to_bashpy-the-parity-tool-reads-the-name)
 - [37. test_hilbert_cluster.py: the Hilbert clustering SQL surface](#37-test_hilbert_clusterpy-the-hilbert-clustering-sql-surface)
+- [38. test_native_chunk_length_bound.py: a truncated chunk length cannot fetch](#38-test_native_chunk_length_boundpy-a-truncated-chunk-length-cannot-fetch)
 
 ## 1. How to read a test in here
 
@@ -4000,3 +4001,20 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_the_install_script_and_the_catalog_agree_on_the_symbol_set` | S8, symbols resolved from the AS clause and never derived |
 | `test_each_new_verb_is_installed_and_its_symbol_declared` | installed once, C, and declared |
 | `test_each_new_verb_has_its_siblings_signature` | args, VARIADIC element and return type, compared against the sibling rather than retyped |
+## 38. test_native_chunk_length_bound.py: a truncated chunk length cannot fetch
+
+A column chunk's `page_length` is `uint64` in the catalog. Both decode entry
+points used to cast the value stream to `uint32`. Adding 2^32 leaves the low
+32 bits unchanged, so an index fetch silently read the original stream and
+returned the row. A sequential scan already refused, because the chunk no
+longer fitted its row group.
+
+This file asserts the SQLSTATE, not a cost number. The poison is a catalog
+UPDATE; the property is that a fetch raises XX001 and the backend survives.
+
+Independent of `test/native_chunk_length_bound.sh`. Same public seam, own
+fixture, own observations. Assertion names match the shell suite.
+
+| test | what it asserts |
+| --- | --- |
+| `test_native_chunk_length_bound` | a point lookup uses the index and returns the row; after `page_length` grows by 2^32, both the fetch and a sequential scan raise XX001 and the backend survives each |

@@ -132,6 +132,7 @@ SUITES=(
 	native_batch_fold_projection
 	native_bloom
 	native_cancel
+	native_chunk_length_bound
 	native_cluster
 	native_compact
 	native_ctas

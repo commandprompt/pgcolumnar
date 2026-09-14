@@ -1156,6 +1156,12 @@ harness_selftest	490-a-one-line-body-ends-at-its-own-brace	control: and the reco
 harness_selftest	490-a-one-line-body-ends-at-its-own-brace	premise: the skip-loop tool is present	15;16;17;18;19	never	-
 harness_selftest	490-a-one-line-body-ends-at-its-own-brace	premise: the tool answers with an emitter set, so 'q is absent' is about q	15;16;17;18;19	never	-
 harness_selftest	490-a-one-line-body-ends-at-its-own-brace	premise: the tool reports an unclosed count at all, so a zero below means zero	15;16;17;18;19	never	-
+native_chunk_length_bound	native_chunk_length_bound	a sequential scan of the same poisoned chunk is refused (XX001)	18	never	-
+native_chunk_length_bound	native_chunk_length_bound	an index fetch of a chunk whose page_length is 2^32 too large is refused (XX001)	18	never	-
+native_chunk_length_bound	native_chunk_length_bound	backend survived the sequential refusal	18	never	-
+native_chunk_length_bound	native_chunk_length_bound	backend survived the truncated-length fetch	18	never	-
+native_chunk_length_bound	native_chunk_length_bound	premise: a point lookup uses the index, not a sequential columnar scan	18	never	-
+native_chunk_length_bound	native_chunk_length_bound	premise: that fetch returns the row	18	never	-
 native_join_runtime_filter	native_join_runtime_filter	3-table answer equals filter-off	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	3-table join order matches filter-off	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	3-table plan has coordinator	15;16;17;18;19	never	-

@@ -1027,6 +1027,40 @@ pgcolumnar_read_start(PgColumnarReadState *readState)
 	}
 }
 
+
+/*
+ * pgcolumnar_chunk_value_bytes
+ *		The value stream that follows a chunk's validity bitmap, as a uint32.
+ *
+ *		page_length is uint64 in the catalog. Both decode entry points used to
+ *		cast (page_length - validityBytes) to uint32. Adding 2^32 to page_length
+ *		leaves the low 32 bits unchanged, so an index fetch silently read the
+ *		original stream and returned the row. A sequential scan already refused
+ *		(the chunk no longer fitted its row group). Refuse here so a fetch cannot
+ *		truncate.
+ */
+static uint32
+pgcolumnar_chunk_value_bytes(uint64 pageLength, int validityBytes, int attnum)
+{
+	uint64		vbytes;
+
+	if (validityBytes < 0)
+		validityBytes = 0;
+	if ((uint64) validityBytes > pageLength)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("columnar chunk for column %d has a validity bitmap longer than the chunk",
+						attnum)));
+	vbytes = pageLength - (uint64) validityBytes;
+	if (vbytes > (uint64) PG_UINT32_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("columnar chunk for column %d is too large to decode",
+						attnum),
+				 errdetail("Value stream is " UINT64_FORMAT " bytes.", vbytes)));
+	return (uint32) vbytes;
+}
+
 /*
  * pgcolumnar_native_decode_chunk
  *		Reconstruct a native column chunk's raw present-value stream (D4) from its
@@ -2718,7 +2752,9 @@ pgcolumnar_native_load_group(PgColumnarReadState *rs)
 			/* D4: reconstruct the raw present-value stream from the descriptor */
 			rs->nativeValueCursor[cc->columnIndex] =
 				pgcolumnar_native_decode_chunk(rs->groupContext, att, base + validityBytes,
-											 (uint32) (cc->pageLength - validityBytes),
+											 pgcolumnar_chunk_value_bytes(cc->pageLength,
+																		   validityBytes,
+																		   cc->columnIndex + 1),
 											 cc->encodingDescriptor,
 											 cc->encodingDescriptorLen,
 											 cc->blockCodec, &vraw, &vcount,
@@ -4366,7 +4402,9 @@ pgcolumnar_fetch_row(Relation rel, Snapshot snapshot, uint64 rowNumber,
 									COLUMNAR_NATIVE_ENCDESC_BASELINE);
 			MemoryContext decCx;
 			MemoryContext decOld;
-			uint32		vlen = (uint32) (cc->pageLength - validityBytes);
+			uint32		vlen = pgcolumnar_chunk_value_bytes(cc->pageLength,
+												   validityBytes,
+												   c + 1);
 			char	   *vstream;
 
 			if (entry->overflow[c])

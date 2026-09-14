@@ -175,4 +175,6 @@ guard_tests 335
 # right here; two independent 322s merged just as silently earlier today and the
 # merged tree collected 323. Re-derive BOTH after every merge, not the one git
 # complained about.
-cluster_tests 320
+# 320 -> 321: test_native_chunk_length_bound.py, the uint32 page_length fence.
+# Re-derived by collection on this tree: `321 tests collected`.
+cluster_tests 321
