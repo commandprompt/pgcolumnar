@@ -18,6 +18,37 @@ true until the next version shipped.
 
 ### Added
 
+- `orphan-scan` is armed in the matrix runner, so a ledger row naming a deleted
+  check is refused rather than reported (#983, #1015).
+
+  The gate answers "has this run a check the ledger has never seen". Nothing answered
+  the other half, "does the ledger name a check that no longer exists" -- and two rows
+  naming deleted checks sat in the committed ledger from #917 until #983 found them
+  while doing something else. The census counted both. `orphan-scan` was written for
+  exactly that and had NO CALLER IN THE TREE: tested, and unable to fire on anybody's
+  change.
+
+  **One log per call, not all of them.** `_by_run` returns one entry per LOG, so
+  `len(runs) > 1` is true whenever more than one file is passed even when they came
+  from one matrix run. A call shaped like the gate's `$_led_logs` is refused by the
+  COUNT, before the before-log/after-log union the message names. So the runner loops.
+
+  **`--orphans-only`, because a skip is not a deletion.** By default `rc=1` also covers
+  a part that skipped, and that is right: `not checked` is silence by construction and
+  out of scope, while `unprunable` is a gap in a part the run claimed and in it. But a
+  skip is box-dependent -- part 340 skips only where there is no non-root user to read
+  as -- and failing a matrix for that is a gate somebody turns off. The flag changes the
+  QUESTION rather than the severity of an answer, so `rc=1` never acquires a second
+  meaning, and the skipped part is still printed.
+
+  Measured before wiring: only part 340 of the 46 has a real `check_skip` call; 320,
+  400, 410 and 480 match on comments, a grep-based sweep and `printf` fixtures. Five
+  majors on one box gave `orphans=0, unprunable=0` -- but with `108 PASS and 0 SKIP`,
+  so the skip path never fired and that run tested nothing about skips. The skipped-part
+  case was forced synthetically instead, and the tool classifies the siblings
+  `unprunable` rather than orphans.
+
+- The piped-loop sweep reported a clean tree without reading one (#1033).
 - Userinfo in an object-store ENDPOINT was accepted, and the diagnostic told the
   operator to allow-list it (#995).
 

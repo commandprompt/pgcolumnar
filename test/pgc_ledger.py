@@ -721,6 +721,22 @@ def cmd_orphan_scan(args):
             f"ledger rows -- every row must land in exactly one of the four")
 
     if not args.prune:
+        # THE FLAG CHANGES THE QUESTION, NOT THE SEVERITY OF AN ANSWER (#983, #1015).
+        # The default question is "is anything outstanding in the parts this run
+        # claimed", and a skipped part IS outstanding -- the run held those rows and
+        # failed to speak for them, which is why it differs from `not checked`: that
+        # one is silence by construction and out of scope, this one is a gap in a part
+        # the run claimed. So rc=1 covering both is right by default.
+        #
+        # A GATE NEEDS THE NARROWER QUESTION. `run_all_versions.sh` must refuse a row
+        # whose check no longer exists and must NOT refuse a box where a part skipped,
+        # since a skip is box-dependent and is not a deletion. Rather than give rc=1 a
+        # second meaning under a flag -- the same defect one level up -- this asks a
+        # different question, so rc=1 always means "the thing this invocation asked
+        # about was found". `unprunable` is still PRINTED above either way, so
+        # narrowing the gate's question cannot silence the report.
+        if getattr(args, "orphans_only", False):
+            return 1 if orphans else 0
         return 1 if (orphans or unprunable) else 0
 
     if unprunable:
@@ -1136,6 +1152,10 @@ def main(argv=None):
     o = sub.add_parser("orphan-scan",
                        help="refuse a ledger row no record in its own part matches")
     o.add_argument("--ledger", required=True)
+    o.add_argument("--orphans-only", action="store_true",
+                   help="ask only whether a ledger row's check has been DELETED, so a "
+                        "part that merely skipped does not make the exit status non-zero; "
+                        "the skipped part is still reported")
     o.add_argument("--prune", action="store_true",
                    help="remove orphan rows that carry no history; refuse the whole "
                         "prune if any of them does")

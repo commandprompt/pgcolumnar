@@ -908,6 +908,7 @@ harness_selftest	410-a-check-must-have-been-red	a run that emits every row in it
 harness_selftest	410-a-check-must-have-been-red	a run whose checks are all ledgered passes the gate	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a second major is ADDED to the set, sorted, not written over the first	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a second mutation ACCUMULATES rather than replacing the first	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a skipped part is NOT an orphan, so --orphans-only returns 0	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a stale prior is named WITH its distance from HEAD	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a verdict pgc_record cannot emit is an integrity failure	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	an absolute budget path resolves against git rather than shrugging	15;16;17;18;19	never	-
@@ -942,6 +943,7 @@ harness_selftest	410-a-check-must-have-been-red	and it says so rather than decli
 harness_selftest	410-a-check-must-have-been-red	and it says the change introduces the file rather than raising anything	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and it says the ref does not resolve, rather than claiming the file is new	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and it says why, rather than falling back to something weaker	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	and it still REPORTS the skipped part, so the gate cannot silence it	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and never says a change introduces a file at a ref that is not there	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and none of them ends in a tab	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and not against one that stayed green	15;16;17;18;19	never	-
@@ -971,16 +973,22 @@ harness_selftest	410-a-check-must-have-been-red	and the summary keeps the two ap
 harness_selftest	410-a-check-must-have-been-red	auto refuses when GITHUB_BASE_REF names a ref that is not here	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	auto uses the base ref when it resolves, and names it	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	auto with no base ref and no upstream is an integrity failure	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	both conditions survive the reduction whatever order they arrive in (1 2)	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	both conditions survive the reduction whatever order they arrive in (2 1)	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	both failure arms fail the major	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	but that suite is counted as not covered, which is the debt	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	but the gate says so, so the skip is visible rather than silent	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	control: a REAL orphan still returns 1 under --orphans-only	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	control: a check the ledger claims for 15 that a PG15 run did not emit IS an orphan	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	control: a prune that leaves nothing outstanding returns 0	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	control: a well-formed log still merges	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	control: all-clean logs leave both flags down	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	control: an all-PASS log still merges with no flag at all	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	control: and a clean run still returns 0 under it	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	control: and that one did prune, so 0 is not a refusal in disguise	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	control: and the ledger really is shorter afterwards	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	control: on a covered major a new check is named and refused	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	control: one orphan among clean logs raises only the orphan flag	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	control: the row in the part the run never mentioned SURVIVES the prune	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	control: the same log merges with a different reason, so the refusal above is --mutation-across-two-checks and not the log	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	control: the same row with a real major is read without complaint	15;16;17;18;19	never	-
@@ -1007,6 +1015,7 @@ harness_selftest	410-a-check-must-have-been-red	premise: that part has rows the 
 harness_selftest	410-a-check-must-have-been-red	premise: the budget is a tracked file too	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the budget was restored byte-exact	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the check has history before the rename	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	premise: the fixture is back to a state with rows to speak about	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the fixture ledger holds two rows	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the fixture log names checks the real ledger already knows	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the gate's status block was found in the runner	15;16;17;18;19	never	-
@@ -1020,10 +1029,12 @@ harness_selftest	410-a-check-must-have-been-red	premise: the orphan about to be 
 harness_selftest	410-a-check-must-have-been-red	premise: the orphan now carries a date and a mutation	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the raised copy really does carry a higher ceiling	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the real budget is inside a git repository	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	premise: the runner's orphan reduction was extracted, not an empty range	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the scratch prior really is three commits behind	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the scratch repo has a committed ceiling and no upstream	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the scratch repo has a prior ceiling committed	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the skip-loop sweep is present, so its counts can be read	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	premise: the skipped-part fixture still yields a finding by default	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the workflow file is where this part thinks it is	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	raising the ceiling above its committed value is refused	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	raising the ceiling in the tracked file is refused	15;16;17;18;19	never	-

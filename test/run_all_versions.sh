@@ -1451,6 +1451,69 @@ pgc_tally_suite() {	# pgc_tally_suite NAME VERDICT LOGFILE
 		esac
 	fi
 
+	# THE OTHER HALF OF THE COMPARISON (#983, #1015). The gate answers "has this run a
+	# check the ledger has never seen". It cannot answer "does the ledger name a check
+	# that no longer exists", and nothing did: two rows naming deleted checks sat in the
+	# committed ledger from #917 until #983 found them by accident, and the census
+	# counted both. `orphan-scan` was written for exactly that and had no caller in the
+	# tree at all -- tested, and unable to fire on anybody's change.
+	#
+	# ONE LOG PER CALL, NOT ALL OF THEM. `_by_run` returns one entry per LOG, so
+	# `len(runs) > 1` is true whenever more than one file is passed even when they came
+	# from the same matrix run, and `cmd_orphan_scan` refuses outright. Shaping this call
+	# like the gate's `$_led_logs` is refused by the COUNT, before the union argument the
+	# message names. So it loops.
+	#
+	# --orphans-only, BECAUSE A SKIP IS NOT A DELETION. Without it rc=1 also covers a
+	# part that skipped, which is box-dependent -- part 340 skips only where there is no
+	# non-root user to read as -- and failing a matrix for that would be a gate somebody
+	# turns off. The skipped part is still PRINTED by the tool, so narrowing what the
+	# gate refuses on does not hide it.
+	if [ -n "${_led_logs:-}" ] && [ -f "$builddir/test/check_ledger.tsv" ]; then
+		# TWO FLAGS, NOT A COMBINED STATUS. The loop runs once per log, so the
+		# statuses have to be reduced, and every single-variable reduction loses
+		# one of the two answers:
+		#
+		#   `|| _orph_fail=$?`   OVERWRITES, so across 246 logs the operator is told
+		#                        about whichever failed LAST. Measured with a stub:
+		#                        orphan-then-toolfail reports "could not run" and
+		#                        hides a real orphan; the reverse hides the broken
+		#                        tool. The verdict is right either way and the
+		#                        DIAGNOSIS is wrong half the time, which is the
+		#                        defect the gate's own comment above says it fixed.
+		#   keeping the MAX      still hides a real orphan behind a tool failure.
+		#   `|| { [ "$?" -gt ... ; }`  is worse again: `$?` inside the braces is the
+		#                        `[` test, so it yields 0 for every input and reports
+		#                        CLEAN. Measured, both orders.
+		#
+		# Reported by @OffgridwithJD, who also measured that third one before
+		# suggesting it. Two independent conditions need two independent flags.
+		_orph_orphan=0
+		_orph_broken=0
+		# shellcheck disable=SC2086
+		for _orph_log in $_led_logs; do
+			python3 "$builddir/test/pgc_ledger.py" orphan-scan --orphans-only \
+				--ledger "$builddir/test/check_ledger.tsv" "$_orph_log"
+			_orph_rc=$?
+			case "$_orph_rc" in
+				0)	;;
+				1)	_orph_orphan=1 ;;
+				*)	_orph_broken=1 ;;
+			esac
+		done
+		if [ "$_orph_orphan" = 1 ]; then
+			echo "  PG$major: the ledger names a check that no longer exists, which is"
+			echo "  not a pass. Regenerate the ledger, or rename the row if the check"
+			echo "  moved rather than went."
+			verfail=1
+		fi
+		if [ "$_orph_broken" = 1 ]; then
+			echo "  PG$major could not run the orphan scan on at least one log, which is"
+			echo "  not a pass. That is separate from the line above, and both can be true."
+			verfail=1
+		fi
+	fi
+
 	# How many of the suites counted as having RUN actually accounted for their
 	# checks (#916). Counting a suite that never accounted among the suites that ran
 	# is the overcount #447 added this line to stop, one level further down, and
