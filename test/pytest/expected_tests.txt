@@ -132,7 +132,14 @@
 # 340 -> 341: a test file documented as an unnumbered `###` is invisible to every
 # other arm -- outside the numbering, outside the contents, and still NAMED, so the
 # coverage arm passes (#1024). Re-derived by collection: `341 tests collected`.
-guard_tests 341
+# 341 -> 342: a numbered section with NO BODY is the next defect down from the one
+# above, and 341's arm cannot see it. That arm asks whether each file is NAMED by a
+# numbered heading; a heading with no body is still a heading, so a section inserted
+# into the gap between another heading and its body leaves both files named and one
+# documented under the wrong title. `## 37. test_iceberg_fdw.py` sat directly above
+# `## 38.`, with the Iceberg body attached to the userinfo heading, and every arm in
+# this file stayed green. Re-derived by collection: `342 tests collected`.
+guard_tests 342
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -189,4 +196,10 @@ guard_tests 341
 # and not a pair -- `objstore_endpoint_userinfo.sh` does not exist; these assert the
 # same properties through the python harness independently.
 # Re-derived by collection: `325 tests collected`.
-cluster_tests 325
+# 325 -> 373 when test_sorted_pathkeys.py landed: the port of the ordered-scan
+# surface (#432), 48 collected tests against the bash suite's 110 check names.
+# FORTY-EIGHT COLLECTED AGAINST 110 NAMES, which is not a shortfall -- most arms
+# are one function carrying several of the bash suite's names, and the parity
+# grader reads names, not functions. Re-derived by collection on this tree, never
+# by adding 48 to a number measured on another: `373 tests collected`.
+cluster_tests 373

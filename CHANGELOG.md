@@ -18,6 +18,50 @@ true until the next version shipped.
 
 ### Added
 
+- `test/pytest/test_sorted_pathkeys.py`: the ordered-scan surface, ported from
+  `test/sorted_pathkeys.sh` (#432). All 110 of its check names, one for one.
+
+  The bash suite pins one decision: when a columnar scan may hand the planner
+  PATHKEYS, the promise that its rows already arrive in a stated order. The planner
+  then drops the Sort above the scan, and nothing downstream re-checks. So a wrong
+  promise is not a slow plan, it is WRONG ROWS.
+
+  The port keeps the original's three shapes rather than reorganising by feature: a
+  CLAIM arm (the Sort goes), a REFUSAL arm (something made the claim untrue and the
+  Sort comes back), and an ANSWER arm (the rows themselves, against a heap table
+  built from the same data). The ANSWER arm is not a duplicate of the CLAIM arm --
+  dropping the Sort is only correct if the rows arrive sorted anyway, and a plan
+  check alone cannot say whether they did.
+
+  THE ONE ARM THAT NEEDED MORE THAN A PORT is `pgcolumnar.parallel_copy`, which
+  prepares one transaction per worker. `max_prepared_transactions` cannot be raised
+  without restarting the postmaster, and the default is 0, so asking for fewer
+  workers does not help. `pgc_cluster` now sets it where it writes
+  `postgresql.conf`, at the value `lib.sh` gives this suite through
+  `PGC_EXTRA_CONF`. Refusing the arm instead was measured and rejected: it loses
+  three names outright (`cannot_run` records under the REASON CODE, #1040 phase 0b)
+  AND turns the `pytest (cluster tests)` job red, because an unrunnable check exits
+  67 and the job runs pytest under `set -euo pipefail`. That half exits 0 today with
+  zero unrun, so this file would have been the first to break it.
+
+- `test_docs_cover_the_corpus.py` now refuses a NUMBERED SECTION WITH NO BODY.
+
+  The arm above it asks whether each test file is NAMED by a numbered heading. A
+  heading with no body is still a heading, so a section inserted into the gap between
+  another heading and its body leaves both files named and one of them documented
+  under the wrong title -- every existing arm green. `## 37. test_iceberg_fdw.py`
+  reached `main` sitting directly above `## 38.`, with the Iceberg body attached to
+  the userinfo heading. Fixed here, and the section order now matches the bodies.
+
+### Fixed
+
+- `compare_to_bash.py`'s corpus arm called a WRAPPED name fabricated. A name too long
+  for one line is written as adjacent literals, and Python joins them at parse time,
+  so the joined name is text the file contains but not text `in src` can find. The
+  arm exists to catch a reader that CONSTRUCTS a name, so it now collapses the file's
+  own concatenation and keeps exactly that guarantee: an f-string name still yields a
+  `{}` template, which the collapse does not rescue. Both directions are asserted.
+
 - Userinfo in an object-store ENDPOINT was accepted, and the diagnostic told the
   operator to allow-list it (#995).
 

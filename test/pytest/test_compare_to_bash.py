@@ -87,7 +87,7 @@ from compare_to_bash import (_as_names, _bash_names, _bodies,  # noqa: E402
 # directions for the same reason: a one-way list rots into a permanent exemption.
 COMPLETE = ["differential", "hilbert_cluster", "hilbert_locality",
             "native_ownership", "native_projection", "projection_privilege",
-            "stats_privilege", "zonemap_boundaries"]
+            "sorted_pathkeys", "stats_privilege", "zonemap_boundaries"]
 
 # stem -> why it does not yet reach zero. Empty today, and an entry here is a claim
 # about the PORT rather than a licence: the standing arm does not grade it, so the
@@ -219,6 +219,24 @@ def test_a_table_that_is_not_literal_contributes_nothing(expect):
         "one, two", "control: a literal table over a single column still reads")
 
 
+
+# A name too long for one line is written as adjacent literals, and PYTHON JOINS THEM AT
+# PARSE TIME -- `"ab" "cd"` and `"ab" + "cd"` are both the single string `abcd` before any
+# reader sees them. So a joined name is text the file CONTAINS; it is just not text that
+# `in src` can find, because the quotes and the newline sit in the middle of it.
+#
+# The arm below guards against a reader that CONSTRUCTS a name (an f-string, a `%`, a
+# variable), and collapsing the file's own concatenation keeps exactly that guarantee: a
+# constructed name still fails, because nothing in the source spells it. Not collapsing it
+# would instead forbid the corpus from wrapping a long name, which is a style rule the arm
+# was never meant to carry -- it went unnoticed only while no name was long enough to wrap.
+_JOIN = re.compile(r'"\s*(?:\+\s*)?"', re.S)
+
+
+def _joined(src):
+    """`src` with adjacent string literals run together, as the parser runs them."""
+    return _JOIN.sub("", src)
+
 def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
     """EVERY NAME IT RETURNS IS TEXT THE FILE CONTAINS, asserted over the tree rather
     than over a fixture, because the risk this guards is a reader that CONSTRUCTS a
@@ -231,7 +249,7 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
         if got:
             files.append(py.name[5:-3])
         added += len(got)
-        absent += [n for n in got if n not in src]
+        absent += [n for n in got if n not in _joined(src)]
     expect.at_least(added, 40,
                     "premise: the reader really does add names in this tree, so the "
                     "assertion below is not vacuous")
@@ -239,9 +257,35 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
                 "every name the loop reader returns appears verbatim in the file it "
                 "came from")
     expect.text(", ".join(files),
-                "build_refusal, differential, join_runtime_filter",
-                "and it is these files, so a fourth appearing is a diff a reviewer "
+                "build_refusal, differential, join_runtime_filter, sorted_pathkeys",
+                "and it is these files, so a fifth appearing is a diff a reviewer "
                 "sees rather than a number that moved")
+
+    # CONTROL, because the assertion above was RELAXED to let a wrapped name through and a
+    # relaxation that lets everything through is indistinguishable from a passing arm.
+    # Collapsing the concatenation must rescue a SPLIT name and must not rescue a BUILT
+    # one.
+    split = ('for label, sql in (("one two "\n' + '                   "three", "q"),):\n'
+             '    expect.num(g, 1, label)\n')
+    expect.text(", ".join(_loop_names(ast.parse(split))), "one two three",
+                "premise: the reader joins a wrapped name, which is why the relaxation "
+                "is needed at all")
+    expect.num(int("one two three" in split), 0,
+               "and the raw source does NOT contain it, so the old predicate called a "
+               "wrapped name fabricated")
+    expect.num(int("one two three" in _joined(split)), 1,
+               "collapsing the file's own concatenation finds it")
+
+    built = ('P = "two"\n'
+             'for label, sql in ((f"one {P} three", "q"),):\n'
+             '    expect.num(g, 1, label)\n')
+    expect.text(", ".join(_loop_names(ast.parse(built))), "one {} three",
+                "premise: an f-string name is read as a TEMPLATE, not refused")
+    expect.num(int("one {} three" in _joined(built)), 0,
+               "and collapsing the concatenation does NOT rescue it -- a template is "
+               "constructed, not found, so the relaxation keeps the guarantee it was "
+               "relaxed from. A port that writes an f-string loop name reddens this arm "
+               "by name, which is the designed outcome and not a new one")
 
 
 # A port that parametrises a family its bash twin unrolls, which is the whole of
