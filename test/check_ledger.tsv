@@ -1215,3 +1215,13 @@ native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses vectorized agg when GUC on	15;16;17;18;19	2026-09-12	drop JOINREL fold
+parallel_am_scan	parallel_am_scan	a parallel table-AM scan returns the same row count as serial	18	never	-
+parallel_am_scan	parallel_am_scan	premise: ANALYZE printed a rows= line per launched worker	18	never	-
+parallel_am_scan	parallel_am_scan	premise: EXPLAIN ANALYZE launched two workers	18	never	-
+parallel_am_scan	parallel_am_scan	premise: the parallel plan has Gather	18	never	-
+parallel_am_scan	parallel_am_scan	premise: the parallel plan is still a Seq Scan, not a custom scan	18	never	-
+parallel_am_scan	parallel_am_scan	premise: the parallel plan uses two workers	18	never	-
+parallel_am_scan	parallel_am_scan	premise: the serial plan is not a columnar custom scan	18	never	-
+parallel_am_scan	parallel_am_scan	premise: the table holds every inserted row	18	never	-
+parallel_am_scan	parallel_am_scan	premise: with the custom scan off the serial plan is a Seq Scan	18	never	-
+parallel_am_scan	parallel_am_scan	workers share the table-AM scan, it is not a single claimer	18	never	-

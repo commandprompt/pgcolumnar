@@ -986,9 +986,12 @@ PgColumnarRuntimeGroupsRemoved(PgColumnarReadState *readState)
 
 /*
  * pgcolumnar_read_start
- *		Lazily load the stripe list on the first fetch. For a parallel scan a
- *		single worker claims the whole scan and the others see it exhausted,
- *		which is a correct (if not parallel-accelerated) behaviour.
+ *		Lazily load the stripe list on the first fetch. Every parallel
+ *		participant loads the group list; work is claimed per group in
+ *		pgcolumnar_next_group_index from phs_nallocated, the same way the
+ *		custom scan claims from its DSM counter. The old first-wins use of
+ *		that counter left one backend (usually the leader) to read every
+ *		group and the launched workers idle.
  */
 static void
 pgcolumnar_read_start(PgColumnarReadState *readState)
@@ -997,16 +1000,6 @@ pgcolumnar_read_start(PgColumnarReadState *readState)
 		return;
 
 	readState->started = true;
-
-	if (readState->parallelScan != NULL)
-	{
-		ParallelBlockTableScanDesc bpscan =
-			(ParallelBlockTableScanDesc) readState->parallelScan;
-		uint64		claim = pg_atomic_fetch_add_u64(&bpscan->phs_nallocated, 1);
-
-		if (claim != 0)
-			readState->exhausted = true;
-	}
 
 	if (!readState->exhausted)
 	{
@@ -3156,20 +3149,28 @@ PgColumnarReadFoldColumn(PgColumnarReadState *readState, int attidx,
  *		The next native row group to scan, or -1 when none remain. The native
  *		counterpart of pgcolumnar_next_stripe_index: a parallel custom scan claims
  *		it from the shared atomic so each worker reads distinct row groups (gap
- *		23, D6e); a serial scan walks rowGroupIndex.
+ *		23, D6e); a table-AM parallel scan claims from phs_nallocated the same
+ *		way; a serial scan walks rowGroupIndex.
  */
 static int64
 pgcolumnar_next_group_index(PgColumnarReadState *readState)
 {
 	int			ngroups = list_length(readState->rowGroupList);
-	uint32		gi;
+	uint64		gi;
 
 	if (readState->parallelCounter != NULL)
 		gi = pg_atomic_fetch_add_u32(readState->parallelCounter, 1);
-	else
-		gi = (uint32) readState->rowGroupIndex++;
+	else if (readState->parallelScan != NULL)
+	{
+		ParallelBlockTableScanDesc bpscan =
+			(ParallelBlockTableScanDesc) readState->parallelScan;
 
-	return (gi < (uint32) ngroups) ? (int64) gi : -1;
+		gi = pg_atomic_fetch_add_u64(&bpscan->phs_nallocated, 1);
+	}
+	else
+		gi = (uint64) readState->rowGroupIndex++;
+
+	return (gi < (uint64) ngroups) ? (int64) gi : -1;
 }
 
 void

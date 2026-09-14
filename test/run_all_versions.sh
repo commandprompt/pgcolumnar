@@ -223,6 +223,7 @@ SUITES=(
 	objstore_tls_read
 	objstore_userinfo
 	parallel
+	parallel_am_scan
 	parallel_copy
 	parallel_copy_dedup
 	parallel_degree

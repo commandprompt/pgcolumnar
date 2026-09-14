@@ -749,7 +749,7 @@ pgcolumnar_scan_getnextslot(TableScanDesc sscan, ScanDirection direction,
 }
 
 /* -------------------------------------------------------------------------
- * parallel scan: single-worker claim (see pgcolumnar_reader.c)
+ * parallel scan: shared group claim via phs_nallocated (see pgcolumnar_reader.c)
  * ------------------------------------------------------------------------- */
 
 static Size
@@ -1983,8 +1983,8 @@ pgcolumnar_index_build_range_scan(Relation table_rel, Relation index_rel,
 	/*
 	 * Obtain the reader. A parallel index build passes the TableScanDesc it
 	 * opened with table_beginscan_parallel; that scan already holds a reader
-	 * bound to the shared parallel scan, whose single-participant claim (see
-	 * pgcolumnar_read_start) makes exactly one participant read the whole table.
+	 * bound to the shared parallel scan, whose per-group claim (see
+	 * pgcolumnar_next_group_index) hands each participant distinct row groups.
 	 * We must read through that reader, not a private one: a private full-table
 	 * reader in every participant would index every row once per participant,
 	 * producing duplicate (key, TID) entries. When no scan is supplied (a serial

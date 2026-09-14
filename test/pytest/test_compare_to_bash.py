@@ -86,7 +86,8 @@ from compare_to_bash import (_as_names, _bash_names, _bodies,  # noqa: E402
 # The shape is `SHELL_REFERENCES`' in `test_harness_deps.py`, asserted in both
 # directions for the same reason: a one-way list rots into a permanent exemption.
 COMPLETE = ["differential", "hilbert_cluster", "hilbert_locality",
-            "native_ownership", "native_projection", "projection_privilege",
+            "native_ownership", "native_projection", "parallel_am_scan",
+            "projection_privilege",
             "stats_privilege", "zonemap_boundaries"]
 
 # stem -> why it does not yet reach zero. Empty today, and an entry here is a claim

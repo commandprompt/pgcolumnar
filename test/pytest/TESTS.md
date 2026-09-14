@@ -85,6 +85,7 @@ behaviour, the source of that number is named.
 - [37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface](#37-test_iceberg_fdwpy-the-iceberg-fdws-pruning-surface)
 - [38. test_objstore_endpoint_userinfo.py: userinfo in an object-store endpoint](#38-test_objstore_endpoint_userinfopy-userinfo-in-an-object-store-endpoint)
 - [39. test_hilbert_cluster.py: the Hilbert clustering SQL surface](#39-test_hilbert_clusterpy-the-hilbert-clustering-sql-surface)
+- [40. test_parallel_am_scan.py: a table-AM parallel scan must share work](#40-test_parallel_am_scanpy-a-table-am-parallel-scan-must-share-work)
 
 ## 1. How to read a test in here
 
@@ -4021,3 +4022,27 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_the_install_script_and_the_catalog_agree_on_the_symbol_set` | S8, symbols resolved from the AS clause and never derived |
 | `test_each_new_verb_is_installed_and_its_symbol_declared` | installed once, C, and declared |
 | `test_each_new_verb_has_its_siblings_signature` | args, VARIADIC element and return type, compared against the sibling rather than retyped |
+
+## 40. test_parallel_am_scan.py: a table-AM parallel scan must share work
+
+The port of `test/parallel_am_scan.sh`. With the custom scan off, Parallel Seq
+Scan goes through the table AM. `phs_nallocated` was a first-wins flag: one
+backend claimed the whole scan and every launched worker reported 0 rows.
+The custom-scan path already claims distinct row groups; this pair pins the
+AM path to the same property.
+
+Public seam: `EXPLAIN ANALYZE` worker rows on a Parallel Seq Scan. Leader
+participation is off so the two launched workers are the claimers under
+test. The shell twin uses its own table (`pam`, 50000 rows, groups of 100);
+this file uses `ampar`, 80000 rows, groups of 200. Assertion names match.
+
+### Every arm
+
+| test | what it holds |
+| --- | --- |
+| `test_parallel_am_scan` | the serial plan is a Seq Scan, not a custom scan; the parallel plan is a Seq Scan under Gather with two workers launched; a parallel AM scan returns the same count as serial; both launched workers produced rows |
+
+The load-bearing assertion is `workers share the table-AM scan, it is not a
+single claimer`. It is unreachable while `phs_nallocated` is first-wins, and
+reachable only when each worker claims its own row groups.
+
