@@ -842,10 +842,12 @@ harness_selftest	400-a-check-result-must-be-machine	pgc_fail emits one record	15
 harness_selftest	400-a-check-result-must-be-machine	pgc_pass emits one record	15;16;17;18;19	never	-
 harness_selftest	400-a-check-result-must-be-machine	premise: and it would name a file that calls check and echoes a SKIP	15;16;17;18;19	never	-
 harness_selftest	400-a-check-result-must-be-machine	premise: and that is this fragment, not the suite	15;16;17;18;19	never	-
+harness_selftest	400-a-check-result-must-be-machine	premise: and that population is the suite corpus	15;16;17;18;19	never	-
 harness_selftest	400-a-check-result-must-be-machine	premise: it is callable	15;16;17;18;19	never	-
 harness_selftest	400-a-check-result-must-be-machine	premise: it names a check_skip reading an unassigned variable	15;16;17;18;19	never	-
 harness_selftest	400-a-check-result-must-be-machine	premise: lib.sh is where the check helpers live	15;16;17;18;19	never	-
 harness_selftest	400-a-check-result-must-be-machine	premise: the fixtures carry the shapes this sweep is about	15;16;17;18;19	never	-
+harness_selftest	400-a-check-result-must-be-machine	premise: the piped-loop sweep read every file it was offered	15;16;17;18;19	never	-
 harness_selftest	400-a-check-result-must-be-machine	premise: the probe ran every helper shape once	15;16;17;18;19	never	-
 harness_selftest	400-a-check-result-must-be-machine	premise: the sweep classified a corpus of check-calling files	15;16;17;18;19	never	-
 harness_selftest	400-a-check-result-must-be-machine	premise: while a file that calls no check is not its business	15;16;17;18;19	never	-

@@ -18,6 +18,30 @@ true until the next version shipped.
 
 ### Added
 
+- The piped-loop sweep reported a clean tree without reading one (#1033).
+
+  `selftest/400` proves its detector FIRES -- a fixture with a check inside a piped
+  loop gives 1 -- and nothing proved it had EXAMINED anything. Without `nullglob` a
+  wrong `$PGC_TESTDIR` leaves both globs LITERAL, `awk` opens no file, `grep -c .`
+  over no input prints `0`, and the arm compares that `0` against `0` and passes:
+
+      PGC_TESTDIR=<a real dir with one offender>   hits=1   detector fires
+      PGC_TESTDIR=/nonexistent                     hits=0   ARM PASSES, nothing read
+
+  The same file already gets this right 260 lines above, where a different sweep
+  carries `[ -e "$_sk_f" ] || continue` and a `premise: the sweep classified a corpus
+  of check-calling files` arm. One sweep was premised and the other was not.
+
+  The population is now counted by what `awk` actually OPENED -- `FNR == 1` fires once
+  per file it reads -- rather than by `ls`, so a file that exists and cannot be read is
+  a miss rather than an invisible one, and the premise uses the same mechanism as the
+  detector so the two cannot drift apart. It is RECONCILED against what the globs
+  offered rather than floored at a constant: a literal glob offers 2 words and reads 0.
+
+  Removal proof: pointed at a nonexistent tree, `no suite calls a check inside a piped
+  loop` still PASSES -- which is the defect -- while both premises redden.
+
+  Closes the third of #1033's three gaps; `ae008c2` closed the other two.
 - A bash suite that unrolls a family as literals graded MISSING against the port that
   parametrises it (#1045 class 3).
 
