@@ -1156,6 +1156,12 @@ harness_selftest	490-a-one-line-body-ends-at-its-own-brace	control: and the reco
 harness_selftest	490-a-one-line-body-ends-at-its-own-brace	premise: the skip-loop tool is present	15;16;17;18;19	never	-
 harness_selftest	490-a-one-line-body-ends-at-its-own-brace	premise: the tool answers with an emitter set, so 'q is absent' is about q	15;16;17;18;19	never	-
 harness_selftest	490-a-one-line-body-ends-at-its-own-brace	premise: the tool reports an unclosed count at all, so a zero below means zero	15;16;17;18;19	never	-
+index_fetch_penalty_crossover	index_fetch_penalty_crossover	a 50000-row correlated range uses the custom scan, not a fetching index	18	never	-
+index_fetch_penalty_crossover	index_fetch_penalty_crossover	a selective point lookup still uses the index	18	never	-
+index_fetch_penalty_crossover	index_fetch_penalty_crossover	both paths return the same aggregate at 50000	18	never	-
+index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the btree on id exists	18	never	-
+index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the table holds all 1000000 rows	18	never	-
+index_fetch_penalty_crossover	index_fetch_penalty_crossover	the fetch penalty leaves a clustered ORDER BY on its index	18	never	-
 native_join_runtime_filter	native_join_runtime_filter	3-table answer equals filter-off	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	3-table join order matches filter-off	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	3-table plan has coordinator	15;16;17;18;19	never	-

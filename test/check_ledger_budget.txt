@@ -54,4 +54,4 @@ suites_not_covered 249
 #   the number of attacked checks -- and it overcounts from the first moment this
 #   ledger does the job it exists for. The gate prints both quantities side by side
 #   (`rows=N | never observed red=M`) because they are different questions.
-checks_never_observed_red 1209
+checks_never_observed_red 1215

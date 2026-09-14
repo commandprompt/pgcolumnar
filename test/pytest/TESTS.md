@@ -85,6 +85,7 @@ behaviour, the source of that number is named.
 - [37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface](#37-test_iceberg_fdwpy-the-iceberg-fdws-pruning-surface)
 - [38. test_objstore_endpoint_userinfo.py: userinfo in an object-store endpoint](#38-test_objstore_endpoint_userinfopy-userinfo-in-an-object-store-endpoint)
 - [39. test_hilbert_cluster.py: the Hilbert clustering SQL surface](#39-test_hilbert_clusterpy-the-hilbert-clustering-sql-surface)
+- [40. test_index_fetch_penalty_crossover.py: the correlated range must not fetch](#40-test_index_fetch_penalty_crossoverpy-the-correlated-range-must-not-fetch)
 
 ## 1. How to read a test in here
 
@@ -4021,3 +4022,21 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_the_install_script_and_the_catalog_agree_on_the_symbol_set` | S8, symbols resolved from the AS clause and never derived |
 | `test_each_new_verb_is_installed_and_its_symbol_declared` | installed once, C, and declared |
 | `test_each_new_verb_has_its_siblings_signature` | args, VARIADIC element and return type, compared against the sibling rather than retyped |
+
+## 40. test_index_fetch_penalty_crossover.py: the correlated range must not fetch
+
+#913. A fetching index scan on a correlated key is priced below the custom scan
+through ~50,000 rows, while it does about 27x the work. The penalty term exists
+for this; the measurement says it is too small. Split from #766, which closed
+on the opposite question.
+
+This file asserts the PLAN, not a cost number. Costs drift with the constants.
+The chosen node is the property.
+
+Independent of `test/index_fetch_penalty_crossover.sh`. Same public seam, own
+fixture, own observations. Assertion names match the shell suite.
+
+| test | what it asserts |
+| --- | --- |
+| `test_index_fetch_penalty_crossover` | a 50,000-row correlated range uses the custom scan; a point lookup still uses the index; both paths agree on the aggregate; a clustered ORDER BY stays on the index |
+

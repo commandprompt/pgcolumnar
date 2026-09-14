@@ -115,6 +115,7 @@ SUITES=(
 	import_exclusion
 	import_export_privilege
 	index_delete_liveness
+	index_fetch_penalty_crossover
 	index_fetch_penalty_width
 	index_only
 	inheritance
