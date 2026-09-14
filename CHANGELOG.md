@@ -1656,6 +1656,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- A parallel custom scan divided its whole run cost by the worker count.
+
+  Core seqscan divides CPU across workers and leaves disk I/O whole. The
+  partial columnar path divided `(total - startup)` by `workers`, so an
+  I/O-dominated scan was quoted at half its serial cost with two workers.
+  Measured: serial run 10825, parallel Custom Scan 5412.5 (ratio 2.000).
+  Leaving I/O undivided, the same fixture is 10112.5 (ratio 1.070).
+
+  `get_parallel_divisor` is static in core; the leader-participation heuristic
+  is reproduced so CPU uses the same divisor a parallel seqscan does.
+
 - The standing parity arm graded a hand-written list, and nothing enforced it
   (#432, #1046).
 

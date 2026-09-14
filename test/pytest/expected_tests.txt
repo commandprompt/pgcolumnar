@@ -180,4 +180,6 @@ guard_tests 340
 # right here; two independent 322s merged just as silently earlier today and the
 # merged tree collected 323. Re-derive BOTH after every merge, not the one git
 # complained about.
-cluster_tests 320
+# 320 -> 321: test_parallel_scan_cost.py, the parallel custom-scan I/O cost.
+# Re-derived by collection on this tree: `321 tests collected`.
+cluster_tests 321

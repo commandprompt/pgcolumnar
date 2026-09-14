@@ -83,6 +83,7 @@ behaviour, the source of that number is named.
 - [35. test_projection_privilege.py: the projection read helpers are a privilege boundary](#35-test_projection_privilegepy-the-projection-read-helpers-are-a-privilege-boundary)
 - [36. test_compare_to_bash.py: the parity tool reads the NAME](#36-test_compare_to_bashpy-the-parity-tool-reads-the-name)
 - [37. test_hilbert_cluster.py: the Hilbert clustering SQL surface](#37-test_hilbert_clusterpy-the-hilbert-clustering-sql-surface)
+- [38. test_parallel_scan_cost.py: a parallel custom scan must not divide I/O](#38-test_parallel_scan_costpy-a-parallel-custom-scan-must-not-divide-io)
 
 ## 1. How to read a test in here
 
@@ -4005,3 +4006,28 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_the_install_script_and_the_catalog_agree_on_the_symbol_set` | S8, symbols resolved from the AS clause and never derived |
 | `test_each_new_verb_is_installed_and_its_symbol_declared` | installed once, C, and declared |
 | `test_each_new_verb_has_its_siblings_signature` | args, VARIADIC element and return type, compared against the sibling rather than retyped |
+
+## 38. test_parallel_scan_cost.py: a parallel custom scan must not divide I/O
+
+The port of `test/parallel_scan_cost.sh`. The partial path priced itself as
+`serial_startup + (serial_run / workers)`. Core seqscan divides CPU only and
+leaves disk I/O whole. Dividing the whole run quotes an I/O-dominated scan at
+half its serial cost with two workers, so Gather beat honestly costed
+alternatives.
+
+Public seam: `EXPLAIN` of a columnar scan. This file raises `seq_page_cost` so
+I/O dominates the serial run; the shell twin does the same with a different
+page-cost and its own table. CPU terms stay at their defaults so the parallel
+path is still a little cheaper than serial and Gather still appears -- the
+number this suite exists to read. Assertion names match the shell suite.
+
+### Every arm
+
+| test | what it holds |
+| --- | --- |
+| `test_parallel_scan_cost` | the serial plan is a columnar scan with no Gather; the parallel plan is a columnar scan under Gather with two workers; both have a positive run cost; an I/O-dominated parallel scan is not priced at serial/workers |
+
+The load-bearing assertion classifies the ratio `serial_run / parallel_run` as
+`io-kept` (below 1.35) rather than `halved` (2.000 on the unfixed path). It is
+unreachable by dividing the whole run, and reachable only if I/O remains.
+

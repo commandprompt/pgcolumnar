@@ -2518,6 +2518,47 @@ pgcolumnar_refined_scan_cost(RelOptInfo *rel, Oid relid, Path *seqpath,
 }
 
 /*
+ * pgcolumnar_parallel_divisor
+ *		Core's get_parallel_divisor (costsize.c) is static, so the
+ *		leader-participation heuristic is reproduced here. CPU is divided
+ *		the same way a parallel seqscan is; I/O is not.
+ */
+static double
+pgcolumnar_parallel_divisor(Path *path)
+{
+	double		parallel_divisor = path->parallel_workers;
+
+	if (parallel_leader_participation)
+	{
+		double		leader_contribution;
+
+		leader_contribution = 1.0 - (0.3 * path->parallel_workers);
+		if (leader_contribution > 0)
+			parallel_divisor += leader_contribution;
+	}
+
+	return parallel_divisor;
+}
+
+/*
+ * pgcolumnar_scan_io_run_cost
+ *		The page-read portion of a columnar scan, after projected-width
+ *		scaling (#171) and zone-map survival (#434). This is the term core
+ *		leaves undivided on a parallel seqscan.
+ */
+static Cost
+pgcolumnar_scan_io_run_cost(RelOptInfo *rel, Oid relid)
+{
+	double		survival = pgcolumnar_zonemap_survival(rel, relid);
+	double		widthFrac = pgcolumnar_projected_width_fraction(rel, relid);
+	Cost		pageCost = seq_page_cost * (double) rel->pages;
+
+	if (widthFrac < 1.0)
+		pageCost *= widthFrac;
+	return pageCost * survival;
+}
+
+/*
  * PgColumnarSetRelPathlist
  *		set_rel_pathlist_hook: for a columnar base relation, replace the
  *		sequential-scan path with the columnar custom scan and drop parallel
@@ -2845,7 +2886,7 @@ PgColumnarSetRelPathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
 	 * Add a parallel-aware partial path (gap 23) so the planner can put a Gather
 	 * over a parallel columnar scan. Workers each claim distinct stripes from a
 	 * shared counter set up by the DSM callbacks. The cost model mirrors a
-	 * parallel seqscan: the per-tuple work is divided among the workers.
+	 * parallel seqscan: CPU is divided among the workers, disk I/O is not.
 	 *
 	 * Costed from the serial columnar path rather than from the seqscan, and no
 	 * longer conditional on a seqscan surviving (#362). add_path frees the
@@ -2950,7 +2991,10 @@ PgColumnarSetRelPathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
 		if (workers > 0)
 		{
 			CustomPath *ppath = makeNode(CustomPath);
-			double		divisor = (double) workers;
+			double		divisor;
+			Cost		serialRun;
+			Cost		ioRun;
+			Cost		cpuRun;
 
 			ppath->path.pathtype = T_CustomScan;
 			ppath->path.parent = rel;
@@ -2959,10 +3003,23 @@ PgColumnarSetRelPathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
 			ppath->path.parallel_aware = true;
 			ppath->path.parallel_safe = true;
 			ppath->path.parallel_workers = workers;
-			ppath->path.rows = rel->rows / divisor;
+			/*
+			 * Core seqscan divides CPU by get_parallel_divisor and leaves disk
+			 * I/O whole (costsize.c: the disk run cost cannot be amortized).
+			 * This path used to divide the entire (total - startup) by the
+			 * worker count, so an I/O-dominated scan was quoted at 1/N of its
+			 * serial cost.
+			 */
+			divisor = pgcolumnar_parallel_divisor(&ppath->path);
+			serialRun = serialTotalCost - serialStartupCost;
+			ioRun = pgcolumnar_scan_io_run_cost(rel, rte->relid);
+			if (ioRun > serialRun)
+				ioRun = serialRun;
+			cpuRun = serialRun - ioRun;
+			ppath->path.rows = clamp_row_est(rel->rows / divisor);
 			ppath->path.startup_cost = serialStartupCost;
 			ppath->path.total_cost = serialStartupCost +
-				(serialTotalCost - serialStartupCost) / divisor;
+				ioRun + cpuRun / divisor;
 			ppath->path.pathkeys = NIL;
 			ppath->flags = 0;
 			ppath->custom_paths = NIL;

@@ -1215,3 +1215,11 @@ native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses vectorized agg when GUC on	15;16;17;18;19	2026-09-12	drop JOINREL fold
+parallel_scan_cost	parallel_scan_cost	an I/O-dominated parallel scan is not priced at serial/workers	18	never	-
+parallel_scan_cost	parallel_scan_cost	premise: both scans have a positive run cost	18	never	-
+parallel_scan_cost	parallel_scan_cost	premise: the parallel plan has Gather	18	never	-
+parallel_scan_cost	parallel_scan_cost	premise: the parallel plan is a columnar scan	18	never	-
+parallel_scan_cost	parallel_scan_cost	premise: the parallel plan uses two workers	18	never	-
+parallel_scan_cost	parallel_scan_cost	premise: the serial plan has no Gather	18	never	-
+parallel_scan_cost	parallel_scan_cost	premise: the serial plan is a columnar scan	18	never	-
+parallel_scan_cost	parallel_scan_cost	premise: the table holds every inserted row	18	never	-
