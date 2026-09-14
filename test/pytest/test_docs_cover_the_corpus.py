@@ -987,3 +987,45 @@ def test_a_stale_next_step_is_caught_on_a_fixture(expect):
               for i in sorted(ids) if i in refused2]
     expect.text(", ".join(stale2), "1:four-five-six",
                 "and an open entry whose id reached section 2 is named")
+
+
+def test_a_numbered_section_has_a_body_of_its_own(expect):
+    """A numbered heading immediately followed by another heading documents nothing.
+
+    THE COVERAGE ARM CANNOT SEE THIS. `test_every_test_file_has_a_NUMBERED_section_of_its_own`
+    asks whether each file is NAMED by a numbered heading, and a heading with no body is
+    still a heading -- so a section inserted between another section's heading and its
+    body leaves both files named and one of them documented under the wrong title. That is
+    how `## 37. test_iceberg_fdw.py` came to sit directly above `## 38.`, with the Iceberg
+    body attached to the userinfo heading: a merge put the new section in the gap, and
+    every existing arm stayed green.
+
+    So this reads the STRUCTURE rather than the names: between one numbered heading and
+    the next there must be something that is not another heading and not blank.
+    """
+    text = (HERE / "TESTS.md").read_text(encoding="utf-8")
+    lines = text.split("\n")
+    heads = [i for i, l in enumerate(lines) if re.match(r"^## \d+[a-z]?\. ", l)]
+    expect.at_least(len(heads), 20,
+                    "premise: the numbered headings were found at all")
+
+    empty = []
+    for k, i in enumerate(heads):
+        end = heads[k + 1] if k + 1 < len(heads) else len(lines)
+        body = [l for l in lines[i + 1:end] if l.strip() and not l.startswith("#")]
+        if not body:
+            empty.append(lines[i][3:].split(":")[0].strip())
+    expect.text(", ".join(empty) or "none", "none",
+                "every numbered section carries a body of its own")
+
+    # Control: plant the shape and prove the reader names it, so a green above is the
+    # absence of the defect rather than the absence of a working check.
+    planted = lines[:heads[1]] + ["## 999. planted.py: nothing follows this", ""] + lines[heads[1]:]
+    heads2 = [i for i, l in enumerate(planted) if re.match(r"^## \d+[a-z]?\. ", l)]
+    found = []
+    for k, i in enumerate(heads2):
+        end = heads2[k + 1] if k + 1 < len(heads2) else len(planted)
+        if not [l for l in planted[i + 1:end] if l.strip() and not l.startswith("#")]:
+            found.append(planted[i][3:].split(":")[0].strip())
+    expect.text(", ".join(found), "999. planted.py",
+                "control: a planted empty section is named by the same reader")

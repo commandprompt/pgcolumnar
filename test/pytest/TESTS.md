@@ -85,6 +85,8 @@ behaviour, the source of that number is named.
 - [37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface](#37-test_iceberg_fdwpy-the-iceberg-fdws-pruning-surface)
 - [38. test_objstore_endpoint_userinfo.py: userinfo in an object-store endpoint](#38-test_objstore_endpoint_userinfopy-userinfo-in-an-object-store-endpoint)
 - [39. test_hilbert_cluster.py: the Hilbert clustering SQL surface](#39-test_hilbert_clusterpy-the-hilbert-clustering-sql-surface)
+- [40. test_sorted_pathkeys.py: when a scan may claim its rows are ordered](#40-test_sorted_pathkeyspy-when-a-scan-may-claim-its-rows-are-ordered)
+- [41. test_projections.py: a second copy of some columns, kept honest](#41-test_projectionspy-a-second-copy-of-some-columns-kept-honest)
 
 ## 1. How to read a test in here
 
@@ -222,6 +224,36 @@ INCOMPLETE branch set a variable the verdict never read.
 `@pytest.mark.skip` FAILS the run. The honest-looking alternative greened
 silently, so the layer refused the cheap dishonest escape and permitted the
 expensive-looking one. An escape hatch that costs nothing is the default.
+
+### Before you write a `cannot_run`: it exits 67, and CI acts on that
+
+A run containing one unrunnable check exits **67** — `EXIT_INCOMPLETE`, deliberately the
+same number as `lib.sh`'s `PGC_EXIT_INCOMPLETE`, so a runner learns the code once. pytest
+itself only uses 0-6, so it collides with nothing.
+
+**The `pytest (cluster tests)` job runs pytest bare under `set -euo pipefail`.** So 67
+fails the step, and the job goes red on a check that did exactly what it was supposed to
+do. Measured on 2026-09-14: that leg exits 0 with **0 unrun**, so nothing in the cluster
+half was producing one and nothing was absorbing it. The next legitimately-unrunnable
+cluster arm is the first, and it turns the job red.
+
+The guard half is not in the same position today, but the reasoning is the same.
+
+So, in order:
+
+1. **Try to remove the precondition.** `sorted_pathkeys`' `parallel_copy` arm needed
+   `max_prepared_transactions` raised before the postmaster starts. That is a line in
+   `pgc_cluster`'s `postgresql.conf`, so the arm runs and the question disappears. Prefer
+   this whenever the precondition is something this harness controls.
+2. **If it is not yours to control, weigh what refusing costs.** `cannot_run` records
+   under the REASON CODE, not under a check name, so a ported arm that refuses emits
+   NONE of the bash names it would have carried and the suite must be declared in
+   `INCOMPLETE` (#1040 phase 0b). Refusing is not free even before CI sees it.
+3. **Only then refuse**, and say in the PR that the cluster job's exit code changes.
+
+The general shape, worth recognising away from here: a truthful "could not evaluate"
+sharing one channel with "something is wrong", and a caller that cannot tell them apart.
+`orphan-scan` has the same problem with its exit 1 (#1015).
 
 The run now ends `EXIT_INCOMPLETE`, which is 67 — deliberately the same number as
 `PGC_EXIT_INCOMPLETE` in `lib.sh:58`, because a runner that learns the code should
@@ -1069,6 +1101,7 @@ many times.
 | `test_every_in_document_link_in_this_directory_reaches_a_heading` | every contents-list link resolves, with a coverage premise |
 | `test_the_contents_list_is_numbered_in_order` | the contents list and the sections both count 1..N with no gap or inversion — the link arms above ask only whether a link RESOLVES, and a shuffled list resolves perfectly |
 | `test_every_test_file_has_a_NUMBERED_section_of_its_own` | a section written as an unnumbered `###` is invisible to every other arm: not in the numbering, not in the contents, and the file is still NAMED so the coverage arm is satisfied — `test_iceberg_fdw.py` shipped that way in #1057 |
+| `test_a_numbered_section_has_a_body_of_its_own` | the next one down: a heading with no body still NAMES its file, so a section inserted into the gap between another heading and its body leaves every existing arm green — `## 37. test_iceberg_fdw.py` sat directly above `## 38.` with the Iceberg body under the userinfo title |
 | `test_a_shuffled_contents_list_is_caught_on_a_fixture` | **removal proof**: the `29, 31, 30` shape that shipped, with a clean control and an omitted entry named apart from an inversion |
 | `test_the_next_steps_list_is_anchored_to_the_inventory` | every section 5 entry names a mode id, so the entry can be checked at all |
 | `test_no_open_next_step_names_work_the_document_calls_done` | an un-struck entry whose id reached section 2 is stale work to do |
@@ -3880,19 +3913,6 @@ the tool grades THIS tree.
 
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
-## 38. test_objstore_endpoint_userinfo.py: userinfo in an object-store endpoint
-
-Not a port and not a pair: `objstore_endpoint_userinfo.sh` does not exist. These assert
-the same properties as `test/objstore_userinfo.sh`'s endpoint arms, independently,
-through the python harness.
-
-| test | asserts |
-| --- | --- |
-| `test_a_userinfo_endpoint_is_refused` | both shapes refuse at `22023`, naming userinfo and naming the ENDPOINT rather than the s3:// URL |
-| `test_the_guard_fires_without_a_region_configured` | the placement: with no region set the refusal is userinfo, not the region demand |
-| `test_a_clean_endpoint_is_not_refused_as_userinfo` | the control -- a clean endpoint gets past the guard and fails for another reason |
-| `test_an_at_sign_in_the_object_key_is_not_userinfo` | the other direction: `@` is legal in a key and is untouched |
-
 Ports `test/iceberg_fdw.sh`. 74 of its 76 check names, one for one; the two it cannot
 carry are `pgc_skip`'s refusal names, which are structural and declared in
 `INCOMPLETE` with their reason.
@@ -3926,6 +3946,20 @@ carry are `pgc_skip`'s refusal names, which are structural and declared in
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 
+
+
+## 38. test_objstore_endpoint_userinfo.py: userinfo in an object-store endpoint
+
+Not a port and not a pair: `objstore_endpoint_userinfo.sh` does not exist. These assert
+the same properties as `test/objstore_userinfo.sh`'s endpoint arms, independently,
+through the python harness.
+
+| test | asserts |
+| --- | --- |
+| `test_a_userinfo_endpoint_is_refused` | both shapes refuse at `22023`, naming userinfo and naming the ENDPOINT rather than the s3:// URL |
+| `test_the_guard_fires_without_a_region_configured` | the placement: with no region set the refusal is userinfo, not the region demand |
+| `test_a_clean_endpoint_is_not_refused_as_userinfo` | the control -- a clean endpoint gets past the guard and fails for another reason |
+| `test_an_at_sign_in_the_object_key_is_not_userinfo` | the other direction: `@` is legal in a key and is untouched |
 
 ## 39. test_hilbert_cluster.py: the Hilbert clustering SQL surface
 
@@ -4021,3 +4055,189 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_the_install_script_and_the_catalog_agree_on_the_symbol_set` | S8, symbols resolved from the AS clause and never derived |
 | `test_each_new_verb_is_installed_and_its_symbol_declared` | installed once, C, and declared |
 | `test_each_new_verb_has_its_siblings_signature` | args, VARIADIC element and return type, compared against the sibling rather than retyped |
+
+
+## 40. test_sorted_pathkeys.py: when a scan may claim its rows are ordered
+
+Ports `test/sorted_pathkeys.sh` (#432), all 110 of its check names, one for one.
+The bash suite pins one decision: when a columnar
+scan may hand the planner PATHKEYS -- a promise that the rows come out in a stated order,
+which lets the planner drop the Sort above it. A wrong promise is not a slow plan, it is
+WRONG ROWS, because nothing downstream re-checks the order.
+
+So every arm here is in one of three shapes, and the file is organised by them rather than
+by feature:
+
+- **CLAIM.** The relation really is ordered, the Sort really does disappear.
+- **REFUSAL.** Something made the claim untrue -- an append, an UPDATE, a rewrite, a
+  collation change -- and the Sort must come BACK.
+- **ANSWER.** The rows themselves, against a heap table built from the same data. This is
+  the shape that catches a wrong claim, because a plan check alone cannot: a scan that
+  promises an order it does not keep produces a plan that looks right.
+
+An ANSWER arm is not a duplicate of its CLAIM arm. Dropping the Sort is only correct if the
+rows arrive sorted anyway, and only the heap comparison can say whether they did.
+
+### The arm that needed a cluster setting, not a workaround
+
+`pgcolumnar.parallel_copy` prepares one transaction per worker, and
+`max_prepared_transactions` cannot be raised without restarting the postmaster. The
+default is 0, so asking for fewer workers does not help: any number of workers is one
+too many.
+
+`pgc_cluster` therefore sets it where it writes `postgresql.conf`, at the value
+`lib.sh` gives this suite through `PGC_EXTRA_CONF`. The alternative -- refusing the arm
+with `expect.cannot_run` -- was measured and rejected for two reasons. It would have
+lost three of the bash suite's names outright, because `cannot_run` records under the
+REASON CODE rather than under a name (#1040 phase 0b). And it would have turned the
+`pytest (cluster tests)` job RED: an unrunnable check exits 67, the job runs pytest
+under `set -euo pipefail`, and no file in that half had ever produced one. Measured:
+the cluster leg exits 0 today with 0 unrun.
+
+The arm asserts `pg_prepared_xacts` is empty afterwards. A prepared transaction left
+behind holds its locks until someone resolves it, and this cluster is session-scoped --
+so a leak would not fail this test, it would wedge every file that runs after it.
+
+### What the port asserts that the original gets for free
+
+`psycopg` returns a PostgreSQL array as a python list, so `{k,j}` arrives as `['k','j']`
+and a text comparison against the bash suite's expected output would fail for a reason that
+has nothing to do with ordering. The port casts to `::text` in SQL instead of comparing
+python objects, so both harnesses are reading the same string the server produced.
+
+The COPY arms need a directory the SERVER can write. `tmp_path` is under
+`/tmp/pytest-of-root/`, mode 700, which the backend cannot reach -- so a `server_dir`
+fixture makes a world-writable one. The bash suite never meets this because it runs its
+psql as the same user.
+
+| test | asserts |
+| --- | --- |
+| `test_the_fixture_really_is_ordered` | the premise: the rows are in the order the test is about, measured by inversions rather than assumed |
+| `test_a_real_ordering_loses_the_sort` | the CLAIM: an order the rows are actually in drops the Sort |
+| `test_an_order_the_rows_are_not_in_keeps_the_sort` | the control: a different order must still pay for a Sort |
+| `test_the_columnar_answer_matches_heap_in_order` | the ANSWER: the rows, against a heap built from the same data |
+| `test_a_constant_leading_key_is_skipped` | a leading key with one distinct value cannot prove the second key's order |
+| `test_a_run_with_an_appended_tail_is_not_an_ordered_relation` | rows appended past the run end the ordering, however sorted the run still is |
+| `test_the_tail_answer_matches_heap` | and the rows after the append are still right |
+| `test_a_zorder_run_is_not_a_sort_on_its_lead_column` | Z-order interleaves bits, so it orders NEITHER column on its own |
+| `test_a_declared_sort_key_is_an_intention_not_a_layout` | a declared key on an unsorted relation is a statement of intent, not evidence |
+| `test_an_unsorted_vacuum_retracts_the_ordered_path` | a vacuum that rewrites without sorting must retract the claim |
+| `test_a_type_change_rewrite_drops_the_mark` | a rewriting ALTER TYPE changes the values, so the old mark cannot survive it |
+| `test_one_updated_row_is_a_row_outside_the_run` | a single UPDATE appends, and one row outside the run is enough |
+| `test_the_mark_follows_a_rename` | #778: the mark is stored by name, so a RENAME COLUMN must carry it |
+| `test_a_recorded_name_that_no_longer_resolves_is_not_a_claim` | a name that resolves to nothing must retract rather than fall through |
+| `test_the_guc_turns_the_claim_off` | the GUC is a real off switch, checked with the Sort back |
+| `test_a_ctas_relation_claims_nothing` | CTAS writes rows in whatever order the query produced; nothing records an order |
+| `test_a_collatable_sort_column_is_not_claimed` | text order is collation-dependent, so a run sorted under one collation is not sorted under another |
+| `test_a_collation_alter_changes_the_order_without_rewriting` | the mechanism: ALTER COLLATION changes the ORDER while the bytes stay put |
+| `test_a_domain_and_an_array_carry_their_base_collation` | a domain over text and a text[] inherit the collatability, and the refusal with it |
+| `test_a_composite_is_claimed_and_postgres_closes_the_hole` | a composite of two texts, and where PostgreSQL itself refuses first |
+| `test_an_enum_add_value_before_does_not_renumber` | `ADD VALUE ... BEFORE` inserts a sort order without renumbering, so a sorted run stays sorted |
+| `test_a_cached_ordered_plan_is_retracted` | a plan cached while ordered must be retracted by INSERT, INSERT ... SELECT and a plain append |
+| `test_a_cached_plan_is_retracted_by_copy` | the same through COPY, which takes a different write path |
+| `test_a_cached_plan_is_retracted_under_parallel_flush` | and under `parallel_flush`, where the rows arrive from workers |
+| `test_a_cached_plan_is_retracted_across_backends_by_parallel_copy` | the cross-BACKEND case, the only write path where the invalidation crosses a process boundary; asserts the rows loaded before asserting the retraction, and that no prepared transaction leaked |
+| `test_truncate_restarts_numbering_in_a_new_storage` | TRUNCATE gives a new relfilenode, so nothing from the old storage may carry |
+| `test_a_reclaiming_rewrite_retracts_while_the_rows_stay_ordered` | the hard case: the rows stay in order and the claim must still go, because the run boundaries moved |
+| `test_a_query_that_cannot_use_the_order_does_not_pay_to_decide` | deciding the claim must not read buffers for a query that cannot use it |
+| `test_a_projection_does_not_lend_its_order_to_the_base_relation` | a sorted projection is a different relation; its order is not the base table's |
+| `test_a_plain_gather_never_sits_above_a_scan_claiming_an_order` | Gather does not preserve order, so the two must never be stacked |
+
+
+## 41. test_projections.py: a second copy of some columns, kept honest
+
+Ports `test/projections.sh` (#432), all 75 of its check names, one for one.
+
+A projection is a second copy of some columns. Every property here is about the copy
+staying honest: it holds the rows the base holds, it loses the rows the base loses, it
+survives a vacuum that renumbers every row underneath it, and the planner reads it only
+when it can answer the whole query from it.
+
+So a wrong projection is a WRONG ANSWER, not a slow one. A scan that reads a stale
+projection returns rows the base no longer has, and nothing downstream re-checks.
+
+The file is organised by what can make the copy diverge, not by feature:
+
+| group | what can go wrong |
+| --- | --- |
+| CATALOG | `add_projection` records the wrong thing, or accepts what it should refuse |
+| FAN-OUT | a write reaches the base and not the copy -- including a DELETE, whose liveness comes from the base's delete vector |
+| RECONSTRUCT | a column the projection does not store is fetched from the base BY ROW NUMBER; if that linkage drifts the rows pair up wrongly |
+| PLANNER | a covering projection is chosen when it can answer, and must not be when it cannot |
+| REBUILD | `pgcolumnar.vacuum` compacts the base into fresh row numbers; a projection left on the old numbering is keyed to rows that mean something else |
+| MVCC | an old snapshot must not see rows committed after it -- through a projection scan as much as through the base |
+| LIFECYCLE | a dropped table's declaration (#304), and a projection added or dropped mid-transaction (#875) |
+
+### Four places the port asserts more than the original
+
+This is the first port where the difference is worth a section, because in one of them
+the port is **strictly stronger** and a reader comparing the two should know which way.
+
+**`expect_fail` becomes `expect.sqlstate`.** The original's own helper runs the
+statement and passes when it errors AT ALL, so a misspelt table name satisfies every one
+of its eight refusal arms. Each code below was MEASURED against this build, and they are
+all distinct, so each arm now names the refusal it is for:
+
+```
+duplicate name          42710      add on heap table       42809
+unknown column          42703      drop base               22023
+empty columns           22023      drop unknown            42704
+duplicate column        42701      read_projection base    42704
+sort key not in columns 22023
+```
+
+The names are the bash suite's; the assertions are not.
+
+**The EXPLAIN grep becomes a typed field.** `grep -c 'Columnar Projection: pc'` is a
+substring test over text. The plan carries `"Columnar Projection": "pc"` as a property,
+so the port reads the value -- and the mutation proof confirms it reads the NAME rather
+than the presence: forcing the planner to refuse gives `got None want 'pc'`. The two
+NEGATIVE arms use `expect.plan_marker(absent=True)`, which refuses an empty plan, because
+a plan that never arrived looks exactly like a plan carrying no projection.
+
+**`pgc_set_hash` becomes `expect.row_set`.** Order-blind by declaration rather than by
+construction. A hash mismatch says two hashes differ; a row-set mismatch says which row.
+
+**The second session is a second connection.** The original drives a background
+`psql -f fifo` and waits by polling its output file for a token, up to 200 times at
+0.1s. A second `psycopg` connection removes the wait rather than shortening it: the
+query returns when it returns. The original's two arms that exist only to NAME that
+polling timeout -- `session A opened snapshot` and `session A responded post-commit` --
+are carried here as the positive facts they are the negative of.
+
+### Arrays are cast in SQL
+
+`psycopg` returns a PostgreSQL array as a Python list, so `{1,2,3}` arrives as
+`[1, 2, 3]`. Casting `::text` in the query keeps both harnesses comparing the string the
+server produced, rather than comparing a Python object against a brace literal and
+failing for a reason that has nothing to do with projections.
+
+| test | asserts |
+| --- | --- |
+| `test_the_catalog_is_empty_until_the_first_projection_is_added` | the base projection is recorded LAZILY, so the catalog holds nothing before the first add |
+| `test_the_first_add_records_the_base_and_the_new_projection` | both rows appear at once, with the base's columns, empty sort key, name and shared storage id |
+| `test_a_second_projection_may_have_no_sort_key` | a projection without a sort key, and three distinct storage ids |
+| `test_a_bad_projection_is_refused_by_its_own_code` | seven refusals, each by its measured SQLSTATE rather than by "it errored" |
+| `test_a_projection_on_a_heap_table_is_refused` | the refusal that is about the ACCESS METHOD, not the arguments |
+| `test_drop_removes_one_projection_and_leaves_the_rest` | drop is surgical, and the table is still readable after the DDL |
+| `test_a_projection_added_late_is_back_filled_from_the_existing_rows` | a projection added after the rows exist is populated from them, not left empty |
+| `test_a_write_fans_out_to_every_projection` | the write path: both projections match the base, by rows and by count |
+| `test_projection_chunks_carry_skip_metadata` | the min/max that makes choosing the projection worth anything |
+| `test_a_delete_reaches_the_projection_through_the_base_delete_vector` | liveness comes from the BASE, so a delete that never touches the copy still removes its rows |
+| `test_fan_out_spans_more_than_one_row_group` | one group is the case where a numbering bug cannot show |
+| `test_the_base_projection_cannot_be_read_by_name` | `base` names a catalog row, not something `read_projection` addresses |
+| `test_columns_the_projection_lacks_are_reconstructed_from_the_base` | the row-number linkage between copy and base |
+| `test_reconstruction_survives_deletes_and_nulls` | where a drifting row number shows first: missing rows and absent values |
+| `test_a_covering_sort_key_query_reads_the_projection` | the projection is chosen, AND the rows match a heap oracle -- a plan check alone cannot say the rows were right |
+| `test_the_guc_is_an_off_switch` | the off switch really switches off |
+| `test_a_query_naming_an_uncovered_column_falls_back_to_the_base` | choosing a projection that lacks `b` would drop the column, not merely cost more |
+| `test_a_projection_scan_reflects_deletes` | the scan path, against the oracle, after a delete and over the full range |
+| `test_vacuum_rebuilds_the_projection_against_the_compacted_base` | survives, is still chosen, and still matches the oracle on fresh row numbers |
+| `test_a_second_vacuum_renumbers_again_and_stays_correct` | ONCE IS NOT THE PROPERTY: a rebuild reading the pre-vacuum numbering is right the first time |
+| `test_an_old_snapshot_never_sees_rows_committed_after_it` | REPEATABLE READ through a projection scan, the case no single-session test can reach |
+| `test_dropping_a_table_removes_only_its_own_declaration` | #304: one orphan used to abort `rebuild_projections()` for every other table |
+| `test_the_rebuild_repairs_an_orphan_rather_than_aborting_on_it` | a database from an older build already holds orphans, so the rebuild must clean rather than abort |
+| `test_a_projection_added_mid_transaction_receives_the_later_writes` | #875: a write before the add latches an EMPTY writer list and every later write skips silently |
+| `test_the_control_a_transaction_with_no_write_before_the_add` | the control -- that path always worked and must stay working |
+| `test_a_projection_dropped_mid_transaction_stops_receiving_writes` | the same latch with the opposite sign, including the orphan storage it would leave |
+| `test_the_control_a_drop_in_its_own_transaction` | pins the arm above to the CACHE rather than to `drop_projection`'s own cleanup |

@@ -283,6 +283,21 @@ class Cluster:
                         # A test that hangs should fail, not wedge the run.
                         "statement_timeout='120s'",
                         "log_min_messages=warning",
+                        # ONE PREPARED TRANSACTION PER parallel_copy WORKER, and the
+                        # setting cannot be raised without a restart -- so it is set
+                        # here, where the postmaster is started, rather than by a test.
+                        #
+                        # THE DEFAULT IS 0, so it is not a matter of asking for fewer
+                        # workers: any number of workers is one too many. `lib.sh` takes
+                        # the same setting for the same suite through PGC_EXTRA_CONF, at
+                        # the same value.
+                        #
+                        # It costs a fixed shared-memory array and changes nothing else:
+                        # a prepared transaction exists only where something PREPAREs
+                        # one, and nothing else in this corpus does. The cluster is
+                        # session-scoped, so a per-test alternative would mean restarting
+                        # it underneath every other file.
+                        "max_prepared_transactions=8",
                         "",
                     ]
                 )
