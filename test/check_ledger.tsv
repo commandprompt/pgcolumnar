@@ -1399,6 +1399,12 @@ parallel_scan_cost	parallel_scan_cost	premise: the serial plan has no Gather	15;
 parallel_scan_cost	parallel_scan_cost	premise: the serial plan is a columnar scan	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	premise: the table holds every inserted row	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	the leader-participation branch changes the divisor	15;16;17;18;19	never	-
+projection_parallel	projection_parallel	a covering projection can be a parallel scan	15;16;17;18;19	2026-09-18	-
+projection_parallel	projection_parallel	a parallel covering projection returns the covering rows once	15;16;17;18;19	never	-
+projection_parallel	projection_parallel	premise: a covering projection exists	15;16;17;18;19	never	-
+projection_parallel	projection_parallel	premise: a parallel base scan is available when the projection is off	15;16;17;18;19	never	-
+projection_parallel	projection_parallel	premise: a serial covering query uses the projection	15;16;17;18;19	never	-
+projection_parallel	projection_parallel	premise: the table holds every inserted row	15;16;17;18;19	never	-
 projection_scan_cost	projection_scan_cost	a clause that mentions the sort key but cannot prune on it does not cheapen a covering projection	15;16;17;18;19	never	-
 projection_scan_cost	projection_scan_cost	a non-sort-key restriction does not cheapen a covering projection	15;16;17;18;19	2026-09-18	-
 projection_scan_cost	projection_scan_cost	a tight covering projection is cheaper relative to the base than a loose one	15;16;17;18;19	2026-09-17	-
