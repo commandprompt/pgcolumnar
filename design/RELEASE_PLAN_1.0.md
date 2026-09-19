@@ -162,7 +162,7 @@ Nothing further should be added. It is 11 days into a 14-day cycle.
   Three defects found by the investigation are tracked separately and do NOT
   close with it: #1074, #1075, #1076.
 
-### 1.0-alpha5, target 2026-09-29. Theme: encoding (adaptive cascade selection)
+### 1.0-alpha5, target 2026-09-29. Theme: encoding, as measured
 
 **BOTH OF THIS ALPHA'S PLANNED ITEMS SHIPPED EARLY, IN ALPHA4**, so the encoding
 item has been moved up from alpha6 to fill it. Recorded 2026-09-17 while auditing
@@ -190,13 +190,29 @@ The two items as they were planned:
 This is a scheduling fact rather than a problem. The series compressed on
 2026-08-29 to reach beta sooner, and work moving forward is that decision working.
 
-**What this alpha now carries**, moved up from alpha6:
+**WHAT THIS ALPHA CARRIES, DECIDED 2026-09-19.** It was re-themed after the
+measurements below, on the owner's call. Adaptive cascade selection came up from
+alpha6 to fill the gap the two shipped items left, and the evidence does not
+support building it. What the alpha delivered instead came out of measuring it:
 
-- **Adaptive cascade encoding selection.** The primitives exist; the missing piece
-  is a sampling selector that chooses per block. High value at low to medium
-  effort, and it changes what the writer emits.
+    #1132  an encoding is kept only when it is smaller AFTER the block codec
+    #1130  a chunk with no nulls stores no validity bitmap
 
-**THE PLAN'S OWN GATE HAS NOT BEEN MET, AND THE DECISION IS OPEN (#1139).**
+Both were found while measuring the cascade candidates rather than from the plan,
+and together they are the largest WHOLE-TABLE stored-size result in the series so
+far. The qualifier is load-bearing: larger percentages appear a few lines away in
+the CHANGELOG and none of them is the same measurement. 49.7% is one column and
+comes from #1132 itself, 54.6% is a ratio to raw rather than to what we stored
+before, and 93.7% is coverage.
+
+    81,869,112 -> 78,109,810 -> 64,984,810 bytes on ClickBench, -20.6%
+
+**Cascading itself leaves the alpha and is tracked on #1139.** It is not
+abandoned: what it lacks is the measured win `design/CASCADE_ENCODING_PLAN.md`
+demands before any of it ships, and the measurement to run is now specified
+rather than general. See that issue before starting it.
+
+**WHY IT LEFT, MEASURED RATHER THAN ARGUED (#1139).**
 Step 1, the sampling selector, shipped on 2026-07-25. Step 2, cascading itself,
 is what this theme now means. `design/CASCADE_ENCODING_PLAN.md` requires a
 measured size win per candidate chain before any of it ships. Measured on
@@ -235,14 +251,21 @@ specified. Run dictionary-then-FOR and dictionary-then-bitpack over the DICT
 vectors, knowing the ceiling is 3.3% of the bytes where the headroom is. The
 other 96.7% is out of reach of every chain on the list.
 
-The numbers and their method are on #1139. **What is not decided here is whether
-to re-theme this alpha**, which is the owner's call; this is recorded so a reader
-does not take the theme above as settled work. Two items reached this alpha from
-its own measurements rather than from the plan:
+The numbers and their method are on #1139, along with a claim of mine that was
+wrong and the measurement that corrected it: "all four candidate chains are
+fixed-width integer chains" read the chains' second stage as the column type they
+apply to. Two of them reach text through a dictionary stage, and the DICT share
+above is what settles how much that is worth.
 
     #1132  encoding kept only when smaller after the codec   81,869,112 -> 78,109,810   -4.59%
     #1130  no validity bitmap for a chunk with no nulls      78,109,810 -> 64,984,810  -16.80%
                                                              total                     -20.6%
+
+**If the owner wants the remaining bytes**, the measurement points at codec level
+rather than at chains: at equal level our encoding already wins on every text
+column, and the 1.25x that is left is what a far more expensive codec finds. A
+per-table codec level is a smaller change than a format bump, with the win where
+the evidence is. Not scheduled; recorded so the next person does not re-derive it.
 
 No date moves. alpha6 keeps Parquet partition inference and stays the last alpha.
 
@@ -252,8 +275,10 @@ No date moves. alpha6 keeps Parquet partition inference and stays the last alpha
 
 One item. The Arrow C Data Interface export was cut from this alpha on 2026-08-29,
 and adaptive cascade encoding selection moved up to alpha5 on 2026-09-17 when
-alpha4 absorbed alpha5's join work. alpha6 is still the last one, and the series
-should not lose an item it needs to a slip in October.
+alpha4 absorbed alpha5's join work. **It did not come back here on 2026-09-19**:
+alpha5 was re-themed and cascading left the series entirely, tracked on #1139
+until it has the measured win its own plan demands. alpha6 is still the last one,
+and the series should not lose an item it needs to a slip in October.
 
 ## What compressing the series costs
 
