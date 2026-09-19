@@ -338,4 +338,8 @@ guard_tests 382
 # test_native_delete_vector_index.py and test_native_delete_visibility_paths.py,
 # one test each. Derived by collection.
 # 435 -> 436 with the temporal port (#432), the first pair #1131 unblocked.
-cluster_tests 436
+# 436 -> 437 with the Parquet dictionary-OOB port (#432), the second pair #1131 unblocked.
+# 437 -> 440 with the advisory-lock port (#432): THREE tests, not one, because
+# cannot_run declares a whole test unrunnable while check_skip skips one check --
+# so the SQL-form arm has to be its own test for the skip's scope to be honest.
+cluster_tests 440
