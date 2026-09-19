@@ -5153,12 +5153,14 @@ The executor already partitions whatever storage `BeginCustomScan` opened (the
 DSM stripe counter is attached to `readState`), so a covering scan can be
 parallel. A partial covering-projection path is now offered.
 
-This file asserts the PLANNER shape and the query's count. Public seam:
-`EXPLAIN` of a covering projection query, plus `count(*)`. The shell twin uses
-`cvppar` / `byik` / 32000 rows / `ik BETWEEN 40 AND 220`; this file uses
-`pcvgath` / `onskey` / 50000 rows / `skey BETWEEN 200 AND 599`. Assertion
-names match.
+This file asserts the PLANNER shape, EXPLAIN ANALYZE worker rows, and the
+query's count. Gather in the plan is not enough: a single claimer still
+returns the covering rows once. Public seam: `EXPLAIN` / `EXPLAIN
+(ANALYZE, VERBOSE)` of a covering projection query, plus `count(*)`. The
+shell twin uses `cvppar` / `byik` / 32000 rows / `ik BETWEEN 40 AND 8039`;
+this file uses `pcvgath` / `onskey` / 50000 rows / `skey BETWEEN 200 AND
+12299`. Assertion names match.
 
 | test | what it asserts |
 | --- | --- |
-| `test_projection_parallel` | the table and covering projection exist; a serial covering query uses the projection; a parallel base scan is available when the projection is off; a covering projection can be a parallel scan; a parallel covering projection returns the covering rows once |
+| `test_projection_parallel` | the table and covering projection exist; a serial covering query uses the projection; a parallel base scan is available when the projection is off; a covering projection can be a parallel scan; a parallel covering projection returns the covering rows once; EXPLAIN ANALYZE launched two workers and printed a rows= line for each; both launched workers produced rows |

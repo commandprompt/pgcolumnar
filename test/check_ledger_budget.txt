@@ -151,4 +151,8 @@ suites_not_covered 249
 # Re-derived by COUNTING on this tree, never by adding fourteen to a number from
 # another:
 #     awk -F'\t' '$5=="never"' test/check_ledger.tsv | wc -l
-checks_never_observed_red 1421
+# RESEATED onto origin/main 51e24d0. Main stated 1421. This branch adds nine
+# projection_parallel rows (two last-red observed, seven never). Re-derived
+# by COUNTING on the rebased tree, never by adding a delta:
+#     awk -F"\t" "$5==\"never\"" test/check_ledger.tsv | wc -l
+checks_never_observed_red 1428
