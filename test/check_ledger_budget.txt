@@ -151,4 +151,36 @@ suites_not_covered 249
 # Re-derived by COUNTING on this tree, never by adding fourteen to a number from
 # another:
 #     awk -F'\t' '$5=="never"' test/check_ledger.tsv | wc -l
-checks_never_observed_red 1421
+# 1421 -> 1439 when index_am_support's twenty checks landed. Twenty rows, of which
+# TWO carry an observed red, both reddened by mutating the DOCUMENT rather than
+# the code:
+#
+#   the extractor premise      the access-method names are deleted from
+#                              docs/features.md, so the page claims nothing and
+#                              the per-method loop runs zero times
+#   the claim-form premise     the claim is qualified inside its own bullet,
+#                              "...over a columnar table, though spgist cannot be
+#                              chosen", which the page's own suite must refuse
+#
+# ONE ROW WAS REMOVED RATHER THAN RENAMED, and the orphan scan is right that this
+# needs saying. `premise: the claim is a plain list, with no exclusion this suite
+# cannot read` carried a red from the "but NOT spgist" edit. It is NOT the same
+# check under a new name: it screened for negation TOKENS, and @OffgridwithJD
+# defeated it with `cannot`, where \bnot\b has no word boundary. Its replacement
+# asserts a different property -- the bullet matches one whitelisted form -- and
+# reddens on BOTH edits. The evidence is strictly stronger under the new name, so
+# the removed row's history is subsumed rather than lost.
+#
+# The third mutation this suite was proved with -- adding `gin` to the page with
+# no probe -- is deliberately NOT merged: it reddens a check whose NAME exists
+# only under that mutation, and a ledger row no clean run can produce is exactly
+# what the orphan scan refuses.
+#
+# suites_not_covered does NOT move: registering index_am_support takes registered
+# 261 -> 262 and seeding it takes covered 12 -> 13, so the difference is 249
+# either way.
+#
+# Re-derived by COUNTING on this tree, never by adding nineteen to a number from
+# another:
+#     awk -F'\t' '$5=="never"' test/check_ledger.tsv | wc -l
+checks_never_observed_red 1439

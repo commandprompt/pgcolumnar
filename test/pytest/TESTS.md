@@ -111,6 +111,7 @@ behaviour, the source of that number is named.
 - [63. test_native_vacuum_race.py: compaction must not drop a concurrent commit](#63-test_native_vacuum_racepy-compaction-must-not-drop-a-concurrent-commit)
 - [64. test_native_delete_vector_index.py: reading the delete vector uses its index](#64-test_native_delete_vector_indexpy-reading-the-delete-vector-uses-its-index)
 - [65. test_native_delete_visibility_paths.py: a deleted row is invisible on every path](#65-test_native_delete_visibility_pathspy-a-deleted-row-is-invisible-on-every-path)
+- [66. test_index_am_support.py: the index methods the page claims must work](#66-test_index_am_supportpy-the-index-methods-the-page-claims-must-work)
 
 ## 1. How to read a test in here
 
@@ -5139,3 +5140,114 @@ its row in place, so the in-transaction arm cannot be satisfied by a delete that
 | test | what it holds |
 | --- | --- |
 | `test_native_delete_visibility_paths` | every arm: the row count and group span, then the live set through a Seq Scan, an Index Scan, an Index Only Scan and the columnar aggregate — each with its plan asserted — then one deleted and one live row through the index, and a delete read back inside its own transaction |
+## 66. test_index_am_support.py: the index methods the page claims must work
+
+`docs/features.md` said "`CREATE INDEX` builds btree and hash indexes over a
+columnar table" from the day it was written. GiST and SP-GiST build over one too,
+and answer their operators, and a reader of that sentence concluded the opposite
+and asked whether range columns were supported at all. They are. The sentence was
+wrong by omission, and nothing could see that it was.
+
+**THIS FILE READS THE DOCUMENT RATHER THAN CARRYING A LIST.** The precedent is
+`doc_parallel_premise`, which extracts the published query out of
+`limitations.md` for the same reason: a suite holding its own copy of a claim
+cannot see the page drift away from it. The access methods are taken from the
+backticked names in that sentence, and every name found is exercised.
+
+So the failure modes are proven by mutating the DOCUMENT rather than the code:
+
+| mutation | result |
+| --- | --- |
+| add `gin` to the sentence, with no probe for it | `premise: gin, which the page claims, has a probe in this suite` fails |
+| remove every method name from the sentence | `premise: the features page names at least one index access method` fails; the loop runs zero times and cannot pass vacuously |
+| **`builds btree, hash and gist but NOT spgist`** | `premise: the claim bullet holds the claim and nothing else` fails, in both harnesses |
+| **the denial written after `columnar table`** | the same premise fails, in both harnesses |
+| **`...though spgist cannot be chosen`** | the same premise fails — see below |
+| **legitimate prose added to the claim bullet** | the same premise fails, on purpose |
+
+**THE LAST TWO ARE THE ONES THAT NEARLY SHIPPED, and @OffgridwithJD wrote them.**
+A name-harvesting extractor reads `NOT spgist` as a claim that SP-GiST is
+supported. The page would then say a method does not work while this file proves
+it does, by name, and reports green -- worse than no coupling at all, because the
+tracker says the page is pinned so nobody re-reads it.
+
+The second edit was subtler and defeated something else: the two halves had
+different windows. The shell stopped at `columnar table` and this file's regex
+stopped just before it, so a denial written after that phrase gave four names on
+one side and three on the other. Both passed. They disagreed. Nothing compared
+them. Independence buys two sets of blind spots, not none, and the fix is that
+both halves now read the same unit -- the whole list item.
+
+**THE CLAIM IS WHITELISTED, AND THE FIRST ATTEMPT WAS A DENYLIST THAT LASTED ONE
+ROUND.** The version that shipped to review refused a window containing `not`,
+`never`, `except`, `unsupported`, `rather than` or `but no`. @OffgridwithJD broke
+it with one more edit:
+
+    ...and `gist` but NOT `spgist` indexes        refused, correctly
+    ...though `spgist` cannot be chosen           PASSED
+
+`\bnot\b` has no word boundary before the `not` inside `cannot`. Their own
+correction is the reason the fix is not another token: **a denylist of negations
+is the losing game they had told me to avoid**, one round at a time — `isn't`,
+`no longer`, `save for`, and eventually a sentence that inverts the claim with no
+negation token in it at all.
+
+So the bullet has exactly ONE legitimate form, and anything else is refused:
+
+    - `CREATE INDEX` builds `a`, `b` and `c` indexes over a columnar table.
+
+Prose added to that bullet is refused too, **even when it is perfectly true**,
+and the refusal asks for its own sentence. The page gives it one: the note about
+this suite reading the list now lives in the next bullet, where it cannot change
+what the claim says.
+
+**AND THE FIRST WHITELIST BROKE A RULE THIS FILE'S HEADER CITES.** Matching the
+form with `claim_line | grep -qE ...` is exactly the shape `selftest/080` refuses
+(#486): `grep -q` exits as soon as it has its answer, the writer takes EPIPE, and
+under `pipefail` the pipeline reports the pattern ABSENT whatever the string
+held — always in the direction that sends someone hunting a defect that is not
+there. `harness_selftest` caught both instances, which is the answer to why that
+rule is a suite rather than a convention: the header of this very file cites it,
+and the code two functions below it did it anyway. The match is a `[[ =~ ]]` test
+with no pipeline now.
+
+**THE FORM PREMISE IS ASSERTED BEFORE THE NAMES PREMISE**, because it is the
+cause and the other is the consequence: a bullet neither half can read yields no
+names. pytest stops at its first failing assertion, so putting the cause second
+would have reported only "the page names nothing" and left the reader to work out
+why.
+
+**THE SCAN PATH IS THE ORACLE, NOT A LITERAL.** Each method's answer is compared
+against the same query run with every index path disabled. A literal would pin
+this fixture; the property is that the two paths agree. A predicate matching no
+row would satisfy that trivially, so each method also asserts its predicate
+matches something.
+
+**WHY THE RANGE METHODS ARE ON THE PAGE AT ALL.** Overlap and containment never
+prune chunk groups on a scan: the scan resolves an operator through the column
+type's btree family and takes the five btree strategies, while `&&` and `@>`
+belong to GiST families. So for a range column the index is not an optimisation,
+it is the only fast path, and the last arm asserts the plan rather than a timing.
+
+**GIN AND BRIN ARE DELIBERATELY ABSENT.** Both build on a columnar table. Neither
+has been observed in a plan the planner chose, and building is not the same as
+being usable, so neither is claimed on the page or probed here. Adding either to
+the page without a probe turns this file red, which is the point.
+
+Independent of `test/index_am_support.sh`: the same seams -- the document,
+`CREATE INDEX`, and the two plans -- but its own cluster, its own table name, its
+own row count, and the methods extracted with a Python regex rather than with
+awk. Neither file names the other.
+
+### Every arm
+
+| arm | what it holds |
+| --- | --- |
+| `premise: the features page names at least one index access method` | the extractor found something, so a green loop means work happened |
+| `premise: the claim bullet holds the claim and nothing else` | the bullet is the one form a name-reader can read, so the names ARE the claim |
+| `premise: the fixture holds every row` | the corpus is what the probes assume |
+| `premise: <am>, which the page claims, has a probe in this suite` | a claim on the page without evidence here is a failure, not a skip |
+| `<am> builds an index over a columnar table` | the method builds |
+| `premise: the <am> predicate matches rows at all` | the comparison below is not two empty sets agreeing |
+| `<am> answers its operator with the same rows the scan returns` | the index path and the scan path agree |
+| `premise: an overlap query reaches the row through a GiST index` | the plan, asserted, for the claim that ranges have an index path |

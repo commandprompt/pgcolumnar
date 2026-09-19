@@ -115,6 +115,7 @@ SUITES=(
 	import_deferred
 	import_exclusion
 	import_export_privilege
+	index_am_support
 	index_delete_liveness
 	index_fetch_penalty_crossover
 	index_fetch_penalty_width

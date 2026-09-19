@@ -337,4 +337,23 @@ guard_tests 382
 # 433 -> 435 when the two delete-visibility ports landed (#432):
 # test_native_delete_vector_index.py and test_native_delete_visibility_paths.py,
 # one test each. Derived by collection.
-cluster_tests 435
+# 433 -> 434 when test_index_am_support.py landed: one cluster test that reads the
+# index access methods out of docs/features.md and exercises every one the page
+# names. The count moves by one because the per-method arms are a loop inside a
+# single test rather than a parametrization.
+#
+# RE-DERIVED BY COLLECTION AFTER THE REBASE, not carried. This branch first stated
+# 431 against a base of 430, and #1142 moved the base to 433 underneath it, so the
+# committed number described a tree that no longer existed.
+# Re-derived on the rebased tree: `434 tests collected`. `guard_tests` was
+# re-derived in the same run and did NOT move: 380.
+# RE-DERIVED AGAIN after the reseat onto main carrying #1148: `436 tests
+# collected`. And once more after main took #1151, where this file AUTO-MERGED
+# SILENTLY: main stated 435, this branch stated 436, git took 436 without a
+# conflict. That happened to be right -- #1151 moves `guard_tests` 380 -> 382 and
+# leaves `cluster_tests` alone -- and it was confirmed by collection rather than
+# by the arithmetic, because a side that wins silently is right only until it is
+# not. This branch has now stated 431, 434 and 436, each correct for the
+# base it was taken on, which is the whole reason this file says re-derive rather
+# than carry. `guard_tests` was re-derived in the same run and did NOT move: 380.
+cluster_tests 436

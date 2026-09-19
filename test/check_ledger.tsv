@@ -1294,6 +1294,26 @@ harness_selftest	530-a-record-must-name-its-major	premise: it is callable	15;16;
 harness_selftest	530-a-record-must-name-its-major	premise: the runner defines the reader this part evals	15;16;17;18;19	never	-
 harness_selftest	530-a-record-must-name-its-major	the runner calls the reader over every suite's log	15;16;17;18;19	never	-
 harness_selftest	530-a-record-must-name-its-major	the word in a REASON is not a record that names no major	15;16;17;18;19	never	-
+index_am_support	index_am_support	btree answers its operator with the same rows the scan returns	15;16;17;18;19	never	-
+index_am_support	index_am_support	btree builds an index over a columnar table	15;16;17;18;19	never	-
+index_am_support	index_am_support	gist answers its operator with the same rows the scan returns	15;16;17;18;19	never	-
+index_am_support	index_am_support	gist builds an index over a columnar table	15;16;17;18;19	never	-
+index_am_support	index_am_support	hash answers its operator with the same rows the scan returns	15;16;17;18;19	never	-
+index_am_support	index_am_support	hash builds an index over a columnar table	15;16;17;18;19	never	-
+index_am_support	index_am_support	premise: an overlap query reaches the row through a GiST index	15;16;17;18;19	never	-
+index_am_support	index_am_support	premise: btree, which the page claims, has a probe in this suite	15;16;17;18;19	never	-
+index_am_support	index_am_support	premise: gist, which the page claims, has a probe in this suite	15;16;17;18;19	never	-
+index_am_support	index_am_support	premise: hash, which the page claims, has a probe in this suite	15;16;17;18;19	never	-
+index_am_support	index_am_support	premise: spgist, which the page claims, has a probe in this suite	15;16;17;18;19	never	-
+index_am_support	index_am_support	premise: the btree predicate matches rows at all	15;16;17;18;19	never	-
+index_am_support	index_am_support	premise: the claim bullet holds the claim and nothing else	15;16;17;18;19	2026-09-19	docs/features.md qualifies the claim inside its own bullet: 'builds ... over a columnar table, though spgist cannot be chosen'. The first version of this suite screened for negation tokens and passed this, because \bnot\b has no word boundary before the 'not' in 'cannot'; the whitelist refuses it for being a form the suite cannot read
+index_am_support	index_am_support	premise: the features page names at least one index access method	15;16;17;18;19	2026-09-19	docs/features.md qualifies the claim inside its own bullet: 'builds ... over a columnar table, though spgist cannot be chosen'. The first version of this suite screened for negation tokens and passed this, because \bnot\b has no word boundary before the 'not' in 'cannot'; the whitelist refuses it for being a form the suite cannot read;docs/features.md stops naming any index access method, so the extractor finds nothing and the per-method loop runs zero times
+index_am_support	index_am_support	premise: the fixture holds every row	15;16;17;18;19	never	-
+index_am_support	index_am_support	premise: the gist predicate matches rows at all	15;16;17;18;19	never	-
+index_am_support	index_am_support	premise: the hash predicate matches rows at all	15;16;17;18;19	never	-
+index_am_support	index_am_support	premise: the spgist predicate matches rows at all	15;16;17;18;19	never	-
+index_am_support	index_am_support	spgist answers its operator with the same rows the scan returns	15;16;17;18;19	never	-
+index_am_support	index_am_support	spgist builds an index over a columnar table	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	a 50000-row correlated range uses the custom scan, not a fetching index	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	a selective point lookup still uses the index	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	both paths return the same aggregate at 50000	15;16;17;18;19	never	-
