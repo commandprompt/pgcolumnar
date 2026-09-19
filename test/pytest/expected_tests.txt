@@ -337,4 +337,8 @@ guard_tests 382
 # 433 -> 435 when the two delete-visibility ports landed (#432):
 # test_native_delete_vector_index.py and test_native_delete_visibility_paths.py,
 # one test each. Derived by collection.
-cluster_tests 435
+# 435 -> 436 when test_projection_parallel.py landed on this reseat.
+# Re-derived by collection on the rebased tree, never by adding one:
+# `436 tests collected`. guard_tests was re-derived in the same run and
+# did NOT move -- 382.
+cluster_tests 436

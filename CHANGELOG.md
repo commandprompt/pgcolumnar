@@ -303,6 +303,25 @@ true until the next version shipped.
 
   No bash suite changes, so no ledger row moves and the census does not.
   `cluster_tests` 427 -> 430, re-derived by collection on the reseated tree.
+- A covering projection scan could not run in parallel.
+
+  `PgColumnarSetRelPathlist` offered the covering projection as a serial
+  CustomPath (`parallel_aware = false`, `parallel_safe = false`) and the
+  parallel base scan as a partial path with no projection name. Those cannot
+  both be true of one plan: either Gather wins and the projection is dropped,
+  or the serial projection wins and the workers are dropped. Measured on a
+  32,000-row scrambled table under parallel settings: the covering query
+  planned as a serial `Columnar Projection` (`projection-only`), while the
+  same query with the projection-scan GUC off planned Gather over a parallel
+  base scan.
+
+  The executor already partitions whatever storage `BeginCustomScan` opened
+  (the DSM stripe counter is attached to `readState`). A partial covering
+  path now carries the projection name, divides CPU the same way the parallel
+  base path does, and keeps I/O undivided. After the change the same fixture
+  plans `Gather` plus `Columnar Projection: byik` and still returns each
+  covering row once. I/O is still the base relation's pages; pricing from the
+  projection's own storage pages is a separate defect.
 
 - Three suites ported to pytest, and the queue re-derived (#432).
 
@@ -474,7 +493,6 @@ true until the next version shipped.
   surface grew with it.
 
   No check names change, so no ledger row moves and the census stays at 1391.
-
 - The union-merge page did not say why rebasing works where merging does not
   (#1116 follow-up).
 

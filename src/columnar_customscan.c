@@ -2691,6 +2691,9 @@ PgColumnarSetRelPathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
 	CustomPath *cpath;
 	Cost		serialStartupCost;
 	Cost		serialTotalCost;
+	Cost		projRun = 0;
+	double		projScale = 1.0;
+	char	   *projName = NULL;
 	Path	   *seqpath = NULL;
 	List	   *keep = NIL;
 	ListCell   *lc;
@@ -2964,17 +2967,16 @@ PgColumnarSetRelPathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
 	 */
 	{
 		AttrNumber	sortAttno = 0;
-		char	   *projName = pgcolumnar_choose_projection(root, rel, rte->relid,
-															&sortAttno);
+
+		projName = pgcolumnar_choose_projection(root, rel, rte->relid,
+											   &sortAttno);
 
 		if (projName != NULL)
 		{
 			CustomPath *ppath = makeNode(CustomPath);
 			Cost		serialRun;
-			Cost		projRun;
 			double		sel;
 			double		baseSurvival;
-			double		scale;
 			double		groups;
 			double		floorFrac;
 			int			limit;
@@ -3021,12 +3023,12 @@ PgColumnarSetRelPathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
 			baseSurvival = pgcolumnar_zonemap_survival(rel, rte->relid);
 			if (baseSurvival < 1e-9)
 				baseSurvival = 1e-9;
-			scale = sel / baseSurvival;
-			if (scale > 1.0)
-				scale = 1.0;
-			if (scale < 0.0)
-				scale = 0.0;
-			projRun = serialRun * scale;
+			projScale = sel / baseSurvival;
+			if (projScale > 1.0)
+				projScale = 1.0;
+			if (projScale < 0.0)
+				projScale = 0.0;
+			projRun = serialRun * projScale;
 			ppath->path.startup_cost = serialStartupCost;
 			ppath->path.total_cost = serialStartupCost + projRun;
 			ppath->path.pathkeys = NIL;
@@ -3189,6 +3191,52 @@ PgColumnarSetRelPathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
 #endif
 			ppath->methods = &pgcolumnar_path_methods;
 			add_partial_path(rel, &ppath->path);
+
+			/*
+			 * A serial covering path cannot compete with that partial path:
+			 * it is parallel_aware = false, so either Gather wins and the
+			 * projection is dropped, or the serial projection wins and the
+			 * workers are dropped. The executor already partitions whatever
+			 * storage BeginCustomScan opened -- the DSM stripe counter is
+			 * attached to readState, covering projection included -- so a
+			 * covering scan can be parallel. Offer a partial path that
+			 * carries the projection name.
+			 *
+			 * I/O is still the base relation's pages, scaled by the same
+			 * factor as the serial covering path. Pricing from the
+			 * projection's own storage pages is a separate defect.
+			 */
+			if (projName != NULL)
+			{
+				CustomPath *prpath = makeNode(CustomPath);
+				Cost		ioRunProj;
+				Cost		cpuRunProj;
+
+				prpath->path.pathtype = T_CustomScan;
+				prpath->path.parent = rel;
+				prpath->path.pathtarget = rel->reltarget;
+				prpath->path.param_info = NULL;
+				prpath->path.parallel_aware = true;
+				prpath->path.parallel_safe = true;
+				prpath->path.parallel_workers = workers;
+				ioRunProj = ioRun * projScale;
+				if (ioRunProj > projRun)
+					ioRunProj = projRun;
+				cpuRunProj = projRun - ioRunProj;
+				prpath->path.rows = clamp_row_est(rel->rows / divisor);
+				prpath->path.startup_cost = serialStartupCost;
+				prpath->path.total_cost = serialStartupCost +
+					ioRunProj + cpuRunProj / divisor;
+				prpath->path.pathkeys = NIL;
+				prpath->flags = 0;
+				prpath->custom_paths = NIL;
+				prpath->custom_private = list_make1(makeString(projName));
+#if PG_VERSION_NUM >= 170000
+				prpath->custom_restrictinfo = rel->baserestrictinfo;
+#endif
+				prpath->methods = &pgcolumnar_path_methods;
+				add_partial_path(rel, &prpath->path);
+			}
 		}
 	}
 }
