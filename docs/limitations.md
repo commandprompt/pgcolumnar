@@ -642,6 +642,57 @@ follow one rule. This access method refuses a configuration that it cannot
 support at the point where you choose it. It does not refuse it at each later
 use.
 
+## Which predicates prune
+
+A scan prunes chunk groups and vectors by reading zone maps. It can only do that
+for an operator it can place in an ordering. The scan resolves the operator
+through the column type's **btree** operator family. It then accepts the five
+btree strategies: `<`, `<=`, `=`, `>=` and `>`.
+
+Everything else is filtered after the values are decoded. The rows returned are
+correct either way. What differs is how much the scan reads to find them.
+
+The operators this most often surprises people with are the range ones. Overlap
+(`&&`) and containment (`@>`) belong to GiST operator families, not to btree.
+Measured on a 200,000-row table with one `tstzrange` column:
+
+| predicate | pushed-down filters | zone map probes |
+| --- | ---: | ---: |
+| `span && tstzrange(...)` | 0 | 0 |
+| `span @> timestamptz` | 0 | 0 |
+| `span > tstzrange(...)` | 1 | 2 |
+
+Zone maps are written for range and multirange columns. They cannot answer an
+overlap question. The minimum and maximum are taken in the range type's own
+btree order, which sorts by lower bound and then upper bound. The largest range
+in that order is not the range with the greatest upper bound. Overlap pruning
+would need that second statistic, and nothing records it today.
+
+### GIN and BRIN build, and nothing has been seen to use them
+
+`CREATE INDEX` accepts `gin` and `brin` on a columnar table and the build
+succeeds. That is all that is established. No plan has been observed choosing
+either one.
+
+For GIN the question is open. A `jsonb` containment query on a 20,000-row table
+still planned a sequential scan with four scan settings turned off. GIN supports
+only bitmap scans, and those settings are cost penalties rather than
+prohibitions.
+
+For BRIN the question is deeper. BRIN summarises ranges of physical blocks, and a
+columnar table's block layout is not a heap's. Whether such a summary means
+anything here is a design question, not a tuning one. It may be that the build
+should be refused instead of accepted.
+
+[Issue #1143](https://github.com/commandprompt/pgcolumnar/issues/1143) tracks
+both. Until it is settled, treat a successful `CREATE INDEX` with either method
+as a build, not as a plan.
+
+**Use a GiST or an SP-GiST index for a selective overlap or containment query.**
+Both build on a columnar table and both answer the query. A columnar index scan
+is charged for the row-group decode its per-row fetches force. A broad query may
+therefore still be cheaper as a scan.
+
 ## Indexes
 
 - Stale index entries left by deletes and updates are filtered on fetch and

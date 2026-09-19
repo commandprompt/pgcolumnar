@@ -111,9 +111,17 @@ coverage.
 
 ## Indexes and index-only scans
 
-- `CREATE INDEX` builds btree and hash indexes over a columnar table. Every row is
-  assigned a stable row number and synthetic item pointer at insert time, so
-  ordinary index scans fetch rows by item pointer.
+- `CREATE INDEX` builds `btree`, `hash`, `gist` and `spgist` indexes over a
+  columnar table.
+- That sentence is the whole claim, and it keeps its own bullet on purpose.
+  `test/index_am_support.sh` reads it out of this page and exercises every method
+  it names. The suite accepts one form of words and refuses anything else in that
+  bullet. Prose added there gets a loud refusal rather than a silent pass.
+- Every row is assigned a stable row number and synthetic item pointer at insert
+  time, so ordinary index scans fetch rows by item pointer.
+- A GiST or SP-GiST index is how a range column answers an overlap or a
+  containment query. Those operators never prune chunk groups on a scan. See
+  [which predicates prune](limitations.md#which-predicates-prune).
 - Index-only scans: a columnar visibility-map fork records which chunk groups are
   all-visible. Lazy `VACUUM` sets a chunk group's bit only when the group has no
   deletes and was inserted before the oldest snapshot horizon. Any write clears the
@@ -147,6 +155,12 @@ coverage.
   savepoint rollback, with correct attribution across `ROLLBACK TO`.
 - Unique and primary-key constraints are enforced on insert and at index build
   time. NOT NULL and CHECK constraints are enforced through the insert path.
+- Temporal constraints work on PostgreSQL 18 and later. A `PRIMARY KEY` or
+  `UNIQUE` constraint declared `WITHOUT OVERLAPS` is enforced exactly as it is on
+  a heap table. PostgreSQL 19 adds `UPDATE ... FOR PORTION OF`, which produces
+  the same result set on either storage. Such a constraint needs a GiST index
+  over the key. A scalar part of that key therefore needs `btree_gist`, which
+  ships with contrib.
 - Concurrent inserts of the same unique key are serialized so the conflict is
   always caught, controlled by `pgcolumnar.enable_unique_insert_lock`. See
   [limitations](limitations.md) for the exact behavior.
