@@ -151,4 +151,8 @@ suites_not_covered 249
 # Re-derived by COUNTING on this tree, never by adding fourteen to a number from
 # another:
 #     awk -F'\t' '$5=="never"' test/check_ledger.tsv | wc -l
-checks_never_observed_red 1421
+# 1421 -> 1426 after six projection_scan_io rows: five premises stay
+# never; the load-bearing arm was observed red under rel->pages.
+# Re-derived by COUNTING on this tree, never by adding a delta:
+#     awk -F'\t' '$5=="never"' test/check_ledger.tsv | wc -l
+checks_never_observed_red 1426

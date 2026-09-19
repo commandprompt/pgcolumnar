@@ -1416,6 +1416,12 @@ projection_scan_cost	projection_scan_cost	premise: without the projection scan, 
 projection_scan_cost	projection_scan_cost	premise: without the projection scan, the tight plan is a base columnar scan	15;16;17;18;19	never	-
 projection_scan_cost	projection_scan_cost	tight and loose covering scans are not both priced at half the base	15;16;17;18;19	2026-09-17	-
 projection_scan_cost	projection_scan_cost	while a plain range on the sort key still earns its discount	15;16;17;18;19	never	-
+projection_scan_io	projection_scan_io	a covering projection is not priced from the base table's pages	15;16;17;18;19	2026-09-19	rel->pages
+projection_scan_io	projection_scan_io	premise: a covering projection exists	15;16;17;18;19	never	-
+projection_scan_io	projection_scan_io	premise: the covering projection occupies a minority of the relation	15;16;17;18;19	never	-
+projection_scan_io	projection_scan_io	premise: the covering scan has a positive run cost	15;16;17;18;19	never	-
+projection_scan_io	projection_scan_io	premise: the plan uses the covering projection	15;16;17;18;19	never	-
+projection_scan_io	projection_scan_io	premise: the table holds every inserted row	15;16;17;18;19	never	-
 validity_elision	validity_elision	a chunk claiming no bitmap while it holds fewer values than rows is refused	15;16;17;18;19	never	-
 validity_elision	validity_elision	a column with no nulls stores no validity bitmap	15;16;17;18;19	2026-09-18	writer: flush_one_column's presentCount == rowCount forced false, so the bitmap is written even when the chunk holds no null
 validity_elision	validity_elision	a null-free column elides its bitmap beside a null-bearing one in the same row group	15;16;17;18;19	never	-

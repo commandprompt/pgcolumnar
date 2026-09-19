@@ -34,6 +34,21 @@ true until the next version shipped.
   after them has the same hole. The port asserts the accepted rows are present first.
 
   `cluster_tests` 435 -> 436, re-derived by collection.
+- A covering projection scan was priced from the base table's pages, so a
+  column subset stored as its own row groups was quoted as a full-file read.
+
+  `pgcolumnar_scan_io_run_cost` and the covering path in
+  `PgColumnarSetRelPathlist` used `seq_page_cost * rel->pages`. The relation
+  file holds the base plus every projection. The covering path now charges
+  I/O from that projection's own page-rounded row groups, times the sort-key
+  selectivity (already one-stripe floored). CPU still scales from the base
+  run: decode work follows the rows, not the file.
+
+  Measured on PG18 with `seq_page_cost = 1000` and CPU terms zeroed, 24000
+  rows, a covering projection of `(ik, bulky)` beside the base: covering run
+  41991.6 against base-page I/O 42000 (ratio 1.000) before, 19996 against
+  42000 (ratio 0.476) after. The projection occupied 56366 of 344064 relation
+  bytes.
 
 - A named skip could not be ported: `cannot_run` recorded under its reason code, so
   66 suites and 1,281 names could not reach `missing: 0` (#1131, #1150).
