@@ -2658,6 +2658,59 @@ pgcolumnar_parallel_divisor(Path *path)
 }
 
 /*
+ * pgcolumnar_projection_pages
+ *		Physical pages occupied by one named covering projection's row groups.
+ *		rel->pages is the whole relation file (base plus every projection);
+ *		a covering scan reads only this subset.
+ */
+static BlockNumber
+pgcolumnar_projection_pages(Oid relid, const char *projName)
+{
+	Relation	r;
+	uint64		storageId;
+	uint64		projSid = 0;
+	List	   *projs;
+	ListCell   *lc;
+	List	   *rgs;
+	uint64		bytes = 0;
+	BlockNumber pages;
+	Snapshot	snap;
+
+	r = table_open(relid, AccessShareLock);
+	storageId = PgColumnarStorageId(r);
+	table_close(r, AccessShareLock);
+
+	projs = PgColumnarListProjections(storageId);
+	foreach(lc, projs)
+	{
+		PgColumnarProjection *pr = (PgColumnarProjection *) lfirst(lc);
+
+		if (pr->projectionId > 0 && strcmp(pr->name, projName) == 0)
+		{
+			projSid = pr->projStorageId;
+			break;
+		}
+	}
+	if (projSid == 0)
+		return 1;
+
+	snap = GetActiveSnapshot();
+	if (snap == NULL)
+		snap = GetTransactionSnapshot();
+	rgs = PgColumnarReadRowGroupList(projSid, PgColumnarCatalogSnapshot(snap));
+	foreach(lc, rgs)
+	{
+		NativeRowGroupMetadata *rg = (NativeRowGroupMetadata *) lfirst(lc);
+
+		bytes += COLUMNAR_PAGE_ROUND_UP(rg->byteLength);
+	}
+	pages = (BlockNumber) (bytes / COLUMNAR_BYTES_PER_PAGE);
+	if (pages < 1)
+		pages = 1;
+	return pages;
+}
+
+/*
  * pgcolumnar_scan_io_run_cost
  *		The page-read portion of a columnar scan, after projected-width
  *		scaling (#171) and zone-map survival (#434). This is the term core
@@ -3026,7 +3079,20 @@ PgColumnarSetRelPathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
 				scale = 1.0;
 			if (scale < 0.0)
 				scale = 0.0;
-			projRun = serialRun * scale;
+			{
+				BlockNumber projPages;
+				Cost		ioBase;
+				Cost		ioProj;
+				Cost		cpuRun;
+
+				projPages = pgcolumnar_projection_pages(rte->relid, projName);
+				ioBase = pgcolumnar_scan_io_run_cost(rel, rte->relid);
+				cpuRun = serialRun - ioBase;
+				if (cpuRun < 0.0)
+					cpuRun = 0.0;
+				ioProj = seq_page_cost * (double) projPages * sel;
+				projRun = cpuRun * scale + ioProj;
+			}
 			ppath->path.startup_cost = serialStartupCost;
 			ppath->path.total_cost = serialStartupCost + projRun;
 			ppath->path.pathkeys = NIL;

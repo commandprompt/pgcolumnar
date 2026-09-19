@@ -5173,3 +5173,18 @@ table alone, and `overlapping insert rejected (columnar)` reddens with `got 'ok'
 | test | what it holds |
 | --- | --- |
 | `test_temporal` | every arm: heap and columnar agree on accepting non-overlapping rows and rejecting an overlapping one, the accepted rows are really there, the PK contents match, and on 19 the FOR PORTION OF update and its result set match |
+## 67. test_projection_scan_io.py: a covering projection is not priced from the base table's pages
+
+Port of `projection_scan_io.sh`. A covering projection scan inherited the base
+custom-scan I/O term, `seq_page_cost * rel->pages`. That page count is the whole
+relation file: the base plus every projection stored beside it. The covering
+path reads only the projection's own row groups.
+
+Public seam: `EXPLAIN` cost of a covering projection against `pg_relation_size`
+of the table, with `seq_page_cost` raised and CPU terms zeroed so the run is
+pages. The shell twin uses `psio` / `byik` / 24000 rows; this file uses `pciot`
+/ `onck` / 36000 rows. Assertion names match.
+
+| test | what it holds |
+| --- | --- |
+| `test_projection_scan_io` | the table and covering projection exist; the plan uses that projection; the covering scan has a positive run cost; the projection occupies a minority of the relation; the covering run is not priced from the base table's pages |
