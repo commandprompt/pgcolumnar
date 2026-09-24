@@ -458,6 +458,36 @@ true until the next version shipped.
 
 ### Fixed
 
+- A partitioned table carrying `relam = pgcolumnar` no longer aborts the backend
+  (#1259).
+
+  `PgColumnarIsColumnarRelation` decided "is this ours?" from `relam` alone.
+  From PostgreSQL 17 a partitioned table may carry `relam = pgcolumnar` as the
+  default for its future partitions, and it has no storage: `relfilenode` is 0.
+  Every caller that took the true branch and then read storage handed
+  `smgropen` a zero relfilenumber, which on an assert build aborts the backend
+  and restarts the cluster:
+
+  ```
+    TRAP: failed Assert("RelFileNumberIsValid(rlocator.relNumber)"), smgr.c:204
+    LOG:  server process was terminated by signal 6: Aborted
+  ```
+
+  On a production build it does not crash, it answers wrong: `get_storage_id`
+  returns NULL and `stats` and `sort_status` build on that.
+
+  The predicate now also requires storage. **`RELKIND_HAS_STORAGE` rather than
+  `== RELKIND_RELATION`, and the difference is load-bearing:** a materialized
+  view can be columnar -- measured, `relkind` `m`, `relam` `pgcolumnar`, rows
+  readable -- and narrowing to `RELKIND_RELATION` would have stopped
+  recognising one at all 31 call sites, silently. A test arm drives exactly that
+  wrong fix.
+
+  All 31 call sites were classified before the change: none legitimately wants
+  the partitioned parent. `set_options` refuses it and `add_projection` aborted
+  on it, so the two catalog renames in `pgcolumnar_process_utility` have nothing
+  to maintain there.
+
 - The ANALYZE cap's input guard defends a class, and the comment named one
   member of it (#1252).
 

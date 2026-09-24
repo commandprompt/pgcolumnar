@@ -22,6 +22,7 @@
 #include "access/xact.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "commands/sequence.h"
@@ -3761,8 +3762,31 @@ PgColumnarDeleteOptions(Oid relid)
 
 /*
  * PgColumnarIsColumnarRelation
- *		Whether a relation uses the columnar table access method. The access
- *		method oid is resolved once and cached.
+ *		Whether a relation uses the columnar table access method AND has
+ *		storage of its own. The access method oid is resolved once and cached.
+ *
+ *		THE RELKIND TEST IS NOT DECORATION (#1259). From PostgreSQL 17 a
+ *		PARTITIONED table may carry relam = pgcolumnar, as the default access
+ *		method for its future partitions, and it has no storage: relfilenode is
+ *		0. Every caller that took the true branch and then read storage handed
+ *		smgropen a zero relfilenumber, which on an assert build aborts the
+ *		backend and restarts the cluster:
+ *
+ *		    TRAP: failed Assert("RelFileNumberIsValid(rlocator.relNumber)"),
+ *		          File: "smgr.c", Line: 204
+ *
+ *		Ten entry points were measured reaching it. On a production build it
+ *		does not crash, it answers wrong -- get_storage_id returns NULL and
+ *		stats and sort_status build on that -- which is the harder half to
+ *		notice.
+ *
+ *		RELKIND_HAS_STORAGE RATHER THAN == RELKIND_RELATION, and the difference
+ *		is load-bearing: a MATERIALIZED VIEW can be columnar. Measured --
+ *		`CREATE MATERIALIZED VIEW mv USING pgcolumnar AS ...` succeeds, and the
+ *		result has relkind 'm', relam 'pgcolumnar' and readable rows. Narrowing
+ *		to RELKIND_RELATION would have stopped recognising it at all 31 call
+ *		sites, silently. The macro admits it and excludes the partitioned
+ *		parent, which is exactly the property the callers need.
  */
 bool
 PgColumnarIsColumnarRelation(Oid relid)
@@ -3772,7 +3796,10 @@ PgColumnarIsColumnarRelation(Oid relid)
 	if (columnarAmOid == InvalidOid)
 		columnarAmOid = get_am_oid("pgcolumnar", true);
 
-	return OidIsValid(columnarAmOid) && get_rel_relam(relid) == columnarAmOid;
+	if (!OidIsValid(columnarAmOid) || get_rel_relam(relid) != columnarAmOid)
+		return false;
+
+	return RELKIND_HAS_STORAGE(get_rel_relkind(relid));
 }
 
 /* -------------------------------------------------------------------------

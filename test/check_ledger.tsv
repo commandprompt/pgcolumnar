@@ -1545,6 +1545,32 @@ index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the 50000-r
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the btree on id exists	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the table holds all 1000000 rows	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	the fetch penalty leaves a clustered ORDER BY on its index	15;16;17;18;19	never	-
+inheritance	inheritance	INHERITS parent includes the child (columnar)	15;16;17;18;19	never	-
+inheritance	inheritance	INHERITS parent includes the child (heap oracle)	15;16;17;18;19	never	-
+inheritance	inheritance	ONLY parent is still just the parent	15;16;17;18;19	never	-
+inheritance	inheritance	SELECT * from an INHERITS parent plans an Append	15;16;17;18;19	never	-
+inheritance	inheritance	a columnar materialized view is still recognised as columnar	15;16;17;18;19	2026-09-24	the predicate narrowed to `relkind == RELKIND_RELATION` instead of RELKIND_HAS_STORAGE -- the obvious wrong fix, which also excludes RELKIND_MATVIEW and stops a columnar materialized view being recognised at all 31 call sites
+inheritance	inheritance	a large child is still visible through the parent	15;16;17;18;19	never	-
+inheritance	inheritance	a partitioned parent still returns every row	15;16;17;18;19	never	-
+inheritance	inheritance	add_projection on the parent is refused rather than aborting the backend	15;16;17;18;19	never	-
+inheritance	inheritance	and it still returns its rows	15;16;17;18;19	never	-
+inheritance	inheritance	and the cluster is still up after it	15;16;17;18;19	never	-
+inheritance	inheritance	and the cluster is still up after that too	15;16;17;18;19	never	-
+inheritance	inheritance	and the partition is still a PgColumnarScan (#436)	15;16;17;18;19	never	-
+inheritance	inheritance	control: add_projection on the LEAF still works	15;16;17;18;19	never	-
+inheritance	inheritance	control: get_storage_id on the LEAF still returns an id	15;16;17;18;19	never	-
+inheritance	inheritance	count(*) from an INHERITS parent plans an Append	15;16;17;18;19	never	-
+inheritance	inheritance	filtered rows match the heap	15;16;17;18;19	never	-
+inheritance	inheritance	get_storage_id on the parent is refused rather than reading storage	15;16;17;18;19	never	-
+inheritance	inheritance	premise: a materialized view is relkind m	15;16;17;18;19	never	-
+inheritance	inheritance	premise: and it carries the columnar access method	15;16;17;18;19	never	-
+inheritance	inheritance	premise: and it is partitioned	15;16;17;18;19	never	-
+inheritance	inheritance	premise: so it has no storage of its own	15;16;17;18;19	never	-
+inheritance	inheritance	premise: the parent carries the columnar access method	15;16;17;18;19	never	-
+inheritance	inheritance	premise: while its leaf is an ordinary relation	15;16;17;18;19	never	-
+inheritance	inheritance	row identities match the heap	15;16;17;18;19	never	-
+inheritance	inheritance	the child is visible through the parent	15;16;17;18;19	never	-
+inheritance	inheritance	ungrouped vector aggregation also sees the child rows	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	a sequential scan of the same poisoned chunk is refused (XX001)	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	an index fetch of a chunk whose page_length is 2^32 too large is refused (XX001)	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	backend survived the sequential refusal	15;16;17;18;19	never	-

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 248
+suites_not_covered 247
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -1121,4 +1121,47 @@ suites_not_covered 248
 # was meaningful in the old form where `scan_ms` really could be 0. By the rule
 # used for the input guard one line above -- a condition either gets covered or
 # gets removed -- this one cannot be covered, so it goes.
-checks_never_observed_red 1574
+
+# #1259: 1574 -> 1599, AND suites_not_covered 248 -> 247. `inheritance` enters
+# the ledger with all 26 of its checks, for the same mechanical reason
+# analyze_stats did: recording that the new arm reddens means merging a RUN, and
+# the tool refuses partial ones.
+#
+#     ledger rows   1741 + 26 = 1767
+#     never         1574 + 25 = 1599
+#     dated          167 +  1 =  168
+#     1599 + 168 == 1767
+#
+# ONE ARM IS DATED AND IT IS THE ONE THAT DISCRIMINATES AGAINST THE WRONG FIX.
+# Mutation B narrows the predicate to `relkind == RELKIND_RELATION` -- the
+# obvious fix, and the one a reader reaches for. It reddens EXACTLY `a columnar
+# materialized view is still recognised as columnar`, on all five majors and
+# nothing else. A materialized view CAN be columnar: measured, relkind 'm',
+# relam 'pgcolumnar', rows readable. RELKIND_RELATION would have stopped
+# recognising it at all 31 call sites, silently.
+#
+# MUTATION A -- THE REVERT -- IS A REMOVAL PROOF AND NOT A LEDGER SOURCE, and
+# the reason is worth keeping. Reverting the relkind test restores the crash, so
+# what fails AFTER it depends on when the postmaster finishes restarting:
+#
+#     major 15, 16   0 reds   the arms are skipped; the bug is PG17+
+#     major 17       4 reds
+#     major 18, 19   8 reds   the same 4, plus 4 downstream of the restart
+#
+# Same mutation, same tree, different counts. Dating arms from that would record
+# the matview arms as killed by a crash rather than by a test, so A is reported
+# and not merged. The two arms it reddens on every one of 17/18/19 are `and the
+# cluster is still up after it` and `and the cluster is still up after that too`.
+#
+# AND THOSE TWO ARE WHY THE `is refused` ARMS ARE NOT ENOUGH. Under the revert
+# `get_storage_id` on a parent CRASHES, and a crashed connection also returns
+# non-zero -- so `refused` is satisfied by the bug itself and those arms pass
+# vacuously. The liveness check taken from a NEW backend is what distinguishes a
+# refusal from an abort.
+#
+# THE PG17 FLOOR IS LOAD-BEARING, NOT TIDINESS. PostgreSQL 15 and 16 refuse
+# `PARTITION BY ... USING pgcolumnar` outright, so the fixture never exists and
+# the two `is refused` arms PASS for the wrong reason -- the relation is not
+# there. A vacuous green, caught by the premises, which is what premises are
+# for. Ten arms are skipped by name below PG17 rather than left to pass.
+checks_never_observed_red 1599
