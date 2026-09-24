@@ -207,7 +207,12 @@ jobs:
       - name: Collect logs on failure
         if: failure()
         run: |
-          for f in /tmp/pgcolumnar-matrix-*/*.log; do
+          # /tmp/pgcolumnar-logs, not the build directory: run_all_versions.sh
+          # copies each suite's log there and then removes the builddir, so a
+          # glob of the builddir alone runs after the path is gone and prints
+          # nothing. ci.yml was fixed for this on #918; this workflow was not,
+          # and collected nothing on three consecutive aarch64 reds (#1248).
+          for f in /tmp/pgcolumnar-logs/*.log /tmp/pgcolumnar-matrix-*/*.log; do
             [ -e "$f" ] || continue
             echo "===== $f ====="
             tail -60 "$f"
