@@ -726,6 +726,11 @@ true until the next version shipped.
   on the next suite and cleans them -- so this cost a rebuild rather than a wrong
   install. What it did not cost is nothing, and the comment promised something it
   did not always do.
+- `ALTER TABLE ... ALTER COLUMN TYPE` left `pgcolumnar.storage.relation_oid` pointing at the dropped rewrite relation (#1211).
+
+  The flush records the transient relation `make_new_heap` builds. The swap keeps the user's OID and drops the transient, so the one lookup keyed on `relation_oid` finds nothing. The rows stay readable. Measured on PG18 before the change: the storage row for `pgcolumnar.get_storage_id` compared equal to the live regclass was `0` after `ALTER COLUMN id TYPE bigint`, and `1` before it. A table that was not rewritten stayed `1`.
+
+  After the statement, the storage row for the id now on the metapage is retargeted at the surviving OID when it names something else. The same comparison is `1`. Removing that call returns `0`. `test/projection_rewrite.sh` stayed 84 passed on the fixed build.
 
 - `pgc_reconcile_records` no longer reports an impossible mismatch on a log it
   cannot measure (#1242). Handed a log that states `checks run: N` and carries

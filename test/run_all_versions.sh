@@ -274,6 +274,7 @@ SUITES=(
 	recovery
 	replication
 	rewrite_group_scan
+	rewrite_storage_oid
 	rls_direct_storage
 	row_triggers
 	scan_decode_cost

@@ -1164,4 +1164,17 @@ suites_not_covered 247
 # the two `is refused` arms PASS for the wrong reason -- the relation is not
 # there. A vacuous green, caught by the premises, which is what premises are
 # for. Ten arms are skipped by name below PG17 rather than left to pass.
-checks_never_observed_red 1600
+
+# #1211 (PR #1250, linuxhikerpm): 1600 -> 1604. `rewrite_storage_oid` enters the
+# ledger with its five checks -- four premises arriving `never` and one arm
+# dated, the one a mutation of PgColumnarRetargetStorageRelation reddens.
+#
+#     ledger rows   1769 + 5 = 1774
+#     never         1600 + 4 = 1604
+#     dated          169 + 1 =  170
+#     1604 + 170 == 1774
+#
+# REBASED FROM 1bcfb92b ONTO 81ec3ddc, 32 commits, by the maintainer rather than
+# the author. The branch predates #1261, and three of its five CI reds were
+# fixed by the rebase alone rather than by any change here -- see the PR.
+checks_never_observed_red 1604
