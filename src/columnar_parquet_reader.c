@@ -18,6 +18,8 @@
  *-------------------------------------------------------------------------
  */
 #include "columnar.h"
+
+#include "catalog/pg_class.h"	/* RELKIND_HAS_STORAGE (#1263) */
 #include "columnar_objstore.h"
 #include "columnar_parquet_format.h"
 #include "columnar_parquet_reader.h"
@@ -3650,6 +3652,37 @@ pgcolumnar_import_parquet(PG_FUNCTION_ARGS)
 	files = pq_resolve_paths(path, NULL);
 
 	rel = table_open(relid, RowExclusiveLock);
+
+	/*
+	 * DOES IT HAVE STORAGE (#1263)? Not "is it columnar": import_parquet
+	 * deliberately accepts a HEAP target and several suites rely on it
+	 * (native_parquet_units imports into a plain `CREATE TABLE imp_ms (t
+	 * timestamp)`), which is where it differs from import_arrow. Guarding on
+	 * PgColumnarIsColumnarRelation here rejected those with 42809 and broke
+	 * four suites.
+	 *
+	 * The property the crash actually needs is storage. A PARTITIONED table
+	 * may carry relam = pgcolumnar from PostgreSQL 17 and has relfilenode 0;
+	 * this function reached table_slot_create and the insert sink on it and
+	 * took the backend down with SIGSEGV -- signal 11, on builds with asserts
+	 * OFF as well, so it crashed production rather than answering wrong.
+	 *
+	 * RELKIND_HAS_STORAGE is the same predicate #1261 chose one level up, and
+	 * for the same reason: it admits a matview and a heap and excludes the
+	 * partitioned parent.
+	 */
+	if (!RELKIND_HAS_STORAGE(rel->rd_rel->relkind))
+	{
+		char		nm[NAMEDATALEN];
+
+		strlcpy(nm, RelationGetRelationName(rel), NAMEDATALEN);
+		table_close(rel, RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("cannot import into relation \"%s\"", nm),
+				 errdetail("It has no storage of its own.")));
+	}
+
 	tupdesc = RelationGetDescr(rel);
 	slot = table_slot_create(rel, NULL);
 
