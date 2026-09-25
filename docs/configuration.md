@@ -132,12 +132,14 @@ apply to the data that the writer writes after the change. The data that is
 already on disk does not change. It changes only when a command rewrites the
 table, for example `pgcolumnar.vacuum`.
 
-The table must already be an ordinary table using the `pgcolumnar` access method.
-Setting options on anything else raises `relation "..." is not a columnar table`.
+The relation must already use the `pgcolumnar` access method, and must be either
+an ordinary table or a materialized view. Both hold rows of their own, so the
+writer reads their options. Setting options on anything else raises
+`relation "..." is not a columnar table`.
 
-A partitioned table is rejected as well. It holds no data of its own, so options
-set on it would never be read. Set them on each partition, which is where the
-rows are written. For an ordinary table, convert it first, then set its options:
+A partitioned table is rejected. It holds no rows of its own, so options set on
+it would never be read. Set them on each partition, which is where the writer
+writes. To use options on a table that is not columnar yet, convert it first:
 
 ```sql
 ALTER TABLE events SET ACCESS METHOD pgcolumnar;
@@ -155,7 +157,7 @@ SELECT pgcolumnar.set_options(
 
 | Argument | Type | Description |
 | --- | --- | --- |
-| `table_name` | regclass | The columnar table to change. Anything that is not an ordinary table using the `pgcolumnar` access method is rejected, including a partitioned table. |
+| `table_name` | regclass | The columnar relation to change: an ordinary table or a materialized view using the `pgcolumnar` access method. Anything else is rejected, including a partitioned table. |
 | `chunk_group_row_limit` | integer | Per-table override of `pgcolumnar.chunk_group_row_limit`. |
 | `stripe_row_limit` | integer | Per-table override of `pgcolumnar.stripe_row_limit`. See the note below: a value under 1024 costs text compression. |
 | `compression` | name | One of `none`, `pglz`, `lz4`, `zstd`. |
@@ -316,7 +318,9 @@ The option applies to one table and is not a session setting. This is
 deliberate. If it were a session setting, two sessions with different values
 would store the same data in two different forms.
 
-`pgcolumnar.reset_options` returns options to the server defaults:
+`pgcolumnar.reset_options` returns options to the server defaults. It accepts
+exactly what `pgcolumnar.set_options` accepts, and refuses exactly what it
+refuses:
 
 ```sql
 SELECT pgcolumnar.reset_options(

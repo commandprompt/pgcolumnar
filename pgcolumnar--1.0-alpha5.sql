@@ -456,15 +456,15 @@ BEGIN
 					 JOIN pg_am a ON a.oid = c.relam
 					WHERE c.oid = table_name
 					  AND a.amname = 'pgcolumnar'
-					  AND c.relkind = 'r') THEN
+					  AND c.relkind IN ('r', 'm')) THEN
 		RAISE EXCEPTION 'relation "%" is not a columnar table', table_name
 			USING ERRCODE = 'wrong_object_type',
 				HINT = 'Per-table options are read by the columnar writer and '
-				'apply only to an ordinary table using the pgcolumnar access '
-				'method. A partitioned table has no storage of its own: set the '
-				'options on each partition. Otherwise convert the table first '
-				'with ALTER TABLE ... SET ACCESS METHOD pgcolumnar, then set '
-				'the options.';
+				'apply only to an ordinary table or materialized view using the '
+				'pgcolumnar access method. A partitioned table has no storage of '
+				'its own: set the options on each partition. Otherwise convert '
+				'the table first with ALTER TABLE ... SET ACCESS METHOD '
+				'pgcolumnar, then set the options.';
 	END IF;
 
 	IF encode_effort IS NOT NULL AND
@@ -617,13 +617,13 @@ BEGIN
 					 JOIN pg_am a ON a.oid = c.relam
 					WHERE c.oid = table_name
 					  AND a.amname = 'pgcolumnar'
-					  AND c.relkind = 'r') THEN
+					  AND c.relkind IN ('r', 'm')) THEN
 		RAISE EXCEPTION 'relation "%" is not a columnar table', table_name
 			USING ERRCODE = 'wrong_object_type',
 				HINT = 'Per-table options are read by the columnar writer and '
-				'apply only to an ordinary table using the pgcolumnar access '
-				'method. A partitioned table has no storage of its own: reset '
-				'the options on each partition.';
+				'apply only to an ordinary table or materialized view using the '
+				'pgcolumnar access method. A partitioned table has no storage of '
+				'its own: reset the options on each partition.';
 	END IF;
 
 	UPDATE pgcolumnar.options o SET

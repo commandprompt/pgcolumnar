@@ -261,13 +261,20 @@ check "reset restores default limit" \
 # that: it reports success for something that could not have applied, which is
 # the harder half to notice.
 #
-# THE PROPERTY IS PARITY, NOT A RELKIND LIST, and that is deliberate. Whether a
-# columnar MATERIALIZED VIEW should hold options is open (#1265): set_options
-# refuses one today, while compact, vacuum_sorted and stats all accept it. An
-# arm asserting "a matview is accepted" would prejudge a question that is jd's.
-# An arm asserting the two entry points AGREE catches the asymmetry today and
-# stays correct whichever way that is settled -- widening one then has to widen
-# the other to keep this green.
+# THE PROPERTY IS PARITY, NOT A RELKIND LIST, and that is deliberate. It was
+# written while the matview question was open, so that settling it either way
+# would not invalidate the arm -- "widening one then has to widen the other to
+# keep this green" was the prediction, and that is what happened.
+#
+# SETTLED 2026-09-25 (jd, #1265): a columnar MATERIALIZED VIEW MAY hold options,
+# and the drop hook was widened in the same change so the row is cleaned up
+# after one. Before that, set_options refused a matview while compact,
+# vacuum_sorted and stats all accepted it, and an options row planted on a
+# matview outlived the relation on all five majors.
+#
+# The parity arms below stay exactly as they were. What is ADDED is a verdict
+# arm, because parity alone is now too weak: both entry points refusing a
+# matview would still "agree", which is the state this change exists to end.
 #
 # "reset_options must refuse what set_options refuses" would be the same claim
 # stated as a direction, and it quietly assumes set_options is the correct one.
@@ -290,6 +297,9 @@ p5_agree() {	# p5_agree REL -> agree | set=X reset=Y
 q "CREATE TABLE o_par_col (a int) USING pgcolumnar;" >/dev/null
 q "CREATE TABLE o_par_heap (a int);" >/dev/null
 q "CREATE TABLE o_par_part (a int) PARTITION BY RANGE (a);" >/dev/null
+q "CREATE TABLE o_par_mvsrc (a int);" >/dev/null
+q "INSERT INTO o_par_mvsrc VALUES (1),(2);" >/dev/null
+q "CREATE MATERIALIZED VIEW o_par_mv USING pgcolumnar AS SELECT a FROM o_par_mvsrc;" >/dev/null
 
 check "premise: the columnar fixture is relkind r on the columnar access method" \
 	"$(q "SELECT c.relkind::text || am.amname::text FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.relname = 'o_par_col';")" \
@@ -300,6 +310,9 @@ check "premise: the heap fixture is relkind r and is NOT columnar" \
 check "premise: the partitioned fixture is relkind p with no storage" \
 	"$(q "SELECT c.relkind::text || c.relfilenode::text FROM pg_class c WHERE c.relname = 'o_par_part';")" \
 	"p0"
+check "premise: the matview fixture is relkind m on the columnar access method" \
+	"$(q "SELECT c.relkind::text || am.amname::text FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.relname = 'o_par_mv';")" \
+	"mpgcolumnar"
 
 # THE CONTROL. Without it "agree" is satisfied by a build where both functions
 # refuse everything, and the three parity arms below would all pass on it.
@@ -312,6 +325,18 @@ check "set_options and reset_options agree about a heap table" \
 	"$(p5_agree o_par_heap)" "agree"
 check "set_options and reset_options agree about a partitioned parent" \
 	"$(p5_agree o_par_part)" "agree"
+check "set_options and reset_options agree about a columnar matview" \
+	"$(p5_agree o_par_mv)" "agree"
+
+# The verdict arm. Parity is satisfied by both refusing, which is precisely the
+# behaviour #1265 changed, so the direction has to be named once it is settled.
+check "both entry points accept a columnar matview (#1265, settled)" \
+	"$(p5_set_verdict o_par_mv)/$(p5_reset_verdict o_par_mv)" "accepted/accepted"
+
+# And the partitioned parent must STILL be refused. Widening to matviews is not
+# widening to everything without storage: this is the arm that says so.
+check "control: a partitioned parent is still refused by both" \
+	"$(p5_set_verdict o_par_part)/$(p5_reset_verdict o_par_part)" "refused/refused"
 
 # ---------------------------------------------------------------------------
 # Vacuum: combine small stripes and reclaim deleted rows, returning correct

@@ -138,4 +138,88 @@ check "a live table with a projection still reads correctly" \
 check "and its projection is still readable" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_projection('dcl_live','lp');" | tail -1)" "3000"
 
+# --- 7. a columnar MATERIALIZED VIEW takes its options row with it (#1265) ---
+#
+# The drop hook returned before it examined anything that was not an ordinary
+# table (`if (get_rel_relkind(objectId) != RELKIND_RELATION) return;`), so an
+# options row describing a columnar matview outlived the relation: a row keyed
+# to a dead oid, reachable from nothing and cleared by nothing. Measured on all
+# five majors before the fix -- the matview left 1 row, an ordinary columnar
+# table in the same run left 0.
+#
+# THE ROW IS PLANTED DIRECTLY rather than through set_options, and that is
+# deliberate. The subject of this suite is the DROP HOOK, and set_options
+# carries its own relkind guard (#1265 widened both). Going through set_options
+# would make a red here ambiguous between the two, and -- worse -- while that
+# guard refused a matview, no row would exist and "0 rows afterwards" would be
+# satisfied by a build whose hook does nothing at all. An INSERT reaches the
+# hook question with one variable.
+
+psql_run "DROP MATERIALIZED VIEW IF EXISTS dcl_mv; DROP TABLE IF EXISTS dcl_mv_src;
+	CREATE TABLE dcl_mv_src (a int);
+	INSERT INTO dcl_mv_src VALUES (1),(2);
+	CREATE MATERIALIZED VIEW dcl_mv USING pgcolumnar AS SELECT a FROM dcl_mv_src;" >/dev/null
+
+check "premise: the matview is relkind m on the columnar access method" \
+	"$(q "SELECT c.relkind::text || am.amname FROM pg_class c
+		JOIN pg_am am ON am.oid = c.relam WHERE c.relname = 'dcl_mv';" | tail -1)" \
+	"mpgcolumnar"
+
+psql_run "INSERT INTO pgcolumnar.options (regclass, stripe_row_limit)
+	VALUES ('dcl_mv'::regclass, 123);" >/dev/null
+check "premise: the matview carries an options row for the hook to clear" \
+	"$(q "SELECT count(*) FROM pgcolumnar.options
+		WHERE regclass = 'dcl_mv'::regclass;" | tail -1)" "1"
+
+dcl_mv_oid="$(q "SELECT 'dcl_mv'::regclass::oid::text;" | tail -1)"
+psql_run "DROP MATERIALIZED VIEW dcl_mv;" >/dev/null
+check "dropping a columnar matview takes its options row with it" \
+	"$(q "SELECT count(*) FROM pgcolumnar.options WHERE regclass = $dcl_mv_oid;" | tail -1)" \
+	"0"
+
+# REFRESH MUST NOT TAKE THE ROW. This is the risk the widening introduces, and
+# it is here because the hook's own comment names it: "every REWRITE drops a
+# transient pg_temp_<oid> through this hook, so VACUUM FULL, CLUSTER, ALTER
+# TABLE ... ALTER COLUMN TYPE and CREATE MATERIALIZED VIEW take the same path".
+# While the hook returned early for a matview, none of those could reach a
+# matview's options row. Now that it does not, a refresh that dropped the
+# relation rather than swapping its storage would silently discard the options
+# the user set -- and the user would find out at the next write, not at the
+# refresh. An arm is cheaper than that.
+
+psql_run "DROP MATERIALIZED VIEW IF EXISTS dcl_mv_ref; DROP TABLE IF EXISTS dcl_mv_ref_src;
+	CREATE TABLE dcl_mv_ref_src (a int);
+	INSERT INTO dcl_mv_ref_src VALUES (1),(2);
+	CREATE MATERIALIZED VIEW dcl_mv_ref USING pgcolumnar AS SELECT a FROM dcl_mv_ref_src;" >/dev/null
+psql_run "SELECT pgcolumnar.set_options('dcl_mv_ref', stripe_row_limit => 100000);" >/dev/null
+check "premise: the matview holds the options row set through set_options" \
+	"$(q "SELECT stripe_row_limit::text FROM pgcolumnar.options
+		WHERE regclass = 'dcl_mv_ref'::regclass;" | tail -1)" "100000"
+
+psql_run "INSERT INTO dcl_mv_ref_src VALUES (3);" >/dev/null
+psql_run "REFRESH MATERIALIZED VIEW dcl_mv_ref;" >/dev/null
+check "premise: the refresh actually rewrote the matview" \
+	"$(q "SELECT count(*) FROM dcl_mv_ref;" | tail -1)" "3"
+check "REFRESH keeps the matview's options row" \
+	"$(q "SELECT stripe_row_limit::text FROM pgcolumnar.options
+		WHERE regclass = 'dcl_mv_ref'::regclass;" | tail -1)" "100000"
+
+psql_run "DROP MATERIALIZED VIEW dcl_mv_ref;" >/dev/null
+
+# The control, in the same run and by the same route. Without it a hook that
+# deletes every options row unconditionally passes the arm above.
+psql_run "DROP TABLE IF EXISTS dcl_opt_keep;
+	CREATE TABLE dcl_opt_keep (a int) USING pgcolumnar;" >/dev/null
+psql_run "INSERT INTO pgcolumnar.options (regclass, stripe_row_limit)
+	VALUES ('dcl_opt_keep'::regclass, 123);" >/dev/null
+check "control: an unrelated options row survives that drop" \
+	"$(q "SELECT count(*) FROM pgcolumnar.options
+		WHERE regclass = 'dcl_opt_keep'::regclass;" | tail -1)" "1"
+
+dcl_keep_oid="$(q "SELECT 'dcl_opt_keep'::regclass::oid::text;" | tail -1)"
+psql_run "DROP TABLE dcl_opt_keep;" >/dev/null
+check "control: an ordinary columnar table still takes its own options row" \
+	"$(q "SELECT count(*) FROM pgcolumnar.options WHERE regclass = $dcl_keep_oid;" | tail -1)" \
+	"0"
+
 pgc_summary
