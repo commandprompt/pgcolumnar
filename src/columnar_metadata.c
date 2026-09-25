@@ -1923,11 +1923,28 @@ delete_rows_by_storage_id(const char *tableName, AttrNumber storageAttno,
 	ScanKeyData key[1];
 	SysScanDesc scan;
 	HeapTuple	tuple;
+	Oid			idx;
 
 	ScanKeyInit(&key[0], storageAttno, BTEqualStrategyNumber,
 				F_INT8EQ, Int64GetDatum((int64) storageId));
 
-	scan = systable_beginscan(rel, InvalidOid, false, NULL, 1, key);
+	/*
+	 * ONE LINE THAT IS SEVEN SITES (#1207). The catalog name and the key
+	 * attnum both arrive as parameters, so the issue's stated method -- trace
+	 * the handle to its own open_columnar_table -- cannot classify this scan,
+	 * and it was left out of the population. Its call sites resolve it:
+	 * delete_vector, column_chunk, zone_map, bloom, free_space, row_group and
+	 * storage, every one keyed on storage_id and every one with a primary key
+	 * whose first column is storage_id. Each catalog's index follows the
+	 * <name>_pkey convention, checked for all seven.
+	 *
+	 * Size-aware like every other converted site: below the threshold this
+	 * resolves to InvalidOid and the scan stays sequential, which is what
+	 * keeps a small catalog from paying for a probe it cannot use (#1213).
+	 */
+	idx = pgcolumnar_scan_index_oid(rel, psprintf("%s_pkey", tableName));
+
+	scan = systable_beginscan(rel, idx, OidIsValid(idx), NULL, 1, key);
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 		CatalogTupleDelete(rel, &tuple->t_self);
 	systable_endscan(scan);
