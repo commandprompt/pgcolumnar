@@ -253,6 +253,66 @@ q "INSERT INTO o_reset SELECT g FROM generate_series(1,5000) g;" >/dev/null
 check "reset restores default limit" \
 	"$(q "SELECT count(*) FROM pgcolumnar.zone_map WHERE storage_id=pgcolumnar.get_storage_id('o_reset') AND vector_index >= 0 AND column_index = 0;")" "1"
 
+# ---- set_options and reset_options must reach the SAME verdict (#1265) -------
+#
+# reset_options had no guard at all -- no relam test, no relkind test, just the
+# UPDATE -- so it reported success for a heap table and for a partitioned parent
+# while set_options refused the identical relation. Nothing is corrupted by
+# that: it reports success for something that could not have applied, which is
+# the harder half to notice.
+#
+# THE PROPERTY IS PARITY, NOT A RELKIND LIST, and that is deliberate. Whether a
+# columnar MATERIALIZED VIEW should hold options is open (#1265): set_options
+# refuses one today, while compact, vacuum_sorted and stats all accept it. An
+# arm asserting "a matview is accepted" would prejudge a question that is jd's.
+# An arm asserting the two entry points AGREE catches the asymmetry today and
+# stays correct whichever way that is settled -- widening one then has to widen
+# the other to keep this green.
+#
+# "reset_options must refuse what set_options refuses" would be the same claim
+# stated as a direction, and it quietly assumes set_options is the correct one.
+# Symmetry does not.
+p5_set_verdict() {	# p5_set_verdict REL -> accepted|refused
+	q "SELECT pgcolumnar.set_options('$1', chunk_group_row_limit => 1000);" \
+		>/dev/null 2>&1 && echo accepted || echo refused
+}
+p5_reset_verdict() {	# p5_reset_verdict REL -> accepted|refused
+	q "SELECT pgcolumnar.reset_options('$1', chunk_group_row_limit => true);" \
+		>/dev/null 2>&1 && echo accepted || echo refused
+}
+p5_agree() {	# p5_agree REL -> agree | set=X reset=Y
+	local s r
+	s="$(p5_set_verdict "$1")"
+	r="$(p5_reset_verdict "$1")"
+	[ "$s" = "$r" ] && echo agree || echo "set=$s reset=$r"
+}
+
+q "CREATE TABLE o_par_col (a int) USING pgcolumnar;" >/dev/null
+q "CREATE TABLE o_par_heap (a int);" >/dev/null
+q "CREATE TABLE o_par_part (a int) PARTITION BY RANGE (a);" >/dev/null
+
+check "premise: the columnar fixture is relkind r on the columnar access method" \
+	"$(q "SELECT c.relkind::text || am.amname::text FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.relname = 'o_par_col';")" \
+	"rpgcolumnar"
+check "premise: the heap fixture is relkind r and is NOT columnar" \
+	"$(q "SELECT c.relkind::text || (am.amname <> 'pgcolumnar')::text FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.relname = 'o_par_heap';")" \
+	"rtrue"
+check "premise: the partitioned fixture is relkind p with no storage" \
+	"$(q "SELECT c.relkind::text || c.relfilenode::text FROM pg_class c WHERE c.relname = 'o_par_part';")" \
+	"p0"
+
+# THE CONTROL. Without it "agree" is satisfied by a build where both functions
+# refuse everything, and the three parity arms below would all pass on it.
+check "control: both entry points accept an ordinary columnar table" \
+	"$(p5_set_verdict o_par_col)/$(p5_reset_verdict o_par_col)" "accepted/accepted"
+
+check "set_options and reset_options agree about a columnar table" \
+	"$(p5_agree o_par_col)" "agree"
+check "set_options and reset_options agree about a heap table" \
+	"$(p5_agree o_par_heap)" "agree"
+check "set_options and reset_options agree about a partitioned parent" \
+	"$(p5_agree o_par_part)" "agree"
+
 # ---------------------------------------------------------------------------
 # Vacuum: combine small stripes and reclaim deleted rows, returning correct
 # data. stripe_row_limit=1000 makes 5 stripes; after deleting half and vacuum
