@@ -532,7 +532,22 @@ done
 s_default="$(drop_work drp_small_a)"
 s_probe="$(drop_work drp_small_b 0)"
 echo "-- drop small  default=$s_default probe-always=$s_probe"
-check_num "with few catalog pages the drop's default does no more work than probing every one" \
-	"$([ "$s_default" -le "$s_probe" ] && echo 1 || echo 0)" "1"
+# STRICT, NOT `-le`, AND THAT IS THE WHOLE ARM. The first version asked only
+# that the default do no MORE work than a forced probe. A build with the size
+# check REMOVED -- probing unconditionally -- makes the two readings equal, and
+# `-le` passes on it: the arm could not tell "the check is present and
+# declining" from "there is no check". That is the same vacuity as an arm
+# asserting only that the rows were deleted, which is what this section exists
+# instead of. Reported by @jdatcmd.
+#
+# Requiring a MARGIN reddens under both mutations, so this arm witnesses the
+# conversion rather than merely guarding a future one:
+#
+#     conversion present, declining      24 vs 27     125 permille   PASS
+#     size check removed, always probe   27 vs 27       0            FAIL
+#     conversion reverted, sequential   101 vs 101      0            FAIL
+check_num "with few catalog pages the drop's default does less work than probing every one" \
+	"$(margin "$(permille "$((s_probe - s_default))" "$s_default")" $FLOOR_PERMILLE)" \
+	"$FLOOR_PERMILLE"
 
 pgc_summary
