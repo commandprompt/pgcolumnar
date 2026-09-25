@@ -356,7 +356,7 @@ check_num "with the catalog populated, planning costs less than reading it whole
 # the premises would keep passing against a fixture that no longer separates the
 # two routes. Driving the catalog past the threshold and reading back where the
 # row landed is the property; the fill count is only how it is reached.
-# Raised by @pgcolumnar-review-3d, who declined to look for a cheaper fixture
+# Raised by @jdatcmd, who declined to look for a cheaper fixture
 # for this reason.
 fill=800
 q "DO \$\$
@@ -463,7 +463,7 @@ check_num "the newest columnar table costs no more catalog work than the oldest"
 # shapes never reach a group-sensitive term. All three call sites turn the limit
 # into a GROUP COUNT -- 150000 against 3000 over 20,000 rows is 1 group against
 # 7 -- and on a shape that reaches one, the plan is priced 301.29 against 43.86.
-# Reported by @pgcolumnar-review-3d, who refused the claim from the mechanism
+# Reported by @jdatcmd, who refused the claim from the mechanism
 # rather than from the numbers.
 q "SET pgcolumnar.stripe_row_limit = 150000;
    CREATE TABLE stor_proj (a int, b text) USING pgcolumnar;
