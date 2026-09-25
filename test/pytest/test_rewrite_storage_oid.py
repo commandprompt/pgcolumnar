@@ -72,3 +72,79 @@ def test_rewrite_storage_oid(pgc_conn, expect):
             1,
             "a type rewrite leaves the storage row pointing at the live table",
         )
+
+
+def _points_at(conn, relname):
+    return _one(
+        conn,
+        f"SELECT (relation_oid = '{relname}'::regclass)::int"
+        f"  FROM pgcolumnar.storage"
+        f" WHERE storage_id = pgcolumnar.get_storage_id('{relname}')",
+    )
+
+
+def test_a_matview_created_with_data_points_at_itself(pgc_conn, expect):
+    """The same defect on a different statement (#1275).
+
+    `CREATE MATERIALIZED VIEW ... AS` with data builds a transient, fills it and
+    swaps, exactly as a rewriting `ALTER` does, so the storage row is written
+    with the transient's OID and the swap leaves it naming a relation that no
+    longer exists. Measured before the fix: the row named a dropped 16527 while
+    the matview was 16523.
+
+    `REFRESH MATERIALIZED VIEW` already repaired it, because that node type was
+    in the repair gate. `CreateTableAsStmt` was not.
+
+    THE `CREATE TABLE ... AS` ARM IS THE CONTROL THAT NARROWS THE CLAIM. Same
+    parse node, and it does NOT have the defect -- it fills the relation it
+    created instead of swapping a transient in. Without it the fix would
+    reasonably have been written for the node type as a whole, which is broader
+    than anything measured asked for.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE mv_src (id int, note text) USING pgcolumnar")
+        cur.execute("INSERT INTO mv_src SELECT g, 'n'||g FROM generate_series(1,900) g")
+        cur.execute("CREATE MATERIALIZED VIEW mv_data USING pgcolumnar AS"
+                    " SELECT id, note FROM mv_src")
+        cur.execute("CREATE TABLE mv_cta USING pgcolumnar AS SELECT id, note FROM mv_src")
+
+    # A ROW COUNT FIRST, so the arms below are about a relation that was
+    # actually populated. A matview created WITH NO DATA writes no storage row
+    # at all, and every arm here would then be asking about nothing.
+    expect.num(
+        _one(pgc_conn, "SELECT count(*) FROM mv_data"),
+        900,
+        "premise: the matview holds the rows it was created with",
+    )
+    expect.num(
+        _one(pgc_conn, "SELECT count(*) FROM mv_cta"),
+        900,
+        "premise: the CREATE TABLE AS table holds them too",
+    )
+
+    mv, cta = _points_at(pgc_conn, "mv_data"), _points_at(pgc_conn, "mv_cta")
+    print(f"-- mv={mv} cta={cta}")
+
+    # THE CONTROL, AND IT MUST PASS BEFORE THE FIX AS WELL AS AFTER. If this
+    # ever reads 0 the claim below is no longer about matviews specifically and
+    # the remedy is a different one.
+    expect.num(
+        cta, 1, "premise: CREATE TABLE ... AS leaves its storage row pointing at itself"
+    )
+    expect.num(
+        mv, 1, "a matview created WITH DATA leaves its storage row pointing at itself"
+    )
+
+    # AND REFRESH MUST STILL WORK. It repaired this before the fix, through a
+    # different node type, so an arm here is what says the fix did not displace
+    # the path that already worked.
+    with pgc_conn.cursor() as cur:
+        cur.execute("REFRESH MATERIALIZED VIEW mv_data")
+    expect.num(
+        _one(pgc_conn, "SELECT count(*) FROM mv_data"),
+        900,
+        "premise: the refreshed matview still holds every row",
+    )
+    expect.num(
+        _points_at(pgc_conn, "mv_data"), 1, "and REFRESH still leaves it pointing at itself"
+    )

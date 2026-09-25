@@ -1772,8 +1772,14 @@ range_pruning	range_pruning	premise: the range type collates differently from it
 range_pruning	range_pruning	so does a containment probe	15;16;17;18;19	never	-
 range_pruning	range_pruning	the overlap qual is pushed down, where it used to be dropped	15;16;17;18;19	never	-
 range_pruning	range_pruning	the same for a containment probe far to its right	15;16;17;18;19	never	-
+rewrite_storage_oid	rewrite_storage_oid	a matview created WITH DATA leaves its storage row pointing at itself	15;16;17;18;19	never	-
 rewrite_storage_oid	rewrite_storage_oid	a type rewrite leaves the storage row pointing at the live table	15;16;17;18;19	2026-09-24	the rewrite hook does not retarget storage.relation_oid
+rewrite_storage_oid	rewrite_storage_oid	and REFRESH still leaves it pointing at itself	15;16;17;18;19	never	-
+rewrite_storage_oid	rewrite_storage_oid	premise: CREATE TABLE ... AS leaves its storage row pointing at itself	15;16;17;18;19	never	-
 rewrite_storage_oid	rewrite_storage_oid	premise: a table that was not rewritten still points at itself	15;16;17;18;19	never	-
+rewrite_storage_oid	rewrite_storage_oid	premise: the CREATE TABLE AS table holds them too	15;16;17;18;19	never	-
+rewrite_storage_oid	rewrite_storage_oid	premise: the matview holds the rows it was created with	15;16;17;18;19	never	-
+rewrite_storage_oid	rewrite_storage_oid	premise: the refreshed matview still holds every row	15;16;17;18;19	never	-
 rewrite_storage_oid	rewrite_storage_oid	premise: the rewritten table still holds every row	15;16;17;18;19	never	-
 rewrite_storage_oid	rewrite_storage_oid	premise: the storage row points at the live table before the rewrite	15;16;17;18;19	never	-
 rewrite_storage_oid	rewrite_storage_oid	premise: the table holds every inserted row	15;16;17;18;19	never	-
