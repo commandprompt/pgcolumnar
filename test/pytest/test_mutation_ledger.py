@@ -331,6 +331,60 @@ def test_an_orphan_row_is_named_and_the_unscanned_rows_are_counted(tmp_path, exp
                "a before-log and an after-log together are refused, as rename-scan refuses them")
 
 
+def test_a_row_outside_the_run_majors_is_counted_once_not_twice(tmp_path, expect):
+    """#1270. A row whose majors exclude the running major, in a part the run HAS.
+
+    `checkable` requires both that the part is in the run and that the row's majors
+    intersect the run's. Everything outside it becomes `not checked`. But `matched`
+    was computed as `set(rows) & now` -- against every row rather than against the
+    checkable ones -- so a row the run still emits, whose ledger majors do not name
+    this major, landed in BOTH buckets. The four categories then over-counted and the
+    integrity assertion refused a scan that had found nothing wrong.
+
+    This is not hypothetical: it made `run_all_versions.sh` report `FAIL PG19` on a
+    clean tree with every suite passing. `projection_scan_io` holds eleven rows, three
+    of which claim `15;16;17;18`, and on PG19 the arithmetic came out
+    `11 + 1766 = 1777` against 1774 ledger rows. PG19 is the one major CI never runs
+    the suites on, so nothing upstream of a local gate could see it.
+
+    The row belongs in `not checked`. The scan is asked whether the ledger names a
+    check that no longer exists, and a row claiming majors this run is not cannot be
+    answered here either way.
+    """
+    ledger = _w(tmp_path, "l.tsv", "")
+    on18 = _w(tmp_path, "b18.log",
+              "RESULT\tdemo\tpart1\tonly on 18\tPASS\t18\t\n"
+              "RESULT\tdemo\tpart1\talso only on 18\tPASS\t18\t\nchecks run: 2\n")
+    _run("merge", "--ledger", ledger, "--date", "2026-09-01", on18)
+    expect.num(len(_rows(ledger)), 2, "premise: the ledger holds both rows")
+    expect.num(sum(1 for r in _rows(ledger) if r[3] == "18"), 2,
+               "premise: and both claim major 18 only, which is what makes 19 outside them")
+
+    # The SAME part and the SAME checks, emitted by a run on a major the rows do not
+    # claim. The keys are therefore in `now` while the majors do not intersect.
+    on19 = _w(tmp_path, "a19.log",
+              "RESULT\tdemo\tpart1\tonly on 18\tPASS\t19\t\n"
+              "RESULT\tdemo\tpart1\talso only on 18\tPASS\t19\t\nchecks run: 2\n")
+    out, rc = _run("orphan-scan", "--ledger", ledger, on19)
+    expect.num(out.count("classification lost rows"), 0,
+               "a row outside the run's majors is classified once, not counted twice")
+    expect.num(rc, 0, "and the scan completes rather than refusing its own arithmetic")
+    expect.num(out.count("not checked=2"), 1,
+               "both rows land in `not checked`, the bucket for what the run cannot speak to")
+    expect.num(out.count("orphan:"), 0,
+               "and neither is called an orphan, since the run never denied them")
+
+    # THE CONTROL. Without it this passes on a build where `matched` is always zero,
+    # which would break every scan that legitimately matches a row.
+    on18b = _w(tmp_path, "c18.log",
+               "RESULT\tdemo\tpart1\tonly on 18\tPASS\t18\t\n"
+               "RESULT\tdemo\tpart1\talso only on 18\tPASS\t18\t\nchecks run: 2\n")
+    out2, rc2 = _run("orphan-scan", "--ledger", ledger, on18b)
+    expect.num(rc2, 0, "control: a run ON the claimed major is clean")
+    expect.num(out2.count("not checked=0"), 1,
+               "control: and there both rows ARE checkable, so nothing is unspoken for")
+
+
 def test_prune_drops_a_historyless_orphan_and_refuses_one_carrying_history(tmp_path, expect):
     """The catalogue of what has been seen red is what this ledger exists to be.
 
