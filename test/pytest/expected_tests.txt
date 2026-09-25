@@ -261,7 +261,7 @@
 # adding one: `403 tests collected` over the 24 NO_CLUSTER files. `cluster_tests`
 # was re-derived in the same run and did NOT move -- 467 -- which is the expected
 # answer for a change that touches only the layer and its own guard.
-guard_tests 403
+guard_tests 404
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

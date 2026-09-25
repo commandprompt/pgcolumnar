@@ -911,7 +911,24 @@ def cmd_orphan_scan(args):
           f"unprunable={len(unprunable)}, not checked={len(unchecked)}")
     # The four categories must account for every row, or a row went missing in the
     # classification itself -- which is the failure this tool exists to report.
-    matched = len(set(rows) & now)
+    #
+    # INTERSECTED WITH `checkable`, NOT WITH EVERY ROW (#1270). The other three
+    # buckets all partition `checkable`/`unchecked`, so `matched` has to be drawn
+    # from the same side of that line. Against `set(rows)` instead, a row the run
+    # still EMITS whose ledger majors do not name this major landed in `matched`
+    # and in `unchecked` both, and the assertion below refused a scan that had
+    # found nothing wrong.
+    #
+    # It was not hypothetical. `projection_scan_io` holds eleven rows, three of
+    # which claim `15;16;17;18`, and their checks still run on 19 -- so a PG19 run
+    # computed `11 + 1766 = 1777` against 1774 rows and `run_all_versions.sh`
+    # reported `FAIL PG19` on a clean tree with every suite passing. PG19 is the
+    # one major CI never runs the suites on, so only a local gate could see it.
+    #
+    # The row belongs in `not checked`: this scan asks whether the ledger names a
+    # check that no longer exists, and a row claiming majors this run is not cannot
+    # be answered here in either direction.
+    matched = len(checkable & now)
     if matched + len(orphans) + len(unprunable) + len(unchecked) != len(rows):
         raise LedgerError(
             f"classification lost rows: matched {matched} + orphans {len(orphans)} + "

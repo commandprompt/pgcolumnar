@@ -16,6 +16,49 @@ true until the next version shipped.
 
 ## [Unreleased]
 
+### Fixed
+
+- The ledger orphan scan no longer counts one row in two buckets (#1270). Its
+  own integrity assertion was refusing a scan that had found nothing wrong, and
+  that refusal reddened PG19 in `run_all_versions.sh`.
+
+  `matched` was `set(rows) & now`, drawn from every ledger row, while the other
+  three buckets partition `checkable`. A row the run still emits, whose ledger
+  majors do not name the running major, therefore landed in `matched` and in
+  `not checked` at once. It is now `checkable & now`, from the same side of that
+  line.
+
+  Measured on `pg19-projection_scan_io.log`, the one log that reddened the
+  matrix:
+
+  ```
+    before   matched 11 + orphans 0 + unprunable 0 + not checked 1766 != 1774   rc=2
+    after    parts in the run=1, rows in those parts=8, orphans=0, not checked=1766   rc=0
+  ```
+
+  `projection_scan_io` holds eleven rows, three of which claim `15;16;17;18`
+  while their checks still run on 19, so a PG19 run computed `11 + 1766 = 1777`
+  against 1774 rows. It is the only suite in the ledger with that shape, which is
+  why one part on one major reddened the whole matrix.
+
+  **CI could not have caught this.** `ci.yml` runs the suites on 17 and 18, the
+  nightly on 15/16/17/18 plus aarch64 18; PG19 suites are local-only by design,
+  as `ci.yml` says itself. So the documented local gate, full suites on 18 and
+  19, failed on a clean tree and nothing upstream of it could see that.
+
+  The integrity assertion is not the defect. It caught a real classification
+  error rather than reporting a clean scan, and the numbers it printed are what
+  made this diagnosable in one pass.
+
+  **This does not make PG19 green, and the gate after the fix says so.** A clean
+  tree still reports `FAIL PG19`, now for a second and unrelated reason: three
+  `projection_scan_io` checks run on 19 while their ledger rows claim only
+  `15;16;17;18`, so the ledger gate refuses a check it has never seen. That
+  refusal is correct and actionable, it names the three checks and prints the
+  `merge` command that fixes it, and it needs one log per gated major. It is
+  present on pristine `main` before this change, so it is a separate piece of
+  maintenance rather than part of this fix.
+
 ### Changed
 
 - A columnar `MATERIALIZED VIEW` may now hold per-table options, and `DROP`

@@ -2481,6 +2481,27 @@ not an orphan, because the run cannot speak about it — counting those as prese
 let a one-suite log certify the whole ledger. So the scan states how many rows it could
 not speak about, and this test pins that number as well as the orphan it found.
 
+### `test_a_row_outside_the_run_majors_is_counted_once_not_twice`
+
+The same set-compare from the other side: a row the run **does** emit, in a part the run
+**does** contain, whose ledger majors do not name the running major.
+
+`checkable` requires both conditions, and everything outside it becomes `not checked`. But
+`matched` was `set(rows) & now`, computed against every ledger row rather than against the
+checkable ones — the wrong side of that line. So such a row landed in `matched` **and** in
+`not checked`, the four categories stopped partitioning, and the integrity assertion
+refused a scan that had found nothing wrong.
+
+It was not hypothetical. `run_all_versions.sh` reported `FAIL PG19` on a clean tree with
+every suite passing: `projection_scan_io` holds eleven rows, three claiming `15;16;17;18`
+while their checks still run on 19, giving `11 + 1766 = 1777` against 1774 ledger rows.
+PG19 is the one major CI never runs the suites on, so nothing upstream of a local gate
+could see it.
+
+The control is what stops the test being satisfied by the wrong fix. A run **on** the
+claimed major must still be clean with `not checked=0` — without it the test passes on a
+build where `matched` is always zero, which would break every legitimate match.
+
 ### `test_a_part_that_skipped_is_unprunable_because_absence_is_not_removal`
 
 The first version of `--prune` **deleted a suite**. One SKIP record put the part in the
