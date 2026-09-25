@@ -470,4 +470,69 @@ check_num "the vacuum's default does less row_group work than reading it whole" 
 	"$(margin "$(permille "$((v_scan - v_default))" "$v_default")" $FLOOR_PERMILLE)" \
 	"$FLOOR_PERMILLE"
 
+# ---- the DROP path: delete_rows_by_storage_id, seven catalogs (#1207) -------
+#
+# THIS FILE DID NOT COVER THE CONVERSION IT LOOKS LIKE IT COVERS. Everything
+# above drives `delete_group_rows` (columnar_metadata.c:745), the retire path.
+# The seven-catalog sweep is `delete_rows_by_storage_id` (:1919), reached only
+# from PgColumnarDeleteMetadata on DROP and TRUNCATE -- and this suite contained
+# no DROP TABLE at all. Across the whole corpus no suite paired a catalog-work
+# assertion with a DROP, so seq_scan 2 -> 0 lived only in a PR body, which
+# nothing executes. Reported by @jdatcmd.
+#
+# WORK, NOT THE ACCESS PATH, for the reason at the top of this file: an arm
+# asserting seq_scan=0 fails against a build that makes the drop cheaper some
+# other way. And an arm asserting only that the rows were deleted passes with
+# InvalidOid, since a sequential scan deletes them just as correctly -- that is
+# the vacuous version this one exists instead of.
+#
+# drop_work TABLE [INDEX_MIN_BLOCKS] -- buffers the seven catalogs served while
+# TABLE was dropped. A DROP cannot be repeated, so each reading gets its own
+# identically built table.
+DCATS="$CATS,'storage'"
+drop_work() {
+	local set_clause=""
+	[ $# -ge 2 ] && set_clause="SET pgcolumnar.index_min_blocks = $2; "
+	q "SELECT pg_stat_reset();" >/dev/null
+	q "${set_clause}DROP TABLE $1;" >/dev/null
+	q "SELECT pg_stat_force_next_flush();" >/dev/null
+	q "SELECT coalesce(sum(heap_blks_read + heap_blks_hit
+			   + coalesce(idx_blks_read,0) + coalesce(idx_blks_hit,0)), 0)
+		FROM pg_statio_all_tables
+		WHERE schemaname = 'pgcolumnar' AND relname IN ($DCATS);"
+}
+
+# Enough neighbours that the catalogs are worth an index. The conversion is
+# size-aware, so with a few pages the default DECLINES the probe and the two
+# readings converge -- which is the second arm, not a failure of the first.
+for i in $(seq 1 24); do make_target "drp_fill_$i" 6; done
+for t in drp_default drp_whole; do make_target "$t" 6; done
+
+check_num "premise: the drop fixture grew the catalogs it is there to grow" \
+	"$([ "$(catpages)" -ge 3 ] && echo 1 || echo 0)" "1"
+check_num "premise: the table about to be dropped owns catalog rows" \
+	"$([ "$(groups_of drp_default)" -gt 0 ] && echo 1 || echo 0)" "1"
+
+d_default="$(drop_work drp_default)";               echo "--   drop default:    $d_default"
+d_whole="$(drop_work drp_whole 2147483647)";        echo "--   drop read-whole: $d_whole"
+echo "-- drop  catalog pages=$(catpages)  default=$d_default read-whole=$d_whole"
+
+check_num "the drop's default does less catalog work than reading them whole" \
+	"$(margin "$(permille "$((d_whole - d_default))" "$d_default")" $FLOOR_PERMILLE)" \
+	"$FLOOR_PERMILLE"
+
+# THE OTHER SIDE, and the arm that says the size check still protects a small
+# database: with the catalogs below the threshold the default declines the probe,
+# so forcing a probe cannot beat it.
+q "DROP TABLE IF EXISTS drp_small_a, drp_small_b;" >/dev/null 2>&1
+for t in drp_small_a drp_small_b; do
+	q "CREATE TABLE $t (id int) USING pgcolumnar;
+	   INSERT INTO $t SELECT g FROM generate_series(1,50) g;" >/dev/null
+done
+s_default="$(drop_work drp_small_a)"
+s_probe="$(drop_work drp_small_b 0)"
+echo "-- drop small  default=$s_default probe-always=$s_probe"
+check_num "with few catalog pages the drop's default does no more work than probing every one" \
+	"$([ "$s_default" -le "$s_probe" ] && echo 1 || echo 0)" "1"
+
 pgc_summary
