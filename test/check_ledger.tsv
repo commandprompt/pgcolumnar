@@ -99,15 +99,28 @@ catalog_plan_index	catalog_plan_index	a no-qual count did not sequentially scan 
 catalog_plan_index	catalog_plan_index	and touches the empty catalogs not at all	15;16;17;18;19	2026-09-24	only the five options_pkey sites reverted, the two projection ones kept;pgcolumnar_scan_index_oid stops asking the relation its size;the seven planner sites back to the unconditional pgcolumnar_index_oid
 catalog_plan_index	catalog_plan_index	planning a join probed pgcolumnar.storage through storage_pkey	15;16;17;18;19	2026-09-23	both storage_id scans reverted to InvalidOid, so the catalog is swept sequentially on its own primary key
 catalog_plan_index	catalog_plan_index	planning costs less than probing both catalogs would	15;16;17;18;19	2026-09-24	pgcolumnar_scan_index_oid stops asking the relation its size;the seven planner sites back to the unconditional pgcolumnar_index_oid
+catalog_plan_index	catalog_plan_index	planning over the newest columnar table did not sequentially scan pgcolumnar.storage	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	premise: a covering projection gave the table a second storage row	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: a no-qual count over a columnar table touched storage at all	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: forcing the probe costs something, so the instrument measured	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	premise: planning the newest table reached pgcolumnar.storage	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	premise: planning the oldest table reached pgcolumnar.storage too	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: projection is larger than the threshold, so the two paths differ	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: reading the populated catalog whole costs something	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	premise: the base row was first before the update	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: the filtered scan returned every row	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: the join reached storage more than once	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: the measured table holds its rows	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: the measured table owns a small share of that catalog	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	premise: the newest relation's storage row is far enough in to tell the routes apart	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	premise: the no-op update moved the base storage row	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	premise: the two relations are far enough apart in the catalog	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	premise: the two storage rows disagree about row_group_limit	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	premise: the update put the projection row in front	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: this fixture is the default configuration, both catalogs empty	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	premise: this query shape is priced differently under the two limits	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	the newest columnar table costs no more catalog work than the oldest	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	the planned cost does not depend on which storage row the heap returns first	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	with the catalog populated, planning costs less than reading it whole	15;16;17;18;19	2026-09-24	pgcolumnar_scan_index_oid stops asking the relation its size;the seven planner sites back to the unconditional pgcolumnar_index_oid
 differential	differential	agg avg	15;16;17;18;19	never	-
 differential	differential	agg count	15;16;17;18;19	never	-
