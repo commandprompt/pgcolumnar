@@ -18,6 +18,58 @@ true until the next version shipped.
 
 ### Changed
 
+- A columnar `MATERIALIZED VIEW` may now hold per-table options, and `DROP`
+  clears them (#1265). `pgcolumnar.set_options` and `pgcolumnar.reset_options`
+  accept one; the drop hook deletes its options row.
+
+  **The three sites move together, and that is the whole point.** Before this
+  change `set_options` refused a matview, `reset_options` refused it, and the
+  drop hook returned early for anything that was not an ordinary table. Widening
+  only the two SQL guards would have let a row be recorded that nothing could
+  ever clear. Measured on all five majors before the fix, with an options row
+  planted directly on a columnar matview:
+
+  ```
+    PG15 PG16 PG17 PG18 PG19    matview rows after DROP   1  (orphan)
+    PG15 PG16 PG17 PG18 PG19    control: table after DROP 0  (cleaned)
+  ```
+
+  The control is what identifies the hook rather than the guard: an ordinary
+  columnar table in the same run cleaned up correctly.
+
+  **The hook tests two relkinds, not `RELKIND_HAS_STORAGE`.** That macro also
+  admits indexes, sequences and toast relations, none of which can carry
+  pgcolumnar options. A partitioned table stays refused by all three sites: it
+  holds no rows of its own, so an option set on it could never be read.
+
+  **`CREATE MATERIALIZED VIEW ... USING pgcolumnar` needs no version floor.** It
+  was measured working on 15.18, 16.14, 17.6, 18.4 and 19beta2, with `relkind`
+  `m` on the `pgcolumnar` access method in every case. This is unlike a
+  partitioned table, which cannot carry an access method before PG17.
+
+  **The upgrade path needed its own fix, and a test caught it rather than a
+  reviewer.** `pgcolumnar--1.0-alpha4--1.0-alpha5.sql` did not redefine
+  `set_options`, correctly, because the function had not changed since
+  `alpha2--alpha3`. Widening only `pgcolumnar--1.0-alpha5.sql` left a fresh
+  install accepting a matview while every upgraded install still refused one.
+  `native_upgrade_converge` failed on all four upgrade paths with one diverging
+  line:
+
+  ```
+    116c116
+    < FN|pgcolumnar.set_options(...)|2113853fea4ad7a654560b4e1784045e|...
+    > FN|pgcolumnar.set_options(...)|44abe8992bafb0acd1e809cdb1b0c3d9|...
+  ```
+
+  The upgrade script now carries the function, byte-identical below the `CREATE`
+  line, and the four paths converge again.
+
+  **`pgcolumnar.vacuum_full` was deliberately left alone.** It sweeps
+  `relkind = 'r'`, so it still skips columnar matviews. Whether it should sweep
+  them is a separate question about maintenance, not about options, and
+  answering it inside this change would have widened a second behaviour without
+  measuring it.
+
 - Eighteen arms across `validity_elision`, selftest part 190 and
   `native_join_vector_agg` now carry a mutation that reddens them (#1236). No
   test changed and no code changed: the arms were attacked and the ledger

@@ -3085,8 +3085,28 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 	{
 		Relation	rel;
 
-		if (get_rel_relkind(objectId) != RELKIND_RELATION)
-			return;
+		/*
+		 * Ordinary tables AND materialized views. A columnar matview has
+		 * storage of its own, so it can carry an options row -- and until
+		 * #1265 this early return meant that row outlived the relation, keyed
+		 * to a dead oid that nothing could reach and nothing would clear.
+		 * Measured on all five majors: a matview left 1 row behind, an
+		 * ordinary columnar table in the same run left 0.
+		 *
+		 * This is deliberately a two-name test rather than
+		 * RELKIND_HAS_STORAGE. That macro also admits indexes, sequences and
+		 * toast relations, none of which can carry pgcolumnar options or
+		 * storage, and widening to them would be a claim this change has not
+		 * measured. A partitioned table is excluded by both, and must stay
+		 * excluded: it has no storage, so an options row on one could never be
+		 * read.
+		 */
+		{
+			char		relkind = get_rel_relkind(objectId);
+
+			if (relkind != RELKIND_RELATION && relkind != RELKIND_MATVIEW)
+				return;
+		}
 
 		/* DROP already holds AccessExclusiveLock on the relation */
 		rel = relation_open(objectId, NoLock);
