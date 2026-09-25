@@ -66,6 +66,7 @@ catalog_delete_index	catalog_delete_index	B1 with large catalogs the default doe
 catalog_delete_index	catalog_delete_index	P1 with a few catalog pages the default does less work than probing every one	15;16;17;18;19	2026-09-24	pgcolumnar_scan_index_oid stops asking the relation its size, so every site probes;the eight converted scan sites back to InvalidOid
 catalog_delete_index	catalog_delete_index	premise: row_group is larger than the threshold, so the two paths differ	15;16;17;18;19	2026-09-24	pgcolumnar_index_min_blocks default 3 -> 2147483647, so no site probes
 catalog_delete_index	catalog_delete_index	premise: the deep table grew the catalogs it is there to grow	15;16;17;18;19	never	-
+catalog_delete_index	catalog_delete_index	premise: the drop fixture grew the catalogs it is there to grow	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: the phase 0 catalogs hold only this file's tables	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: the phase 0 compaction kept every surviving row	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: the phase 0 compaction retired the emptied groups	15;16;17;18;19	never	-
@@ -81,6 +82,7 @@ catalog_delete_index	catalog_delete_index	premise: the phase B compaction kept e
 catalog_delete_index	catalog_delete_index	premise: the phase B compaction retired the emptied groups	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: the phase B reading covers every catalog the arms name	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: the phase B reading measured something	15;16;17;18;19	never	-
+catalog_delete_index	catalog_delete_index	premise: the table about to be dropped owns catalog rows	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: the three phase 0 targets are the same fixture	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: the three phase A targets are the same fixture	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: the three phase B targets are the same fixture	15;16;17;18;19	never	-
@@ -90,7 +92,9 @@ catalog_delete_index	catalog_delete_index	premise: two phase A compactions at th
 catalog_delete_index	catalog_delete_index	premise: two phase B compactions at the same setting agree well inside the floor	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: two vacuums of the same table at the same setting agree well inside the floor	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	the default's cost grows far less with the database than reading whole does	15;16;17;18;19	2026-09-24	pgcolumnar_index_min_blocks default 3 -> 2147483647, so no site probes;pgcolumnar_scan_index_oid stops asking the relation its size, so every site probes;the eight converted scan sites back to InvalidOid
+catalog_delete_index	catalog_delete_index	the drop's default does less catalog work than reading them whole	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	the vacuum's default does less row_group work than reading it whole	15;16;17;18;19	2026-09-24	pgcolumnar_index_min_blocks default 3 -> 2147483647, so no site probes;pgcolumnar_scan_index_oid stops asking the relation its size, so every site probes;the eight converted scan sites back to InvalidOid
+catalog_delete_index	catalog_delete_index	with few catalog pages the drop's default does less work than probing every one	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	a no-qual count did not sequentially scan pgcolumnar.storage	15;16;17;18;19	2026-09-23	both storage_id scans reverted to InvalidOid, so the catalog is swept sequentially on its own primary key
 catalog_plan_index	catalog_plan_index	and touches the empty catalogs not at all	15;16;17;18;19	2026-09-24	only the five options_pkey sites reverted, the two projection ones kept;pgcolumnar_scan_index_oid stops asking the relation its size;the seven planner sites back to the unconditional pgcolumnar_index_oid
 catalog_plan_index	catalog_plan_index	planning a join probed pgcolumnar.storage through storage_pkey	15;16;17;18;19	2026-09-23	both storage_id scans reverted to InvalidOid, so the catalog is swept sequentially on its own primary key
