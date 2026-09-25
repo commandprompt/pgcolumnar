@@ -3640,9 +3640,8 @@ pgcolumnar_effective_stripe_row_limit(Oid relid)
  *		of groups on every plan, which is too much to spend refining a term that
  *		is approximate by construction.
  *
- *		Scanned without an index: storage_pkey is on storage_id and this
- *		looks up by relation_oid. options_pkey does match its lookup, and
- *		PgColumnarReadOptions uses it; this one cannot.
+ *		Resolved through the relation's own metapage rather than by
+ *		relation_oid (#1210). See the comment at the lookup below.
  */
 int
 pgcolumnar_written_stripe_row_limit(Oid relid)
@@ -3672,12 +3671,82 @@ pgcolumnar_written_stripe_row_limit(Oid relid)
 		opts.stripeRowLimitSet && opts.stripeRowLimit > 0)
 		return opts.stripeRowLimit;
 
-	rel = open_columnar_table("storage", AccessShareLock);
-	tupdesc = RelationGetDescr(rel);
+	/*
+	 * THROUGH THE METAPAGE, NOT relation_oid (#1210). This keyed on
+	 * relation_oid, which has NO index, so every planned query over a columnar
+	 * relation swept the catalog. A sequential scan stops at the first match,
+	 * so the cost was the row's POSITION: measured at 2513 rows over 37 pages,
+	 * 37 blocks for the newest relation and 5 for the oldest, and the tables a
+	 * working database is actively querying are the recent ones.
+	 *
+	 * AN INDEX ON relation_oid WOULD NOT HAVE FIXED IT, and that is why this
+	 * does not add one. The column is not unique -- storage_pkey, on
+	 * storage_id, is the only unique index on the table -- because a covering
+	 * projection gets its OWN storage row carrying the BASE table's
+	 * relation_oid. Measured: a table written at stripe_row_limit 150000 with a
+	 * projection added at 7000 resolved to 150000 with the base row physically
+	 * first and 7000 with it second, no value altered in between. A non-unique
+	 * index returns the same ambiguous pair in index order instead of heap
+	 * order, so it would only have made the wrong answer arrive faster.
+	 *
+	 * The metapage carries the relation's own storage id, and storage_pkey is a
+	 * UNIQUE btree over exactly that, so this resolves one row and the right
+	 * one. It also costs nothing to build and touches no upgrade script.
+	 *
+	 * THE GUARD IS NOT DECORATION. PgColumnarReadMetapage raises ERROR on a
+	 * version mismatch, and block 0 of a heap relation is a heap page, so a
+	 * non-columnar relid here would turn a cost estimate into a query failure
+	 * -- where the old scan simply found no row and returned the GUC. Measured
+	 * over a corpus holding a heap table, a heap partition beside a columnar
+	 * one, a partitioned parent, a view and a matview: 20 arrivals, all
+	 * columnar. So the guard is currently unnecessary, which is not the same as
+	 * safe, and it is two syscache probes.
+	 *
+	 * THE ARGUMENT IS THE ASYMMETRY, NOT THE PROBABILITY, and neither of us can
+	 * bound the probability. Without the guard a non-columnar arrival turns a
+	 * query that used to plan into one that fails; with it, the cost is two
+	 * catcache lookups on a path that already opens a relation.
+	 *
+	 * NOTHING IN THE SUITE CAN REDDEN THIS BRANCH, and that is worth saying so
+	 * it does not rot into folklore: every caller reaches here through
+	 * PgColumnarSetRelPathlist or a cost function below it, and all of them are
+	 * columnar by construction. An unnecessary guard with no arm looks exactly
+	 * like covered code, so the next person to touch it cannot tell by testing
+	 * whether removing it breaks anything. It is reachable only from a C-level
+	 * call with a heap relid, and a public seam opened purely to reach it would
+	 * cost more than it proves.
+	 *
+	 * It costs one extra block, the metapage, and cold that is a real read:
+	 * measured r=1 h=3 against the old route's r=0 h=3.
+	 *
+	 * WHAT THE AMBIGUITY COSTS A USER. All three call sites turn the limit into
+	 * a GROUP COUNT that feeds a cost term, so resolving the projection's row
+	 * misprices the plan. Measured over 300,000 rows with a covering projection,
+	 * same query, same data, only the base row's physical position changed:
+	 * 2078.84 against 1134.84 on an index scan and 2300.00 against 91.23 on a
+	 * qual over the projected column. Four of nine shapes moved; the ones that
+	 * did not never reach a group-sensitive term.
+	 */
+	{
+		Relation	userrel;
+		uint64		storageId;
+		Oid			storIdx;
 
-	ScanKeyInit(&key[0], Anum_native_storage_relation_oid, BTEqualStrategyNumber,
-				F_OIDEQ, ObjectIdGetDatum(relid));
-	scan = systable_beginscan(rel, InvalidOid, false, NULL, 1, key);
+		if (!PgColumnarIsColumnarRelation(relid))
+			return pgcolumnar_stripe_row_limit;
+
+		userrel = table_open(relid, AccessShareLock);
+		storageId = PgColumnarStorageId(userrel);
+		table_close(userrel, AccessShareLock);
+
+		rel = open_columnar_table("storage", AccessShareLock);
+		tupdesc = RelationGetDescr(rel);
+
+		ScanKeyInit(&key[0], Anum_native_storage_storage_id, BTEqualStrategyNumber,
+					F_INT8EQ, Int64GetDatum((int64) storageId));
+		storIdx = pgcolumnar_index_oid("storage_pkey");
+		scan = systable_beginscan(rel, storIdx, OidIsValid(storIdx), NULL, 1, key);
+	}
 
 	if (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{

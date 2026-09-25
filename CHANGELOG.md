@@ -18,6 +18,66 @@ true until the next version shipped.
 
 ### Fixed
 
+- Planning a query over a columnar relation no longer sequentially scans
+  `pgcolumnar.storage` (#1210). `pgcolumnar_written_stripe_row_limit` looked its
+  row up by `relation_oid`, which has no index, so the scan walked the catalog
+  until it matched. A sequential scan stops at the first match, so the cost was
+  the row's **position** rather than the catalog's size: the oldest columnar
+  relation never paid for what came after it and the newest paid for all of it,
+  unbounded, and the relations a working database is actively querying are the
+  recent ones.
+
+  Blocks of `pgcolumnar.storage` per planned query, 2513 rows over 37 pages,
+  `EXPLAIN (BUFFERS)` with no execution:
+
+  ```
+                   newest relation    oldest relation
+    before               37                  5
+    after                 4                  4
+  ```
+
+  Resolved through the relation's own metapage, which carries its storage id,
+  and probed against `storage_pkey` -- a UNIQUE btree over exactly that column.
+  Nothing is built and no upgrade script changes.
+
+  **An index on `relation_oid` was the issue's own suggestion and would not have
+  fixed it.** The column is not unique: `storage_pkey` is the only unique index
+  on the table, and a covering projection gets its own storage row carrying the
+  **base** table's `relation_oid`. Measured -- a table written at
+  `stripe_row_limit` 150000 with a projection added at 7000 resolved to 150000
+  with the base row physically first and 7000 with it second, no value altered
+  in between. A non-unique index returns the same ambiguous pair in index order
+  instead of heap order, so it would only have made the wrong answer arrive
+  faster.
+
+  The fix costs one extra block, the metapage, and cold that is a real read:
+  `r=1 h=3` against the old route's `r=0 h=3`.
+
+  It is guarded by `PgColumnarIsColumnarRelation`, two syscache probes.
+  `PgColumnarReadMetapage` raises `ERROR` on a version mismatch and block 0 of a
+  heap relation is a heap page, so a non-columnar relid would turn a cost
+  estimate into a query failure where the old scan simply returned the GUC. No
+  non-columnar relid was observed arriving -- 20 arrivals over a corpus holding
+  a heap table, a heap partition beside a columnar one, a partitioned parent, a
+  view and a matview -- which is not the same as safe.
+
+  **What the ambiguity costs a user.** All three call sites turn the limit into
+  a group count that feeds a cost term, so resolving the projection's row
+  misprices the plan. Same query, same data, only the base row's physical
+  position changed:
+
+  ```
+    SELECT a,b FROM t WHERE a BETWEEN 1 AND 30000    2078.84  ->  1134.84
+    SELECT b   FROM t WHERE b = 'x7'                 2300.00  ->    91.23
+  ```
+
+  Four of nine shapes moved. The ones that did not never reach a
+  group-sensitive term, which is why an early reading of two such shapes was
+  mistaken for the limit being invisible in the plan.
+
+  `pgcolumnar.analyze()` reads the same ambiguous column in SQL and is **not**
+  fixed by this change; see #1276.
+
 - `run_all_versions.sh` now reports `PASS PG19` on a clean tree (#1270). Three
   `projection_scan_io` rows claimed `15;16;17;18` while their checks run on 19,
   so the ledger gate refused a check it had never seen and reddened the major

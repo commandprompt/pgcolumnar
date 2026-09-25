@@ -319,4 +319,217 @@ check_num "premise: reading the populated catalog whole costs something" \
 check_num "with the catalog populated, planning costs less than reading it whole" \
 	"$(margin "$((pop_whole - pop_default))" 1)" "1"
 
+# ---------------------------------------------------------------------------
+# AND pgcolumnar.storage THROUGH ITS OWN METAPAGE (#1210)
+#
+# pgcolumnar_written_stripe_row_limit looked the storage row up by
+# relation_oid, which has NO index, so every planned query over a columnar
+# relation sequentially scanned the catalog. The scan stops at the first match,
+# so the cost is the row's POSITION: the oldest columnar relation never pays for
+# the catalog behind it and the newest pays for all of it.
+#
+# relation_oid is also NOT UNIQUE. storage_pkey, on storage_id, is the only
+# unique index on the table, and a covering projection gets its OWN storage row
+# carrying the BASE table's relation_oid -- so the scan finds two rows and takes
+# whichever heap order hands it first. Measured on the unfixed tree: a table
+# written at stripe_row_limit 150000 with a projection added at 7000 resolved to
+# 150000 with the base row first and 7000 with it second, no value altered in
+# between. An index on relation_oid cannot fix that, because a non-unique index
+# returns the same ambiguous pair in index order instead of heap order.
+#
+# The fix resolves through the relation's metapage and probes storage_pkey,
+# which is exact.
+#
+# NOT MEASURED THROUGH PLAN COST, and that is a finding rather than a choice.
+# On the unfixed tree the resolved limit flips 150000 -> 3000 while
+# EXPLAIN's total cost stays byte-identical at 1203.00 on a sequential shape and
+# 12.49 on an indexed one. The wrong answer is INVISIBLE in the plan, so an arm
+# comparing costs would pass on both trees.
+fill=800
+q "DO \$\$
+	DECLARE i int;
+	BEGIN
+		FOR i IN 1..$fill LOOP
+			EXECUTE format('CREATE TABLE stor_f%s (a int, b text) USING pgcolumnar', i);
+			EXECUTE format('INSERT INTO stor_f%s VALUES (1, ''z'')', i);
+		END LOOP;
+	END \$\$;" >/dev/null
+q "CREATE TABLE stor_new (a int, b text) USING pgcolumnar;
+   INSERT INTO stor_new SELECT g, 'x'||(g%50) FROM generate_series(1,2000) g;
+   ANALYZE stor_new, stor_f1;" >/dev/null
+q "VACUUM pgcolumnar.storage;" >/dev/null
+
+stor_pages="$(q "SELECT relpages FROM pg_class WHERE oid = 'pgcolumnar.storage'::regclass;")"
+new_page="$(q "SELECT (ctid::text::point)[0]::int FROM pgcolumnar.storage
+	WHERE relation_oid = 'stor_new'::regclass::oid;")"
+old_page="$(q "SELECT (ctid::text::point)[0]::int FROM pgcolumnar.storage
+	WHERE relation_oid = 'stor_f1'::regclass::oid;")"
+echo "-- pgcolumnar.storage $(q "SELECT count(*) FROM pgcolumnar.storage;") rows, ${stor_pages} pages; stor_new on page ${new_page}, stor_f1 on page ${old_page}"
+
+# THE PREMISE THE POSITION ARM CANNOT DO WITHOUT. If the newest relation's row
+# sits near the front of the catalog a sequential scan stops there, both routes
+# cost about the same, and the arm reports no difference -- which reads as "the
+# scan is gone" and means "the catalog is too small to tell". The probe route
+# costs about four blocks, so the scan has to be worth more than that before the
+# two can be told apart. Derived from the reading, not typed.
+check_num "premise: the newest relation's storage row is far enough in to tell the routes apart" \
+	"$(margin "$new_page" 5)" "5"
+
+storage_blks() {	# storage_blks RELNAME -> blocks of pgcolumnar.storage per plan
+	q "SELECT pg_stat_reset();" >/dev/null
+	q "EXPLAIN (BUFFERS, COSTS OFF) SELECT a, b FROM $1 WHERE a BETWEEN 3 AND 900;" >/dev/null
+	q "SELECT pg_stat_force_next_flush();" >/dev/null
+	q "SELECT coalesce(heap_blks_read,0) + coalesce(heap_blks_hit,0)
+		+ coalesce(idx_blks_read,0) + coalesce(idx_blks_hit,0)
+		FROM pg_statio_all_tables
+		WHERE schemaname = 'pgcolumnar' AND relname = 'storage';"
+}
+
+q "SELECT pg_stat_reset();" >/dev/null
+q "EXPLAIN (BUFFERS, COSTS OFF) SELECT a, b FROM stor_new WHERE a BETWEEN 3 AND 900;" >/dev/null
+q "SELECT pg_stat_force_next_flush();" >/dev/null
+sn="$(storage_stat)"
+sn_idx="${sn%% *}"
+sn_seq="${sn##* }"
+echo "-- planning over the NEWEST columnar table  idx_scan=$sn_idx seq_scan=$sn_seq"
+
+# A ZERO IS ONLY EVIDENCE IF SOMETHING WAS REACHED. A plan that never looks the
+# limit up scans nothing, which is the same reading as a plan that probes.
+check_num "premise: planning the newest table reached pgcolumnar.storage" \
+	"$(margin "$((sn_idx + sn_seq))" 1)" "1"
+
+check_num "planning over the newest columnar table did not sequentially scan pgcolumnar.storage" \
+	"$sn_seq" "0"
+
+blk_new="$(storage_blks stor_new)"
+blk_old="$(storage_blks stor_f1)"
+echo "-- blocks of pgcolumnar.storage per plan  newest=$blk_new  oldest=$blk_old"
+
+# BOTH READINGS NEED A FLOOR, not just the one the claim is about. The first
+# draft of this arm read oldest=0 -- the fill tables had no column b, so the
+# EXPLAIN errored and the plan never happened. Zero blocks then looks like a
+# free lookup and makes the comparison arithmetic on nothing.
+check_num "premise: planning the oldest table reached pgcolumnar.storage too" \
+	"$(margin "$blk_old" 1)" "1"
+
+# THE TWO READINGS MUST BE FAR ENOUGH APART TO MEAN SOMETHING. If the newest
+# and the oldest sit on nearby pages the scan costs the same either way and the
+# arm passes on the unfixed tree.
+check_num "premise: the two relations are far enough apart in the catalog" \
+	"$(margin "$((new_page - old_page - 3))" 1)" "1"
+
+# POSITION, NOT SIZE. This is the claim the issue was filed on and the one an
+# index probe answers: the newest relation must not cost more than the oldest
+# just for having been created later. Measured on the unfixed tree at 706 rows
+# over 6 pages: 6 blocks for the newest against 4 for the oldest, and the gap
+# grows with the catalog because only the newest reading does.
+check_num "the newest columnar table costs no more catalog work than the oldest" \
+	"$(margin "$((blk_old + 2 - blk_new))" 1)" "1"
+
+# ---------------------------------------------------------------------------
+# AND THE ANSWER MUST NOT DEPEND ON HEAP ORDER (#1210)
+#
+# The two arms above measure the WORK. This one measures the ANSWER, which is
+# what the change is actually for.
+#
+# relation_oid is not unique: a covering projection gets its OWN storage row
+# carrying the BASE table's relation_oid, so a sequential scan keyed on that
+# column returns whichever row the heap hands back first. Both rows carry a
+# row_group_limit and they need not agree -- a table written under one
+# stripe_row_limit and a projection added under another is ordinary use, not a
+# contrivance.
+#
+# THE MUTATION ALTERS NO VALUE. `SET row_group_limit = row_group_limit` writes
+# the base row back unchanged, which moves it later in the heap exactly as any
+# real write to it would. Nothing about the data changes; only which row the
+# scan meets first.
+#
+# THE COST IS THE OBSERVABLE, and that took a correction to arrive at. A first
+# attempt read a stable cost on a 30,000-row table with no useful index and
+# concluded the wrong limit was invisible in the plan. It was the fixture: those
+# shapes never reach a group-sensitive term. All three call sites turn the limit
+# into a GROUP COUNT -- 150000 against 3000 over 20,000 rows is 1 group against
+# 7 -- and on a shape that reaches one, the plan is priced 301.29 against 43.86.
+# Reported by @pgcolumnar-review-3d, who refused the claim from the mechanism
+# rather than from the numbers.
+q "SET pgcolumnar.stripe_row_limit = 150000;
+   CREATE TABLE stor_proj (a int, b text) USING pgcolumnar;
+   INSERT INTO stor_proj SELECT g, 'x'||(g%50) FROM generate_series(1,20000) g;" >/dev/null
+q "SET pgcolumnar.stripe_row_limit = 3000;
+   SELECT pgcolumnar.add_projection('stor_proj', 'cov_b', '{b}', '{b}');" >/dev/null
+q "ANALYZE stor_proj;" >/dev/null
+
+proj_cost() {	# -> the plan's total cost, as EXPLAIN prints it
+	q "EXPLAIN (COSTS ON) SELECT b FROM stor_proj WHERE b = 'x7';" \
+		| sed -n '1s/.*\.\.\([0-9.]*\) rows.*/\1/p'
+}
+base_sid="$(q "SELECT pgcolumnar.get_storage_id('stor_proj'::regclass);")"
+limits="$(q "SELECT count(DISTINCT row_group_limit) FROM pgcolumnar.storage
+	WHERE relation_oid = 'stor_proj'::regclass::oid;")"
+rows_for="$(q "SELECT count(*) FROM pgcolumnar.storage
+	WHERE relation_oid = 'stor_proj'::regclass::oid;")"
+echo "-- stor_proj owns $rows_for storage rows carrying $limits distinct row_group_limit values"
+
+# WITHOUT TWO ROWS THERE IS NO AMBIGUITY, and without two DIFFERENT limits the
+# ambiguity cannot be seen. Both are premises, and both are read from the
+# catalog rather than assumed from the fixture's DDL.
+check_num "premise: a covering projection gave the table a second storage row" \
+	"$rows_for" "2"
+check_num "premise: the two storage rows disagree about row_group_limit" \
+	"$limits" "2"
+
+# THE PREMISE THAT STOPS THIS ARM GOING QUIET, and it is the one a future
+# change is most likely to break silently. The arm below asserts two costs are
+# EQUAL, so it also passes if this query shape stops reaching a group-sensitive
+# term at all -- which is exactly the fixture failure that hid this defect from
+# the first attempt. Establish, on this tree, that the cost really does depend
+# on the limit: set the base row's limit to the projection's value and require
+# the plan to be priced differently. Measured here as 301.29 against 43.86.
+#
+# RUN FIRST AND RESTORED, because it writes the row the arm below measures.
+cost_hi="$(proj_cost)"
+q "UPDATE pgcolumnar.storage SET row_group_limit = 3000 WHERE storage_id = $base_sid;" >/dev/null
+cost_lo="$(proj_cost)"
+q "UPDATE pgcolumnar.storage SET row_group_limit = 150000 WHERE storage_id = $base_sid;" >/dev/null
+echo "-- the shape is group-sensitive: limit 150000 -> $cost_hi, limit 3000 -> $cost_lo"
+
+check_num "premise: this query shape is priced differently under the two limits" \
+	"$(if [ "$cost_hi" = "$cost_lo" ]; then echo 0; else echo 1; fi)" "1"
+
+# PUT THE BASE ROW FIRST, by writing the OTHER row so it moves to the end. Which
+# row the premises above left in front is not something to assume.
+proj_sid="$(q "SELECT storage_id FROM pgcolumnar.storage
+	WHERE relation_oid = 'stor_proj'::regclass::oid AND storage_id <> $base_sid;")"
+q "UPDATE pgcolumnar.storage SET row_group_limit = row_group_limit
+	WHERE storage_id = $proj_sid;" >/dev/null
+
+first_before="$(q "SELECT CASE WHEN storage_id = $base_sid THEN 'base' ELSE 'proj' END
+	FROM pgcolumnar.storage WHERE relation_oid = 'stor_proj'::regclass::oid
+	ORDER BY ctid LIMIT 1;")"
+ctid_before="$(q "SELECT ctid FROM pgcolumnar.storage WHERE storage_id = $base_sid;")"
+cost_before="$(proj_cost)"
+
+q "UPDATE pgcolumnar.storage SET row_group_limit = row_group_limit
+	WHERE storage_id = $base_sid;" >/dev/null
+
+ctid_after="$(q "SELECT ctid FROM pgcolumnar.storage WHERE storage_id = $base_sid;")"
+first_after="$(q "SELECT CASE WHEN storage_id = $base_sid THEN 'base' ELSE 'proj' END
+	FROM pgcolumnar.storage WHERE relation_oid = 'stor_proj'::regclass::oid
+	ORDER BY ctid LIMIT 1;")"
+cost_after="$(proj_cost)"
+echo "-- base row $ctid_before -> $ctid_after;  first in the heap $first_before -> $first_after;  cost $cost_before -> $cost_after"
+
+# THE MUTATION MUST HAVE DONE SOMETHING, and each of these is a separate way for
+# it to have done nothing. A HOT update that rewrites in place, a fixture that
+# lost its second row, or a base row that was already second all leave the two
+# readings coming from one heap order, and the arm then passes without having
+# asked anything.
+check_text "premise: the no-op update moved the base storage row" \
+	"$(if [ "$ctid_before" = "$ctid_after" ]; then echo same; else echo moved; fi)" "moved"
+check_text "premise: the base row was first before the update" "$first_before" "base"
+check_text "premise: the update put the projection row in front" "$first_after" "proj"
+
+check_text "the planned cost does not depend on which storage row the heap returns first" \
+	"$cost_after" "$cost_before"
+
 pgc_summary

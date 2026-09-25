@@ -6208,6 +6208,16 @@ The two halves share no fixture: the shell suite drives `projection` to 7 pages 
 
 `pg_stat_reset()` is database-wide. The corpus runs serially within a worker.
 
+AND pgcolumnar.storage THROUGH THE RELATION'S OWN METAPAGE (#1210). `pgcolumnar_written_stripe_row_limit` looked its row up by `relation_oid`, which has no index, so every planned query over a columnar relation swept the catalog. A sequential scan stops at the first match, so the cost was the row's POSITION rather than the catalog's size: the oldest columnar relation never paid for what came after it and the newest paid for all of it, unbounded.
+
+AN INDEX ON `relation_oid` WAS THE ISSUE'S OWN SUGGESTION AND IS THE WRONG REMEDY. The column is not unique -- `storage_pkey`, on `storage_id`, is the only unique index on the table -- because a covering projection gets its own storage row carrying the BASE table's `relation_oid`. Measured: a table written at `stripe_row_limit` 150000 with a projection added at 7000 resolved to 150000 with the base row physically first and 7000 with it second, no value altered in between. A non-unique index returns the same ambiguous pair in index order instead of heap order, so it would only have made the wrong answer arrive faster.
+
+THERE ARE TWO KINDS OF ARM HERE, AND THE SECOND ONE TOOK A CORRECTION TO ARRIVE AT. Two arms measure the WORK -- blocks of `pgcolumnar.storage` per planned query. One measures the ANSWER, which is what the change is for: the plan's cost must not change when the base storage row is moved later in the heap by an update that alters no value. A first attempt read a stable cost on a 30,000-row table with no useful index and concluded the wrong limit was invisible in the plan. It was the fixture -- those shapes never reach a group-sensitive term. All three call sites turn the limit into a GROUP COUNT, and on a shape that reaches one the plan is priced 301.29 against 43.86. Measured over 300,000 rows: 2078.84 against 1134.84 on an index scan and 2300.00 against 91.23 on a qual over the projected column, four of nine shapes moving.
+
+ON A PRIVATE DATABASE for this test too, and for a reason the other two share: `pgcolumnar.storage` is per database, so inside the corpus the page count is whatever the rest of the run left behind and the position premises stop meaning what they say.
+
+Measured on the unfixed tree in this harness's own database, 6 pages: 6 blocks for the newest relation with `seq_scan = 1`, against 2 for the oldest. With the fix, 3 and 3.
+
 ### Every test
 
 | test | what it holds |
@@ -6215,6 +6225,8 @@ The two halves share no fixture: the shell suite drives `projection` to 7 pages 
 | `test_catalog_plan_index` | the measured table's row count, that the filtered scan returned every row, and that planning a `count(*)` and a two-relation join reach `pgcolumnar.storage` through `storage_pkey` |
 | `test_planning_costs_nothing_on_the_default_configuration` | that this fixture really is the default configuration with both catalogs empty, that forcing the probe costs something so the instrument measured, that planning costs less than probing both, and that it touches the empty catalogs **not at all** |
 | `test_planning_still_probes_a_populated_catalog` | that `projection` is larger than the threshold so the two paths differ, that the measured table owns a small share of it, that reading it whole costs something, and that planning costs less than reading it whole |
+| `test_the_written_limit_lookup_does_not_sweep_the_storage_catalog` | that the newest relation's storage row is far enough into the catalog to tell the two routes apart, that the two relations are far enough apart, that both plans reached `pgcolumnar.storage`, that planning over the newest did **not** sequentially scan it, and that the newest costs no more catalog work than the oldest |
+| `test_the_written_limit_does_not_depend_on_heap_order` | that a covering projection gave the table a second storage row, that the two rows disagree about `row_group_limit`, that this query shape is priced differently under the two limits, that the no-op update moved the base row, that the base row was first before it and the projection's row after, and that the planned cost does **not** change |
 
 ## 81. test_catalog_delete_index.py: retiring a row group costs no more for a bigger database
 
