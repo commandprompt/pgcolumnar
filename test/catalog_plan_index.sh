@@ -345,6 +345,19 @@ check_num "with the catalog populated, planning costs less than reading it whole
 # EXPLAIN's total cost stays byte-identical at 1203.00 on a sequential shape and
 # 12.49 on an indexed one. The wrong answer is INVISIBLE in the plan, so an arm
 # comparing costs would pass on both trees.
+# EIGHT HUNDRED FILL TABLES, AND THE NUMBER IS NOT THE POINT -- the page count
+# is. The arms below need the newest relation's storage row far enough into the
+# catalog that a sequential scan to it costs more than the four blocks an index
+# probe costs, and `new_page` is asserted against that rather than assumed.
+#
+# PINNING A PAGE COUNT INSTEAD WOULD BE CHEAPER AND WRONG. Rows per page is a
+# function of the row width, so a future column on pgcolumnar.storage would
+# silently leave a pinned count describing a smaller catalog than it names, and
+# the premises would keep passing against a fixture that no longer separates the
+# two routes. Driving the catalog past the threshold and reading back where the
+# row landed is the property; the fill count is only how it is reached.
+# Raised by @pgcolumnar-review-3d, who declined to look for a cheaper fixture
+# for this reason.
 fill=800
 q "DO \$\$
 	DECLARE i int;

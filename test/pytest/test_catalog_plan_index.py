@@ -358,6 +358,12 @@ def test_the_written_limit_lookup_does_not_sweep_the_storage_catalog(pgc_own_db,
     newest relation against 4 for the oldest, with `seq_scan = 1`.
     """
     conn = pgc_own_db
+    # EIGHT HUNDRED FILL TABLES, AND THE NUMBER IS NOT THE POINT -- the page
+    # count is. Pinning a page count instead would be cheaper and wrong: rows
+    # per page is a function of the row width, so a future column on
+    # pgcolumnar.storage would leave a pinned count describing a smaller catalog
+    # than it names, and the premises would keep passing against a fixture that
+    # no longer separates the two routes.
     fill = 800
     with conn.cursor() as cur:
         cur.execute(
