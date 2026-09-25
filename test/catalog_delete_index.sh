@@ -508,8 +508,13 @@ drop_work() {
 for i in $(seq 1 24); do make_target "drp_fill_$i" 6; done
 for t in drp_default drp_whole; do make_target "$t" 6; done
 
+# `margin`, not a 1-or-0: this arm reports the page count it saw. Part 540
+# refused the first version by name, and its rule is why -- a `-ge` against
+# anything but 0 or 1 discards a real number, where `-gt 0` below is an honest
+# presence check and is excused. `got [0] want [1]` would read the same at two
+# pages and at zero, and those are a thin fixture and a broken one.
 check_num "premise: the drop fixture grew the catalogs it is there to grow" \
-	"$([ "$(catpages)" -ge 3 ] && echo 1 || echo 0)" "1"
+	"$(margin "$(catpages)" 3)" "3"
 check_num "premise: the table about to be dropped owns catalog rows" \
 	"$([ "$(groups_of drp_default)" -gt 0 ] && echo 1 || echo 0)" "1"
 
