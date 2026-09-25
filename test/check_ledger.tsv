@@ -1103,6 +1103,7 @@ harness_selftest	410-a-check-must-have-been-red	and a row naming NO major says n
 harness_selftest	410-a-check-must-have-been-red	and an empty mutation is a placeholder, not an empty last field	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and an undated merge does not erase a known date	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and defines it BEFORE the first call, since bash reads top to bottom	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	and every job that runs the suite matrix collects from the path it retains	15;16;17;18;19	2026-09-24	the matrix job's collection step globs only the build directory run_all_versions.sh deletes, so a red run collects no per-suite log at all
 harness_selftest	410-a-check-must-have-been-red	and every suite log is APPENDED to, so the stamp survives the run	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and it copies them BEFORE removing the build directory, which is the only order that works	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and it entered as debt, not as an observation nothing made	15;16;17;18;19	never	-
@@ -1203,6 +1204,7 @@ harness_selftest	410-a-check-must-have-been-red	premise: and the skipped run emi
 harness_selftest	410-a-check-must-have-been-red	premise: and the two arms it stands in for are still named in the ledger	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: and those writes exist at all, in the appending form	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: both are never, so this ledger's census is two	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	premise: more than one job runs the suite matrix, so this arm has a population	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: pgc_source_fingerprint really does return empty with status 0	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: that part has rows the skipped run cannot speak for	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	premise: the budget is a tracked file too	15;16;17;18;19	never	-

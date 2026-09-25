@@ -87,8 +87,15 @@ check "premise: the nightly workflow is present" \
 # The two are complementary rather than duplicates, and part 410 owns the PR half.
 _j500() { awk -v j="  $1:" '$0==j{f=1;next} /^  [a-z][a-z0-9_-]*:$/{f=0} f' "$_n500"; }
 
+# MATCHING THE INVOCATION, not the word -- the same trap the arm below this one
+# already documents, which had not been applied here. A comment inside the job
+# that NAMES run_all_versions.sh counted as a second invocation and this arm
+# read 2 where the property is 1. It was found by writing such a comment
+# (#1248): the guard went red on a change that added no second call. Anchoring
+# at the start of the command is what a comment cannot reach, since a comment
+# line begins with `#`.
 check "premise: the suites job is findable and runs the matrix" \
-	"$(_j500 suites | grep -c 'run_all_versions\.sh')" "1"
+	"$(_j500 suites | grep -cE '^[[:space:]]*bash test/run_all_versions\.sh')" "1"
 
 check "the suites job names a prior ceiling for the gate" \
 	"$(_j500 suites | grep -c 'PGC_LEDGER_AGAINST')" "1"

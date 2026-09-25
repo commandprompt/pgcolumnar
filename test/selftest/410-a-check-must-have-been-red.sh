@@ -899,6 +899,53 @@ check "and it copies them BEFORE removing the build directory, which is the only
 check "and CI collects from the retained path rather than the deleted one" \
 	"$(grep -c '/tmp/pgcolumnar-logs/\*\.log' "$PGC_SRCDIR/.github/workflows/ci.yml")" "1"
 
+# ---- and EVERY JOB THAT RUNS THE MATRIX, not just the one that was fixed -----
+#
+# The arm above names ci.yml. nightly.yml has the same step and was never named,
+# so it went on globbing only the build directory this runner deletes, and
+# collected nothing on three consecutive reds. That is how #1248's aarch64
+# failure stayed undiagnosable even after #1253 made its diagnosis
+# unconditional: the diagnosis is printed into a per-suite log that the nightly
+# never collected.
+#
+# SCOPED TO THE JOB, NOT THE FILE, and that distinction is the arm. nightly.yml
+# carries TWO collection steps: the matrix job's, and the sanitizer gate's. The
+# sanitizer job runs test/run_san.sh, never run_all_versions.sh, so it never
+# writes /tmp/pgcolumnar-logs and is right not to read it. A file-scoped grep is
+# satisfied by whichever step happens to carry the path and would pass this file
+# while the matrix job's step was still wrong -- which is the defect, not a
+# hypothetical. Named by @OffgridwithJD.
+#
+# The property is therefore: a job that INVOKES the matrix must collect from the
+# path the matrix retains. Derived, so a second such job is covered on the day
+# it is added rather than the day somebody remembers it.
+_cl_pop=""
+_cl_missing=""
+for _cl_wf in "$PGC_SRCDIR"/.github/workflows/*.yml; do
+	for _cl_job in $(awk '/^  [a-z][a-z0-9_-]*:$/{gsub(/[ :]/,"");print}' "$_cl_wf"); do
+		_cl_body="$(awk -v j="  ${_cl_job}:" '$0==j{f=1;next} /^  [a-z][a-z0-9_-]*:$/{f=0} f' "$_cl_wf")"
+		# A `case`, never a captured string piped into an early-exit reader.
+		# Part 080 caught exactly that shape in the
+		# first version of this loop: under pipefail the early-exiting reader
+		# makes the writer take EPIPE, and the pipeline reports the pattern
+		# ABSENT even when the body contains it -- which here would name a job
+		# as missing the path while it has it.
+		case "$_cl_body" in
+			*"bash test/run_all_versions.sh"*) ;;
+			*) continue ;;
+		esac
+		_cl_pop="$_cl_pop ${_cl_wf##*/}:${_cl_job}"
+		case "$_cl_body" in
+			*"/tmp/pgcolumnar-logs/*.log"*) ;;
+			*) _cl_missing="$_cl_missing ${_cl_wf##*/}:${_cl_job}" ;;
+		esac
+	done
+done
+check_num "premise: more than one job runs the suite matrix, so this arm has a population" \
+	"$(set -- $_cl_pop; [ $# -ge 2 ] && echo 1 || echo 0)" "1"
+check "and every job that runs the suite matrix collects from the path it retains" \
+	"$(set -- $_cl_missing; [ $# -eq 0 ] && echo none || echo "$*")" "none"
+
 check "and it runs before the build directory is removed, which is the only place it can" \
 	"$([ "$(grep -n 'pgc_ledger.py" gate' "$_rv" | cut -d: -f1)" -lt \
 	    "$(grep -n 'rm -rf "\$builddir"' "$_rv" | tail -1 | cut -d: -f1)" ] && echo before || echo after)" "before"

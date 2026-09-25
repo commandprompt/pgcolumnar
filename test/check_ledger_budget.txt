@@ -1164,4 +1164,4 @@ suites_not_covered 247
 # the two `is refused` arms PASS for the wrong reason -- the relation is not
 # there. A vacuous green, caught by the premises, which is what premises are
 # for. Ten arms are skipped by name below PG17 rather than left to pass.
-checks_never_observed_red 1599
+checks_never_observed_red 1600
