@@ -223,46 +223,72 @@ check "partial index covers its rows after import" \
 # AND "IS REFUSED" IS NOT THE PROPERTY. A crashed connection also returns
 # non-zero, so expect_error alone is satisfied by the bug itself. The liveness
 # check from a fresh backend is what separates a refusal from an abort.
-psql_run "DROP TABLE IF EXISTS pq_parent CASCADE;
-	CREATE TABLE pq_parent (id int, v text) PARTITION BY RANGE (id);
-	ALTER TABLE pq_parent SET ACCESS METHOD pgcolumnar;
-	CREATE TABLE pq_leaf PARTITION OF pq_parent FOR VALUES FROM (0) TO (100);
-	INSERT INTO pq_parent SELECT g, 'r' || g FROM generate_series(0, 49) g;"
+# PG17 IS THE FLOOR AND EVERY ARM BELOW IS VACUOUS WITHOUT IT (#1264).
+# PostgreSQL 15 and 16 refuse an access method on a partitioned table outright,
+# so `ALTER TABLE ... SET ACCESS METHOD pgcolumnar` does nothing there and the
+# fixture never exists. Measured on 15.18: the ALTER is refused and relam comes
+# back empty. Every arm then fails on a correct build -- which is what the
+# 2026-09-25 nightly showed on `suites (PG 15, x86_64)` and `(PG 16, x86_64)`,
+# while the per-PR gate runs only 17 and 18 and was green.
+#
+# The same floor and the same reason as inheritance.sh's arms (#1261). Skipped
+# BY NAME rather than left out, so a reader sees which properties were not
+# measured on this major instead of a shorter list.
+if [ "${PGC_MAJOR:-0}" -lt 17 ]; then
+	for _pq_arm in \
+		"premise: the parent is partitioned and carries the columnar access method" \
+		"premise: so it has no storage of its own" \
+		"premise: a parquet file exists, so the import reaches the relation" \
+		"control: importing that file into the LEAF still works" \
+		"control: a HEAP target still imports, so the guard is about storage" \
+		"importing into the partitioned parent is refused" \
+		"and the cluster is still up, so the refusal was not an abort"; do
+		check_skip "$_pq_arm" \
+			"SKIP  $_pq_arm (a partitioned table cannot carry an access method before PG17; this server is ${PGC_MAJOR:-unknown})" \
+			"partitioned relam needs PG17+"
+	done
+else
+	psql_run "DROP TABLE IF EXISTS pq_parent CASCADE;
+		CREATE TABLE pq_parent (id int, v text) PARTITION BY RANGE (id);
+		ALTER TABLE pq_parent SET ACCESS METHOD pgcolumnar;
+		CREATE TABLE pq_leaf PARTITION OF pq_parent FOR VALUES FROM (0) TO (100);
+		INSERT INTO pq_parent SELECT g, 'r' || g FROM generate_series(0, 49) g;"
 
-check "premise: the parent is partitioned and carries the columnar access method" \
-	"$(q "SELECT c.relkind::text || am.amname::text
-	      FROM pg_class c JOIN pg_am am ON am.oid = c.relam
-	      WHERE c.relname = 'pq_parent';")" "ppgcolumnar"
-check_num "premise: so it has no storage of its own" \
-	"$(q "SELECT relfilenode FROM pg_class WHERE relname = 'pq_parent';")" "0"
+	check "premise: the parent is partitioned and carries the columnar access method" \
+		"$(q "SELECT c.relkind::text || am.amname::text
+		      FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+		      WHERE c.relname = 'pq_parent';")" "ppgcolumnar"
+	check_num "premise: so it has no storage of its own" \
+		"$(q "SELECT relfilenode FROM pg_class WHERE relname = 'pq_parent';")" "0"
 
-PQFILE="$PGC_WORKDIR/pq_leaf.parquet"
-psql_run "SELECT pgcolumnar.export_parquet('pq_leaf', '$PQFILE');" >/dev/null 2>&1
-check "premise: a parquet file exists, so the import reaches the relation" \
-	"$([ -s "$PQFILE" ] && echo yes || echo no)" "yes"
+	PQFILE="$PGC_WORKDIR/pq_leaf.parquet"
+	psql_run "SELECT pgcolumnar.export_parquet('pq_leaf', '$PQFILE');" >/dev/null 2>&1
+	check "premise: a parquet file exists, so the import reaches the relation" \
+		"$([ -s "$PQFILE" ] && echo yes || echo no)" "yes"
 
-# TWO CONTROLS, and the HEAP one is the reason this guard is about storage and
-# not about being columnar. import_parquet deliberately accepts a heap target --
-# native_parquet_units imports into a plain `CREATE TABLE imp_ms (t timestamp)`
-# -- which is where it differs from import_arrow. A first version of this fix
-# guarded on PgColumnarIsColumnarRelation, rejected heap targets with 42809 and
-# reddened four suites; the arm set at the time had a columnar control and no
-# heap one, so it could not see that.
-check_num "control: importing that file into the LEAF still works" \
-	"$(q "SELECT pgcolumnar.import_parquet('pq_leaf', '$PQFILE');")" "50"
+	# TWO CONTROLS, and the HEAP one is the reason this guard is about storage and
+	# not about being columnar. import_parquet deliberately accepts a heap target --
+	# native_parquet_units imports into a plain `CREATE TABLE imp_ms (t timestamp)`
+	# -- which is where it differs from import_arrow. A first version of this fix
+	# guarded on PgColumnarIsColumnarRelation, rejected heap targets with 42809 and
+	# reddened four suites; the arm set at the time had a columnar control and no
+	# heap one, so it could not see that.
+	check_num "control: importing that file into the LEAF still works" \
+		"$(q "SELECT pgcolumnar.import_parquet('pq_leaf', '$PQFILE');")" "50"
 
-psql_run "DROP TABLE IF EXISTS pq_heap;
-	CREATE TABLE pq_heap (id int, v text);"
-check_num "control: a HEAP target still imports, so the guard is about storage" \
-	"$(q "SELECT pgcolumnar.import_parquet('pq_heap', '$PQFILE');")" "50"
+	psql_run "DROP TABLE IF EXISTS pq_heap;
+		CREATE TABLE pq_heap (id int, v text);"
+	check_num "control: a HEAP target still imports, so the guard is about storage" \
+		"$(q "SELECT pgcolumnar.import_parquet('pq_heap', '$PQFILE');")" "50"
 
-expect_error "importing into the partitioned parent is refused" \
-	"SELECT pgcolumnar.import_parquet('pq_parent', '$PQFILE');"
-# `q`, not `psql_run`: psql_run runs -q with no -At and prints nothing, so this
-# arm returned empty on a LIVE cluster and could never pass. It read as a
-# correct red against the unfixed build and would have stayed red against the
-# fix -- a discriminator that discriminates nothing.
-check "and the cluster is still up, so the refusal was not an abort" \
-	"$(q "SELECT 1;")" "1"
+	expect_error "importing into the partitioned parent is refused" \
+		"SELECT pgcolumnar.import_parquet('pq_parent', '$PQFILE');"
+	# `q`, not `psql_run`: psql_run runs -q with no -At and prints nothing, so this
+	# arm returned empty on a LIVE cluster and could never pass. It read as a
+	# correct red against the unfixed build and would have stayed red against the
+	# fix -- a discriminator that discriminates nothing.
+	check "and the cluster is still up, so the refusal was not an abort" \
+		"$(q "SELECT 1;")" "1"
+fi
 
 pgc_summary
