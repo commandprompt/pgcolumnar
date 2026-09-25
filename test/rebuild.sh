@@ -37,6 +37,30 @@ set -uo pipefail
 # shellcheck source=/dev/null
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# THE EXEMPTION MUST BE IN SCOPE, AND set -u WILL NOT TELL US (#1248). The
+# symbol check below asks pgc_symbol_is_toolchain about every undefined name.
+# If that function is not defined here, the command substitution yields the
+# empty string, `[ "" = no ]` is false, the `&&` short-circuits, and the
+# undefined list comes out EMPTY -- so the check prints "all resolve" and exits
+# 0 on a genuinely mislinked major. It fails OPEN.
+#
+# The exemption used to be a VARIABLE, and `set -u` turned a missing one into
+# `IGNORE: unbound variable` and status 1 -- fail CLOSED. A missing FUNCTION is
+# invisible to set -u, so moving the exemption into lib.sh loses that for free
+# unless it is asserted. Driven, same pipeline both ways:
+#
+#     function defined     unresolved: [ExecInitNode]   <- the check works
+#     function undefined   unresolved: [<none>]         <- silently clean
+#
+# Part 580's `type -t` arm cannot cover this: it runs in the selftest's shell,
+# which sources lib.sh, so it says nothing about what THIS script sees.
+# Reported by @jdatcmd.
+if [ "$(type -t pgc_symbol_is_toolchain || true)" != function ]; then
+	echo "rebuild: pgc_symbol_is_toolchain is not defined; lib.sh did not load" >&2
+	echo "  the symbol check cannot run without it and would report success" >&2
+	exit 1
+fi
+
 PG_CONFIG="${1:-/usr/local/pg17/bin/pg_config}"
 SRCDIR="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
