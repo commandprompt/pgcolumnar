@@ -2965,6 +2965,26 @@ pgcolumnar_process_utility(PlannedStmt *pstmt, const char *queryString,
 				 * premise, so the day it stops being true this narrowing is
 				 * refused rather than silently wrong.
 				 *
+				 * THE SET IS CLOSED AT TWO VALUES, so this partitions the node
+				 * type rather than guessing at it. parsenodes.h annotates
+				 * CreateTableAsStmt.objtype as OBJECT_TABLE or OBJECT_MATVIEW,
+				 * and nothing else -- read on the 15, 17 and 19 headers rather
+				 * than on one, since this ships across the matrix. SELECT INTO
+				 * is OBJECT_TABLE, so it is the control's case and not a third
+				 * one. Reported by @jdatcmd.
+				 *
+				 * NoLock, AND FOR A CREATE THE REASON IS NOT THE ONE STATED
+				 * ABOVE. That comment says the statement already holds
+				 * AccessExclusiveLock ON THE HIERARCHY, which was written for
+				 * TRUNCATE and for a type change -- statements that operate on
+				 * relations existing before they began. A CREATE has no
+				 * hierarchy and no pre-existing relation: the lock is held
+				 * because the creating transaction holds AccessExclusiveLock on
+				 * a relation it has just made, and this block runs after
+				 * standard_ProcessUtility, so the create has completed. Same
+				 * conclusion, different derivation, and the next reader would
+				 * otherwise inherit the stated reason rather than the true one.
+				 *
 				 * pgcolumnar_rewritten_relids is EMPTY here (measured), so the
 				 * recorded-list route the TRUNCATE path uses is not available
 				 * and the statement's own name is the only handle.
