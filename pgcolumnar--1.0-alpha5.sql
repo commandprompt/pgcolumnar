@@ -1448,9 +1448,32 @@ BEGIN
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		WHERE c.oid = rel;
 
+	/*
+	 * THROUGH THE METAPAGE, NOT relation_oid (#1276). relation_oid is not
+	 * unique in pgcolumnar.storage -- storage_pkey, on storage_id, is the only
+	 * unique index -- because a covering projection gets its OWN row carrying
+	 * the BASE table's relation_oid. SELECT ... INTO then took whichever row
+	 * heap order handed back first, without complaining about the second.
+	 *
+	 * The harm was missing statistics rather than wrong ones. sid is only a
+	 * GATE below; the values come from reading the column. A projection
+	 * NARROWER than its base fails that gate for every column index it does not
+	 * carry, and CONTINUE skips those columns in silence with a successful
+	 * return. Measured on a five-column table covered by a one-column
+	 * projection: five columns with statistics became two.
+	 *
+	 * This is the idiom three siblings in this file already hold, at the
+	 * sort_status, stats and maintenance_due readers. #1210 fixed the same root
+	 * cause in C and does not touch this caller.
+	 *
+	 * IT DOES NOT FIX #1275 AND MUST NOT BE READ AS DOING SO. A matview created
+	 * WITH DATA has an orphaned relation_oid until its first REFRESH, so this
+	 * caller stops hitting that orphan while the orphan itself remains for every
+	 * other reader.
+	 */
 	SELECT s.storage_id INTO sid
 		FROM pgcolumnar.storage s
-		WHERE s.relation_oid = rel;
+		WHERE s.storage_id = pgcolumnar.get_storage_id(rel);
 
 	IF sid IS NULL THEN
 		RAISE EXCEPTION 'pgcolumnar.analyze(): % has no columnar storage', rel::text

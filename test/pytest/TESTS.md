@@ -5718,6 +5718,18 @@ evidence and be none. What establishes that the mutant reached the server is the
 so the build fingerprint moves and `build_once` reinstalls. Verified rather than
 assumed: `542af67fbc25` unmutated, `1cd8f666717b` mutated, `542af67fbc25` restored.
 
+A COVERING PROJECTION MUST NOT DECIDE WHICH COLUMNS GET STATISTICS (#1276). `analyze()` resolved its storage id with `WHERE s.relation_oid = rel`. `relation_oid` is **not unique** in `pgcolumnar.storage` -- `storage_pkey`, on `storage_id`, is the only unique index -- because a covering projection gets its OWN row carrying the BASE table's `relation_oid`. `SELECT ... INTO` then took whichever row heap order handed back first without complaining about the second. Same root cause as #1210, which fixed the C lookup and does not touch this one.
+
+THE HARM IS MISSING STATISTICS, NOT WRONG ONES. The values come from reading the column; `sid` is only a gate at `alpha5:1532`. A projection NARROWER than its base fails that gate for every column index it does not carry, and `CONTINUE` skips those columns in silence with a successful return. Measured: five columns with statistics became two.
+
+A TWO-COLUMN BASE CANNOT SEE IT. The projection carries zone maps for both indexes, the gate passes either way, and the statistics come out identical to the control -- a fixture returning a stable, plausible, meaningless number. Five columns covered by one is the shape that separates them, and the indexes each storage actually carries are read from the catalog and asserted before the arm runs, because a skip and an absence look identical downstream.
+
+TWO PREDICTIONS WERE WRITTEN DOWN BEFORE THE FIX AND BOTH ARE ARMS. The `sid IS NULL` branch keeps a real case -- a never-written columnar table has a readable metapage and no storage row, so it is still refused, `P0001`, measured rather than assumed -- and a `WITH DATA` matview starts succeeding, because its `relation_oid` is orphaned until the first `REFRESH` (#1275). **That second one is a behaviour change and not #1275 being fixed**: the orphan is still in the catalog for every other reader, and the arm carries premises saying so.
+
+THE REFUSAL IS CAPTURED AS A VALUE, NOT A NOTICE. A `DO` block's `RAISE NOTICE` lands on the message stream rather than in a result set, so an arm reading it gets the empty string back -- which `check_text` refuses as "a side is empty", fail-closed. A helper that RETURNS the sqlstate puts the answer where the arm can see it, and a premise requires that helper to report a **success** too, or "refused" is the only thing it could ever say.
+
+THE FIX IS NOT ONE LINE, AND A GREP IS WHY IT LOOKED LIKE ONE. `pgcolumnar."analyze"` was last defined in `pgcolumnar--1.0-alpha--1.0-alpha2.sql`, a shipped artifact that must not change, so an alpha4 install carries that body until an upgrade script replaces it. A grep for `FUNCTION pgcolumnar.analyze` cannot match `pgcolumnar."analyze"` -- the dot needs exactly one character and the text has two, `.` and `"` -- so the absence read as "new in alpha5". `native_upgrade_converge.sh` refused the incomplete change on all four upgrade paths with one diverging function hash, and the whole corrected body now goes into `pgcolumnar--1.0-alpha4--1.0-alpha5.sql` as well.
+
 ### Every test
 
 | test | what it holds |
@@ -5726,6 +5738,7 @@ assumed: `542af67fbc25` unmutated, `1cd8f666717b` mutated, `542af67fbc25` restor
 | `test_histogram_bounds_are_a_positional_stride` | eleven distinct rows at target 3, where core's `values[floor(i*(nv-1)/(nhist-1))]` and `percentile_disc`'s `ceil(p*nv)-1` land on different values; the expectation comes from an independent oracle AND a hand-worked figure that must agree first |
 | `test_null_frac_counts_live_rows_not_ones_a_delete_left` | #485: null_frac came from the zone maps, which count what was WRITTEN, so one pg_stats row carried two statistics normalised against different populations; both must imply the same table |
 | `test_the_documented_statistics_are_the_ones_written` | the list in `docs/sql-reference.md` parsed and compared against what the function populates, plus the two negatives the doc states in prose |
+| `test_a_covering_projection_does_not_decide_which_columns_get_statistics` | #1276: five columns covered by a one-column projection, the zone-map indexes each storage carries read from the catalog before the arm runs, the heap-order flip asserted rather than assumed, that every column keeps its statistics whichever row is first, that the refusal branch still fires for a never-written table, and that a `WITH DATA` matview now resolves |
 
 
 ## 73. test_assertion_carries_its_measurement.py: a failure must say what it measured

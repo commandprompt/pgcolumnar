@@ -529,4 +529,11 @@ guard_tests 404
 # The branch was 32 commits behind and declared 479, a number derived against
 # 1bcfb92b. Carrying that forward would have been a count measured on a tree
 # that no longer exists; 483 is measured on this one.
-cluster_tests 486
+# REBASED ONTO 5389b35a AFTER #1277 MERGED, AND THE NUMBER WAS COLLECTED RATHER
+# THAN ADDED UP. Both sides moved this key -- #1277 took it to 486 and this
+# branch had 485 against the older base -- so git CONFLICTED, which is the loud
+# case this file's own history calls the lucky one. 486 + 1 is the arithmetic
+# and 487 is what `pytest --collect-only` over the 53 cluster files reports on
+# the merged tree. They agree here; the point is that the second one is evidence
+# and the first is a guess that happens to be right.
+cluster_tests 487
