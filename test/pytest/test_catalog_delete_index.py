@@ -506,3 +506,106 @@ def test_vacuum_reads_less_of_row_group_than_reading_it_whole(pgc_own_db, expect
         FLOOR_PERMILLE,
         "the vacuum's default does less row_group work than reading it whole",
     )
+
+
+# ---- the DROP path: delete_rows_by_storage_id, seven catalogs (#1207) -------
+#
+# The shell twin's section explains the subject: everything above drives
+# `delete_group_rows` (columnar_metadata.c:745), the retire path, while the
+# seven-catalog sweep is `delete_rows_by_storage_id` (:1919), reached only from
+# PgColumnarDeleteMetadata on DROP and TRUNCATE. Neither half covered it.
+#
+# MEASURED HERE, NOT BORROWED. This file opens its own database, builds its own
+# fixture and reads pg_statio itself. Parallel in what it asserts, independent
+# in what it calls -- lifting the shell helpers so both could drive them would
+# make the extraction the dependency.
+DROP_CATALOGS = tuple(CATALOGS) + ("storage",)
+
+
+def _drop_work(conn, table, min_blocks=None):
+    """Buffers the seven catalogs served while `table` was dropped.
+
+    A DROP cannot be repeated, so each reading needs its own identically built
+    table.
+    """
+    with conn.cursor() as cur:
+        # FLUSH BEFORE THE RESET, for the reason _compact_work records: this
+        # harness holds ONE connection, so the writes that built the fixture
+        # leave pending statistics that pg_stat_reset() does not clear and that
+        # land on top of the reading. Omitting it here read -988 permille --
+        # the first DROP absorbing the whole fixture build -- against +125 for
+        # the shell twin, which gets a fresh backend per statement.
+        cur.execute("SELECT pg_stat_force_next_flush()")
+        cur.execute("SELECT pg_stat_reset()")
+        if min_blocks is not None:
+            cur.execute(f"SET pgcolumnar.index_min_blocks = {min_blocks}")
+        cur.execute(f"DROP TABLE {table}")
+        cur.execute("RESET pgcolumnar.index_min_blocks")
+        cur.execute("SELECT pg_stat_force_next_flush()")
+        cur.execute(
+            "SELECT coalesce(sum("
+            "  coalesce(heap_blks_read,0) + coalesce(heap_blks_hit,0) "
+            "+ coalesce(idx_blks_read,0) + coalesce(idx_blks_hit,0)), 0) "
+            "FROM pg_statio_all_tables "
+            "WHERE schemaname = 'pgcolumnar' AND relname = ANY(%s)",
+            (list(DROP_CATALOGS),),
+        )
+        return int(cur.fetchone()[0])
+
+
+def test_dropping_a_table_reads_less_of_the_catalogs_than_reading_them_whole(
+    pgc_own_db, expect
+):
+    """The DROP sweep must use the index once the catalogs are worth one.
+
+    WORK, NOT THE ACCESS PATH, for the reason in this file's header: an arm
+    asserting `seq_scan = 0` fails against a build that makes the drop cheaper
+    some other way. And an arm asserting only that the rows were deleted passes
+    with InvalidOid, because a sequential scan deletes them just as correctly --
+    that is the vacuous version this test exists instead of.
+    """
+    conn = pgc_own_db
+    # MORE NEIGHBOURS THAN THE SHELL TWIN NEEDS, and the reason is the fixture
+    # rather than the property. `pgc_own_db` gives this file a private database,
+    # so the catalogs hold only what this test builds -- where the shell twin
+    # shares a cluster with everything before it. At 24 fill tables the margin
+    # read 53 permille here against 901 there, both correct measurements of
+    # different databases.
+    for i in range(1, 61):
+        _make_target(conn, f"drp_fill_{i}", 6)
+    for t in ("drp_default", "drp_whole"):
+        _make_target(conn, t, 6)
+
+    expect.at_least(
+        _catpages(conn), 3,
+        "premise: the drop fixture grew the catalogs it is there to grow",
+    )
+    expect.at_least(
+        _groups_of(conn, "drp_default"), 1,
+        "premise: the table about to be dropped owns catalog rows",
+    )
+
+    d_default = _drop_work(conn, "drp_default")
+    d_whole = _drop_work(conn, "drp_whole", 2147483647)
+    print(f"-- drop  catalog pages={_catpages(conn)} "
+          f"default={d_default} read-whole={d_whole}")
+    expect.at_least(
+        _permille(d_whole - d_default, d_default), FLOOR_PERMILLE,
+        "the drop's default does less catalog work than reading them whole",
+    )
+
+    # THE OTHER SIDE. Below the threshold the default declines the probe, so
+    # forcing one must cost MORE. A `<=` form would pass on a build with the
+    # size check removed -- the two readings are then equal -- which is the same
+    # vacuity as asserting only that the rows were deleted.
+    for t in ("drp_small_a", "drp_small_b"):
+        with conn.cursor() as cur:
+            cur.execute(f"CREATE TABLE {t} (id int) USING pgcolumnar")
+            cur.execute(f"INSERT INTO {t} SELECT g FROM generate_series(1,50) g")
+    s_default = _drop_work(conn, "drp_small_a")
+    s_probe = _drop_work(conn, "drp_small_b", 0)
+    print(f"-- drop small  default={s_default} probe-always={s_probe}")
+    expect.at_least(
+        _permille(s_probe - s_default, s_default), FLOOR_PERMILLE,
+        "with few catalog pages the drop's default does less work than probing every one",
+    )

@@ -1177,4 +1177,4 @@ suites_not_covered 247
 # REBASED FROM 1bcfb92b ONTO 81ec3ddc, 32 commits, by the maintainer rather than
 # the author. The branch predates #1261, and three of its five CI reds were
 # fixed by the rebase alone rather than by any change here -- see the PR.
-checks_never_observed_red 1610
+checks_never_observed_red 1614

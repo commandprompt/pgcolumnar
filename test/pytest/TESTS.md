@@ -6254,6 +6254,7 @@ THE ONE THING THIS HALF HAS TO DO THAT THE SHELL HALF DOES NOT is flush the stat
 | --- | --- |
 | `test_retiring_a_group_costs_no_more_for_a_bigger_database` | per phase: three identical targets, the emptied groups retired, every survivor kept, all six catalogs read, and two compactions at the same setting agreeing well inside the floor. Then that the default does less work than probing every catalog at six pages, less than reading every one whole at twenty-two and at seventy-six, and that its cost grows far less with the database than reading whole does |
 | `test_vacuum_reads_less_of_row_group_than_reading_it_whole` | that the vacuum walked this table's groups, that two vacuums at the same setting agree, and that its `row_group` work is below what reading that catalog whole costs -- the `PgColumnarComputeAllVisibleGroups` read, which the compaction path never reaches |
+| `test_dropping_a_table_reads_less_of_the_catalogs_than_reading_them_whole` | that a DROP costs less catalog work than reading the seven catalogs whole, and -- below the threshold -- less than forcing a probe. The subject is `delete_rows_by_storage_id`, one parameterised line serving seven catalogs on the DROP/TRUNCATE path, which nothing covered before (#1207). Measured in buffers, never the access path, and on a fixture sixty tables wide because `pgc_own_db` gives this file a private database where the shell twin shares a cluster |
 
 ## 82. test_rewrite_storage_oid.py: a type rewrite keeps the storage row on the live table
 
