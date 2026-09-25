@@ -18,6 +18,37 @@ true until the next version shipped.
 
 ### Fixed
 
+- `run_all_versions.sh` now reports `PASS PG19` on a clean tree (#1270). Three
+  `projection_scan_io` rows claimed `15;16;17;18` while their checks run on 19,
+  so the ledger gate refused a check it had never seen and reddened the major
+  with every suite passing.
+
+  This is the second of that issue's two causes; the entry below is the first.
+  Both were live at once, which is why the first diagnosis found only one.
+
+  Regenerated with the command the tool itself prints, one log per gated major
+  in a single invocation:
+
+  ```
+    5 majors, projection_scan_io, rc=0 and 11 RESULT records each
+    majors: uniform, all 1787 rows carry 15;16;17;18;19
+  ```
+
+  A row covers only the majors it was merged from, so merging the PG19 log
+  alone would have stripped `15;16;17;18` off those three rows.
+
+  **No history lost and no row added.** The one row of the three that carried a
+  red observation keeps it, and across the whole ledger nothing changed but the
+  majors column:
+
+  ```
+    before   majors=[15;16;17;18]     date=[2026-09-21]  mutation=[return 1]
+    after    majors=[15;16;17;18;19]  date=[2026-09-21]  mutation=[return 1]
+
+    rows whose (date, mutation) changed: 0
+    rows=1787  never=1610  budget=1610   unchanged
+  ```
+
 - The ledger orphan scan no longer counts one row in two buckets (#1270). Its
   own integrity assertion was refusing a scan that had found nothing wrong, and
   that refusal reddened PG19 in `run_all_versions.sh`.

@@ -1714,15 +1714,15 @@ projection_scan_cost	projection_scan_cost	premise: without the projection scan, 
 projection_scan_cost	projection_scan_cost	tight and loose covering scans are not both priced at half the base	15;16;17;18;19	2026-09-17	-
 projection_scan_cost	projection_scan_cost	while a plain range on the sort key still earns its discount	15;16;17;18;19	never	-
 projection_scan_io	projection_scan_io	a covering projection is not priced from the base table's pages	15;16;17;18;19	2026-09-19	rel->pages
-projection_scan_io	projection_scan_io	a covering projection whose storage cannot be found is not priced as one page	15;16;17;18	2026-09-21	return 1
+projection_scan_io	projection_scan_io	a covering projection whose storage cannot be found is not priced as one page	15;16;17;18;19	2026-09-21	return 1
 projection_scan_io	projection_scan_io	an empty covering projection is still priced as one page, so it is chosen	15;16;17;18;19	2026-09-23	pages = 997 on the third return of pgcolumnar_projection_pages
-projection_scan_io	projection_scan_io	premise: a covering path is still offered when projection storage cannot be found	15;16;17;18	never	-
+projection_scan_io	projection_scan_io	premise: a covering path is still offered when projection storage cannot be found	15;16;17;18;19	never	-
 projection_scan_io	projection_scan_io	premise: a covering projection exists	15;16;17;18;19	never	-
 projection_scan_io	projection_scan_io	premise: the covering projection occupies a minority of the relation	15;16;17;18;19	never	-
 projection_scan_io	projection_scan_io	premise: the covering scan has a positive run cost	15;16;17;18;19	never	-
 projection_scan_io	projection_scan_io	premise: the empty projection is found and its storage holds no row groups	15;16;17;18;19	never	-
 projection_scan_io	projection_scan_io	premise: the plan uses the covering projection	15;16;17;18;19	never	-
-projection_scan_io	projection_scan_io	premise: the projection row still exists after its storage id is cleared	15;16;17;18	never	-
+projection_scan_io	projection_scan_io	premise: the projection row still exists after its storage id is cleared	15;16;17;18;19	never	-
 projection_scan_io	projection_scan_io	premise: the table holds every inserted row	15;16;17;18;19	never	-
 range_pruning	range_pruning	a clustered overlap skips vectors instead of decoding them	15;16;17;18;19	never	-
 range_pruning	range_pruning	a scattered column skips nothing, which is what the documentation says	15;16;17;18;19	never	-
