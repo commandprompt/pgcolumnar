@@ -77,6 +77,50 @@ true until the next version shipped.
 
   `pgcolumnar.analyze()` reads the same ambiguous column in SQL and is **not**
   fixed by this change; see #1276.
+- `pgcolumnar.analyze()` no longer skips columns when a covering projection's
+  storage row comes first in heap order (#1276). It resolved its storage id with
+  `WHERE s.relation_oid = rel`, and `relation_oid` is **not unique** in
+  `pgcolumnar.storage` -- `storage_pkey`, on `storage_id`, is the only unique
+  index -- because a covering projection gets its own row carrying the **base**
+  table's `relation_oid`. `SELECT ... INTO` took whichever row heap order handed
+  back first without complaining about the second.
+
+  **The harm was missing statistics, not wrong ones.** The values come from
+  reading the column; the storage id is only a gate. A projection narrower than
+  its base failed that gate for every column index it did not carry, and
+  `CONTINUE` skipped those columns in silence with a successful return:
+
+  ```
+    five-column table, one-column covering projection
+      base storage covers column_index    0,1,2,3,4
+      projection storage covers           0,1
+
+      base row first        columns with statistics: 5
+      projection row first  columns with statistics: 2
+  ```
+
+  Resolved through the relation's metapage instead, matching the idiom three
+  siblings in the same file already hold.
+
+  Two behaviours are now asserted rather than left to be discovered. The
+  refusal branch keeps a real case: a never-written columnar table has a
+  readable metapage and no storage row, so it is still refused with `P0001`.
+  And a materialized view created `WITH DATA` starts succeeding, because its
+  `relation_oid` is orphaned until the first `REFRESH`.
+
+  **That second one is not #1275 being fixed.** The orphan is still in the
+  catalog and every other reader of `relation_oid` still meets it; only this
+  caller stops hitting it.
+
+  Same root cause as #1210, which fixed the C lookup and does not touch this
+  one.
+
+  The whole corrected body also goes into
+  `pgcolumnar--1.0-alpha4--1.0-alpha5.sql`. `pgcolumnar."analyze"` was last
+  defined in `pgcolumnar--1.0-alpha--1.0-alpha2.sql`, a shipped artifact that
+  must not change, so an alpha4 install carries that body until an upgrade
+  script replaces it. `native_upgrade_converge.sh` refused the base-script-only
+  change on all four upgrade paths.
 
 - `run_all_versions.sh` now reports `PASS PG19` on a clean tree (#1270). Three
   `projection_scan_io` rows claimed `15;16;17;18` while their checks run on 19,

@@ -677,3 +677,203 @@ def test_the_documented_statistics_are_the_ones_written(pgc_conn, expect):
                               "WHERE relname = 'af_doc' "
                               "AND relnamespace = current_schema()::regnamespace"), -1,
                "reltuples is untouched, as the doc says")
+
+
+def _stats_cols(conn, table):
+    """How many of `table`'s columns hold statistics after a fresh analyze()."""
+    _exec(conn, f"DELETE FROM pg_statistic WHERE starelid = '{table}'::regclass")
+    _exec(conn, f"SELECT pgcolumnar.analyze('{table}'::regclass)")
+    return int(_one(conn, f"SELECT count(*) FROM pg_stats WHERE tablename = '{table}'"))
+
+
+def _first_in_heap(conn, table, base_sid):
+    got = _one(
+        conn,
+        f"SELECT CASE WHEN storage_id = {base_sid} THEN 'base' ELSE 'proj' END"
+        f"  FROM pgcolumnar.storage WHERE relation_oid = '{table}'::regclass::oid"
+        f"  ORDER BY ctid LIMIT 1",
+    )
+    return str(got)
+
+
+def _try_analyze(conn, table):
+    """'succeeded' or 'refused <sqlstate>', as a VALUE rather than a NOTICE.
+
+    A DO block's RAISE NOTICE lands on the client's message stream, not in a
+    result set, so an arm reading it gets nothing back and cannot tell a
+    refusal that did not happen from one it could not see.
+    """
+    _exec(
+        conn,
+        "CREATE OR REPLACE FUNCTION af_try_py(r regclass) RETURNS text"
+        " LANGUAGE plpgsql AS $fn$"
+        " BEGIN PERFORM pgcolumnar.analyze(r); RETURN 'succeeded';"
+        " EXCEPTION WHEN OTHERS THEN RETURN 'refused ' || SQLSTATE; END $fn$",
+    )
+    return str(_one(conn, f"SELECT af_try_py('{table}'::regclass)"))
+
+
+def test_a_covering_projection_does_not_decide_which_columns_get_statistics(pgc_own_db, expect):
+    """analyze() resolved its storage id by relation_oid, which is not unique (#1276).
+
+    A covering projection gets its OWN row in `pgcolumnar.storage` carrying the
+    BASE table's `relation_oid`, so `SELECT ... INTO` took whichever row heap
+    order handed back first without complaining about the second. Same root
+    cause as #1210; that fixed the C lookup and does not touch this one.
+
+    THE HARM IS MISSING STATISTICS, NOT WRONG ONES. The values come from reading
+    the column. `sid` is only a gate: a projection NARROWER than its base fails
+    it for every column index the projection does not carry, and `CONTINUE`
+    skips those columns in silence with a successful return.
+
+    A TWO-COLUMN BASE CANNOT SEE THIS -- the projection carries zone maps for
+    both indexes, the gate passes either way, and the statistics come out
+    identical to the control. Five columns covered by one is the shape that
+    separates them.
+
+    ON A PRIVATE DATABASE, because the fixture writes `pgcolumnar.storage` by
+    hand to move a row and reads `pg_statistic` for one relation.
+    """
+    conn = pgc_own_db
+    readable, _raw, major = _major(conn)
+    if not readable or major < 18:
+        # UNNAMED, like the three siblings. The shell suite prints one
+        # `check_skip` and exits, so naming this here would publish a check the
+        # original does not have -- which is what the one-for-one comparator
+        # grades.
+        _decline_unnamed(expect, major)
+        return
+
+    _exec(conn, "SET pgcolumnar.stripe_row_limit = 150000")
+    _exec(conn, "CREATE TABLE ap (a int, b text, c int, d int, e int) USING pgcolumnar")
+    _exec(
+        conn,
+        "INSERT INTO ap SELECT g, 'x'||(g%50), g%7, g%11, g%13"
+        " FROM generate_series(1,20000) g",
+    )
+    _exec(conn, "SET pgcolumnar.stripe_row_limit = 3000")
+    _exec(conn, "SELECT pgcolumnar.add_projection('ap', 'cov_b', '{b}', '{b}')")
+    _exec(conn, "RESET pgcolumnar.stripe_row_limit")
+    _exec(conn, "ANALYZE ap")
+
+    base_sid = int(_one(conn, "SELECT pgcolumnar.get_storage_id('ap'::regclass)"))
+    other_sid = int(
+        _one(
+            conn,
+            "SELECT storage_id FROM pgcolumnar.storage"
+            f" WHERE relation_oid = 'ap'::regclass::oid AND storage_id <> {base_sid}",
+        )
+    )
+    n_rows = int(
+        _one(conn, "SELECT count(*) FROM pgcolumnar.storage WHERE relation_oid = 'ap'::regclass::oid")
+    )
+    idx_of = lambda sid: _one(
+        conn,
+        "SELECT string_agg(DISTINCT column_index::text, ',' ORDER BY column_index::text)"
+        f" FROM pgcolumnar.zone_map WHERE storage_id = {sid} AND vector_index = -1",
+    )
+    base_idx, cov_idx = str(idx_of(base_sid)), str(idx_of(other_sid))
+    print(f"-- ap owns {n_rows} storage rows; base covers [{base_idx}], projection covers [{cov_idx}]")
+
+    # A SKIP AND AN ABSENCE LOOK IDENTICAL DOWNSTREAM, so the indexes each
+    # storage actually carries are read from the catalog and asserted, not
+    # assumed from the DDL.
+    expect.num(n_rows, 2, "premise: a covering projection gave the table a second storage row")
+    expect.text(base_idx, "0,1,2,3,4", "premise: the base storage covers every column index")
+    expect.text(cov_idx, "0,1", "premise: the projection's storage covers fewer of them")
+
+    # THE FIXTURE'S SHAPE PINNED WHERE IT CAN BE RE-DERIVED. If the table gains
+    # or loses a column the arms above are about a different question, and this
+    # reddens with the new count rather than letting them pass quietly. The
+    # count lives in the VALUE and not in the name, because a number in a check
+    # NAME is a claim nothing re-derives and renaming a check later costs a
+    # ledger row and a TESTS.md line.
+    expect.num(
+        int(_one(conn, "SELECT count(*) FROM pg_attribute WHERE attrelid = 'ap'::regclass"
+                       " AND attnum > 0 AND NOT attisdropped")),
+        5,
+        "premise: the fixture's column count has not changed",
+    )
+
+    # PUT THE BASE ROW FIRST by writing the OTHER one. Assuming a heap position
+    # is the defect this test is about.
+    _exec(
+        conn,
+        f"UPDATE pgcolumnar.storage SET row_group_limit = row_group_limit WHERE storage_id = {other_sid}",
+    )
+    first_base = _first_in_heap(conn, "ap", base_sid)
+    cols_base = _stats_cols(conn, "ap")
+
+    # THE MUTATION ALTERS NO VALUE: it writes the base row back unchanged, which
+    # moves it later in the heap exactly as any real write to it would.
+    _exec(
+        conn,
+        f"UPDATE pgcolumnar.storage SET row_group_limit = row_group_limit WHERE storage_id = {base_sid}",
+    )
+    first_flip = _first_in_heap(conn, "ap", base_sid)
+    cols_flip = _stats_cols(conn, "ap")
+    print(f"-- first in the heap: {first_base} -> {first_flip};  columns with statistics: {cols_base} -> {cols_flip}")
+
+    expect.text(first_base, "base", "premise: the base storage row was first")
+    expect.text(first_flip, "proj", "premise: the update put the projection's row first")
+    expect.num(cols_base, 5, "premise: every column has statistics when the base row is resolved")
+
+    expect.num(
+        cols_flip,
+        5,
+        "pgcolumnar.analyze() covers every column whichever storage row the heap returns first",
+    )
+
+    # THE REFUSAL BRANCH MUST STAY ALIVE. A never-written columnar table has a
+    # READABLE metapage and NO storage row, so resolving through the metapage
+    # still leaves sid NULL. Without this the fix could make that branch dead
+    # code and nothing would say so.
+    _exec(conn, "CREATE TABLE ap_empty (a int, b text) USING pgcolumnar")
+    empty_rows = int(
+        _one(
+            conn,
+            "SELECT count(*) FROM pgcolumnar.storage"
+            " WHERE storage_id = pgcolumnar.get_storage_id('ap_empty'::regclass)",
+        )
+    )
+    empty_state = _try_analyze(conn, "ap_empty")
+    print(f"-- a never-written columnar table: rows by metapage id={empty_rows}, analyze() {empty_state}")
+
+    expect.num(empty_rows, 0, "premise: a never-written columnar table has no storage row to find")
+    # THE HELPER MUST BE ABLE TO REPORT A SUCCESS TOO, or 'refused' is the only
+    # thing it can ever say and the arm below cannot fail.
+    expect.text(
+        _try_analyze(conn, "ap"), "succeeded", "premise: the capture helper reports a success when there is one"
+    )
+    expect.text(
+        empty_state,
+        "refused P0001",
+        "pgcolumnar.analyze() still refuses a relation that has never been written",
+    )
+
+    # AND THE BEHAVIOUR CHANGE IS ASSERTED, NOT LEFT TO BE DISCOVERED. A matview
+    # created WITH DATA has an orphaned relation_oid until its first REFRESH
+    # (#1275). Keyed on relation_oid this refused a matview holding rows;
+    # through the metapage it resolves. THAT IS NOT #1275 BEING FIXED -- the
+    # orphan is still in the catalog for every other reader.
+    _exec(conn, "CREATE MATERIALIZED VIEW ap_mv USING pgcolumnar AS SELECT a, b, c FROM ap")
+    mv_by_reloid = int(
+        _one(conn, "SELECT count(*) FROM pgcolumnar.storage WHERE relation_oid = 'ap_mv'::regclass::oid")
+    )
+    mv_by_meta = int(
+        _one(
+            conn,
+            "SELECT count(*) FROM pgcolumnar.storage"
+            " WHERE storage_id = pgcolumnar.get_storage_id('ap_mv'::regclass)",
+        )
+    )
+    mv_state = _try_analyze(conn, "ap_mv")
+    print(f"-- a WITH DATA matview: by relation_oid={mv_by_reloid}, by metapage={mv_by_meta}, analyze() {mv_state}")
+
+    expect.num(mv_by_reloid, 0, "premise: the matview's relation_oid still finds no storage row")
+    expect.num(mv_by_meta, 1, "premise: and its metapage still finds exactly one")
+    expect.text(
+        mv_state,
+        "succeeded",
+        "pgcolumnar.analyze() now reaches a matview whose relation_oid is orphaned",
+    )

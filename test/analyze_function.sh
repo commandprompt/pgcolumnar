@@ -802,4 +802,176 @@ check "reltuples is untouched, as the doc says" \
 	"$(q "SELECT reltuples::bigint FROM pg_class WHERE relname='af_doc'")" "-1"
 
 
+# --- a covering projection must not decide which columns get statistics (#1276)
+#
+# analyze() resolved its storage id with
+#
+#     SELECT s.storage_id INTO sid FROM pgcolumnar.storage s WHERE s.relation_oid = rel;
+#
+# relation_oid is NOT unique in pgcolumnar.storage -- storage_pkey, on
+# storage_id, is the only unique index -- because a covering projection gets its
+# OWN row carrying the BASE table's relation_oid. SELECT ... INTO takes the
+# first row in heap order without complaining about the second. (#1210 is the
+# same root cause in C; this is the plpgsql reader, and #1210's fix does not
+# touch it.)
+#
+# THE HARM IS MISSING STATISTICS, NOT WRONG ONES. The values come from reading
+# the column; sid is only a GATE, at alpha5:1532:
+#
+#     PERFORM 1 FROM pgcolumnar.zone_map z
+#       WHERE z.storage_id = sid AND z.column_index = att.attnum - 1 ...
+#     CONTINUE WHEN NOT FOUND;
+#
+# so a projection NARROWER than its base fails that gate for every column index
+# it does not carry, and CONTINUE skips those columns in silence with a
+# successful return.
+#
+# A TWO-COLUMN BASE CANNOT SEE THIS. The projection carries zone maps for both
+# indexes, the gate passes either way, and the statistics come out identical to
+# the control -- a fixture that returns a stable, plausible, meaningless number.
+# Five columns covered by one is the shape that separates them.
+q "DROP TABLE IF EXISTS af_proj;
+   SET pgcolumnar.stripe_row_limit = 150000;
+   CREATE TABLE af_proj (a int, b text, c int, d int, e int) USING pgcolumnar;
+   INSERT INTO af_proj SELECT g, 'x'||(g%50), g%7, g%11, g%13
+     FROM generate_series(1,20000) g;" >/dev/null
+q "SET pgcolumnar.stripe_row_limit = 3000;
+   SELECT pgcolumnar.add_projection('af_proj', 'cov_b', '{b}', '{b}');" >/dev/null
+q "ANALYZE af_proj;" >/dev/null
+
+proj_base_sid="$(q "SELECT pgcolumnar.get_storage_id('af_proj'::regclass);")"
+proj_other_sid="$(q "SELECT storage_id FROM pgcolumnar.storage
+	WHERE relation_oid = 'af_proj'::regclass::oid AND storage_id <> $proj_base_sid;")"
+proj_rows="$(q "SELECT count(*) FROM pgcolumnar.storage
+	WHERE relation_oid = 'af_proj'::regclass::oid;")"
+base_list="$(q "SELECT string_agg(DISTINCT column_index::text, ',' ORDER BY column_index::text)
+	FROM pgcolumnar.zone_map WHERE storage_id = $proj_base_sid AND vector_index = -1;")"
+cov_list="$(q "SELECT string_agg(DISTINCT column_index::text, ',' ORDER BY column_index::text)
+	FROM pgcolumnar.zone_map WHERE storage_id = $proj_other_sid AND vector_index = -1;")"
+echo "-- af_proj owns $proj_rows storage rows; zone_map column indexes: base=[$base_list] projection=[$cov_list]"
+
+# WITHOUT A SECOND ROW THERE IS NO AMBIGUITY, and without the projection being
+# NARROWER the gate passes either way. Both are read from the catalog.
+check_num "premise: a covering projection gave the table a second storage row" \
+	"$proj_rows" "2"
+# THE LIST, NOT A COUNT, AND NO NUMBER IN THE NAME. A number in a check NAME is
+# a claim nothing re-derives: change the fixture to four columns or six and the
+# arm keeps passing under a name that now says something false -- in the ledger,
+# in TESTS.md and in every RESULT record it has ever carried. Renaming a check
+# later costs a ledger row, so the count goes in the VALUE, where a fixture
+# change reddens it. Raised by @jdatcmd.
+#
+# The list is also a better diagnostic than its length: `got [0,1] want
+# [0,1,2,3,4]` says WHICH indexes went missing.
+check_text "premise: the base storage covers every column index" \
+	"$base_list" "0,1,2,3,4"
+check_text "premise: the projection's storage covers fewer of them" \
+	"$cov_list" "0,1"
+
+# AND THE FIXTURE'S SHAPE IS PINNED WHERE IT CAN BE RE-DERIVED. If the table
+# gains or loses a column the arms above are about a different question, and
+# this reddens with the new count rather than letting them pass quietly.
+check_num "premise: the fixture's column count has not changed" \
+	"$(q "SELECT count(*) FROM pg_attribute
+		WHERE attrelid = 'af_proj'::regclass AND attnum > 0 AND NOT attisdropped;")" "5"
+
+proj_stats() {	# -> how many of af_proj's columns hold statistics
+	q "DELETE FROM pg_statistic WHERE starelid = 'af_proj'::regclass;" >/dev/null
+	q "SELECT pgcolumnar.analyze('af_proj'::regclass);" >/dev/null
+	q "SELECT count(*) FROM pg_stats WHERE tablename = 'af_proj';"
+}
+proj_first() {
+	q "SELECT CASE WHEN storage_id = $proj_base_sid THEN 'base' ELSE 'proj' END
+		FROM pgcolumnar.storage WHERE relation_oid = 'af_proj'::regclass::oid
+		ORDER BY ctid LIMIT 1;"
+}
+
+# PUT THE BASE ROW FIRST by writing the OTHER one, rather than assuming where
+# the fixture left it. Assuming a heap position is what this defect is about.
+q "UPDATE pgcolumnar.storage SET row_group_limit = row_group_limit
+	WHERE storage_id = $proj_other_sid;" >/dev/null
+first_base="$(proj_first)"
+cols_base="$(proj_stats)"
+
+# THE MUTATION ALTERS NO VALUE: it writes the base row back unchanged, which
+# moves it later in the heap exactly as any real write to it would.
+q "UPDATE pgcolumnar.storage SET row_group_limit = row_group_limit
+	WHERE storage_id = $proj_base_sid;" >/dev/null
+first_flip="$(proj_first)"
+cols_flip="$(proj_stats)"
+echo "-- first row in the heap: $first_base -> $first_flip;  columns with statistics: $cols_base -> $cols_flip"
+
+# THE FLIP MUST HAVE HAPPENED, or both readings come from one heap order and the
+# arm below passes without having asked anything.
+check_text "premise: the base storage row was first" "$first_base" "base"
+check_text "premise: the update put the projection's row first" "$first_flip" "proj"
+check_num "premise: every column has statistics when the base row is resolved" \
+	"$cols_base" "5"
+
+check_num "pgcolumnar.analyze() covers every column whichever storage row the heap returns first" \
+	"$cols_flip" "5"
+
+# AND THE BRANCH THAT REFUSES A RELATION WITH NO STORAGE MUST STAY ALIVE. A
+# never-written columnar table has a READABLE metapage and NO storage row, so
+# resolving through the metapage still leaves sid NULL. Without this the fix
+# could make that branch dead code and nothing would say so.
+q "DROP TABLE IF EXISTS af_empty;
+   CREATE TABLE af_empty (a int, b text) USING pgcolumnar;" >/dev/null
+empty_rows="$(q "SELECT count(*) FROM pgcolumnar.storage
+	WHERE storage_id = pgcolumnar.get_storage_id('af_empty'::regclass);")"
+# CAPTURED AS A VALUE, NOT AS A NOTICE. `q` sends stderr to /dev/null, so a
+# RAISE NOTICE from a DO block returns the empty string -- and an empty side is
+# indistinguishable from a refusal that never happened. A helper that RETURNS
+# the sqlstate puts the answer in the result set where `q` can see it.
+q "CREATE OR REPLACE FUNCTION af_try(r regclass) RETURNS text LANGUAGE plpgsql AS \$fn\$
+	BEGIN
+		PERFORM pgcolumnar.analyze(r);
+		RETURN 'succeeded';
+	EXCEPTION WHEN OTHERS THEN
+		RETURN 'refused ' || SQLSTATE;
+	END
+	\$fn\$;" >/dev/null
+empty_state="$(q "SELECT af_try('af_empty'::regclass);")"
+echo "-- a never-written columnar table: storage rows by metapage id=$empty_rows, analyze() $empty_state"
+
+check_num "premise: a never-written columnar table has no storage row to find" \
+	"$empty_rows" "0"
+
+# THE HELPER MUST BE ABLE TO REPORT A SUCCESS TOO, or "refused" is the only
+# thing it can ever say and the arm below cannot fail.
+check_text "premise: the capture helper reports a success when there is one" \
+	"$(q "SELECT af_try('af_proj'::regclass);")" "succeeded"
+check_text "pgcolumnar.analyze() still refuses a relation that has never been written" \
+	"$empty_state" "refused P0001"
+
+# AND THE BEHAVIOUR CHANGE IS ASSERTED, NOT LEFT TO BE DISCOVERED. A matview
+# created WITH DATA has an ORPHANED relation_oid until its first REFRESH
+# (#1275): the storage row points at a transient relation that no longer
+# exists. Keyed on relation_oid this found nothing and refused a matview holding
+# rows; through the metapage it resolves and succeeds.
+#
+# THIS IS NOT #1275 BEING FIXED. The orphan is still in the catalog and every
+# other reader of relation_oid still meets it. Only this caller stops hitting
+# it, and an arm that says so is the difference between a recorded change and a
+# reader concluding the orphan is gone.
+q "DROP MATERIALIZED VIEW IF EXISTS af_mv;
+   CREATE MATERIALIZED VIEW af_mv USING pgcolumnar AS SELECT a, b, c FROM af_proj;" >/dev/null
+mv_by_reloid="$(q "SELECT count(*) FROM pgcolumnar.storage
+	WHERE relation_oid = 'af_mv'::regclass::oid;")"
+mv_by_meta="$(q "SELECT count(*) FROM pgcolumnar.storage
+	WHERE storage_id = pgcolumnar.get_storage_id('af_mv'::regclass);")"
+mv_state="$(q "SELECT af_try('af_mv'::regclass);")"
+echo "-- a WITH DATA matview: rows by relation_oid=$mv_by_reloid, by metapage id=$mv_by_meta, analyze() $mv_state"
+
+# THE ORPHAN MUST STILL BE THERE, or this arm is measuring a matview that was
+# never in the broken state and says nothing about the change.
+check_num "premise: the matview's relation_oid still finds no storage row" \
+	"$mv_by_reloid" "0"
+check_num "premise: and its metapage still finds exactly one" \
+	"$mv_by_meta" "1"
+
+check_text "pgcolumnar.analyze() now reaches a matview whose relation_oid is orphaned" \
+	"$mv_state" "succeeded"
+
+
 pgc_summary
