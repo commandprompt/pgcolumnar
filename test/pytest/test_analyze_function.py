@@ -735,10 +735,13 @@ def test_a_covering_projection_does_not_decide_which_columns_get_statistics(pgc_
     hand to move a row and reads `pg_statistic` for one relation.
     """
     conn = pgc_own_db
-    ok, raw, major = _major(conn)
-    expect.num(1 if ok else 0, 1, "premise: the server major is readable")
-    if major < 18:
-        _decline_unnamed(expect, raw)
+    readable, _raw, major = _major(conn)
+    if not readable or major < 18:
+        # UNNAMED, like the three siblings. The shell suite prints one
+        # `check_skip` and exits, so naming this here would publish a check the
+        # original does not have -- which is what the one-for-one comparator
+        # grades.
+        _decline_unnamed(expect, major)
         return
 
     _exec(conn, "SET pgcolumnar.stripe_row_limit = 150000")
@@ -778,6 +781,19 @@ def test_a_covering_projection_does_not_decide_which_columns_get_statistics(pgc_
     expect.num(n_rows, 2, "premise: a covering projection gave the table a second storage row")
     expect.text(base_idx, "0,1,2,3,4", "premise: the base storage covers every column index")
     expect.text(cov_idx, "0,1", "premise: the projection's storage covers fewer of them")
+
+    # THE FIXTURE'S SHAPE PINNED WHERE IT CAN BE RE-DERIVED. If the table gains
+    # or loses a column the arms above are about a different question, and this
+    # reddens with the new count rather than letting them pass quietly. The
+    # count lives in the VALUE and not in the name, because a number in a check
+    # NAME is a claim nothing re-derives and renaming a check later costs a
+    # ledger row and a TESTS.md line.
+    expect.num(
+        int(_one(conn, "SELECT count(*) FROM pg_attribute WHERE attrelid = 'ap'::regclass"
+                       " AND attnum > 0 AND NOT attisdropped")),
+        5,
+        "premise: the fixture's column count has not changed",
+    )
 
     # PUT THE BASE ROW FIRST by writing the OTHER one. Assuming a heap position
     # is the defect this test is about.

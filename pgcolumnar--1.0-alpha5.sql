@@ -1470,6 +1470,16 @@ BEGIN
 	 * WITH DATA has an orphaned relation_oid until its first REFRESH, so this
 	 * caller stops hitting that orphan while the orphan itself remains for every
 	 * other reader.
+	 *
+	 * THIS ONLY HOLDS WHILE analyze() IS INVOKER-RIGHTS. get_storage_id carries
+	 * its own pg_class_aclcheck for ACL_SELECT against GetUserId(), which is the
+	 * CALLER here and would become the FUNCTION OWNER the day anyone adds
+	 * SECURITY DEFINER to this declaration. The check would then stop protecting
+	 * anybody and no test would fail, because every arm that exercises it runs
+	 * as a caller who is also the owner. Two of this file's closest siblings are
+	 * already SECURITY DEFINER and :769 carries a helper written for such
+	 * callers, so the conversion is a live possibility rather than a hypothetical.
+	 * Raised by @jdatcmd.
 	 */
 	SELECT s.storage_id INTO sid
 		FROM pgcolumnar.storage s

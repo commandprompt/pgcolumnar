@@ -844,32 +844,36 @@ proj_other_sid="$(q "SELECT storage_id FROM pgcolumnar.storage
 	WHERE relation_oid = 'af_proj'::regclass::oid AND storage_id <> $proj_base_sid;")"
 proj_rows="$(q "SELECT count(*) FROM pgcolumnar.storage
 	WHERE relation_oid = 'af_proj'::regclass::oid;")"
-base_idx="$(q "SELECT count(DISTINCT column_index) FROM pgcolumnar.zone_map
-	WHERE storage_id = $proj_base_sid AND vector_index = -1;")"
-cov_idx="$(q "SELECT count(DISTINCT column_index) FROM pgcolumnar.zone_map
-	WHERE storage_id = $proj_other_sid AND vector_index = -1;")"
-echo "-- af_proj owns $proj_rows storage rows; zone_map column indexes: base=$base_idx projection=$cov_idx"
+base_list="$(q "SELECT string_agg(DISTINCT column_index::text, ',' ORDER BY column_index::text)
+	FROM pgcolumnar.zone_map WHERE storage_id = $proj_base_sid AND vector_index = -1;")"
+cov_list="$(q "SELECT string_agg(DISTINCT column_index::text, ',' ORDER BY column_index::text)
+	FROM pgcolumnar.zone_map WHERE storage_id = $proj_other_sid AND vector_index = -1;")"
+echo "-- af_proj owns $proj_rows storage rows; zone_map column indexes: base=[$base_list] projection=[$cov_list]"
 
 # WITHOUT A SECOND ROW THERE IS NO AMBIGUITY, and without the projection being
 # NARROWER the gate passes either way. Both are read from the catalog.
 check_num "premise: a covering projection gave the table a second storage row" \
 	"$proj_rows" "2"
-# EXACT COUNTS, NOT A MARGIN, and deliberately. `margin` exists in two other
-# suites and their comments say it belongs in lib.sh once a third wants it --
-# this is not that third, because a premise about a fixture whose shape this
-# file controls is better stated as the shape itself. Both sides carry their
-# measured value, and either one moving reddens and says which.
-check_num "premise: the base storage covers every one of the five column indexes" \
-	"$base_idx" "5"
-check_num "premise: the projection's storage covers fewer of them" \
-	"$cov_idx" "2"
+# THE LIST, NOT A COUNT, AND NO NUMBER IN THE NAME. A number in a check NAME is
+# a claim nothing re-derives: change the fixture to four columns or six and the
+# arm keeps passing under a name that now says something false -- in the ledger,
+# in TESTS.md and in every RESULT record it has ever carried. Renaming a check
+# later costs a ledger row, so the count goes in the VALUE, where a fixture
+# change reddens it. Raised by @jdatcmd.
+#
+# The list is also a better diagnostic than its length: `got [0,1] want
+# [0,1,2,3,4]` says WHICH indexes went missing.
+check_text "premise: the base storage covers every column index" \
+	"$base_list" "0,1,2,3,4"
+check_text "premise: the projection's storage covers fewer of them" \
+	"$cov_list" "0,1"
 
-# A SKIP AND AN ABSENCE LOOK IDENTICAL DOWNSTREAM, so the indexes each storage
-# actually carries are printed before the arm runs.
-echo "-- base storage covers column_index: $(q "SELECT string_agg(DISTINCT column_index::text, ',' ORDER BY column_index::text)
-	FROM pgcolumnar.zone_map WHERE storage_id = $proj_base_sid AND vector_index = -1;")"
-echo "-- projection storage covers column_index: $(q "SELECT string_agg(DISTINCT column_index::text, ',' ORDER BY column_index::text)
-	FROM pgcolumnar.zone_map WHERE storage_id = $proj_other_sid AND vector_index = -1;")"
+# AND THE FIXTURE'S SHAPE IS PINNED WHERE IT CAN BE RE-DERIVED. If the table
+# gains or loses a column the arms above are about a different question, and
+# this reddens with the new count rather than letting them pass quietly.
+check_num "premise: the fixture's column count has not changed" \
+	"$(q "SELECT count(*) FROM pg_attribute
+		WHERE attrelid = 'af_proj'::regclass AND attnum > 0 AND NOT attisdropped;")" "5"
 
 proj_stats() {	# -> how many of af_proj's columns hold statistics
 	q "DELETE FROM pg_statistic WHERE starelid = 'af_proj'::regclass;" >/dev/null
