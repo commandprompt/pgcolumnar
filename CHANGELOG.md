@@ -32,8 +32,8 @@ true until the next version shipped.
 
   **Restricted to `objtype == OBJECT_MATVIEW`, and a control says why.**
   `CREATE TABLE ... AS ... USING pgcolumnar` is the same parse node and does
-  **not** have the defect — it fills the relation it created instead of swapping
-  a transient in — so the remedy is narrower than the node type.
+  **not** have the defect -- it fills the relation it created instead of
+  swapping a transient in -- so the remedy is narrower than the node type.
   `test/rewrite_storage_oid.sh` asserts that as a premise, which refuses the
   narrowing the day it stops being true.
 
