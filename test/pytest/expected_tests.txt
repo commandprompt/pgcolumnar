@@ -529,4 +529,4 @@ guard_tests 403
 # The branch was 32 commits behind and declared 479, a number derived against
 # 1bcfb92b. Carrying that forward would have been a count measured on a tree
 # that no longer exists; 483 is measured on this one.
-cluster_tests 483
+cluster_tests 484
