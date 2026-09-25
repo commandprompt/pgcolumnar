@@ -212,10 +212,28 @@ jobs:
           # glob of the builddir alone runs after the path is gone and prints
           # nothing. ci.yml was fixed for this on #918; this workflow was not,
           # and collected nothing on three consecutive aarch64 reds (#1248).
+          # A FAILING SUITE'S LOG IS PRINTED WHOLE; A PASSING ONE IS NOT PRINTED
+          # AT ALL (#1248). `tail -60` was too small for the suite that needed
+          # it: harness_selftest emits 2452 lines and its hand-rebuild premise
+          # sits 76 from the end, so the window missed the failure -- and the
+          # diagnosis printed just after it -- by 16 lines. Raising the number
+          # would go stale the next time a part is added after 590, which is
+          # how it went stale the first time.
+          #
+          # Printing only the logs that carry a FAIL is also far less output:
+          # 268 tails of 60 is ~16000 lines of mostly passing suites, against
+          # one failing suite's 2452 that actually contains the answer.
           for f in /tmp/pgcolumnar-logs/*.log /tmp/pgcolumnar-matrix-*/*.log; do
             [ -e "$f" ] || continue
-            echo "===== $f ====="
-            tail -60 "$f"
+            # awk, not grep: this is the SAME expression used to validate the
+            # selector, so the guard and its check cannot disagree -- which is
+            # exactly what happened. The first version wrote `\t` in a POSIX
+            # BRE, where GNU grep matches a literal `t`, so it selected nothing
+            # on CI; and `if: failure()` means a green run never runs this step,
+            # so it would have looked fixed until the next red printed nothing.
+            awk -F'\t' '$5 == "FAIL" { found = 1 } END { exit !found }' "$f" || continue
+            echo "===== $f (whole log: it carries a FAIL) ====="
+            cat "$f"
           done
 
   # clang ASAN+UBSAN gate. Builds an instrumented PostgreSQL (cached) and runs the
