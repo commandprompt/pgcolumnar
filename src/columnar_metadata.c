@@ -2161,6 +2161,85 @@ insert_row:
 }
 
 /*
+ * PgColumnarRetargetStorageRelation
+ *		Point this relation's storage row at the OID that survived the rewrite.
+ *
+ *		ALTER COLUMN TYPE rewrites through the transient relation make_new_heap
+ *		builds. The flush records that transient's OID (columnar_write_state.c,
+ *		RelationGetRelid of the relation it was handed). The swap keeps the
+ *		user's OID and drops the transient, so pgcolumnar.storage.relation_oid
+ *		names a relation that no longer exists. The written-geometry lookup is
+ *		keyed on that column and finds nothing. The rows are still readable:
+ *		the metapage on the surviving relation already names the storage id
+ *		the rewrite wrote.
+ *
+ *		A no-op when the row already names this relation, which is TRUNCATE
+ *		and any statement that did not rewrite, and when the relation has no
+ *		storage row yet.
+ */
+void
+PgColumnarRetargetStorageRelation(Oid relid)
+{
+	Relation	userRel;
+	Relation	rel;
+	TupleDesc	tupdesc;
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	uint64		storageId;
+	Oid			storIdx;
+
+	if (!OidIsValid(relid) || !PgColumnarIsColumnarRelation(relid))
+		return;
+
+	userRel = table_open(relid, NoLock);
+	storageId = PgColumnarStorageId(userRel);
+	table_close(userRel, NoLock);
+	if (storageId == 0)
+		return;
+
+	/*
+	 * The storage row was inserted earlier in this statement. Advance the
+	 * command counter so this scan sees it.
+	 */
+	CommandCounterIncrement();
+
+	rel = open_columnar_table("storage", RowExclusiveLock);
+	tupdesc = RelationGetDescr(rel);
+	ScanKeyInit(&key[0], Anum_native_storage_storage_id, BTEqualStrategyNumber,
+				F_INT8EQ, Int64GetDatum((int64) storageId));
+	storIdx = pgcolumnar_index_oid("storage_pkey");
+	scan = systable_beginscan(rel, storIdx, OidIsValid(storIdx), NULL, 1, key);
+	tuple = systable_getnext(scan);
+	if (HeapTupleIsValid(tuple))
+	{
+		bool		isnull;
+		Datum		d = heap_getattr(tuple, Anum_native_storage_relation_oid,
+									 tupdesc, &isnull);
+		Oid			stored = isnull ? InvalidOid : DatumGetObjectId(d);
+
+		if (stored != relid)
+		{
+			Datum		values[Natts_native_storage];
+			bool		nulls[Natts_native_storage];
+			bool		replace[Natts_native_storage];
+			HeapTuple	newTuple;
+
+			memset(values, 0, sizeof(values));
+			memset(nulls, false, sizeof(nulls));
+			memset(replace, false, sizeof(replace));
+			values[Anum_native_storage_relation_oid - 1] = ObjectIdGetDatum(relid);
+			replace[Anum_native_storage_relation_oid - 1] = true;
+			newTuple = heap_modify_tuple(tuple, tupdesc, values, nulls, replace);
+			CatalogTupleUpdate(rel, &newTuple->t_self, newTuple);
+			heap_freetuple(newTuple);
+		}
+	}
+	systable_endscan(scan);
+	table_close(rel, RowExclusiveLock);
+}
+
+/*
  * PgColumnarRenameDeclaredSortByColumn
  *		Follow a column rename through the DECLARED sort key in
  *		pgcolumnar.options (#778).

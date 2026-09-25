@@ -2956,7 +2956,10 @@ pgcolumnar_process_utility(PlannedStmt *pstmt, const char *queryString,
 			ListCell   *lc2;
 
 			foreach(lc2, kin)
+			{
+				PgColumnarRetargetStorageRelation(lfirst_oid(lc2));
 				PgColumnarRerecordProjectionsAfterRewrite(lfirst_oid(lc2));
+			}
 			list_free(kin);
 		}
 

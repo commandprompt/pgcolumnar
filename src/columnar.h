@@ -626,6 +626,7 @@ typedef struct PgColumnarProjectionDeclaration
 } PgColumnarProjectionDeclaration;
 
 extern void PgColumnarRerecordProjectionsAfterRewrite(Oid relid);
+extern void PgColumnarRetargetStorageRelation(Oid relid);
 extern void PgColumnarInsertProjectionRow(const PgColumnarProjection *proj);
 /* The dumpable declaration behind a projection, keyed by regclass and stored as
  * column names so a dump and restore can carry it (#266). */

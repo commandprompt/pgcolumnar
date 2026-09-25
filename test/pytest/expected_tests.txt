@@ -519,4 +519,14 @@ guard_tests 403
 # which is the case the earlier note about 478/479/480 did not cover. Every one
 # of those was re-derived against a different main; this one is re-derived
 # against 6c3a9510 and against nothing else.
-cluster_tests 482
+# cluster_tests 482 -> 483 for PR #1250's test_rewrite_storage_oid.py.
+# RE-DERIVED BY COLLECTION on the rebased tree using CI's own file lists, not by
+# adding one to a number measured on another tree:
+#
+#     guard job    24 files   403 tests collected   (did NOT move)
+#     cluster job  53 files   483 tests collected
+#
+# The branch was 32 commits behind and declared 479, a number derived against
+# 1bcfb92b. Carrying that forward would have been a count measured on a tree
+# that no longer exists; 483 is measured on this one.
+cluster_tests 483
