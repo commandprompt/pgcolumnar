@@ -131,13 +131,17 @@ echo "-- recorded: major $(pgc_major_of "$PG_CONFIG"), source $(pgc_source_finge
 if command -v nm >/dev/null 2>&1; then
 	# Symbol names are compared with any @GLIBC_x.y version suffix stripped, since
 	# the reference copy in libc is versioned and the reference in postgres is not.
-	# The ignored names are toolchain symbols that are undefined by design (weak
-	# ITM/gmon hooks, and __cxa_finalize which the loader supplies).
+	# The exemption lives in lib.sh as pgc_symbol_is_toolchain and is driven by
+	# part 580 with literals, because __stack_chk_guard cannot be reached on
+	# x86_64 and a fix verified there proves nothing (#1248).
 	strip_ver() { sed 's/@.*//'; }
-	IGNORE='^(_ITM_|__gmon_start__$|__cxa_finalize$)'
 
 	undef="$(nm -D --undefined-only "$SO" 2>/dev/null | awk '{print $NF}' |
-		strip_ver | grep -Ev "$IGNORE" | LC_ALL=C sort -u)"
+		strip_ver |
+		while IFS= read -r _sym; do
+			[ "$(pgc_symbol_is_toolchain "$_sym")" = no ] &&
+				printf '%s\n' "$_sym"
+		done | LC_ALL=C sort -u)"
 	# The .so is dlopen'd into the running postgres, so its symbols resolve against
 	# the server binary, everything the server itself links (libm, libssl, ...), and
 	# the .so's own dependencies. All three belong in the reference set.
@@ -155,7 +159,10 @@ $(nm -D --defined-only "$lib" 2>/dev/null | awk '{print $NF}')"
 	if [ -n "$missing" ]; then
 		echo "rebuild: UNRESOLVED SYMBOLS against $PGVER:" >&2
 		echo "$missing" | head -20 >&2
-		echo "(this usually means objects from another major were linked in)" >&2
+		echo "(objects from another major linked in, or a symbol this check's" >&2
+		echo " reference set does not cover -- it reads the server binary and" >&2
+		echo " everything ldd reports with '=>', which omits the loader and the" >&2
+		echo " vdso)" >&2
 		exit 1
 	fi
 	echo "-- symbols: all resolve against $(basename "$BINDIR")/postgres"

@@ -164,6 +164,43 @@ check_text "premise: the gating decision is exposed to be judged" \
 check_text "premise: the diagnosis is exposed too" \
 	"$(type -t _hr_diagnose)" "function"
 
+# ---- and the SYMBOL EXEMPTION is exposed too, for the same reason (#1248) ----
+#
+# The 2026-09-25 nightly finally printed rebuild.sh's diagnosis, and the cause
+# was the symbol check itself: `__stack_chk_guard`, reported as evidence of a
+# mislinked major on a build that had just logged `build: OK (0 warnings)`.
+#
+# THE ARM DRIVES THE DECISION, NOT THE SYMBOL, and that is the whole point.
+# `__stack_chk_guard` cannot be reached on x86_64: the canary lives at %fs:0x28
+# and the name never appears, so a fix verified on this architecture is
+# indistinguishable from a no-op. Measured on x86_64 -- our .so leaves
+# `__stack_chk_fail` undefined and libc exports it, while `__stack_chk_guard` is
+# exported by neither libc nor the loader and is never referenced.
+#
+# Literals run the same on every architecture. The end-to-end behaviour on
+# aarch64 is NOT covered by these arms and the next nightly is what covers it.
+check_text "premise: the symbol exemption is exposed to be judged" \
+	"$(type -t pgc_symbol_is_toolchain)" "function"
+
+check_text "the stack canary object is exempt, whatever the architecture calls it" \
+	"$(pgc_symbol_is_toolchain __stack_chk_guard)" "yes"
+check_text "and so are the ITM and gmon hooks this check always ignored" \
+	"$(pgc_symbol_is_toolchain __gmon_start__)/$(pgc_symbol_is_toolchain _ITM_deregisterTMCloneTable)" \
+	"yes/yes"
+
+# THE ARM THAT STOPS THE EXEMPTION SWALLOWING ITS OWN SUBJECT. A predicate that
+# answered `yes` to everything would satisfy the three above and disarm the
+# check entirely, which is the failure this whole issue is an instance of.
+check_text "a PostgreSQL symbol is NOT exempt, so the check still has a subject" \
+	"$(pgc_symbol_is_toolchain ExecInitNode)" "no"
+check_text "and neither is one of ours" \
+	"$(pgc_symbol_is_toolchain PgColumnarIsColumnarRelation)" "no"
+
+# The version suffix is stripped before the comparison, so the exemption has to
+# see through it too -- `__cxa_finalize@GLIBC_2.2.5` is the form nm prints.
+check_text "the exemption sees through an @GLIBC version suffix" \
+	"$(pgc_symbol_is_toolchain '__cxa_finalize@GLIBC_2.2.5')" "yes"
+
 check_text "a rebuild that succeeded runs the arms that read its stamp" \
 	"$(_hr_dependents 0)" "run"
 check_text "a rebuild that failed skips them rather than reading a stamp it did not write" \
