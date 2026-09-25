@@ -851,29 +851,51 @@ def test_a_covering_projection_does_not_decide_which_columns_get_statistics(pgc_
         "pgcolumnar.analyze() still refuses a relation that has never been written",
     )
 
-    # AND THE BEHAVIOUR CHANGE IS ASSERTED, NOT LEFT TO BE DISCOVERED. A matview
-    # created WITH DATA has an orphaned relation_oid until its first REFRESH
-    # (#1275). Keyed on relation_oid this refused a matview holding rows;
-    # through the metapage it resolves. THAT IS NOT #1275 BEING FIXED -- the
-    # orphan is still in the catalog for every other reader.
+    # A MATVIEW CREATED WITH DATA, AND THIS ARM HAS BEEN SUPERSEDED ONCE ALREADY.
+    #
+    # #1276 added it to record a behaviour change: a WITH DATA matview had an
+    # orphaned relation_oid until its first REFRESH, so keyed on that column
+    # analyze() refused a matview holding rows and through the metapage it
+    # resolved. Its premise asserted the orphan was still there -- and #1275
+    # then removed the orphan, so the premise went red. That is the premise
+    # doing its job: it recorded a fact about the world and reddened when the
+    # world changed, rather than passing quietly under an arm that no longer
+    # meant anything.
+    #
+    # WITH THE ORPHAN GONE both routes resolve, so this shape no longer
+    # distinguishes them and is NOT evidence for #1276's fix -- the projection
+    # arms above are. What it still holds is that analyze() reaches a freshly
+    # created matview at all, which was an outright error before #1276, and
+    # that the two routes agree about WHICH storage.
     _exec(conn, "CREATE MATERIALIZED VIEW ap_mv USING pgcolumnar AS SELECT a, b, c FROM ap")
-    mv_by_reloid = int(
-        _one(conn, "SELECT count(*) FROM pgcolumnar.storage WHERE relation_oid = 'ap_mv'::regclass::oid")
+    by_reloid = _one(
+        conn,
+        "SELECT coalesce(min(storage_id)::text, 'none') FROM pgcolumnar.storage"
+        " WHERE relation_oid = 'ap_mv'::regclass::oid",
     )
-    mv_by_meta = int(
-        _one(
-            conn,
-            "SELECT count(*) FROM pgcolumnar.storage"
-            " WHERE storage_id = pgcolumnar.get_storage_id('ap_mv'::regclass)",
-        )
+    by_meta = _one(
+        conn,
+        "SELECT coalesce(min(storage_id)::text, 'none') FROM pgcolumnar.storage"
+        " WHERE storage_id = pgcolumnar.get_storage_id('ap_mv'::regclass)",
     )
     mv_state = _try_analyze(conn, "ap_mv")
-    print(f"-- a WITH DATA matview: by relation_oid={mv_by_reloid}, by metapage={mv_by_meta}, analyze() {mv_state}")
+    print(f"-- a WITH DATA matview: by relation_oid={by_reloid}, by metapage={by_meta}, analyze() {mv_state}")
 
-    expect.num(mv_by_reloid, 0, "premise: the matview's relation_oid still finds no storage row")
-    expect.num(mv_by_meta, 1, "premise: and its metapage still finds exactly one")
+    # THE IDS, NOT THEIR COUNTS. Two rows counting 1 each can still be two
+    # DIFFERENT storages, and that is the failure this arm would most want to
+    # see.
+    expect.text(
+        "none" if str(by_reloid) == "none" else "found",
+        "found",
+        "premise: the matview's relation_oid finds a storage row",
+    )
+    expect.text(
+        str(by_meta),
+        str(by_reloid),
+        "the two routes agree which storage a WITH DATA matview owns",
+    )
     expect.text(
         mv_state,
         "succeeded",
-        "pgcolumnar.analyze() now reaches a matview whose relation_oid is orphaned",
+        "pgcolumnar.analyze() reaches a matview created WITH DATA",
     )

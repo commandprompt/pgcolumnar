@@ -944,33 +944,39 @@ check_text "premise: the capture helper reports a success when there is one" \
 check_text "pgcolumnar.analyze() still refuses a relation that has never been written" \
 	"$empty_state" "refused P0001"
 
-# AND THE BEHAVIOUR CHANGE IS ASSERTED, NOT LEFT TO BE DISCOVERED. A matview
-# created WITH DATA has an ORPHANED relation_oid until its first REFRESH
-# (#1275): the storage row points at a transient relation that no longer
-# exists. Keyed on relation_oid this found nothing and refused a matview holding
-# rows; through the metapage it resolves and succeeds.
+# A MATVIEW CREATED WITH DATA, AND THIS ARM HAS BEEN SUPERSEDED ONCE ALREADY.
 #
-# THIS IS NOT #1275 BEING FIXED. The orphan is still in the catalog and every
-# other reader of relation_oid still meets it. Only this caller stops hitting
-# it, and an arm that says so is the difference between a recorded change and a
-# reader concluding the orphan is gone.
+# #1276 added it to record a behaviour change: a WITH DATA matview had an
+# ORPHANED relation_oid until its first REFRESH, so keyed on that column
+# analyze() refused a matview holding rows, and through the metapage it
+# resolved. Its premise asserted the orphan was still there -- and #1275 then
+# removed the orphan, so the premise went red. That is the premise doing its
+# job: it recorded a fact about the world and reddened when the world changed,
+# rather than passing quietly under an arm that no longer meant anything.
+#
+# WHAT IS LEFT TO GUARD, AND WHAT IS NOT. With the orphan gone, both routes
+# resolve, so this shape no longer distinguishes them and is NOT evidence for
+# #1276's fix -- the projection arms above are. What it still holds is that
+# analyze() reaches a freshly created matview at all, which was an outright
+# error before #1276, and that the two routes agree about WHICH storage, which
+# is #1275's guarantee cross-checked from a different file.
 q "DROP MATERIALIZED VIEW IF EXISTS af_mv;
    CREATE MATERIALIZED VIEW af_mv USING pgcolumnar AS SELECT a, b, c FROM af_proj;" >/dev/null
-mv_by_reloid="$(q "SELECT count(*) FROM pgcolumnar.storage
+mv_by_reloid="$(q "SELECT coalesce(min(storage_id)::text, 'none') FROM pgcolumnar.storage
 	WHERE relation_oid = 'af_mv'::regclass::oid;")"
-mv_by_meta="$(q "SELECT count(*) FROM pgcolumnar.storage
+mv_by_meta="$(q "SELECT coalesce(min(storage_id)::text, 'none') FROM pgcolumnar.storage
 	WHERE storage_id = pgcolumnar.get_storage_id('af_mv'::regclass);")"
 mv_state="$(q "SELECT af_try('af_mv'::regclass);")"
-echo "-- a WITH DATA matview: rows by relation_oid=$mv_by_reloid, by metapage id=$mv_by_meta, analyze() $mv_state"
+echo "-- a WITH DATA matview: by relation_oid=$mv_by_reloid, by metapage=$mv_by_meta, analyze() $mv_state"
 
-# THE ORPHAN MUST STILL BE THERE, or this arm is measuring a matview that was
-# never in the broken state and says nothing about the change.
-check_num "premise: the matview's relation_oid still finds no storage row" \
-	"$mv_by_reloid" "0"
-check_num "premise: and its metapage still finds exactly one" \
-	"$mv_by_meta" "1"
+# THE IDS, NOT THEIR COUNTS. Two rows counting 1 each can still be two
+# DIFFERENT storages, and that is the failure this arm would most want to see.
+check_text "premise: the matview's relation_oid finds a storage row" \
+	"$(if [ "$mv_by_reloid" = "none" ]; then echo none; else echo found; fi)" "found"
+check_text "the two routes agree which storage a WITH DATA matview owns" \
+	"$mv_by_meta" "$mv_by_reloid"
 
-check_text "pgcolumnar.analyze() now reaches a matview whose relation_oid is orphaned" \
+check_text "pgcolumnar.analyze() reaches a matview created WITH DATA" \
 	"$mv_state" "succeeded"
 
 
