@@ -164,6 +164,98 @@ check_text "premise: the gating decision is exposed to be judged" \
 check_text "premise: the diagnosis is exposed too" \
 	"$(type -t _hr_diagnose)" "function"
 
+# ---- and the SYMBOL EXEMPTION is exposed too, for the same reason (#1248) ----
+#
+# The 2026-09-25 nightly finally printed rebuild.sh's diagnosis, and the cause
+# was the symbol check itself: `__stack_chk_guard`, reported as evidence of a
+# mislinked major on a build that had just logged `build: OK (0 warnings)`.
+#
+# THE ARM DRIVES THE DECISION, NOT THE SYMBOL, and that is the whole point.
+# `__stack_chk_guard` cannot be reached on x86_64: the canary lives at %fs:0x28
+# and the name never appears, so a fix verified on this architecture is
+# indistinguishable from a no-op. Measured on x86_64 -- our .so leaves
+# `__stack_chk_fail` undefined and libc exports it, while `__stack_chk_guard` is
+# exported by neither libc nor the loader and is never referenced.
+#
+# Literals run the same on every architecture. The end-to-end behaviour on
+# aarch64 is NOT covered by these arms and the next nightly is what covers it.
+check_text "premise: the symbol exemption is exposed to be judged" \
+	"$(type -t pgc_symbol_is_toolchain)" "function"
+
+check_text "the stack canary object is exempt, whatever the architecture calls it" \
+	"$(pgc_symbol_is_toolchain __stack_chk_guard)" "yes"
+check_text "and so are the ITM and gmon hooks this check always ignored" \
+	"$(pgc_symbol_is_toolchain __gmon_start__)/$(pgc_symbol_is_toolchain _ITM_deregisterTMCloneTable)" \
+	"yes/yes"
+
+# THE ARM THAT STOPS THE EXEMPTION SWALLOWING ITS OWN SUBJECT. A predicate that
+# answered `yes` to everything would satisfy the three above and disarm the
+# check entirely, which is the failure this whole issue is an instance of.
+check_text "a PostgreSQL symbol is NOT exempt, so the check still has a subject" \
+	"$(pgc_symbol_is_toolchain ExecInitNode)" "no"
+check_text "and neither is one of ours" \
+	"$(pgc_symbol_is_toolchain PgColumnarIsColumnarRelation)" "no"
+
+# The version suffix is stripped before the comparison, so the exemption has to
+# see through it too -- `__cxa_finalize@GLIBC_2.2.5` is the form nm prints.
+check_text "the exemption sees through an @GLIBC version suffix" \
+	"$(pgc_symbol_is_toolchain '__cxa_finalize@GLIBC_2.2.5')" "yes"
+
+# ---- and rebuild.sh must FAIL CLOSED without it (#1248) ---------------------
+#
+# The arms above run in THIS shell, which sourced lib.sh, so they say nothing
+# about what rebuild.sh sees. That gap is not hypothetical: moving the exemption
+# from a variable to a function silently changed the fail direction.
+#
+#     old, a VARIABLE   set -u turns a missing one into `IGNORE: unbound
+#                       variable` and status 1                 -> fails CLOSED
+#     new, a FUNCTION   invisible to set -u; the substitution yields "",
+#                       `[ "" = no ]` is false, the && short-circuits, the
+#                       undefined list comes out EMPTY, and the check prints
+#                       "all resolve" and exits 0 on a mislinked major
+#                                                              -> fails OPEN
+#
+# Measured on the same pipeline both ways: defined -> [ExecInitNode],
+# undefined -> [<none>]. Reported by @jdatcmd.
+#
+# So this drives the REAL rebuild.sh against a lib.sh with the function removed.
+# The assertion sits immediately after the source, before any build, so the run
+# is cheap and needs no tree.
+_hr_fc="$(mktemp -d)"
+cp "$PGC_TESTDIR/rebuild.sh" "$PGC_TESTDIR/lib.sh" "$_hr_fc/" 2>/dev/null
+cp "$PGC_TESTDIR/portlib.sh" "$_hr_fc/" 2>/dev/null || true
+# Remove the definition only -- every caller and comment stays, so the failure
+# under test is "not in scope", not "the file is broken". The sed range is
+# bounded by the function's own column-0 brace; an unterminated range would
+# delete to EOF and the premise below would not see the difference.
+sed -i '/^pgc_symbol_is_toolchain() {/,/^}$/d' "$_hr_fc/lib.sh"
+check_num "premise: the mutation left lib.sh loadable" \
+	"$(bash -n "$_hr_fc/lib.sh" >/dev/null 2>&1 && echo 1 || echo 0)" "1"
+check_num "premise: the mutation removed the definition and nothing else" \
+	"$(grep -c '^pgc_symbol_is_toolchain() {' "$_hr_fc/lib.sh")" "0"
+check_num "premise: and the callers are still there, so this is scope not syntax" \
+	"$([ "$(grep -c 'pgc_symbol_is_toolchain' "$_hr_fc/rebuild.sh")" -gt 0 ] && echo 1 || echo 0)" "1"
+
+# A NON-ZERO EXIT IS NOT THE PROPERTY. This invocation names a pg_config that
+# does not exist, so rebuild.sh exits non-zero either way and an arm asserting
+# only `rc != 0` passes whether the assertion is there or not. The removal proof
+# caught exactly that: stripping the assertion reddened the message arm and left
+# the status arm green. So the control below runs the SAME command with the
+# function PRESENT and requires a DIFFERENT refusal, which is what makes the
+# attribution real.
+_hr_fc_ctl="$(cd "$PGC_TESTDIR" && bash ./rebuild.sh /nonexistent/pg_config /nonexistent 2>&1)"
+check_num "control: with the exemption present, the same call fails on the pg_config" \
+	"$(printf '%s' "$_hr_fc_ctl" | grep -c 'no such pg_config')" "1"
+check_num "control: and it does NOT blame the exemption" \
+	"$(printf '%s' "$_hr_fc_ctl" | grep -c 'pgc_symbol_is_toolchain is not defined')" "0"
+
+_hr_fc_out="$(cd "$_hr_fc" && bash ./rebuild.sh /nonexistent/pg_config /nonexistent 2>&1)"
+check_num "without the exemption it refuses EARLIER, naming the missing function" \
+	"$(printf '%s' "$_hr_fc_out" | grep -c 'pgc_symbol_is_toolchain is not defined')" "1"
+check_num "and it never reaches the pg_config check it would otherwise fail on" \
+	"$(printf '%s' "$_hr_fc_out" | grep -c 'no such pg_config')" "0"
+rm -rf "$_hr_fc"
+
 check_text "a rebuild that succeeded runs the arms that read its stamp" \
 	"$(_hr_dependents 0)" "run"
 check_text "a rebuild that failed skips them rather than reading a stamp it did not write" \

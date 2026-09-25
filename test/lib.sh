@@ -1284,6 +1284,55 @@ psql_file() {
 		-d "$PGC_DB" -At -f "$1" 2>/dev/null || true
 }
 
+# ---- the rebuild symbol check's exemption, exposed to be judged -------------
+#
+# A name the TOOLCHAIN leaves undefined by design, never a PostgreSQL symbol.
+# rebuild.sh's check (#382) exists to catch a .so linked against another major,
+# which shows up as an unresolved PostgreSQL symbol; these are the names that
+# are undefined for reasons that have nothing to do with the major.
+#
+# __stack_chk_guard IS ARCHITECTURE-SPECIFIC, WHICH IS WHY IT COST FOUR NIGHTS
+# (#1248). x86_64 reads the stack canary from %fs:0x28 and needs no symbol at
+# all; aarch64 references a global DATA object. Measured on x86_64: our .so
+# leaves `__stack_chk_fail` undefined and libc exports it (so the check passes),
+# while `__stack_chk_guard` is exported by neither libc nor the loader and is
+# not referenced at all. So the aarch64 build was never broken -- `build: OK (0
+# warnings)`, install OK, stamp recorded -- and the check was reporting a
+# toolchain symbol as evidence of a mislinked major.
+#
+# EXPOSED AS A FUNCTION BECAUSE THE SYMBOL CANNOT BE REACHED ON x86_64. A fix
+# verified on this architecture proves nothing: the name never appears, so a
+# no-op looks identical to a repair. Part 580 drives this with literals instead,
+# which runs the same on every architecture -- the same reason `_hr_dependents`
+# and `_hr_diagnose` are functions rather than inline.
+# WHAT EACH ENTRY IS FOR, measured on x86_64 by driving it against the real .so
+# and the real reference set rather than read off a comment:
+#
+#     _ITM_deregisterTMCloneTable   undefined in our .so, resolvable 0  -> needed
+#     __gmon_start__                undefined in our .so, resolvable 0  -> needed
+#     __cxa_finalize                undefined in our .so, resolvable 1  -> redundant HERE
+#     __stack_chk_guard             not referenced on this arch at all
+#
+# __cxa_finalize IS KEPT DESPITE RESOLVING HERE. libc defines it and libc is in
+# the reference set, so on this toolchain the exemption buys nothing -- but
+# "redundant on x86_64" is not "redundant everywhere", and dropping it would be
+# the same architecture-blind edit this whole issue is about.
+#
+# THE OLD COMMENT SAID __cxa_finalize WAS "supplied by the loader" AND THAT IS
+# FALSE. Measured: the loader defines it 0 times, libc defines it once. That
+# sentence was read, believed, and used as the premise of a published
+# conclusion before anyone tested it -- a wrong comment is an input to the next
+# reader's reasoning, and nothing executes it, so no test was ever going to
+# catch it. Named by @jdatcmd, who was the reader it misled.
+pgc_symbol_is_toolchain() {	# pgc_symbol_is_toolchain NAME -> yes|no
+	case "${1%%@*}" in
+		_ITM_* | __gmon_start__ | __cxa_finalize | __stack_chk_guard)
+			echo yes ;;
+		*)
+			echo no ;;
+	esac
+}
+
 # ---- assertions ------------------------------------------------------------
 
 
