@@ -6285,8 +6285,15 @@ THE ONE THING THIS HALF HAS TO DO THAT THE SHELL HALF DOES NOT is flush the stat
 
 Port of `rewrite_storage_oid.sh`. `ALTER COLUMN ... TYPE` writes `pgcolumnar.storage.relation_oid` as the transient relation and then drops it. The live table's OID no longer finds the row. The rows themselves stay readable.
 
+AND THE SAME DEFECT ON A SECOND STATEMENT (#1275). `CREATE MATERIALIZED VIEW ... AS` with data builds a transient, fills it and swaps, exactly as a rewriting `ALTER` does, so the storage row named a relation that no longer existed. Measured before the fix: the row named a dropped 16527 while the matview was 16523. `REFRESH MATERIALIZED VIEW` already repaired it, because that node type was in the repair gate; `CreateTableAsStmt` was not.
+
+THE `CREATE TABLE ... AS` ARM IS THE CONTROL THAT NARROWS THE FIX, and it is the reason the remedy is restricted to `objtype == OBJECT_MATVIEW` rather than applied to the parse node. Same node, no defect -- it fills the relation it created instead of swapping a transient in. Without that control the fix would reasonably have been written for `CreateTableAsStmt` as a whole, which is broader than anything measured asked for, and the premise now refuses the narrowing the day it stops being true.
+
+THE `REFRESH` ARM GUARDS THE PATH THAT ALREADY WORKED. It repaired this before the fix, through a different node type, so an arm there is what says the new arm did not displace it.
+
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_rewrite_storage_oid` | the storage row matches the live regclass before the rewrite, the row count survives, an unrewritten table still matches itself, and the rewritten table's storage row matches the live regclass afterwards |
+| `test_a_matview_created_with_data_points_at_itself` | that the matview and the `CREATE TABLE AS` table both hold their rows, that `CREATE TABLE ... AS` points at itself (the control that narrows the fix), that a matview created `WITH DATA` points at itself, and that `REFRESH` still does |

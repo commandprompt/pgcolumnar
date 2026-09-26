@@ -530,10 +530,17 @@ guard_tests 404
 # 1bcfb92b. Carrying that forward would have been a count measured on a tree
 # that no longer exists; 483 is measured on this one.
 # REBASED ONTO 5389b35a AFTER #1277 MERGED, AND THE NUMBER WAS COLLECTED RATHER
-# THAN ADDED UP. Both sides moved this key -- #1277 took it to 486 and this
+# THAN ADDED UP. Both sides moved this key -- #1277 took it to 486 and that
 # branch had 485 against the older base -- so git CONFLICTED, which is the loud
 # case this file's own history calls the lucky one. 486 + 1 is the arithmetic
-# and 487 is what `pytest --collect-only` over the 53 cluster files reports on
-# the merged tree. They agree here; the point is that the second one is evidence
-# and the first is a guess that happens to be right.
-cluster_tests 487
+# and 487 is what `pytest --collect-only` over the 53 cluster files reported on
+# the merged tree. They agreed; the point is that the second one is evidence and
+# the first is a guess that happens to be right.
+#
+# AND IT HAPPENED AGAIN IMMEDIATELY, WHICH IS THE POINT OF THE NOTE ABOVE.
+# #1278 and #1275 were both cut from 5389b35a and both moved this key to 487 for
+# DIFFERENT tests. #1278 merged first, so 487 is now main's value and #1275's
+# own test is not in it. Git conflicted again -- loudly, because the key moved
+# on both sides -- and the answer is neither branch's number. Collected on the
+# rebased tree, not added up.
+cluster_tests 488

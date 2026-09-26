@@ -48,6 +48,32 @@ true until the next version shipped.
 
 ### Fixed
 
+- `CREATE MATERIALIZED VIEW ... USING pgcolumnar ... WITH DATA` no longer
+  orphans `pgcolumnar.storage.relation_oid` (#1275). The statement builds a
+  transient relation, fills it and swaps, exactly as a rewriting `ALTER` does,
+  so the storage row was written with the transient's OID and the swap left it
+  naming a relation that no longer existed. Measured: the row named a dropped
+  `16527` while the matview was `16523`, and a lookup by the live relation found
+  nothing.
+
+  `REFRESH MATERIALIZED VIEW` already repaired it, because that node type was in
+  the repair gate `ALTER`, `TRUNCATE` and `REFRESH` share. `CreateTableAsStmt`
+  was not, so a matview stayed broken between `CREATE` and its first `REFRESH`.
+
+  **Restricted to `objtype == OBJECT_MATVIEW`, and a control says why.**
+  `CREATE TABLE ... AS ... USING pgcolumnar` is the same parse node and does
+  **not** have the defect -- it fills the relation it created instead of
+  swapping a transient in -- so the remedy is narrower than the node type.
+  `test/rewrite_storage_oid.sh` asserts that as a premise, which refuses the
+  narrowing the day it stops being true.
+
+  The statement's own name is the only handle: `pgcolumnar_rewritten_relids` is
+  empty at that point, so the recorded-list route the `TRUNCATE` path uses is
+  not available.
+
+  `pgcolumnar.analyze()` stopped reading this column in #1276; the column itself
+  was still wrong for every other reader until this.
+
 - Planning a query over a columnar relation no longer sequentially scans
   `pgcolumnar.storage` (#1210). `pgcolumnar_written_stripe_row_limit` looked its
   row up by `relation_oid`, which has no index, so the scan walked the catalog

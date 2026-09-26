@@ -2897,7 +2897,7 @@ pgcolumnar_process_utility(PlannedStmt *pstmt, const char *queryString,
 	 */
 	if (parsetree != NULL &&
 		(IsA(parsetree, AlterTableStmt) || IsA(parsetree, TruncateStmt) ||
-		 IsA(parsetree, RefreshMatViewStmt)))
+		 IsA(parsetree, RefreshMatViewStmt) || IsA(parsetree, CreateTableAsStmt)))
 	{
 		List	   *targets = NIL;
 		ListCell   *lc;
@@ -2939,7 +2939,62 @@ pgcolumnar_process_utility(PlannedStmt *pstmt, const char *queryString,
 			 * layout, not by any rule, and one added field in either struct turns
 			 * it into a wrong pointer with no diagnostic.
 			 */
-			if (IsA(parsetree, RefreshMatViewStmt))
+			if (IsA(parsetree, CreateTableAsStmt))
+			{
+				/*
+				 * CREATE MATERIALIZED VIEW ... WITH DATA (#1275). It builds a
+				 * transient, fills it and swaps, exactly as a rewriting ALTER
+				 * does, so the storage row is written with the transient's OID
+				 * and the swap leaves it naming a relation that no longer
+				 * exists. Measured: the row named a dropped 16527 while the
+				 * matview was 16523, and a lookup by the live relation found
+				 * nothing until the first REFRESH repaired it through the
+				 * RefreshMatViewStmt arm above.
+				 *
+				 * ITS OWN ARM RATHER THAN THE CAST BELOW, for the reason the
+				 * comment above already gives about the other two: they share a
+				 * field offset by coincidence of layout, and this node does not
+				 * share it at all -- its relation is reached through
+				 * ->into->rel.
+				 *
+				 * MATVIEWS ONLY, AND A CONTROL SAYS SO. `CREATE TABLE ... AS
+				 * ... USING pgcolumnar` is the same parse node and does NOT have
+				 * the defect -- measured, its storage row points at itself,
+				 * because it fills the relation it created instead of swapping
+				 * a transient in. test/rewrite_storage_oid.sh asserts that as a
+				 * premise, so the day it stops being true this narrowing is
+				 * refused rather than silently wrong.
+				 *
+				 * THE SET IS CLOSED AT TWO VALUES, so this partitions the node
+				 * type rather than guessing at it. parsenodes.h annotates
+				 * CreateTableAsStmt.objtype as OBJECT_TABLE or OBJECT_MATVIEW,
+				 * and nothing else -- read on the 15, 17 and 19 headers rather
+				 * than on one, since this ships across the matrix. SELECT INTO
+				 * is OBJECT_TABLE, so it is the control's case and not a third
+				 * one. Reported by @jdatcmd.
+				 *
+				 * NoLock, AND FOR A CREATE THE REASON IS NOT THE ONE STATED
+				 * ABOVE. That comment says the statement already holds
+				 * AccessExclusiveLock ON THE HIERARCHY, which was written for
+				 * TRUNCATE and for a type change -- statements that operate on
+				 * relations existing before they began. A CREATE has no
+				 * hierarchy and no pre-existing relation: the lock is held
+				 * because the creating transaction holds AccessExclusiveLock on
+				 * a relation it has just made, and this block runs after
+				 * standard_ProcessUtility, so the create has completed. Same
+				 * conclusion, different derivation, and the next reader would
+				 * otherwise inherit the stated reason rather than the true one.
+				 *
+				 * pgcolumnar_rewritten_relids is EMPTY here (measured), so the
+				 * recorded-list route the TRUNCATE path uses is not available
+				 * and the statement's own name is the only handle.
+				 */
+				CreateTableAsStmt *cts = (CreateTableAsStmt *) parsetree;
+
+				rv = (cts->objtype == OBJECT_MATVIEW && cts->into)
+					? cts->into->rel : NULL;
+			}
+			else if (IsA(parsetree, RefreshMatViewStmt))
 				rv = ((RefreshMatViewStmt *) parsetree)->relation;
 			else
 				rv = ((AlterTableStmt *) parsetree)->relation;
