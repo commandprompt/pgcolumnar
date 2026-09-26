@@ -16,6 +16,36 @@ true until the next version shipped.
 
 ## [Unreleased]
 
+### Changed
+
+- `test/pytest/README.md` now names all four registries a new pytest test has to
+  be entered in, and which of them a local run can catch. Adding one test reddens
+  CI from `expected_tests.txt`, `TESTS.md`, the ledger plus its budget, and
+  `expected_unrunnable.txt` separately, and CI reports them one at a time.
+  Measured over one day of two people adding tests: four round trips, each
+  failure in a different registry from the one just fixed. The collected count
+  collided three times; on the third the arithmetic was wrong, because two
+  branches cut from one base both moved the key to 487 and the rebased tree
+  collects 488.
+
+  The caveat that needed measuring rather than assuming is on
+  `expected_unrunnable.txt`. Running the major where a test declines is not
+  sufficient to check it: a prefix built without ICU makes a collation test
+  decline where the runner's does not, so the same non-zero exit appears on a
+  tree where nothing is wrong. CI named one entry under exit 67 and a local PG17
+  run named a different one under the same exit, so the section says to read the
+  names in the `unrunnable and not expected to be` list rather than the exit code.
+
+  The same section's example invocation is corrected while it is being added to.
+  `--pgc-expect-tests` takes the number of **collected tests**, and the example
+  passed 24, which is the number of files `NO_CLUSTER` lists. It now takes `N`
+  with a sentence saying which quantity it is, because a literal there names the
+  wrong thing and goes stale. Every `python` and `pytest` in the file now carries
+  the interpreter path the Prerequisites section builds; the first draft of the
+  new block used bare `python`, which is not on PATH in the container and would
+  have failed for the reader the section is written for.
+  Reported by @OffgridwithJD.
+
 ### Fixed
 
 - Planning a query over a columnar relation no longer sequentially scans
