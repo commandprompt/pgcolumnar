@@ -1,6 +1,6 @@
 # pgColumnar 1.0-alpha5 release notes
 
-Release date: TODO(release)
+Release date: 2026-10-13
 Previous release: 1.0-alpha4 (2026-09-17)
 
 pgColumnar is a columnar table access method for PostgreSQL. This is the fifth
