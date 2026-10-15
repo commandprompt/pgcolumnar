@@ -106,6 +106,12 @@ for c in tz mac mac8 nm ch tm mo ip cd bt vb e dom n tsi d; do
 	lo="$(q "SELECT quote_literal($c::text) || '::' || '$ty' FROM t_heap WHERE id = 3005" | tail -1)"
 	hi="$(q "SELECT quote_literal($c::text) || '::' || '$ty' FROM t_heap WHERE id = 9005" | tail -1)"
 	sql="SELECT id FROM %T WHERE $c BETWEEN least($lo, $hi) AND greatest($lo, $hi)"
+	# Heap's answer must not be empty: bounds that came out wrong (a lost typmod made
+	# bt's BETWEEN '0' AND '0') would make both answers empty, and the comparison and
+	# the skip arm would pass on nothing (OffgridwithJD, review of #1426).
+	n="$(q "SELECT count(*) FROM (${sql//%T/t_heap}) x" | tail -1)"
+	check "a range on $c holds rows on heap, so its comparison reads something" \
+		"$([ -n "$n" ] && [ "$n" -gt 0 ] && echo yes || echo "no (${n:-none} rows)")" "yes"
 	diff_query "a range on $c finds heap's rows" "$sql"
 	r="$(removed "$sql")"
 	if [ -n "${NO_PRUNE[$c]:-}" ]; then

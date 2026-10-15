@@ -118,6 +118,10 @@ def test_types_the_matrix_never_stored_answer_as_heap(pgc_conn, expect):
         lo, hi = (_rows(pgc_conn, f"SELECT quote_literal({c}::text) || '::' || '{ty}' "
                                   f"FROM t_heap WHERE id = {i}")[0][0] for i in (3005, 9005))
         sql = f"SELECT id FROM %T WHERE {c} BETWEEN least({lo}, {hi}) AND greatest({lo}, {hi})"
+        # Heap's answer must not be empty: wrong bounds would make both answers empty.
+        n = _rows(pgc_conn, f"SELECT count(*) FROM ({sql.replace('%T', 't_heap')}) x")[0][0]
+        expect.text("yes" if n > 0 else f"no ({n} rows)", "yes",
+                    f"a range on {c} holds rows on heap, so its comparison reads something")
         got, want = _both(pgc_conn, sql)
         expect.row_set(got, want, f"a range on {c} finds heap's rows")
         r = _removed(pgc_conn, sql)
