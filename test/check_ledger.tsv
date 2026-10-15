@@ -3464,3 +3464,11 @@ vm_privilege	vm_privilege	vm entry point is covered by this boundary test: vm_se
 vm_privilege	vm_privilege	vm_is_visible refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
 vm_privilege	vm_privilege	vm_selftest did not report success to the unprivileged role	15;16;17;18;19	2026-10-14	vm_selftest without its owner check
 vm_privilege	vm_privilege	vm_selftest refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the heap-dimension join has the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a heap dimension holds 200 rows	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	a (SELECT false) gate over a heap dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
+native_join_runtime_filter	native_join_runtime_filter	a (SELECT true) gate over a heap dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
+native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the columnar-dimension join has the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a columnar dimension holds 200 rows	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	a (SELECT false) gate over a columnar dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
+native_join_runtime_filter	native_join_runtime_filter	a (SELECT true) gate over a columnar dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)

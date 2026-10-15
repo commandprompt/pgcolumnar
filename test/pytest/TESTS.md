@@ -3023,6 +3023,15 @@ A non-key fact-table qual with late materialization off. The attach used to
 force the two-pass path with only the join key decoded, so the qual dropped
 every row. Heap is the oracle. Independent of the shell conjunction arm.
 
+### `test_a_gating_qual_over_the_join_matches_heap`
+
+A WHERE that names no column, `(SELECT false)` or `(SELECT true)`, over a join to a
+heap and to a columnar dimension (#1437). The planner puts a gating Result over such
+a join, and the coordinator expected a Hash Join there: a release build raised an
+ERROR and an assert build aborted the backend. Each answer must be heap's, with
+premises that the same join with no gate takes the coordinator and that heap's
+true-gate answer holds rows. Independent of the shell arms.
+
 ## 26. test_check_records.py: every counted assertion is a record
 
 #937, first phase. The shell harness makes counting and recording the same call,

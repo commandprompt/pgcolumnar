@@ -2791,4 +2791,16 @@ suites_not_covered 224
 #     never         2596 + 2 = 2598
 #     dated          865 + 3 = 868
 #     2598 + 868 == 3466
-checks_never_observed_red 2598
+#
+# #1437, a join with a WHERE that names no column failed in the join runtime filter
+# (jdatcmd): 2598 -> 2602. native_join_runtime_filter gains eight checks from
+# five-major runs (55/55 on each of 15-19). The four gate arms are dated on PG17 by
+# the tree before the fix with only the asserting cast removed, where each failed
+# with 'expected a core Hash Join' against heap's 0|| and 200|639900|25600 (main's
+# own tree aborts the backend at the first one). The four premises arrive never.
+#
+#     ledger rows   3466 + 8 = 3474
+#     never         2598 + 4 = 2602
+#     dated          868 + 4 = 872
+#     2602 + 872 == 3474
+checks_never_observed_red 2602
