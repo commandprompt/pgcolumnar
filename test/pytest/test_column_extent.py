@@ -247,6 +247,22 @@ def test_a_shrink_is_recomputed_never_guessed(pgc_own_db, expect):
     expect.text(_ext(conn, "vr", "ts"), _truth(conn, "vr", "ts"),
                 "after VACUUM retires a fully deleted group the extent is the live rows'")
 
+    # recluster, named by the changelog with the three above (#1341 item 75): the
+    # deleted rows are not written back, and they held the minimum.
+    _run(conn, "CREATE TABLE rc (ts timestamptz, v int) USING pgcolumnar")
+    _small_groups(conn, "rc")
+    _run(conn, "INSERT INTO rc SELECT '2025-05-05'::timestamptz + g * interval '3 min', (g * 104729) % 2711"
+               " FROM generate_series(1, 3600) g",
+         "DELETE FROM rc WHERE ts < '2025-05-05'::timestamptz + interval '1500 min'")
+    before = _ext(conn, "rc", "ts")
+    reclustered = _one(conn, "SELECT pgcolumnar.recluster('rc', 'ts', 'v')")
+    expect.text("yes" if (reclustered or 0) >= 1 else f"no ({reclustered})", "yes",
+                "recluster rewrites the table's row groups")
+    after = _ext(conn, "rc", "ts")
+    expect.text(after, _truth(conn, "rc", "ts"), "after recluster the extent is the live rows'")
+    expect.text("yes" if before and before != after else f"no ({before})", "yes",
+                "and it did move: the deleted rows held the old minimum")
+
 
 def test_no_complete_extent_where_the_zone_maps_cannot_give_one(pgc_own_db, expect):
     conn = pgc_own_db

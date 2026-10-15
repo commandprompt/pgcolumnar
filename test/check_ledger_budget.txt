@@ -2533,4 +2533,16 @@ suites_not_covered 230
 #     never         2344 + 1 = 2345
 #     dated          767 + 3 = 770
 #     2345 + 770 == 3115
-checks_never_observed_red 2345
+#
+# #1341 item 75, the changelog names recluster with expire, compact_rewrite and
+# VACUUM as recomputing the column extent, and only the other three had arms:
+# 2345 -> 2346. column_extent gains 3 checks from five-major runs (42/42 on each
+# of 15-19). Two are dated on PG17 by the existing mutation "PgColumnarRetireGroup
+# without marking the storage for a recompute", which also re-dates the four
+# arms it already held. "recluster rewrites the table's row groups" arrives never.
+#
+#     ledger rows   3115 + 3 = 3118
+#     never         2345 + 1 = 2346
+#     dated          770 + 2 = 772
+#     2346 + 772 == 3118
+checks_never_observed_red 2346

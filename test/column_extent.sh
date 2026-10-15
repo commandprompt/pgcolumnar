@@ -213,6 +213,21 @@ q "CREATE TABLE vr (ts timestamptz, v int) USING pgcolumnar;
 q "VACUUM vr;" >/dev/null
 check "after VACUUM retires a fully deleted group the extent is the live rows'" "$(ext vr ts)" "$(truth vr ts)"
 
+# recluster rewrites every group too, and the changelog names it with the three
+# above (#1341 item 75): the rows a DELETE removed are not written back, so its
+# extent must be the live rows', not wider by rows no longer stored. The deleted
+# rows hold the minimum, so a stale extent keeps it.
+q "CREATE TABLE rc (ts timestamptz, v int) USING pgcolumnar;
+   SELECT pgcolumnar.set_options('rc', stripe_row_limit => 1000, chunk_group_row_limit => 1000);
+   INSERT INTO rc SELECT '2026-01-01'::timestamptz + g * interval '1 min', (g * 7919) % 3001 FROM generate_series(1, 3000) g;
+   DELETE FROM rc WHERE ts < '2026-01-01'::timestamptz + interval '400 min';" >/dev/null
+rc_before="$(ext rc ts)"
+reclustered="$(q "SELECT pgcolumnar.recluster('rc', 'ts', 'v');")"
+check "recluster rewrites the table's row groups" "$([ "${reclustered:-0}" -ge 1 ] && echo yes || echo "no ($reclustered)")" "yes"
+check "after recluster the extent is the live rows'" "$(ext rc ts)" "$(truth rc ts)"
+check "and it did move: the deleted rows held the old minimum" \
+	"$([ -n "$rc_before" ] && [ "$rc_before" != "$(ext rc ts)" ] && echo yes || echo "no ($rc_before)")" "yes"
+
 # ---- no complete extent where the zone maps cannot give one ----------------------
 q "CREATE TABLE ac (ts timestamptz) USING pgcolumnar;
    SELECT pgcolumnar.set_options('ac', stripe_row_limit => 1000, chunk_group_row_limit => 1000);
