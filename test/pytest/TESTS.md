@@ -6968,3 +6968,4 @@ The pytest twin of `test/partition_rows.sh` (#1341, #1421), every check by the s
 | test | what it holds |
 | --- | --- |
 | `test_rows_cross_columnar_partitions_and_keys_hold_through_the_parent` | the row-moving update against heap, the three key arms, and the three races with each contender seen waiting |
+| `test_a_keyed_update_keeps_its_memory_bounded` | an UPDATE of 25,000 keyed rows, in place and moving partition, over a row group with deletes, grows the backend's memory by under 32 MB (#1422 review) |

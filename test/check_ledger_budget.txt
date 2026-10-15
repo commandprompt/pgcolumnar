@@ -2306,8 +2306,14 @@ suites_not_covered 232
 #     content.
 # The other four arrive never: the three duplicate-key refusals and the move itself.
 #
-#     ledger rows   2873 + 11 = 2884
-#     never         2179 + 4 = 2183
-#     dated          694 + 7 = 701
-#     2183 + 701 == 2884
-checks_never_observed_red 2183
+#
+# Four more from the #1422 review, a keyed UPDATE's memory over groups with
+# deletes, from five-major runs (15/15 on each of 15-19). The two bounds are dated
+# by the tree before the fix, where each UPDATE grew by 402 MB; the delete-marks
+# premise and the every-row-once check arrive never.
+#
+#     ledger rows   2873 + 15 = 2888
+#     never         2179 + 6 = 2185
+#     dated          694 + 9 = 703
+#     2185 + 703 == 2888
+checks_never_observed_red 2185
