@@ -69,7 +69,7 @@ NO_PRUNE = {
     "ch": "every row group holds every value, since the column cycles through 26 letters",
     "e": "every row group holds every value, since the column cycles through the 4 labels",
     "n": "every row group holds NaN and both infinities, so each zone map spans every value",
-    "cd": "a cidr key is treated as cross-type against inet and dropped (#1433)",
+    # cd was pinned here until #1433, when a cidr key was dropped as cross-type
 }
 
 

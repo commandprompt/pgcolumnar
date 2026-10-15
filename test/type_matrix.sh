@@ -88,13 +88,13 @@ diff_query "each column's count and NULL count is heap's" "SELECT $COUNTS FROM %
 # review of #1426). Neither id is NULL in any column.
 #
 # Each arm also says whether the zone maps skipped chunk groups, from EXPLAIN ANALYZE,
-# so an arm that should prune cannot pass on a scan that read everything. Four measure
-# 0 of 12 on PG17 and PG18, and are pinned at 0 with the reason:
+# so an arm that should prune cannot pass on a scan that read everything. Three measure
+# 0 of 12 on PG17 and PG18, and are pinned at 0 with the reason. cd was a fourth until
+# #1433, when a cidr key was treated as cross-type against inet and dropped:
 declare -A NO_PRUNE=(
 	[ch]="every row group holds every value, since the column cycles through 26 letters"
 	[e]="every row group holds every value, since the column cycles through the 4 labels"
-	[n]="every row group holds NaN and both infinities, so each zone map spans every value"
-	[cd]="a cidr key is treated as cross-type against inet and dropped (#1433)")
+	[n]="every row group holds NaN and both infinities, so each zone map spans every value")
 removed() {	# removed SQL -> the columnar scan's "Chunk Groups Removed by Filter"
 	q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${1//%T/t_col}" |
 		sed -n 's/.*Columnar Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' | head -1

@@ -178,6 +178,7 @@ behaviour, the source of that number is named.
 - [130. test_rls_query_paths.py: row-level security holds on every read path](#130-test_rls_query_pathspy-row-level-security-holds-on-every-read-path)
 - [131. test_type_matrix.py: types the differential matrix never stored answer as heap](#131-test_type_matrixpy-types-the-differential-matrix-never-stored-answer-as-heap)
 - [132. test_iceberg_data_files.py: a delete entry in a data manifest is refused](#132-test_iceberg_data_filespy-a-delete-entry-in-a-data-manifest-is-refused)
+- [133. test_native_skip.py: a type binary-coercible to its opclass's type prunes](#133-test_native_skippy-a-type-binary-coercible-to-its-opclasss-type-prunes)
 
 ## 1. How to read a test in here
 
@@ -7209,3 +7210,14 @@ A partial pytest twin of `test/iceberg_data_files.sh` (#1341 item 49). It ports 
 | `test_the_control_entry_is_listed` | a data manifest with one added data entry lists that one file |
 | `test_an_existing_entry_is_listed` | an EXISTING (status 0) entry is listed too, so a lister that keeps only ADDED entries fails |
 | `test_a_delete_entry_is_refused` | a position-delete entry, an equality-delete entry and a DELETED entry are each refused with 0A000, and the backend stays up |
+
+## 133. test_native_skip.py: a type binary-coercible to its opclass's type prunes
+
+A partial pytest twin of `test/native_skip.sh` (#1433). It ports only the arms that issue added, by the shell's names; the rest of the shell suite is declared INCOMPLETE in `test_compare_to_bash.py`. A comparison on a cidr column resolves to inet's operator, and a varchar column's to text's. The reader called such a key cross-type and asked the opfamily for an ordering proc over the pair, which `network_ops` and `text_ops` do not register, so the key was dropped and the column pruned nothing. inet and text hold the same values and are the controls. Each arm asserts heap's answer, then that chunk groups were removed. A premise checks that heap's answer holds the rows the arm expects.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_range_on_a_coercible_type_prunes` | a range on inet, cidr, a domain over cidr, text, varchar and a domain over varchar returns heap's rows and removes chunk groups |
+| `test_equality_on_a_coercible_type_prunes` | equality on cidr and on varchar, which also takes the bloom probe, returns heap's row and removes chunk groups |

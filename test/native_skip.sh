@@ -428,4 +428,48 @@ check "a partition takes the columnar custom scan (#436)" \
 check "and it prunes row groups (#436)" \
 	"$(gt0 "$(skipped 'SELECT id FROM nskp WHERE id BETWEEN 5000 AND 5100')")" "yes"
 
+
+# ---- a type binary-coercible to its opclass's type must prune (#1433) --------
+#
+# A comparison on a cidr column resolves to inet's operator and a varchar
+# column's to text's, with the column relabelled. The key reached the reader
+# with a column of cidr (or varchar) and an argument of inet (or text), so it
+# was cross-type, and the opfamily registers an ordering proc only for
+# (inet, inet) and (text, text). The key was dropped, and the column pruned
+# nothing while EXPLAIN still counted the filter as pushed down. inet and text
+# hold the same values and are the controls: the fixture prunes when the key is
+# kept. Parity first in every arm, as above.
+psql_run "CREATE DOMAIN nsk_cidr AS cidr;"
+psql_run "CREATE DOMAIN nsk_vc AS varchar(20);"
+psql_run "CREATE TABLE hb (id int, ip inet, cd cidr, dcd nsk_cidr, t text, vc varchar(20), dvc nsk_vc);"
+psql_run "CREATE TABLE nb (id int, ip inet, cd cidr, dcd nsk_cidr, t text, vc varchar(20), dvc nsk_vc) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('nb', stripe_row_limit => 2048, chunk_group_row_limit => 1024);"
+NB_GEN="SELECT g, a::inet, a::cidr, a::cidr, s, s, s
+  FROM (SELECT g, '10.0.' || (g / 256) || '.' || (g % 256) AS a,
+               lpad(g::text, 6, '0') AS s
+        FROM generate_series(1, 20480) g) x"
+psql_run "INSERT INTO hb $NB_GEN;"
+psql_run "INSERT INTO nb $NB_GEN;"
+NB_IP="BETWEEN '10.0.20.0' AND '10.0.20.100'"
+NB_S="BETWEEN '005000' AND '005100'"
+for arm in "ip|inet|$NB_IP" "cd|cidr|$NB_IP" "dcd|a domain over cidr|$NB_IP" \
+	"t|text|$NB_S" "vc|varchar|$NB_S" "dvc|a domain over varchar|$NB_S"; do
+	col=${arm%%|*}; rest=${arm#*|}; what=${rest%%|*}; pred=${rest#*|}
+	check "a range on $what returns the same rows as heap (#1433)" \
+		"$(pgc_set_hash "SELECT id FROM nb WHERE $col $pred")" \
+		"$(pgc_set_hash "SELECT id FROM hb WHERE $col $pred")"
+	check "and a range on $what skips groups (#1433)" \
+		"$(gt0 "$(skipped "SELECT id FROM nb WHERE $col $pred")")" "yes"
+done
+# equality also takes the bloom probe, which hashes the constant with the
+# column's hash proc: the same proc for both types of each pair
+for arm in "cd|cidr|'10.0.40.7'" "vc|varchar|'012345'"; do
+	col=${arm%%|*}; rest=${arm#*|}; what=${rest%%|*}; val=${rest#*|}
+	check "equality on $what returns the same rows as heap (#1433)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM nb WHERE $col = $val")" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM hb WHERE $col = $val")"
+	check "and equality on $what skips groups (#1433)" \
+		"$(gt0 "$(skipped "SELECT id FROM nb WHERE $col = $val")")" "yes"
+done
+
 pgc_summary

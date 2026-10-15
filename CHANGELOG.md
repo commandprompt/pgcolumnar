@@ -430,6 +430,14 @@ true until the next version shipped.
   itself. The runtime filter now leaves such a join to the ordinary plan. Found by
   OffgridwithJD (#1437). `test/native_join_runtime_filter.sh` and
   `test_join_runtime_filter.py`.
+- **A cidr or varchar column, or a domain over either, prunes chunk groups.** A
+  comparison on such a column resolves to inet's or text's operator, and the reader
+  called the key cross-type and dropped it, because the opfamily orders only
+  (inet, inet) and (text, text). The column was read whole, while EXPLAIN still
+  counted the filter as pushed down. Such a key now uses the column's own ordering
+  and hash, which the writer used to build the zone maps and bloom filters. Found
+  by OffgridwithJD reviewing #1426 (#1433). `test/native_skip.sh` and
+  `test_native_skip.py`.
 
 - **A concurrent `UPDATE` of the same row now fails with 40001 on a table with a
   unique index, as documented, not 23505 (#1421).** Two sessions updating one row of

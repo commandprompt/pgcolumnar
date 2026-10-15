@@ -3335,7 +3335,7 @@ type_matrix	type_matrix	a range on bt holds rows on heap, so its comparison read
 type_matrix	type_matrix	a range on bt lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
 type_matrix	type_matrix	a range on cd finds heap's rows	15;16;17;18;19	never	-
 type_matrix	type_matrix	a range on cd holds rows on heap, so its comparison reads something	15;16;17;18;19	never	-
-type_matrix	type_matrix	a range on cd skips no chunk groups: a cidr key is treated as cross-type against inet and dropped (#1433)	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on cd lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	a cidr key was treated as cross-type against inet and dropped, so the range removed no chunk groups (the tree before #1433)
 type_matrix	type_matrix	a range on ch finds heap's rows	15;16;17;18;19	never	-
 type_matrix	type_matrix	a range on ch holds rows on heap, so its comparison reads something	15;16;17;18;19	never	-
 type_matrix	type_matrix	a range on ch skips no chunk groups: every row group holds every value, since the column cycles through 26 letters	15;16;17;18;19	never	-
