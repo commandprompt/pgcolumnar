@@ -734,10 +734,14 @@ encode_post_codec	encode_post_codec	the tail column holds no row the heap does n
 encode_post_codec	encode_post_codec	the tail column preserves its checksum	15;16;17;18;19	2026-10-13	the reader returning row 5 of every row group as NULL
 encode_post_codec	encode_post_codec	the tail column reads back exactly what the heap holds	15;16;17;18;19	2026-10-13	the reader returning row 5 of every row group as NULL
 encode_post_codec	encode_post_codec	while a column where encoding genuinely wins still encodes	15;16;17;18;19	never	-
+entry_point_privilege	entry_point_privilege	and each named suite exists and calls that entry point	15;16;17;18;19	never	-
+entry_point_privilege	entry_point_privilege	and no entry names a function that is not a relation-taking entry point	15;16;17;18;19	never	-
+entry_point_privilege	entry_point_privilege	cluster_hilbert refuses an unprivileged caller with 42501	15;16;17;18;19	2026-10-14	cluster_verb_validate without its owner check
 entry_point_privilege	entry_point_privilege	coverage: inputs == sum(buckets)	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	coverage: no entry point is unbucketed	15;16;17;18;19	2026-10-14	the install script gains a pgcolumnar function no bucket names
 entry_point_privilege	entry_point_privilege	coverage: relation-taking == pinned + claimed-guarded + catalog-governed	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	every catalog-governed name is still a relation-taking entry point	15;16;17;18;19	never	-
+entry_point_privilege	entry_point_privilege	every claimed-guarded entry point names the suite that asserts its bar (#1386)	15;16;17;18;19	2026-10-14	the install script gains a relation-taking function with no privilege check
 entry_point_privilege	entry_point_privilege	export_arrow refuses a caller with no privilege before touching the file	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	export_parquet refuses a caller with no privilege before touching the file	15;16;17;18;19	2026-10-14	export_parquet without its SELECT check
 entry_point_privilege	entry_point_privilege	get_storage_id refuses an unprivileged caller with 42501	15;16;17;18;19	2026-10-14	get_storage_id without its SELECT check
@@ -754,15 +758,22 @@ entry_point_privilege	entry_point_privilege	premise: t_ep now holds EXECUTE, so 
 entry_point_privilege	entry_point_privilege	premise: the extension is installed and C entry points were found	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	premise: the install script declares MODULE_PATHNAME symbols at all	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	read_projection refuses an unprivileged caller with 42501	15;16;17;18;19	2026-10-14	read_projection without its SELECT check
+entry_point_privilege	entry_point_privilege	recluster_hilbert refuses an unprivileged caller with 42501	15;16;17;18;19	2026-10-14	cluster_verb_validate without its owner check
 entry_point_privilege	entry_point_privilege	reconstruct_via_projection refuses an unprivileged caller with 42501	15;16;17;18;19	never	-
+entry_point_privilege	entry_point_privilege	require_caller_select refuses an unprivileged caller with 42501	15;16;17;18;19	2026-10-14	require_caller_select checks nothing
 entry_point_privilege	entry_point_privilege	the catalog and the install script agree on the symbol set	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	the catalog-governed class is the six from #560	15;16;17;18;19	never	-
+entry_point_privilege	entry_point_privilege	the owner can call cluster_hilbert, so a refusal below is a refusal	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	the owner can call get_storage_id, so a refusal below is a refusal	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	the owner can call read_projection, so a refusal below is a refusal	15;16;17;18;19	never	-
+entry_point_privilege	entry_point_privilege	the owner can call recluster_hilbert, so a refusal below is a refusal	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	the owner can call reconstruct_via_projection, so a refusal below is a refusal	15;16;17;18;19	2026-10-14	reconstruct_via_projection refuses even a superuser owner
+entry_point_privilege	entry_point_privilege	the owner can call require_caller_select, so a refusal below is a refusal	15;16;17;18;19	never	-
+entry_point_privilege	entry_point_privilege	the owner can call truncate, so a refusal below is a refusal	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	the owner can call vm_is_visible, so a refusal below is a refusal	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	the owner can call vm_selftest, so a refusal below is a refusal	15;16;17;18;19	never	-
 entry_point_privilege	entry_point_privilege	the relation-by-other-means class is the three that are known	15;16;17;18;19	never	-
+entry_point_privilege	entry_point_privilege	truncate refuses an unprivileged caller with 42501	15;16;17;18;19	2026-10-14	truncate without its owner check
 entry_point_privilege	entry_point_privilege	vm_is_visible refuses an unprivileged caller with 42501	15;16;17;18;19	2026-10-14	vm_is_visible without its owner check
 entry_point_privilege	entry_point_privilege	vm_selftest refuses an unprivileged caller with 42501	15;16;17;18;19	never	-
 fdw_plan_privilege	fdw_plan_privilege	a privileged planner estimates the Iceberg table from its manifests	15;16;17;18;19	never	-

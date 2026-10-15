@@ -6940,7 +6940,7 @@ The pytest twin of `test/entry_point_privilege.sh` (#569, ported for #1341), eve
 
 | test | what it holds |
 | --- | --- |
-| `test_every_relation_taking_entry_point_has_a_decided_bar` | the enumeration premises, the symbol-set agreement, the bucket and class counts, the five 42501 refusals with their owner premises, and the four file siblings refused at the table |
+| `test_every_relation_taking_entry_point_has_a_decided_bar` | the enumeration premises, the symbol-set agreement, the bucket and class counts, every claimed-guarded entry point named with the pytest file that asserts its bar (#1386), the nine 42501 refusals with their owner calls, and the four file siblings refused at the table |
 
 ## 110. test_am_contracts.py: contracts the access method owes core DML and transactions
 

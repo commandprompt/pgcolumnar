@@ -136,7 +136,10 @@ CATALOG_GOVERNED="$(echo $CATALOG_GOVERNED)"
 
 # Relation-taking entry points that are supposed to REFUSE an unprivileged
 # caller, asserted behaviourally rather than believed.
-GUARDED_BEHAVIOURAL="read_projection reconstruct_via_projection vm_is_visible vm_selftest get_storage_id"
+# #1386 added the four after get_storage_id: each had no arm anywhere that calls it as
+# a caller its bar should stop (cluster_hilbert and recluster_hilbert share cluster's
+# owner check in code, which is a reason to expect a refusal, not an assertion of one).
+GUARDED_BEHAVIOURAL="read_projection reconstruct_via_projection vm_is_visible vm_selftest get_storage_id cluster_hilbert recluster_hilbert truncate require_caller_select"
 GUARDED_BEHAVIOURAL="$(echo $GUARDED_BEHAVIOURAL)"
 
 # ---- the enumeration, from the catalog -------------------------------------
@@ -277,6 +280,66 @@ check_num "the catalog-governed class is the six from #560" "$catalog_n" "6"
 #    engineer who closes one must come here and remove the name.
 check_num "no relation-taking C entry point is still ungated" "$pinned_n" "0"
 
+# ---- every claimed-guarded entry point names where its bar is asserted (#1386) ----
+#
+# "Claimed-guarded" was the else branch: every relation-taking name that is neither
+# catalog-governed nor pinned. A new relation-taking function with no check at all
+# landed there and nothing reddened (measured: zz_mutant_leak(regclass) left this
+# suite 31/31). So the claim is now written down, name by name, with the suite whose
+# arms call it as a caller the bar should stop. A name with no entry is red, and so
+# is an entry whose suite does not exist or never calls the function, or that names
+# a function this population no longer has.
+BAR_ASSERTED_IN="
+add_projection:vacuum_lock_privilege
+drop_projection:vacuum_lock_privilege
+vacuum:vacuum_lock_privilege
+vacuum_sorted:vacuum_lock_privilege
+cluster:vacuum_lock_privilege
+recluster:vacuum_lock_privilege
+compact:vacuum_lock_privilege
+compact_rewrite:vacuum_lock_privilege
+export_arrow:import_export_privilege
+export_parquet:import_export_privilege
+import_arrow:import_export_privilege
+import_parquet:import_export_privilege
+parallel_copy:import_export_privilege
+parallel_export_parquet:import_export_privilege
+expire:ttl_expire
+column_extent:column_extent
+maintenance_due:maintenance_due
+refresh_rollup:rollup
+rebase_rollup:rollup
+rollup_source_groups:rollup
+rollup_source_retired:rollup
+tier_partition:tier_partition
+partition_create_ahead:partition_lifecycle
+"
+# Relation-taking, with no bar to assert, each for its reason:
+#   partition_drop_candidates, partition_drop_plan  return what pg_inherits and the
+#     partition bounds already tell any role, and the plan is text: the statements
+#     it lists run as whoever runs them, under core's own privilege checks.
+NO_BAR_NEEDED="partition_drop_candidates partition_drop_plan"
+bar_home() { awk -v f="$1" -F: '$1 == f { print $2 }' <<<"$BAR_ASSERTED_IN"; }
+unhomed="" badhome="" stalehome=""
+for fn in $relfns; do
+	case " $CATALOG_GOVERNED $KNOWN_UNGUARDED $NO_BAR_NEEDED " in *" $fn "*) continue ;; esac
+	# The behavioural arms below are this suite's own home for the names they call.
+	case " $GUARDED_BEHAVIOURAL " in *" $fn "*) continue ;; esac
+	home="$(bar_home "$fn")"
+	if [ -z "$home" ]; then unhomed="$unhomed $fn"; continue; fi
+	f="$(dirname "${BASH_SOURCE[0]}")/$home.sh"
+	[ -r "$f" ] && grep -q "pgcolumnar\.$fn(" "$f" || badhome="$badhome $fn:$home"
+done
+for fn in $(awk -F: 'NF == 2 { print $1 }' <<<"$BAR_ASSERTED_IN") $NO_BAR_NEEDED; do
+	case " $relfns " in *" $fn "*) ;; *) stalehome="$stalehome $fn" ;; esac
+done
+check "every claimed-guarded entry point names the suite that asserts its bar (#1386)" \
+	"$([ -z "${unhomed// /}" ] && echo none || echo "$unhomed")" "none"
+check "and each named suite exists and calls that entry point" \
+	"$([ -z "${badhome// /}" ] && echo none || echo "$badhome")" "none"
+check "and no entry names a function that is not a relation-taking entry point" \
+	"$([ -z "${stalehome// /}" ] && echo none || echo "$stalehome")" "none"
+
 # THE COUNT ABOVE IS NOT ENOUGH, AND THIS SUITE PROVED IT ON ITSELF.
 #
 # When #558 and #562 merged, four of the nine names here became genuinely
@@ -353,7 +416,8 @@ call_for() {  # call_for <fn> -> a valid argument vector for that function
 	case "$1" in
 		read_projection|reconstruct_via_projection) echo "SELECT pgcolumnar.$1('ep_target','p1');" ;;
 		vm_is_visible|vm_selftest)                  echo "SELECT pgcolumnar.$1('ep_target',0);" ;;
-		get_storage_id)                             echo "SELECT pgcolumnar.$1('ep_target');" ;;
+		get_storage_id|truncate|require_caller_select) echo "SELECT pgcolumnar.$1('ep_target');" ;;
+		cluster_hilbert|recluster_hilbert)          echo "SELECT pgcolumnar.$1('ep_target', 'id');" ;;
 		export_arrow|export_parquet|import_arrow|import_parquet)
 			echo "SELECT pgcolumnar.$1('ep_target','/nonexistent/dir/x');" ;;
 		*) echo "" ;;
@@ -386,7 +450,8 @@ done
 check "premise: t_ep now holds EXECUTE, so a refusal below can only be the C check" \
 	"$(q "SELECT bool_and(has_function_privilege('t_ep', p.oid, 'EXECUTE'))
 	      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-	      WHERE n.nspname='pgcolumnar' AND p.proname IN ('read_projection','reconstruct_via_projection','vm_is_visible','vm_selftest');")" \
+	      WHERE n.nspname='pgcolumnar' AND p.proname IN ('read_projection','reconstruct_via_projection','vm_is_visible','vm_selftest',
+	                                   'cluster_hilbert','recluster_hilbert','truncate','require_caller_select');")" \
 	"t"
 
 for fn in $GUARDED_BEHAVIOURAL; do

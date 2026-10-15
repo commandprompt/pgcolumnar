@@ -49,7 +49,34 @@ GUARDED_BEHAVIOURAL = {
     "vm_is_visible": "SELECT pgcolumnar.vm_is_visible('ep_target',0)",
     "vm_selftest": "SELECT pgcolumnar.vm_selftest('ep_target',0)",
     "get_storage_id": "SELECT pgcolumnar.get_storage_id('ep_target')",
+    # #1386: no arm anywhere called these as a caller their bar should stop.
+    "cluster_hilbert": "SELECT pgcolumnar.cluster_hilbert('ep_target', 'id')",
+    "recluster_hilbert": "SELECT pgcolumnar.recluster_hilbert('ep_target', 'id')",
+    "truncate": "SELECT pgcolumnar.truncate('ep_target')",
+    "require_caller_select": "SELECT pgcolumnar.require_caller_select('ep_target')",
 }
+# Where each other claimed-guarded entry point's bar is asserted (#1386): the pytest
+# file whose tests call it as a caller its bar should stop. A suite with no pytest twin
+# yet is named as such, so the name is still accounted for and a new one is not.
+NO_TWIN_YET = "no pytest twin yet: "
+BAR_ASSERTED_IN = {
+    **{f: "test_vacuum_lock_privilege.py" for f in ("add_projection", "drop_projection", "vacuum",
+                                                    "vacuum_sorted", "cluster", "recluster",
+                                                    "compact", "compact_rewrite")},
+    **{f: "test_import_export_privilege.py" for f in ("export_arrow", "export_parquet", "import_arrow",
+                                                      "import_parquet", "parallel_copy",
+                                                      "parallel_export_parquet")},
+    "expire": "test_ttl_expire.py",
+    "column_extent": "test_column_extent.py",
+    "maintenance_due": NO_TWIN_YET + "maintenance_due.sh",
+    **{f: "test_rollup.py" for f in ("refresh_rollup", "rebase_rollup", "rollup_source_groups",
+                                     "rollup_source_retired")},
+    "tier_partition": "test_tier_partition.py",
+    "partition_create_ahead": "test_partition_lifecycle.py",
+}
+# Relation-taking, with no bar to assert: they return what pg_inherits and the
+# partition bounds already tell any role, and the plan's statements run as their caller.
+NO_BAR_NEEDED = {"partition_drop_candidates", "partition_drop_plan"}
 FILE_SIBLINGS = ("export_arrow", "export_parquet", "import_arrow", "import_parquet")
 
 
@@ -142,6 +169,24 @@ def test_every_relation_taking_entry_point_has_a_decided_bar(pgc_conn, pgc_clust
     expect.num(catalog_n, 6, "the catalog-governed class is the six from #560")
     expect.num(pinned_n, 0, "no relation-taking C entry point is still ungated")
 
+    # ---- every claimed-guarded entry point names where its bar is asserted (#1386)
+    claimed = sorted(relfns - CATALOG_GOVERNED - KNOWN_UNGUARDED - NO_BAR_NEEDED - set(GUARDED_BEHAVIOURAL))
+    unhomed = [f for f in claimed if f not in BAR_ASSERTED_IN]
+    badhome = []
+    for f in claimed:
+        home = BAR_ASSERTED_IN.get(f)
+        if home is None or home.startswith(NO_TWIN_YET):
+            continue
+        path = pathlib.Path(__file__).resolve().parent / home
+        if not (path.is_file() and f"pgcolumnar.{f}(" in path.read_text()):
+            badhome.append(f"{f}:{home}")
+    stale = sorted((set(BAR_ASSERTED_IN) | NO_BAR_NEEDED) - relfns)
+    expect.text(" ".join(unhomed) or "none", "none",
+                "every claimed-guarded entry point names the suite that asserts its bar (#1386)")
+    expect.text(" ".join(badhome) or "none", "none", "and each named suite exists and calls that entry point")
+    expect.text(" ".join(stale) or "none", "none",
+                "and no entry names a function that is not a relation-taking entry point")
+
     # ---- the behavioural arms
     with conn.cursor() as cur:
         cur.execute("CREATE TABLE ep_target (id int, v text) USING pgcolumnar")
@@ -166,12 +211,15 @@ def test_every_relation_taking_entry_point_has_a_decided_bar(pgc_conn, pgc_clust
                 cur.execute(f"GRANT EXECUTE ON FUNCTION {sig} TO {ROLE}")
     expect.text(str(_one(conn, f"SELECT bool_and(has_function_privilege('{ROLE}', p.oid, 'EXECUTE')) {in_ext}"
                                " AND p.proname IN ('read_projection','reconstruct_via_projection',"
-                               "'vm_is_visible','vm_selftest')")), "True",
+                               "'vm_is_visible','vm_selftest','cluster_hilbert','recluster_hilbert',"
+                               "'truncate','require_caller_select')")), "True",
                 "premise: t_ep now holds EXECUTE, so a refusal below can only be the C check")
 
     import psycopg
-    expect.num(len(GUARDED_BEHAVIOURAL), 5, "premise: the behavioural loop covers the five guarded names")
-    for fn, sql in sorted(GUARDED_BEHAVIOURAL.items()):
+    expect.num(len(GUARDED_BEHAVIOURAL), 9, "premise: the behavioural loop covers the nine guarded names")
+    # In declaration order, as the shell's loop runs: the projection readers before the
+    # Hilbert rewrites.
+    for fn, sql in GUARDED_BEHAVIOURAL.items():
         try:
             _one(conn, sql)
             owner = "ok"

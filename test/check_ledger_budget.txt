@@ -2667,4 +2667,18 @@ suites_not_covered 224
 #     never         2516 + 10 = 2526
 #     dated          808 +  2 =  810
 #     2526 + 810 == 3336
-checks_never_observed_red 2526
+#
+# #1386, every relation-taking entry point names the suite that asserts its bar
+# (OffgridwithJD): 2526 -> 2532. 11 new entry_point_privilege checks: the three map arms, and
+# an owner call and a 42501 arm for each of cluster_hilbert, recluster_hilbert, truncate
+# and require_caller_select, which no arm called as a refused caller. Dated: the map arm
+# by a relation-taking function with no check (it left the suite 31/31 before), and
+# each new 42501 arm by its check removed (truncate's owner check, require_caller_select
+# checking nothing, and cluster_verb_validate's owner check for both Hilbert verbs).
+# Five-major runs: 42/42 on 15-19.
+#
+#     ledger rows   3336 + 11 = 3347
+#     never         2526 + 6 = 2532
+#     dated          810 + 5 =  815
+#     2532 + 815 == 3347
+checks_never_observed_red 2532
