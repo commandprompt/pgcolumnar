@@ -79,9 +79,9 @@ def test_row_level_security_holds_on_every_read_path(pgc_cluster, pgc_conn, expe
             alice.execute(f'SET search_path TO "{schema}", public, pgcolumnar')
             return sum(1 for line in plan.splitlines() if needle in line)
 
-        def leaks(table, setup):
+        def leaks(table, setup, sql="SELECT count(*) FROM %t WHERE rq_leak(secret)"):
             notices.clear()
-            run(setup, f"SELECT count(*) FROM {table} WHERE rq_leak(secret)")
+            run(setup, sql.replace("%t", table))
             seen = [n for n in notices if n.startswith("seen:")]
             return f"{len(seen)}|{sum(1 for n in seen if n.startswith(f'seen:S-{BOB}'))}"
 
@@ -120,5 +120,19 @@ def test_row_level_security_holds_on_every_read_path(pgc_cluster, pgc_conn, expe
         expect.num(plan_has(PAR, "SELECT count(*) FROM %t WHERE rq_leak(secret)", "Gather"), 1,
                    "premise: the parallel leak arm's plan gathers from workers")
         expect.text(leaks("rq", PAR), "10000|0", "and through a parallel scan")
+        # Both vectorized nodes build their own quals, so each must also keep a
+        # non-leakproof function from rows the policy hides.
+        expect.num(plan_has((), "SELECT grp, count(*) FROM %t WHERE secret IS NOT NULL GROUP BY grp",
+                            "Columnar Vectorized Group Keys"), 1,
+                   "premise: a GROUP BY with a leakproof filter under the policy is the grouped vectorized node")
+        lgrp = "SELECT grp, count(*) FROM %t WHERE rq_leak(secret) GROUP BY grp"
+        expect.text(f"{leaks('rq', (), lgrp)}|{leaks('rh', (), lgrp)}", "10000|0|10000|0",
+                    "a non-leakproof function in a GROUP BY under the policy sees only rq_alice's rows, as on heap")
+        expect.num(plan_has(uva, "SELECT count(*), sum(v) FROM %t WHERE secret IS NOT NULL",
+                            "Columnar Vectorized Aggregates"), 1,
+                   "premise: an ungrouped count and sum with a leakproof filter, with the setting on, "
+                   "is the ungrouped vectorized aggregate")
+        expect.text(leaks("rq", uva, "SELECT count(*), sum(v) FROM %t WHERE rq_leak(secret)"), "10000|0",
+                    "and in the ungrouped vectorized aggregate")
     finally:
         alice.close()

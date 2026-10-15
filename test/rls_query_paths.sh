@@ -92,9 +92,9 @@ check "premise: the projection arm's plan reads the covering projection" "$(plan
 check "a covering projection scan under the policy is heap's" "$(same "" "$PQ")" "same"
 
 # ---- a function that is not leakproof sees only visible rows --------------------------
-leaks() {	# leaks TABLE SETUP -> "<notices>|<notices naming another owner's row>"
-	local out
-	out="$(as_alice "$2 SELECT count(*) FROM $1 WHERE rq_leak(secret)")"
+leaks() {	# leaks TABLE SETUP [QUERY] -> "<notices>|<notices naming another owner's row>"
+	local out sql="${3:-SELECT count(*) FROM %t WHERE rq_leak(secret)}"
+	out="$(as_alice "$2 ${sql//%t/$1}")"
 	echo "$(grep -c 'seen:' <<<"$out")|$(grep -c 'seen:S-rq_bob' <<<"$out")"
 }
 check "a cheap function that is not leakproof sees only rq_alice's rows on columnar, as on heap" \
@@ -105,5 +105,16 @@ check "and the same with vectorization and the custom scan off" "$(leaks rq "$OF
 check "premise: the parallel leak arm's plan gathers from workers" \
 	"$(plan_has "$PAR" "SELECT count(*) FROM %t WHERE rq_leak(secret)" 'Gather')" "1"
 check "and through a parallel scan" "$(leaks rq "$PAR")" "10000|0"
+# Both vectorized nodes build their own quals (above), so each must also keep a
+# function that is not leakproof from rows the policy hides. Each premise shows the
+# arm's query shape, with a leakproof filter in place of the function, is answered by
+# that node (OffgridwithJD, review of #1429).
+check "premise: a GROUP BY with a leakproof filter under the policy is the grouped vectorized node" \
+	"$(plan_has "" "SELECT grp, count(*) FROM %t WHERE secret IS NOT NULL GROUP BY grp" 'Columnar Vectorized Group Keys')" "1"
+check "a non-leakproof function in a GROUP BY under the policy sees only rq_alice's rows, as on heap" \
+	"$(leaks rq "" "SELECT grp, count(*) FROM %t WHERE rq_leak(secret) GROUP BY grp")|$(leaks rh "" "SELECT grp, count(*) FROM %t WHERE rq_leak(secret) GROUP BY grp")" "10000|0|10000|0"
+check "premise: an ungrouped count and sum with a leakproof filter, with the setting on, is the ungrouped vectorized aggregate" \
+	"$(plan_has "$UVA" "SELECT count(*), sum(v) FROM %t WHERE secret IS NOT NULL" 'Columnar Vectorized Aggregates')" "1"
+check "and in the ungrouped vectorized aggregate" "$(leaks rq "$UVA" "SELECT count(*), sum(v) FROM %t WHERE rq_leak(secret)")" "10000|0"
 
 pgc_summary
