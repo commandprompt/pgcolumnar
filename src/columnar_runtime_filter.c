@@ -86,6 +86,7 @@ typedef struct PgColumnarRuntimeTapState
 
 static set_join_pathlist_hook_type previous_set_join_pathlist_hook = NULL;
 
+static bool PgColumnarHasGatingQual(List *restrictinfos);
 static Plan *PgColumnarPlanRuntimeFilterPath(PlannerInfo *root,
                                              RelOptInfo *rel,
                                              CustomPath *bestPath,
@@ -339,7 +340,8 @@ PgColumnarSetJoinPathlist(PlannerInfo *root,
             continue;
 
         hashPath = (HashPath *) path;
-        if (path->param_info != NULL ||
+        if (PgColumnarHasGatingQual(hashPath->jpath.joinrestrictinfo) ||
+            path->param_info != NULL ||
             path->parallel_aware ||
             path->parallel_workers != 0 ||
             hashPath->jpath.innerjoinpath->param_info != NULL ||
@@ -430,6 +432,27 @@ PgColumnarSetJoinPathlist(PlannerInfo *root,
     add_path(joinrel, &customPath->path);
 }
 
+/*
+ * A gating qual is a pseudoconstant clause, one that names no column of the
+ * join, such as WHERE (SELECT false) or WHERE now() < '2000-01-01'. The planner
+ * puts a Result with a One-Time Filter over a join that carries one, so the
+ * coordinator's child would be that Result rather than the Hash Join it wraps
+ * (#1437). The path declines such a join, as the vectorized aggregates do.
+ * has_pseudoconstant_clauses() would say the same, but PG17 removed it.
+ */
+static bool
+PgColumnarHasGatingQual(List *restrictinfos)
+{
+    ListCell *cell;
+
+    foreach(cell, restrictinfos)
+    {
+        if (lfirst_node(RestrictInfo, cell)->pseudoconstant)
+            return true;
+    }
+    return false;
+}
+
 static AttrNumber
 PgColumnarFindKeyResno(Plan *plan, Index varno, AttrNumber attno)
 {
@@ -469,7 +492,9 @@ PgColumnarPlanRuntimeFilterPath(PlannerInfo *root,
     if (list_length(customPlans) != 1)
         elog(ERROR, "pgcolumnar runtime filter expected one core join plan");
 
-    joinPlan = linitial_node(HashJoin, customPlans);
+    /* linitial, not linitial_node: a cast that fails is an assertion abort on
+     * an assert build, and this check is what must report the wrong shape */
+    joinPlan = (HashJoin *) linitial(customPlans);
     if (!IsA(joinPlan, HashJoin) || !IsA(innerPlan(joinPlan), Hash))
         elog(ERROR, "pgcolumnar runtime filter expected a core Hash Join");
 

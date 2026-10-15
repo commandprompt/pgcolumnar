@@ -422,6 +422,14 @@ true until the next version shipped.
   vectorized aggregate answered from the zone maps and never applied the one-time
   filter. It now leaves such a query to the ordinary plan. Found by OffgridwithJD in
   review (#1435). `test/native_agg.sh` and `test_native_agg.py`.
+- **A join to a columnar table with a WHERE that names no column no longer fails.**
+  `SELECT count(*) FROM fact JOIN dim USING (k) WHERE (SELECT false)`, or a gate on
+  `now()`, failed with `pgcolumnar runtime filter expected a core Hash Join`, EXPLAIN
+  included, and on a build with assertions it aborted the backend. The planner puts a
+  gating Result over such a join, and the join runtime filter expected the Hash Join
+  itself. The runtime filter now leaves such a join to the ordinary plan. Found by
+  OffgridwithJD (#1437). `test/native_join_runtime_filter.sh` and
+  `test_join_runtime_filter.py`.
 
 - **A concurrent `UPDATE` of the same row now fails with 40001 on a table with a
   unique index, as documented, not 23505 (#1421).** Two sessions updating one row of

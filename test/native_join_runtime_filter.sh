@@ -314,4 +314,42 @@ SQLFQ="SELECT count(*),sum(fact_fq.k),sum(fact_fq.extra) FROM fact_fq JOIN dim_f
 onfq="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLFQ")"
 check "fact-qual plan has coordinator" "$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$onfq")" 1
 check "fact-qual conjunction equals heap" "$(pc "${rf_on}$SQLFQ"|tail -1)" "$(q "SELECT count(*),sum(heap_fq.k),sum(heap_fq.extra) FROM heap_fq JOIN dim_fq ON heap_fq.k=dim_fq.k WHERE heap_fq.k > 100 AND heap_fq.extra > 40")"
+# A gating qual, a WHERE that names no column (#1437). The planner puts a
+# Result with a One-Time Filter over the join, so the coordinator's child was a
+# Result rather than the Hash Join it expects, and every such query failed with
+# "expected a core Hash Join", EXPLAIN included. A true gate must give heap's
+# rows and a false one none, over a heap and a columnar dimension. The premises
+# show the same join with no gate takes the coordinator, so the gate is what the
+# arms vary. Independent of the pytest twin: different names, key range, and
+# row count.
+q "$(cat <<'SQL'
+CREATE TABLE dim_gh(k int);
+INSERT INTO dim_gh SELECT g FROM generate_series(3100, 3299) g;
+CREATE TABLE dim_gc(k int) USING pgcolumnar;
+INSERT INTO dim_gc SELECT g FROM generate_series(3100, 3299) g;
+CREATE TABLE fact_g(k int, payload text) USING pgcolumnar;
+SELECT pgcolumnar.set_options($t$fact_g$t$, stripe_row_limit => 1000);
+INSERT INTO fact_g SELECT g, repeat(md5(g::text), 4) FROM generate_series(1, 15000) g;
+CREATE TABLE heap_g AS SELECT * FROM fact_g;
+ANALYZE dim_gh;
+ANALYZE dim_gc;
+ANALYZE fact_g;
+SQL
+)" >/dev/null
+for dim in dim_gh dim_gc; do
+	kind=heap; [ "$dim" = dim_gc ] && kind=columnar
+	SQLG="SELECT count(*),sum(fact_g.k),sum(length(fact_g.payload)) FROM fact_g JOIN $dim ON fact_g.k=$dim.k"
+	ong="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLG")"
+	check "premise: with no gate, the $kind-dimension join has the coordinator" \
+		"$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$ong")" 1
+	# the reference must hold rows, or a server that answered nothing on both
+	# sides would pass the comparisons below as equal
+	check "premise: heap's answer under a true gate over a $kind dimension holds 200 rows" \
+		"$(q "SELECT count(*) FROM heap_g JOIN $dim ON heap_g.k=$dim.k WHERE (SELECT true)")" 200
+	for gate in false true; do
+		check "a (SELECT $gate) gate over a $kind dimension equals heap" \
+			"$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;$SQLG WHERE (SELECT $gate)" | tail -1)" \
+			"$(q "SELECT count(*),sum(heap_g.k),sum(length(heap_g.payload)) FROM heap_g JOIN $dim ON heap_g.k=$dim.k WHERE (SELECT $gate)")"
+	done
+done
 pgc_summary

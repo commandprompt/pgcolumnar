@@ -719,3 +719,53 @@ def test_fact_qual_with_late_mat_off_matches_heap(pgc_conn, expect):
         name="late-mat-off fact qual still uses the runtime coordinator",
     )
     expect.rows([got], [heap], "late-mat-off fact qual equals heap")
+
+
+def test_a_gating_qual_over_the_join_matches_heap(pgc_conn, expect):
+    """A WHERE that names no column puts a gating Result over the join (#1437).
+
+    The coordinator expected its child to be the Hash Join, so the Result made
+    every such query fail, EXPLAIN included: an ERROR on a release build, and a
+    failed cast assertion that aborted the backend on an assert build. A true
+    gate must give heap's rows and a false one none, over a heap and a columnar
+    dimension. The premises show the same join with no gate takes the
+    coordinator. Independently of native_join_runtime_filter.sh: different
+    names, key range and row count.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE dgh(k int);
+            INSERT INTO dgh SELECT g FROM generate_series(6400, 6549) g;
+            CREATE TABLE dgc(k int) USING pgcolumnar;
+            INSERT INTO dgc SELECT g FROM generate_series(6400, 6549) g;
+            CREATE TABLE fg(k int, payload text) USING pgcolumnar;
+            SELECT pgcolumnar.set_options($t$fg$t$, stripe_row_limit => 1000);
+            INSERT INTO fg SELECT g, repeat(md5(g::text), 3)
+            FROM generate_series(1, 13000) g;
+            CREATE TABLE hg AS SELECT * FROM fg;
+            ANALYZE dgh;
+            ANALYZE dgc;
+            ANALYZE fg
+            """
+        )
+    for dim, kind in (("dgh", "heap"), ("dgc", "columnar")):
+        sql = (f"SELECT count(*), sum(fg.k), sum(length(fg.payload)) "
+               f"FROM fg JOIN {dim} ON fg.k = {dim}.k")
+        expect.num(
+            _plan(pgc_conn, sql, on=True).count("Columnar Runtime Filter Coordinator"), 1,
+            f"premise: with no gate, the {kind}-dimension join has the coordinator")
+        with pgc_conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) FROM hg JOIN {dim} ON hg.k = {dim}.k WHERE (SELECT true)")
+            expect.num(cur.fetchone()[0], 150,
+                       f"premise: heap's answer under a true gate over a {kind} dimension holds 150 rows")
+        for gate in ("false", "true"):
+            with pgc_conn.cursor() as cur:
+                cur.execute(f"{sql} WHERE (SELECT {gate})")
+                got = cur.fetchone()
+                cur.execute(
+                    f"SELECT count(*), sum(hg.k), sum(length(hg.payload)) "
+                    f"FROM hg JOIN {dim} ON hg.k = {dim}.k WHERE (SELECT {gate})")
+                heap = cur.fetchone()
+            expect.rows([got], [heap],
+                        f"a (SELECT {gate}) gate over a {kind} dimension equals heap")
