@@ -35,6 +35,14 @@ def _run(dsn, *stmts):
             c.execute(s)
 
 
+def _try(dsn, *stmts):
+    """_run, but a failure is left for the premise after it to report, as the shell does."""
+    try:
+        _run(dsn, *stmts)
+    except psycopg.Error:
+        pass
+
+
 def _contend(dsn, name, sql, release):
     """Run `sql` as session `name`; once it waits on a lock, run `release`.
     -> '<waited>|<sqlstate or ok>'."""
@@ -96,11 +104,17 @@ def test_a_prepared_transaction_across_sessions_and_a_crash(pgc_cluster, expect)
                    "and after COMMIT PREPARED the other session sees all the prepared rows")
 
         before = _one(dsn, ROWS)
-        _run(dsn, "BEGIN", "DELETE FROM px WHERE k % 20 = 0", "PREPARE TRANSACTION 'px_del'")
+        # A PREPARE that failed would leave the table unchanged and the checks after
+        # it comparing it with itself, so its failure is reported by the premise.
+        _try(dsn, "BEGIN", "DELETE FROM px WHERE k % 20 = 0", "PREPARE TRANSACTION 'px_del'")
+        expect.num(_one(dsn, "SELECT count(*) FROM pg_prepared_xacts WHERE gid = 'px_del'"), 1,
+                   "premise: the DELETE is prepared")
         expect.text(_one(dsn, ROWS), before, "while a DELETE is prepared, another session still sees every row")
         _run(dsn, "ROLLBACK PREPARED 'px_del'")
         expect.text(_one(dsn, ROWS), before, "ROLLBACK PREPARED of a DELETE leaves every row as it was")
-        _run(dsn, "BEGIN", "UPDATE px SET v = v || '!' WHERE k % 20 = 1", "PREPARE TRANSACTION 'px_upd'")
+        _try(dsn, "BEGIN", "UPDATE px SET v = v || '!' WHERE k % 20 = 1", "PREPARE TRANSACTION 'px_upd'")
+        expect.num(_one(dsn, "SELECT count(*) FROM pg_prepared_xacts WHERE gid = 'px_upd'"), 1,
+                   "premise: the UPDATE is prepared")
         _run(dsn, "ROLLBACK PREPARED 'px_upd'")
         expect.text(_one(dsn, ROWS), before, "ROLLBACK PREPARED of an UPDATE leaves every row as it was, none duplicated")
 

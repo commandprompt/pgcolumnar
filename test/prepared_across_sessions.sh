@@ -52,10 +52,14 @@ check "and after COMMIT PREPARED the other session sees all the prepared rows" "
 # ---- ROLLBACK PREPARED of a DELETE and of an UPDATE -----------------------------------
 before="$(rows)"
 psql_run "BEGIN; DELETE FROM px WHERE k % 20 = 0; PREPARE TRANSACTION 'px_del';" >/dev/null
+# Without these premises a PREPARE that failed would leave the table unchanged, and
+# the checks after it would compare it with itself (OffgridwithJD, review of #1428).
+check "premise: the DELETE is prepared" "$(q "SELECT count(*) FROM pg_prepared_xacts WHERE gid = 'px_del'")" "1"
 check "while a DELETE is prepared, another session still sees every row" "$(rows)" "$before"
 psql_run "ROLLBACK PREPARED 'px_del';" >/dev/null
 check "ROLLBACK PREPARED of a DELETE leaves every row as it was" "$(rows)" "$before"
 psql_run "BEGIN; UPDATE px SET v = v || '!' WHERE k % 20 = 1; PREPARE TRANSACTION 'px_upd';" >/dev/null
+check "premise: the UPDATE is prepared" "$(q "SELECT count(*) FROM pg_prepared_xacts WHERE gid = 'px_upd'")" "1"
 psql_run "ROLLBACK PREPARED 'px_upd';" >/dev/null
 check "ROLLBACK PREPARED of an UPDATE leaves every row as it was, none duplicated" "$(rows)" "$before"
 
