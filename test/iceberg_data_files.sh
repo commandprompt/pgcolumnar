@@ -247,6 +247,11 @@ PY
 EC="$(entry_tbl ctl 1 0)"
 check "control: a data manifest with one added data entry lists that one file" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$EC')")" "1"
+# status 0 is EXISTING: a live file in a manifest that a later commit rewrote or
+# merged. A lister that refused every entry but ADDED would pass every other arm
+# here and fail an ordinary table after its second append.
+check "an EXISTING (status 0) data entry is listed, as an ADDED one is" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$(entry_tbl kept 0 0)')")" "1"
 check "a position-delete entry in a data manifest is refused (0A000)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl pos 1 1)')")" "0A000"
 check "an equality-delete entry in a data manifest is refused (0A000)" \

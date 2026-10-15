@@ -9,6 +9,7 @@ file would hand a caller rows that a commit took out.
 No available writer emits these shapes, so each table here is crafted Avro: the same
 one-entry data manifest with one (status, content) pair. The (1, 0) control is listed,
 so a refusal of the others is the entry's doing, not a fault in the crafted Avro.
+An EXISTING (0, 0) entry is listed too, so a lister that keeps only ADDED entries fails.
 
 This ports only the entry arms of `test/iceberg_data_files.sh`; the rest of that suite
 is declared INCOMPLETE in `test_compare_to_bash.py`.
@@ -113,6 +114,14 @@ def test_the_control_entry_is_listed(pgc_conn, tmp_path, expect):
     """The crafted Avro reads: one added data entry lists one file."""
     expect.num(_listed(pgc_conn, _entry_table(tmp_path / "ctl", 1, 0)), 1,
                "control: a data manifest with one added data entry lists that one file")
+
+
+def test_an_existing_entry_is_listed(pgc_conn, tmp_path, expect):
+    """Status 0 is EXISTING: a live file in a manifest a later commit rewrote or
+    merged. A lister that refused every entry but ADDED would pass the other arms
+    and fail an ordinary table after its second append."""
+    expect.num(_listed(pgc_conn, _entry_table(tmp_path / "kept", 0, 0)), 1,
+               "an EXISTING (status 0) data entry is listed, as an ADDED one is")
 
 
 @pytest.mark.parametrize("status, content, name", [

@@ -7200,11 +7200,12 @@ The pytest twin of `test/type_matrix.sh` (#1341), every check by the shell's nam
 
 ## 132. test_iceberg_data_files.py: a delete entry in a data manifest is refused
 
-A partial pytest twin of `test/iceberg_data_files.sh` (#1341 item 49). It ports only the arms that item added, by the shell's names; the rest of the shell suite is declared INCOMPLETE in `test_compare_to_bash.py`. The lister refuses a delete manifest in the manifest list without opening it, but a data manifest can still hold an entry it must not list: a position or equality delete file (entry content 1 or 2), or a removed file (status 2, DELETED). Each table is crafted Avro, the same one-entry data manifest with one (status, content) pair, because no available writer emits these shapes. The (1, 0) control must be listed, so a refusal of the others comes from the entry and not from a fault in the crafted Avro.
+A partial pytest twin of `test/iceberg_data_files.sh` (#1341 item 49). It ports only the arms that item added, by the shell's names; the rest of the shell suite is declared INCOMPLETE in `test_compare_to_bash.py`. The lister refuses a delete manifest in the manifest list without opening it, but a data manifest can still hold an entry it must not list: a position or equality delete file (entry content 1 or 2), or a removed file (status 2, DELETED). Each table is crafted Avro, the same one-entry data manifest with one (status, content) pair, because no available writer emits these shapes. The (1, 0) control must be listed, so a refusal of the others comes from the entry and not from a fault in the crafted Avro. An EXISTING (0, 0) entry must be listed too, so a lister that keeps only ADDED entries fails.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_the_control_entry_is_listed` | a data manifest with one added data entry lists that one file |
+| `test_an_existing_entry_is_listed` | an EXISTING (status 0) entry is listed too, so a lister that keeps only ADDED entries fails |
 | `test_a_delete_entry_is_refused` | a position-delete entry, an equality-delete entry and a DELETED entry are each refused with 0A000, and the backend stays up |
