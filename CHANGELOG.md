@@ -401,6 +401,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- **A concurrent `UPDATE` of the same row now fails with 40001 on a table with a
+  unique index, as documented, not 23505 (#1421).** Two sessions updating one row of
+  a table with a PRIMARY KEY or UNIQUE index: the second used to wait on the first's
+  new key and then fail with `unique_violation`, naming a duplicate the user never
+  wrote, so an application retrying on `serialization_failure` did not retry. The
+  same happened to a row two sessions moved between partitions of a parent with a
+  key. The update path now serializes the row before its new version reaches the
+  unique check. On such tables each row is serialized as the `UPDATE` reaches it, so
+  two multi-row `UPDATE`s reaching shared rows in opposite orders can now deadlock
+  (40P01), as a heap can. A 200k-row `UPDATE` of a keyed table measured about 20%
+  slower; a table without a unique index is unchanged. `test/update_conc.sh` and
+  the new `test/partition_rows.sh`, with `test_partition_rows.py`.
+
 - **The Iceberg wrapper no longer reads server files while planning for a role the scan
   would refuse.** `EXPLAIN` on an Iceberg foreign table read its `metadata_path` for any
   role holding SELECT on it. That showed a role without `pg_read_server_files` the

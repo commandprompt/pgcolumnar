@@ -327,6 +327,21 @@ pgcolumnar_acquire_key_lock(Oid indexOid, uint32 bucket)
 }
 
 /*
+ * PgColumnarHasUniqueIndex
+ *		Does rel have a unique index that a new row version is checked against?
+ *		The same set PgColumnarLockUniqueKeys locks for (unique, immediate, valid,
+ *		ready), read from the same cache. The update path asks it to decide
+ *		whether a row must be serialized before its new version is inserted
+ *		(#1421). Independent of enable_unique_insert_lock: without that lock the
+ *		btree's own uniqueness check still waits on the winner's key.
+ */
+bool
+PgColumnarHasUniqueIndex(Relation rel)
+{
+	return pgcolumnar_unique_lookup(rel)->nIndexes > 0;
+}
+
+/*
  * PgColumnarLockUniqueKeys
  *		For a row about to be inserted into rel (through the table AM), take a
  *		transaction-scoped advisory lock for each applicable unique index's key,

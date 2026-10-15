@@ -4436,6 +4436,18 @@ pgcolumnar_lookup_row_group(uint64 storageId, Snapshot metaSnapshot,
 }
 
 /*
+ * PgColumnarLookupRowGroup
+ *		The row group covering rowNumber under metaSnapshot, or NULL, through the
+ *		same memo the fetch path uses. For the update path's single-row conflict
+ *		check (#1421), which needs one group, not the whole list.
+ */
+NativeRowGroupMetadata *
+PgColumnarLookupRowGroup(uint64 storageId, Snapshot metaSnapshot, uint64 rowNumber)
+{
+	return pgcolumnar_lookup_row_group(storageId, metaSnapshot, rowNumber);
+}
+
+/*
  * Find the entry for this group in this command, or prepare an empty one.
  *
  * Always returns a usable slot, never NULL. A hit returns the live entry and

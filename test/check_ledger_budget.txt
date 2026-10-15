@@ -2296,4 +2296,18 @@ suites_not_covered 232
 #     never         2095 + 84 = 2179
 #     dated          691 +  3 =  694
 #     2179 + 694 == 2873
-checks_never_observed_red 2179
+#
+# #1421, a concurrent UPDATE of the same row gets 40001 with a unique index too, and
+# #1341's partition shapes (jdatcmd): 2179 -> 2183. partition_rows enters with all 11
+# checks from five-major runs (11/11 on each of 15-19). Seven are dated on PG17:
+#   - the tree before #1421: the move-versus-move race (23505 where heap gives 40001);
+#   - a moving row not marked deleted in the partition it leaves: the split, the
+#     content, the index lookup, the freed key, both 40001 races and the final
+#     content.
+# The other four arrive never: the three duplicate-key refusals and the move itself.
+#
+#     ledger rows   2873 + 11 = 2884
+#     never         2179 + 4 = 2183
+#     dated          694 + 7 = 701
+#     2183 + 701 == 2884
+checks_never_observed_red 2183

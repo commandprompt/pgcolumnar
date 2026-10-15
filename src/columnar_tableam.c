@@ -2235,6 +2235,19 @@ pgcolumnar_tuple_delete(COLUMNAR_TUPLE_DELETE_ARGS)
 	if (PgColumnarRowWriteConflict(rel, tid, cid, wait, tmfd, &conflict))
 		return conflict;
 
+	/*
+	 * A row moving to another partition is deleted here and inserted there, and
+	 * the insert reaches the destination's unique check before this delete is
+	 * flushed. Serialize it now, as the update path does, so a concurrent mover
+	 * of the same row loses with 40001 rather than 23505 (#1421).
+	 */
+#if PG_VERSION_NUM >= 190000
+	if ((options & TABLE_DELETE_CHANGING_PARTITION) != 0)
+#else
+	if (changingPart)
+#endif
+		PgColumnarSerializeRowNow(rel, rowNumber);
+
 	PgColumnarMarkRowDeleted(rel, rowNumber);
 	return TM_Ok;
 }
@@ -2268,6 +2281,14 @@ pgcolumnar_tuple_update(COLUMNAR_TUPLE_UPDATE_ARGS)
 		*lockmode = LockTupleExclusive;
 		return conflict;
 	}
+
+	/*
+	 * #1421: with a unique index, the new version's unique-key lock and check
+	 * come before the flush that serializes the old row, so a loser waited on
+	 * the winner's key and failed with 23505. Serialize the old row first.
+	 */
+	if (PgColumnarHasUniqueIndex(rel))
+		PgColumnarSerializeRowNow(rel, oldRowNumber);
 
 	PgColumnarMarkRowDeleted(rel, oldRowNumber);
 

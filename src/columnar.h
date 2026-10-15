@@ -1065,6 +1065,11 @@ extern bool PgColumnarRowWriteConflict(Relation rel, ItemPointer otid,
 									   TM_FailureData *tmfd, TM_Result *result);
 extern void PgColumnarSerializeFlushRows(uint64 storageId, const uint64 *rows,
 										 int nrows);
+extern void PgColumnarSerializeRowNow(Relation rel, uint64 rowNumber);
+extern bool PgColumnarHasUniqueIndex(Relation rel);
+extern NativeRowGroupMetadata *PgColumnarLookupRowGroup(uint64 storageId,
+														 Snapshot metaSnapshot,
+														 uint64 rowNumber);
 
 /* -------------------------------------------------------------------------
  * planner integration (pgcolumnar_customscan.c, spec 8.3, 9)
