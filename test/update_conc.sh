@@ -27,6 +27,10 @@
 # in whether the losing writer errors, which is exactly what the heap oracle
 # measures.
 #
+# THE FIX HAS LANDED: src/columnar_row_lock.c serializes the row identity, and
+# every check here passes. The paragraphs above and below describe the code the
+# suite was written against. Its pytest twin is test/pytest/test_update_conc.py.
+#
 # This suite is RED-first: the checks encode the CORRECT (post-fix) behavior, so
 # every columnar arm FAILS on today's code and PASSES once same-row writes
 # serialize. A heap table runs the byte-identical interleaving as the oracle, and
@@ -75,16 +79,19 @@
 # failed. That is worse than invisibility, because a missing number can be noticed
 # and a balancing one cannot. Induced and measured rather than argued.
 #
-# THE NAME IS FIXED PER WAIT KIND, with the session and sentinel in pgc_record's
-# REASON field. The ledger is keyed on (suite, part, name), so interpolating
+# THE NAME IS FIXED PER WAIT KIND, with the session and sentinel in pgc_fail's
+# DETAIL. The ledger is keyed on (suite, part, name), so interpolating
 # "$name/$label" into the name would mint rows nobody can enumerate and therefore
 # nobody can seed.
 #
 # NO GREEN RUN EXECUTES THIS. It records only on the timeout path, so a passing
 # suite emits nothing here and the record stream is unchanged.
+#
+# lib.sh's pgc_fail, not a direct pgc_record (#1341): the pytest twin's grading
+# reads names through lib.sh's recorders, and a suite that records on its own is
+# one the twin check cannot read.
 wait_timeout() {	# wait_timeout FIXED-NAME DETAIL
-	pgc_record FAIL "$1" "FAIL  $1 (timed out waiting for $2)" "$2"
-	fail=1
+	pgc_fail "$1" "timed out waiting for $2"
 }
 
 
@@ -190,35 +197,11 @@ PSQL="psql -h '$WORKDIR' -p $PORT -d upconc -qAtX -v ON_ERROR_STOP=1"
 SPSQL="psql -h '$WORKDIR' -p $PORT -d upconc -qAtX"
 ctl_q() { run_pg "$PSQL -c \"$1\""; }
 
-fail=0
-# RECORDS RATHER THAN ONLY PRINTING (#965). This suite emitted human PASS lines
-# and no RESULT records, so every mechanism built on the record vocabulary -- the
-# ledger, the census, checks_never_observed_red, the red-observation record,
-# duplicate-name detection -- was blind to all of them. The ledger did not merely
-# return nothing on this log, it REFUSED it: "no RESULT records, so there is
-# nothing to reconcile".
-#
-# `pgc_record` takes the DISPLAY whole, so the human output below is byte-for-byte
-# what it was. NOT lib.sh's own `check`: that composes its own display and would
-# drop the `: $got` suffix, which is the measured value rather than a label.
-#
-# `fail` is still set, so this suite's exit logic is untouched. Its verdict line
-# stays for the same reason: under `set -euo pipefail` a failing command aborts the
-# suite, and the verdict is what distinguishes finished from stopped.
-#
-# The `checks run:` line is READ BY NOTHING YET. The matrix gates reconciliation on
-# the ACCOUNTING line via `pgc_log_shows_accounting`, and this suite emits none
-# because it emits no accounting line. The line is still correct and wanted --
-# it is the total the records reconcile against -- so the remaining step is a gate
-# flip rather than new work (@jdatcmd, #969 review).
-check() {  # name got want
-	if [ "$2" = "$3" ]; then
-		pgc_record PASS "$1" "PASS  $1: $2"
-	else
-		pgc_record FAIL "$1" "FAIL  $1: got [$2] want [$3]"
-		fail=1
-	fi
-}
+# lib.sh's `check` records every result (#965), and since #1341 this suite uses
+# it rather than a local wrapper around pgc_record. The local one printed the
+# measured value on a PASS too. lib.sh's prints it on a FAIL, which is when it is
+# read, and the twin check can read the names, which it could not before.
+# pgc_summary at the end prints the accounting line the matrix reconciles.
 
 # --- persistent interactive sessions over FIFOs (as in test/concurrency.sh) ---
 start_session() {  # name
@@ -504,15 +487,42 @@ echo "-- heap=$H_SP ; col=$C_SP"
 check "savepoint columnar final state matches heap oracle" "$C_SP" "$H_SP"
 check "savepoint columnar kept the pre-savepoint value, no duplicate (1/10)" "$C_SP" "1/10"
 
+# ---------------------------------------------------------------------------
+# savepoint, a statement that FAILS inside it (#1341). The arm above cannot reach
+# the subtransaction discard: its inner UPDATE completes, and executor-end flushes
+# its marks and rows under the inner subtransaction, whose abort then hides them.
+# Measured: with either discard in pgcolumnar_subxact_callback removed, both arms
+# above stay green. Here the inner UPDATE changes id=1 and then fails on id=3, so
+# no executor-end runs, and its delete mark and new row are still buffered when
+# ROLLBACK TO arrives. Only the discard keeps them from being written at COMMIT.
+# The premise is the scan order: id=1 is read, and updated, before id=3 fails it.
+# ---------------------------------------------------------------------------
+sp_fail_arm() {  # tbl -> "scan order|count/values for id=1|rows" after the rollback
+	local order
+	seed1 "$1"
+	# One session, so the scan order is read inside the transaction that then
+	# fails. Without ON_ERROR_STOP the script goes on past the failed UPDATE.
+	order="$(run_pg "$SPSQL" 2>/dev/null <<-SQL
+	BEGIN;
+	UPDATE $1 SET v=10 WHERE id=1;
+	INSERT INTO $1 VALUES (3,0);
+	SELECT string_agg(id::text, ',') FROM $1;
+	SAVEPOINT sp;
+	UPDATE $1 SET v = CASE WHEN id=3 THEN 1/(id-3) ELSE 99 END;
+	ROLLBACK TO sp;
+	COMMIT;
+	SQL
+	)"
+	echo "$order|$(ctl_q "SELECT count(*)||'/'||coalesce(string_agg(v::text, ',' ORDER BY v),'') FROM $1 WHERE id=1;")|$(ctl_q "SELECT count(*) FROM $1;")"
+}
+echo; echo "### savepoint: a statement failing inside it leaves nothing behind"
+H_SPF="$(sp_fail_arm t_heap)"; C_SPF="$(sp_fail_arm t_col)"
+echo "-- heap=$H_SPF ; col=$C_SPF"
+check "premise: the failing statement reads id=1 before id=3 on the columnar table" "${C_SPF%%|*}" "1,3"
+check "savepoint, failed statement: columnar final state matches heap oracle" "${C_SPF#*|}" "${H_SPF#*|}"
+check "savepoint, failed statement: columnar kept the pre-savepoint value, no duplicate (1/10, 2 rows)" "${C_SPF#*|}" "1/10|2"
+
 send s1 "\\q"
 send s2 "\\q"
 
-echo
-if [ "$fail" = 0 ]; then
-	echo "checks run: $PGC_CHECKS"
-	echo "UPDATE CONCURRENCY TEST PASSED"
-else
-	echo "checks run: $PGC_CHECKS"
-	echo "UPDATE CONCURRENCY TEST FAILED"
-fi
-exit "$fail"
+pgc_summary

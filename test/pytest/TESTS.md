@@ -180,6 +180,7 @@ behaviour, the source of that number is named.
 - [132. test_iceberg_data_files.py: a delete entry in a data manifest is refused](#132-test_iceberg_data_filespy-a-delete-entry-in-a-data-manifest-is-refused)
 - [133. test_native_skip.py: a type binary-coercible to its opclass's type prunes](#133-test_native_skippy-a-type-binary-coercible-to-its-opclasss-type-prunes)
 - [134. test_unique_conc.py: concurrent inserters of one unique key serialize](#134-test_unique_concpy-concurrent-inserters-of-one-unique-key-serialize)
+- [135. test_update_conc.py: two writers of one row serialize](#135-test_update_concpy-two-writers-of-one-row-serialize)
 
 ## 1. How to read a test in here
 
@@ -7243,3 +7244,25 @@ The shapes: one key, with the lock off in T2 as the control that shows the bug; 
 | `test_null_keys` | two NULLs never wait under NULLS DISTINCT; under NULLS NOT DISTINCT they serialize and conflict |
 | `test_a_duplicate_within_one_statement` | one INSERT of the same key twice raises 23505 and inserts nothing |
 | `test_an_aborted_first_inserter` | T2 waits behind T1's flushed, uncommitted row; T1 rolls back and T2's insert succeeds |
+
+## 135. test_update_conc.py: two writers of one row serialize
+
+The pytest twin of `test/update_conc.sh` (#5, ported for #1341), every check by the shell's name. A columnar UPDATE marks the old row deleted and appends a new one, so without a lock on the row identity two transactions updating one row each kept their own new version, and the row was duplicated. `columnar_row_lock.c` takes a transaction-scoped advisory lock per row at the delete-vector flush, re-reads the latest committed state, and gives the loser a retryable 40001. A table with a unique index takes the lock during the UPDATE, so the unique check cannot answer 23505 first (#1421).
+
+Each concurrent case runs one interleaving on a heap table, the oracle, and on a columnar one: s1 writes and holds its transaction, s2's statement waits on a lock, which a poll of `pg_stat_activity` confirms, and s1 commits. At READ COMMITTED a heap re-applies s2's update where columnar fails it, so the columnar value is compared with the heap's only at REPEATABLE READ. A private database; each session runs at a 30s `lock_timeout`, as the shell's cluster does.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_update_vs_update_read_committed` | one row is left and the loser gets 40001; the heap composes both updates into one row |
+| `test_update_vs_update_repeatable_read` | count and values match the heap, and both losers get 40001 |
+| `test_update_vs_update_serializable` | the count matches the heap and the loser gets 40001, which held before the row lock too |
+| `test_update_vs_delete_read_committed` | the heap's DELETE removes the updated row; columnar's loser gets 40001 |
+| `test_delete_vs_update_read_committed` | the committed DELETE stands on both, and columnar's loser gets 40001 |
+| `test_a_row_updated_twice_by_one_statement` | `UPDATE ... FROM (VALUES (1), (1))` leaves one row on both |
+| `test_overlapping_multi_row_updates` | 41 overlapping rows: 200 rows remain, and the loser gets 40001 |
+| `test_serial_updates_control` | the same two updates without overlap leave one row with the last writer's value |
+| `test_a_covering_unique_index` | with a unique index the loser still gets 40001, not 23505; the heap composes |
+| `test_a_savepoint_rolled_back` | an UPDATE rolled back to a savepoint leaves the pre-savepoint value, as on the heap |
+| `test_a_statement_failing_inside_a_savepoint` | an UPDATE that fails partway inside a savepoint leaves nothing behind: its buffered mark and row are discarded |
