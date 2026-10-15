@@ -21,7 +21,7 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 psql_run "DROP ROLE IF EXISTS rq_alice; DROP ROLE IF EXISTS rq_bob;
           CREATE ROLE rq_alice LOGIN NOSUPERUSER; CREATE ROLE rq_bob LOGIN NOSUPERUSER;
           GRANT USAGE ON SCHEMA pgcolumnar TO rq_alice;
-          CREATE FUNCTION rq_leak(text) RETURNS bool LANGUAGE plpgsql COST 0.0001
+          CREATE FUNCTION rq_leak(text) RETURNS bool LANGUAGE plpgsql COST 0.0001 PARALLEL SAFE
             AS \$\$ BEGIN RAISE NOTICE 'seen:%', \$1; RETURN true; END \$\$;"
 for t in rq rh; do
 	am=pgcolumnar; [ $t = rh ] && am=heap
@@ -90,6 +90,10 @@ leaks() {	# leaks TABLE SETUP -> "<notices>|<notices naming another owner's row>
 check "a cheap function that is not leakproof sees only rq_alice's rows on columnar, as on heap" \
 	"$(leaks rq "")|$(leaks rh "")" "10000|0|10000|0"
 check "and the same with vectorization and the custom scan off" "$(leaks rq "$OFF")" "10000|0"
+# PARALLEL SAFE, or the planner keeps the function out of the workers and this arm
+# repeats the first one (OffgridwithJD, review of #1429).
+check "premise: the parallel leak arm's plan gathers from workers" \
+	"$(plan_has "$PAR" "SELECT count(*) FROM %t WHERE rq_leak(secret)" 'Gather')" "1"
 check "and through a parallel scan" "$(leaks rq "$PAR")" "10000|0"
 
 pgc_summary

@@ -33,7 +33,7 @@ def test_row_level_security_holds_on_every_read_path(pgc_cluster, pgc_conn, expe
             if cur.fetchone() is None:
                 cur.execute(f"CREATE ROLE {r} LOGIN NOSUPERUSER")
             cur.execute(f'GRANT USAGE ON SCHEMA "{schema}", pgcolumnar TO {r}')
-        cur.execute("CREATE FUNCTION rq_leak(text) RETURNS bool LANGUAGE plpgsql COST 0.0001 "
+        cur.execute("CREATE FUNCTION rq_leak(text) RETURNS bool LANGUAGE plpgsql COST 0.0001 PARALLEL SAFE "
                     "AS $$ BEGIN RAISE NOTICE 'seen:%', $1; RETURN true; END $$")
         for t, am in (("rq", "pgcolumnar"), ("rh", "heap")):
             cur.execute(f"CREATE TABLE {t} (id int, owner name, grp int, v int, secret text) USING {am}")
@@ -104,6 +104,10 @@ def test_row_level_security_holds_on_every_read_path(pgc_cluster, pgc_conn, expe
         expect.text(f"{leaks('rq', ())}|{leaks('rh', ())}", "10000|0|10000|0",
                     "a cheap function that is not leakproof sees only rq_alice's rows on columnar, as on heap")
         expect.text(leaks("rq", OFF), "10000|0", "and the same with vectorization and the custom scan off")
+        # PARALLEL SAFE, or the planner keeps the function out of the workers and
+        # this arm repeats the first one.
+        expect.num(plan_has(PAR, "SELECT count(*) FROM %t WHERE rq_leak(secret)", "Gather"), 1,
+                   "premise: the parallel leak arm's plan gathers from workers")
         expect.text(leaks("rq", PAR), "10000|0", "and through a parallel scan")
     finally:
         alice.close()
