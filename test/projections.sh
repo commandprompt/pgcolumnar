@@ -448,4 +448,21 @@ psql_run "INSERT INTO dt2 SELECT g, g FROM generate_series(200, 300) g;"
 check "control: a drop in its own transaction never left one" \
 	"$(proj_orphans dt2)" "0"
 
+# ---- a sort key with no ordering is refused (#1341) --------------------------
+#
+# add_projection does not check the sort column's type. The writer does, when it
+# is built: json has no btree comparison, so the back-fill over existing rows
+# must refuse with 0A000 rather than sort by a comparison function that does not
+# exist. Last in the suite, because without the check that sort crashes the
+# backend (measured).
+psql_run "CREATE TABLE pjs (id int, j json) USING pgcolumnar;
+	  INSERT INTO pjs SELECT g, json_build_object('k', g) FROM generate_series(1, 500) g;"
+check "a projection sorted on a type with no ordering (json) is refused (0A000)" \
+	"$(proj_sqlstate "SELECT pgcolumnar.add_projection('pjs', 'pjp', ARRAY['id','j'], ARRAY['j'])")" "0A000"
+# On a server that accepts connections again: without the check the sort crashes
+# its backend (measured), and this arm must answer for the catalog, not for that.
+for _i in $(seq 1 60); do [ "$(q 'SELECT 1' 2>/dev/null)" = 1 ] && break; sleep 0.5; done
+check "and nothing of it is declared" \
+	"$(q "SELECT count(*) FROM pgcolumnar.projection_declaration WHERE name = 'pjp';")" "0"
+
 pgc_summary

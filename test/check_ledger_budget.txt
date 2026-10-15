@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 227
+suites_not_covered 226
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2632,4 +2632,15 @@ suites_not_covered 227
 #     never         2374 - 3 = 2371
 #     dated          802 + 3 = 805
 #     2371 + 805 == 3176
-checks_never_observed_red 2371
+#
+# #1341, projections seeded, with the sort-type arms (OffgridwithJD): 2371 -> 2446, and
+# suites_not_covered 227 -> 226. The suite had no rows. It enters with all 76 checks
+# from five-major runs (76/76 on each of 15-19). One is dated by the projection
+# writer without its sort-type ordering check: a json sort key's back-fill then
+# crashed the backend instead of refusing with 0A000. The other 75 arrive never.
+#
+#     ledger rows   3176 + 76 = 3252
+#     never         2371 + 75 = 2446
+#     dated          805 +  1 =  806
+#     2446 + 806 == 3252
+checks_never_observed_red 2446

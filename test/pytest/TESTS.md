@@ -4434,6 +4434,7 @@ failing for a reason that has nothing to do with projections.
 | `test_the_first_add_records_the_base_and_the_new_projection` | both rows appear at once, with the base's columns, empty sort key, name and shared storage id |
 | `test_a_second_projection_may_have_no_sort_key` | a projection without a sort key, and three distinct storage ids |
 | `test_a_bad_projection_is_refused_by_its_own_code` | seven refusals, each by its measured SQLSTATE rather than by "it errored" |
+| `test_a_sort_key_with_no_ordering_is_refused` | #1341: a projection sorted on `json`, which has no btree ordering, is refused `0A000` when the back-fill builds its writer, and nothing of it is declared |
 | `test_a_projection_on_a_heap_table_is_refused` | the refusal that is about the ACCESS METHOD, not the arguments |
 | `test_drop_removes_one_projection_and_leaves_the_rest` | drop is surgical, and the table is still readable after the DDL |
 | `test_a_projection_added_late_is_back_filled_from_the_existing_rows` | a projection added after the rows exist is populated from them, not left empty |

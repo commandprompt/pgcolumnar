@@ -2604,6 +2604,82 @@ projection_update	projection_update	projection matches the heap before any updat
 projection_update	projection_update	read_projection matches the live base after that update	15;16;17;18;19	2026-10-14	projection rows storing the first projected column's value in every projected column
 projection_update	projection_update	read_projection still matches the live base	15;16;17;18;19	2026-10-14	projection rows storing the first projected column's value in every projected column
 projection_update	projection_update	reconstruct via the projection still rebuilds every live row	15;16;17;18;19	2026-10-14	projection rows storing the first projected column's value in every projected column
+projections	projections	DROP TABLE removes its declaration (#304)	15;16;17;18;19	never	-
+projections	projections	GUC off: no projection scan	15;16;17;18;19	never	-
+projections	projections	a mid-transaction drop leaves no orphan projection storage	15;16;17;18;19	never	-
+projections	projections	a projection added after a write in the same transaction gets the later rows	15;16;17;18;19	never	-
+projections	projections	a projection dropped mid-transaction is gone, not still being written	15;16;17;18;19	never	-
+projections	projections	a projection sorted on a type with no ordering (json) is refused (0A000)	15;16;17;18;19	2026-10-14	the projection writer without its sort-type ordering check (the back-fill sort then crashes the backend)
+projections	projections	add on heap table rejected	15;16;17;18;19	never	-
+projections	projections	aggregate over projection scan matches oracle	15;16;17;18;19	never	-
+projections	projections	an orphan left by an older build is present	15;16;17;18;19	never	-
+projections	projections	an unrestricted base scan matches oracle after delete	15;16;17;18;19	never	-
+projections	projections	an unrestricted query reads the base, not the projection	15;16;17;18;19	never	-
+projections	projections	and it removed the orphan	15;16;17;18;19	never	-
+projections	projections	and leaves the other table's declaration alone	15;16;17;18;19	never	-
+projections	projections	and nothing of it is declared	15;16;17;18;19	never	-
+projections	projections	and the base table still took every row	15;16;17;18;19	never	-
+projections	projections	and they are the right rows, not merely the right number	15;16;17;18;19	never	-
+projections	projections	back-fill: p2 matches base (b column)	15;16;17;18;19	never	-
+projections	projections	back-fill: p2 populated from existing rows	15;16;17;18;19	never	-
+projections	projections	base + p2 remain	15;16;17;18;19	never	-
+projections	projections	base id 0 columns are all attrs	15;16;17;18;19	never	-
+projections	projections	base id 0 name	15;16;17;18;19	never	-
+projections	projections	base id 0 sort_key empty	15;16;17;18;19	never	-
+projections	projections	base proj_storage_id == base	15;16;17;18;19	never	-
+projections	projections	control: a drop in its own transaction never left one	15;16;17;18;19	never	-
+projections	projections	control: with no write before add_projection the projection was always right	15;16;17;18;19	never	-
+projections	projections	distinct storage ids	15;16;17;18;19	never	-
+projections	projections	drop base rejected	15;16;17;18;19	never	-
+projections	projections	drop unknown rejected	15;16;17;18;19	never	-
+projections	projections	duplicate column rejected	15;16;17;18;19	never	-
+projections	projections	duplicate name rejected	15;16;17;18;19	never	-
+projections	projections	empty columns rejected	15;16;17;18;19	never	-
+projections	projections	fp chunks carry min/max skip metadata	15;16;17;18;19	never	-
+projections	projections	fp count after delete matches base	15;16;17;18;19	never	-
+projections	projections	fp fan-out matches base (a,c)	15;16;17;18;19	never	-
+projections	projections	fp reflects deletes (a,c)	15;16;17;18;19	never	-
+projections	projections	fp row count matches base	15;16;17;18;19	never	-
+projections	projections	fp2 multi-stripe fan-out matches base	15;16;17;18;19	never	-
+projections	projections	fp2 spans multiple projection row groups	15;16;17;18;19	never	-
+projections	projections	fq fan-out matches base (b)	15;16;17;18;19	never	-
+projections	projections	new snapshot projection scan sees both batches	15;16;17;18;19	never	-
+projections	projections	no projection rows before first add	15;16;17;18;19	never	-
+projections	projections	non-covering query (references b) uses the base	15;16;17;18;19	never	-
+projections	projections	old snapshot projection scan does not see post-snapshot rows	15;16;17;18;19	never	-
+projections	projections	p1 columns	15;16;17;18;19	never	-
+projections	projections	p1 gone after drop	15;16;17;18;19	never	-
+projections	projections	p1 has its own storage id	15;16;17;18;19	never	-
+projections	projections	p1 id is 1	15;16;17;18;19	never	-
+projections	projections	p1 sort_key	15;16;17;18;19	never	-
+projections	projections	p2 columns	15;16;17;18;19	never	-
+projections	projections	p2 id is 2	15;16;17;18;19	never	-
+projections	projections	p2 sort_key empty	15;16;17;18;19	never	-
+projections	projections	planner still uses projection after vacuum	15;16;17;18;19	never	-
+projections	projections	premise: the base table holds every committed row	15;16;17;18;19	never	-
+projections	projections	projection chosen for covering + sort-key query	15;16;17;18;19	never	-
+projections	projections	projection matches base after second vacuum	15;16;17;18;19	never	-
+projections	projections	projection scan matches oracle after delete	15;16;17;18;19	never	-
+projections	projections	projection survives vacuum	15;16;17;18;19	never	-
+projections	projections	projection-scan matches oracle after vacuum	15;16;17;18;19	never	-
+projections	projections	projection-scan results match heap oracle	15;16;17;18;19	never	-
+projections	projections	read_projection base rejected	15;16;17;18;19	never	-
+projections	projections	read_projection matches base after vacuum	15;16;17;18;19	never	-
+projections	projections	reconstruct (a,b,c) matches base after vacuum	15;16;17;18;19	never	-
+projections	projections	reconstruct full row matches base	15;16;17;18;19	never	-
+projections	projections	reconstruct matches base after delete + NULLs	15;16;17;18;19	never	-
+projections	projections	reconstruct row count matches base	15;16;17;18;19	never	-
+projections	projections	session A baseline via projection sees batch 1	15;16;17;18;19	never	-
+projections	projections	so a rebuild still works for the rest of the database	15;16;17;18;19	never	-
+projections	projections	sort key not in columns	15;16;17;18;19	never	-
+projections	projections	storage id resolves	15;16;17;18;19	never	-
+projections	projections	table populated	15;16;17;18;19	never	-
+projections	projections	table still readable after DDL	15;16;17;18;19	never	-
+projections	projections	the drop really removed the projection	15;16;17;18;19	never	-
+projections	projections	the rebuild does not abort on it	15;16;17;18;19	never	-
+projections	projections	two declared projections to start	15;16;17;18;19	never	-
+projections	projections	two rows after first add (base + p1)	15;16;17;18;19	never	-
+projections	projections	unknown column rejected	15;16;17;18;19	never	-
 range_pruning	range_pruning	a clustered overlap near the end skips the four vectors only their upper bounds rule out	15;16;17;18;19	2026-10-13	native_range_excludes never using max_upper (haveUpper forced false)
 range_pruning	range_pruning	a clustered overlap skips vectors instead of decoding them	15;16;17;18;19	never	-
 range_pruning	range_pruning	a scattered column skips nothing, which is what the documentation says	15;16;17;18;19	never	-

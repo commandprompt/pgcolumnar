@@ -253,6 +253,27 @@ def test_a_bad_projection_is_refused_by_its_own_code(cat, expect, name, code, sq
         expect.sqlstate(exc.value, code, name)
 
 
+def test_a_sort_key_with_no_ordering_is_refused(pgc_conn, expect):
+    """add_projection does not check the sort column's type; the writer does, when
+    the back-fill builds it (#1341). json has no btree comparison, so the refusal is
+    0A000 with the type named, rather than a sort by a comparison that does not
+    exist, and nothing of the projection is left declared."""
+    import psycopg
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE pjs (id int, j json) USING pgcolumnar")
+        cur.execute("INSERT INTO pjs SELECT g, json_build_object('k', g) FROM generate_series(1, 500) g")
+    try:
+        with pgc_conn.cursor() as cur:
+            cur.execute("SELECT pgcolumnar.add_projection('pjs', 'pjp', ARRAY['id','j'], ARRAY['j'])")
+        got = "ok"
+    except psycopg.Error as e:
+        got = e.sqlstate or "?"
+    expect.text(got, "0A000", "a projection sorted on a type with no ordering (json) is refused (0A000)")
+    with pgc_conn.cursor() as cur:
+        expect.num(_one(cur, "SELECT count(*) FROM pgcolumnar.projection_declaration WHERE name = 'pjp'"), 0,
+                   "and nothing of it is declared")
+
+
 def test_a_projection_on_a_heap_table_is_refused(cat, expect):
     """SEPARATE, because it needs a heap table the other refusals do not, and because
     the refusal is about the ACCESS METHOD rather than about the arguments."""
