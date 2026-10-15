@@ -603,9 +603,10 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   behavior is stricter than a heap at `READ COMMITTED`. A heap re-applies both
   updates transparently there; pgColumnar makes the loser retry. The same holds
   for a row an `UPDATE` moves to another partition. On a table with a unique index,
-  an `UPDATE` serializes each row as it reaches it, not at the end of the statement,
-  so two multi-row `UPDATE`s that reach shared rows in opposite orders can deadlock;
-  one of them gets `deadlock_detected` (40P01), which is also retryable. The GUC
+  an `UPDATE` serializes each row as it reaches it, not at the end of the statement.
+  Two multi-row `UPDATE`s that reach shared rows in opposite orders can therefore
+  deadlock. One of them then gets `deadlock_detected` (40P01), which is also
+  retryable. The GUC
   `pgcolumnar.enable_row_update_lock` (default on) controls this serialization.
   The GUC `pgcolumnar.row_lock_buckets` (default 1024) bounds the held locks per
   storage, so a bulk update cannot exhaust the lock table. Unrelated rows may
