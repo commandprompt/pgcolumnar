@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 230
+suites_not_covered 229
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2559,4 +2559,41 @@ suites_not_covered 230
 #     never         2346 +  6 = 2352
 #     dated          772 +  5 =  777
 #     2352 + 777 == 3129
-checks_never_observed_red 2352
+#
+# #1341, rls_direct_storage seeded with its pytest twin (OffgridwithJD): 2352 -> 2362,
+# and suites_not_covered 230 -> 229. The suite had no rows. It enters with all 26
+# checks from five-major runs (26/26 on each of 15-19). Sixteen are dated by three
+# mutations of the RLS guard: deleted (the eight refusals, nothing written, nothing
+# imported, and FORCE), widened to refuse RLS_NONE_ENV (the owner's read, the owner's
+# export and the owner without FORCE), and moved ahead of read_projection's ACL check
+# (the two disclosure arms). The owner's export was measured by a test both of whose
+# branches echoed "ran"; it now reads the export back, and main's suite survives the
+# widened guard on it. The other 10 arrive never: the premises and the no-policy
+# controls.
+#
+#     ledger rows   3129 + 26 = 3155
+#     never         2352 + 10 = 2362
+#     dated          777 + 16 = 793
+#     2362 + 793 == 3155
+#
+# #1341, rls_direct_storage's two scan-dependent premises (OffgridwithJD, #1397 review):
+# 2362 -> 2361. Both read the table through the columnar scan, so they are checks and
+# lose the prefix, renamed with their rows. "the policy is in force for ordinary SQL"
+# is dated by the custom scan dropping its quals (the restricted role then saw all 200
+# rows); the owner's count arrives never. Five-major runs: 26/26 on 15-19.
+#
+#     ledger rows   3155     = 3155
+#     never         2362 - 1 = 2361
+#     dated          793 + 1 = 794
+#     2361 + 794 == 3155
+#
+# #1383 review (OffgridwithJD): 2361 -> 2360. "the source files the import arms need exist"
+# loses the premise prefix: the owner's export writes those files, and an export that
+# writes nothing reddens it in both twins (the twin now fails it by name instead of
+# raising), with the owner-export arm beside it. Five-major runs: 26/26 on 15-19.
+#
+#     ledger rows   3155     = 3155
+#     never         2361 - 1 = 2360
+#     dated          794 + 1 = 795
+#     2360 + 795 == 3155
+checks_never_observed_red 2360

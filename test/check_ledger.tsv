@@ -2643,6 +2643,32 @@ rewrite_storage_oid	rewrite_storage_oid	the repair gate does not read a partitio
 rewrite_storage_oid	rewrite_storage_oid	the repair gate does not read a partition the ALTER did not touch: lp ATTACH PARTITION lp_3 FOR VALUES FROM ('2026-03-01') TO ('2026-04-01')	15;16;17;18;19	2026-10-12	the repair gate opens every inheritor with NoLock again, so it reads the metapage of a partition the ALTER never locked (an Assert on assert builds)
 rewrite_storage_oid	rewrite_storage_oid	the repair gate does not read a partition the ALTER did not touch: lp DETACH PARTITION lp_2	15;16;17;18;19	2026-10-12	the repair gate opens every inheritor with NoLock again, so it reads the metapage of a partition the ALTER never locked (an Assert on assert builds)
 rewrite_storage_oid	rewrite_storage_oid	the repair gate does not read a partition the ALTER did not touch: lp DETACH PARTITION lp_2 CONCURRENTLY	15;16;17;18;19	2026-10-12	the repair gate opens every inheritor with NoLock again, so it reads the metapage of a partition the ALTER never locked (an Assert on assert builds)
+rls_direct_storage	rls_direct_storage	a table with NO policy is still readable by the same role	15;16;17;18;19	never	-
+rls_direct_storage	rls_direct_storage	and no imported row landed in the restricted table	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	and read_projection tells it the same thing, not that RLS exists	15;16;17;18;19	2026-10-14	read_projection checks RLS before the table ACL
+rls_direct_storage	rls_direct_storage	and still exportable by it	15;16;17;18;19	never	-
+rls_direct_storage	rls_direct_storage	and the owner can still export it	15;16;17;18;19	2026-10-14	export_parquet writes no file (total = 0);the RLS guard refuses anything but RLS_NONE so the owner and superuser (RLS_NONE_ENV) are refused too
+rls_direct_storage	rls_direct_storage	export_arrow refuses one	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	export_parquet refuses one	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	import_arrow refuses one	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	import_parquet refuses a policy-restricted writer	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	no export file was written for the refused caller	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	parallel_copy refuses one	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	parallel_export_parquet refuses one	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	premise: t_owner owns force_t	15;16;17;18;19	never	-
+rls_direct_storage	rls_direct_storage	premise: the no-privilege role is told permission denied by ordinary SQL	15;16;17;18;19	never	-
+rls_direct_storage	rls_direct_storage	premise: the role HOLDS select, so the ACL check cannot be what refuses	15;16;17;18;19	never	-
+rls_direct_storage	rls_direct_storage	premise: the role can open a session	15;16;17;18;19	never	-
+rls_direct_storage	rls_direct_storage	premise: the role holds EXECUTE, so the grant layer is not what refuses	15;16;17;18;19	never	-
+rls_direct_storage	rls_direct_storage	read_projection refuses a policy-restricted caller	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	reconstruct_via_projection refuses one too	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	so no caller without privilege learns RLS state from these functions	15;16;17;18;19	2026-10-14	read_projection checks RLS before the table ACL
+rls_direct_storage	rls_direct_storage	the OWNER can still read the RLS table's storage (RLS_NONE_ENV)	15;16;17;18;19	2026-10-14	the RLS guard refuses anything but RLS_NONE so the owner and superuser (RLS_NONE_ENV) are refused too
+rls_direct_storage	rls_direct_storage	the owner sees every row, so the policy hides something real	15;16;17;18;19	never	-
+rls_direct_storage	rls_direct_storage	the policy is in force for ordinary SQL	15;16;17;18;19	2026-10-14	the custom scan drops its quals (plan.qual = NIL)
+rls_direct_storage	rls_direct_storage	the source files the import arms need exist	15;16;17;18;19	2026-10-14	export_parquet writes no file (total = 0)
+rls_direct_storage	rls_direct_storage	under FORCE the non-superuser owner IS refused, so owner-only is no substitute	15;16;17;18;19	2026-10-14	PgColumnarRequireNoRowSecurity never refuses (the RLS guard deleted)
+rls_direct_storage	rls_direct_storage	without FORCE the owner is allowed, because RLS_NONE_ENV is not RLS_ENABLED	15;16;17;18;19	2026-10-14	the RLS guard refuses anything but RLS_NONE so the owner and superuser (RLS_NONE_ENV) are refused too
 rollup	rollup	* with anything but count is refused	15;16;17;18;19	2026-10-13	create_rollup allowing * with any function
 rollup	rollup	DROP TABLE of a rollup's source is refused while the rollup exists (2BP01, #1376)	15;16;17;18;19	2026-10-14	a rollup's view, partials and source with no dependency between them, and no catalog cleanup (main before #1376's fix)
 rollup	rollup	DROP VIEW of a rollup takes its partials and its catalog rows with it (#1376)	15;16;17;18;19	2026-10-14	a rollup's view, partials and source with no dependency between them, and no catalog cleanup (main before #1376's fix)

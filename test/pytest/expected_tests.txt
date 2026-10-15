@@ -707,4 +707,6 @@ guard_tests 438
 # by collection over the cluster files on this tree.
 # cluster_tests 588 -> 590 for #1341's caller-privilege tests in test_tier_partition.py and
 # test_partition_lifecycle.py, one each, by collection over the cluster files on this tree.
-cluster_tests 590
+# cluster_tests 590 -> 591 for #1341's test_rls_direct_storage.py, the twin of
+# rls_direct_storage.sh: one test, by collection over the cluster files on this tree.
+cluster_tests 591

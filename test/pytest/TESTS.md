@@ -170,6 +170,7 @@ behaviour, the source of that number is named.
 - [122. test_prepared_across_sessions.py: a prepared transaction, seen from other sessions and across a crash](#122-test_prepared_across_sessionspy-a-prepared-transaction-seen-from-other-sessions-and-across-a-crash)
 - [123. test_maintenance_crash.py: a crash part-way through maintenance loses nothing](#123-test_maintenance_crashpy-a-crash-part-way-through-maintenance-loses-nothing)
 - [124. test_serializable.py: SERIALIZABLE refuses a write skew on a columnar table](#124-test_serializablepy-serializable-refuses-a-write-skew-on-a-columnar-table)
+- [125. test_rls_direct_storage.py: the direct-storage paths refuse a caller a policy restricts](#125-test_rls_direct_storagepy-the-direct-storage-paths-refuse-a-caller-a-policy-restricts)
 
 ## 1. How to read a test in here
 
@@ -7100,3 +7101,13 @@ The pytest twin of `test/serializable.sh` (#1341), every check by the shell's na
 | test | what it holds |
 | --- | --- |
 | `test_serializable_refuses_a_write_skew` | the catalog SIRead locks, the four write skews refused by SSI with 40001 against heap, and the REPEATABLE READ controls |
+
+## 125. test_rls_direct_storage.py: the direct-storage paths refuse a caller a policy restricts
+
+The pytest twin of `test/rls_direct_storage.sh` (#563, ported for #1341), every check by the shell's name. Row-level security is applied by the rewriter, and these functions read and write storage with no query to rewrite, so each refuses a relation whose policies apply to the caller. The caller HOLDS SELECT, INSERT, EXECUTE and the server-file roles, so the RLS check is the only refuser left. Eight entry points are refused and nothing was written or imported; a role with no privilege is told "permission denied" and not that RLS exists; a table with no policy, the owner without FORCE, and the owner's export (read back, row for row) stay allowed; and under FORCE a non-superuser owner is refused too.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_direct_storage_paths_refuse_a_policy_restricted_caller` | the premises, the eight refusals and their absent effects, the no-privilege caller's ACL error, the not-over-refusing controls, and the FORCE pair |
