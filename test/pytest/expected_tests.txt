@@ -713,4 +713,6 @@ guard_tests 438
 # one test, by collection over the cluster files on this tree.
 # cluster_tests 592 -> 593 for #1341's test_objstore_allowlist.py, the twin of
 # objstore_allowlist.sh: one test, by collection over the cluster files on this tree.
-cluster_tests 593
+# cluster_tests 593 -> 596 for #1341's test_objstore_userinfo.py, the twin of
+# objstore_userinfo.sh: three tests, by collection over the cluster files on this tree.
+cluster_tests 596

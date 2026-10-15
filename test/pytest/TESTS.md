@@ -173,6 +173,7 @@ behaviour, the source of that number is named.
 - [125. test_rls_direct_storage.py: the direct-storage paths refuse a caller a policy restricts](#125-test_rls_direct_storagepy-the-direct-storage-paths-refuse-a-caller-a-policy-restricts)
 - [126. test_objstore_crlf.py: a CR or LF in an object-store URL is refused before it is sent](#126-test_objstore_crlfpy-a-cr-or-lf-in-an-object-store-url-is-refused-before-it-is-sent)
 - [127. test_objstore_allowlist.py: the endpoint allow-list, empty by default](#127-test_objstore_allowlistpy-the-endpoint-allow-list-empty-by-default)
+- [128. test_objstore_userinfo.py: userinfo in a URL is refused on every entry point](#128-test_objstore_userinfopy-userinfo-in-a-url-is-refused-on-every-entry-point)
 
 ## 1. How to read a test in here
 
@@ -7135,3 +7136,17 @@ The list is changed by ALTER SYSTEM and a reload, and reset in a `finally`. The 
 | test | what it holds |
 | --- | --- |
 | `test_the_endpoint_allow_list` | the default deny, the list's matching, SUSET and the admin override, and the link-local refusal |
+
+## 128. test_objstore_userinfo.py: userinfo in a URL is refused on every entry point
+
+The pytest twin of `test/objstore_userinfo.sh` (#706, #995, #997, ported for #1341), every check by the shell's name. `user@host` is refused with the parse guard's 22023 on the http read and write paths, in an s3 or gs bucket authority, and in an endpoint a foreign server configures. 22023 comes only from the parse guards and 42501 only from the allow-list, so the SQLSTATE says which layer refused, and the message pins the guard. `test_objstore_endpoint_userinfo.py` covers the endpoint half independently and is not this file's pair.
+
+The controls are what make the arms mean anything. With no endpoint configured every s3 URL is refused 28000, the clean one included, and 28000 has three causes, so each control names the refusal it expects.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_userinfo_in_a_url_is_refused_by_the_parse_guard` | read_parquet and export_parquet over http, export_arrow, and the s3 and gs bucket authority, read and write: 22023, naming userinfo |
+| `test_a_clean_url_reaches_the_refusal_it_should` | a clean s3 URL demands an endpoint (naming `AWS_ENDPOINT_URL`), gs demands a credential, a malformed URL and an `@` in a key are not userinfo, a clean non-allowed endpoint is still 42501, and the backend is alive |
+| `test_userinfo_in_a_configured_endpoint_is_refused` | both endpoint shapes, `u:p@` and `user@`, are 22023 naming userinfo and the endpoint; a clean endpoint gets past the parse |
