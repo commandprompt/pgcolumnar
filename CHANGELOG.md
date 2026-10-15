@@ -401,6 +401,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- **A vectorized aggregate no longer shows a non-leakproof function rows that row-level
+  security hides.** Under a policy, a query such as `SELECT grp, count(*) FROM t WHERE
+  f(secret) GROUP BY grp` ran `f` on every row, the other owners' included, through the
+  grouped vectorized node (the default for a GROUP BY) and the ungrouped one
+  (`pgcolumnar.enable_ungrouped_vector_agg`). The answers were right; only the function
+  saw too much. Both nodes now leave a WHERE whose clauses could leak past the policy to
+  the custom scan, which orders its quals as PostgreSQL does. A WHERE with only leakproof
+  clauses, or a table with no policy, vectorizes as before. Found by OffgridwithJD in
+  review. `test/rls_query_paths.sh` and `test_rls_query_paths.py`.
+
 - **A concurrent `UPDATE` of the same row now fails with 40001 on a table with a
   unique index, as documented, not 23505 (#1421).** Two sessions updating one row of
   a table with a PRIMARY KEY or UNIQUE index: the second used to wait on the first's
