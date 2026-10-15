@@ -2305,6 +2305,8 @@ prepared_across_sessions	prepared_across_sessions	an UPDATE of a row a prepared 
 prepared_across_sessions	prepared_across_sessions	and after COMMIT PREPARED its rows are heap's	15;16;17;18;19	never	-
 prepared_across_sessions	prepared_across_sessions	and after COMMIT PREPARED the other session sees all the prepared rows	15;16;17;18;19	never	-
 prepared_across_sessions	prepared_across_sessions	premise: prepared transactions are enabled	15;16;17;18;19	never	-
+prepared_across_sessions	prepared_across_sessions	premise: the DELETE is prepared	15;16;17;18;19	never	-
+prepared_across_sessions	prepared_across_sessions	premise: the UPDATE is prepared	15;16;17;18;19	never	-
 prepared_across_sessions	prepared_across_sessions	while a DELETE is prepared, another session still sees every row	15;16;17;18;19	never	-
 prepared_writes	prepared_writes	a delete prepared and committed in one session leaves the session answering	15;16;17;18;19	2026-10-13	PREPARE letting go of neither (main before #1323);PREPARE without letting go of the delete-vector buffers
 prepared_writes	prepared_writes	an index fetch before PREPARE, and the same row fetched first after COMMIT PREPARED, in one session	15;16;17;18;19	never	-
