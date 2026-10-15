@@ -411,6 +411,12 @@ true until the next version shipped.
   clauses, or a table with no policy, vectorizes as before. Found by OffgridwithJD in
   review. `test/rls_query_paths.sh` and `test_rls_query_paths.py`.
 
+- **`pgcolumnar.column_extent` refuses a table whose row-level security policies
+  apply to the caller.** It returned the column's stored smallest and largest value
+  over every row, so a caller limited by a policy could read values from rows it
+  cannot see. It now raises `row-level security is in force`, as the other functions
+  that read storage directly do. Found by OffgridwithJD in review.
+
 - **A concurrent `UPDATE` of the same row now fails with 40001 on a table with a
   unique index, as documented, not 23505 (#1421).** Two sessions updating one row of
   a table with a PRIMARY KEY or UNIQUE index: the second used to wait on the first's
