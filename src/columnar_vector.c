@@ -63,6 +63,7 @@
 #include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
 #include "nodes/plannodes.h"
+#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
@@ -820,6 +821,38 @@ static bool pgcolumnar_batch_shape_eligible(PgColumnarAggScanState *state,
  * vectorized aggregate: planning
  * ------------------------------------------------------------------------- */
 
+
+/*
+ * pgcolumnar_quals_could_leak
+ *		True when a clause above the lowest security level could leak, so a node that
+ *		evaluates the WHERE itself must not take the query.
+ *
+ * Row-level security puts the policy's quals at a lower security level than the
+ * user's. PostgreSQL lets a clause run before a lower-level one only if it is
+ * leakproof, and order_qual_clauses enforces that for an ordinary plan. The
+ * vectorized nodes build their own quals from baserestrictinfo and evaluate them
+ * in their own order, so a non-leakproof function in the user's WHERE was handed
+ * rows the policy hides (OffgridwithJD, review of #1429). Declining leaves such a
+ * query to the custom scan, which orders its quals correctly.
+ */
+static bool
+pgcolumnar_quals_could_leak(List *rinfos)
+{
+	Index		minLevel = UINT_MAX;
+	ListCell   *lc;
+
+	foreach(lc, rinfos)
+		minLevel = Min(minLevel, lfirst_node(RestrictInfo, lc)->security_level);
+	foreach(lc, rinfos)
+	{
+		RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc);
+
+		if (rinfo->security_level > minLevel &&
+			contain_leaked_vars((Node *) rinfo->clause))
+			return true;
+	}
+	return false;
+}
 static Plan *
 PgColumnarPlanAggPath(PlannerInfo *root, RelOptInfo *rel, CustomPath *best_path,
 					List *tlist, List *clauses, List *custom_plans)
@@ -1529,6 +1562,8 @@ PgColumnarCreateUpperPaths(PlannerInfo *root, UpperRelationKind stage,
 	 * zone-map answerable. A filter, or a sum/avg over int8/float/numeric, needs
 	 * the scan-fold path instead (#289).
 	 */
+	if (pgcolumnar_quals_could_leak(factRel->baserestrictinfo))
+		return;
 	quals = extract_actual_clauses(factRel->baserestrictinfo, false);
 
 	needsScan = (quals != NIL);
@@ -2586,8 +2621,12 @@ PgColumnarTryGroupAggPath(PlannerInfo *root, RelOptInfo *input_rel,
 
 	/*
 	 * WHERE is carried whole and rechecked per row, so correctness never depends
-	 * on which clauses become scan keys; the scan keys only prune groups.
+	 * on which clauses become scan keys; the scan keys only prune groups. A WHERE
+	 * whose clauses could leak past a row-level security policy is left to the
+	 * custom scan (pgcolumnar_quals_could_leak).
 	 */
+	if (pgcolumnar_quals_could_leak(input_rel->baserestrictinfo))
+		return;
 	quals = extract_actual_clauses(input_rel->baserestrictinfo, false);
 
 	/*
