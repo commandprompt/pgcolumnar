@@ -143,3 +143,58 @@ def test_rows_cross_columnar_partitions_and_keys_hold_through_the_parent(pgc_clu
                 "an UPDATE in place of a row another session is moving waits, then fails with 40001, as on heap")
     c, h = _answers(pgc_conn, CONTENT).split("|")
     expect.text("same" if c == h else f"{c}|{h}", "same", "and after the races the parents hold the same rows")
+
+
+PM_MEM = """CREATE FUNCTION pm_mem(at text, id int) RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+    IF id IN (1, 49999) THEN
+        INSERT INTO pm_mem SELECT at, id, sum(total_bytes) FROM pg_backend_memory_contexts;
+    END IF;
+    RETURN 0;
+END $$"""
+
+
+def _pm_build(conn, name):
+    """A keyed parent whose first partition holds 1..50000 in one row group, evens deleted."""
+    conn.execute(f"CREATE TABLE {name} (id int PRIMARY KEY, v int) PARTITION BY RANGE (id)")
+    conn.execute(f"CREATE TABLE {name}_1 PARTITION OF {name} FOR VALUES FROM (0) TO (100000) USING pgcolumnar")
+    conn.execute(f"CREATE TABLE {name}_2 PARTITION OF {name} FOR VALUES FROM (100000) TO (300000) USING pgcolumnar")
+    conn.execute(f"INSERT INTO {name} SELECT g, 0 FROM generate_series(1, 50000) g")
+    conn.execute(f"DELETE FROM {name} WHERE id % 2 = 0")
+
+
+def _marks(conn, name):
+    return _value(conn, f"SELECT count(*) || '|' || (SELECT count(*) FROM pgcolumnar.delete_vector "
+                        f"WHERE storage_id = pgcolumnar.get_storage_id('{name}_1')) FROM {name}")
+
+
+def _bounded(conn, at):
+    readings, mb = conn.execute(
+        "SELECT count(*), (max(bytes) FILTER (WHERE id = 49999) - max(bytes) FILTER (WHERE id = 1)) / 1048576 "
+        "FROM pm_mem WHERE at = %s", (at,)).fetchone()
+    print(f"  {at}: {readings} readings, growth {mb} MB")
+    return "yes" if readings == 2 and mb is not None and mb < 32 else f"no (readings|MB: {readings}|{mb})"
+
+
+def test_a_keyed_update_keeps_its_memory_bounded(pgc_conn, expect):
+    """On a keyed table each updated or moved row is checked at once against the
+    committed delete marks of its row group (#1421). Kept in the statement's memory,
+    those reads cost one copy of the group's delete bitmap per row: 402 MB for
+    25,000 rows of a 50,000-row group (OffgridwithJD, review of #1422). pm_mem records
+    the backend's context bytes at the first and the last row an UPDATE reaches.
+    """
+    pgc_conn.execute("CREATE TABLE pm_mem (at text, id int, bytes bigint)")
+    pgc_conn.execute(PM_MEM)
+    _pm_build(pgc_conn, "pmu")
+    _pm_build(pgc_conn, "pmm")
+    expect.text(f"{_marks(pgc_conn, 'pmu')} {_marks(pgc_conn, 'pmm')}", "25000|1 25000|1",
+                "each keyed table's group carries delete marks before its UPDATE")
+    pgc_conn.execute("UPDATE pmu SET v = v + 1 + pm_mem('update', id)")
+    expect.text(_bounded(pgc_conn, "update"), "yes",
+                "an UPDATE of 25,000 keyed rows keeps under 32 MB of memory between its first and last row")
+    pgc_conn.execute("UPDATE pmm SET id = id + 100000 + pm_mem('move', id)")
+    expect.text(_bounded(pgc_conn, "move"), "yes",
+                "an UPDATE moving 25,000 keyed rows to the other partition keeps under 32 MB likewise")
+    expect.text(_value(pgc_conn, "SELECT (SELECT sum(v) FROM pmu) || '/' || (SELECT count(*) FROM pmm_1) "
+                                 "|| '/' || (SELECT count(*) FROM pmm_2)"), "25000/0/25000",
+                "and each UPDATE reached every row once")

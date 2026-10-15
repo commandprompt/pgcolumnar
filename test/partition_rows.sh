@@ -118,4 +118,53 @@ check "an UPDATE in place of a row another session is moving waits, then fails w
 	"yes|40001|1  yes|40001|1"
 check "and after the races the parents hold the same rows" "$(same "$CONTENT")" "same"
 
+# ---- memory through a keyed UPDATE ---------------------------------------------
+# On a keyed table each updated or moved row is checked at once against the
+# committed delete marks of its row group (#1421). Those reads must not stay in the
+# statement's memory: kept, they cost one copy of the group's delete bitmap per row,
+# 1.2 GB for 50,000 rows in OffgridwithJD's measurement (review of #1422). One
+# group of 50,000 rows with every even row deleted, so its bitmap is in the
+# catalog; pm_mem records the backend's context bytes at the first and the last row
+# an UPDATE reaches, and the growth between them is what the statement kept.
+# pm_build NAME: a keyed parent NAME, its first partition holding rows 1..50000 in one
+# row group with every even row deleted
+pm_build() {
+	psql_run "CREATE TABLE $1 (id int PRIMARY KEY, v int) PARTITION BY RANGE (id);
+	          CREATE TABLE $1_1 PARTITION OF $1 FOR VALUES FROM (0) TO (100000) USING pgcolumnar;
+	          CREATE TABLE $1_2 PARTITION OF $1 FOR VALUES FROM (100000) TO (300000) USING pgcolumnar;
+	          INSERT INTO $1 SELECT g, 0 FROM generate_series(1, 50000) g;
+	          DELETE FROM $1 WHERE id % 2 = 0;"
+}
+psql_run "CREATE TABLE pm_mem (at text, id int, bytes bigint);
+          CREATE FUNCTION pm_mem(at text, id int) RETURNS int LANGUAGE plpgsql AS \$\$
+          BEGIN
+              IF id IN (1, 49999) THEN
+                  INSERT INTO pm_mem SELECT at, id, sum(total_bytes) FROM pg_backend_memory_contexts;
+              END IF;
+              RETURN 0;
+          END \$\$;"
+pm_build pmu; pm_build pmm
+growth() {	# growth AT -> "readings|growth in MB" for the UPDATE labelled AT
+	q "SELECT count(*) || '|' || coalesce(((max(bytes) FILTER (WHERE id = 49999) -
+	          max(bytes) FILTER (WHERE id = 1)) / 1048576)::text, '') FROM pm_mem WHERE at = '$1'"
+}
+bounded() {	# bounded AT -> yes when both readings exist and the growth is under 32 MB
+	local g; g="$(growth "$1")"
+	[ "${g%%|*}" = 2 ] && [ -n "${g#*|}" ] && [ "${g#*|}" -lt 32 ] && echo yes || echo "no (readings|MB: $g)"
+}
+marks() {	# marks PARENT -> "live rows|delete_vector rows of its first partition"
+	q "SELECT count(*) || '|' || (SELECT count(*) FROM pgcolumnar.delete_vector
+	   WHERE storage_id = pgcolumnar.get_storage_id('$1_1')) FROM $1"
+}
+check "each keyed table's group carries delete marks before its UPDATE" \
+	"$(marks pmu) $(marks pmm)" "25000|1 25000|1"
+psql_run "UPDATE pmu SET v = v + 1 + pm_mem('update', id);" >/dev/null
+check "an UPDATE of 25,000 keyed rows keeps under 32 MB of memory between its first and last row" \
+	"$(bounded update)" "yes"
+psql_run "UPDATE pmm SET id = id + 100000 + pm_mem('move', id);" >/dev/null
+check "an UPDATE moving 25,000 keyed rows to the other partition keeps under 32 MB likewise" \
+	"$(bounded move)" "yes"
+check "and each UPDATE reached every row once" \
+	"$(q "SELECT (SELECT sum(v) FROM pmu) || '/' || (SELECT count(*) FROM pmm_1) || '/' || (SELECT count(*) FROM pmm_2)")" "25000/0/25000"
+
 pgc_summary
