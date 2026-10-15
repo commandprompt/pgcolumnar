@@ -161,6 +161,7 @@ behaviour, the source of that number is named.
 - [113. test_vacuum_lock_privilege.py: maintenance refuses a non-owner before taking its lock](#113-test_vacuum_lock_privilegepy-maintenance-refuses-a-non-owner-before-taking-its-lock)
 - [114. test_vm_privilege.py: the visibility-map entry points are owner-only and refuse heap](#114-test_vm_privilegepy-the-visibility-map-entry-points-are-owner-only-and-refuse-heap)
 - [115. test_partition_rows.py: rows cross columnar partitions, and keys hold through the parent](#115-test_partition_rowspy-rows-cross-columnar-partitions-and-keys-hold-through-the-parent)
+- [116. test_prepared_across_sessions.py: a prepared transaction, seen from other sessions and across a crash](#116-test_prepared_across_sessionspy-a-prepared-transaction-seen-from-other-sessions-and-across-a-crash)
 
 ## 1. How to read a test in here
 
@@ -6969,3 +6970,13 @@ The pytest twin of `test/partition_rows.sh` (#1341, #1421), every check by the s
 | --- | --- |
 | `test_rows_cross_columnar_partitions_and_keys_hold_through_the_parent` | the row-moving update against heap, the three key arms, and the three races with each contender seen waiting |
 | `test_a_keyed_update_keeps_its_memory_bounded` | an UPDATE of 25,000 keyed rows, in place and moving partition, over a row group with deletes, grows the backend's memory by under 32 MB (#1422 review) |
+
+## 116. test_prepared_across_sessions.py: a prepared transaction, seen from other sessions and across a crash
+
+The pytest twin of `test/prepared_across_sessions.sh` (#1341), every check by the shell's name, on a private cluster because the last arm crashes the postmaster. While a transaction is prepared, another session does not see its insert and still sees the rows its DELETE removed. A second insert of a key it holds waits and gets 23505 after COMMIT PREPARED; an UPDATE of a row it updated waits and gets 40001, which needs #1421's fix (it got 23505 before, the table having a primary key). ROLLBACK PREPARED of a DELETE and of an UPDATE leaves every row as it was. A prepared insert survives an immediate stop, is still listed in `pg_prepared_xacts`, and after COMMIT PREPARED its rows equal a heap table's.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_prepared_transaction_across_sessions_and_a_crash` | visibility while prepared, the two waits and their errors, both ROLLBACK PREPAREDs, and the crash |

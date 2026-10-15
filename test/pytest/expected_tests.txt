@@ -677,4 +677,6 @@ guard_tests 435
 # over the cluster files on this tree.
 # cluster_tests 568 -> 569 for #1422 review's test_a_keyed_update_keeps_its_memory_bounded
 # in test_partition_rows.py, by collection over the cluster files on this tree.
-cluster_tests 569
+# cluster_tests 569 -> 570 for #1341's test_prepared_across_sessions.py, one test, by
+# collection over the cluster files on this tree (stacked on #1422).
+cluster_tests 570

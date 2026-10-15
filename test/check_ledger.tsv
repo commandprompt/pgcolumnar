@@ -2296,6 +2296,16 @@ partman_columnar	partman_columnar	premise: with default_table_access_method ever
 partman_columnar	partman_columnar	premise: without default_table_access_method pg_partman makes heap partitions	15;16;17;18;19	never	-
 partman_columnar	partman_columnar	retention leaves no pgcolumnar storage row behind	15;16;17;18;19	2026-10-12	the drop hook stops deleting the storage row, so a partition pg_partman drops leaves it behind
 partman_columnar	partman_columnar	the rows went in	15;16;17;18;19	2026-10-12	a sequential scan drops the last row group from its list, so every one-group partition reads empty
+prepared_across_sessions	prepared_across_sessions	ROLLBACK PREPARED of a DELETE leaves every row as it was	15;16;17;18;19	never	-
+prepared_across_sessions	prepared_across_sessions	ROLLBACK PREPARED of an UPDATE leaves every row as it was, none duplicated	15;16;17;18;19	never	-
+prepared_across_sessions	prepared_across_sessions	a prepared insert is invisible to another session	15;16;17;18;19	never	-
+prepared_across_sessions	prepared_across_sessions	a prepared insert survives a crash: the cluster came back and still holds the prepared transaction	15;16;17;18;19	never	-
+prepared_across_sessions	prepared_across_sessions	a second insert of a key the prepared transaction holds waits, then fails with 23505 after COMMIT PREPARED	15;16;17;18;19	never	-
+prepared_across_sessions	prepared_across_sessions	an UPDATE of a row a prepared transaction updated waits, then fails with 40001 after COMMIT PREPARED	15;16;17;18;19	2026-10-15	the tree before #1421: a same-row UPDATE on a keyed table fails with 23505 rather than 40001
+prepared_across_sessions	prepared_across_sessions	and after COMMIT PREPARED its rows are heap's	15;16;17;18;19	never	-
+prepared_across_sessions	prepared_across_sessions	and after COMMIT PREPARED the other session sees all the prepared rows	15;16;17;18;19	never	-
+prepared_across_sessions	prepared_across_sessions	premise: prepared transactions are enabled	15;16;17;18;19	never	-
+prepared_across_sessions	prepared_across_sessions	while a DELETE is prepared, another session still sees every row	15;16;17;18;19	never	-
 prepared_writes	prepared_writes	a delete prepared and committed in one session leaves the session answering	15;16;17;18;19	2026-10-13	PREPARE letting go of neither (main before #1323);PREPARE without letting go of the delete-vector buffers
 prepared_writes	prepared_writes	an index fetch before PREPARE, and the same row fetched first after COMMIT PREPARED, in one session	15;16;17;18;19	never	-
 prepared_writes	prepared_writes	an insert prepared and committed in one session leaves the session answering	15;16;17;18;19	2026-10-13	PREPARE letting go of neither (main before #1323);PREPARE without letting go of the pending write states

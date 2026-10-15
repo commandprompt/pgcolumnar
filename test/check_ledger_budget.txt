@@ -2316,4 +2316,16 @@ suites_not_covered 232
 #     never         2179 + 6 = 2185
 #     dated          694 + 9 = 703
 #     2185 + 703 == 2888
-checks_never_observed_red 2185
+#
+# #1341, a prepared transaction seen from other sessions and across a crash
+# (jdatcmd, stacked on #1422): 2185 -> 2194. prepared_across_sessions enters with all
+# 10 checks from five-major runs (10/10 on each of 15-19). One is dated on PG17 by
+# the tree before #1421, where an UPDATE of a row a prepared transaction updated
+# failed with 23505. The other nine arrive never: a discard at PRE_PREPARE did not
+# redden them, because each statement's writes are flushed at its executor end.
+#
+#     ledger rows   2888 + 10 = 2898
+#     never         2185 +  9 = 2194
+#     dated          703 +  1 =  704
+#     2194 + 704 == 2898
+checks_never_observed_red 2194
