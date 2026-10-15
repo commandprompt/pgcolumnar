@@ -2337,6 +2337,22 @@ native_reclaim	native_reclaim	repeated recluster reuses space (file plateaus)	15
 native_reclaim	native_reclaim	reused-block data matches heap mirror	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	row count correct after cycle	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	ten row groups, every one half deleted	15;16;17;18;19	2026-10-14	the write state ignores stripe_row_limit
+objstore_allowlist	objstore_allowlist	a multi-entry list matches any entry	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	a non-superuser cannot widen the list (42501)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
+objstore_allowlist	objstore_allowlist	a superuser session SET works (admin override)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
+objstore_allowlist	objstore_allowlist	default: a local read is untouched by the list	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	default: an http read is refused 42501	15;16;17;18;19	2026-10-14	an empty endpoint allow-list admits every endpoint;the allow-list check never refuses;the allow-list's default is 127.0.0.1, not empty
+objstore_allowlist	objstore_allowlist	default: the refusal names the GUC	15;16;17;18;19	2026-10-14	an empty endpoint allow-list admits every endpoint;the allow-list check never refuses;the allow-list's default is 127.0.0.1, not empty
+objstore_allowlist	objstore_allowlist	host:port entry, right port: works	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	host:port entry, wrong port: refused 42501	15;16;17;18;19	2026-10-14	the allow-list check never refuses
+objstore_allowlist	objstore_allowlist	link-local: refused 42501 despite being listed	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	link-local: the listed ordinary host still works beside it	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	link-local: the refusal names the range, not the list	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	listed host: the read works	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	premise: fixture server is up	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	premise: the role can open a session	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	the list defaults to empty	15;16;17;18;19	2026-10-14	the allow-list's default is 127.0.0.1, not empty
+objstore_allowlist	objstore_allowlist	unlisted host: refused 42501	15;16;17;18;19	2026-10-14	the allow-list check never refuses
 objstore_credentials	objstore_credentials	a mapping with an access key and no secret is refused before any request (28000)	15;16;17;18;19	2026-10-14	the user-mapping credential pairing check removed (an access key alone crashes the backend)
 objstore_credentials	objstore_credentials	a role with no mapping of its own reads through the PUBLIC mapping	15;16;17;18;19	2026-10-14	the user-mapping lookup has no PUBLIC fallback
 objstore_credentials	objstore_credentials	a role's own mapping is used before the PUBLIC one (bob's wrong secret is still refused 28000)	15;16;17;18;19	2026-10-14	the user-mapping lookup tries PUBLIC before the role's own

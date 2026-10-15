@@ -172,6 +172,7 @@ behaviour, the source of that number is named.
 - [124. test_serializable.py: SERIALIZABLE refuses a write skew on a columnar table](#124-test_serializablepy-serializable-refuses-a-write-skew-on-a-columnar-table)
 - [125. test_rls_direct_storage.py: the direct-storage paths refuse a caller a policy restricts](#125-test_rls_direct_storagepy-the-direct-storage-paths-refuse-a-caller-a-policy-restricts)
 - [126. test_objstore_crlf.py: a CR or LF in an object-store URL is refused before it is sent](#126-test_objstore_crlfpy-a-cr-or-lf-in-an-object-store-url-is-refused-before-it-is-sent)
+- [127. test_objstore_allowlist.py: the endpoint allow-list, empty by default](#127-test_objstore_allowlistpy-the-endpoint-allow-list-empty-by-default)
 
 ## 1. How to read a test in here
 
@@ -7122,3 +7123,15 @@ The pytest twin of `test/objstore_crlf.sh` (ported for #1341), every check by th
 | test | what it holds |
 | --- | --- |
 | `test_a_cr_or_lf_in_a_url_is_refused_before_it_is_sent` | read_parquet and a REST `catalog_uri` with a CR/LF in the path are refused naming CR or LF, the listener receives no injected line, and the backend is alive after each |
+
+## 127. test_objstore_allowlist.py: the endpoint allow-list, empty by default
+
+The pytest twin of `test/objstore_allowlist.sh` (#393, ported for #1341), every check by the shell's name. An empty `pgcolumnar.objstore_allowed_endpoints` refuses all remote reads with 42501 and names the setting; a local read is untouched. A list admits exactly what it names, host or host:port, any entry of several. Only a superuser may change it (SUSET), and a superuser session SET is the admin override, asserted with the configured list empty so only the SET can admit the read. A link-local address is refused even when listed, before any connection, naming the range.
+
+The list is changed by ALTER SYSTEM and a reload, and reset in a `finally`. The fixture server is the file's own Range-capable `http.server`, serving one Parquet file from `server_dir`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_endpoint_allow_list` | the default deny, the list's matching, SUSET and the admin override, and the link-local refusal |

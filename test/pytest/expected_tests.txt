@@ -711,4 +711,6 @@ guard_tests 438
 # rls_direct_storage.sh: one test, by collection over the cluster files on this tree.
 # cluster_tests 591 -> 592 for #1341's test_objstore_crlf.py, the twin of objstore_crlf.sh:
 # one test, by collection over the cluster files on this tree.
-cluster_tests 592
+# cluster_tests 592 -> 593 for #1341's test_objstore_allowlist.py, the twin of
+# objstore_allowlist.sh: one test, by collection over the cluster files on this tree.
+cluster_tests 593
