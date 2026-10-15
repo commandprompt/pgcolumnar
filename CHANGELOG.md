@@ -410,9 +410,13 @@ true until the next version shipped.
   key. The update path now serializes the row before its new version reaches the
   unique check. On such tables each row is serialized as the `UPDATE` reaches it, so
   two multi-row `UPDATE`s reaching shared rows in opposite orders can now deadlock
-  (40P01), as a heap can. A 200k-row `UPDATE` of a keyed table measured about 20%
-  slower; a table without a unique index is unchanged. `test/update_conc.sh` and
-  the new `test/partition_rows.sh`, with `test_partition_rows.py`.
+  (40P01), as a heap can. Each row's check reads its row group's committed delete
+  marks. On PostgreSQL 17, an `UPDATE` of 100,000 rows of a keyed table took 15% to
+  40% longer, with and without deletes in the table (three runs each; one run by
+  OffgridwithJD measured 3.4 times as long on a shared machine). A table without a
+  unique index is unchanged. `test/update_conc.sh` and the new
+  `test/partition_rows.sh`, with `test_partition_rows.py`, which also holds such an
+  `UPDATE` to bounded memory.
 
 - **The Iceberg wrapper no longer reads server files while planning for a role the scan
   would refuse.** `EXPLAIN` on an Iceberg foreign table read its `metadata_path` for any

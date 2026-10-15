@@ -378,6 +378,8 @@ PgColumnarSerializeRowNow(Relation rel, uint64 rowNumber)
 	Snapshot	meta;
 	NativeRowGroupMetadata *rg;
 	bool		deleted = false;
+	MemoryContext tmp;
+	MemoryContext old;
 
 	if (!pgcolumnar_enable_row_update_lock)
 		return;
@@ -394,7 +396,16 @@ PgColumnarSerializeRowNow(Relation rel, uint64 rowNumber)
 	 * With the lock held, the latest committed state: a delete committed after
 	 * this statement's snapshot is visible here. This transaction's own deletes
 	 * are in its buffer, not in this committed view, so they are not conflicts.
+	 *
+	 * The reads go in a context of their own, deleted before returning. This runs
+	 * once per updated row, and in the caller's context each call would keep a copy
+	 * of the group's delete bitmap until the statement ends: 402 MB for 25,000 rows
+	 * of a 50,000-row group (OffgridwithJD, review of #1422).
 	 */
+	tmp = AllocSetContextCreate(CurrentMemoryContext,
+								"pgcolumnar row serialization check",
+								ALLOCSET_SMALL_SIZES);
+	old = MemoryContextSwitchTo(tmp);
 	PushActiveSnapshot(GetLatestSnapshot());
 	meta = PgColumnarCatalogSnapshot(GetActiveSnapshot());
 	rg = PgColumnarLookupRowGroup(storageId, meta, rowNumber);
@@ -418,6 +429,8 @@ PgColumnarSerializeRowNow(Relation rel, uint64 rowNumber)
 		}
 	}
 	PopActiveSnapshot();
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(tmp);
 
 	if (deleted)
 		ereport(ERROR,
