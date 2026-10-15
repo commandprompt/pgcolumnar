@@ -319,6 +319,7 @@ SUITES=(
 	timeseries_recipes
 	truncate_cleanup
 	ttl_expire
+	type_matrix
 	ungrouped_vector_agg
 	unique_conc
 	update_conc

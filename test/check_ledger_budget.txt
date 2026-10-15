@@ -2760,4 +2760,24 @@ suites_not_covered 224
 #     never         2544 + 13 = 2557
 #     dated          836 + 11 = 847
 #     2557 + 847 == 3404
-checks_never_observed_red 2557
+#
+# #1341, types the differential matrix never stored answer as heap (jdatcmd):
+# 2557 -> 2596. type_matrix enters with all 57 checks from five-major runs (57/57 on
+# each of 15-19). 17 are dated on PG17 by two mutants (OffgridwithJD, reviews of
+# #1426):
+#   - a by-reference fixed-width value over 8 bytes stored as its first 8 bytes and
+#     zero padding: every row, the counts, the tz range (its zone offset varies, so
+#     bytes 8-11 matter), the nm range and its pruning, and point equality;
+#   - the scan never skipping a row group by zone map: the 12 range arms that must
+#     skip chunk groups, varbit's included now that its values increase with the row.
+# A third, the range bounds cast with pg_typeof (which drops the typmod), dates bt's
+# heap-not-empty arm: its range then finds no rows. Each of the 16 range arms has
+# one, so no comparison can pass on two empty answers (review of #1426).
+# The rest arrive never, among them the four range arms pinned at 0 skipped groups,
+# with the reason in each name (cidr's names #1433), and the libxml premise.
+#
+#     ledger rows   3404 + 57 = 3461
+#     never         2557 + 39 = 2596
+#     dated          847 + 18 = 865
+#     2596 + 865 == 3461
+checks_never_observed_red 2596

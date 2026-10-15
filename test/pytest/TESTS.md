@@ -176,6 +176,7 @@ behaviour, the source of that number is named.
 - [128. test_objstore_userinfo.py: userinfo in a URL is refused on every entry point](#128-test_objstore_userinfopy-userinfo-in-a-url-is-refused-on-every-entry-point)
 - [129. test_savepoint_flush.py: a savepoint rolled back after a flush](#129-test_savepoint_flushpy-a-savepoint-rolled-back-after-a-flush)
 - [130. test_rls_query_paths.py: row-level security holds on every read path](#130-test_rls_query_pathspy-row-level-security-holds-on-every-read-path)
+- [131. test_type_matrix.py: types the differential matrix never stored answer as heap](#131-test_type_matrixpy-types-the-differential-matrix-never-stored-answer-as-heap)
 
 ## 1. How to read a test in here
 
@@ -7175,3 +7176,13 @@ The pytest twin of `test/rls_query_paths.sh` (#1341), every check by the shell's
 | test | what it holds |
 | --- | --- |
 | `test_row_level_security_holds_on_every_read_path` | the read paths against heap (the custom scan, both vectorized aggregates, parallel, index-only, the covering projection), their plan premises, and the leak arms, including one through each vectorized node |
+
+## 131. test_type_matrix.py: types the differential matrix never stored answer as heap
+
+The pytest twin of `test/type_matrix.sh` (#1341), every check by the shell's name. The encoder has fast paths for fixed widths 1, 2, 4 and 8, and every other width and every varlena takes a generic path. This matrix stores what no test had: by-reference fixed widths 6, 8, 12, 16 and 64 (macaddr, macaddr8, timetz, point, name), the 1-byte `"char"`, time, money, inet, cidr, bit, varbit, tsvector, xml, json, an enum, a composite, a domain, and numeric NaN and ±Infinity with timestamp and date ±infinity. 12000 rows in row groups of 1000, each column NULL on its own pattern, are generated once into heap and copied. Every row as text, each column's counts, a range on every ordered column with literal bounds read from heap, json, point and tsvector matches, the special-value aggregates, and the composite's fields must all equal heap's.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_types_the_matrix_never_stored_answer_as_heap` | the 21 columns against heap: rows, counts, sixteen ranges, the three non-btree matches, and the special values |
