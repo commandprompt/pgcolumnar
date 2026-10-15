@@ -61,7 +61,17 @@ check "a superuser sees all 20000 rows, and rq_alice her 10000 on both tables" \
 # ---- the custom scan and the vectorized aggregates -----------------------------------
 check "premise: the aggregate is answered by the columnar custom scan" "$(plan_has "" "$AGG" 'Custom Scan \(PgColumnarScan\)')" "1"
 check "count, sum, min and max under the policy, by the custom scan, are heap's" "$(same "" "$AGG")" "same"
+check "premise: the GROUP BY arm's plan is the grouped vectorized node" \
+	"$(plan_has "" "$GRP" 'Columnar Vectorized Group Keys')" "1"
 check "a GROUP BY under the policy, with vectorization on, is heap's" "$(same "" "$GRP")" "same"
+# The ungrouped vectorized aggregate builds its own quals from baserestrictinfo too,
+# and any user can turn it on (PGC_USERSET). With no qual left, count(*) alone is
+# answered from metadata, so a sum makes it scan (OffgridwithJD, review of #1429).
+UVA="SET pgcolumnar.enable_ungrouped_vector_agg = on;"
+UAGG="SELECT count(*) || '/' || sum(v) FROM %t"
+check "premise: the ungrouped vectorized arm's plan folds the aggregates in the scan" \
+	"$(plan_has "$UVA" "$UAGG" 'Columnar Vectorized Aggregates')" "1"
+check "count and sum under the policy, by the ungrouped vectorized aggregate, are heap's" "$(same "$UVA" "$UAGG")" "same"
 OFF="SET pgcolumnar.enable_vectorization = off; SET pgcolumnar.enable_group_vectorization = off; SET pgcolumnar.enable_custom_scan = off;"
 check "and with vectorization and the custom scan off" "$(same "$OFF" "$GRP")|$(same "$OFF" "$AGG")" "same|same"
 

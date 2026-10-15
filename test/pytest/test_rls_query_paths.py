@@ -91,7 +91,18 @@ def test_row_level_security_holds_on_every_read_path(pgc_cluster, pgc_conn, expe
         expect.num(plan_has((), AGG, "Custom Scan (PgColumnarScan)"), 1,
                    "premise: the aggregate is answered by the columnar custom scan")
         expect.text(same((), AGG), "same", "count, sum, min and max under the policy, by the custom scan, are heap's")
+        expect.num(plan_has((), GRP, "Columnar Vectorized Group Keys"), 1,
+                   "premise: the GROUP BY arm's plan is the grouped vectorized node")
         expect.text(same((), GRP), "same", "a GROUP BY under the policy, with vectorization on, is heap's")
+        # The ungrouped vectorized aggregate builds its own quals too, and any user can
+        # turn it on. With no qual left, count(*) alone comes from metadata, so a sum
+        # makes it scan.
+        uva = ("SET pgcolumnar.enable_ungrouped_vector_agg = on",)
+        uagg = "SELECT count(*) || '/' || sum(v) FROM %t"
+        expect.num(plan_has(uva, uagg, "Columnar Vectorized Aggregates"), 1,
+                   "premise: the ungrouped vectorized arm's plan folds the aggregates in the scan")
+        expect.text(same(uva, uagg), "same",
+                    "count and sum under the policy, by the ungrouped vectorized aggregate, are heap's")
         expect.text(f"{same(OFF, GRP)}|{same(OFF, AGG)}", "same|same", "and with vectorization and the custom scan off")
         expect.num(plan_has(PAR, AGG, "Gather"), 1, "premise: the parallel arm's plan gathers from workers")
         expect.text(f"{same(PAR, AGG)}|{same(PAR, GRP)}", "same|same",
