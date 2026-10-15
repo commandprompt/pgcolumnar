@@ -174,6 +174,7 @@ behaviour, the source of that number is named.
 - [126. test_objstore_crlf.py: a CR or LF in an object-store URL is refused before it is sent](#126-test_objstore_crlfpy-a-cr-or-lf-in-an-object-store-url-is-refused-before-it-is-sent)
 - [127. test_objstore_allowlist.py: the endpoint allow-list, empty by default](#127-test_objstore_allowlistpy-the-endpoint-allow-list-empty-by-default)
 - [128. test_objstore_userinfo.py: userinfo in a URL is refused on every entry point](#128-test_objstore_userinfopy-userinfo-in-a-url-is-refused-on-every-entry-point)
+- [129. test_savepoint_flush.py: a savepoint rolled back after a flush](#129-test_savepoint_flushpy-a-savepoint-rolled-back-after-a-flush)
 
 ## 1. How to read a test in here
 
@@ -7153,3 +7154,13 @@ The controls are what make the arms mean anything. With no endpoint configured e
 | `test_userinfo_in_a_url_is_refused_by_the_parse_guard` | read_parquet and export_parquet over http, export_arrow, and the s3 and gs bucket authority, read and write: 22023, naming userinfo |
 | `test_a_clean_url_reaches_the_refusal_it_should` | a clean s3 URL demands an endpoint (naming `AWS_ENDPOINT_URL`), gs demands a credential, a malformed URL and an `@` in a key are not userinfo, a clean non-allowed endpoint is still 42501, and the backend is alive |
 | `test_userinfo_in_a_configured_endpoint_is_refused` | both endpoint shapes, `u:p@` and `user@`, are 22023 naming userinfo and the endpoint; a clean endpoint gets past the parse |
+
+## 129. test_savepoint_flush.py: a savepoint rolled back after a flush
+
+The pytest twin of `test/savepoint_flush.sh` (#1341), every check by the shell's name. A row group flushed inside a savepoint is a catalog row written under the subtransaction, so the abort must hide it; rows still buffered, and buffered delete marks, must be thrown away. With row groups of 1000 rows, each shape runs on a columnar table and on heap, and heap is the answer: a flushed `INSERT` rolled back to a savepoint, at READ COMMITTED and at REPEATABLE READ; the same unique keys inserted again after `ROLLBACK TO`; an `UPDATE` of every row rolled back to a savepoint; and an `INSERT` and an `UPDATE` that fail after flushing, alone and inside a savepoint. Four readers compare each result, inside the transaction and after `COMMIT`: a plain sequential scan, the custom scan, the vectorized count and the primary key's index. Every shape starts from fresh tables, so one that goes wrong cannot fail the ones after it. Premises check that each reader takes its path and that each write really flushed: row groups for the INSERTs, and for both UPDATEs the inserts into `row_group` and `delete_vector` that `pg_stat_xact_all_tables` counts between `BEGIN` and `ROLLBACK TO`, two or more of each. The failing UPDATE reads its own table half-way through, through `sp_probe`, which flushes its delete marks before it fails. Each transaction runs one statement at a time and goes on after an error, as `psql` does with `ON_ERROR_STOP` off.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_savepoint_rolled_back_after_a_flush` | the reader paths, the flushes, and every shape answering as heap does inside the transaction and after it |
