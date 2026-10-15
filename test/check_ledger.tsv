@@ -2186,6 +2186,9 @@ maintenance_rollback	maintenance_rollback	premise: the table holds the rows it w
 maintenance_rollback	maintenance_rollback	recluster changed the row groups inside its transaction	15;16;17;18;19	never	-
 maintenance_rollback	maintenance_rollback	vacuum changed the row groups inside its transaction	15;16;17;18;19	never	-
 maintenance_rollback	maintenance_rollback	vacuum_sorted changed the row groups inside its transaction	15;16;17;18;19	never	-
+native_agg	native_agg	a WHERE (SELECT false) with no column in it gives heap's answer	15;16;17;18;19	2026-10-15	the ungrouped vectorized aggregate takes a query with a gating qual and answers from the zone maps (the tree before #1435)
+native_agg	native_agg	a WHERE on current_user with no column in it gives heap's answer	15;16;17;18;19	2026-10-15	the ungrouped vectorized aggregate takes a query with a gating qual and answers from the zone maps (the tree before #1435)
+native_agg	native_agg	a WHERE on now() with no column in it gives heap's answer	15;16;17;18;19	2026-10-15	the ungrouped vectorized aggregate takes a query with a gating qual and answers from the zone maps (the tree before #1435)
 native_agg	native_agg	an aggregate that needs zone maps reads them	15;16;17;18;19	never	-
 native_agg	native_agg	avg(int4,nulls)	15;16;17;18;19	never	-
 native_agg	native_agg	control: decoding ts reads the table's blocks	15;16;17;18;19	never	-
@@ -2215,6 +2218,8 @@ native_agg	native_agg	min(ts) reads under a tenth of the blocks a decode of ts r
 native_agg	native_agg	multi-agg	15;16;17;18;19	never	-
 native_agg	native_agg	multi-agg beats a parallel plan	15;16;17;18;19	never	-
 native_agg	native_agg	multi-agg plan has no Gather	15;16;17;18;19	never	-
+native_agg	native_agg	premise: count, min and max with no WHERE are the vectorized aggregate	15;16;17;18;19	never	-
+native_agg	native_agg	premise: heap's answer to a false gate is no rows	15;16;17;18;19	never	-
 native_agg	native_agg	premise: the timestamptz table holds every row inserted	15;16;17;18;19	never	-
 native_agg	native_agg	sum(bigint) fallback parity	15;16;17;18;19	never	-
 native_agg	native_agg	sum(int4)	15;16;17;18;19	never	-

@@ -2780,4 +2780,15 @@ suites_not_covered 224
 #     never         2557 + 39 = 2596
 #     dated          847 + 18 = 865
 #     2596 + 865 == 3461
-checks_never_observed_red 2596
+#
+# #1435, the ungrouped vectorized aggregate ignored a WHERE that references no column
+# (jdatcmd): 2596 -> 2598. native_agg gains five checks from five-major runs (40/40 on
+# each of 15-19). The three gating arms are dated on PG17 by the tree before the fix,
+# where each false gate returned every row's aggregates (10000/1/10000 against
+# heap's 0/-/-); the two premises arrive never.
+#
+#     ledger rows   3461 + 5 = 3466
+#     never         2596 + 2 = 2598
+#     dated          865 + 3 = 868
+#     2598 + 868 == 3466
+checks_never_observed_red 2598

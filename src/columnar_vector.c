@@ -1562,6 +1562,21 @@ PgColumnarCreateUpperPaths(PlannerInfo *root, UpperRelationKind stage,
 	 * zone-map answerable. A filter, or a sum/avg over int8/float/numeric, needs
 	 * the scan-fold path instead (#289).
 	 */
+	/*
+	 * A pseudoconstant (gating) qual -- a WHERE that references no column, such as
+	 * (SELECT false) or now() < '2000-01-01' -- is a one-time filter, and
+	 * extract_actual_clauses(..., false) leaves it out of quals. Refused HERE,
+	 * before needsScan is decided: with no other qual the node answers from the
+	 * zone maps and never reaches the refusal in the scan-fold branch below, so a
+	 * false gate returned every row's aggregates (#1435).
+	 */
+	{
+		ListCell   *gc;
+
+		foreach(gc, factRel->baserestrictinfo)
+			if (lfirst_node(RestrictInfo, gc)->pseudoconstant)
+				return;
+	}
 	if (pgcolumnar_quals_could_leak(factRel->baserestrictinfo))
 		return;
 	quals = extract_actual_clauses(factRel->baserestrictinfo, false);

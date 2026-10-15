@@ -416,6 +416,12 @@ true until the next version shipped.
   over every row, so a caller limited by a policy could read values from rows it
   cannot see. It now raises `row-level security is in force`, as the other functions
   that read storage directly do. Found by OffgridwithJD in review.
+- **An ungrouped aggregate on a columnar table applies a WHERE that references no
+  column.** `SELECT count(*), min(v) FROM t WHERE (SELECT false)`, or a WHERE on
+  `now()` or `current_user`, returned every row's aggregates instead of none. The
+  vectorized aggregate answered from the zone maps and never applied the one-time
+  filter. It now leaves such a query to the ordinary plan. Found by OffgridwithJD in
+  review (#1435). `test/native_agg.sh` and `test_native_agg.py`.
 
 - **A concurrent `UPDATE` of the same row now fails with 40001 on a table with a
   unique index, as documented, not 23505 (#1421).** Two sessions updating one row of
