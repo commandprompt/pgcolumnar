@@ -722,4 +722,6 @@ guard_tests 438
 # cluster_tests 598 -> 599 for #1341's test_min_and_max_keep_each_columns_collation in
 # test_rollup.py, by collection over the cluster files on this tree.
 # cluster_tests 599 -> 600 for #1341's test_savepoint_flush.py, one test, by collection
-cluster_tests 600
+# cluster_tests 600 -> 601 for #1341's test_rls_query_paths.py, one test, by collection
+# over the cluster files on this tree.
+cluster_tests 601

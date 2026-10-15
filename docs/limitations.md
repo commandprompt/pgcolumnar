@@ -173,7 +173,9 @@ caller every row, so the call is refused instead.
 
 The functions affected are `read_projection`, `reconstruct_via_projection`,
 `export_arrow`, `export_parquet`, `parallel_export_parquet`, `import_arrow`,
-`import_parquet` and `parallel_copy`.
+`import_parquet`, `parallel_copy` and `column_extent`. `column_extent` reports a
+column's stored smallest and largest value over every row. Under a policy, that
+would show values from rows the caller cannot see.
 
 A superuser, a role with `BYPASSRLS`, and a table's owner without `FORCE ROW
 LEVEL SECURITY` are not refused. Each already reads every row by other means.

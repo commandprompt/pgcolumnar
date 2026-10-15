@@ -468,6 +468,9 @@ commit. Every operation that drops or rewrites row groups recomputes it before
 committing: `expire`, `compact_rewrite`, `VACUUM`, `recluster`. So it can be
 wider than the data only by rows that are deleted but still stored.
 
+It needs `SELECT` on the table, and it refuses a table whose row-level security
+policies apply to the caller (see [limitations](limitations.md#row-level-security)).
+
 No row means the planner reads every row group's zone map instead, which gives
 the same answer at a cost that grows with the table. That happens for:
 

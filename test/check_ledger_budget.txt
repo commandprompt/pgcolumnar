@@ -2741,4 +2741,23 @@ suites_not_covered 224
 #     never         2528 + 16 = 2544
 #     dated          822 + 14 = 836
 #     2544 + 836 == 3380
-checks_never_observed_red 2544
+#
+# #1341, row-level security holds on every columnar read path (jdatcmd): 2544 ->
+# 2557. rls_query_paths enters with all 24 checks from five-major runs (24/24 on each
+# of 15-19). 11 are dated on PG17 by five mutants (OffgridwithJD, reviews of
+# #1429; the first three reproduce on PG18 too):
+#   - three that drop the policy, keeping only clauses with security_level above 0,
+#     one per place it is applied: the custom scan's plan qual (the counts, the
+#     aggregates, the projection and every leak arm, the vectorized nodes' included,
+#     since those fall back to it), the grouped vectorized node's quals (the GROUP BY
+#     arm), and the ungrouped vectorized aggregate's (its arm and the counts);
+#   - the tree before pgcolumnar_quals_could_leak: the two vectorized-node leak arms;
+#   - column_extent without its row-security guard: the column_extent arm.
+# The rest arrive never: the plan premises, the owner's extent control, and arms on
+# paths these mutants miss.
+#
+#     ledger rows   3380 + 24 = 3404
+#     never         2544 + 13 = 2557
+#     dated          836 + 11 = 847
+#     2557 + 847 == 3404
+checks_never_observed_red 2557
