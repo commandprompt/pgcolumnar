@@ -296,6 +296,7 @@ SUITES=(
 	rls_direct_storage
 	rollup
 	row_triggers
+	savepoint_flush
 	scan_decode_cost
 	scan_direction
 	serializable

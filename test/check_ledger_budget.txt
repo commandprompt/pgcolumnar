@@ -2718,4 +2718,27 @@ suites_not_covered 224
 #     never         2529 - 1 = 2528
 #     dated          821 + 1 = 822
 #     2528 + 822 == 3350
-checks_never_observed_red 2528
+#
+# #1341, a savepoint rolled back, or a statement failed, after a flush
+# (jdatcmd): 2528 -> 2544. savepoint_flush enters with all 30 checks from
+# five-major runs (30/30 on each of 15-19). Every shape starts from fresh tables,
+# so each date below was observed with that shape alone (OffgridwithJD, review of
+# #1430). 14 are dated on PG17 by three mutants:
+#   - the row-group list read under SnapshotAny: every arm that reads the table
+#     after an aborted savepoint, and the failing UPDATE's error arm, whose
+#     transaction then fails on the rows that came back;
+#   - every delete_vector read under SnapshotAny: the rolled-back UPDATE and the
+#     failing UPDATE, whose marks are now flushed before it fails;
+#   - the abort promoting its buffers to the parent instead of discarding them:
+#     the failing INSERT and failing UPDATE arms.
+# The two "abort keeps its buffer" mutants of the first version are not used: on
+# an assert-enabled build, after #1403, both trip a flushedUnder assertion at commit
+# and crash the server, so their reds are the crash. On a build without asserts they
+# run and redden 6 and 3 arms (OffgridwithJD, review of #1430). The 16 never are the premises, the
+# "it ran" arms and the reads inside a savepoint.
+#
+#     ledger rows   3350 + 30 = 3380
+#     never         2528 + 16 = 2544
+#     dated          822 + 14 = 836
+#     2544 + 836 == 3380
+checks_never_observed_red 2544
