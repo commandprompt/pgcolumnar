@@ -729,4 +729,6 @@ guard_tests 438
 # test_native_agg.py, by collection over the cluster files on this tree.
 # cluster_tests 603 -> 604 for #1437's test_a_gating_qual_over_the_join_matches_heap in
 # test_join_runtime_filter.py, by collection over the cluster files on this tree.
-cluster_tests 604
+# cluster_tests 604 -> 608 for #1341's test_iceberg_data_files.py, four tests (one
+# control and three parametrized refusals), by collection over the cluster files.
+cluster_tests 608
