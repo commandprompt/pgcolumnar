@@ -175,6 +175,7 @@ behaviour, the source of that number is named.
 - [127. test_objstore_allowlist.py: the endpoint allow-list, empty by default](#127-test_objstore_allowlistpy-the-endpoint-allow-list-empty-by-default)
 - [128. test_objstore_userinfo.py: userinfo in a URL is refused on every entry point](#128-test_objstore_userinfopy-userinfo-in-a-url-is-refused-on-every-entry-point)
 - [129. test_savepoint_flush.py: a savepoint rolled back after a flush](#129-test_savepoint_flushpy-a-savepoint-rolled-back-after-a-flush)
+- [130. test_rls_query_paths.py: row-level security holds on every read path](#130-test_rls_query_pathspy-row-level-security-holds-on-every-read-path)
 
 ## 1. How to read a test in here
 
@@ -7164,3 +7165,13 @@ The pytest twin of `test/savepoint_flush.sh` (#1341), every check by the shell's
 | test | what it holds |
 | --- | --- |
 | `test_a_savepoint_rolled_back_after_a_flush` | the reader paths, the flushes, and every shape answering as heap does inside the transaction and after it |
+
+## 130. test_rls_query_paths.py: row-level security holds on every read path
+
+The pytest twin of `test/rls_query_paths.sh` (#1341), every check by the shell's name. A columnar table and a heap mirror hold the same 20000 rows, half owned by each of two roles, under a policy that shows a role only its own rows. One role, on its own login, queries both by the custom scan, the vectorized and grouped aggregates, with vectorization and the custom scan off, by a parallel scan, an index-only scan and a covering projection; each answer must be heap's, and plan premises check each path was taken. A cheap function that is not leakproof must see only that role's rows, by the custom scan, with it off, and in parallel; a notice handler counts what it saw. Each vectorized node also gets a leak arm, with a premise that the same query with a leakproof filter is answered by that node, and `column_extent`, which reads the stored extent of every row, must refuse a caller the policy restricts.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_row_level_security_holds_on_every_read_path` | the read paths against heap (the custom scan, both vectorized aggregates, parallel, index-only, the covering projection), their plan premises, and the leak arms, including one through each vectorized node |
