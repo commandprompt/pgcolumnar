@@ -711,6 +711,18 @@ differential	differential	wide point	15;16;17;18;19	never	-
 differential	differential	wide range	15;16;17;18;19	never	-
 differential	differential	wide row proj	15;16;17;18;19	never	-
 differential	differential	wide row scan	15;16;17;18;19	never	-
+encode_effort	encode_effort	a table with no option set matches full	15;16;17;18;19	never	-
+encode_effort	encode_effort	a valid encode_effort is stored	15;16;17;18;19	never	-
+encode_effort	encode_effort	an unknown compression name is refused	15;16;17;18;19	2026-10-14	set_options without its compression-name check
+encode_effort	encode_effort	an unknown encode_effort is refused	15;16;17;18;19	never	-
+encode_effort	encode_effort	and a filtered read agrees	15;16;17;18;19	never	-
+encode_effort	encode_effort	and an index fetch finds a fast-written row	15;16;17;18;19	never	-
+encode_effort	encode_effort	and is identical where FSST does not win	15;16;17;18;19	never	-
+encode_effort	encode_effort	and the compression set before it is still the one stored	15;16;17;18;19	2026-10-14	set_options without its compression-name check
+encode_effort	encode_effort	and the refused value was not stored	15;16;17;18;19	never	-
+encode_effort	encode_effort	fast stores more than full on a shape where FSST wins	15;16;17;18;19	never	-
+encode_effort	encode_effort	reset_options clears it	15;16;17;18;19	never	-
+encode_effort	encode_effort	the rows are identical either way	15;16;17;18;19	never	-
 encode_post_codec	encode_post_codec	a chunk is not stored larger than it would be with no encoding at all	15;16;17;18;19	never	-
 encode_post_codec	encode_post_codec	and that column stays far below the no-encoding size, so the win is real	15;16;17;18;19	never	-
 encode_post_codec	encode_post_codec	premise: both fixtures hold every row	15;16;17;18;19	never	-

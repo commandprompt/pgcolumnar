@@ -75,6 +75,18 @@ check "a valid encode_effort is stored" \
 	"$(q "SELECT encode_effort FROM pgcolumnar.options WHERE regclass = 'ef_a'::regclass;" | tail -1)" \
 	"fast"
 
+# The compression option's own guard (#1341), its sibling. Without it an unknown
+# name is stored, and the C reader maps a name it does not know to -1 and falls
+# back to the instance default: the table silently compresses as something else.
+psql_run "SELECT pgcolumnar.set_options('ef_a', compression => 'zstd');" >/dev/null
+badc="$(psql_run "SELECT pgcolumnar.set_options('ef_a', compression => 'brotli');" 2>&1 || true)"
+check "an unknown compression name is refused" \
+	"$(case "$badc" in *'unknown columnar compression "brotli"'*) echo yes ;; *) echo "no ($badc)" ;; esac)" \
+	"yes"
+check "and the compression set before it is still the one stored" \
+	"$(q "SELECT compression FROM pgcolumnar.options WHERE regclass = 'ef_a'::regclass;" | tail -1)" \
+	"zstd"
+
 # --- 2. it changes what the writer does ---------------------------------------
 
 psql_run "DROP TABLE IF EXISTS ef_full; DROP TABLE IF EXISTS ef_fast;

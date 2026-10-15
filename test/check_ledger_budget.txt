@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 225
+suites_not_covered 224
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2656,4 +2656,15 @@ suites_not_covered 225
 #     never         2446 + 70 = 2516
 #     dated          806 +  2 =  808
 #     2516 + 808 == 3324
-checks_never_observed_red 2516
+#
+# #1341, encode_effort seeded, with the compression-name arms (OffgridwithJD): 2516 ->
+# 2526, and suites_not_covered 225 -> 224. The suite had no rows. It enters with all
+# 12 checks from five-major runs (12/12 on each of 15-19). Two are dated by
+# set_options without its compression-name check: "brotli" was stored over the
+# zstd set before it. The other 10 arrive never.
+#
+#     ledger rows   3324 + 12 = 3336
+#     never         2516 + 10 = 2526
+#     dated          808 +  2 =  810
+#     2526 + 810 == 3336
+checks_never_observed_red 2526
