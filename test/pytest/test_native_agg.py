@@ -116,3 +116,29 @@ def test_min_max_over_timestamptz_read_no_data(pgc_conn, expect):
     expect.text(got, want, "max(timestamptz) parity after deleting the newest rows")
     got, want = both("SELECT min(at) FROM {t}")
     expect.text(got, want, "min(timestamptz) parity after deleting the oldest rows")
+
+
+GATED = "SELECT count(*) || '/' || coalesce(min(id)::text, '-') || '/' || coalesce(max(id)::text, '-') FROM"
+
+
+def test_a_where_with_no_column_in_it_is_applied(pgc_conn, expect):
+    """A WHERE that references no column is a gating qual: planned as a one-time
+    filter, not part of the per-row quals. The ungrouped vectorized aggregate
+    answered from the zone maps alone and ignored it, so a false gate returned every
+    row's aggregates (#1435). Each arm is compared with heap."""
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE gn (id int) USING pgcolumnar")
+        cur.execute("CREATE TABLE gh (id int) USING heap")
+        cur.execute("SELECT pgcolumnar.set_options('gn', stripe_row_limit => 1000)")
+        cur.execute("INSERT INTO gn SELECT g FROM generate_series(1, 5000) g")
+        cur.execute("INSERT INTO gh SELECT g FROM generate_series(1, 5000) g")
+        cur.execute("EXPLAIN (COSTS OFF) SELECT count(*), min(id), max(id) FROM gn")
+        plan = "\n".join(r[0] for r in cur.fetchall())
+    expect.text("yes" if "Columnar Vectorized Aggregates" in plan else f"no ({plan})", "yes",
+                "premise: count, min and max with no WHERE are the vectorized aggregate")
+    for name, where in (("(SELECT false)", "(SELECT false)"), ("now()", "now() < '2000-01-01'"),
+                        ("current_user", "current_user = 'pgc_nobody'")):
+        expect.text(_one(pgc_conn, f"{GATED} gn WHERE {where}"), _one(pgc_conn, f"{GATED} gh WHERE {where}"),
+                    f"a WHERE {'' if name.startswith('(') else 'on '}{name} with no column in it gives heap's answer")
+    expect.text(_one(pgc_conn, f"{GATED} gh WHERE (SELECT false)"), "0/-/-",
+                "premise: heap's answer to a false gate is no rows")

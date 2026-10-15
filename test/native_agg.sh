@@ -76,6 +76,20 @@ check "count(*) uses the metadata agg node" \
 check "sum/min/max uses the metadata agg node" \
 	"$(has_aggnode "$(plan 'SELECT sum(id), min(id), max(id) FROM n')")" "yes"
 
+# A WHERE that references no column is a gating qual: planned as a one-time
+# filter, not part of the per-row quals. The node answered from the zone maps alone
+# and ignored it, so a false gate returned every row's aggregates (#1435).
+GATED="SELECT count(*) || '/' || coalesce(min(id)::text, '-') || '/' || coalesce(max(id)::text, '-') FROM"
+check "premise: count, min and max with no WHERE are the vectorized aggregate" \
+	"$(has_aggnode "$(plan 'SELECT count(*), min(id), max(id) FROM n')")" "yes"
+check "a WHERE (SELECT false) with no column in it gives heap's answer" \
+	"$(q "$GATED n WHERE (SELECT false)")" "$(q "$GATED h WHERE (SELECT false)")"
+check "a WHERE on now() with no column in it gives heap's answer" \
+	"$(q "$GATED n WHERE now() < '2000-01-01'")" "$(q "$GATED h WHERE now() < '2000-01-01'")"
+check "a WHERE on current_user with no column in it gives heap's answer" \
+	"$(q "$GATED n WHERE current_user = 'pgc_nobody'")" "$(q "$GATED h WHERE current_user = 'pgc_nobody'")"
+check "premise: heap's answer to a false gate is no rows" "$(q "$GATED h WHERE (SELECT false)")" "0/-/-"
+
 # Supported aggregates answered from zone maps must equal the heap oracle.
 check "count(*)"          "$(q 'SELECT count(*) FROM n;')"        "$(q 'SELECT count(*) FROM h;')"
 check "count(col,nulls)"  "$(q 'SELECT count(s) FROM n;')"       "$(q 'SELECT count(s) FROM h;')"
