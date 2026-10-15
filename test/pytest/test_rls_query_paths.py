@@ -134,5 +134,15 @@ def test_row_level_security_holds_on_every_read_path(pgc_cluster, pgc_conn, expe
                    "is the ungrouped vectorized aggregate")
         expect.text(leaks("rq", uva, "SELECT count(*), sum(v) FROM %t WHERE rq_leak(secret)"), "10000|0",
                     "and in the ungrouped vectorized aggregate")
+        # column_extent reads the stored extent, which covers every row, so under a
+        # policy it would show values from rows the caller cannot see. It refuses, as
+        # the other direct-storage entry points do (#563); the owner still reads it.
+        ce = run((), "SELECT count(*) FROM pgcolumnar.column_extent('rq', 'v')")
+        expect.text("refused" if ce == "ERROR: 0A000" else f"not refused ({ce})", "refused",
+                    "column_extent refuses a caller a policy restricts")
+        with pgc_conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM pgcolumnar.column_extent('rq', 'v')")
+            owner = cur.fetchone()[0]
+        expect.num(owner, 1, "and the owner still reads the extent")
     finally:
         alice.close()

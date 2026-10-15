@@ -116,5 +116,13 @@ check "a non-leakproof function in a GROUP BY under the policy sees only rq_alic
 check "premise: an ungrouped count and sum with a leakproof filter, with the setting on, is the ungrouped vectorized aggregate" \
 	"$(plan_has "$UVA" "SELECT count(*), sum(v) FROM %t WHERE secret IS NOT NULL" 'Columnar Vectorized Aggregates')" "1"
 check "and in the ungrouped vectorized aggregate" "$(leaks rq "$UVA" "SELECT count(*), sum(v) FROM %t WHERE rq_leak(secret)")" "10000|0"
+# pgcolumnar.column_extent reads the stored extent, which covers every row, so under a
+# policy it would show values from rows the caller cannot see. It refuses, as the
+# other direct-storage entry points do (#563), and the owner still reads it
+# (OffgridwithJD, review of #1429).
+ce="$(as_alice "SELECT count(*) FROM pgcolumnar.column_extent('rq', 'v')")"
+check "column_extent refuses a caller a policy restricts" \
+	"$(grep -q 'row-level security is in force' <<<"$ce" && echo refused || echo "not refused (${ce//$'\n'/ })")" "refused"
+check "and the owner still reads the extent" "$(q "SELECT count(*) FROM pgcolumnar.column_extent('rq', 'v')")" "1"
 
 pgc_summary
