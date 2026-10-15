@@ -2445,6 +2445,26 @@ Last-write-wins records the most recent attack rather than the catalogue the col
 exists to become. One `--mutation` copied across several logs attributes a deliberate
 change to failures it had nothing to do with, and is refused.
 
+### `test_a_mutation_named_with_a_semicolon_is_refused_rather_than_split`
+
+The mutation column is a `;`-separated set, written back sorted, so a `--mutation`
+whose text held `; ` was stored as two mutations, one a fragment starting with a space.
+Every later merge re-sorted it, and three branches in a row carried the same eight
+recovery_minimal_wal rows as a change of their own. `merge` now refuses such a text with
+rc 2 and leaves the ledger as it was; the same text with `, and` is recorded whole.
+
+### `test_a_ledger_row_whose_mutation_holds_a_fragment_is_refused`
+
+The writer joins the set with a bare `;`, so a piece with whitespace at an end is a
+fragment of a split sentence, never a mutation it wrote. The reader refuses the ledger
+by line. Two whole mutations separated by a bare `;` still read.
+
+### `test_the_committed_ledger_names_no_mutation_fragment`
+
+The committed ledger, read by the same reader. Red on the tree before this change at
+line 1783, the first of the 12 rows it rewords: 8 from #1427's recovery_minimal_wal
+mutation and 4 older harness_selftest rows.
+
 ### `test_a_mutation_with_two_targets_can_be_recorded_when_both_are_named`
 
 A mutation with two GENUINE targets is ordinary: reverting the

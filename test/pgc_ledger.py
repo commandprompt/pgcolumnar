@@ -312,6 +312,16 @@ def read_ledger(path):
                     f"{path}:{n}: major {m!r} is neither a number nor "
                     f"{MAJOR_UNKNOWN!r}, so this row names no version it applies to")
         muts = set() if f[5] == NONE else {m for m in f[5].split(";") if m}
+        # A PIECE WITH WHITESPACE AT AN END IS A FRAGMENT, not a mutation. The writer
+        # joins the set with a bare ";", so it never produces one; a text that held
+        # "; " does, when it is split on the ";" (12 rows on the shipped ledger, 8 of
+        # them from one recovery_minimal_wal mutation, re-sorted by every later merge).
+        for m in sorted(muts):
+            if m != m.strip():
+                raise LedgerError(
+                    f"{path}:{n}: mutation {m!r} has whitespace at an end, so it is a "
+                    f"fragment of one mutation's text split on ';'. Reword that mutation "
+                    f"without ';' and keep the row's other mutations as they are.")
         key = (f[0], f[1], f[2])
         # A REPEATED KEY, REFUSED RATHER THAN OVERWRITTEN. This was
         # `rows[key] = [...]`, so a duplicated row collapsed silently and the LAST line
@@ -529,6 +539,12 @@ def cmd_merge(args):
         raise LedgerError(
             "--target names what a mutation killed, so it needs --mutation to say "
             "which mutation. On its own it attributes nothing.")
+
+    if args.mutation and ";" in args.mutation:
+        raise LedgerError(
+            f"--mutation {args.mutation!r} holds ';', which separates mutations in the "
+            f"ledger's mutation column, so it would be stored as several. Reword it "
+            f"without ';' (', and' reads the same).")
 
     if args.mutation:
         failed = sorted({key for _p, seen in runs for key, vs in seen.items()

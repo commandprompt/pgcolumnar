@@ -285,7 +285,10 @@
 # tests, the twin of selftest part 640, by collection over the NO_CLUSTER files.
 # guard_tests 433 -> 435 for #1420's two arms in test_writes_wrote_rows.py (a setting
 # on a watched connection or cursor is refused), by collection over NO_CLUSTER.
-guard_tests 435
+# guard_tests 435 -> 438 for three arms in test_mutation_ledger.py: a mutation text holding
+# ';' is refused at merge, a ledger piece with whitespace at an end is refused, and the
+# committed ledger holds none, by collection over NO_CLUSTER.
+guard_tests 438
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

@@ -125,6 +125,54 @@ def test_the_mutation_column_accumulates_rather_than_overwriting(tmp_path, expec
                "one mutation cannot be attributed across several runs at once")
 
 
+def test_a_mutation_named_with_a_semicolon_is_refused_rather_than_split(tmp_path, expect):
+    """The mutation column is a ";"-separated SET, written back sorted. A `--mutation`
+    whose text held "; " was stored as two "mutations", one a sentence fragment that
+    starts with a space, and the next merge sorted the fragment first. Measured on the
+    shipped ledger: 12 rows, 8 of them from one recovery_minimal_wal mutation (#1427),
+    re-sorted by three later branches until each looked like a change of its own.
+    """
+    ledger = _w(tmp_path, "l.tsv", "")
+    red = _w(tmp_path, "r.log", RED)
+    out, rc = _run("merge", "--ledger", ledger, "--date", "2026-10-15",
+                   "--mutation", "the sync not registered; this build then asserts", red)
+    expect.num(rc, 2, "a mutation whose text holds ';' is refused, not split in two")
+    expect.num(out.count("separates mutations"), 1, "and the refusal says why")
+    expect.num(len(_rows(ledger)), 0, "and the ledger is left as it was")
+
+    out, rc = _run("merge", "--ledger", ledger, "--date", "2026-10-15",
+                   "--mutation", "the sync not registered, and this build then asserts", red)
+    expect.num(rc, 0, f"control: the same text without ';' is recorded: {out.strip()}")
+    expect.text({r[2]: r[5] for r in _rows(ledger)}["first check"],
+                "the sync not registered, and this build then asserts",
+                "and it is recorded whole, as one mutation")
+
+
+def test_a_ledger_row_whose_mutation_holds_a_fragment_is_refused(tmp_path, expect):
+    """A ";"-piece with whitespace at either end cannot be a mutation the writer
+    produced: it joins the set with a bare ";". It is the fragment of a split sentence,
+    so the ledger is refused by line rather than read as two mutations."""
+    green = _w(tmp_path, "g.log", GREEN)
+    split = _w(tmp_path, "split.tsv",
+               "demo\tpart1\tfirst check\t18\t2026-10-15\tthe sync not registered; this build asserts\n")
+    out, rc = _run("merge", "--ledger", split, green)
+    expect.num(rc, 2, "a mutation piece that starts with a space is refused")
+    expect.num(out.count("split.tsv:1:"), 1, "and the refusal names the line")
+
+    two = _w(tmp_path, "two.tsv",
+             "demo\tpart1\tfirst check\t18\t2026-10-15\tbloom neutered;SAOP 128 -> 0\n")
+    out, rc = _run("merge", "--ledger", two, green)
+    expect.num(rc, 0, f"control: two whole mutations separated by a bare ';' still read: {out.strip()}")
+
+
+def test_the_committed_ledger_names_no_mutation_fragment(tmp_path, expect):
+    """The committed ledger read by the same reader, so a split row on main is an
+    integrity failure of the file every gate reads, not a cosmetic one."""
+    copy = _w(tmp_path, "ledger.tsv", (REPO / "test" / "check_ledger.tsv").read_text())
+    out, rc = _run("merge", "--ledger", copy, _w(tmp_path, "g.log", GREEN))
+    expect.num(rc, 0, f"the committed ledger reads with no fragment in it: {out.strip()[:400]}")
+
+
 def test_a_mutation_with_two_targets_can_be_recorded_when_both_are_named(tmp_path, expect):
     """#1014. A mutation with TWO GENUINE TARGETS is ordinary, not exotic.
 
