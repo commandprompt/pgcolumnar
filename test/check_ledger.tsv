@@ -2864,16 +2864,16 @@ rls_direct_storage	rls_direct_storage	without FORCE the owner is allowed, becaus
 rollup	rollup	* with anything but count is refused	15;16;17;18;19	2026-10-13	create_rollup allowing * with any function
 rollup	rollup	DROP TABLE of a rollup's source is refused while the rollup exists (2BP01, #1376)	15;16;17;18;19	2026-10-14	a rollup's view, partials and source with no dependency between them, and no catalog cleanup (main before #1376's fix)
 rollup	rollup	DROP VIEW of a rollup takes its partials and its catalog rows with it (#1376)	15;16;17;18;19	2026-10-14	a rollup's view, partials and source with no dependency between them, and no catalog cleanup (main before #1376's fix)
-rollup	rollup	a delete in a bucket that holds retired history is refused, and the rollup is unchanged	15;16;17;18;19	2026-10-13	refresh_rollup not storing the retired groups' ranges as history;refresh_rollup recording new groups without their time range;refresh_rollup without the history refusal
-rollup	rollup	a delete in a bucket whose history the same refresh retires is refused, and the rollup is unchanged	15;16;17;18;19	2026-10-13	refresh_rollup blocking on stored history only, not on groups the same refresh retires;refresh_rollup recording new groups without their time range;refresh_rollup without the history refusal
-rollup	rollup	a delete in a group that expire then retires is refused, and the rollup is unchanged	15;16;17;18;19	2026-10-13	expire recording a retired group's deleted count as 0;refresh_rollup not refusing a retiring group whose deleted count moved
+rollup	rollup	a delete in a bucket that holds retired history is refused, and the rollup is unchanged	15;16;17;18;19	2026-10-14	expire retires nothing;refresh_rollup not storing the retired groups' ranges as history;refresh_rollup recording new groups without their time range;refresh_rollup without the history refusal
+rollup	rollup	a delete in a bucket whose history the same refresh retires is refused, and the rollup is unchanged	15;16;17;18;19	2026-10-14	expire retires nothing;refresh_rollup blocking on stored history only, not on groups the same refresh retires;refresh_rollup recording new groups without their time range;refresh_rollup without the history refusal
+rollup	rollup	a delete in a group that expire then retires is refused, and the rollup is unchanged	15;16;17;18;19	2026-10-14	expire recording a retired group's deleted count as 0;expire retires nothing;refresh_rollup not refusing a retiring group whose deleted count moved
 rollup	rollup	a delete in buckets with no history, next to retired ones, folds: those buckets equal a recompute and D keeps its history	15;16;17;18;19	2026-10-13	refresh_rollup recomputing every bucket once any group changed;refresh_rollup recording new groups without their time range;refresh_rollup refusing any change but appends (phase 1, main before this branch)
 rollup	rollup	a group_by column the source does not have is refused	15;16;17;18;19	2026-10-14	create_rollup without its group_by column check
 rollup	rollup	a refresh after a delete is not refused	15;16;17;18;19	2026-10-13	refresh_rollup refusing any change but appends (phase 1, main before this branch)
 rollup	rollup	a refresh after a small append reads under a fifth of the source	15;16;17;18;19	2026-10-13	refresh_rollup folding every group, ignoring the recorded snapshot;refresh_rollup's per-group subquery without OFFSET 0, so it becomes a join and reads every group
 rollup	rollup	a refresh after appends folds exactly the appended rows, late ones included	15;16;17;18;19	2026-10-13	refresh_rollup folding every group, ignoring the recorded snapshot;refresh_rollup folding only the first new group;row_tid mapping 290 rows a block instead of the AM's
 rollup	rollup	a refresh after retention folds nothing, refuses nothing, and keeps every bucket	15;16;17;18;19	2026-10-13	refresh_rollup folding every group, ignoring the recorded snapshot;refresh_rollup folding only the first new group;refresh_rollup not dropping groups retention retired
-rollup	rollup	a refresh after the source was rewritten is refused, naming rebase_rollup	15;16;17;18;19	2026-10-13	refresh_rollup without the source identity check
+rollup	rollup	a refresh after the source was rewritten is refused, naming rebase_rollup	15;16;17;18;19	2026-10-14	pgcolumnar.vacuum rewrites nothing;refresh_rollup without the source identity check
 rollup	rollup	a refresh at REPEATABLE READ is refused	15;16;17;18;19	2026-10-13	refresh_rollup at any isolation level
 rollup	rollup	a refresh folds a bulk append	15;16;17;18;19	2026-10-13	refresh_rollup folding every group, ignoring the recorded snapshot;refresh_rollup folding only the first new group;row_tid mapping 290 rows a block instead of the AM's
 rollup	rollup	a refresh in a zone with a DST change recomputes a whole day bucket	15;16;17;18;19	2026-10-13	refresh_rollup adding the width in the session's zone;refresh_rollup recomputing every bucket once any group changed;refresh_rollup recording new groups without their time range;refresh_rollup refusing any change but appends (phase 1, main before this branch)
@@ -2932,17 +2932,16 @@ rollup	rollup	another role cannot add a group row to the owner's rollup (42501)	
 rollup	rollup	another role cannot read the source's groups through rollup_source_groups (42501)	15;16;17;18;19	2026-10-14	rollup_source_groups without its require_caller_select guard
 rollup	rollup	another role sees none of its rollup catalog rows	15;16;17;18;19	2026-10-13	the rollup catalogs without row-level security;the rollup catalogs without their grants
 rollup	rollup	both rollups over the source refreshed, so each has a view, partials and catalog rows	15;16;17;18;19	never	-
+rollup	rollup	compact_rewrite rewrote a row group	15;16;17;18;19	2026-10-14	compact_rewrite reports 0 whatever it rewrote
 rollup	rollup	each row group's TID range holds exactly that group's rows	15;16;17;18;19	2026-10-13	row_tid mapping 290 rows a block instead of the AM's
+rollup	rollup	expire retired the group in bucket D alone and kept the one that shares it	15;16;17;18;19	2026-10-14	expire retires nothing
+rollup	rollup	expire retired the group the delete thinned	15;16;17;18;19	2026-10-14	expire reports 0 whatever it retired;expire retires nothing
+rollup	rollup	expire retired the old row groups	15;16;17;18;19	2026-10-14	expire reports 0 whatever it retired;expire retires nothing
 rollup	rollup	nor its retired groups through rollup_source_retired (42501)	15;16;17;18;19	2026-10-14	rollup_source_retired without its require_caller_select guard
+rollup	rollup	pgcolumnar.vacuum gave the source's row groups new identities	15;16;17;18;19	2026-10-14	pgcolumnar.vacuum rewrites nothing
 rollup	rollup	premise: and the fixture has NULL-key and NULL-bucket groups	15;16;17;18;19	never	-
-rollup	rollup	premise: compact_rewrite rewrote a row group	15;16;17;18;19	never	-
-rollup	rollup	premise: expire retired the group in bucket D alone and kept the one that shares it	15;16;17;18;19	never	-
-rollup	rollup	premise: expire retired the group the delete thinned	15;16;17;18;19	never	-
-rollup	rollup	premise: expire retired the old row groups	15;16;17;18;19	never	-
-rollup	rollup	premise: pgcolumnar.vacuum gave the source's row groups new identities	15;16;17;18;19	never	-
 rollup	rollup	premise: the owner's rollup has group rows another role could reach	15;16;17;18;19	never	-
 rollup	rollup	premise: the rollup functions exist	15;16;17;18;19	never	-
-rollup	rollup	premise: the rollup holds partials the delete below cannot reach	15;16;17;18;19	never	-
 rollup	rollup	premise: the source holds every row	15;16;17;18;19	never	-
 rollup	rollup	rebase_rollup of a table that is not a rollup is refused (42704)	15;16;17;18;19	2026-10-14	rebase_rollup without its not-a-rollup check
 rollup	rollup	rebase_rollup records the source's current row groups	15;16;17;18;19	2026-10-13	rebase_rollup returning 0
@@ -2960,6 +2959,7 @@ rollup	rollup	the paused refresh folded what was there before it began	15;16;17;
 rollup	rollup	the refresh after a small append read the source at all	15;16;17;18;19	never	-
 rollup	rollup	the restored rollup reads as a recompute of the restored source	15;16;17;18;19	never	-
 rollup	rollup	the restored source holds the dumped rows under the storage id recorded for the old one	15;16;17;18;19	never	-
+rollup	rollup	the rollup holds partials the delete below cannot reach	15;16;17;18;19	never	-
 rollup	rollup	the rollup holds rows before the rewrite	15;16;17;18;19	never	-
 rollup	rollup	the rollup table exists with the documented columns	15;16;17;18;19	never	-
 rollup	rollup	the rollup to be dumped folds its source	15;16;17;18;19	never	-

@@ -167,7 +167,7 @@ groups_before="$(q "SELECT pgcolumnar.get_storage_id('src') || ':' || string_agg
 q "SELECT pgcolumnar.vacuum('src');" >/dev/null
 groups_after="$(q "SELECT pgcolumnar.get_storage_id('src') || ':' || string_agg(group_number::text, ',' ORDER BY group_number)
 	FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('src');")"
-check "premise: pgcolumnar.vacuum gave the source's row groups new identities" \
+check "pgcolumnar.vacuum gave the source's row groups new identities" \
 	"$([ -n "$groups_after" ] && [ "$groups_after" != "$groups_before" ] && echo renumbered || echo "same: $groups_after")" "renumbered"
 vb="$(exact "SELECT * FROM r_hourly")"
 check_num "the rollup holds rows before the rewrite" "$(at_least "$(q "SELECT count(*) FROM r_hourly;")" 1)" "1"
@@ -191,7 +191,7 @@ check "and after the rebase the rollup equals a full recompute" "$(matches)" "$(
 partials_at() { q "SELECT count(*) || '|' || md5(string_agg(ctid::text, ',' ORDER BY ctid)) FROM r_hourly__partials WHERE $1;"; }
 FAR="bucket >= '2026-03-05 00:00:00+00'"	# beyond the time range of every group the delete below reaches
 far_before="$(partials_at "$FAR")"
-check_num "premise: the rollup holds partials the delete below cannot reach" \
+check_num "the rollup holds partials the delete below cannot reach" \
 	"$(at_least "$(q "SELECT count(*) FROM r_hourly__partials WHERE $FAR;")" 1)" "1"
 q "DELETE FROM src WHERE dev = 3 AND ts < '2026-03-01 06:00:00+00';" >/dev/null
 check "a refresh after a delete is not refused" \
@@ -218,7 +218,7 @@ check "after a delete and an append that straddles its bucket, a refresh counts 
 
 # compact_rewrite drops a group's dead rows by rewriting the group.
 q "DELETE FROM src WHERE ts >= '2026-03-06 00:00:00+00' AND ts < '2026-03-06 12:00:00+00';" >/dev/null
-check_num "premise: compact_rewrite rewrote a row group" \
+check_num "compact_rewrite rewrote a row group" \
 	"$(at_least "$(q "SELECT pgcolumnar.compact_rewrite('src', 0.01);")" 1)" "1"
 q "SELECT pgcolumnar.refresh_rollup('r_hourly');" >/dev/null
 check "after compact_rewrite the rollup equals a full recompute" "$(matches)" "$(oracle)"
@@ -278,7 +278,7 @@ ob="$(q "SELECT count(*) FROM r_hist WHERE bucket < now() - interval '100 days';
 check_num "the history rollup holds old buckets" "$(at_least "${ob:-0}" 1)" "1"
 q "SELECT pgcolumnar.set_options('hist', ttl_column => 'ts', ttl_interval => '30 days');" >/dev/null
 retired="$(q "SELECT pgcolumnar.expire('hist');")"
-check_num "premise: expire retired the old row groups" "$(at_least "${retired:-0}" 1)" "1"
+check_num "expire retired the old row groups" "$(at_least "${retired:-0}" 1)" "1"
 check "a refresh after retention folds nothing, refuses nothing, and keeps every bucket" \
 	"$(sqlstate_or "SELECT pgcolumnar.refresh_rollup('r_hist');")|$(q "SELECT md5(string_agg(bucket || ':' || count || ':' || sum_v, ',' ORDER BY bucket)) FROM r_hist;")" \
 	"0|$hb"
@@ -310,7 +310,7 @@ layered() {	# layered TABLE: the three groups, a daily rollup r_TABLE refreshed 
 	q "SELECT pgcolumnar.expire('$1');" >/dev/null
 }
 layered hd
-check "premise: expire retired the group in bucket D alone and kept the one that shares it" \
+check "expire retired the group in bucket D alone and kept the one that shares it" \
 	"$(q "SELECT count(*) FILTER (WHERE ts < $D + interval '12 hours') || '|' || count(*) FILTER (WHERE ts >= $D + interval '12 hours' AND ts < $D + interval '1 day') FROM hd;")" "0|47"
 HDQ="SELECT md5(string_agg(bucket || ':' || count || ':' || sum_v, ',' ORDER BY bucket)) FROM r_hd"
 HDR="SELECT md5(string_agg(b || ':' || n || ':' || s, ',' ORDER BY b)) FROM (SELECT date_bin('1 day', ts, '$ORIGIN') b, count(*) n, sum(v)::numeric s FROM hd GROUP BY 1) x"
@@ -343,7 +343,7 @@ q "CREATE TABLE dx (ts timestamptz, v int) USING pgcolumnar;
    SELECT pgcolumnar.refresh_rollup('r_dx');
    DELETE FROM dx WHERE ts < now() - interval '30 days' AND v <= 400;
    SELECT pgcolumnar.set_options('dx', ttl_column => 'ts', ttl_interval => '30 days');" >/dev/null
-check_num "premise: expire retired the group the delete thinned" "$(q "SELECT pgcolumnar.expire('dx');")" "1"
+check_num "expire retired the group the delete thinned" "$(q "SELECT pgcolumnar.expire('dx');")" "1"
 dx_before="$(q "SELECT string_agg(bucket || ':' || count, ',' ORDER BY bucket) FROM r_dx;")"
 check "a delete in a group that expire then retires is refused, and the rollup is unchanged" \
 	"$(sqlstate "SELECT pgcolumnar.refresh_rollup('r_dx');")|$(q "SELECT string_agg(bucket || ':' || count, ',' ORDER BY bucket) FROM r_dx;")" \

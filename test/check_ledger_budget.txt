@@ -2681,4 +2681,18 @@ suites_not_covered 224
 #     never         2526 + 6 = 2532
 #     dated          810 + 5 =  815
 #     2532 + 815 == 3347
-checks_never_observed_red 2532
+#
+# #1339, six rollup premises that read a product operation's result (OffgridwithJD, from
+# jdatcmd's #1372 review): 2532 -> 2527. They lose the prefix, renamed with their rows.
+# Five are dated: vacuum rewriting nothing (the renumbering check), compact_rewrite and
+# expire reporting 0 (their checks), and expire retiring nothing (the bucket-D check,
+# with the two expire counts and three refusal arms beside it). "the rollup holds
+# partials the delete below cannot reach" arrives never: only a refresh that writes no
+# partials reddens it, and that reddens most of the suite. Five-major runs: 82/82, and
+# 105/105 on PG18 after the rebase onto d5c0a5e, which brought in 23 checks.
+#
+#     ledger rows   3347     = 3347
+#     never         2532 - 5 = 2527
+#     dated          815 + 5 =  820
+#     2527 + 820 == 3347
+checks_never_observed_red 2527

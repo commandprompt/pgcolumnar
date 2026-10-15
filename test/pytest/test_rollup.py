@@ -194,7 +194,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     with conn.cursor() as cur:
         cur.execute("SELECT pgcolumnar.vacuum('feed')")
     expect.text("renumbered" if identity() != before else "same", "renumbered",
-                "premise: pgcolumnar.vacuum gave the source's row groups new identities")
+                "pgcolumnar.vacuum gave the source's row groups new identities")
     vb = _matches(conn)
     expect.at_least(_one(conn, "SELECT count(*) FROM gauge_15m"), 1, "the rollup holds rows before the rewrite")
     expect.text(f"{_refresh(conn)}|{_matches(conn)}", f"55000|{vb}",
@@ -219,7 +219,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
               f" FROM gauge_15m__partials WHERE {far}")
     far_before = _one(conn, at_far)
     expect.at_least(_one(conn, f"SELECT count(*) FROM gauge_15m__partials WHERE {far}"), 1,
-                    "premise: the rollup holds partials the delete below cannot reach")
+                    "the rollup holds partials the delete below cannot reach")
     with conn.cursor() as cur:
         cur.execute("DELETE FROM feed WHERE sensor = 4 AND at < '2026-02-01 01:00:00+00'")
     expect.text(_folds(conn), "folded",
@@ -253,7 +253,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
         rewrote = _one(conn, "SELECT pgcolumnar.compact_rewrite('feed', 0.02)")
     except psycopg.Error:
         rewrote = -1
-    expect.at_least(rewrote, 1, "premise: compact_rewrite rewrote a row group")
+    expect.at_least(rewrote, 1, "compact_rewrite rewrote a row group")
     _refresh(conn)
     expect.text(_matches(conn), _oracle(conn), "after compact_rewrite the rollup equals a full recompute")
     expect.text(_refresh(conn), "0", "and the refresh after the rewrite recomputes nothing")
@@ -316,7 +316,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     expect.at_least(old_buckets, 1, "the history rollup holds old buckets")
     with conn.cursor() as cur:
         cur.execute("SELECT pgcolumnar.set_options('aged', ttl_column => 'at', ttl_interval => '14 days')")
-    expect.at_least(_one(conn, "SELECT pgcolumnar.expire('aged')"), 1, "premise: expire retired the old row groups")
+    expect.at_least(_one(conn, "SELECT pgcolumnar.expire('aged')"), 1, "expire retired the old row groups")
     expect.text(f"{_refresh(conn, 'aged_hourly')}|{_one(conn, hist)}", f"0|{before_hist}",
                 "a refresh after retention folds nothing, refuses nothing, and keeps every bucket")
     expect.num(_one(conn, "SELECT count(*) FROM pgcolumnar.rollup_group rg JOIN pgcolumnar.retired_group t"
@@ -361,7 +361,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     expect.text(_one(conn, f"SELECT count(*) FILTER (WHERE at < {h} + interval '40 min') || '|'"
                            f" || count(*) FILTER (WHERE at >= {h} + interval '40 min' AND at < {h} + interval '1 hour')"
                            " FROM layered"), "0|1",
-                "premise: expire retired the group in bucket D alone and kept the one that shares it")
+                "expire retired the group in bucket D alone and kept the one that shares it")
     lq = "SELECT md5(string_agg(bucket || ':' || count || ':' || max_reading, ',' ORDER BY bucket)) FROM layered_hourly"
     lr = (f"SELECT md5(string_agg(b || ':' || n || ':' || m, ',' ORDER BY b)) FROM (SELECT date_bin('1 hour', at,"
           f" '{ORIGIN}') b, count(*) n, max(reading) m FROM layered GROUP BY 1) x")
@@ -403,7 +403,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
         cur.execute("DELETE FROM thinned WHERE at < now() - interval '14 days' AND reading % 5 = 0")
         cur.execute("SELECT pgcolumnar.set_options('thinned', ttl_column => 'at', ttl_interval => '14 days')")
     expect.num(_one(conn, "SELECT pgcolumnar.expire('thinned')"), 1,
-               "premise: expire retired the group the delete thinned")
+               "expire retired the group the delete thinned")
     tq = "SELECT string_agg(bucket || ':' || count || ':' || max_reading, ',' ORDER BY bucket) FROM thinned_hourly"
     before_thin = _one(conn, tq)
     expect.text(f"{_refresh(conn, 'thinned_hourly')}|{_one(conn, tq)}", f"0A000|{before_thin}",
