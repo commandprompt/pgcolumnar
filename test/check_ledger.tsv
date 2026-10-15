@@ -3325,6 +3325,47 @@ ttl_expire	ttl_expire	the retention is recorded where the other options live	15;
 ttl_expire	ttl_expire	with the extent, expire retires the same groups	15;16;17;18;19	2026-10-13	the early exit compares the extent's maximum to the cutoff instead of its minimum
 ttl_expire	ttl_expire	without the extent the same expire probes every group's zone map	15;16;17;18;19	never	-
 ttl_expire	ttl_expire	without the extent, expire retires the aged groups	15;16;17;18;19	2026-10-14	expire returning 0 whatever it retired
+type_matrix	type_matrix	a range on bt finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on bt lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on cd finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on cd skips no chunk groups: a cidr key is treated as cross-type against inet and dropped (#1433)	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on ch finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on ch skips no chunk groups: every row group holds every value, since the column cycles through 26 letters	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on d finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on d lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on dom finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on dom lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on e finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on e skips no chunk groups: every row group holds every value, since the column cycles through the 4 labels	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on ip finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on ip lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on mac finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on mac lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on mac8 finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on mac8 lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on mo finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on mo lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on n finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on n skips no chunk groups: every row group holds NaN and both infinities, so each zone map spans every value	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on nm finds heap's rows	15;16;17;18;19	2026-10-15	a by-reference fixed-width value over 8 bytes is stored as its first 8 bytes and zero padding (PgColumnarEncodeValueByLen)
+type_matrix	type_matrix	a range on nm lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	a by-reference fixed-width value over 8 bytes is stored as its first 8 bytes and zero padding (PgColumnarEncodeValueByLen);the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on tm finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on tm lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on tsi finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on tsi lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on tz finds heap's rows	15;16;17;18;19	2026-10-15	a by-reference fixed-width value over 8 bytes is stored as its first 8 bytes and zero padding (PgColumnarEncodeValueByLen)
+type_matrix	type_matrix	a range on tz lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a range on vb finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	a range on vb lets the zone maps skip chunk groups	15;16;17;18;19	2026-10-15	the scan never skips a row group by zone map (pgcolumnar_native_group_can_match ignored)
+type_matrix	type_matrix	a tsvector match finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	each column's count and NULL count is heap's	15;16;17;18;19	2026-10-15	a by-reference fixed-width value over 8 bytes is stored as its first 8 bytes and zero padding (PgColumnarEncodeValueByLen)
+type_matrix	type_matrix	equality on json, as text, finds heap's rows	15;16;17;18;19	never	-
+type_matrix	type_matrix	every row, as text, is heap's	15;16;17;18;19	2026-10-15	a by-reference fixed-width value over 8 bytes is stored as its first 8 bytes and zero padding (PgColumnarEncodeValueByLen)
+type_matrix	type_matrix	point equality (~=) finds heap's rows	15;16;17;18;19	2026-10-15	a by-reference fixed-width value over 8 bytes is stored as its first 8 bytes and zero padding (PgColumnarEncodeValueByLen)
+type_matrix	type_matrix	premise: both tables hold 12000 rows, the columnar one in at least twelve row groups	15;16;17;18;19	never	-
+type_matrix	type_matrix	premise: the server supports xml (built with libxml)	15;16;17;18;19	never	-
+type_matrix	type_matrix	the aggregates over numeric NaN and Infinity and timestamp and date infinity are heap's	15;16;17;18;19	never	-
+type_matrix	type_matrix	the composite's fields and the enum's order read back as heap's	15;16;17;18;19	never	-
 vacuum_lock_privilege	vacuum_lock_privilege	add_projection refuses a non-owner before taking its lock (#749)	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock
 vacuum_lock_privilege	vacuum_lock_privilege	cluster refuses a non-owner before taking the exclusive lock	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock
 vacuum_lock_privilege	vacuum_lock_privilege	compact does the same, which is the behaviour drop_projection now matches	15;16;17;18;19	never	-
