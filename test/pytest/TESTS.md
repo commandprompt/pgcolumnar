@@ -171,6 +171,7 @@ behaviour, the source of that number is named.
 - [123. test_maintenance_crash.py: a crash part-way through maintenance loses nothing](#123-test_maintenance_crashpy-a-crash-part-way-through-maintenance-loses-nothing)
 - [124. test_serializable.py: SERIALIZABLE refuses a write skew on a columnar table](#124-test_serializablepy-serializable-refuses-a-write-skew-on-a-columnar-table)
 - [125. test_rls_direct_storage.py: the direct-storage paths refuse a caller a policy restricts](#125-test_rls_direct_storagepy-the-direct-storage-paths-refuse-a-caller-a-policy-restricts)
+- [126. test_objstore_crlf.py: a CR or LF in an object-store URL is refused before it is sent](#126-test_objstore_crlfpy-a-cr-or-lf-in-an-object-store-url-is-refused-before-it-is-sent)
 
 ## 1. How to read a test in here
 
@@ -7111,3 +7112,13 @@ The pytest twin of `test/rls_direct_storage.sh` (#563, ported for #1341), every 
 | test | what it holds |
 | --- | --- |
 | `test_the_direct_storage_paths_refuse_a_policy_restricted_caller` | the premises, the eight refusals and their absent effects, the no-privilege caller's ACL error, the not-over-refusing controls, and the FORCE pair |
+
+## 126. test_objstore_crlf.py: a CR or LF in an object-store URL is refused before it is sent
+
+The pytest twin of `test/objstore_crlf.sh` (ported for #1341), every check by the shell's name. A URL path is written into the request line, so a CR/LF in it would split the request. The guard is in the single connect path, so read_parquet and the REST catalog client's request are both refused, naming CR or LF; and a listener of the file's own records that nothing carrying the injected line reached it.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_cr_or_lf_in_a_url_is_refused_before_it_is_sent` | read_parquet and a REST `catalog_uri` with a CR/LF in the path are refused naming CR or LF, the listener receives no injected line, and the backend is alive after each |

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 229
+suites_not_covered 228
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2596,4 +2596,15 @@ suites_not_covered 229
 #     never         2361 - 1 = 2360
 #     dated          794 + 1 = 795
 #     2360 + 795 == 3155
-checks_never_observed_red 2360
+#
+# #1341, objstore_crlf seeded, with its pytest twin (OffgridwithJD): 2360 -> 2362, and
+# suites_not_covered 229 -> 228. The suite had no rows. It enters with all 5 checks
+# from five-major runs (5/5 on each of 15-19). Three are dated by the request-line
+# guard on the URL path removed: neither refusal named CR or LF, and the listener
+# received the injected line. The two backend-alive checks arrive never.
+#
+#     ledger rows   3155 + 5 = 3160
+#     never         2360 + 2 = 2362
+#     dated          795 + 3 =  798
+#     2362 + 798 == 3160
+checks_never_observed_red 2362

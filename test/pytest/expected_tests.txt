@@ -709,4 +709,6 @@ guard_tests 438
 # test_partition_lifecycle.py, one each, by collection over the cluster files on this tree.
 # cluster_tests 590 -> 591 for #1341's test_rls_direct_storage.py, the twin of
 # rls_direct_storage.sh: one test, by collection over the cluster files on this tree.
-cluster_tests 591
+# cluster_tests 591 -> 592 for #1341's test_objstore_crlf.py, the twin of objstore_crlf.sh:
+# one test, by collection over the cluster files on this tree.
+cluster_tests 592

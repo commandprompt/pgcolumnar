@@ -2364,6 +2364,11 @@ objstore_credentials	objstore_credentials	placement: secret on a SERVER is HV00D
 objstore_credentials	objstore_credentials	premise: bob's error was a real refusal, not silence	15;16;17;18;19	never	-
 objstore_credentials	objstore_credentials	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 objstore_credentials	objstore_credentials	premise: without mapping or environment, even a superuser gets 28000	15;16;17;18;19	never	-
+objstore_crlf	objstore_crlf	a CR/LF in a REST catalog_uri is rejected too (objstore_http_request path)	15;16;17;18;19	2026-10-14	the request-line guard on the URL path removed
+objstore_crlf	objstore_crlf	a CR/LF in the URL path is rejected before the request is sent	15;16;17;18;19	2026-10-14	the request-line guard on the URL path removed
+objstore_crlf	objstore_crlf	backend alive	15;16;17;18;19	never	-
+objstore_crlf	objstore_crlf	backend alive after the REST attempt	15;16;17;18;19	never	-
+objstore_crlf	objstore_crlf	no injected line reached the listener (no request splitting)	15;16;17;18;19	2026-10-14	the request-line guard on the URL path removed
 parallel_am_scan	parallel_am_scan	a parallel index build indexes every row of the table	15;16;17;18;19	never	-
 parallel_am_scan	parallel_am_scan	a parallel table-AM scan returns the same row count as serial	15;16;17;18;19	never	-
 parallel_am_scan	parallel_am_scan	premise: ANALYZE printed a rows= line per launched worker	15;16;17;18;19	never	-
