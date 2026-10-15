@@ -622,6 +622,40 @@ psql_run "CREATE TABLE lr_p5 (bucket timestamptz) USING pgcolumnar; CREATE VIEW 
 check "a rollup row's view, partials and source cannot be changed once written (0A000, #1376)" \
 	"$(sqlstate "UPDATE pgcolumnar.rollup SET partials = 'lr_p6' WHERE rollup = 'lr_v5'::regclass")" "0A000"
 
+# ---- min and max keep the source column's collation (#1341) ------------------
+#
+# The partials columns are created with the type alone, so they carry the
+# database's default collation. A refresh that updates a bucket folds the new
+# partial into the stored one with least()/greatest(), and that comparison must be
+# the source column's. Two text columns, "C" and en_US, so whichever is the
+# database default, the other differs from it. Lower-case rows first, then
+# upper-case rows into the SAME buckets: under C 'B' sorts before 'a', under en_US
+# after it, and only the second refresh's fold can get that wrong.
+CT_COLL="$(q "SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'en_US.UTF-8', 'en_US') ORDER BY collname LIMIT 1;")"
+if [ -n "$CT_COLL" ]; then
+	q "CREATE TABLE ct (ts timestamptz, sc text COLLATE \"C\", su text COLLATE \"$CT_COLL\") USING pgcolumnar;
+	   SELECT pgcolumnar.set_options('ct', stripe_row_limit => 1000);
+	   INSERT INTO ct SELECT '$ORIGIN'::timestamptz + (g % 24) * interval '1 hour', 'a'||g, 'a'||g FROM generate_series(1, 2000) g;" >/dev/null
+	q "SELECT pgcolumnar.create_rollup('r_ct', 'ct', 'ts', '1 day', '$ORIGIN', '{}', '{min,max,min,max}', '{sc,sc,su,su}');" >/dev/null
+	q "SELECT pgcolumnar.refresh_rollup('r_ct');" >/dev/null
+	q "INSERT INTO ct SELECT '$ORIGIN'::timestamptz + (g % 24) * interval '1 hour', 'B'||g, 'B'||g FROM generate_series(1, 2000) g;" >/dev/null
+	# A check, not a premise (#1236; #1372 review): refresh_rollup's return value and
+	# the bucket count are both product output.
+	check "the second refresh folds new rows into the existing bucket" \
+		"$(q "SELECT pgcolumnar.refresh_rollup('r_ct');")|$(q "SELECT count(*) FROM r_ct;")" "2000|1"
+	check "min and max over a C column and an en_US column keep each column's own order across a refresh" \
+		"$(q "SELECT min_sc || '|' || max_sc || '|' || min_su || '|' || max_su FROM r_ct;")" \
+		"$(q "SELECT min(sc) || '|' || max(sc) || '|' || min(su) || '|' || max(su) FROM ct;")"
+	check "premise: the two collations disagree on these rows, so the arm can tell them apart" \
+		"$(q "SELECT (min(sc) COLLATE \"C\" <> min(su) COLLATE \"C\")::text FROM ct;")" "true"
+else
+	for _n in "the second refresh folds new rows into the existing bucket" \
+			"min and max over a C column and an en_US column keep each column's own order across a refresh" \
+			"premise: the two collations disagree on these rows, so the arm can tell them apart"; do
+		check_skip "$_n" "SKIP  $_n (no en_US collation)" "the server has no en_US collation"
+	done
+fi
+
 # Row numbers start at 1 (#1341). LAST IN THE SUITE ON PURPOSE: without the floor,
 # row_tid(0) crashed the backend (measured on PG17), and a crash mid-suite takes the
 # checks after it down with it, premises included.

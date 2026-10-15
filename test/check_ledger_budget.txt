@@ -2695,4 +2695,27 @@ suites_not_covered 224
 #     never         2532 - 5 = 2527
 #     dated          815 + 5 =  820
 #     2527 + 820 == 3347
-checks_never_observed_red 2527
+#
+# #1341, a rollup's min and max keep each source column's collation (OffgridwithJD):
+# 2527 -> 2529. Three new rollup checks. The arm is dated by the fold comparing in
+# the partials' default collation (on an en_US database the C column's min became
+# a1 where the recompute gives B1). Its two premises arrive never. Five-major runs
+# on the files merged with #1359: rollup 85/85 on 15-19.
+#
+#     ledger rows   3347 + 3 = 3350
+#     never         2527 + 2 = 2529
+#     dated          820 + 1 = 821
+#     2529 + 821 == 3350
+#
+# #1372 review (OffgridwithJD): 2529 -> 2528. "the second refresh folds new rows into the
+# existing bucket" loses the premise prefix: refresh_rollup's return value is product
+# output. refresh_rollup returning one more than it folded reddens it, dating it, and
+# fifteen other rollup arms that count what a refresh folded, all already dated.
+# Five-major runs: rollup 85/85 on 15-19, and 108/108 on PG18 after the rebase onto
+# d5c0a5e, which brought in 23 checks (#1391's row_tid arm still runs last).
+#
+#     ledger rows   3350     = 3350
+#     never         2529 - 1 = 2528
+#     dated          821 + 1 = 822
+#     2528 + 822 == 3350
+checks_never_observed_red 2528

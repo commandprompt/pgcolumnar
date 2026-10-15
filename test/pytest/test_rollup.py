@@ -781,6 +781,42 @@ def test_rollup_dump_and_restore(pgc_cluster, tmp_path, expect):
             admin("postgres", f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
 
 
+def test_min_and_max_keep_each_columns_collation(pgc_own_db, expect):
+    """The partials columns carry the database's default collation, and a refresh
+    that updates a bucket folds with least()/greatest(), which must compare in the
+    SOURCE column's collation (#1341). One "C" column and one en_US column, so
+    whichever is the default, the other differs from it. Lower-case rows first,
+    then upper-case into the same bucket: under C 'B' sorts before 'a', under en_US
+    after it, and only the second refresh's fold can get that wrong."""
+    conn = pgc_own_db
+    coll = _one(conn, "SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'en_US.UTF-8', 'en_US')"
+                      " ORDER BY collname LIMIT 1")
+    if coll is None:
+        expect.cannot_run("MISSING_DEPENDENCY", "no en_US collation",
+                          name="the server has no en_US collation")
+        return
+    with conn.cursor() as cur:
+        cur.execute(f'CREATE TABLE ct (ts timestamptz, sc text COLLATE "C", su text COLLATE "{coll}") USING pgcolumnar')
+        cur.execute("SELECT pgcolumnar.set_options('ct', stripe_row_limit => 1000)")
+        cur.execute(f"INSERT INTO ct SELECT '{ORIGIN}'::timestamptz + (g % 24) * interval '1 hour', 'a'||g, 'a'||g"
+                    " FROM generate_series(1, 2000) g")
+        cur.execute(f"SELECT pgcolumnar.create_rollup('r_ct', 'ct', 'ts', '1 day', '{ORIGIN}', '{{}}',"
+                    " '{min,max,min,max}', '{sc,sc,su,su}')")
+        cur.execute("SELECT pgcolumnar.refresh_rollup('r_ct')")
+        cur.execute(f"INSERT INTO ct SELECT '{ORIGIN}'::timestamptz + (g % 24) * interval '1 hour', 'B'||g, 'B'||g"
+                    " FROM generate_series(1, 2000) g")
+    folded = _one(conn, "SELECT pgcolumnar.refresh_rollup('r_ct')")
+    expect.text(f"{folded}|{_one(conn, 'SELECT count(*) FROM r_ct')}", "2000|1",
+                "the second refresh folds new rows into the existing bucket")
+    expect.text(_one(conn, "SELECT min_sc || '|' || max_sc || '|' || min_su || '|' || max_su FROM r_ct"),
+                _one(conn, "SELECT min(sc) || '|' || max(sc) || '|' || min(su) || '|' || max(su) FROM ct"),
+                "min and max over a C column and an en_US column keep each column's own order across a refresh")
+    # Both sides in "C": the two columns' collations differ, so a bare comparison
+    # has no collation to use. Equality does not depend on which one is chosen.
+    expect.text(str(_one(conn, 'SELECT min(sc) COLLATE "C" <> min(su) COLLATE "C" FROM ct')), "True",
+                "premise: the two collations disagree on these rows, so the arm can tell them apart")
+
+
 def test_row_tid_refuses_a_row_number_below_one(pgc_conn, expect):
     """Row numbers start at 1 (#1341). LAST IN THE FILE, AND A TEST OF ITS OWN: without
     the floor, row_tid(0) crashed the backend (measured on PG17), which would take the

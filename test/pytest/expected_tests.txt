@@ -719,4 +719,6 @@ guard_tests 438
 # test_projections.py, by collection over the cluster files on this tree.
 # cluster_tests 597 -> 598 for #1341's test_a_named_column_that_does_not_exist_is_refused in
 # test_analyze_function.py, by collection over the cluster files on this tree.
-cluster_tests 598
+# cluster_tests 598 -> 599 for #1341's test_min_and_max_keep_each_columns_collation in
+# test_rollup.py, by collection over the cluster files on this tree.
+cluster_tests 599
