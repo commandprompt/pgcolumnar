@@ -87,7 +87,7 @@ def test_row_level_security_holds_on_every_read_path(pgc_cluster, pgc_conn, expe
 
         expect.text(f"{total}|{run((), 'SELECT count(*) FROM rq')}|{run((), 'SELECT count(*) FROM rh')}",
                     "20000|10000|10000",
-                    "premise: a superuser sees all 20000 rows, and rq_alice her 10000 on both tables")
+                    "a superuser sees all 20000 rows, and rq_alice her 10000 on both tables")
         expect.num(plan_has((), AGG, "Custom Scan (PgColumnarScan)"), 1,
                    "premise: the aggregate is answered by the columnar custom scan")
         expect.text(same((), AGG), "same", "count, sum, min and max under the policy, by the custom scan, are heap's")

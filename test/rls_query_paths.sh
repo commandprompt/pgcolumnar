@@ -55,7 +55,7 @@ plan_has() {	# plan_has SETUP QUERY PATTERN -> how many plan lines match, on the
 AGG="SELECT count(*) || '/' || sum(v) || '/' || min(v) || '/' || max(v) || '/' || count(*) FILTER (WHERE owner <> current_user) FROM %t"
 GRP="SELECT string_agg(grp || ':' || n || ':' || s, ',' ORDER BY grp) FROM (SELECT grp, count(*) n, sum(v) s FROM %t GROUP BY grp) x"
 
-check "premise: a superuser sees all 20000 rows, and rq_alice her 10000 on both tables" \
+check "a superuser sees all 20000 rows, and rq_alice her 10000 on both tables" \
 	"$(q "SELECT count(*) FROM rq")|$(as_alice "SELECT count(*) FROM rq")|$(as_alice "SELECT count(*) FROM rh")" "20000|10000|10000"
 
 # ---- the custom scan and the vectorized aggregates -----------------------------------
