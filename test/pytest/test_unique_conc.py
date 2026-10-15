@@ -95,7 +95,7 @@ class _Race:
         self.sh = _Session(dsn, "cc_sh")
 
     def close(self):
-        for c in (self.s1.conn, self.s2.conn, self.sh.conn, self.watch):
+        for c in (self.sh.conn, self.s2.conn, self.s1.conn, self.watch):
             c.close()
 
     def one(self, sql):
@@ -155,19 +155,26 @@ class _Race:
         self.run(self.sh, f"SELECT pg_advisory_unlock({hkey})")
         return self.finish(self.s1)
 
-    def conflict(self, hkey, table, first, second, index):
-        """T1 holds `first` unflushed; T2 inserts `second`, waits, and gets 23505 once T1
-        commits. -> (sessions waiting while T1 held the key, _violated's answer)."""
+    def conflict(self, hkey, table, first, second):
+        """T1 holds `first` unflushed; T2 inserts `second` and should wait for it.
+        -> how many sessions wait, read while T1 still holds the key. The test
+        asserts it before `settle` releases T1, so a T2 that did not wait is that
+        check's red, not a later wait's (#1341: with no key lock, T1 then stalled
+        behind T2 and the first red was a bounded wait)."""
         self.pause_s1(hkey, f"INSERT INTO {table} {first}")
         self.run(self.s2, "BEGIN")
         self.s2.start(f"INSERT INTO {table} {second}")
         self.wait_blocked("cc_s2", asserted=True)
-        waiting = self.waiting("cc_s2")
+        return self.waiting("cc_s2")
+
+    def settle(self, hkey, index):
+        """After `conflict`: T1 finishes and commits, and T2 should get 23505.
+        -> _violated's answer."""
         self.release_s1(hkey)
         self.run(self.s1, "COMMIT")
         violated = _violated(self.finish(self.s2), index)
         self.run(self.s2, "ROLLBACK")
-        return waiting, violated
+        return violated
 
     def no_conflict(self, hkey, table, first, second):
         """T1 holds `first` unflushed; T2's `second` must not wait for it.
@@ -239,8 +246,9 @@ def test_one_key_serializes_and_the_lock_is_what_does_it(race, expect):
                "1a pre-fix: lock disabled lets both same-key inserts commit (bug)")
 
     race.run(race.s1, "TRUNCATE s_int")
-    waiting, violated = race.conflict(1002, "s_int", _paused("1", "cq_block(1002, -1)"), "VALUES (1)", "s_int_uidx")
-    expect.num(waiting, 1, "1b post-fix: same-key second inserter blocks")
+    expect.num(race.conflict(1002, "s_int", _paused("1", "cq_block(1002, -1)"), "VALUES (1)"), 1,
+               "1b post-fix: same-key second inserter blocks")
+    violated = race.settle(1002, "s_int_uidx")
     expect.text(violated, "yes", "1b post-fix: blocked inserter got a unique_violation")
     expect.num(race.one("SELECT count(*) FROM s_int WHERE k = 1"), 1, "1b post-fix: exactly one row with key 1")
 
@@ -255,9 +263,9 @@ def test_keys_equal_under_the_opclass_serialize(race, expect):
                "2a pre-fix: numeric 1.0 and 1.00 both commit with lock off (bug)")
 
     race.run(race.s1, "TRUNCATE s_num")
-    waiting, violated = race.conflict(1004, "s_num", _paused("1.0", "cq_block(1004, (-1)::numeric)"),
-                                      "VALUES (1.00)", "s_num_uidx")
-    expect.num(waiting, 1, "2b post-fix: numeric 1.00 serializes behind 1.0 (opclass-safe hash)")
+    expect.num(race.conflict(1004, "s_num", _paused("1.0", "cq_block(1004, (-1)::numeric)"), "VALUES (1.00)"), 1,
+               "2b post-fix: numeric 1.00 serializes behind 1.0 (opclass-safe hash)")
+    violated = race.settle(1004, "s_num_uidx")
     expect.text(violated, "yes", "2b post-fix: numeric equal-but-different-bytes got unique_violation")
     expect.num(race.one("SELECT count(*) FROM s_num WHERE v = 1.0"), 1, "2b post-fix: exactly one row equal to 1.0")
 
@@ -271,9 +279,9 @@ def test_citext_keys_equal_by_case_serialize(race, expect):
         return
     race.run(race.s1, "CREATE TABLE s_ci (v citext) USING pgcolumnar")
     race.run(race.s1, "CREATE UNIQUE INDEX s_ci_uidx ON s_ci (v)")
-    waiting, violated = race.conflict(1005, "s_ci", _paused("'ABC'::citext", "cq_block(1005, 'zzz'::citext)"),
-                                      "VALUES ('abc')", "s_ci_uidx")
-    expect.num(waiting, 1, "2c post-fix: citext 'abc' serializes behind 'ABC' (case-folded hash)")
+    expect.num(race.conflict(1005, "s_ci", _paused("'ABC'::citext", "cq_block(1005, 'zzz'::citext)"), "VALUES ('abc')"), 1,
+               "2c post-fix: citext 'abc' serializes behind 'ABC' (case-folded hash)")
+    violated = race.settle(1005, "s_ci_uidx")
     expect.text(violated, "yes", "2c post-fix: citext case-insensitive duplicate got unique_violation")
     expect.num(race.one("SELECT count(*) FROM s_ci WHERE v = 'abc'"), 1, "2c post-fix: exactly one row equal to 'abc'")
 
@@ -290,9 +298,9 @@ def test_different_keys_do_not_block_each_other(race, expect):
 def test_a_multi_column_key(race, expect):
     race.run(race.s1, "CREATE TABLE s_mc (a int, b int) USING pgcolumnar")
     race.run(race.s1, "CREATE UNIQUE INDEX s_mc_uidx ON s_mc (a, b)")
-    waiting, violated = race.conflict(1007, "s_mc", _paused("1", "cq_block(1007, -1)", ", 2"), "VALUES (1, 2)",
-                                      "s_mc_uidx")
-    expect.num(waiting, 1, "4 multi-column equal key serializes")
+    expect.num(race.conflict(1007, "s_mc", _paused("1", "cq_block(1007, -1)", ", 2"), "VALUES (1, 2)"), 1,
+               "4 multi-column equal key serializes")
+    violated = race.settle(1007, "s_mc_uidx")
     expect.text(violated, "yes", "4 multi-column duplicate got unique_violation")
     expect.num(race.one("SELECT count(*) FROM s_mc WHERE a = 1 AND b = 2"), 1, "4 exactly one (1,2) row")
     # (5,7) differs from (5,6) only in its second column
@@ -303,9 +311,9 @@ def test_a_multi_column_key(race, expect):
 def test_a_partial_unique_index(race, expect):
     race.run(race.s1, "CREATE TABLE s_part (k int, active boolean) USING pgcolumnar")
     race.run(race.s1, "CREATE UNIQUE INDEX s_part_uidx ON s_part (k) WHERE active")
-    waiting, violated = race.conflict(1009, "s_part", _paused("1", "cq_block(1009, -1)", ", true"),
-                                      "VALUES (1, true)", "s_part_uidx")
-    expect.num(waiting, 1, "5 partial index, row inside predicate serializes")
+    expect.num(race.conflict(1009, "s_part", _paused("1", "cq_block(1009, -1)", ", true"), "VALUES (1, true)"), 1,
+               "5 partial index, row inside predicate serializes")
+    violated = race.settle(1009, "s_part_uidx")
     expect.text(violated, "yes", "5 partial index in-predicate duplicate got unique_violation")
     expect.num(race.one("SELECT count(*) FROM s_part WHERE k = 1 AND active"), 1, "5 exactly one active row with k=1")
     # Outside the predicate the index covers neither row, so nothing serializes.
@@ -325,9 +333,9 @@ def test_null_keys(race, expect):
     # NULLS NOT DISTINCT is PG15's, the oldest major this tree supports.
     race.run(race.s1, "CREATE TABLE s_nn (k int) USING pgcolumnar")
     race.run(race.s1, "CREATE UNIQUE INDEX s_nn_uidx ON s_nn (k) NULLS NOT DISTINCT")
-    waiting, violated = race.conflict(1012, "s_nn", _paused("NULL", "cq_block(1012, -1)"), "VALUES (NULL)",
-                                      "s_nn_uidx")
-    expect.num(waiting, 1, "6 NULLS NOT DISTINCT: second NULL key serializes")
+    expect.num(race.conflict(1012, "s_nn", _paused("NULL", "cq_block(1012, -1)"), "VALUES (NULL)"), 1,
+               "6 NULLS NOT DISTINCT: second NULL key serializes")
+    violated = race.settle(1012, "s_nn_uidx")
     expect.text(violated, "yes", "6 NULLS NOT DISTINCT: second NULL got unique_violation")
     expect.num(race.one("SELECT count(*) FROM s_nn WHERE k IS NULL"), 1, "6 NULLS NOT DISTINCT: exactly one NULL row")
 
