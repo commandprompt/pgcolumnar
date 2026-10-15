@@ -733,4 +733,6 @@ guard_tests 438
 # listed controls and three parametrized refusals), by collection over the cluster files.
 # cluster_tests 609 -> 617 for #1433's test_native_skip.py, eight tests (six ranges and
 # two equalities, parametrized), by collection over the cluster files on this tree.
-cluster_tests 617
+# cluster_tests 617 -> 627 for #1341's test_unique_conc.py, the twin of unique_conc.sh:
+# ten tests, by collection over the cluster files on this tree.
+cluster_tests 627

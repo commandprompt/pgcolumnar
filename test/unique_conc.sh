@@ -66,16 +66,19 @@
 # failed. That is worse than invisibility, because a missing number can be noticed
 # and a balancing one cannot. Induced and measured rather than argued.
 #
-# THE NAME IS FIXED PER WAIT KIND, with the session and sentinel in pgc_record's
-# REASON field. The ledger is keyed on (suite, part, name), so interpolating
+# THE NAME IS FIXED PER WAIT KIND, with the session and sentinel in pgc_fail's
+# DETAIL. The ledger is keyed on (suite, part, name), so interpolating
 # "$name/$label" into the name would mint rows nobody can enumerate and therefore
 # nobody can seed.
 #
 # NO GREEN RUN EXECUTES THIS. It records only on the timeout path, so a passing
 # suite emits nothing here and the record stream is unchanged.
+#
+# lib.sh's pgc_fail, not a direct pgc_record (#1341): the pytest twin's grading
+# reads names through lib.sh's recorders, and a suite that records on its own is
+# one the twin check cannot read.
 wait_timeout() {	# wait_timeout FIXED-NAME DETAIL
-	pgc_record FAIL "$1" "FAIL  $1 (timed out waiting for $2)" "$2"
-	fail=1
+	pgc_fail "$1" "timed out waiting for $2"
 }
 
 
@@ -192,35 +195,11 @@ ctl_q() { run_pg "$PSQL -c \"$1\""; }
 # subject is the error itself.
 ctl_qe() { run_pg "$SPSQL -c \"$1\" 2>&1"; }
 
-fail=0
-# RECORDS RATHER THAN ONLY PRINTING (#965). This suite emitted human PASS lines
-# and no RESULT records, so every mechanism built on the record vocabulary -- the
-# ledger, the census, checks_never_observed_red, the red-observation record,
-# duplicate-name detection -- was blind to all of them. The ledger did not merely
-# return nothing on this log, it REFUSED it: "no RESULT records, so there is
-# nothing to reconcile".
-#
-# `pgc_record` takes the DISPLAY whole, so the human output below is byte-for-byte
-# what it was. NOT lib.sh's own `check`: that composes its own display and would
-# drop the `: $got` suffix, which is the measured value rather than a label.
-#
-# `fail` is still set, so this suite's exit logic is untouched. Its verdict line
-# stays for the same reason: under `set -euo pipefail` a failing command aborts the
-# suite, and the verdict is what distinguishes finished from stopped.
-#
-# The `checks run:` line is READ BY NOTHING YET. The matrix gates reconciliation on
-# the ACCOUNTING line via `pgc_log_shows_accounting`, and this suite emits none
-# because it emits no accounting line. The line is still correct and wanted --
-# it is the total the records reconcile against -- so the remaining step is a gate
-# flip rather than new work (@jdatcmd, #969 review).
-check() {  # name got want
-	if [ "$2" = "$3" ]; then
-		pgc_record PASS "$1" "PASS  $1: $2"
-	else
-		pgc_record FAIL "$1" "FAIL  $1: got [$2] want [$3]"
-		fail=1
-	fi
-}
+# lib.sh's `check` records every result (#965), and since #1341 this suite uses
+# it rather than a local wrapper around pgc_record. The local one printed the
+# measured value on a PASS too. lib.sh's prints it on a FAIL, which is when it is
+# read, and the twin check can read the names, which it could not before.
+# pgc_summary at the end prints the accounting line the matrix reconciles.
 
 # --- persistent interactive sessions over FIFOs (as in test/concurrency.sh) ---
 start_session() {  # name
@@ -263,13 +242,20 @@ wait_sentinel() {  # name label
 	done
 	return 0
 }
-wait_blocked() {  # application_name
-	local app="$1" i=0 n
+# wait_blocked APP [asserted]: with "asserted", the caller's next check counts the
+# waiter itself, so a wait that runs out is that check's failure and is not
+# recorded twice (#1341: a mutant that took no key lock recorded a second, fixed-
+# name failure per arm, which no green run emits and so no ledger row can hold).
+# It also gives up after 10s, as a waiter that is going to block does so at once.
+wait_blocked() {
+	local app="$1" i=0 n limit=1200
+	[ "${2:-}" = asserted ] && limit=200
 	while :; do
 		n="$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='$app' AND wait_event_type='Lock';")"
 		[ "$n" = "1" ] && return 0
 		sleep 0.05; i=$((i + 1))
-		if [ "$i" -ge 1200 ]; then
+		if [ "$i" -ge "$limit" ]; then
+			[ "${2:-}" = asserted ] && return 1
 			wait_timeout "a bounded wait for a session to block completed" "$app"; return 1
 		fi
 	done
@@ -287,6 +273,22 @@ wait_idle_intx() {  # application_name
 }
 # does session $1's cumulative output contain the substring $2?
 out_has() { grep -qF -- "$2" "$WORKDIR/$1.out" 2>/dev/null; }
+# returned SESSION LABEL -> "returned" when the session's INSERT came back inside a
+# live transaction, which the SELECT of LABEL after it shows, else "refused". The
+# no-wait arms give T2 a 5s lock_timeout, so an INSERT that waits is refused well
+# inside the 60s bounded wait. Without it, the server's 60s lock_timeout and the
+# wait ran out together, T2 was no longer waiting when the count was read, and
+# these arms could not fail (#1341, measured with a mutant that hashes only a key's
+# first column: 33/33).
+returned() {
+	out_has "$1" "$2" && echo returned || echo refused
+}
+# violated SESSION INDEX -> yes when the session's output holds a 23505 naming the
+# index. Its psql runs with VERBOSITY verbose, so the SQLSTATE is printed: the
+# index name alone would also match another error that named it (#1341).
+violated() {
+	out_has "$1" "ERROR:  23505: duplicate key value violates unique constraint \"$2\"" && echo yes || echo no
+}
 
 ctl_q "CREATE EXTENSION pgcolumnar;" >/dev/null
 # A row whose second value blocks on a holder-session advisory lock, holding T1
@@ -316,6 +318,7 @@ start_session s2
 start_session sh   # holder of the mid-statement pause lock
 send s1 "SET application_name='cc_s1';"
 send s2 "SET application_name='cc_s2';"
+send s2 "\\set VERBOSITY verbose"
 # This suite's cluster is started with the large prime above. Pin both halves of
 # what that buys: a session cannot change the count out from under the advisory
 # lock tag, and the cluster really is running the count the suite needs.
@@ -357,6 +360,7 @@ HKEY=1001
 pause_s1 "INSERT INTO s_int SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE 1 END FROM generate_series(1,2) g;"
 send_wait s2 "s2off_beg" "BEGIN;"
 send s2 "SET LOCAL pgcolumnar.enable_unique_insert_lock = off;"
+send s2 "SET LOCAL lock_timeout = '5s';"
 # T1 holds key 1 unflushed. With the lock off, T2 must NOT block; it inserts a
 # duplicate and commits. (With the fix on, it would block here instead.)
 send_wait s2 "s2off_ins" "INSERT INTO s_int VALUES (1);"
@@ -373,14 +377,14 @@ pause_s1 "INSERT INTO s_int SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE 1
 send_wait s2 "s2on_beg" "BEGIN;"
 send s2 "INSERT INTO s_int VALUES (1);"
 send s2 "\\echo <<s2on_ins>>"
-wait_blocked cc_s2
+wait_blocked cc_s2 asserted
 check "1b post-fix: same-key second inserter blocks" \
 	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
 release_s1
 send_wait s1 "s1_com_1b" "COMMIT;"   # releases the key lock; T2 unblocks
 wait_sentinel s2 s2on_ins             # T2's INSERT completed (with an error)
 check "1b post-fix: blocked inserter got a unique_violation" \
-	"$(out_has s2 's_int_uidx' && echo yes || echo no)" "yes"
+	"$(violated s2 s_int_uidx)" "yes"
 send_wait s2 "s2on_rb" "ROLLBACK;"
 check "1b post-fix: exactly one row with key 1" \
 	"$(ctl_q "SELECT count(*) FROM s_int WHERE k = 1;")" "1"
@@ -398,6 +402,7 @@ HKEY=1003
 pause_s1 "INSERT INTO s_num SELECT CASE WHEN g=2 THEN cq_block($HKEY, (-1)::numeric) ELSE 1.0 END FROM generate_series(1,2) g;"
 send_wait s2 "n_off_beg" "BEGIN;"
 send s2 "SET LOCAL pgcolumnar.enable_unique_insert_lock = off;"
+send s2 "SET LOCAL lock_timeout = '5s';"
 send_wait s2 "n_off_ins" "INSERT INTO s_num VALUES (1.00);"
 send_wait s2 "n_off_com" "COMMIT;"
 release_s1
@@ -411,14 +416,14 @@ pause_s1 "INSERT INTO s_num SELECT CASE WHEN g=2 THEN cq_block($HKEY, (-1)::nume
 send_wait s2 "n_on_beg" "BEGIN;"
 send s2 "INSERT INTO s_num VALUES (1.00);"   # byte-different, opclass-equal to 1.0
 send s2 "\\echo <<n_on_ins>>"
-wait_blocked cc_s2
+wait_blocked cc_s2 asserted
 check "2b post-fix: numeric 1.00 serializes behind 1.0 (opclass-safe hash)" \
 	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
 release_s1
 send_wait s1 "s1_com_2b" "COMMIT;"
 wait_sentinel s2 n_on_ins
 check "2b post-fix: numeric equal-but-different-bytes got unique_violation" \
-	"$(out_has s2 's_num_uidx' && echo yes || echo no)" "yes"
+	"$(violated s2 s_num_uidx)" "yes"
 send_wait s2 "n_on_rb" "ROLLBACK;"
 check "2b post-fix: exactly one row equal to 1.0" \
 	"$(ctl_q "SELECT count(*) FROM s_num WHERE v = 1.0;")" "1"
@@ -432,14 +437,14 @@ if [ "$CITEXT" = 1 ]; then
 	send_wait s2 "ci_beg" "BEGIN;"
 	send s2 "INSERT INTO s_ci VALUES ('abc');"   # equals 'ABC' under citext
 	send s2 "\\echo <<ci_ins>>"
-	wait_blocked cc_s2
+	wait_blocked cc_s2 asserted
 	check "2c post-fix: citext 'abc' serializes behind 'ABC' (case-folded hash)" \
 		"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
 	release_s1
 	send_wait s1 "s1_com_2c" "COMMIT;"
 	wait_sentinel s2 ci_ins
 	check "2c post-fix: citext case-insensitive duplicate got unique_violation" \
-		"$(out_has s2 's_ci_uidx' && echo yes || echo no)" "yes"
+		"$(violated s2 s_ci_uidx)" "yes"
 	send_wait s2 "ci_rb" "ROLLBACK;"
 	check "2c post-fix: exactly one row equal to 'abc'" \
 		"$(ctl_q "SELECT count(*) FROM s_ci WHERE v = 'abc';")" "1"
@@ -455,10 +460,12 @@ ctl_q "CREATE UNIQUE INDEX s_diff_uidx ON s_diff (k);" >/dev/null
 HKEY=1006
 pause_s1 "INSERT INTO s_diff SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE 10 END FROM generate_series(1,2) g;"
 send_wait s2 "d_beg" "BEGIN;"
-send_wait s2 "d_ins" "INSERT INTO s_diff VALUES (20);"   # different key: must not block
-wait_idle_intx cc_s2
+send s2 "SET LOCAL lock_timeout = '5s';"
+send_wait s2 "d_ins" "INSERT INTO s_diff VALUES (20);"
+send_wait s2 "d_ok" "SELECT 'returned_d';"
+[ "$(returned s2 returned_d)" = returned ] && wait_idle_intx cc_s2
 check "3 different keys do not block each other" \
-	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "0"
+	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")|$(returned s2 returned_d)" "0|returned"
 send_wait s2 "d_com" "COMMIT;"
 release_s1
 send_wait s1 "s1_com_3" "COMMIT;"
@@ -476,14 +483,14 @@ pause_s1 "INSERT INTO s_mc SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE 1 
 send_wait s2 "mc_beg" "BEGIN;"
 send s2 "INSERT INTO s_mc VALUES (1, 2);"
 send s2 "\\echo <<mc_ins>>"
-wait_blocked cc_s2
+wait_blocked cc_s2 asserted
 check "4 multi-column equal key serializes" \
 	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
 release_s1
 send_wait s1 "s1_com_4a" "COMMIT;"
 wait_sentinel s2 mc_ins
 check "4 multi-column duplicate got unique_violation" \
-	"$(out_has s2 's_mc_uidx' && echo yes || echo no)" "yes"
+	"$(violated s2 s_mc_uidx)" "yes"
 send_wait s2 "mc_rb" "ROLLBACK;"
 check "4 exactly one (1,2) row" \
 	"$(ctl_q "SELECT count(*) FROM s_mc WHERE a=1 AND b=2;")" "1"
@@ -491,10 +498,12 @@ check "4 exactly one (1,2) row" \
 HKEY=1008
 pause_s1 "INSERT INTO s_mc SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE 5 END, 6 FROM generate_series(1,2) g;"
 send_wait s2 "mc2_beg" "BEGIN;"
-send_wait s2 "mc2_ins" "INSERT INTO s_mc VALUES (5, 7);"   # (5,7) != (5,6)
-wait_idle_intx cc_s2
+send s2 "SET LOCAL lock_timeout = '5s';"
+send_wait s2 "mc2_ins" "INSERT INTO s_mc VALUES (5, 7);"
+send_wait s2 "mc2_ok" "SELECT 'returned_mc2';"
+[ "$(returned s2 returned_mc2)" = returned ] && wait_idle_intx cc_s2
 check "4 multi-column differing key does not block" \
-	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "0"
+	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")|$(returned s2 returned_mc2)" "0|returned"
 send_wait s2 "mc2_com" "COMMIT;"
 release_s1
 send_wait s1 "s1_com_4b" "COMMIT;"
@@ -510,14 +519,14 @@ pause_s1 "INSERT INTO s_part SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE 
 send_wait s2 "pt_beg" "BEGIN;"
 send s2 "INSERT INTO s_part VALUES (1, true);"
 send s2 "\\echo <<pt_ins>>"
-wait_blocked cc_s2
+wait_blocked cc_s2 asserted
 check "5 partial index, row inside predicate serializes" \
 	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
 release_s1
 send_wait s1 "s1_com_5a" "COMMIT;"
 wait_sentinel s2 pt_ins
 check "5 partial index in-predicate duplicate got unique_violation" \
-	"$(out_has s2 's_part_uidx' && echo yes || echo no)" "yes"
+	"$(violated s2 s_part_uidx)" "yes"
 send_wait s2 "pt_rb" "ROLLBACK;"
 check "5 exactly one active row with k=1" \
 	"$(ctl_q "SELECT count(*) FROM s_part WHERE k=1 AND active;")" "1"
@@ -526,10 +535,12 @@ check "5 exactly one active row with k=1" \
 HKEY=1010
 pause_s1 "INSERT INTO s_part SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE 2 END, false FROM generate_series(1,2) g;"
 send_wait s2 "pt2_beg" "BEGIN;"
+send s2 "SET LOCAL lock_timeout = '5s';"
 send_wait s2 "pt2_ins" "INSERT INTO s_part VALUES (2, false);"
-wait_idle_intx cc_s2
+send_wait s2 "pt2_ok" "SELECT 'returned_pt2';"
+[ "$(returned s2 returned_pt2)" = returned ] && wait_idle_intx cc_s2
 check "5 partial index, rows outside predicate do not serialize" \
-	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "0"
+	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")|$(returned s2 returned_pt2)" "0|returned"
 send_wait s2 "pt2_com" "COMMIT;"
 release_s1
 send_wait s1 "s1_com_5b" "COMMIT;"
@@ -545,48 +556,48 @@ ctl_q "CREATE UNIQUE INDEX s_nd_uidx ON s_nd (k);" >/dev/null
 HKEY=1011
 pause_s1 "INSERT INTO s_nd SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE NULL END FROM generate_series(1,2) g;"
 send_wait s2 "nd_beg" "BEGIN;"
+send s2 "SET LOCAL lock_timeout = '5s';"
 send_wait s2 "nd_ins" "INSERT INTO s_nd VALUES (NULL);"
-wait_idle_intx cc_s2
+send_wait s2 "nd_ok" "SELECT 'returned_nd';"
+[ "$(returned s2 returned_nd)" = returned ] && wait_idle_intx cc_s2
 check "6 NULLS DISTINCT: two NULL keys do not block" \
-	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "0"
+	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")|$(returned s2 returned_nd)" "0|returned"
 send_wait s2 "nd_com" "COMMIT;"
 release_s1
 send_wait s1 "s1_com_6a" "COMMIT;"
 check "6 NULLS DISTINCT: both NULL rows kept" \
 	"$(ctl_q "SELECT count(*) FROM s_nd WHERE k IS NULL;")" "2"
 
-# NULLS NOT DISTINCT (PG15+): NULL keys DO conflict -> serialize and violate.
-if [ "$PG_MAJOR" -ge 15 ]; then
-	ctl_q "CREATE TABLE s_nn (k int) USING pgcolumnar;" >/dev/null
-	ctl_q "CREATE UNIQUE INDEX s_nn_uidx ON s_nn (k) NULLS NOT DISTINCT;" >/dev/null
-	HKEY=1012
-	pause_s1 "INSERT INTO s_nn SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE NULL END FROM generate_series(1,2) g;"
-	send_wait s2 "nn_beg" "BEGIN;"
-	send s2 "INSERT INTO s_nn VALUES (NULL);"
-	send s2 "\\echo <<nn_ins>>"
-	wait_blocked cc_s2
-	check "6 NULLS NOT DISTINCT: second NULL key serializes" \
-		"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
-	release_s1
-	send_wait s1 "s1_com_6b" "COMMIT;"
-	wait_sentinel s2 nn_ins
-	check "6 NULLS NOT DISTINCT: second NULL got unique_violation" \
-		"$(out_has s2 's_nn_uidx' && echo yes || echo no)" "yes"
-	send_wait s2 "nn_rb" "ROLLBACK;"
-	check "6 NULLS NOT DISTINCT: exactly one NULL row" \
-		"$(ctl_q "SELECT count(*) FROM s_nn WHERE k IS NULL;")" "1"
-else
-	check_skip "the NULLS NOT DISTINCT case" "SKIP  6 NULLS NOT DISTINCT test (PostgreSQL < 15)" "PostgreSQL < 15"
-fi
+# NULLS NOT DISTINCT: NULL keys DO conflict -> serialize and violate. It is
+# PG15's, the oldest major this tree builds, so the PG < 15 skip that stood here
+# was a branch no run could take (#1341).
+ctl_q "CREATE TABLE s_nn (k int) USING pgcolumnar;" >/dev/null
+ctl_q "CREATE UNIQUE INDEX s_nn_uidx ON s_nn (k) NULLS NOT DISTINCT;" >/dev/null
+HKEY=1012
+pause_s1 "INSERT INTO s_nn SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE NULL END FROM generate_series(1,2) g;"
+send_wait s2 "nn_beg" "BEGIN;"
+send s2 "INSERT INTO s_nn VALUES (NULL);"
+send s2 "\\echo <<nn_ins>>"
+wait_blocked cc_s2 asserted
+check "6 NULLS NOT DISTINCT: second NULL key serializes" \
+	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
+release_s1
+send_wait s1 "s1_com_6b" "COMMIT;"
+wait_sentinel s2 nn_ins
+check "6 NULLS NOT DISTINCT: second NULL got unique_violation" \
+	"$(violated s2 s_nn_uidx)" "yes"
+send_wait s2 "nn_rb" "ROLLBACK;"
+check "6 NULLS NOT DISTINCT: exactly one NULL row" \
+	"$(ctl_q "SELECT count(*) FROM s_nn WHERE k IS NULL;")" "1"
 
 # ===========================================================================
 # Scenario 7: same-statement duplicate is still caught (no regression).
 # ===========================================================================
 ctl_q "CREATE TABLE s_ss (k int) USING pgcolumnar;" >/dev/null
 ctl_q "CREATE UNIQUE INDEX s_ss_uidx ON s_ss (k);" >/dev/null
-ss_err="$(run_pg "$SPSQL -c \"INSERT INTO s_ss SELECT 7 FROM generate_series(1,2);\" 2>&1" )"
+ss_err="$(run_pg "$SPSQL -v VERBOSITY=verbose -c \"INSERT INTO s_ss SELECT 7 FROM generate_series(1,2);\" 2>&1" )"
 check "7 same-statement duplicate raises unique_violation" \
-	"$(grep -qF 's_ss_uidx' <<<"$ss_err" && echo yes || echo no)" "yes"
+	"$(grep -qF 'ERROR:  23505: duplicate key value violates unique constraint "s_ss_uidx"' <<<"$ss_err" && echo yes || echo no)" "yes"
 check "7 same-statement duplicate inserted no rows" \
 	"$(ctl_q "SELECT count(*) FROM s_ss;")" "0"
 
@@ -603,7 +614,7 @@ send_wait s1 "ab_ins" "INSERT INTO s_ab VALUES (1);"   # completes, flushes, hol
 send_wait s2 "ab_beg2" "BEGIN;"
 send s2 "INSERT INTO s_ab VALUES (1);"
 send s2 "\\echo <<ab_ins2>>"
-wait_blocked cc_s2
+wait_blocked cc_s2 asserted
 check "8 second inserter blocks behind uncommitted first" \
 	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
 send_wait s1 "ab_rb" "ROLLBACK;"   # first inserter aborts; row never committed
@@ -616,12 +627,4 @@ send s1 "\\q"
 send s2 "\\q"
 send sh "\\q"
 
-echo
-if [ "$fail" = 0 ]; then
-	echo "checks run: $PGC_CHECKS"
-	echo "UNIQUE_CONC TEST PASSED"
-else
-	echo "checks run: $PGC_CHECKS"
-	echo "UNIQUE_CONC TEST FAILED"
-fi
-exit "$fail"
+pgc_summary
