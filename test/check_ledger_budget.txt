@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 224
+suites_not_covered 223
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2815,4 +2815,23 @@ suites_not_covered 224
 #     never         2602 - 1     = 2601
 #     dated          872 + 1     = 873
 #     2601 + 873 == 3474
-checks_never_observed_red 2601
+#
+# #1341, unique_conc seeded, with its twin (OffgridwithJD): 2601 -> 2607, and
+# suites_not_covered 224 -> 223. The suite had no rows: its local check() recorded
+# through pgc_record with no accounting line, and it now uses lib.sh's recorders.
+# It enters with all 33 checks from five-major runs (33/33 on each of 15-19). 27 are
+# dated by six mutations of columnar_unique.c: the per-key lock never taken (the 18
+# serialize, unique_violation and one-row arms), the lock taken with the setting off
+# (1a, 2a), every key in one bucket (3, and 4's differing key), only the first key
+# column hashed (4's differing key), the partial predicate ignored (5 outside it),
+# and a NULL key locked under NULLS DISTINCT (6). The "does not block" arms could not
+# fail before this change, so their dates are new evidence. Six arrive never: the two
+# bucket-count premises, the same-statement duplicate (7, the btree's own check), and
+# the aborted first inserter (8), which waits on the first's xid with or without the
+# key lock.
+#
+#     ledger rows   3474 + 33 = 3507
+#     never         2601 +  6 = 2607
+#     dated          873 + 27 = 900
+#     2607 + 900 == 3507
+checks_never_observed_red 2607
