@@ -705,4 +705,6 @@ guard_tests 438
 # cluster_tests 586 -> 587 for #1341's test_serializable.py, one test, by collection
 # cluster_tests 587 -> 588 for #1341's daemon TimeZone test in test_autovacuum_expire.py,
 # by collection over the cluster files on this tree.
-cluster_tests 588
+# cluster_tests 588 -> 590 for #1341's caller-privilege tests in test_tier_partition.py and
+# test_partition_lifecycle.py, one each, by collection over the cluster files on this tree.
+cluster_tests 590

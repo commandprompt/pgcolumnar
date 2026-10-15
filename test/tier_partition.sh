@@ -399,6 +399,56 @@ else
 		"PostgreSQL $PGC_MAJOR has no virtual generated columns"
 fi
 
+# ---- the caller's own privileges (#1341) -------------------------------------
+#
+# tier_partition is not SECURITY DEFINER: every step runs as the caller, so the
+# owner-only steps (its LOCK ... IN SHARE MODE first) stop a role that does not own
+# the table.
+# Made SECURITY DEFINER, it would run as the extension's owner and let any caller
+# detach, drop and replace a partition it does not own. Two roles, each holding
+# every other privilege the call needs (the server-file role for the export, USAGE
+# on the server and CREATE on the schema for the foreign table, and SELECT on the
+# partition), so ownership is the only thing between them.
+for r in tier_own tier_peer; do
+	psql_run "DROP ROLE IF EXISTS $r; CREATE ROLE $r LOGIN NOSUPERUSER;
+	          GRANT pg_write_server_files TO $r; GRANT USAGE ON FOREIGN SERVER tier_pq TO $r;
+	          GRANT USAGE, CREATE ON SCHEMA public TO $r; GRANT USAGE ON SCHEMA pgcolumnar TO $r;"
+done
+sqlstate_as() {	# sqlstate_as ROLE SQL -> the SQLSTATE SQL fails with as ROLE, or ok
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$2" 2>&1 >/dev/null)
+	[ -z "$out" ] && { echo ok; return; }
+	echo "$out" | sed -n 's/^\(ERROR\|FATAL\): *\([0-9A-Z]\{5\}\).*/\2/p' | head -1
+}
+# The owner's control has a table of its own (pw), so a refusal that let the peer
+# through cannot make the control fail for the peer's reason.
+for t in po pw; do
+	build $t
+	psql_run "ALTER TABLE $t OWNER TO tier_own; ALTER TABLE ${t}_jan OWNER TO tier_own;
+	          ALTER TABLE ${t}_feb OWNER TO tier_own;"
+done
+psql_run "GRANT SELECT ON po, po_jan TO tier_peer;"
+pb="$(digest po)"
+check "premise: tier_own owns the parent and its partitions, and neither role is a superuser" \
+	"$(q "SELECT string_agg(DISTINCT pg_get_userbyid(relowner), ',') FROM pg_class WHERE relname IN ('po', 'po_jan', 'po_feb', 'pw', 'pw_jan', 'pw_feb');")|$(q "SELECT count(*) FROM pg_roles WHERE rolname IN ('tier_own', 'tier_peer') AND rolsuper;")" \
+	"tier_own|0"
+check "premise: tier_peer can open a session and read the partition" \
+	"$(sqlstate_as tier_peer "SELECT count(*) FROM po_jan")" "ok"
+check "a role that does not own the table is refused by its own privileges (42501)" \
+	"$(sqlstate_as tier_peer "SELECT pgcolumnar.tier_partition('po_jan', 'tier_pq', '$W/po_peer.parquet')")" "42501"
+check "and the refused call leaves the partition local and attached, every row once" \
+	"$(digest po)|$(jan_shape po)" "$pb|r:pgcolumnar:$JAN_BOUND"
+check_num "with no foreign table behind it" \
+	"$(q "SELECT count(*) FROM pg_foreign_table t JOIN pg_class c ON c.oid = t.ftrelid WHERE c.relname LIKE 'po\\_%';")" "0"
+# The first statement to need more than SELECT is the LOCK ... IN SHARE MODE ahead
+# of the export, so the refusal comes before any file is written (measured on 15-19).
+check "and the refused call wrote no export file" \
+	"$([ -e "$W/po_peer.parquet" ] && echo written || echo absent)" "absent"
+check "a non-superuser owner tiers its own partition" \
+	"$(sqlstate_as tier_own "SELECT pgcolumnar.tier_partition('pw_jan', 'tier_pq', '$W/pw_own.parquet')")|$(jan_shape pw)" \
+	"ok|f:-:$JAN_BOUND"
+
 # ---- a failure after each step ----------------------------------------------
 for step in export detach drop create attach; do
 	build f

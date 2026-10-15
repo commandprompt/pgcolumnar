@@ -530,3 +530,63 @@ def test_tier_partition_moves_a_virtual_generated_column(pgc_own_db, server_dir,
     kind = _one(conn, "SELECT relkind::text FROM pg_class WHERE oid = 'cv_mar'::regclass")
     expect.text(f"{moved}|{kind}|{'same' if before and before == _one(conn, digest) else 'differs'}",
                 "71|f|same", "a virtual generated column moves and reads back the same")
+
+
+def test_tier_partition_runs_on_the_callers_own_privileges(pgc_own_db, pgc_cluster, server_dir, expect):
+    """tier_partition is not SECURITY DEFINER, so a role that does not own the table is
+    refused by its own privileges (#1341). Made SECURITY DEFINER, it would run as the
+    extension's owner and let any caller replace a partition it does not own. Both roles
+    hold every other privilege the call needs, so ownership is all that separates them."""
+    conn = pgc_own_db
+    db = _one(conn, "SELECT current_database()")
+    with conn.cursor() as cur:
+        cur.execute("SET timezone = 'UTC'")
+        cur.execute("CREATE SERVER tq FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        for r in ("tier_own_py", "tier_peer_py"):
+            cur.execute(f"DO $$ BEGIN CREATE ROLE {r} LOGIN NOSUPERUSER; "
+                        "EXCEPTION WHEN duplicate_object THEN NULL; END $$")
+            cur.execute(f"GRANT pg_write_server_files TO {r}")
+            cur.execute(f"GRANT USAGE ON FOREIGN SERVER tq TO {r}")
+            cur.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {r}")
+            cur.execute(f"GRANT USAGE ON SCHEMA pgcolumnar TO {r}")
+    # The owner's control has a table of its own (pw), so a refusal that let the peer
+    # through cannot make the control fail for the peer's reason.
+    for t in ("po", "pw"):
+        _build(conn, t)
+        with conn.cursor() as cur:
+            for r in (t, f"{t}_mar", f"{t}_apr"):
+                cur.execute(f"ALTER TABLE {r} OWNER TO tier_own_py")
+    with conn.cursor() as cur:
+        cur.execute("GRANT SELECT ON po, po_mar TO tier_peer_py")
+    before = _digest(conn, "po")
+
+    def as_role(role, sql):
+        try:
+            with psycopg.connect(f"host=127.0.0.1 port={pgc_cluster.port} user={role} dbname={db}",
+                                 autocommit=True) as c:
+                c.execute("SET timezone = 'UTC'")
+                c.execute(sql)
+            return "ok"
+        except psycopg.Error as e:
+            return e.sqlstate or "?"
+
+    owners = _one(conn, "SELECT string_agg(DISTINCT pg_get_userbyid(relowner), ',') FROM pg_class"
+                        " WHERE relname IN ('po', 'po_mar', 'po_apr', 'pw', 'pw_mar', 'pw_apr')")
+    supers = _one(conn, "SELECT count(*) FROM pg_roles WHERE rolname IN ('tier_own_py', 'tier_peer_py') AND rolsuper")
+    expect.text(f"{owners}|{supers}", "tier_own_py|0",
+                "premise: tier_own owns the parent and its partitions, and neither role is a superuser")
+    expect.text(as_role("tier_peer_py", "SELECT count(*) FROM po_mar"), "ok",
+                "premise: tier_peer can open a session and read the partition")
+    peer_path = server_dir / "po_peer.parquet"
+    expect.text(as_role("tier_peer_py", f"SELECT pgcolumnar.tier_partition('po_mar', 'tq', '{peer_path}')"),
+                "42501", "a role that does not own the table is refused by its own privileges (42501)")
+    expect.text(f"{_digest(conn, 'po')}|{_mar_shape(conn, 'po')}", f"{before}|r:pgcolumnar:{BOUND}",
+                "and the refused call leaves the partition local and attached, every row once")
+    expect.num(_one(conn, "SELECT count(*) FROM pg_foreign_table t JOIN pg_class c ON c.oid = t.ftrelid"
+                          " WHERE c.relname LIKE 'po\\_%'"), 0, "with no foreign table behind it")
+    # The LOCK ... IN SHARE MODE ahead of the export is the first statement to need
+    # more than SELECT, so the refusal comes before any file is written.
+    expect.text("written" if peer_path.exists() else "absent", "absent", "and the refused call wrote no export file")
+    expect.text(as_role("tier_own_py", f"SELECT pgcolumnar.tier_partition('pw_mar', 'tq', '{server_dir / 'pw_own.parquet'}')")
+                + f"|{_mar_shape(conn, 'pw')}", f"ok|f:-:{BOUND}",
+                "a non-superuser owner tiers its own partition")

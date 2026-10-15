@@ -2545,4 +2545,18 @@ suites_not_covered 230
 #     never         2345 + 1 = 2346
 #     dated          770 + 2 = 772
 #     2346 + 772 == 3118
-checks_never_observed_red 2346
+#
+# #1341, tier_partition and partition_create_ahead on the caller's own privileges
+# (OffgridwithJD): 2346 -> 2352. Eleven new checks, all in already-covered suites.
+# Five are dated, by each function made SECURITY DEFINER: tier_partition's refusal,
+# the partition left local, no foreign table and no export file (four), and
+# partition_create_ahead's refusal (one). The two owner controls run on tables of
+# their own, so neither mutation reddens them; they and four premises arrive never.
+# Five-major runs: tier_partition 79/79 (80 on 18-19, which run the virtual column)
+# and partition_lifecycle 64/64 on 15-19.
+#
+#     ledger rows   3118 + 11 = 3129
+#     never         2346 +  6 = 2352
+#     dated          772 +  5 =  777
+#     2352 + 777 == 3129
+checks_never_observed_red 2352

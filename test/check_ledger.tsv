@@ -2399,6 +2399,7 @@ partition_lifecycle	partition_lifecycle	a cutoff on a partition's upper bound in
 partition_lifecycle	partition_lifecycle	a drop plan for a parent not RANGE-partitioned on one column is refused, LIST and two-column RANGE included	15;16;17;18;19	2026-10-14	partition_drop_candidates refusing only a parent with no partition key, not LIST or a multi-column RANGE;partition_drop_candidates without its RANGE-on-one-column check
 partition_lifecycle	partition_lifecycle	a drop plan for a parent not partitioned on a timestamp is refused	15;16;17;18;19	2026-10-14	a parent partitioned on a non-timestamp key planned instead of refused;partition_drop_candidates without its timestamp-key check
 partition_lifecycle	partition_lifecycle	a drop plan for a parent with a DEFAULT partition is refused	15;16;17;18;19	2026-10-13	a parent with a DEFAULT partition planned instead of refused
+partition_lifecycle	partition_lifecycle	a non-superuser owner creates partitions ahead on its own table	15;16;17;18;19	never	-
 partition_lifecycle	partition_lifecycle	a parent partitioned on a key that is not a timestamp is refused before any DDL	15;16;17;18;19	2026-10-13	partition_create_ahead without its timestamp key check
 partition_lifecycle	partition_lifecycle	a parent that is not RANGE-partitioned on one column is refused before any DDL	15;16;17;18;19	2026-10-13	partition_create_ahead without its RANGE-on-one-column check
 partition_lifecycle	partition_lifecycle	a parent with a 63-byte name gets partitions whose names keep their dates	15;16;17;18;19	2026-10-14	partition_create_ahead creating its last partition without attaching it;partition_create_ahead stopping one width short of now plus the lead;partition_create_ahead without shortening a long parent name;partition_create_ahead's name bound one byte too long
@@ -2410,6 +2411,7 @@ partition_lifecycle	partition_lifecycle	a partition named with the drop block's 
 partition_lifecycle	partition_lifecycle	a partition that is itself partitioned is planned whole	15;16;17;18;19	2026-10-13	a partition that is itself partitioned left out of the plan;a partition whose upper bound equals the cutoff left out;a plain DROP, not refusing while the partition is still attached;the cutoff filter removed: every partition planned;the lower bound read where the upper is meant;the plan detaches but drops nothing;the plan detaches without CONCURRENTLY
 partition_lifecycle	partition_lifecycle	a pending detach is finalised, not started again	15;16;17;18;19	2026-10-13	a partition whose upper bound equals the cutoff left out;a pending detach planned as a new concurrent detach, not FINALIZE;a plain DROP, not refusing while the partition is still attached;the cutoff filter removed: every partition planned;the lower bound read where the upper is meant;the plan detaches but drops nothing
 partition_lifecycle	partition_lifecycle	a plan for names that need quoting runs as returned	15;16;17;18;19	2026-10-13	a partition whose upper bound equals the cutoff left out;names in the plan with their quotes removed;the cutoff filter removed: every partition planned;the lower bound read where the upper is meant;the plan detaches but drops nothing
+partition_lifecycle	partition_lifecycle	a role that does not own the parent is refused by its own privileges (42501), and creates nothing	15;16;17;18;19	2026-10-14	partition_create_ahead made SECURITY DEFINER
 partition_lifecycle	partition_lifecycle	a second call creates nothing	15;16;17;18;19	2026-10-14	partition_create_ahead creating its last partition without attaching it;partition_create_ahead starting from now, not the highest upper bound
 partition_lifecycle	partition_lifecycle	a second plan for the same cutoff is empty, and the partitions it kept are still attached	15;16;17;18;19	2026-10-13	the cutoff filter removed: every partition planned;the lower bound read where the upper is meant
 partition_lifecycle	partition_lifecycle	a tiered partition is planned with DROP FOREIGN TABLE	15;16;17;18;19	2026-10-13	a partition whose upper bound equals the cutoff left out;a plain DROP, not refusing while the partition is still attached;a tiered partition planned with DROP TABLE;the cutoff filter removed: every partition planned;the lower bound read where the upper is meant;the plan detaches but drops nothing;the plan detaches without CONCURRENTLY
@@ -2441,6 +2443,8 @@ partition_lifecycle	partition_lifecycle	premise: a partition is named with the d
 partition_lifecycle	partition_lifecycle	premise: a timestamp parent continued from a hand-made partition, in a session west of UTC	15;16;17;18;19	never	-
 partition_lifecycle	partition_lifecycle	premise: a timestamp parent was given partitions from a session east of UTC	15;16;17;18;19	never	-
 partition_lifecycle	partition_lifecycle	premise: a timestamptz parent continued from a hand-made partition, in a session west of UTC	15;16;17;18;19	never	-
+partition_lifecycle	partition_lifecycle	premise: pl_own owns the parent, and neither role is a superuser	15;16;17;18;19	never	-
+partition_lifecycle	partition_lifecycle	premise: pl_peer can open a session	15;16;17;18;19	never	-
 partition_lifecycle	partition_lifecycle	premise: the January partition was tiered to Parquet	15;16;17;18;19	never	-
 partition_lifecycle	partition_lifecycle	premise: the call inside the transaction created partitions	15;16;17;18;19	never	-
 partition_lifecycle	partition_lifecycle	premise: the drop fixture has several partitions, each holding rows	15;16;17;18;19	never	-
@@ -2884,6 +2888,7 @@ tier_partition	tier_partition	a failure after drop leaves the rows exactly once,
 tier_partition	tier_partition	a failure after export leaves the rows exactly once, still local	15;16;17;18;19	never	-
 tier_partition	tier_partition	a fault step that is not one of tier_partition's is refused	15;16;17;18;19	2026-10-13	the tier_fault_after check hook accepting any value
 tier_partition	tier_partition	a grant to a role whose name needs quoting is carried to the foreign partition	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix;tier_partition not carrying the grants;tier_partition returning 0 rows moved
+tier_partition	tier_partition	a non-superuser owner tiers its own partition	15;16;17;18;19	never	-
 tier_partition	tier_partition	a parent held by a long reader times the move out, as lock_wait says	15;16;17;18;19	2026-10-13	tier_partition without the lock_wait bound
 tier_partition	tier_partition	a parent with a UNIQUE index is refused before anything moves	15;16;17;18;19	2026-10-13	tier_partition without the UNIQUE-parent refusal
 tier_partition	tier_partition	a partition a view depends on is refused before anything moves	15;16;17;18;19	2026-10-13	tier_partition without the dependents check
@@ -2896,6 +2901,7 @@ tier_partition	tier_partition	a partition with a trigger of its own is refused b
 tier_partition	tier_partition	a query on the other range scans only the local partition, beside a foreign one	15;16;17;18;19	never	-
 tier_partition	tier_partition	a query on the tiered range scans only the foreign partition	15;16;17;18;19	never	-
 tier_partition	tier_partition	a retry over the failed attempt's file moves the partition, exactly once	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix;tier_partition refusing every existing path (the first version's rule);tier_partition returning 0 rows moved
+tier_partition	tier_partition	a role that does not own the table is refused by its own privileges (42501)	15;16;17;18;19	2026-10-14	tier_partition made SECURITY DEFINER
 tier_partition	tier_partition	a rollback after the whole call leaves the rows local, exactly once	15;16;17;18;19	never	-
 tier_partition	tier_partition	a server of another wrapper is refused	15;16;17;18;19	2026-10-14	tier_partition without its wrong-wrapper branch, so the iceberg wrapper refuses only after the export;tier_partition without the wrapper check
 tier_partition	tier_partition	a server that does not exist is refused before anything moves	15;16;17;18;19	2026-10-13	tier_partition without its missing-server branch, so core refuses only after the export
@@ -2913,6 +2919,8 @@ tier_partition	tier_partition	and no foreign table behind it after detach	15;16;
 tier_partition	tier_partition	and no foreign table behind it after drop	15;16;17;18;19	never	-
 tier_partition	tier_partition	and no foreign table behind it after export	15;16;17;18;19	never	-
 tier_partition	tier_partition	and the refusals moved nothing	15;16;17;18;19	2026-10-13	tier_partition without the path refusal
+tier_partition	tier_partition	and the refused call leaves the partition local and attached, every row once	15;16;17;18;19	2026-10-14	tier_partition made SECURITY DEFINER
+tier_partition	tier_partition	and the refused call wrote no export file	15;16;17;18;19	2026-10-14	tier_partition made SECURITY DEFINER
 tier_partition	tier_partition	and the timed-out move leaves the rows local, with nothing attached	15;16;17;18;19	2026-10-13	tier_partition without the lock_wait bound
 tier_partition	tier_partition	at read committed a row committed between the caller's snapshot and the lock survives	15;16;17;18;19	never	-
 tier_partition	tier_partition	at read committed the move goes ahead and exports that row	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix;tier_partition returning 0 rows moved
@@ -2937,6 +2945,8 @@ tier_partition	tier_partition	premise: the first attempt failed after export and
 tier_partition	tier_partition	premise: the move started while the insert was in flight, and waited for it	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: the parent holds every row	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: the storage id was read before the move	15;16;17;18;19	never	-
+tier_partition	tier_partition	premise: tier_own owns the parent and its partitions, and neither role is a superuser	15;16;17;18;19	never	-
+tier_partition	tier_partition	premise: tier_peer can open a session and read the partition	15;16;17;18;19	never	-
 tier_partition	tier_partition	the answers over the parent are the same after the move	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix
 tier_partition	tier_partition	the call holds ACCESS EXCLUSIVE on the parent until commit, as the docs say	15;16;17;18;19	never	-
 tier_partition	tier_partition	the cold partition is now a foreign partition with its own name and bound	15;16;17;18;19	2026-10-13	tier_partition attaching with the upper bound shifted a minute;tier_partition naming the foreign table with a suffix
@@ -2947,6 +2957,7 @@ tier_partition	tier_partition	the local partition leaves no pgcolumnar storage r
 tier_partition	tier_partition	the move ran inside the caller's transaction	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved
 tier_partition	tier_partition	the other partition is still local after the refusals	15;16;17;18;19	2026-10-13	tier_partition without the path refusal
 tier_partition	tier_partition	tier_partition moves the cold partition and returns the rows it moved	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved
+tier_partition	tier_partition	with no foreign table behind it	15;16;17;18;19	2026-10-14	tier_partition made SECURITY DEFINER
 tier_partition	tier_partition	with the dependents gone, the same partition moves	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved;tier_partition without the dependents check
 timeseries_recipes	timeseries_recipes	premise: the readings table is columnar	15;16;17;18;19	never	-
 timeseries_recipes	timeseries_recipes	premise: the reference has 24 hours, 6 of them empty and one all-NULL	15;16;17;18;19	never	-

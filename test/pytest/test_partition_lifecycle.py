@@ -595,3 +595,46 @@ def test_partition_drop_plan(pgc_conn, pgc_cluster, expect):
                          for t in ("xnl", "xls", "xr2")),
                 "|".join(f"55000 {name(t)} is not RANGE-partitioned on one column" for t in ("xnl", "xls", "xr2")),
                 "a drop plan for a parent not RANGE-partitioned on one column is refused, LIST and two-column RANGE included")
+
+
+def test_partition_create_ahead_runs_on_the_callers_own_privileges(pgc_conn, pgc_cluster, expect):
+    """partition_create_ahead is not SECURITY DEFINER, so its CREATE TABLE ... PARTITION
+    OF runs as the caller and core refuses a role that does not own the parent (#1341).
+    Made SECURITY DEFINER, it would run as the extension's owner and let any caller add
+    partitions to a table it does not own. Both roles hold USAGE and CREATE on the
+    schema, so ownership is all that separates them."""
+    conn = pgc_conn
+    schema = _one(conn, "SELECT current_schema()")
+    with conn.cursor() as cur:
+        for r in ("pl_own_py", "pl_peer_py"):
+            cur.execute(f"DO $$ BEGIN CREATE ROLE {r} LOGIN NOSUPERUSER; "
+                        "EXCEPTION WHEN duplicate_object THEN NULL; END $$")
+            cur.execute(f'GRANT USAGE, CREATE ON SCHEMA "{schema}" TO {r}')
+            cur.execute(f"GRANT USAGE ON SCHEMA pgcolumnar TO {r}")
+        # The owner's control has a parent of its own (pw2), so a refusal that let the
+        # peer through cannot make the control fail for the peer's reason.
+        for t in ("pv", "pw2"):
+            cur.execute(f"CREATE TABLE {t} (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts)")
+            cur.execute(f"ALTER TABLE {t} OWNER TO pl_own_py")
+
+    def as_role(role, sql):
+        try:
+            with psycopg.connect(f"host=127.0.0.1 port={pgc_cluster.port} user={role} dbname=postgres",
+                                 autocommit=True) as c:
+                c.execute(f'SET search_path TO "{schema}", pgcolumnar, public')
+                return str(c.execute(sql).fetchone()[0])
+        except psycopg.Error as e:
+            return e.sqlstate or "?"
+
+    ahead_pv = "SELECT pgcolumnar.partition_create_ahead('pv', '1 day', 2)"
+    owner = _one(conn, "SELECT string_agg(DISTINCT pg_get_userbyid(relowner), ',') FROM pg_class"
+                       " WHERE oid IN ('pv'::regclass, 'pw2'::regclass)")
+    supers = _one(conn, "SELECT count(*) FROM pg_roles WHERE rolname IN ('pl_own_py', 'pl_peer_py') AND rolsuper")
+    expect.text(f"{owner}|{supers}", "pl_own_py|0",
+                "premise: pl_own owns the parent, and neither role is a superuser")
+    expect.text(as_role("pl_peer_py", "SELECT 1"), "1", "premise: pl_peer can open a session")
+    expect.text(f"{as_role('pl_peer_py', ahead_pv)}|{_kids(conn, 'pv')}",
+                "42501|0", "a role that does not own the parent is refused by its own privileges (42501), and creates nothing")
+    ahead_pw2 = "SELECT pgcolumnar.partition_create_ahead('pw2', '1 day', 2)"
+    expect.text(f"{as_role('pl_own_py', ahead_pw2)}|{_kids(conn, 'pw2')}",
+                "3|3", "a non-superuser owner creates partitions ahead on its own table")

@@ -241,6 +241,40 @@ check "a parent with a DEFAULT partition is refused" \
 check "and nothing was created for it" \
 	"$(kids td)|$(q "SELECT count(*) FROM pg_proc WHERE proname = 'partition_create_ahead';")" "1|1"
 
+# ---- the caller's own privileges (#1341) -------------------------------------
+#
+# partition_create_ahead is not SECURITY DEFINER, so its CREATE TABLE ... PARTITION OF
+# runs as the caller, and core refuses a role that does not own the parent. Made
+# SECURITY DEFINER, it would run as the extension's owner and let any caller add
+# partitions, and the access-exclusive lock that comes with them, to a table it does
+# not own. Both roles hold USAGE and CREATE on the schema, so ownership is all that
+# separates them.
+for r in pl_own pl_peer; do
+	psql_run "DROP ROLE IF EXISTS $r; CREATE ROLE $r LOGIN NOSUPERUSER;
+	          GRANT USAGE, CREATE ON SCHEMA public TO $r; GRANT USAGE ON SCHEMA pgcolumnar TO $r;"
+done
+as_role() {	# as_role ROLE SQL -> the single value SQL returns as ROLE, or the SQLSTATE it fails with
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$2" 2>&1)
+	case "$out" in
+		*ERROR:*|*FATAL:*) sed -n 's/^\(ERROR\|FATAL\): *\([0-9A-Z]\{5\}\).*/\2/p' <<<"$out" | head -1 ;;
+		*) printf '%s\n' "$out" | tail -1 ;;
+	esac
+}
+# The owner's control has a parent of its own (pw2), so a refusal that let the peer
+# through cannot make the control fail for the peer's reason.
+q "CREATE TABLE pv (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts); ALTER TABLE pv OWNER TO pl_own;
+   CREATE TABLE pw2 (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts); ALTER TABLE pw2 OWNER TO pl_own;" >/dev/null
+check "premise: pl_own owns the parent, and neither role is a superuser" \
+	"$(q "SELECT string_agg(DISTINCT pg_get_userbyid(relowner), ',') FROM pg_class WHERE oid IN ('pv'::regclass, 'pw2'::regclass);")|$(q "SELECT count(*) FROM pg_roles WHERE rolname IN ('pl_own', 'pl_peer') AND rolsuper;")" \
+	"pl_own|0"
+check "premise: pl_peer can open a session" "$(as_role pl_peer "SELECT 1")" "1"
+check "a role that does not own the parent is refused by its own privileges (42501), and creates nothing" \
+	"$(as_role pl_peer "SELECT pgcolumnar.partition_create_ahead('pv', '1 day', 2)")|$(kids pv)" "42501|0"
+check "a non-superuser owner creates partitions ahead on its own table" \
+	"$(as_role pl_own "SELECT pgcolumnar.partition_create_ahead('pw2', '1 day', 2)")|$(kids pw2)" "3|3"
+
 # ==== the drop half: partition_drop_plan (#1297) ================================
 #
 #   partition_drop_plan(parent regclass, cutoff timestamptz) -> SETOF text
