@@ -466,14 +466,15 @@ check "CONTROL serial columnar keeps one row (GREEN today; proves the RED is the
 check "CONTROL serial columnar keeps the last writer's value" "$(vals t_col)" "20"
 
 # ---------------------------------------------------------------------------
-# CHARACTERIZATION: a covering UNIQUE(id) index makes the shipped unique-key
-# advisory lock (columnar_unique.c) serialize the two NEW rows, so the loser gets
-# a unique_violation (23505) instead of duplicating -- but a heap COMPOSES with no
-# error. This documents why the primary RED fixture above has NO unique index (an
-# index would mask the lost update) and that the unique path is a partial
-# mitigation, not heap-transparent serialization. Stable before and after the fix.
+# A covering UNIQUE(id) index. The loser must get the same retryable
+# serialization_failure (40001) as without one, as docs/limitations.md promises
+# ("needs no unique index"). It used to get unique_violation (23505): the new
+# version's unique-key lock waited on the winner's identical key, and the unique
+# check fired before the flush that raises 40001 (#1421). A heap composes with no
+# error. The primary fixture above still has no unique index, so this arm and that
+# one exercise the two paths separately.
 # ---------------------------------------------------------------------------
-echo; echo "### CHARACTERIZATION: covering UNIQUE(id) is only a partial mitigation"
+echo; echo "### a covering UNIQUE(id): the loser still gets 40001 (#1421)"
 ctl_q "CREATE TABLE t_colu (id int, v int) USING pgcolumnar;" >/dev/null
 ctl_q "CREATE UNIQUE INDEX t_colu_uidx ON t_colu (id);" >/dev/null
 ctl_q "CREATE TABLE t_heapu (id int, v int);" >/dev/null
@@ -482,8 +483,8 @@ uu t_heapu "READ COMMITTED" uxh_; H_CNT=$RES_CNT; H_SS=$RES_SS
 uu t_colu  "READ COMMITTED" uxc_; C_CNT=$RES_CNT; C_SS=$RES_SS
 echo "-- heap+uniq: count=$H_CNT sqlstate=$H_SS ; col+uniq: count=$C_CNT sqlstate=$C_SS"
 check "unique/RC heap composes with no error (sqlstate 00000)" "$H_SS" "00000"
-check "unique/RC columnar loser errors where heap composes (not transparent)" \
-	"$([ "$C_SS" != "00000" ] && echo errored)" "errored"
+check "unique/RC columnar loser gets serialization_failure (40001), as without a unique index" \
+	"$C_SS|$C_CNT" "40001|1"
 
 # ---------------------------------------------------------------------------
 # savepoint: a subtransaction that updates a row then rolls back must discard both

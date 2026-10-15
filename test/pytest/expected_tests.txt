@@ -673,4 +673,6 @@ guard_tests 435
 # in test_am_contracts.py, by collection over the cluster files on this tree.
 # cluster_tests 566 -> 567 for #1420's wiring arm in test_connection.py, by collection
 # over the cluster files on this tree.
-cluster_tests 567
+# cluster_tests 567 -> 568 for #1421's test_partition_rows.py, one test, by collection
+# over the cluster files on this tree.
+cluster_tests 568

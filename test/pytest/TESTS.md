@@ -160,6 +160,7 @@ behaviour, the source of that number is named.
 - [112. test_debug_hook_privilege.py: the debug metadata mutators are owner-only](#112-test_debug_hook_privilegepy-the-debug-metadata-mutators-are-owner-only)
 - [113. test_vacuum_lock_privilege.py: maintenance refuses a non-owner before taking its lock](#113-test_vacuum_lock_privilegepy-maintenance-refuses-a-non-owner-before-taking-its-lock)
 - [114. test_vm_privilege.py: the visibility-map entry points are owner-only and refuse heap](#114-test_vm_privilegepy-the-visibility-map-entry-points-are-owner-only-and-refuse-heap)
+- [115. test_partition_rows.py: rows cross columnar partitions, and keys hold through the parent](#115-test_partition_rowspy-rows-cross-columnar-partitions-and-keys-hold-through-the-parent)
 
 ## 1. How to read a test in here
 
@@ -6957,3 +6958,13 @@ The pytest twin of `test/vm_privilege.sh` (#748, ported for #1341), every check 
 | test | what it holds |
 | --- | --- |
 | `test_the_visibility_map_entry_points` | the premises, the two refusal layers and the damage they prevent, the owner controls, the heap refusals and sweep, and the coverage scan |
+
+## 115. test_partition_rows.py: rows cross columnar partitions, and keys hold through the parent
+
+The pytest twin of `test/partition_rows.sh` (#1341, #1421), every check by the shell's name. A parent with a PRIMARY KEY and two columnar partitions, and the same with heap partitions; heap is the answer. An `UPDATE` moves 49 rows to the other partition: each partition and the parent then hold what heap's do, and the key finds a moved row at its new key only. A duplicate key through the parent is refused (23505), a key a moved row gave up is free again, and a duplicate of a moved row's new key is refused in its new partition. Three races, ordered by a gate connection rather than by sleeps: a second insert of the same key waits and gets 23505; a second session moving the row the first is moving waits and gets 40001, which columnar used to answer with 23505 (#1421); and an in-place `UPDATE` of a row being moved waits and gets 40001.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_rows_cross_columnar_partitions_and_keys_hold_through_the_parent` | the row-moving update against heap, the three key arms, and the three races with each contender seen waiting |
