@@ -6487,6 +6487,7 @@ Not ported, and declared INCOMPLETE in `test_compare_to_bash.py`: the `int4`/`te
 | test | what it holds |
 | --- | --- |
 | `test_min_max_over_timestamptz_read_no_data` | the table holds every row; `max(ts)` plans the metadata node; a decode reads at least 10 blocks; `max` and `min` each read under a tenth of that; parity with heap before and after deleting rows at both ends |
+| `test_a_where_with_no_column_in_it_is_applied` | a WHERE that references no column, such as `(SELECT false)`, `now() < ...` or `current_user = ...`, gives heap's answer, with a premise that the same aggregate with no WHERE is the vectorized node (#1435) |
 
 ## 86. test_format_downgrade.py: an alpha4 binary refuses what this build wrote
 

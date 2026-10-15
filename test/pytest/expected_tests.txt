@@ -725,4 +725,6 @@ guard_tests 438
 # cluster_tests 600 -> 601 for #1341's test_rls_query_paths.py, one test, by collection
 # over the cluster files on this tree.
 # cluster_tests 601 -> 602 for #1341's test_type_matrix.py, one test, by collection
-cluster_tests 602
+# cluster_tests 602 -> 603 for #1435's test_a_where_with_no_column_in_it_is_applied in
+# test_native_agg.py, by collection over the cluster files on this tree.
+cluster_tests 603
