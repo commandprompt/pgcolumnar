@@ -497,6 +497,36 @@ def test_analyze_function(pgc_conn, expect):
                 "a column at SET STATISTICS 0 is left alone, because that is what zero means")
 
 
+def test_a_named_column_that_does_not_exist_is_refused(pgc_conn, expect):
+    """Silently collecting nothing for a column that does not exist is the failure
+    that looks like success (#1341). The refusal comes before any work: a real
+    column named beside it gets no statistics either. The control names only the
+    real column, so "no statistics" is not a table that never gets any."""
+    import psycopg
+    readable, _raw, major = _major(pgc_conn)
+    if not readable or major < 18:
+        _decline_unnamed(expect, major)
+        return
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE af_unk (a int, b text) USING pgcolumnar")
+        cur.execute("INSERT INTO af_unk SELECT g, 'v'||g FROM generate_series(1, 5000) g")
+    try:
+        with pgc_conn.cursor() as cur:
+            cur.execute("SELECT pgcolumnar.analyze('af_unk'::regclass, ARRAY['a', 'nosuch'])")
+        got = "ok"
+    except psycopg.Error as e:
+        got = f"{e.sqlstate} {e.diag.message_primary}"
+    expect.text(got, 'P0001 pgcolumnar.analyze(): column "nosuch" does not exist in af_unk',
+                "analyze() refuses a named column the table does not have, and names it")
+    stats = "SELECT count(*) FROM pg_stats WHERE tablename = 'af_unk'"
+    with pgc_conn.cursor() as cur:
+        cur.execute(stats)
+        expect.num(cur.fetchone()[0], 0, "and writes no statistics, not even for the real column named beside it")
+        cur.execute("SELECT pgcolumnar.analyze('af_unk'::regclass, ARRAY['a'])")
+        cur.execute(stats + " AND attname = 'a'")
+        expect.num(cur.fetchone()[0], 1, "control: the same call naming only the real column writes its statistics")
+
+
 def test_histogram_bounds_are_a_positional_stride(pgc_conn, expect):
     """Core's bounds are POSITIONS, not quantiles, and the difference is observable.
 

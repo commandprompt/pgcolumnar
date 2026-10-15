@@ -717,4 +717,6 @@ guard_tests 438
 # objstore_userinfo.sh: three tests, by collection over the cluster files on this tree.
 # cluster_tests 596 -> 597 for #1341's test_a_sort_key_with_no_ordering_is_refused in
 # test_projections.py, by collection over the cluster files on this tree.
-cluster_tests 597
+# cluster_tests 597 -> 598 for #1341's test_a_named_column_that_does_not_exist_is_refused in
+# test_analyze_function.py, by collection over the cluster files on this tree.
+cluster_tests 598

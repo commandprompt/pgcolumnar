@@ -72,6 +72,78 @@ am_contracts	am_contracts	premise: the racing sessions contended for keys	15;16;
 am_contracts	am_contracts	premise: the truncate table holds 5000 rows	15;16;17;18;19	never	-
 am_contracts	am_contracts	rows the parent buffered before a savepoint survive a TRUNCATE rolled back to it	15;16;17;18;19	2026-10-14	ExecutorEnd flushes no pending writes;TRUNCATE empties the old storage in place (RelationTruncate before the swap)
 am_contracts	am_contracts	sessions racing DO NOTHING on the same keys leave each key once, with no error	15;16;17;18;19	2026-10-14	a speculative row that lost the race is never withdrawn;speculative insert refused as unsupported, as before #1341
+analyze_function	analyze_function	a column at SET STATISTICS 0 is left alone, because that is what zero means	18;19	never	-
+analyze_function	analyze_function	analyze() refuses a named column the table does not have, and names it	18;19	2026-10-14	analyze() without its unknown-column check
+analyze_function	analyze_function	and 42's	18;19	never	-
+analyze_function	analyze_function	and 7's frequency exactly, over total rows rather than non-null rows	18;19	never	-
+analyze_function	analyze_function	and 99's	18;19	never	-
+analyze_function	analyze_function	and core's own number for it is not the truth, as the arithmetic requires	18;19	never	-
+analyze_function	analyze_function	and correlation is absent, as the doc says	18;19	never	-
+analyze_function	analyze_function	and exactly for a fraction core's sample cannot express	18;19	never	-
+analyze_function	analyze_function	and it is an ordered ladder rather than two extremes	18;19	never	-
+analyze_function	analyze_function	and it is sorted ascending, which a histogram must be to be usable	18;19	never	-
+analyze_function	analyze_function	and no most-common value is inside skew's histogram either	18;19	never	-
+analyze_function	analyze_function	and so does the most-common list, which is capped by the same target	18;19	never	-
+analyze_function	analyze_function	and the smallest non-most-common value at the bottom	18;19	never	-
+analyze_function	analyze_function	and without a WARNING, which is how a mistyped argument is dropped	18;19	never	-
+analyze_function	analyze_function	and writes no statistics, not even for the real column named beside it	18;19	2026-10-14	analyze() without its unknown-column check
+analyze_function	analyze_function	control: the same call naming only the real column writes its statistics	18;19	never	-
+analyze_function	analyze_function	every bound is a value the column actually holds	18;19	never	-
+analyze_function	analyze_function	every statistic the doc lists is one the function writes	18;19	never	-
+analyze_function	analyze_function	histogram_bounds are core's positional stride, not evenly spaced quantiles	18;19	never	-
+analyze_function	analyze_function	no most-common value appears in histogram_bounds, which would double-count it	18;19	never	-
+analyze_function	analyze_function	null_frac and the most-common frequencies agree on how many rows there are	18;19	never	-
+analyze_function	analyze_function	null_frac counts live rows, not rows a DELETE left behind	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze()	15;16;17	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() covers every column whichever storage row the heap returns first	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() leaves the statistics it does not compute in place	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() puts the true maximum at the top of histogram_bounds	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() ran for the zero-target column without raising	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() ran without raising for the MCV column	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() ran without raising, so the statistics below are its own	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() reaches a matview created WITH DATA	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() reports n_distinct exactly, from one column	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() reports null_frac exactly, from reading the column	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() still refuses a relation that has never been written	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() writes the three repeated values as most_common_vals	18;19	never	-
+analyze_function	analyze_function	premise: 7 survived the delete and is still a most-common value	18;19	never	-
+analyze_function	analyze_function	premise: a covering projection gave the table a second storage row	18;19	never	-
+analyze_function	analyze_function	premise: a histogram exists for cat, so the exclusion below is not vacuous	18;19	never	-
+analyze_function	analyze_function	premise: a histogram was written, so the comparison below is not vacuous	18;19	never	-
+analyze_function	analyze_function	premise: a never-written columnar table has no storage row to find	18;19	never	-
+analyze_function	analyze_function	premise: and it really is one row in 500000	18;19	never	-
+analyze_function	analyze_function	premise: and no whole number of sampled rows gives that fraction, so core cannot report it	18;19	never	-
+analyze_function	analyze_function	premise: and nothing else in the column repeats, so the list is exactly three	18;19	never	-
+analyze_function	analyze_function	premise: and the global default differs from it, so the two are distinguishable	18;19	never	-
+analyze_function	analyze_function	premise: core ANALYZE produced a null_frac at all, so the numbers below exist	18;19	never	-
+analyze_function	analyze_function	premise: core samples fewer rows than the table holds, so its number is an estimate	18;19	never	-
+analyze_function	analyze_function	premise: every column has statistics when the base row is resolved	18;19	never	-
+analyze_function	analyze_function	premise: skew really is at a non-default statistics target	18;19	never	-
+analyze_function	analyze_function	premise: the MCV fixture has the row count the frequencies divide by	18;19	never	-
+analyze_function	analyze_function	premise: the MCV list really is gone before we write, so what follows is ours	18;19	never	-
+analyze_function	analyze_function	premise: the base storage covers every column index	18;19	never	-
+analyze_function	analyze_function	premise: the base storage row was first	18;19	never	-
+analyze_function	analyze_function	premise: the capture helper reports a success when there is one	18;19	never	-
+analyze_function	analyze_function	premise: the delete left fewer live rows than the zone maps describe	18;19	never	-
+analyze_function	analyze_function	premise: the doc lists the statistics it claims to write	18;19	never	-
+analyze_function	analyze_function	premise: the fixture has the cardinality this check compares against	18;19	never	-
+analyze_function	analyze_function	premise: the fixture is exactly one-in-ten NULL	18;19	never	-
+analyze_function	analyze_function	premise: the fixture stays on the absolute-count side of core's 10% rule	18;19	never	-
+analyze_function	analyze_function	premise: the fixture's column count has not changed	18;19	never	-
+analyze_function	analyze_function	premise: the independent oracle agrees with the hand-worked bounds	18;19	never	-
+analyze_function	analyze_function	premise: the k7 fixture is exactly one row in seven NULL	18;19	never	-
+analyze_function	analyze_function	premise: the matview's relation_oid finds a storage row	18;19	never	-
+analyze_function	analyze_function	premise: the outlier really is in the table	18;19	never	-
+analyze_function	analyze_function	premise: the projection's storage covers fewer of them	18;19	never	-
+analyze_function	analyze_function	premise: the stride fixture has no repeated value, so no MCV is excluded	18;19	never	-
+analyze_function	analyze_function	premise: the update put the projection's row first	18;19	never	-
+analyze_function	analyze_function	premise: value 42 appears exactly 54,000 times	18;19	never	-
+analyze_function	analyze_function	premise: value 7 appears exactly 90,000 times	18;19	never	-
+analyze_function	analyze_function	premise: value 99 appears exactly 27,000 times	18;19	never	-
+analyze_function	analyze_function	reltuples is untouched, as the doc says	18;19	never	-
+analyze_function	analyze_function	so the bottom bound is the smallest non-most-common value, not the column minimum	18;19	never	-
+analyze_function	analyze_function	the histogram honours the column's statistics target, not the global default	18;19	never	-
+analyze_function	analyze_function	the two routes agree which storage a WITH DATA matview owns	18;19	never	-
 analyze_stats	analyze_stats	ANALYZE now collects statistics at all	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	ANALYZE on a wide table completes well inside its derived cap	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	a fast machine still gets the floor, not a bound that shrinks with it	15;16;17;18;19	2026-09-24	the cap loses its absolute floor, so the bound shrinks with the machine it runs on;the floor moved by one, so the boundary where floor and derived bound meet is off by one

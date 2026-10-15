@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 226
+suites_not_covered 225
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2643,4 +2643,17 @@ suites_not_covered 226
 #     never         2371 + 75 = 2446
 #     dated          805 +  1 =  806
 #     2446 + 806 == 3252
-checks_never_observed_red 2446
+#
+# #1341, analyze_function seeded, with the unknown-column arms (OffgridwithJD): 2446 ->
+# 2516, and suites_not_covered 226 -> 225. The suite had no rows. It enters with all 72
+# checks from five-major runs (71/71 on 18-19, and the one named version SKIP on
+# 15-17, where pgcolumnar.analyze() needs PostgreSQL 18). Two are dated, on PG18, by
+# analyze() without its unknown-column check: the call then succeeded and wrote
+# statistics for the real column named beside the missing one. The other 70 arrive
+# never.
+#
+#     ledger rows   3252 + 72 = 3324
+#     never         2446 + 70 = 2516
+#     dated          806 +  2 =  808
+#     2516 + 808 == 3324
+checks_never_observed_red 2516

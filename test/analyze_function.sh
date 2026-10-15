@@ -979,5 +979,23 @@ check_text "the two routes agree which storage a WITH DATA matview owns" \
 check_text "pgcolumnar.analyze() reaches a matview created WITH DATA" \
 	"$mv_state" "succeeded"
 
+# ---- a named column that does not exist is refused (#1341) --------------------
+#
+# Silently collecting nothing for it is the failure that looks like success, and
+# the refusal comes before any work: a real column named beside it gets no
+# statistics either. A fresh table, so pg_stats starts empty for it.
+q "DROP TABLE IF EXISTS af_unk;
+   CREATE TABLE af_unk (a int, b text) USING pgcolumnar;
+   INSERT INTO af_unk SELECT g, 'v'||g FROM generate_series(1, 5000) g;" >/dev/null
+unk_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At \
+	-v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "SELECT pgcolumnar.analyze('af_unk'::regclass, ARRAY['a', 'nosuch'])" 2>&1)"
+check_text "analyze() refuses a named column the table does not have, and names it" \
+	"$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p' <<<"$unk_out" | head -1)" \
+	"P0001 pgcolumnar.analyze(): column \"nosuch\" does not exist in af_unk"
+check_num "and writes no statistics, not even for the real column named beside it" \
+	"$(q "SELECT count(*) FROM pg_stats WHERE tablename = 'af_unk'")" "0"
+q "SELECT pgcolumnar.analyze('af_unk'::regclass, ARRAY['a'])" >/dev/null
+check_num "control: the same call naming only the real column writes its statistics" \
+	"$(q "SELECT count(*) FROM pg_stats WHERE tablename = 'af_unk' AND attname = 'a'")" "1"
 
 pgc_summary
