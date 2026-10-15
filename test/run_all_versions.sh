@@ -294,6 +294,7 @@ SUITES=(
 	rewrite_group_scan
 	rewrite_storage_oid
 	rls_direct_storage
+	rls_query_paths
 	rollup
 	row_triggers
 	savepoint_flush
