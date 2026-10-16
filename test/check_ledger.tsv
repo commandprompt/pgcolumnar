@@ -2813,6 +2813,42 @@ native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses vectorized agg when GUC on	15;16;17;18;19	2026-09-12	drop JOINREL fold
+native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: predicate skips 3 of 4 groups	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: INT64 statistics are not decoded, so an INT64-backed DECIMAL never skips;columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
+native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: skipping did not drop rows	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: unfiltered scan skips nothing	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	NaN-safe [val < 10] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: col < const skips the row groups that do hold matches
+native_parquet_pushdown	native_parquet_pushdown	NaN-safe [val <= 10] == oracle	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	NaN-safe [val = 'NaN'::float8] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an equality against a NaN constant is pushed
+native_parquet_pushdown	native_parquet_pushdown	NaN-safe [val = 1234] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an equality skips every row group
+native_parquet_pushdown	native_parquet_pushdown	NaN-safe [val > 1e300] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: float > and >= are pushed although the statistics exclude NaN
+native_parquet_pushdown	native_parquet_pushdown	NaN-safe [val > 3998] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: float > and >= are pushed although the statistics exclude NaN
+native_parquet_pushdown	native_parquet_pushdown	NaN-safe [val >= 1e300] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: float > and >= are pushed although the statistics exclude NaN
+native_parquet_pushdown	native_parquet_pushdown	float < still skips	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: col < const skips the row groups that do hold matches;columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
+native_parquet_pushdown	native_parquet_pushdown	float predicate skips 2 (>= not pushed, NaN-unsafe)	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: float > and >= are pushed although the statistics exclude NaN;columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
+native_parquet_pushdown	native_parquet_pushdown	full scan == oracle	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	id < 100 skips 3	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: col < const skips the row groups that do hold matches;columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
+native_parquet_pushdown	native_parquet_pushdown	id >= 199900 skips 3	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
+native_parquet_pushdown	native_parquet_pushdown	inverted stats skip nothing	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an inverted min/max interval drives skips like any other
+native_parquet_pushdown	native_parquet_pushdown	inverted stats: unfiltered == oracle	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	inverted-stats [c < 0] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an inverted min/max interval drives skips like any other
+native_parquet_pushdown	native_parquet_pushdown	inverted-stats [c <= -1294967296] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an inverted min/max interval drives skips like any other
+native_parquet_pushdown	native_parquet_pushdown	inverted-stats [c = -1294967296] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an inverted min/max interval drives skips like any other
+native_parquet_pushdown	native_parquet_pushdown	inverted-stats [c = 1] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an inverted min/max interval drives skips like any other
+native_parquet_pushdown	native_parquet_pushdown	inverted-stats [c > 0] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an inverted min/max interval drives skips like any other
+native_parquet_pushdown	native_parquet_pushdown	inverted-stats [c >= 1] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an inverted min/max interval drives skips like any other
+native_parquet_pushdown	native_parquet_pushdown	no predicate skips 0	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	point in group 0 skips 3	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an equality skips every row group;columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
+native_parquet_pushdown	native_parquet_pushdown	predicate [id < 100] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: col < const skips the row groups that do hold matches
+native_parquet_pushdown	native_parquet_pushdown	predicate [id <= 5 OR id >= 199995] == oracle	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	predicate [id = 60000] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an equality skips every row group
+native_parquet_pushdown	native_parquet_pushdown	predicate [id > 60000 AND id < 60010] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: col < const skips the row groups that do hold matches
+native_parquet_pushdown	native_parquet_pushdown	predicate [id >= 199900] == oracle	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	predicate [id BETWEEN 60000 AND 70000] == oracle	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	predicate [val > 90000 AND val < 90030] == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: col < const skips the row groups that do hold matches
+native_parquet_pushdown	native_parquet_pushdown	range in one group skips 3	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
+native_parquet_pushdown	native_parquet_pushdown	read_parquet same file == oracle	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	reports 4 row groups	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	spanning predicate skips 0	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: col < const skips the row groups that do hold matches
 native_parquet_schema	native_parquet_schema	OPTIONAL column reports nullable=t	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	REQUIRED column reports nullable=f	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports every column nullable
 native_parquet_schema	native_parquet_schema	REQUIRED int32 maps to integer	15;16;17;18;19	never	-
