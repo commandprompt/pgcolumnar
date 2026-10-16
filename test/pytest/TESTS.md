@@ -197,6 +197,7 @@ behaviour, the source of that number is named.
 - [149. test_native_decode_gate_width.py: decode gating runs only on a projection wide enough to pay](#149-test_native_decode_gate_widthpy-decode-gating-runs-only-on-a-projection-wide-enough-to-pay)
 - [150. test_pg_dump_roundtrip.py: a columnar table survives pg_dump and restore](#150-test_pg_dump_roundtrippy-a-columnar-table-survives-pg_dump-and-restore)
 - [151. test_pg_upgrade.py: a columnar table survives pg_upgrade](#151-test_pg_upgradepy-a-columnar-table-survives-pg_upgrade)
+- [152. test_replication.py: physical replication and standby redo](#152-test_replicationpy-physical-replication-and-standby-redo)
 
 ## 1. How to read a test in here
 
@@ -7490,3 +7491,15 @@ Like the shell it needs TWO majors: the new one is `--pg-config`, the old one `P
 | test | what it holds |
 | --- | --- |
 | `test_pg_upgrade_preserves_a_columnar_table` | pg_upgrade exits 0, and the upgraded table keeps its rows, content, options and index, and takes writes |
+
+## 152. test_replication.py: physical replication and standby redo
+
+The pytest twin of `test/replication.sh` (ported for #1341), every check by the shell's name. A private primary gets a columnar table and a projection. pg_basebackup makes a streaming standby of it, and a second backup is brought up alone with no upstream, so what it holds came from the backup bytes. Inserts, deletes, updates, vacuum, compact and an SMGR end truncation are replayed and compared with the primary. A standby running without the module must still replay, because every record the extension emits is a core type.
+
+Each replay arm is about a write the primary made. Vacuum must have rewritten the table into a new relfilenode. Compact must have retired a row group; after vacuum it had none to retire until the fixture gave it one. The truncate must have shrunk the primary.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_streaming_standby_and_a_restore_replay_columnar_tables` | the standby and the isolated restore hold the primary's rows and projections, every write path replays identically, and a module-less standby replays |
