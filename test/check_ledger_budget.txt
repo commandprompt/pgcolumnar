@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 209
+suites_not_covered 208
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3115,4 +3115,21 @@ suites_not_covered 209
 #     never         2843 +  1 - 17 = 2827
 #     dated         1057 + 17 = 1074
 #     2827 + 1074 == 3901
-checks_never_observed_red 2827
+#
+# #1341, native_repack seeded, with its twin (OffgridwithJD): 2827 -> 2838, and
+# suites_not_covered 209 -> 208. The suite had no rows. It enters with 22: its 21
+# checks from PostgreSQL 19, where REPACK exists (21/21), and the REPACK skip that
+# 15-18 record. 11 are dated by four mutations: the PG19 refusal not naming REPACK, the
+# refusal not saying "not supported", relation_copy_for_cluster returning without
+# raising (every spelling succeeds and the table comes back empty), and vacuum()
+# returning before it rewrites (the new "and it reclaimed the deleted rows"). Eleven
+# arrive never: the skip, the deleted-rows premise, the heap controls, the two
+# REPACK (CONCURRENTLY) refusals, which core raises before our callback is reached on
+# 19beta4 and later, the concurrent fixture's undamaged arms, the storage-options and
+# access-method arms, and vacuum()'s own success.
+#
+#     ledger rows   3901 + 22 = 3923
+#     never         2827 + 11 = 2838
+#     dated         1074 + 11 = 1085
+#     2838 + 1085 == 3923
+checks_never_observed_red 2838

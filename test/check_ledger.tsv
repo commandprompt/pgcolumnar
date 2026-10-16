@@ -2673,6 +2673,28 @@ native_recluster	native_recluster	row count	15;16;17;18;19	never	-
 native_recluster	native_recluster	row count after recluster	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster_online retires none of the old groups (PgColumnarRetireGroup removed)
 native_recluster	native_recluster	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
 native_recluster	native_recluster	unique still enforced, by SQLSTATE 23505 and not by any failure	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster_online inserts no index entry for a rewritten row (PgColumnarIndexInsertRow removed)
+native_repack	native_repack	CLUSTER errors the same way	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing;columnar_tableam.c: the refusal no longer says not supported
+native_repack	native_repack	REPACK	15;16;17;18	never	-
+native_repack	native_repack	REPACK (VERBOSE) errors the same way	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing;columnar_tableam.c: the refusal no longer says not supported
+native_repack	native_repack	REPACK ... USING INDEX errors the same way	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing;columnar_tableam.c: the refusal no longer says not supported
+native_repack	native_repack	REPACK on a columnar table errors (#399)	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing
+native_repack	native_repack	VACUUM FULL errors the same way	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing;columnar_tableam.c: the refusal no longer says not supported
+native_repack	native_repack	and it kept every live row	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing
+native_repack	native_repack	and it reclaimed the deleted rows	19	2026-10-16	columnar_vacuum.c: pgcolumnar_vacuum returns before rewriting
+native_repack	native_repack	and on a columnar table it is refused: by core's heap-only check from 19beta4, else by ours	19	never	-
+native_repack	native_repack	and the content is still identical	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing
+native_repack	native_repack	and the error names REPACK, which is what the user typed (#399)	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing;columnar_tableam.c: the PG19 refusal names CLUSTER and VACUUM FULL but not REPACK
+native_repack	native_repack	control: REPACK works on a heap table on this build	19	never	-
+native_repack	native_repack	control: with an identity index, REPACK (CONCURRENTLY) succeeds on heap	19	never	-
+native_repack	native_repack	pgcolumnar.vacuum is the supported alternative and succeeds	19	never	-
+native_repack	native_repack	premise: the table holds deleted rows for the alternative to reclaim	19	never	-
+native_repack	native_repack	the columnar table is undamaged after the refused concurrent repack: content	19	never	-
+native_repack	native_repack	the columnar table is undamaged after the refused concurrent repack: rows	19	never	-
+native_repack	native_repack	the columnar table is unharmed: access method	19	never	-
+native_repack	native_repack	the columnar table is unharmed: content hash	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing
+native_repack	native_repack	the columnar table is unharmed: row count	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing
+native_repack	native_repack	the columnar table is unharmed: storage options	19	never	-
+native_repack	native_repack	without an identity index it is refused by PostgreSQL, not by us	19	never	-
 objstore_allowlist	objstore_allowlist	a multi-entry list matches any entry	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	a non-superuser cannot widen the list (42501)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
 objstore_allowlist	objstore_allowlist	a superuser session SET works (admin override)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
