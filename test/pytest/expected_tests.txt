@@ -781,4 +781,6 @@ guard_tests 438
 # one test, by collection over the cluster files on this tree.
 # cluster_tests 693 -> 694 for #1341's test_native_batch_fold_projection.py, the twin of native_batch_fold_projection.sh:
 # one test, by collection over the cluster files on this tree.
-cluster_tests 694
+# cluster_tests 694 -> 695 for #1341's test_native_encdesc_golden.py, the twin of native_encdesc_golden.sh:
+# one test, by collection over the cluster files on this tree.
+cluster_tests 695

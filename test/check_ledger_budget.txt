@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 206
+suites_not_covered 205
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3159,4 +3159,19 @@ suites_not_covered 206
 #     never         2841 +  4 = 2845
 #     dated         1092 +  2 = 1094
 #     2845 + 1094 == 3939
-checks_never_observed_red 2845
+#
+# #1341, native_encdesc_golden seeded, with its twin (OffgridwithJD): 2845 -> 2853,
+# and suites_not_covered 206 -> 205. The suite had no rows. It enters with all 17
+# checks from five-major runs (17/17 on each of 15-19). 9 are dated by four mutations
+# of the descriptor codec: rawLen and encLen written in each other's place, read from
+# each other's offsets (the new decoding-read arm, which the byte arms cannot see
+# because the bytes on disk are right), NO_VALIDITY never set, and the version and
+# flags bytes swapped. Eight arrive never: the vectorCount, valueCount, length and
+# trailer arms, which no mutation here moves, and the count and sum read-backs, which
+# the catalog and the zone maps answer without decoding a page.
+#
+#     ledger rows   3939 + 17 = 3956
+#     never         2845 +  8 = 2853
+#     dated         1094 +  9 = 1103
+#     2853 + 1103 == 3956
+checks_never_observed_red 2853

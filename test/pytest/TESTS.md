@@ -205,6 +205,7 @@ behaviour, the source of that number is named.
 - [157. test_native_join_vector_agg.py: the vectorized aggregate over a unique-key inner join](#157-test_native_join_vector_aggpy-the-vectorized-aggregate-over-a-unique-key-inner-join)
 - [158. test_native_writer.py: the native writer by its catalog rows](#158-test_native_writerpy-the-native-writer-by-its-catalog-rows)
 - [159. test_native_batch_fold_projection.py: the batch fold's column lists on a wide table](#159-test_native_batch_fold_projectionpy-the-batch-folds-column-lists-on-a-wide-table)
+- [160. test_native_encdesc_golden.py: the encoding descriptor's wire layout](#160-test_native_encdesc_goldenpy-the-encoding-descriptors-wire-layout)
 
 ## 1. How to read a test in here
 
@@ -7593,3 +7594,13 @@ The pytest twin of `test/native_batch_fold_projection.sh` (ported for #1341), ev
 | test | what it holds |
 | --- | --- |
 | `test_the_batch_fold_gathers_the_right_columns_on_a_wide_table` | the fold runs and sums the right column on a wide table, against an unfolded reference that itself matches the generator |
+
+## 160. test_native_encdesc_golden.py: the encoding descriptor's wire layout
+
+The pytest twin of `test/native_encdesc_golden.sh` (ported for #1341), every check by the shell's name. The encoding descriptor is the writer-to-reader contract for a column chunk's per-vector encoding, and a deterministic 300-row table pins its version 3 bytes at their offsets: version, flags, vectorCount, each entry's valueCount and rawLen, the length, and the trailer. A read that decodes closes it. `count(*)` and `sum(a)` are answered from the catalog and the zone maps, so only every row's text, compared with the generator's, needs the pages. That's what sees a reader that parses rawLen and encLen from each other's offsets.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_descriptor_layout` | the descriptor's bytes sit at their fixed offsets with the expected values, and every row decodes to what the generator wrote |
