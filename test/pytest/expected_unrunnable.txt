@@ -87,3 +87,9 @@
 17 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
 18 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
 19 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
+
+# PostgreSQL 15 to 18: REPACK arrived in 19, so there is no REPACK to refuse.
+15 test_native_repack.py::test_repack_on_a_columnar_table
+16 test_native_repack.py::test_repack_on_a_columnar_table
+17 test_native_repack.py::test_repack_on_a_columnar_table
+18 test_native_repack.py::test_repack_on_a_columnar_table

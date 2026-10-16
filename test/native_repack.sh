@@ -78,6 +78,10 @@ hash_before=$(q "SELECT md5(string_agg(id::text||':'||v, ',' ORDER BY id)) FROM 
 opts_before=$(q "SELECT stripe_row_limit || '/' || compression FROM pgcolumnar.options o
 	JOIN pg_class c ON c.oid = o.regclass WHERE c.relname = 'rp'")
 
+dead_sql="SELECT coalesce(sum(deleted_count), 0) FROM pgcolumnar.delete_vector WHERE storage_id = pgcolumnar.get_storage_id('rp')"
+check "premise: the table holds deleted rows for the alternative to reclaim" \
+	"$(q "$dead_sql")" "$(( ROWS / 3 ))"
+
 err_of() { psql_run "$1" 2>&1 | grep -oE 'ERROR:.*' | head -1; }
 
 # ---- every spelling errors, and the message names the command ----------------
@@ -167,8 +171,13 @@ check "the columnar table is unharmed: access method" \
 	"pgcolumnar"
 
 # ---- and the supported route does work ---------------------------------------
+# "Works" is that it reclaims, not only that it returns (#1341): with vacuum()
+# returning before it rewrote anything, every arm here stayed green. The rows the
+# fixture deleted are in storage when it is made (asserted there, before any REPACK
+# can touch the table), and gone after.
 check "pgcolumnar.vacuum is the supported alternative and succeeds" \
 	"$(psql_run "SELECT pgcolumnar.vacuum('rp');" 2>&1 | grep -c ERROR || true)" "0"
+check "and it reclaimed the deleted rows" "$(q "$dead_sql")" "0"
 check "and it kept every live row" "$(q 'SELECT count(*) FROM rp')" "$live"
 check "and the content is still identical" \
 	"$(q "SELECT md5(string_agg(id::text||':'||v, ',' ORDER BY id)) FROM rp")" "$hash_before"

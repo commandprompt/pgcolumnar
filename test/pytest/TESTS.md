@@ -201,6 +201,7 @@ behaviour, the source of that number is named.
 - [153. test_native_recluster.py: online reclustering under ShareUpdateExclusiveLock](#153-test_native_reclusterpy-online-reclustering-under-shareupdateexclusivelock)
 - [154. test_alter_am_cleanup.py: DROP after SET ACCESS METHOD heap cleans up](#154-test_alter_am_cleanuppy-drop-after-set-access-method-heap-cleans-up)
 - [155. test_native_reclaim.py: physical page reclaim and the compaction threshold guards](#155-test_native_reclaimpy-physical-page-reclaim-and-the-compaction-threshold-guards)
+- [156. test_native_repack.py: REPACK on a columnar table](#156-test_native_repackpy-repack-on-a-columnar-table)
 
 ## 1. How to read a test in here
 
@@ -7547,3 +7548,15 @@ The pytest twin of `test/native_reclaim.sh` (ported for #1341, item 70), every c
 | `test_repeated_recluster_reuses_space_and_compact_rewrite_is_guarded` | every repeated recluster rewrites, the file plateaus, free_space doesn't grow, reused blocks read back correctly, and compact_rewrite's threshold guard holds in both directions |
 | `test_maintenance_due_validates_both_thresholds` | each threshold is refused out of range or NULL by 22023 and accepted on its boundaries, and the verdict follows the deleted fraction |
 | `test_max_groups_caps_one_compact_rewrite` | a capped call rewrites three of ten half-deleted groups and an uncapped one the other seven, with every live row kept |
+
+## 156. test_native_repack.py: REPACK on a columnar table
+
+The pytest twin of `test/native_repack.sh` (ported for #1341), every check by the shell's name. PostgreSQL 19 and later only. REPACK replaces CLUSTER and VACUUM FULL in 19 and dispatches through `relation_copy_for_cluster`, which pgColumnar registers as a stub that raises. So every spelling errors, the message names REPACK, and the table keeps its rows, content, options and access method. REPACK (CONCURRENTLY) needs two fixtures: without an identity index core refuses it before the access method is reached, and with one heap succeeds while columnar is refused.
+
+The alternative must reclaim, not only return. With `vacuum()` returning before it rewrote anything, every arm stayed green, so the deleted rows are counted at fixture time and again after it. The twin runs on a private cluster at `wal_level=logical`, which the concurrent form needs. Below 19 it declines with `UNSUPPORTED_MAJOR`, listed in `expected_unrunnable.txt`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_repack_on_a_columnar_table` | every REPACK spelling is refused naming REPACK, the concurrent form is refused for a stated reason, the table is unharmed, and `pgcolumnar.vacuum()` reclaims the deleted rows |
