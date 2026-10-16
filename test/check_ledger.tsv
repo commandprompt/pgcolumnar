@@ -2308,6 +2308,35 @@ native_chunk_length_bound	native_chunk_length_bound	backend survived the sequent
 native_chunk_length_bound	native_chunk_length_bound	backend survived the truncated-length fetch	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	premise: a point lookup uses the index, not a sequential columnar scan	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	that fetch returns the row	15;16;17;18;19	2026-10-16	the index fetch treated a flushed row as not live, so the lookup returned no row (mutation, #1339)
+native_decode_gating	native_decode_gating	EXPLAIN reports Columnar Vector Decodes	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	a one-vector LIKE decodes the qual column plus payload for that vector only	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluation between the decode passes never runs;columnar_reader.c: the per-vector qual evaluator marks every vector skipped
+native_decode_gating	native_decode_gating	a zero-matching LIKE decodes the qual column and no payload column	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluation between the decode passes never runs
+native_decode_gating	native_decode_gating	and reports them all filtered before materialization	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator marks every vector skipped
+native_decode_gating	native_decode_gating	and skips every vector	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluation between the decode passes never runs
+native_decode_gating	native_decode_gating	and the full scan across every group's mask matches too	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	deletes + multiple groups + unprunable qual: columnar matches the heap	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator marks every vector skipped
+native_decode_gating	native_decode_gating	premise: no vector is ruled out by VALUE either (that is 1b-ii's path)	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: no whole row group is pruned	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: one row group, so every count below is one group's	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: rows really were deleted (so the mask is non-NULL)	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: the columnar table spans more than one row group	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: the control matches every row	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: the half-needle survives in one vector, half of its rows	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: the needle plan is a columnar custom scan	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: the needle query takes the late-materialization path	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: the needle really matches one vector's worth of rows	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: the nomatch predicate matches no row	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: the reader has no usable skip predicate for this LIKE	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	premise: the width gate is pinned off, so this narrow projection still gates	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	rejections inside a surviving vector are counted once	15;16;17;18;19	2026-10-16	columnar_reader.c: the producer counts a gated group's rejections a second time
+native_decode_gating	native_decode_gating	rows removed by filter across deleted rows count only live rows	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator counts a deleted row as filtered;columnar_reader.c: the producer counts a gated group's rejections a second time
+native_decode_gating	native_decode_gating	the control decodes every column of every vector	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator marks every vector skipped
+native_decode_gating	native_decode_gating	the control returns every row, values intact	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator marks every vector skipped
+native_decode_gating	native_decode_gating	the needle query returns exactly the matching rows	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator marks every vector skipped
+native_decode_gating	native_decode_gating	the needle removes exactly the non-matching rows, counted once	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	the needle skips exactly the vectors holding no match	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluation between the decode passes never runs;columnar_reader.c: the per-vector qual evaluator marks every vector skipped
+native_decode_gating	native_decode_gating	the nomatch query returns nothing	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	the zero-match query removes every row by filter, counted once	15;16;17;18;19	never	-
 native_delete_visibility_paths	native_delete_visibility_paths	a DELETE whose qual deletes another row of the table succeeds and leaves heap's rows (#1394)	15;16;17;18;19	2026-10-14	PgColumnarUpsertDeleteVector without the command advance (main before #1394's fix)
 native_delete_visibility_paths	native_delete_visibility_paths	a deleted row is invisible via the index	15;16;17;18;19	never	-
 native_delete_visibility_paths	native_delete_visibility_paths	a live row is visible via the index	15;16;17;18;19	never	-
