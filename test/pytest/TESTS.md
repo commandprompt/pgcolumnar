@@ -196,6 +196,7 @@ behaviour, the source of that number is named.
 - [148. test_native_decode_gating.py: an unprunable qual gates payload decode per vector](#148-test_native_decode_gatingpy-an-unprunable-qual-gates-payload-decode-per-vector)
 - [149. test_native_decode_gate_width.py: decode gating runs only on a projection wide enough to pay](#149-test_native_decode_gate_widthpy-decode-gating-runs-only-on-a-projection-wide-enough-to-pay)
 - [150. test_pg_dump_roundtrip.py: a columnar table survives pg_dump and restore](#150-test_pg_dump_roundtrippy-a-columnar-table-survives-pg_dump-and-restore)
+- [151. test_pg_upgrade.py: a columnar table survives pg_upgrade](#151-test_pg_upgradepy-a-columnar-table-survives-pg_upgrade)
 
 ## 1. How to read a test in here
 
@@ -7477,3 +7478,15 @@ The pytest twin of `test/pg_dump_roundtrip.sh` (ported for #1341), every check b
 | `test_dropping_a_projection_forgets_its_declaration` | a dropped projection's declaration goes with it, so a rebuild builds nothing |
 | `test_a_plain_dump_round_trips` | pg_dump and psql exit 0, and the restored database passes every survival arm |
 | `test_a_custom_archive_round_trips` | the same through `pg_dump -Fc` and `pg_restore --exit-on-error` |
+
+## 151. test_pg_upgrade.py: a columnar table survives pg_upgrade
+
+The pytest twin of `test/pg_upgrade.sh` (ported for #1341), every check by the shell's name. A cluster on an older major gets a columnar table with non-default options, deletes and an index; it is upgraded with pg_upgrade into an empty cluster on the new major, and the row count, the content byte for byte, the options, the index and writability must all survive. The index arm runs with the columnar scan off and must take the index: right after pg_upgrade there are no planner statistics, the planner took the columnar scan for the range, and the arm passed with the index dropped.
+
+Like the shell it needs TWO majors: the new one is `--pg-config`, the old one `PGC_UPGRADE_FROM_PG_CONFIG`, and the test builds and installs the extension for the old one from a copy of the tree. The matrix runs one major at a time, so there it declines, and `expected_unrunnable.txt` lists it for every major.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_pg_upgrade_preserves_a_columnar_table` | pg_upgrade exits 0, and the upgraded table keeps its rows, content, options and index, and takes writes |

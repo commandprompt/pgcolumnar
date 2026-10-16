@@ -78,3 +78,12 @@
 16 test_inheritance.py::test_a_partitioned_parent_is_refused_and_its_leaf_is_not
 15 test_parquet_import.py::test_a_partitioned_parent_is_refused
 16 test_parquet_import.py::test_a_partitioned_parent_is_refused
+
+# Every major: pg_upgrade needs a SECOND, older major, named by
+# PGC_UPGRADE_FROM_PG_CONFIG, and the matrix runs one major at a time. A run that
+# sets it is an upgrade run, not a matrix run, and this file would refuse the row.
+15 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
+16 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
+17 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
+18 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
+19 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
