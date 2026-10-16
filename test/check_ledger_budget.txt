@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 211
+suites_not_covered 210
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3066,4 +3066,20 @@ suites_not_covered 211
 #     never         2778 + 33 = 2811
 #     dated         1017 + 11 = 1028
 #     2811 + 1028 == 3839
-checks_never_observed_red 2811
+#
+# #1341 item 70, native_recluster seeded, with its twin (OffgridwithJD): 2811 ->
+# 2817, and suites_not_covered 211 -> 210. The suite had no rows. It enters with all
+# 14 checks from five-major runs (14/14 on each of 15-19). 8 are dated by five
+# mutations of recluster_online: no index entry for a rewritten row, no old group
+# retired, the visibility map left set over the retired row numbers (the index arm,
+# now an index-only count after a VACUUM), AccessExclusiveLock for the lazy lock, and
+# a sort key of no columns (the two skipping arms). Six arrive never: the pre-recluster
+# count and box parity, the columnar-scan and index-only-plan premises, the VACUUM's
+# visibility-map arm, and "reclustered the groups", whose count none of these
+# mutations brings to zero.
+#
+#     ledger rows   3839 + 14 = 3853
+#     never         2811 +  6 = 2817
+#     dated         1028 +  8 = 1036
+#     2817 + 1036 == 3853
+checks_never_observed_red 2817
