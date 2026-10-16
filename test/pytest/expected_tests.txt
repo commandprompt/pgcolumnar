@@ -741,4 +741,6 @@ guard_tests 438
 # tests, by collection over the cluster files on this tree.
 # cluster_tests 641 -> 643 for #1447's two tests in test_join_runtime_filter.py, by
 # collection over the cluster files on this tree.
-cluster_tests 643
+# cluster_tests 643 -> 646 for #1341's test_native_backend_crash.py, the twin of
+# native_backend_crash.sh: three tests, by collection over the cluster files on this tree.
+cluster_tests 646

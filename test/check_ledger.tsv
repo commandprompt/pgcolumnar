@@ -2226,6 +2226,34 @@ native_agg	native_agg	sum(int4)	15;16;17;18;19	never	-
 native_agg	native_agg	sum(int4,nulls)	15;16;17;18;19	never	-
 native_agg	native_agg	sum/min/max uses the metadata agg node	15;16;17;18;19	never	-
 native_agg	native_agg	the deletes removed rows at both ends, the same rows from each	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	a second concurrent reader was also dropped by the crash	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	crashA: kill lands mid-write (backend not yet in pg_sleep)	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	crashA: the INSERT had written pages before the kill (the relation grew)	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	crashB: kill lands after the stripes flushed (backend in pg_sleep)	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	crashB: the INSERT had written pages before the kill (the relation grew)	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	crashC: kill lands mid-write (backend not yet in pg_sleep)	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	crashC: the INSERT had written pages before the kill (the relation grew)	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	mid-write: cluster accepts new connections	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	mid-write: committed content in c matches the heap mirror	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record
+native_backend_crash	native_backend_crash	mid-write: postmaster survived, same pid	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	mid-write: the crash reinitialized the cluster (a live session was dropped)	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	mid-write: the killed insert left no partial row group	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	mid-write: the killed insert left no visible rows	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	mid-write: the mirror itself is unchanged	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	post-flush: cluster accepts new connections	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	post-flush: committed content in c matches the heap mirror	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record
+native_backend_crash	native_backend_crash	post-flush: postmaster survived, same pid	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	post-flush: the crash reinitialized the cluster (a live session was dropped)	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	post-flush: the killed insert left no partial row group	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	post-flush: the killed insert left no visible rows	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	post-flush: the mirror itself is unchanged	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	with-reader: cluster accepts new connections	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	with-reader: committed content in c matches the heap mirror	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record
+native_backend_crash	native_backend_crash	with-reader: postmaster survived, same pid	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	with-reader: the crash reinitialized the cluster (a live session was dropped)	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	with-reader: the killed insert left no partial row group	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	with-reader: the killed insert left no visible rows	15;16;17;18;19	never	-
+native_backend_crash	native_backend_crash	with-reader: the mirror itself is unchanged	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	a sequential scan of the same poisoned chunk is refused (XX001)	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	an index fetch of a chunk whose page_length is 2^32 too large is refused (XX001)	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	backend survived the sequential refusal	15;16;17;18;19	never	-
@@ -2352,6 +2380,9 @@ native_join_runtime_filter	native_join_runtime_filter	a (SELECT false) gate over
 native_join_runtime_filter	native_join_runtime_filter	a (SELECT false) gate over a heap dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
 native_join_runtime_filter	native_join_runtime_filter	a (SELECT true) gate over a columnar dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
 native_join_runtime_filter	native_join_runtime_filter	a (SELECT true) gate over a heap dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
+native_join_runtime_filter	native_join_runtime_filter	an empty build from a large dimension answers as heap	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	an empty build on one rescan does not empty the next	15;16;17;18;19	2026-10-16	the rescan kept the first execution's runtime filter state: prepared not reset on rescan (mutation, #1447)
+native_join_runtime_filter	native_join_runtime_filter	an empty build reads no fact chunk group	15;16;17;18;19	2026-10-16	an inner join whose build was empty ran on, and the fact scan rejected every row one at a time (the tree before #1447)
 native_join_runtime_filter	native_join_runtime_filter	baseline core Hash Join	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	baseline reads all groups	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	build rows omit NULL	15;16;17;18;19	never	-
@@ -2377,8 +2408,12 @@ native_join_runtime_filter	native_join_runtime_filter	join runtime filter defaul
 native_join_runtime_filter	native_join_runtime_filter	plan has build tap	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	plan has runtime coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	plan retains core Hash Join	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: and its build is empty	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a columnar dimension holds 200 rows	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a heap dimension holds 200 rows	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's empty-then-full rescan answer holds the 200 keys	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the empty-then-full rescan runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the large-dimension empty build runs under the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the columnar-dimension join has the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the heap-dimension join has the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	projection join equals heap	15;16;17;18;19	never	-
@@ -3562,10 +3597,3 @@ vm_privilege	vm_privilege	vm entry point is covered by this boundary test: vm_se
 vm_privilege	vm_privilege	vm_is_visible refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
 vm_privilege	vm_privilege	vm_selftest did not report success to the unprivileged role	15;16;17;18;19	2026-10-14	vm_selftest without its owner check
 vm_privilege	vm_privilege	vm_selftest refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	premise: the large-dimension empty build runs under the coordinator	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	premise: and its build is empty	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	an empty build reads no fact chunk group	15;16;17;18;19	2026-10-16	an inner join whose build was empty ran on, and the fact scan rejected every row one at a time (the tree before #1447)
-native_join_runtime_filter	native_join_runtime_filter	an empty build from a large dimension answers as heap	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	premise: the empty-then-full rescan runs under the coordinator	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	premise: heap's empty-then-full rescan answer holds the 200 keys	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	an empty build on one rescan does not empty the next	15;16;17;18;19	2026-10-16	the rescan kept the first execution's runtime filter state: prepared not reset on rescan (mutation, #1447)

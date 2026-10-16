@@ -103,8 +103,9 @@ open_sentinel() {
 # backend is parked in the trailing pg_sleep, between the last flush and the
 # commit that never comes. The phase is asserted, not assumed, from wait_event.
 crash_one_backend() {
-	local rows="$1" marker="$2" phase="$3" bg pid i we src
+	local rows="$1" marker="$2" phase="$3" bg pid i we src size0
 	open_sentinel || echo "-- sentinel did not connect"
+	size0="$(q "SELECT pg_relation_size('c');")"
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -c "BEGIN; INSERT INTO c /* $marker */ SELECT g, 'k'||g, g
 			FROM generate_series(1, $rows) g; SELECT pg_sleep(60);" >/dev/null 2>&1 &
@@ -131,8 +132,18 @@ crash_one_backend() {
 			sleep 0.1
 		done
 	else
-		sleep 0.5
+		# Until the write has reached the relation. A fixed 0.5s stood here, and
+		# nothing showed the INSERT had written a page by then: with its stripes
+		# buffered whole (stripe_row_limit above the row count) the kill landed on
+		# a write that had produced nothing, and every mid-write arm still passed
+		# (#1341). So the kill now waits for the relation to grow, and asserts it.
+		for i in $(seq 1 600); do
+			[ "$(q "SELECT pg_relation_size('c') > $size0;")" = t ] && break
+			sleep 0.1
+		done
 	fi
+	check "$marker: the INSERT had written pages before the kill (the relation grew)" \
+		"$(q "SELECT pg_relation_size('c') > $size0;")" "t"
 	we="$(q "SELECT coalesce(wait_event,'') FROM pg_stat_activity WHERE pid = $pid;")"
 	if [ "$phase" = sleep ]; then
 		check "$marker: kill lands after the stripes flushed (backend in pg_sleep)" "$we" "PgSleep"
