@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 200
+suites_not_covered 199
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3303,4 +3303,21 @@ suites_not_covered 200
 #     never         2942 + 38 = 2980
 #     dated         1160 + 31 = 1191
 #     2980 + 1191 == 4171
-checks_never_observed_red 2980
+#
+# #1341, native_fetch_projection seeded, with its twin (OffgridwithJD): 2980 -> 2990,
+# and suites_not_covered 200 -> 199. The suite had no rows. It enters with all 18
+# checks from five-major runs (18/18 on each of 15-19). 8 are dated by seven
+# mutations: reconstruct's uncovered set missing the last column, read_projection
+# and reconstruct ignoring liveness, a full decode planted beside the liveness
+# check, index deletion asking each row whether it is live and decoding each row,
+# and an unguarded needed-set test. Ten arrive never: seven premises; the fixture's
+# column count and the opening row count; and the two all-covering-projection
+# arms, which an empty set read as "every column" cannot redden, because decoding
+# everything still answers right (measured: the old convention restored leaves
+# both green).
+#
+#     ledger rows   4171 + 18 = 4189
+#     never         2980 + 10 = 2990
+#     dated         1191 +  8 = 1199
+#     2990 + 1199 == 4189
+checks_never_observed_red 2990
