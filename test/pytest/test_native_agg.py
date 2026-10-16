@@ -11,11 +11,10 @@ Measured on the shell twin with every group forced dirty: max(ts) read 414 block
 against a decode's 403, and every parity arm stayed green. So each arm reads the
 table's own blocks from pg_statio against a control that must decode the column.
 
-A partial port of `test/native_agg.sh`: the timestamptz arms only. The int4,
-text, sum/avg, parallel and fallback arms are not ported, and
-`test_compare_to_bash.py` declares the pair INCOMPLETE with that reason.
-Independent of the shell twin: its own table, row count, key spacing and
-delete windows.
+The pytest twin of `test/native_agg.sh`, every check by the shell's name. The
+timestamptz arms came first (#1293); the int4, text, sum/avg, parallel-plan,
+zone-map-read, fallback and empty-table arms were ported for #1341. Independent of
+the shell twin: its own tables, row counts, key spacing and delete windows.
 
 `pg_stat_reset()` is database-wide; this file must not run concurrently with
 another that reads statistics.
@@ -136,9 +135,128 @@ def test_a_where_with_no_column_in_it_is_applied(pgc_conn, expect):
         plan = "\n".join(r[0] for r in cur.fetchall())
     expect.text("yes" if "Columnar Vectorized Aggregates" in plan else f"no ({plan})", "yes",
                 "premise: count, min and max with no WHERE are the vectorized aggregate")
-    for name, where in (("(SELECT false)", "(SELECT false)"), ("now()", "now() < '2000-01-01'"),
-                        ("current_user", "current_user = 'pgc_nobody'")):
-        expect.text(_one(pgc_conn, f"{GATED} gn WHERE {where}"), _one(pgc_conn, f"{GATED} gh WHERE {where}"),
-                    f"a WHERE {'' if name.startswith('(') else 'on '}{name} with no column in it gives heap's answer")
+    # WRITTEN OUT, so each name is the shell's literal rather than a built string
+    for where, name in (
+            ("(SELECT false)", "a WHERE (SELECT false) with no column in it gives heap's answer"),
+            ("now() < '2000-01-01'", "a WHERE on now() with no column in it gives heap's answer"),
+            ("current_user = 'pgc_nobody'",
+             "a WHERE on current_user with no column in it gives heap's answer")):
+        expect.text(_one(pgc_conn, f"{GATED} gn WHERE {where}"),
+                    _one(pgc_conn, f"{GATED} gh WHERE {where}"), name)
     expect.text(_one(pgc_conn, f"{GATED} gh WHERE (SELECT false)"), "0/-/-",
                 "premise: heap's answer to a false gate is no rows")
+
+
+# ---- the int4, text, parallel, zone-map and fallback arms (#1341) ------------------
+
+def _plan(conn, sql, parallel=False):
+    with conn.cursor() as cur:
+        if parallel:
+            # parallel_tuple_cost keeps its default on purpose: zeroing it makes a
+            # Gather of raw rows look free, and the wrong costing then still picks
+            # the right plan (the shell's comment, measured there)
+            cur.execute("SET max_parallel_workers_per_gather = 4")
+            cur.execute("SET parallel_setup_cost = 0")
+            cur.execute("SET min_parallel_table_scan_size = 0")
+        cur.execute("EXPLAIN (COSTS OFF) " + sql)
+        plan = "\n".join(r[0] for r in cur.fetchall())
+        if parallel:
+            for g in ("max_parallel_workers_per_gather", "parallel_setup_cost",
+                      "min_parallel_table_scan_size"):
+                cur.execute(f"RESET {g}")
+    return plan
+
+
+def _aggnode(plan):
+    return "yes" if "Columnar Vectorized Aggregates" in plan else "no"
+
+
+def _gather(plan):
+    return "yes" if "Gather" in plan else "no"
+
+
+def _zm_scans(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_stat_force_next_flush()")
+        cur.execute("SELECT coalesce(idx_scan, 0) + coalesce(seq_scan, 0) FROM pg_stat_all_tables "
+                    "WHERE relid = 'pgcolumnar.zone_map'::regclass")
+        return int(cur.fetchone()[0])
+
+
+def test_the_metadata_aggregates_answer_as_heap_and_win_their_plans(pgc_conn, expect):
+    c = pgc_conn
+    with c.cursor() as cur:
+        cur.execute("CREATE TABLE ah (id int, s int, k bigint, label text)")
+        cur.execute("CREATE TABLE an (id int, s int, k bigint, label text) USING pgcolumnar")
+        cur.execute("SELECT pgcolumnar.set_options('an', stripe_row_limit => 2048, "
+                    "chunk_group_row_limit => 1024)")
+        gen = ("SELECT g, CASE WHEN g % 5 = 0 THEN NULL ELSE g % 997 END, (g * 11)::bigint, "
+               "'tag-' || (g % 37) FROM generate_series(1, 12000) g")
+        cur.execute(f"INSERT INTO ah {gen}")
+        cur.execute(f"INSERT INTO an {gen}")
+
+    # the node first: every parity arm below also holds for a correct fallback
+    expect.text(_aggnode(_plan(c, "SELECT count(*) FROM an")), "yes",
+                "count(*) uses the metadata agg node")
+    expect.text(_aggnode(_plan(c, "SELECT sum(id), min(id), max(id) FROM an")), "yes",
+                "sum/min/max uses the metadata agg node")
+
+    expect.text(str(_one(c, "SELECT count(*) FROM an")), str(_one(c, "SELECT count(*) FROM ah")), "count(*)")
+    expect.text(str(_one(c, "SELECT count(s) FROM an")), str(_one(c, "SELECT count(s) FROM ah")),
+                "count(col,nulls)")
+    expect.text(str(_one(c, "SELECT sum(id) FROM an")), str(_one(c, "SELECT sum(id) FROM ah")), "sum(int4)")
+    expect.text(str(_one(c, "SELECT sum(s) FROM an")), str(_one(c, "SELECT sum(s) FROM ah")),
+                "sum(int4,nulls)")
+    expect.text(str(_one(c, "SELECT avg(s) FROM an")), str(_one(c, "SELECT avg(s) FROM ah")),
+                "avg(int4,nulls)")
+    expect.text(str(_one(c, "SELECT min(id) FROM an")), str(_one(c, "SELECT min(id) FROM ah")), "min(int4)")
+    expect.text(str(_one(c, "SELECT max(id) FROM an")), str(_one(c, "SELECT max(id) FROM ah")), "max(int4)")
+    expect.text(str(_one(c, "SELECT min(s) FROM an")), str(_one(c, "SELECT min(s) FROM ah")),
+                "min(int4,nulls)")
+    expect.text(str(_one(c, "SELECT min(label) FROM an")), str(_one(c, "SELECT min(label) FROM ah")),
+                "min(text)")
+    expect.text(str(_one(c, "SELECT max(label) FROM an")), str(_one(c, "SELECT max(label) FROM ah")),
+                "max(text)")
+    with c.cursor() as cur:
+        cur.execute("SELECT count(*), sum(id), min(id), max(id) FROM an")
+        got = cur.fetchone()
+        cur.execute("SELECT count(*), sum(id), min(id), max(id) FROM ah")
+        want = cur.fetchone()
+    expect.text(str(got), str(want), "multi-agg")
+
+    # it has to win on cost, not only exist (#133)
+    par_count = _plan(c, "SELECT count(*) FROM an", parallel=True)
+    expect.text(_aggnode(par_count), "yes", "count(*) beats a parallel plan")
+    expect.text(_gather(par_count), "no", "count(*) plan has no Gather")
+    par_multi = _plan(c, "SELECT count(*), sum(id), min(id), max(id) FROM an", parallel=True)
+    expect.text(_aggnode(par_multi), "yes", "multi-agg beats a parallel plan")
+    expect.text(_gather(par_multi), "no", "multi-agg plan has no Gather")
+
+    # count(*) needs no zone map; an aggregate that needs one must be seen reading it,
+    # so the zero above cannot pass because the counter never moves
+    before = _zm_scans(c)
+    _one(c, "SELECT count(*) FROM an")
+    after = _zm_scans(c)
+    expect.num(after - before, 0, "count(*) reads no zone maps")
+    before = _zm_scans(c)
+    _one(c, "SELECT count(*), sum(id) FROM an")
+    after = _zm_scans(c)
+    expect.text("yes" if after - before > 0 else f"no ({after - before})", "yes",
+                "an aggregate that needs zone maps reads them")
+
+    with c.cursor() as cur:
+        cur.execute("SELECT count(*), sum(id) FROM an WHERE id > 6000")
+        got = cur.fetchone()
+        cur.execute("SELECT count(*), sum(id) FROM ah WHERE id > 6000")
+        want = cur.fetchone()
+    expect.text(str(got), str(want), "filtered aggregate parity")
+    expect.text(_aggnode(_plan(c, "SELECT count(*), sum(id) FROM an WHERE id > 6000")), "no",
+                "filtered aggregate not metadata node")
+    expect.text(str(_one(c, "SELECT sum(k) FROM an")), str(_one(c, "SELECT sum(k) FROM ah")),
+                "sum(bigint) fallback parity")
+
+    with c.cursor() as cur:
+        cur.execute("CREATE TABLE ae (id int, label text) USING pgcolumnar")
+    expect.num(_one(c, "SELECT count(*) FROM ae"), 0, "empty count(*)")
+    expect.text(str(_one(c, "SELECT sum(id) IS NULL FROM ae")), "True", "empty sum NULL")
+    expect.text(str(_one(c, "SELECT min(label) IS NULL FROM ae")), "True", "empty min NULL")

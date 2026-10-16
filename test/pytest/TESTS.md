@@ -6560,7 +6560,7 @@ THE ROW COUNT IS A PREMISE because the shell twin's first draft overflowed `int`
 
 Removal proof, on this twin: forcing every group dirty reddens `max(ts) reads under a tenth of the blocks a decode of ts reads` (got -1487, wanted at least 1).
 
-Not ported, and declared INCOMPLETE in `test_compare_to_bash.py`: the `int4`/`text` parity, `sum`/`avg`, parallel-plan and fallback arms.
+The rest of the shell suite was ported for #1341, every check by its name: the `int4`, `text` and `sum`/`avg` parity arms with the metadata node asserted first, the node winning against a parallel plan with no Gather (#133), `count(*)` reading no zone maps against an aggregate that must read them, and the filtered, `sum(bigint)` and empty-table fallbacks. Removal proof for those: `count(col)` folded from the row count instead of the value count reddens `count(col,nulls)` in both twins.
 
 ### Every test
 
@@ -6568,6 +6568,7 @@ Not ported, and declared INCOMPLETE in `test_compare_to_bash.py`: the `int4`/`te
 | --- | --- |
 | `test_min_max_over_timestamptz_read_no_data` | the table holds every row; `max(ts)` plans the metadata node; a decode reads at least 10 blocks; `max` and `min` each read under a tenth of that; parity with heap before and after deleting rows at both ends |
 | `test_a_where_with_no_column_in_it_is_applied` | a WHERE that references no column, such as `(SELECT false)`, `now() < ...` or `current_user = ...`, gives heap's answer, with a premise that the same aggregate with no WHERE is the vectorized node (#1435) |
+| `test_the_metadata_aggregates_answer_as_heap_and_win_their_plans` | count, sum, avg, min and max over int4 and text equal heap with the metadata node asserted first; the node beats a parallel plan with no Gather; `count(*)` reads no zone maps while `count(*), sum(id)` does; filtered, `sum(bigint)` and empty-table answers are right |
 
 ## 86. test_format_downgrade.py: an alpha4 binary refuses what this build wrote
 

@@ -119,6 +119,7 @@ COMPLETE = ["advisory_lock_class",
             "latest_reading",
             "maintenance_crash",
             "maintenance_rollback",
+            "native_agg",
             "native_backend_crash",
             "native_batch_fold_projection",
             "native_chunk_length_bound",
@@ -249,12 +250,6 @@ INCOMPLETE = {
     # having no SKIP verdict for an arm a run chooses not to make, does not carry.
     "large_values": "the 1 MB to 200 MB round trips and the TOASTed-update arms are "
                     "ported; the opt-in chunk-over-1-GB refusal is not",
-    # #1293 ported the arms it added: min/max over timestamptz read no data, and
-    # stay right after deletes. The int4/text parity, sum/avg, parallel-plan and
-    # fallback arms of the shell suite predate it and are #432's to port.
-    "native_agg": "the timestamptz min/max arms (blocks read against a decode "
-                  "control, parity before and after deletes) are ported; the "
-                  "int4/text parity, sum/avg, parallel-plan and fallback arms are not",
     # The port asserts the engine counters, the heap oracle, the scattered zero
     # and the declared-collation property. The shell suite additionally pins the
     # three states of max_upper and its own fixture geometry by name, and those
@@ -422,7 +417,7 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
                 "every name the loop reader returns appears verbatim in the file it "
                 "came from")
     expect.text(", ".join(files),
-                "build_refusal, differential, native_groupagg_batch, "
+                "build_refusal, differential, native_agg, native_groupagg_batch, "
                 "native_index_projection, native_parquet_pushdown, "
                 "native_reclaim, native_repack, "
                 "native_saop_pushdown, native_vacuum_race, native_vecskip, sorted_pathkeys, "
