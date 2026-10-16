@@ -799,4 +799,6 @@ guard_tests 438
 # four tests, by collection over the cluster files on this tree.
 # cluster_tests 726 -> 730 for #1341's test_native_fetch_cache.py, the twin of native_fetch_cache.sh:
 # four tests, by collection over the cluster files on this tree.
-cluster_tests 730
+# cluster_tests 730 -> 734 for #1341's test_native_parquet_pushdown.py, the twin of native_parquet_pushdown.sh:
+# four tests, by collection over the cluster files on this tree.
+cluster_tests 734
