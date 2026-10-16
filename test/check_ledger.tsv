@@ -2279,7 +2279,7 @@ native_chunk_length_bound	native_chunk_length_bound	an index fetch of a chunk wh
 native_chunk_length_bound	native_chunk_length_bound	backend survived the sequential refusal	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	backend survived the truncated-length fetch	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	premise: a point lookup uses the index, not a sequential columnar scan	15;16;17;18;19	never	-
-native_chunk_length_bound	native_chunk_length_bound	premise: that fetch returns the row	15;16;17;18;19	never	-
+native_chunk_length_bound	native_chunk_length_bound	that fetch returns the row	15;16;17;18;19	2026-10-16	the index fetch treated a flushed row as not live, so the lookup returned no row (mutation, #1339)
 native_delete_visibility_paths	native_delete_visibility_paths	a DELETE whose qual deletes another row of the table succeeds and leaves heap's rows (#1394)	15;16;17;18;19	2026-10-14	PgColumnarUpsertDeleteVector without the command advance (main before #1394's fix)
 native_delete_visibility_paths	native_delete_visibility_paths	a deleted row is invisible via the index	15;16;17;18;19	never	-
 native_delete_visibility_paths	native_delete_visibility_paths	a live row is visible via the index	15;16;17;18;19	never	-

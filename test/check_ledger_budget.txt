@@ -2933,4 +2933,14 @@ suites_not_covered 219
 #     never         2678 - 2 = 2676
 #     dated          941 + 2 = 943
 #     2676 + 943 == 3619
-checks_never_observed_red 2676
+#
+# #1339, native_chunk_length_bound's "that fetch returns the row" was a premise a
+# product change reddens (jdatcmd): 2676 -> 2675. It becomes an arm, its row renamed
+# with its history, dated by the index fetch treating a flushed row as not live. The
+# plan premise beside it stays a premise. No row is added or removed.
+#
+#     ledger rows   3619 + 0 = 3619
+#     never         2676 - 1 = 2675
+#     dated          943 + 1 = 944
+#     2675 + 944 == 3619
+checks_never_observed_red 2675

@@ -53,8 +53,14 @@ def test_native_chunk_length_bound(pgc_conn, expect):
         cur.execute("SET enable_bitmapscan=off")
         cur.execute("SET pgcolumnar.enable_custom_scan=off")
         cur.execute("SELECT t FROM clb WHERE id = 1")
-        got = cur.fetchone()[0]
-    expect.text(got, "v1", "premise: that fetch returns the row")
+        # A missing row is this check's failure, by name (#1339): fetchone()[0] on
+        # no row raised TypeError, and the run never said which check it was.
+        row = cur.fetchone()
+        got = row[0] if row else "<no row>"
+    # An arm, not a premise (#1339, #1236): an index fetch that treats a flushed row
+    # as not live returns no row here. The plan premise above stays a premise: with
+    # the scans off, the planner, not this repository, chooses the index.
+    expect.text(got, "v1", "that fetch returns the row")
 
     with pgc_conn.cursor() as cur:
         cur.execute(
