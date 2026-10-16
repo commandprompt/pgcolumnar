@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 210
+suites_not_covered 209
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3082,4 +3082,21 @@ suites_not_covered 210
 #     never         2811 +  6 = 2817
 #     dated         1028 +  8 = 1036
 #     2817 + 1036 == 3853
-checks_never_observed_red 2817
+#
+# #1341 item 70, alter_am_cleanup seeded, with its twin (OffgridwithJD): 2817 ->
+# 2843, and suites_not_covered 210 -> 209. The suite had no rows. It enters with all
+# 47 checks from five-major runs (47/47 on each of 15-19). 21 are dated by seven
+# mutations of the drop hook: the cleanup gated on the columnar AM (#304's shape), a
+# gate on the schema instead of pgcolumnar.options, no gate at all, a skip of the
+# whole schema instead of the members, no member skip, and no delete of the
+# declarations or of the options row. Twenty-six arrive never: the sixteen premises, the
+# conversion and round-trip reads that precede each drop, the CREATE TABLE arms and the
+# control, the never-columnar heap's arm, the pre-extension table's DROP (rc=0 either
+# way; its options-row arm is the one dated), and the two TRUNCATE arms, since TRUNCATE
+# drops no relation through the hook and no gate mutation reaches it.
+#
+#     ledger rows   3853 + 47 = 3900
+#     never         2817 + 26 = 2843
+#     dated         1036 + 21 = 1057
+#     2843 + 1057 == 3900
+checks_never_observed_red 2843

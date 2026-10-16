@@ -199,6 +199,7 @@ behaviour, the source of that number is named.
 - [151. test_pg_upgrade.py: a columnar table survives pg_upgrade](#151-test_pg_upgradepy-a-columnar-table-survives-pg_upgrade)
 - [152. test_replication.py: physical replication and standby redo](#152-test_replicationpy-physical-replication-and-standby-redo)
 - [153. test_native_recluster.py: online reclustering under ShareUpdateExclusiveLock](#153-test_native_reclusterpy-online-reclustering-under-shareupdateexclusivelock)
+- [154. test_alter_am_cleanup.py: DROP after SET ACCESS METHOD heap cleans up](#154-test_alter_am_cleanuppy-drop-after-set-access-method-heap-cleans-up)
 
 ## 1. How to read a test in here
 
@@ -7516,3 +7517,18 @@ The index arm counts through an index-only scan of the unique index, after a VAC
 | test | what it holds |
 | --- | --- |
 | `test_online_recluster` | recluster tightens 2D skipping, keeps the rows, keeps the index exact through an index-only scan and the unique constraint enforced, and holds only ShareUpdateExclusiveLock |
+
+## 154. test_alter_am_cleanup.py: DROP after SET ACCESS METHOD heap cleans up
+
+The pytest twin of `test/alter_am_cleanup.sh` (ported for #1341, item 70), every check by the shell's name. `pgcolumnar.options` and `projection_declaration` are keyed by relid, so a table converted to heap still has rows there, and the drop hook must clear them although the table is heap by then (#304). The hook is armed in every database, because the library is preloaded. Where the extension was never installed, or has been dropped, it must not open a catalog that isn't there: an ERROR in an object-access hook aborts the statement, and every table rewrite drops a transient relation through it. It gates on `pgcolumnar.options` resolving, not on the schema, and skips only the extension's own members.
+
+Each cleanup arm compares the catalogs with their state just before its own table was made, so one leak can't redden the arms after it. The REFRESH arm has a matview of its own, made WITH NO DATA, so it can't inherit the CREATE arm's failure.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_drop_after_converting_to_heap_cleans_up` | a converted, a round-tripped and an in-schema table each leave no relid-keyed rows on DROP, and a never-columnar heap is left alone |
+| `test_the_hook_is_harmless_where_the_extension_never_was` | DROP, temp tables and every rewrite path succeed in a database without the extension |
+| `test_a_relation_older_than_the_extension_is_cleaned_up` | a table that predates CREATE EXTENSION isn't a member, so its options row goes on DROP |
+| `test_the_gate_is_on_the_options_table_not_the_schema` | DROP EXTENSION succeeds with populated catalogs, and afterwards, with only the schema left, every path still works |
