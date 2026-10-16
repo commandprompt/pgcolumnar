@@ -179,6 +179,10 @@ COMPLETE = ["advisory_lock_class",
 # about the PORT rather than a licence: the standing arm does not grade it, so the
 # reason is the only thing standing between a declared gap and a forgotten one.
 INCOMPLETE = {
+    # #1341 item 66 ported the arms it added: the upgrade window, this library over
+    # the previous release's catalog before ALTER EXTENSION UPDATE.
+    "native_upgrade_converge": "the upgrade-window arms are ported; the fixture-blob, "
+                               "staging and catalog-convergence arms are not",
     # #1341 item 29 ported the arms four fixes added with shell arms only. Each
     # pair below holds that fix's arms and nothing else of its shell suite.
     "inheritance": "the #1259 arms (a partitioned columnar parent is refused with "

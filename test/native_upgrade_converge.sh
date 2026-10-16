@@ -310,4 +310,53 @@ done
 rm -f "$REF"
 P -d postgres -c "DROP DATABASE IF EXISTS conv_fresh;" >/dev/null
 
+# ---- the window: this library over the previous release's catalog (#1341 item 66) ----
+#
+# docs/installation.md steps 1 and 2 put the new library in place; step 3,
+# ALTER EXTENSION UPDATE, brings the catalog up to it. Between them a database
+# runs this library over its previous release's catalog. The library deletes
+# from retired_group unconditionally (columnar_metadata.c, PgColumnarDeleteMetadata),
+# which that catalog does not have, so DROP TABLE, TRUNCATE and pgcolumnar.vacuum()
+# fail there: measured, with 42P01 'columnar metadata table
+# "pgcolumnar.retired_group" does not exist', which names neither the cause nor step 3.
+#
+# The arms hold what the window must keep: reads and writes work, a refused
+# operation changes nothing and names the remedy, and step 3 makes every one of
+# them work on the same rows. PREV is the newest fixture, so these follow the
+# release they describe rather than naming it.
+PREV="${_NUC_FIXTURES[${#_NUC_FIXTURES[@]}-1]}"
+WIN=conv_window
+P -d postgres -c "DROP DATABASE IF EXISTS $WIN;" >/dev/null
+P -d postgres -c "CREATE DATABASE $WIN;" >/dev/null
+P -d "$WIN" -c "CREATE EXTENSION pgcolumnar VERSION '$PREV';" >/dev/null
+check "premise: the window database runs this library over the previous release's catalog" \
+	"$(P -d "$WIN" -c "SELECT extversion FROM pg_extension WHERE extname='pgcolumnar';")" "$PREV"
+check "premise: that catalog has no retired_group, which this library deletes from" \
+	"$(P -d "$WIN" -c "SELECT count(*) FROM pg_class WHERE relname = 'retired_group' AND relnamespace = 'pgcolumnar'::regnamespace;")" "0"
+P -d "$WIN" -c "CREATE TABLE w (a int, b text) USING pgcolumnar;" >/dev/null
+P -d "$WIN" -c "INSERT INTO w SELECT g, 'x' || g FROM generate_series(1, 20000) g;" >/dev/null
+P -d "$WIN" -c "DELETE FROM w WHERE a % 3 = 0;" >/dev/null
+win_rows() { P -d "$WIN" -c "SELECT count(*) || '|' || sum(a) FROM w;"; }
+check "in the window, a columnar table is written, deleted from and read" "$(win_rows)" "13334|133346667"
+win_refusal() {	# win_refusal SQL -> SQLSTATE|whether the HINT names step 3, or what happened instead
+	local out
+	out="$(P -d "$WIN" -v VERBOSITY=verbose -c "$1" 2>&1)" && { echo accepted; return; }
+	echo "$(sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' <<<"$out" | head -1)|$(grep -q '^HINT:  .*ALTER EXTENSION pgcolumnar UPDATE' <<<"$out" && echo names-the-update || echo no-hint)"
+}
+check "in the window, DROP TABLE is refused and names ALTER EXTENSION UPDATE" \
+	"$(win_refusal "DROP TABLE w;")" "42P01|names-the-update"
+check "in the window, TRUNCATE is refused and names ALTER EXTENSION UPDATE" \
+	"$(win_refusal "TRUNCATE w;")" "42P01|names-the-update"
+check "in the window, pgcolumnar.vacuum() is refused and names ALTER EXTENSION UPDATE" \
+	"$(win_refusal "SELECT pgcolumnar.vacuum('w');")" "42P01|names-the-update"
+check "in the window, the refused operations changed nothing" "$(win_rows)" "13334|133346667"
+
+P -d "$WIN" -c "ALTER EXTENSION pgcolumnar UPDATE;" >/dev/null
+check "after ALTER EXTENSION UPDATE, the same rows are there" "$(win_rows)" "13334|133346667"
+check "after ALTER EXTENSION UPDATE, pgcolumnar.vacuum() succeeds and keeps them" \
+	"$(P -d "$WIN" -c "SELECT pgcolumnar.vacuum('w');" >/dev/null 2>&1 && win_rows || echo refused)" "13334|133346667"
+check "after ALTER EXTENSION UPDATE, TRUNCATE and DROP TABLE succeed" \
+	"$(P -d "$WIN" -c "TRUNCATE w;" >/dev/null 2>&1 && P -d "$WIN" -c "DROP TABLE w;" >/dev/null 2>&1 && echo succeeded || echo refused)" "succeeded"
+P -d postgres -c "DROP DATABASE IF EXISTS $WIN;" >/dev/null
+
 pgc_summary
