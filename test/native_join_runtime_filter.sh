@@ -174,6 +174,16 @@ ORDER BY 1
 SQL
 )
 check "rescan answers equal heap" "$(pc "${rf_on}SET max_parallel_workers_per_gather=0;$SQLR" | grep -v '^SET$')" "$(q "$SQLRH")"
+# An empty build on one rescan must not carry into the next (#1447). An empty
+# build now ends the join at once, so a state left over from the first outer row
+# (99999 keeps no key) would answer the second (0 keeps all 200) with no rows.
+SQLRE="${SQLR//(VALUES (0),(8000))/(VALUES (99999),(0))}"
+SQLRHE="${SQLRH//(VALUES (0),(8000))/(VALUES (99999),(0))}"
+check "premise: the empty-then-full rescan runs under the coordinator" \
+	"$(pc "${rf_on}SET max_parallel_workers_per_gather=0;EXPLAIN (COSTS OFF) $SQLRE" | grep -c 'Columnar Runtime Filter Coordinator')" 1
+check "premise: heap's empty-then-full rescan answer holds the 200 keys" "$(q "$SQLRHE" | head -1)" "0|200"
+check "an empty build on one rescan does not empty the next" \
+	"$(pc "${rf_on}SET max_parallel_workers_per_gather=0;$SQLRE" | grep -v '^SET$')" "$(q "$SQLRHE")"
 
 # 220000 distinct build keys exceed d*10 vs 2^21, so Bloom must refuse rather
 # than emit a saturated filter. Fact is larger so it remains the hash outer.
@@ -239,7 +249,9 @@ check "3-table join order matches filter-off" "$(printf '%s\n' "$on3" | rel_orde
 check "3-table answer equals filter-off" "$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;$SQL3"|tail -1)" "$(pc "${rf_off}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;$SQL3"|tail -1)"
 
 # Empty build: Hash Join still exists, the coordinator still wraps it, and the
-# answer is zero rather than a leftover hull from a previous execution.
+# answer is zero. With a dimension this small the hash join never runs its outer
+# side at all, so this answer cannot fail on what the coordinator does with an
+# empty build (#1339); the large-dimension arms below can.
 q "$(cat <<'SQL'
 CREATE TABLE dim_none(k int);
 CREATE TABLE fact_none(k int, payload text) USING pgcolumnar;
@@ -254,6 +266,23 @@ SQLN="SELECT count(*),sum(fact_none.k) FROM fact_none JOIN dim_none ON fact_none
 onn="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLN")"
 check "empty-build plan has coordinator" "$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$onn")" 1
 check "empty-build answer equals heap" "$(pc "${rf_on}$SQLN"|tail -1)" "$(q "SELECT count(*),sum(heap_none.k) FROM heap_none JOIN dim_none ON heap_none.k=dim_none.k")"
+# An empty build from a LARGE dimension filtered to nothing (#1447). Here the hash
+# join fetches its first outer row before it builds, so the fact scan runs. The
+# coordinator found the build empty, and an inner join with an empty build has no
+# rows, so the fact table must not be read. It was read whole: every fact row was
+# rejected one at a time (5 of 5 groups read, 5000 rows rejected).
+q "$(cat <<'SQL'
+CREATE TABLE dim_gone(k int, v int);
+INSERT INTO dim_gone SELECT g, g FROM generate_series(1,200000) g;
+ANALYZE dim_gone;
+SQL
+)" >/dev/null
+SQLE="SELECT count(*),sum(fact_none.k) FROM fact_none JOIN dim_gone ON fact_none.k=dim_gone.k WHERE dim_gone.v < 0"
+one="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLE")"
+check "premise: the large-dimension empty build runs under the coordinator" "$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$one")" 1
+check "premise: and its build is empty" "$(val 'Runtime Filter Build Rows' "$one")" 0
+check "an empty build reads no fact chunk group" "$(val 'Columnar Chunk Groups Read' "$one")" 0
+check "an empty build from a large dimension answers as heap" "$(pc "${rf_on}$SQLE"|tail -1)" "$(q "SELECT count(*),sum(heap_none.k) FROM heap_none JOIN dim_gone ON heap_none.k=dim_gone.k WHERE dim_gone.v < 0")"
 
 # Projection-backed outer scans are excluded: a covering projection with a
 # sort-key restriction is cheaper than the base scan, so Hash Join would wrap

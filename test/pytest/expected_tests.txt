@@ -739,4 +739,6 @@ guard_tests 438
 # eleven tests, by collection over the cluster files on this tree.
 # cluster_tests 638 -> 641 for #1341's test_recovery.py, the twin of recovery.sh: three
 # tests, by collection over the cluster files on this tree.
-cluster_tests 641
+# cluster_tests 641 -> 643 for #1447's two tests in test_join_runtime_filter.py, by
+# collection over the cluster files on this tree.
+cluster_tests 643

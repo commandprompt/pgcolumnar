@@ -898,6 +898,17 @@ PgColumnarExecRuntimeFilter(CustomScanState *node)
     if (!state->prepared)
         PgColumnarPrepareRuntimeFilter(state);
 
+    /*
+     * AN EMPTY BUILD HAS NO JOIN ROWS (#1447). The coordinator wraps only inner
+     * joins, so once the build is drained and found empty, the answer is already
+     * known. Running the join anyway let the hash join fetch its first outer row
+     * before building, and the Bloom check then rejected every fact row one at a
+     * time: the whole fact table read for no row. A rescan resets prepared, so each
+     * execution decides again.
+     */
+    if (state->buildEmpty)
+        return NULL;
+
     return ExecProcNode(state->joinState);
 }
 
