@@ -90,7 +90,6 @@ native_fold_deferral
 native_fold_skipguard
 native_gap
 native_groupagg_wide_cost
-native_join_runtime_filter
 native_late_materialization
 native_lazy_slot
 native_metadata_flush
