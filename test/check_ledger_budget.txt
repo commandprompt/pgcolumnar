@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 220
+suites_not_covered 219
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2903,4 +2903,22 @@ suites_not_covered 220
 #     never         2644 + 25 = 2669
 #     dated          927 +  3 = 930
 #     2669 + 930 == 3599
-checks_never_observed_red 2669
+#
+# #1341, corruption seeded, with its twin (OffgridwithJD): 2669 -> 2678, and
+# suites_not_covered 220 -> 219. The suite had no rows. It enters with all 20 checks
+# from five-major runs (20/20 on each of 15-19). 11 are dated by seven mutations of
+# the reader and the bloom probe: the group-span check removed, the span, the
+# chunk-bound and the descriptor refusals each replaced by a backend crash, the
+# row-count accounting and the value-stream bound removed together, a malformed
+# bloom header read as "absent", and the bloom length check removed. Each corruption
+# has a second guard, so removing one refusal alone mostly leaves its arm green; a
+# refusal turned into a crash is what the new XX001 and crash-count arms catch.
+# Nine arrive never: the seven touched-a-row premises, which redden only when the
+# harness's UPDATEs match nothing, column_index's liveness, which no single bound
+# reddens, and the absent-value bloom lookup, which cannot see a false negative.
+#
+#     ledger rows   3599 + 20 = 3619
+#     never         2669 +  9 = 2678
+#     dated          930 + 11 = 941
+#     2678 + 941 == 3619
+checks_never_observed_red 2678
