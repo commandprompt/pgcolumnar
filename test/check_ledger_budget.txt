@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 221
+suites_not_covered 220
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2886,4 +2886,21 @@ suites_not_covered 221
 #     never         2639 + 5 = 2644
 #     dated          925 + 2 = 927
 #     2644 + 927 == 3571
-checks_never_observed_red 2644
+#
+# #1341, native_backend_crash seeded, with its twin (OffgridwithJD): 2644 -> 2669,
+# and suites_not_covered 221 -> 220. The suite had no rows. It enters with all 28
+# checks from five-major runs (28/28 on each of 15-19). 3 are dated by a stripe data
+# page written with no WAL record: each scenario's "committed content in c matches
+# the heap mirror", which the reinit's crash recovery cannot rebuild. Twenty-five
+# arrive never. The no-visible-rows and no-partial-row-group arms are MVCC's: no
+# mutation of the extension leaves an aborted transaction's catalog rows visible.
+# The sentinel, second-reader, kill-phase and relation-grew arms go red only under
+# harness mutations (a signal that kills nothing, an INSERT whose stripes buffer
+# whole), which observe the suite rather than the code. The rest hold of the heap
+# mirror, the postmaster pid and a connection.
+#
+#     ledger rows   3571 + 28 = 3599
+#     never         2644 + 25 = 2669
+#     dated          927 +  3 = 930
+#     2669 + 930 == 3599
+checks_never_observed_red 2669
