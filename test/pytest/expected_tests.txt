@@ -753,4 +753,6 @@ guard_tests 438
 # five tests, by collection over the cluster files on this tree.
 # cluster_tests 666 -> 672 for #1341's test_truncate_cleanup.py, the twin of truncate_cleanup.sh:
 # six tests, by collection over the cluster files on this tree.
-cluster_tests 672
+# cluster_tests 672 -> 673 for #1341's test_native_dml.py, the twin of native_dml.sh: one test,
+# by collection over the cluster files on this tree.
+cluster_tests 673

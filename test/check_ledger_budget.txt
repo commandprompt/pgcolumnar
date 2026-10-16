@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 217
+suites_not_covered 216
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2976,4 +2976,18 @@ suites_not_covered 217
 #     never         2686 +  9 = 2695
 #     dated          961 + 16 = 977
 #     2695 + 977 == 3672
-checks_never_observed_red 2695
+#
+# #1341, native_dml seeded, with its twin (OffgridwithJD): 2695 -> 2702, and
+# suites_not_covered 217 -> 216. The suite had no rows. It enters with all 15 checks
+# from five-major runs (15/15 on each of 15-19). 8 are dated by three mutations: a
+# row group holding deletes still answering min and max from its zone maps (the
+# min/max arm, which could not see it before this change), count(*) from metadata
+# not subtracting deleted rows (3), and the index fetch ignoring the delete vector
+# (5). Seven arrive never: the two premises, the rows and sum after the delete, the
+# deleted rows being gone, the live row's index lookup, and the primary key arm.
+#
+#     ledger rows   3672 + 15 = 3687
+#     never         2695 +  7 = 2702
+#     dated          977 +  8 = 985
+#     2702 + 985 == 3687
+checks_never_observed_red 2702
