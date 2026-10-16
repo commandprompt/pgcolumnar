@@ -827,4 +827,6 @@ guard_tests 440
 # nine tests, one per check, by collection over the cluster files on this tree.
 # cluster_tests 763 -> 772 for #1341's test_native_roundtrip.py, the twin of native_roundtrip.sh:
 # nine tests, one per check, by collection over the cluster files on this tree.
-cluster_tests 772
+# cluster_tests 772 -> 779 for #1341's test_native_bloom.py, the twin of native_bloom.sh:
+# seven tests, one per check, by collection over the cluster files on this tree.
+cluster_tests 779
