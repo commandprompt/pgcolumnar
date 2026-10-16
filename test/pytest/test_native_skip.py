@@ -44,10 +44,13 @@ def tables(pgc_conn):
 
 
 def _removed(conn, sql):
+    """Chunk groups the zone maps removed, or -1 when the plan reports no counter at
+    all: a plan that lost the columnar scan must not read as "removed nothing", or
+    every refusal arm passes on it (#1510 review)."""
     plan = "\n".join(r[0] for r in conn.execute(
         "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) " + sql).fetchall())
     m = REMOVED.search(plan)
-    return int(m.group(1)) if m else 0
+    return int(m.group(1)) if m else -1
 
 
 def _ids(conn, table, where):
@@ -73,7 +76,7 @@ def test_a_range_on_a_coercible_type_prunes(tables, expect, col, what, pred):
                f"premise: heap's range on {what} holds 121 rows")
     expect.text(_ids(tables, "skn", f"{col} {pred}"), heap,
                 f"a range on {what} returns the same rows as heap (#1433)")
-    expect.num(min(_removed(tables, f"SELECT id FROM skn WHERE {col} {pred}"), 1), 1,
+    expect.at_least(_removed(tables, f"SELECT id FROM skn WHERE {col} {pred}"), 1,
                f"and a range on {what} skips groups (#1433)")
 
 
@@ -88,7 +91,7 @@ def test_equality_on_a_coercible_type_prunes(tables, expect, col, what, val):
                 f"equality on {what} returns the same rows as heap (#1433)")
     expect.text(_ids(tables, "skh", f"{col} = {val}"), "11009",
                 f"premise: heap's equality on {what} finds row 11009")
-    expect.num(min(_removed(tables, f"SELECT id FROM skn WHERE {col} = {val}"), 1), 1,
+    expect.at_least(_removed(tables, f"SELECT id FROM skn WHERE {col} = {val}"), 1,
                f"and equality on {what} skips groups (#1433)")
 
 
@@ -100,10 +103,6 @@ def _one(conn, sql):
 
 def _rows(conn, sql):
     return [tuple(r) for r in conn.execute(sql).fetchall()]
-
-
-def _skips(conn, sql):
-    return "yes" if _removed(conn, sql) > 0 else "no"
 
 
 @pytest.fixture
@@ -139,40 +138,40 @@ def test_scalar_ranges_and_equality_prune_and_agree(scalar, expect):
     expect.row_set(_rows(c, "SELECT id, k, label FROM sqn WHERE id BETWEEN 5000 AND 5100"),
                    _rows(c, "SELECT id, k, label FROM sqh WHERE id BETWEEN 5000 AND 5100"),
                    "range result parity")
-    expect.text(_skips(c, "SELECT id FROM sqn WHERE id BETWEEN 5000 AND 5100"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM sqn WHERE id BETWEEN 5000 AND 5100"), 1,
                 "range skips groups")
     expect.num(_one(c, "SELECT count(*) FROM sqn WHERE id = 12345"),
                _one(c, "SELECT count(*) FROM sqh WHERE id = 12345"), "equality result parity")
-    expect.text(_skips(c, "SELECT id FROM sqn WHERE id = 12345"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM sqn WHERE id = 12345"), 1,
                 "equality skips groups")
     expect.row_set(_rows(c, "SELECT id FROM sqn WHERE k BETWEEN 100000::bigint AND 101000::bigint"),
                    _rows(c, "SELECT id FROM sqh WHERE k BETWEEN 100000::bigint AND 101000::bigint"),
                    "bigint range parity")
-    expect.text(_skips(c, "SELECT id FROM sqn WHERE k BETWEEN 100000::bigint AND 101000::bigint"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM sqn WHERE k BETWEEN 100000::bigint AND 101000::bigint"), 1,
                 "bigint range skips groups")
     # the same predicate without the casts (#477): parity before skipping, because the
     # risk in an int8 column against an int4 constant is a wrong answer
     expect.row_set(_rows(c, "SELECT id FROM sqn WHERE k BETWEEN 100000 AND 101000"),
                    _rows(c, "SELECT id FROM sqh WHERE k BETWEEN 100000 AND 101000"),
                    "bigint vs integer literal returns the same rows as heap (#477)")
-    expect.text(_skips(c, "SELECT id FROM sqn WHERE k BETWEEN 100000 AND 101000"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM sqn WHERE k BETWEEN 100000 AND 101000"), 1,
                 "and it skips groups, which the cast version already did (#477)")
     # a domain prunes like its base type (#483), parity first
     expect.row_set(_rows(c, "SELECT id FROM sqn WHERE d4 BETWEEN 5000 AND 5100"),
                    _rows(c, "SELECT id FROM sqh WHERE d4 BETWEEN 5000 AND 5100"),
                    "domain over int returns the same rows as heap (#483)")
-    expect.text(_skips(c, "SELECT id FROM sqn WHERE d4 BETWEEN 5000 AND 5100"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM sqn WHERE d4 BETWEEN 5000 AND 5100"), 1,
                 "and it skips groups, as the same predicate on int does (#483)")
     expect.row_set(_rows(c, "SELECT id FROM sqn WHERE d8 BETWEEN 100000 AND 101000"),
                    _rows(c, "SELECT id FROM sqh WHERE d8 BETWEEN 100000 AND 101000"),
                    "domain over bigint returns the same rows as heap (#483)")
-    expect.text(_skips(c, "SELECT id FROM sqn WHERE d8 BETWEEN 100000 AND 101000"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM sqn WHERE d8 BETWEEN 100000 AND 101000"), 1,
                 "and it skips groups too (#483)")
-    expect.text(_skips(c, "SELECT id FROM sqn WHERE d4 > 15000"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM sqn WHERE d4 > 15000"), 1,
                 "one-sided domain predicate skips groups (#483)")
     expect.num(_one(c, "SELECT count(*) FROM sqn WHERE d4 > 15000"),
                _one(c, "SELECT count(*) FROM sqh WHERE d4 > 15000"), "one-sided domain parity")
-    expect.text(_skips(c, "SELECT id FROM sqn WHERE d4 = 12345"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM sqn WHERE d4 = 12345"), 1,
                 "domain equality skips groups (#483)")
     expect.num(_one(c, "SELECT count(*) FROM sqn WHERE d4 = 12345"),
                _one(c, "SELECT count(*) FROM sqh WHERE d4 = 12345"), "domain equality parity")
@@ -180,11 +179,11 @@ def test_scalar_ranges_and_equality_prune_and_agree(scalar, expect):
                "domain equality on an absent value returns nothing")
     expect.num(_one(c, "SELECT count(*) FROM sqn WHERE d4 = 20480"), 1,
                "domain equality on a present boundary value finds it")
-    expect.text(_skips(c, "SELECT id FROM sqn WHERE k > 150000"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM sqn WHERE k > 150000"), 1,
                 "one-sided bigint vs integer literal skips groups (#477)")
     expect.num(_one(c, "SELECT count(*) FROM sqn WHERE k > 150000"),
                _one(c, "SELECT count(*) FROM sqh WHERE k > 150000"), "one-sided parity")
-    expect.text(_skips(c, "SELECT id FROM sqn WHERE k = 123450"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM sqn WHERE k = 123450"), 1,
                 "bigint equality vs integer literal skips groups (#477)")
     expect.num(_one(c, "SELECT count(*) FROM sqn WHERE k = 123450"),
                _one(c, "SELECT count(*) FROM sqh WHERE k = 123450"), "bigint equality parity")
@@ -216,14 +215,13 @@ def test_an_anchored_like_prunes_under_c_and_only_then(pgc_conn, expect):
     c = pgc_conn
     _text_pair(c, "lkh", "lkn", ' COLLATE "C"')
 
-    expect.text(_skips(c, "SELECT t FROM lkn WHERE t >= 'k00005000' AND t < 'k00005001'"),
-                "yes", "premise: the equivalent hand-written range prunes (#426)")
+    expect.at_least(_removed(c, "SELECT t FROM lkn WHERE t >= 'k00005000' AND t < 'k00005001'"), 1, "premise: the equivalent hand-written range prunes (#426)")
     expect.row_set(_rows(c, "SELECT t FROM lkn WHERE t LIKE 'k00005000%'"),
                    _rows(c, "SELECT t FROM lkh WHERE t LIKE 'k00005000%'"),
                    "anchored LIKE result parity (#426)")
-    expect.text(_skips(c, "SELECT t FROM lkn WHERE t LIKE 'k00005000%'"), "yes",
+    expect.at_least(_removed(c, "SELECT t FROM lkn WHERE t LIKE 'k00005000%'"), 1,
                 "anchored LIKE prunes groups (#426)")
-    expect.text(_skips(c, "SELECT t FROM lkn WHERE t LIKE '%5000%'"), "no",
+    expect.num(_removed(c, "SELECT t FROM lkn WHERE t LIKE '%5000%'"), 0,
                 "unanchored LIKE does not prune (#426)")
     expect.row_set(_rows(c, "SELECT t FROM lkn WHERE t LIKE '%5000%'"),
                    _rows(c, "SELECT t FROM lkh WHERE t LIKE '%5000%'"),
@@ -235,7 +233,7 @@ def test_an_anchored_like_prunes_under_c_and_only_then(pgc_conn, expect):
     expect.row_set(_rows(c, "SELECT t FROM lkn WHERE t LIKE 'k0000500_'"),
                    _rows(c, "SELECT t FROM lkh WHERE t LIKE 'k0000500_'"),
                    "trailing _ wildcard result parity (#426)")
-    expect.text(_skips(c, "SELECT t FROM lkn WHERE t LIKE 'k0000500_'"), "yes",
+    expect.at_least(_removed(c, "SELECT t FROM lkn WHERE t LIKE 'k0000500_'"), 1,
                 "trailing _ wildcard still prunes on its prefix (#426)")
     expect.row_set(_rows(c, "SELECT t FROM lkn WHERE t LIKE 'k0000____'"),
                    _rows(c, "SELECT t FROM lkh WHERE t LIKE 'k0000____'"),
@@ -243,14 +241,13 @@ def test_an_anchored_like_prunes_under_c_and_only_then(pgc_conn, expect):
     expect.row_set(_rows(c, "SELECT t FROM lkn WHERE t LIKE 'k00000001%'"),
                    _rows(c, "SELECT t FROM lkh WHERE t LIKE 'k00000001%'"),
                    "low-end prefix parity (#426)")
-    expect.text(_skips(c, "SELECT t FROM lkn WHERE t LIKE 'k00000001%'"), "yes",
+    expect.at_least(_removed(c, "SELECT t FROM lkn WHERE t LIKE 'k00000001%'"), 1,
                 "low-end prefix prunes, which needs the upper bound (#426)")
 
     # the default collation of this cluster is not C, so the bound must not be derived
     _text_pair(c, "ldh", "ldn", "")
-    expect.text(_skips(c, "SELECT t FROM ldn WHERE t >= 'k00005000' AND t < 'k00005001'"),
-                "yes", "premise: the range prunes on the default-collation table too (#426)")
-    expect.text(_skips(c, "SELECT t FROM ldn WHERE t LIKE 'k00005000%'"), "no",
+    expect.at_least(_removed(c, "SELECT t FROM ldn WHERE t >= 'k00005000' AND t < 'k00005001'"), 1, "premise: the range prunes on the default-collation table too (#426)")
+    expect.num(_removed(c, "SELECT t FROM ldn WHERE t LIKE 'k00005000%'"), 0,
                 "default collation that is not C is refused (#426)")
     expect.row_set(_rows(c, "SELECT t FROM ldn WHERE t LIKE 'k00005000%'"),
                    _rows(c, "SELECT t FROM ldh WHERE t LIKE 'k00005000%'"),
@@ -265,7 +262,7 @@ def test_a_default_collation_in_a_locale_c_database_derives_the_bounds(pgc_clust
         a.execute(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
         try:
             a.execute(f"CREATE DATABASE {db} LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0")
-        except psycopg.Error as exc:
+        except (psycopg.errors.InvalidParameterValue, psycopg.errors.FeatureNotSupported) as exc:
             expect.cannot_run("MISSING_DEPENDENCY",
                               f"a --locale=C database could not be created: {exc}")
             return
@@ -301,7 +298,7 @@ def test_an_anchored_like_does_not_prune_under_a_non_c_collation(pgc_conn, expec
             with c.transaction():
                 ok = c.execute(f"SELECT 'x' LIKE 'x' COLLATE \"{coll}\", "
                                f"('b' < 'a' COLLATE \"{coll}\")").fetchone()
-        except psycopg.Error:
+        except (psycopg.errors.UndefinedObject, psycopg.errors.FeatureNotSupported):
             continue
         if ok == (True, False):
             found = coll
@@ -311,9 +308,8 @@ def test_an_anchored_like_does_not_prune_under_a_non_c_collation(pgc_conn, expec
                           "no usable non-C collation on this build")
         return
     _text_pair(c, "luh", "lun", f' COLLATE "{found}"')
-    expect.text(_skips(c, "SELECT t FROM lun WHERE t >= 'k00005000' AND t < 'k00005001'"),
-                "yes", "premise: a range still prunes under a non-C collation (#426)")
-    expect.text(_skips(c, "SELECT t FROM lun WHERE t LIKE 'k00005000%'"), "no",
+    expect.at_least(_removed(c, "SELECT t FROM lun WHERE t >= 'k00005000' AND t < 'k00005001'"), 1, "premise: a range still prunes under a non-C collation (#426)")
+    expect.num(_removed(c, "SELECT t FROM lun WHERE t LIKE 'k00005000%'"), 0,
                 "anchored LIKE does not prune under a non-C collation (#426)")
     expect.row_set(_rows(c, "SELECT t FROM lun WHERE t LIKE 'k00005000%'"),
                    _rows(c, "SELECT t FROM luh WHERE t LIKE 'k00005000%'"),
@@ -344,5 +340,5 @@ def test_a_columnar_partition_takes_the_custom_scan_and_prunes(pgc_conn, expect)
         "EXPLAIN (COSTS OFF) SELECT id FROM ptp WHERE id BETWEEN 5000 AND 5100").fetchall())
     expect.num(plan.count("Custom Scan (PgColumnarScan)"), 1,
                "a partition takes the columnar custom scan (#436)")
-    expect.text(_skips(c, "SELECT id FROM ptp WHERE id BETWEEN 5000 AND 5100"), "yes",
+    expect.at_least(_removed(c, "SELECT id FROM ptp WHERE id BETWEEN 5000 AND 5100"), 1,
                 "and it prunes row groups (#436)")

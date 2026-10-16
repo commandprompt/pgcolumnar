@@ -335,8 +335,12 @@ if [ "$(_cdb "SELECT datcollate FROM pg_database WHERE datname = current_databas
 	check "and it returns the right rows (#426)" \
 		"$(_cdb "SELECT count(*) FROM nc WHERE t LIKE 'k00005000%';")" "1"
 else
-	echo "-- SKIP: could not create a --locale=C database, so the widened guard is"
-	echo "         NOT covered by this run"
+	# RECORDED, NOT ECHOED (#1510 review): an echo dropped these checks without a
+	# trace, which is the shape that hid the non-C probe's quote bug for every run.
+	for _n in "a default-collation column in a --locale=C database derives the bounds (#426)" \
+	          "and it returns the right rows (#426)"; do
+		check_unrunnable "$_n" MISSING_DEPENDENCY "a --locale=C database could not be created on this host"
+	done
 fi
 
 # ...and the refusal, on a collation that is genuinely not byte ordering. This is
@@ -369,8 +373,12 @@ for _c in "en_US.utf8" "en_US.UTF-8" "unicode" "pg_unicode_fast"; do
 done
 
 if [ -z "$NSK_NONC" ]; then
-	echo "-- SKIP: no usable non-C collation on this build, so the refusal half of"
-	echo "         the #426 collation guard is NOT covered by this run"
+	# RECORDED, NOT ECHOED (#1510 review), for the same reason as above
+	for _n in "premise: a range still prunes under a non-C collation (#426)" \
+	          "anchored LIKE does not prune under a non-C collation (#426)" \
+	          "non-C collation LIKE result parity (#426)"; do
+		check_unrunnable "$_n" MISSING_DEPENDENCY "no usable non-C collation on this build"
+	done
 else
 	echo "-- non-C collation under test: $NSK_NONC"
 	psql_run "CREATE TABLE hu (t text COLLATE \"$NSK_NONC\");"
