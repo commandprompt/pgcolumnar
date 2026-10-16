@@ -768,7 +768,7 @@ differential	differential	stripe boundary N=2001 agg	15;16;17;18;19	never	-
 differential	differential	stripe boundary N=2001 scan	15;16;17;18;19	never	-
 differential	differential	stripe boundary N=2001 stripes	15;16;17;18;19	never	-
 differential	differential	textbloom C absent	15;16;17;18;19	never	-
-differential	differential	textbloom C eq	15;16;17;18;19	never	-
+differential	differential	textbloom C eq	15;16;17;18;19	2026-10-16	the reader's bloom check skipping every chunk under the C collation (mutation, #1339)
 differential	differential	textbloom absent	15;16;17;18;19	never	-
 differential	differential	textbloom collate-mismatch	15;16;17;18;19	never	-
 differential	differential	textbloom present	15;16;17;18;19	never	-

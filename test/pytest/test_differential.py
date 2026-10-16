@@ -288,7 +288,15 @@ def test_sum_and_avg_agree_for_every_numeric_type(matrix, col, expect):
         expect.row_set(c, h, f"{col} sum/avg")
         return
     cs, hs = c[0], h[0]
-    expect.num(len(cs), len(hs), f"{col} sum/avg returns the same shape")
+    # TWO NUMBERS ON BOTH SIDES, not the same length (#1339). len() of a two-column row
+    # is 2 whatever the data, so a columnar sum of NULL passed that arm and then raised
+    # an unnamed TypeError in the tolerance below.
+    numbers = all(isinstance(v, (int, float)) for v in (*cs, *hs))
+    expect.text("two numbers each" if numbers and len(cs) == len(hs) == 2
+                else f"columnar {cs!r} heap {hs!r}",
+                "two numbers each", f"{col} sum/avg returns two numbers on both sides")
+    if not numbers:
+        return
     for got, want, what in zip(cs, hs, ("sum", "avg")):
         # THE MEASUREMENT BELONGS IN THE COMPARED VALUE, NOT IN THE NAME. This put
         # `got`, `want` and `rel` into the check NAME, which does carry them to the
@@ -839,7 +847,9 @@ def test_text_bloom_equality_agrees_including_a_mismatched_collation(pgc_conn, e
             ("textbloom present",           "SELECT id FROM %T WHERE tk = 'k' || ((7*2654435761)%50000)"),
             ("textbloom absent",            "SELECT count(*) FROM %T WHERE tk = 'zzzzzzzz'"),
             ("textbloom C absent",          "SELECT count(*) FROM %T WHERE tc = 'zzzzzzzz'"),
-            ("textbloom C eq",              "SELECT count(*) FROM %T WHERE tc = 'c123'"),
+            # A PRESENT value (#1339): 'c123' is in no row, so both sides counted 0
+            # and a wrongly skipped chunk could not show. Row 7's value is present once.
+            ("textbloom C eq",              "SELECT count(*) FROM %T WHERE tc = 'c' || ((7*40503)%50000)"),
             ("textbloom collate-mismatch",
              f"SELECT count(*) FROM %T WHERE tk = '{present}' COLLATE \"C\"")):
         c, h = p.both(sql)

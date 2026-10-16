@@ -3619,4 +3619,14 @@ suites_not_covered 185
 #     never         3074 +  5 = 3079
 #     dated         1366 +  3 = 1369
 #     3079 + 1369 == 4448
-checks_never_observed_red 3079
+# #1339, differential's text-bloom C arm probes a value that is there (jdatcmd):
+# 3079 -> 3078. "textbloom C eq" probed tc = 'c123', which is in no row, so both
+# sides counted 0; it now probes row 7's value, and the reader's bloom check
+# skipping every chunk under the C collation dates it. No row is added, removed or
+# renamed.
+#
+#     ledger rows   4448 + 0 = 4448
+#     never         3079 - 1 = 3078
+#     dated         1369 + 1 = 1370
+#     3078 + 1370 == 4448
+checks_never_observed_red 3078
