@@ -2987,10 +2987,11 @@ imagined shape — it has a population of two and locks it in.
 | test | asserts |
 | --- | --- |
 | `test_every_at_risk_loop_carries_a_coverage_premise` | the corpus itself: every derived loop carrying an assertion has a cardinality premise |
-| `test_the_sweep_finds_the_loops_it_is_meant_to_police` | **premise**: the sweep classified loops, because one that parses nothing reports no offenders either |
+| `test_the_sweep_finds_the_loops_it_is_meant_to_police` | **premise**: the sweep classified loops, because one that parses nothing reports no offenders either. It counts the sweep's own classification (`classify_loops`), not a second walk of its own, so a sweep reading no file reddens it (#1339) |
 | `test_a_loop_with_no_premise_is_caught` | **removal proof**: the real shape with the premise removed, with the clean control beside it |
+| `test_a_premise_in_name_only_is_still_caught` | a name bound to a literal and later rebound to a query is not exempt, and a premise pinning the length at 0 is not a premise (#1339) |
 | `test_a_bounded_loop_needs_no_premise` | a literal, a `range` and a local dict's `.items()` are all exempt, because demanding a premise there would be noise a reader edits away |
-| `test_the_layer_already_refuses_a_loop_holding_every_assertion` | the measured half, so this file does not claim the whole mode — and that the sweep deliberately skips that shape rather than double-reporting it |
+| `test_the_layer_already_refuses_a_loop_holding_every_assertion` | the measured half, so this file does not claim the whole mode: a planted test in a child pytest is refused, and the sweep classifies a planted loop of that shape as already refused rather than double-reporting it. Both run the behaviour; neither reads source (#1339) |
 
 ### Why the rule is looser than the property, and what is left
 
@@ -3002,6 +3003,11 @@ The two differ, and the reason is dataflow. `test_harness_deps.py`'s loop iterat
 a preceding loop. A rule that demanded the names match would reject correct code, which
 is how a guard gets switched off. **So the residual is a loop whose premise bounds the
 wrong collection**, which a reviewer catches and a sweep does not. 3.5 names it.
+
+Two narrower holes are closed (#1339). A name counts as non-empty by construction only
+when **every** binding of it in the function is a non-empty literal. And a `len(...)`
+assertion that pins the length at 0 (`num` or `at_most` against `0`) does not count as
+a premise, because it says the loop runs no times.
 
 
 ## 25. test_native_join_runtime_filter.py: serial join runtime filter
