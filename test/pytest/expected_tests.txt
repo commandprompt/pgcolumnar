@@ -767,4 +767,6 @@ guard_tests 438
 # one test, by collection over the cluster files on this tree.
 # cluster_tests 681 -> 682 for #1341's test_replication.py, the twin of replication.sh:
 # one test, by collection over the cluster files on this tree.
-cluster_tests 682
+# cluster_tests 682 -> 683 for #1341's test_native_recluster.py, the twin of native_recluster.sh:
+# one test, by collection over the cluster files on this tree.
+cluster_tests 683
