@@ -3099,4 +3099,20 @@ suites_not_covered 209
 #     never         2817 + 26 = 2843
 #     dated         1036 + 21 = 1057
 #     2843 + 1057 == 3900
-checks_never_observed_red 2843
+#
+# #1341 item 70, native_reclaim re-dated, with its twin (OffgridwithJD): 2843 ->
+# 2827. The suite had 36 rows, 2 dated. One check is new and arrives never ("each
+# repeated recluster rewrote the table ...", which no mutation here brings to zero),
+# and 17 are newly dated by sixteen mutations from five-major runs (37/37 on each of
+# 15-19): no reservation from a freed range (the plateau and the free_space bound,
+# which now compares with the first cycle's count, and whose reclusters now alternate
+# their key so the self-gate cannot skip them), compact_rewrite's guard without each
+# of its three bounds or strict at either boundary, and maintenance_due with each
+# compact and recluster bound loosened or tightened and a due verdict pinned true or
+# false. suites_not_covered does not move: the suite was already covered.
+#
+#     ledger rows   3900 +  1 = 3901
+#     never         2843 +  1 - 17 = 2827
+#     dated         1057 + 17 = 1074
+#     2827 + 1074 == 3901
+checks_never_observed_red 2827
