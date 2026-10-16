@@ -769,3 +769,84 @@ def test_a_gating_qual_over_the_join_matches_heap(pgc_conn, expect):
                 heap = cur.fetchone()
             expect.rows([got], [heap],
                         f"a (SELECT {gate}) gate over a {kind} dimension equals heap")
+
+
+def test_an_empty_build_reads_no_fact_group(pgc_conn, expect):
+    """An empty build from a large dimension filtered to nothing reads no fact group (#1447).
+
+    With a large dimension the hash join fetches its first outer row before it builds,
+    so the fact scan runs. The coordinator has found the build empty, and an inner join
+    with an empty build has no rows, so the fact table must not be read. It was read
+    whole, every fact row rejected one at a time. Independently of
+    native_join_runtime_filter.sh: different names, sizes and filter.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE dbig(k int, w int);
+            INSERT INTO dbig SELECT g, -g FROM generate_series(1, 150000) g;
+            CREATE TABLE fz(k int, payload text) USING pgcolumnar;
+            SELECT pgcolumnar.set_options($t$fz$t$, stripe_row_limit => 1000);
+            INSERT INTO fz SELECT g, repeat(md5(g::text), 3) FROM generate_series(1, 6000) g;
+            CREATE TABLE hz(k int, payload text);
+            INSERT INTO hz SELECT g, repeat(md5(g::text), 3) FROM generate_series(1, 6000) g;
+            ANALYZE dbig;
+            ANALYZE fz
+            """
+        )
+    sql = ("SELECT count(*), sum(fz.k) FROM fz JOIN dbig ON fz.k = dbig.k "
+           "WHERE dbig.w > 0")
+    plan = _plan(pgc_conn, sql, on=True)
+    expect.num(plan.count("Columnar Runtime Filter Coordinator"), 1,
+               "premise: the large-dimension empty build runs under the coordinator")
+    expect.num(_v(plan, "Runtime Filter Build Rows"), 0, "premise: and its build is empty")
+    expect.num(_v(plan, "Columnar Chunk Groups Read"), 0, "an empty build reads no fact chunk group")
+    with pgc_conn.cursor() as cur:
+        cur.execute(sql)
+        got = cur.fetchone()
+        cur.execute("SELECT count(*), sum(hz.k) FROM hz JOIN dbig ON hz.k = dbig.k WHERE dbig.w > 0")
+        heap = cur.fetchone()
+    expect.rows([got], [heap], "an empty build from a large dimension answers as heap")
+
+
+def test_an_empty_build_on_one_rescan_does_not_empty_the_next(pgc_conn, expect):
+    """A LATERAL whose first outer row builds nothing and second builds every key (#1447).
+
+    An empty build now ends the join at once, so state left over from the first
+    execution would answer the second with no rows. Independently of
+    native_join_runtime_filter.sh: different names and keys.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE dre(k int);
+            INSERT INTO dre SELECT 40 + 100 * g FROM generate_series(0, 149) g;
+            CREATE TABLE fre(k int, payload text) USING pgcolumnar;
+            SELECT pgcolumnar.set_options($t$fre$t$, stripe_row_limit => 1000);
+            INSERT INTO fre SELECT g, repeat(md5(g::text), 4) FROM generate_series(1, 16000) g;
+            CREATE TABLE hre(k int, payload text);
+            INSERT INTO hre SELECT g, repeat(md5(g::text), 4) FROM generate_series(1, 16000) g;
+            ANALYZE dre;
+            ANALYZE fre
+            """
+        )
+        if _has_runtime_filter(pgc_conn):
+            cur.execute("SET pgcolumnar.enable_join_runtime_filter=on")
+        cur.execute("SET max_parallel_workers_per_gather=0")
+        lateral = """
+            SELECT v.x, s.c FROM (VALUES (88888),(0)) v(x)
+            CROSS JOIN LATERAL (
+              SELECT count(*) c FROM {t} JOIN dre ON {t}.k = dre.k WHERE dre.k > v.x
+            ) s ORDER BY 1
+        """
+        cur.execute("EXPLAIN (COSTS OFF) " + lateral.format(t="fre"))
+        plan = "\n".join(r[0] for r in cur.fetchall())
+        cur.execute(lateral.format(t="fre"))
+        got = cur.fetchall()
+        cur.execute(lateral.format(t="hre"))
+        heap = cur.fetchall()
+    expect.num(plan.count("Columnar Runtime Filter Coordinator"), 1,
+               "premise: the empty-then-full rescan runs under the coordinator")
+    expect.text(f"{heap[0][0]}|{heap[0][1]}", "0|150",
+                "premise: heap's empty-then-full rescan answer holds the 150 keys")
+    expect.rows(got, heap, "an empty build on one rescan does not empty the next")

@@ -3562,3 +3562,10 @@ vm_privilege	vm_privilege	vm entry point is covered by this boundary test: vm_se
 vm_privilege	vm_privilege	vm_is_visible refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
 vm_privilege	vm_privilege	vm_selftest did not report success to the unprivileged role	15;16;17;18;19	2026-10-14	vm_selftest without its owner check
 vm_privilege	vm_privilege	vm_selftest refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the large-dimension empty build runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: and its build is empty	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	an empty build reads no fact chunk group	15;16;17;18;19	2026-10-16	an inner join whose build was empty ran on, and the fact scan rejected every row one at a time (the tree before #1447)
+native_join_runtime_filter	native_join_runtime_filter	an empty build from a large dimension answers as heap	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the empty-then-full rescan runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's empty-then-full rescan answer holds the 200 keys	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	an empty build on one rescan does not empty the next	15;16;17;18;19	2026-10-16	the rescan kept the first execution's runtime filter state: prepared not reset on rescan (mutation, #1447)

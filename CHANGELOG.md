@@ -401,6 +401,14 @@ true until the next version shipped.
 
 ### Fixed
 
+- **A join whose runtime-filter build is empty no longer reads the fact table.** When
+  a large dimension filtered to no row was joined to a columnar table, the hash join
+  fetched its first fact row before building, and the runtime filter then rejected
+  every fact row one at a time: every chunk group was read for an answer of no rows.
+  The coordinator now ends the join as soon as it finds the build empty, since an
+  inner join with an empty build has no rows (#1447). `test/native_join_runtime_filter.sh`
+  and `test_join_runtime_filter.py`.
+
 - **A vectorized aggregate no longer shows a non-leakproof function rows that row-level
   security hides.** Under a policy, a query such as `SELECT grp, count(*) FROM t WHERE
   f(secret) GROUP BY grp` ran `f` on every row, the other owners' included, through the

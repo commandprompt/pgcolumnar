@@ -2873,4 +2873,17 @@ suites_not_covered 221
 #     never         2621 + 18 = 2639
 #     dated          914 + 11 = 925
 #     2639 + 925 == 3564
-checks_never_observed_red 2639
+#
+# #1447, an empty runtime-filter build made the fact scan read every chunk group
+# (jdatcmd): 2639 -> 2644. native_join_runtime_filter gains seven checks from
+# five-major runs (62/62 on each of 15-19). 'an empty build reads no fact chunk
+# group' is dated on PG17 by the tree before the fix (5 of 5 groups read). 'an
+# empty build on one rescan does not empty the next' is dated by the mutation that
+# keeps prepared across a rescan (an internal error on the second execution). The
+# five others arrive never.
+#
+#     ledger rows   3564 + 7 = 3571
+#     never         2639 + 5 = 2644
+#     dated          925 + 2 = 927
+#     2644 + 927 == 3571
+checks_never_observed_red 2644

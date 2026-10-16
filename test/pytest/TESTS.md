@@ -3037,6 +3037,21 @@ ERROR and an assert build aborted the backend. Each answer must be heap's, with
 premises that the same join with no gate takes the coordinator and that heap's
 true-gate answer holds rows. Independent of the shell arms.
 
+### `test_an_empty_build_reads_no_fact_group`
+
+An empty build from a large dimension filtered to nothing (#1447). With a dimension
+that large, the hash join fetches its first outer row before it builds, so the fact
+scan runs. An inner join with an empty build has no rows, so the fact table must not
+be read; it was read whole, every row rejected one at a time. Premises check that the
+coordinator ran and that the build was empty, and the answer must be heap's.
+
+### `test_an_empty_build_on_one_rescan_does_not_empty_the_next`
+
+A LATERAL whose first outer row builds nothing and whose second builds every key
+(#1447). An empty build now ends the join at once, so state left over from the first
+execution would answer the second with no rows. Premises check the coordinator and
+that heap's answer holds the keys.
+
 ## 26. test_check_records.py: every counted assertion is a record
 
 #937, first phase. The shell harness makes counting and recording the same call,
