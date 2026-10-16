@@ -2571,6 +2571,75 @@ native_groupagg	native_groupagg	toggle sum signed-zero (-0 preserved) [node fire
 native_groupagg	native_groupagg	while a matching-type predicate still gets one	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	with no time bound at all, a truncating key is bounded from the zone maps	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	with only a lower time bound, a truncating key is still bounded	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	<> filter: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the batch gates' exactness test dropped, so a <> filter's rows are folded
+native_groupagg_batch	native_groupagg_batch	<> filter: the excluded rows really are excluded	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	<> filter: the fold declined	15;16;17;18;19	2026-10-16	columnar_vector.c: the batch gates' exactness test dropped, so a <> filter's rows are folded
+native_groupagg_batch	native_groupagg_batch	add column: ANALYZE reports the row-path run	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped node's ANALYZE prints the predicted fold, not what ran (the #602 shape)
+native_groupagg_batch	native_groupagg_batch	add column: plain EXPLAIN reports the prediction	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	add column: the answer is still right	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	count(*): answers match the heap mirror	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	count(*): the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	count(*): the grouped node is planned	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	date key: answers match the heap mirror	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	date key: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	date key: the grouped node is planned	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	deletes: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold ignores the delete mask
+native_groupagg_batch	native_groupagg_batch	deletes: the fold still ran	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	expression key: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: an expression key's -1 attidx is not refused by the grouped fold's eligibility
+native_groupagg_batch	native_groupagg_batch	expression key: the fold declined	15;16;17;18;19	2026-10-16	columnar_vector.c: an expression key's -1 attidx is not refused by the grouped fold's eligibility
+native_groupagg_batch	native_groupagg_batch	filtered: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold applies no scan key per row
+native_groupagg_batch	native_groupagg_batch	filtered: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	filtered: the grouped node is planned	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	float8 key: answers match the heap mirror	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	float8 key: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	float8 key: the grouped node is planned	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	float8 zero: -0.0 and 0.0 are one group, exactly as the heap says	15;16;17;18;19	2026-10-16	columnar_vector.c: float8 admitted as a simple key, so its group keys are hashed and compared by bits
+native_groupagg_batch	native_groupagg_batch	float8 zero: and a positive one beside it	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	float8 zero: and the fold actually ran on it	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	float8 zero: the fixture really stores a NEGATIVE zero	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	float8 zero: the grouped node is planned	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	float8 zero: the grouped sums match the heap	15;16;17;18;19	2026-10-16	columnar_vector.c: float8 admitted as a simple key, so its group keys are hashed and compared by bits
+native_groupagg_batch	native_groupagg_batch	min/max: answers match the heap mirror	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	min/max: the fold declined	15;16;17;18;19	2026-10-16	columnar_vector.c: min and max admitted as batch fold kinds
+native_groupagg_batch	native_groupagg_batch	parallel: and they equal the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: a partial grouped node folds without the shared row-group counter;columnar_vector.c: the grouped fold ignores the delete mask
+native_groupagg_batch	native_groupagg_batch	parallel: our parallel-aware grouped node is under the Gather	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	parallel: premise: the value arm's own plan launches workers	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	parallel: the answers equal the serial fold, byte for byte	15;16;17;18;19	2026-10-16	columnar_vector.c: a partial grouped node folds without the shared row-group counter
+native_groupagg_batch	native_groupagg_batch	parallel: the fold ran in the partial node (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	parallel: workers actually launched for that node	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	plain: answers match the heap mirror	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	plain: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	plain: the grouped node is planned	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	premise: fixture loaded every row (columnar)	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	premise: fixture loaded every row (heap)	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	premise: the <> filter excludes something at all	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	premise: the delete removed rows	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	premise: the fixture really has null keys	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	premise: the fixture spans more than one row group	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	skipped vectors: and their sums match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: a skipped vector's present slots are not consumed, so later vectors misalign;columnar_vector.c: the grouped fold applies no scan key per row
+native_groupagg_batch	native_groupagg_batch	skipped vectors: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: a skipped vector's present slots are not consumed, so later vectors misalign;columnar_vector.c: the grouped fold applies no scan key per row
+native_groupagg_batch	native_groupagg_batch	skipped vectors: premise: a row group was still read	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	skipped vectors: premise: the scan really skipped vectors	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	skipped vectors: premise: the wide arm is still the grouped node	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	skipped vectors: the fold ran	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	skipped vectors: the fold ran on the four-payload arm	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	text key: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the batch gates' by-value test dropped, so a text key reaches the gather
+native_groupagg_batch	native_groupagg_batch	text key: the fold declined	15;16;17;18;19	2026-10-16	columnar_vector.c: the batch gates' by-value test dropped, so a text key reaches the gather;columnar_vector.c: the grouped path is not planned for a text group key
+native_groupagg_batch	native_groupagg_batch	timestamp key: answers match the heap mirror	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	timestamp key: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	timestamp key: the grouped node is planned	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	toggle-differential: filtered	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold applies no scan key per row;columnar_vector.c: the grouped fold ignores the delete mask
+native_groupagg_batch	native_groupagg_batch	toggle-differential: filtered [premise: node fires with the path on]	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	toggle-differential: filtered [premise: the off arm is not the grouped node]	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	toggle-differential: plain	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold ignores the delete mask
+native_groupagg_batch	native_groupagg_batch	toggle-differential: plain [premise: node fires with the path on]	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	toggle-differential: plain [premise: the off arm is not the grouped node]	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	toggle-differential: two keys	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold ignores the delete mask
+native_groupagg_batch	native_groupagg_batch	toggle-differential: two keys [premise: node fires with the path on]	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	toggle-differential: two keys [premise: the off arm is not the grouped node]	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	two keys: answers match the heap mirror	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	two keys: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
+native_groupagg_batch	native_groupagg_batch	two keys: the grouped node is planned	15;16;17;18;19	never	-
 native_index_projection	native_index_projection	a parallel build projects one column of twenty, not all twenty	15;16;17;18;19	never	-
 native_index_projection	native_index_projection	a parallel expression build projects its expression's columns	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Expressions' columns
 native_index_projection	native_index_projection	a parallel partial build projects the predicate's columns too	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Predicate's columns

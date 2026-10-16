@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 201
+suites_not_covered 200
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3285,4 +3285,22 @@ suites_not_covered 201
 #     never         2941 + 1 = 2942
 #     dated         1160 + 0 = 1160
 #     2942 + 1160 == 4102
-checks_never_observed_red 2942
+#
+# #1341, native_groupagg_batch seeded, with its twin (OffgridwithJD): 2942 -> 2980,
+# and suites_not_covered 201 -> 200. The suite had no rows. It enters with all 69
+# checks from five-major runs (69/69 on each of 15-19). 31 are dated by twelve
+# mutations of the grouped fold: the fold never called, float8 keys compared by
+# bits, the delete mask ignored, a skipped vector's slots not consumed, no scan key
+# applied, the by-value, exactness and expression-key gates dropped, min and max
+# admitted, the partial node without its shared counter, ANALYZE printing the
+# prediction, and the grouped path refusing a text key. Thirty-eight arrive never:
+# sixteen premises and the two float8 fixture facts; the eight "grouped node is
+# planned" arms and the two parallel plan arms, which no fold mutation reaches;
+# seven heap-mirror oracles that none of these mutations moves; the <> count, read
+# by an ungrouped count(*); and the add-column prediction and answer.
+#
+#     ledger rows   4102 + 69 = 4171
+#     never         2942 + 38 = 2980
+#     dated         1160 + 31 = 1191
+#     2980 + 1191 == 4171
+checks_never_observed_red 2980
