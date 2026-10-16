@@ -122,7 +122,11 @@ def test_the_premises_each_role_is_what_the_suite_assumes(pgc_cluster, pgc_conn,
     for r in (OWNER, NONE, SEL):
         for c in ("row_group", "delete_vector", "zone_map"):
             _, err = _as(pgc_cluster, r, f"SELECT count(*) FROM pgcolumnar.{c}")
-            if getattr(err, "sqlstate", None) != "42501":
+            # 42501 AND the table's own message, as the shell requires: a schema-level
+            # refusal is 42501 too, and passed here while the shell reddened.
+            if (getattr(err, "sqlstate", None) != "42501"
+                    or getattr(getattr(err, "diag", None), "message_primary", None)
+                    != f"permission denied for table {c}"):
                 readable.append(f"{r}/{c}")
     expect.text("refused 9 of 9" if not readable
                 else f"refused {9 - len(readable)} of 9 (not refused: {' '.join(readable)})",
