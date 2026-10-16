@@ -2349,6 +2349,12 @@ native_backend_crash	native_backend_crash	with-reader: the crash reinitialized t
 native_backend_crash	native_backend_crash	with-reader: the killed insert left no partial row group	15;16;17;18;19	never	-
 native_backend_crash	native_backend_crash	with-reader: the killed insert left no visible rows	15;16;17;18;19	never	-
 native_backend_crash	native_backend_crash	with-reader: the mirror itself is unchanged	15;16;17;18;19	never	-
+native_batch_fold_projection	native_batch_fold_projection	backend alive	15;16;17;18;19	never	-
+native_batch_fold_projection	native_batch_fold_projection	premise: the reference runs without the batch fold	15;16;17;18;19	never	-
+native_batch_fold_projection	native_batch_fold_projection	ref is a non-empty result (not a vacuous empty compare)	15;16;17;18;19	never	-
+native_batch_fold_projection	native_batch_fold_projection	the folded aggregate equals the non-fold aggregate (payload columns correct)	15;16;17;18;19	2026-10-16	columnar_vector.c: the batch fold's payload list omits the table's last column
+native_batch_fold_projection	native_batch_fold_projection	the non-fold aggregate equals the generator's own answer	15;16;17;18;19	never	-
+native_batch_fold_projection	native_batch_fold_projection	the ungrouped batch fold actually ran (Batch Fold: yes)	15;16;17;18;19	2026-10-16	columnar_vector.c: the ungrouped aggregate never takes the batch fold (row path instead)
 native_chunk_length_bound	native_chunk_length_bound	a sequential scan of the same poisoned chunk is refused (XX001)	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	an index fetch of a chunk whose page_length is 2^32 too large is refused (XX001)	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	backend survived the sequential refusal	15;16;17;18;19	never	-
