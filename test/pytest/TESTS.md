@@ -220,6 +220,7 @@ behaviour, the source of that number is named.
 - [172. test_native_index.py: index lookups and unique enforcement fetch by row number](#172-test_native_indexpy-index-lookups-and-unique-enforcement-fetch-by-row-number)
 - [173. test_native_fetch_bigcap.py: fetching from a row group above the cache cap](#173-test_native_fetch_bigcappy-fetching-from-a-row-group-above-the-cache-cap)
 - [174. test_sorted_projection.py: vacuum_sorted reorders storage and changes no answer](#174-test_sorted_projectionpy-vacuum_sorted-reorders-storage-and-changes-no-answer)
+- [175. test_native_ios.py: an index-only scan skips the fetch on all-visible row groups](#175-test_native_iospy-an-index-only-scan-skips-the-fetch-on-all-visible-row-groups)
 
 ## 1. How to read a test in here
 
@@ -7798,3 +7799,14 @@ The pytest twin of `test/sorted_projection.sh` (ported for #1341), every check b
 | `test_the_sorted_rewrite_changes_no_answer_and_really_reorders` | five query shapes match the heap before and after the sort, the ordered oracle is order-sensitive, and the sort makes the range skip vectors |
 | `test_a_multi_key_sort_reclaims_and_rebuilds_the_index` | a two-column sort matches, deletes are reclaimed, the rebuilt index finds and hides the right rows, and a second sort changes nothing |
 | `test_vacuum_sorted_refuses_what_it_cannot_sort` | a heap table, an unknown column, no sort key and a json key are each refused with their own SQLSTATE |
+
+## 175. test_native_ios.py: an index-only scan skips the fetch on all-visible row groups
+
+The pytest twin of `test/native_ios.sh` (ported for #1341), every check by the shell's name. Once VACUUM has marked a native table's all-visible row groups in the visibility map, an index-only scan over an all-visible range skips the fetch (Heap Fetches: 0) and returns a heap mirror's rows. VACUUM also records the all-visible pages in `pg_class` (#507). They must be in pages, not the VM's synthetic blocks, because core prices an index-only scan by `relallvisible / relpages`. A delete clears the VM bit, so the scan falls back to the fetch there and never returns a deleted row.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_an_all_visible_range_needs_no_fetch_and_vacuum_records_it` | the index-only scan is chosen, fetches nothing, matches the heap, and VACUUM records a page count no larger than the relation and most of it, as the heap's is |
+| `test_a_delete_clears_the_bit_and_is_never_returned` | after a delete the scan matches the heap and fetches where the bit was cleared |
