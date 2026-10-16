@@ -23,4 +23,3 @@ phase4
 phase5
 phase6
 smoke
-update_conc

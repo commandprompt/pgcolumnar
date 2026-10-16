@@ -3428,6 +3428,34 @@ unique_conc	unique_conc	8 after first aborts, second insert succeeds; one row	15
 unique_conc	unique_conc	8 second inserter blocks behind uncommitted first	15;16;17;18;19	never	-
 unique_conc	unique_conc	the bucket count cannot be changed per session	15;16;17;18;19	never	-
 unique_conc	unique_conc	the cluster runs the bucket count the suite needs	15;16;17;18;19	never	-
+update_conc	update_conc	CONTROL serial columnar keeps one row (GREEN today; proves the RED is the overlap)	15;16;17;18;19	never	-
+update_conc	update_conc	CONTROL serial columnar keeps the last writer's value	15;16;17;18;19	never	-
+update_conc	update_conc	du/RC columnar count matches heap oracle	15;16;17;18;19	2026-10-15	a row committed as deleted by a concurrent transaction never raises 40001 at the flush;the flush re-reads the statement snapshot, not the latest committed state;the row-identity serialization at the delete-vector flush skipped
+update_conc	update_conc	du/RC columnar loser gets serialization_failure	15;16;17;18;19	2026-10-15	a row committed as deleted by a concurrent transaction never raises 40001 at the flush;the flush re-reads the statement snapshot, not the latest committed state;the row-identity serialization at the delete-vector flush skipped
+update_conc	update_conc	du/RC heap oracle: committed delete stands (count 0)	15;16;17;18;19	never	-
+update_conc	update_conc	multirow columnar loser gets serialization_failure	15;16;17;18;19	2026-10-15	a row committed as deleted by a concurrent transaction never raises 40001 at the flush;the flush re-reads the statement snapshot, not the latest committed state;the row-identity serialization at the delete-vector flush skipped
+update_conc	update_conc	multirow columnar total matches heap (no per-row duplicates)	15;16;17;18;19	2026-10-15	a row committed as deleted by a concurrent transaction never raises 40001 at the flush;the flush re-reads the statement snapshot, not the latest committed state;the row-identity serialization at the delete-vector flush skipped
+update_conc	update_conc	multirow heap oracle total unchanged (200)	15;16;17;18;19	never	-
+update_conc	update_conc	premise: the failing statement reads id=1 before id=3 on the columnar table	15;16;17;18;19	never	-
+update_conc	update_conc	savepoint columnar final state matches heap oracle	15;16;17;18;19	never	-
+update_conc	update_conc	savepoint columnar kept the pre-savepoint value, no duplicate (1/10)	15;16;17;18;19	never	-
+update_conc	update_conc	savepoint, failed statement: columnar final state matches heap oracle	15;16;17;18;19	2026-10-15	an aborted subtransaction keeps its buffered delete marks;an aborted subtransaction keeps its buffered rows
+update_conc	update_conc	savepoint, failed statement: columnar kept the pre-savepoint value, no duplicate (1/10, 2 rows)	15;16;17;18;19	2026-10-15	an aborted subtransaction keeps its buffered delete marks;an aborted subtransaction keeps its buffered rows
+update_conc	update_conc	self-update columnar keeps one row (no self-duplicate)	15;16;17;18;19	2026-10-15	a row this command already updated is not reported self-modified
+update_conc	update_conc	self-update heap oracle keeps one row	15;16;17;18;19	never	-
+update_conc	update_conc	ud/RC columnar loser gets serialization_failure	15;16;17;18;19	2026-10-15	a row committed as deleted by a concurrent transaction never raises 40001 at the flush;the flush re-reads the statement snapshot, not the latest committed state;the row-identity serialization at the delete-vector flush skipped
+update_conc	update_conc	ud/RC heap oracle: delete applies to the live row (count 0)	15;16;17;18;19	never	-
+update_conc	update_conc	unique/RC columnar loser gets serialization_failure (40001), as without a unique index	15;16;17;18;19	2026-10-15	a table with a unique index skips the row lock during the UPDATE
+update_conc	update_conc	unique/RC heap composes with no error (sqlstate 00000)	15;16;17;18;19	never	-
+update_conc	update_conc	uu/RC columnar keeps a single row (no duplicate)	15;16;17;18;19	2026-10-15	a row committed as deleted by a concurrent transaction never raises 40001 at the flush;the flush re-reads the statement snapshot, not the latest committed state;the row-identity serialization at the delete-vector flush skipped
+update_conc	update_conc	uu/RC columnar loser gets serialization_failure	15;16;17;18;19	2026-10-15	a row committed as deleted by a concurrent transaction never raises 40001 at the flush;the flush re-reads the statement snapshot, not the latest committed state;the row-identity serialization at the delete-vector flush skipped
+update_conc	update_conc	uu/RC heap oracle composes both updates (one row)	15;16;17;18;19	never	-
+update_conc	update_conc	uu/RR columnar count matches heap oracle	15;16;17;18;19	2026-10-15	a row committed as deleted by a concurrent transaction never raises 40001 at the flush;the flush re-reads the statement snapshot, not the latest committed state;the row-identity serialization at the delete-vector flush skipped
+update_conc	update_conc	uu/RR columnar loser gets serialization_failure	15;16;17;18;19	2026-10-15	a row committed as deleted by a concurrent transaction never raises 40001 at the flush;the flush re-reads the statement snapshot, not the latest committed state;the row-identity serialization at the delete-vector flush skipped
+update_conc	update_conc	uu/RR columnar value-set matches heap oracle	15;16;17;18;19	2026-10-15	a row committed as deleted by a concurrent transaction never raises 40001 at the flush;the flush re-reads the statement snapshot, not the latest committed state;the row-identity serialization at the delete-vector flush skipped
+update_conc	update_conc	uu/RR heap oracle: loser serialization_failure	15;16;17;18;19	never	-
+update_conc	update_conc	uu/SER columnar count matches heap oracle	15;16;17;18;19	never	-
+update_conc	update_conc	uu/SER columnar loser gets serialization_failure	15;16;17;18;19	never	-
 vacuum_lock_privilege	vacuum_lock_privilege	add_projection refuses a non-owner before taking its lock (#749)	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock
 vacuum_lock_privilege	vacuum_lock_privilege	cluster refuses a non-owner before taking the exclusive lock	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock
 vacuum_lock_privilege	vacuum_lock_privilege	compact does the same, which is the behaviour drop_projection now matches	15;16;17;18;19	never	-

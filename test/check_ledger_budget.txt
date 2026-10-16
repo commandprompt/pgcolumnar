@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 223
+suites_not_covered 222
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2834,4 +2834,24 @@ suites_not_covered 223
 #     never         2601 +  6 = 2607
 #     dated          873 + 27 = 900
 #     2607 + 900 == 3507
-checks_never_observed_red 2607
+#
+# #1341, update_conc seeded, with its twin (OffgridwithJD): 2607 -> 2621, and
+# suites_not_covered 223 -> 222. The suite had no rows: its local check() recorded
+# through pgc_record with no accounting line, and it now uses lib.sh's recorders.
+# It enters with all 28 checks from five-major runs (28/28 on each of 15-19). 14 are
+# dated by seven mutations: in columnar_row_lock.c, the flush-time serialization
+# skipped, the committed-delete conflict never raised, and the re-read taken from
+# the statement snapshot (each the same 10 duplicate-row and 40001 arms at RC and
+# RR, update-vs-delete, delete-vs-update and multirow); the row lock skipped during
+# the UPDATE of a table with a unique index (the unique/RC arm); the self-modify
+# guard removed (the self-update arm); and in pgcolumnar_subxact_callback, either
+# discard skipped (the new failed-statement savepoint arms, both). Fourteen arrive
+# never: the seven heap-oracle arms, the two SERIALIZABLE guards, which held before
+# the row lock existed, the two serial controls, the scan-order premise, and the
+# completed-UPDATE savepoint arm's two, which neither discard alone reddens.
+#
+#     ledger rows   3507 + 28 = 3535
+#     never         2607 + 14 = 2621
+#     dated          900 + 14 = 914
+#     2621 + 914 == 3535
+checks_never_observed_red 2621
