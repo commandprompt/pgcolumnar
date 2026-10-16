@@ -2566,6 +2566,15 @@ native_fetch_projection	native_fetch_projection	premise: there is a needed-set m
 native_fetch_projection	native_fetch_projection	the all-covering projection reconstructs every row	15;16;17;18;19	never	-
 native_fetch_projection	native_fetch_projection	the projection reads every row to start with	15;16;17;18;19	never	-
 native_fetch_projection	native_fetch_projection	the wide fixture has 41 columns	15;16;17;18;19	never	-
+native_gap	native_gap	baseline parity	15;16;17;18;19	never	-
+native_gap	native_gap	baseline row count	15;16;17;18;19	never	-
+native_gap	native_gap	gap was physically materialized	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData does not fill a gap beyond EOF (6a165821 reverted), so the write lands short of its block and errors;columnar_vacuum.c: debug_advance_reserved_offset advances nothing, so no gap is made
+native_gap	native_gap	indexed lookup after gap	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData does not fill a gap beyond EOF (6a165821 reverted), so the write lands short of its block and errors;columnar_tableam.c: an index fetch finds no row
+native_gap	native_gap	parity after delete on gapped layout	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData does not fill a gap beyond EOF (6a165821 reverted), so the write lands short of its block and errors
+native_gap	native_gap	parity after gapped insert	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData does not fill a gap beyond EOF (6a165821 reverted), so the write lands short of its block and errors
+native_gap	native_gap	parity after post-gap insert	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData does not fill a gap beyond EOF (6a165821 reverted), so the write lands short of its block and errors
+native_gap	native_gap	premise: the indexed lookup reads n_id	15;16;17;18;19	never	-
+native_gap	native_gap	row count after gapped insert	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData does not fill a gap beyond EOF (6a165821 reverted), so the write lands short of its block and errors
 native_groupagg	native_groupagg	a NULL key counts as a group in the bucket bound: four groups under a cap of 3 are declined and all answered	15;16;17;18;19	2026-10-16	the bucket bound left out the NULL group and the runtime cap was off, so the node took the query and answered it (mutation, #1339)
 native_groupagg	native_groupagg	a cached plan run under a lower cap stops at the runtime cap, with its hint	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	a date_bin key is bounded as a truncating key is	15;16;17;18;19	never	-

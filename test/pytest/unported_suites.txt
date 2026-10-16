@@ -88,7 +88,6 @@ native_fetch_interrupt
 native_fetch_sort_context
 native_fold_deferral
 native_fold_skipguard
-native_gap
 native_groupagg_wide_cost
 native_late_materialization
 native_lazy_slot
