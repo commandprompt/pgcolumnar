@@ -207,6 +207,7 @@ behaviour, the source of that number is named.
 - [159. test_native_batch_fold_projection.py: the batch fold's column lists on a wide table](#159-test_native_batch_fold_projectionpy-the-batch-folds-column-lists-on-a-wide-table)
 - [160. test_native_encdesc_golden.py: the encoding descriptor's wire layout](#160-test_native_encdesc_goldenpy-the-encoding-descriptors-wire-layout)
 - [161. test_native_parquet_schema.py: parquet_schema round trip](#161-test_native_parquet_schemapy-parquet_schema-round-trip)
+- [162. test_native_vecskip.py: per-vector skipping by the zone maps](#162-test_native_vecskippy-per-vector-skipping-by-the-zone-maps)
 
 ## 1. How to read a test in here
 
@@ -7616,3 +7617,13 @@ The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every che
 | --- | --- |
 | `test_the_exported_schema_round_trips` | every exported type and its nullability come back from `parquet_schema`, and bad magic is refused by the magic check |
 | `test_required_columns_and_field_ids` | a pyarrow REQUIRED column reports nullable=f, and field ids report as written or as NULL when absent |
+
+## 162. test_native_vecskip.py: per-vector skipping by the zone maps
+
+The pytest twin of `test/native_vecskip.sh` (ported for #1341), every check by the shell's name. Inside a row group the predicate can't prune whole, the 1024-value vectors its zone maps rule out are neither decoded nor emitted. One row group of eight vectors and a range inside vector 0: exactly seven are skipped and no whole group is removed, and the rows equal a heap mirror's. The count alone can't say which mechanism skipped, because without the zone-map rule #452's by-value refinement rules the same seven out. So the decodes (1) and the by-value count (0) are read too. The vectorized aggregate must report the same seven.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_per_vector_skipping` | the zone maps skip exactly the seven vectors outside the range without decoding them, on the scalar scan and the vectorized aggregate, and every range returns the heap's rows |

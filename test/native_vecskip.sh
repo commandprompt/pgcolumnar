@@ -32,7 +32,6 @@ counter() {
 		-d "$PGC_DB" -At -c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $2" 2>/dev/null \
 		| grep "$1" | grep -oE '[0-9]+' | head -1
 }
-gt0() { [ "${1:-0}" -gt 0 ] && echo yes || echo no; }
 
 # The plan text for a query, and whether it is the scalar columnar custom scan.
 # "Columnar Projected Columns" is that node's own marker: the vectorized
@@ -70,8 +69,19 @@ Q="SELECT id, v FROM n WHERE id BETWEEN 100 AND 200"
 check "range parity" \
 	"$(pgc_set_hash "$Q")" \
 	"$(pgc_set_hash 'SELECT id, v FROM h WHERE id BETWEEN 100 AND 200')"
-check "vectors removed > 0" "$(gt0 "$(counter 'Columnar Vectors Skipped' "SELECT id FROM n WHERE id BETWEEN 100 AND 200")")" "yes"
+# EXACTLY seven, not "> 0" (#1341): the range sits inside vector 0 of eight with
+# tight, disjoint id ranges, so the other seven are ruled out. Measured, with the
+# zone-map loop never reaching the last vector the count was 6, and "> 0" held.
+check "the seven vectors outside the range are skipped" \
+	"$(counter 'Columnar Vectors Skipped' "SELECT id FROM n WHERE id BETWEEN 100 AND 200")" "7"
 check "no whole group removed" "$(counter 'Columnar Chunk Groups Removed by Filter' "SELECT id FROM n WHERE id BETWEEN 100 AND 200")" "0"
+# BY THE ZONE MAPS, without decoding (#1341). The skip count alone cannot say which
+# mechanism skipped: with the zone-map rule removed, #452's by-value refinement
+# decodes the id column of all eight vectors and rules the same seven out, and the
+# count is still 7. Measured: decodes|ruled-by-value is 1|0 here, 8|7 with the
+# zone-map rule gone, and 2|1 with the loop stopping short of the last vector.
+check "the zone maps ruled them out without decoding them: one vector decoded, none ruled out by value" \
+	"$(counter 'Columnar Vector Decodes' "SELECT id FROM n WHERE id BETWEEN 100 AND 200")|$(counter 'Columnar Vectors Ruled Out by Value' "SELECT id FROM n WHERE id BETWEEN 100 AND 200")" "1|0"
 
 # A predicate matching every vector prunes none.
 check "non-selective removes no vectors" \
@@ -115,6 +125,10 @@ check "the vectorized aggregate reports Columnar Vectors Skipped" \
 	"$([ "$(explain_agg "$AGGQ" | grep -c 'Columnar Vectors Skipped' || true)" != 0 ] \
 		&& echo yes || echo no)" \
 	"yes"
+# And the number it reports is the scalar node's, on the same predicate: a line
+# that printed 0, or anything else, would answer #512's question wrongly.
+check "and the aggregate skips the same seven vectors" \
+	"$(explain_agg "$AGGQ" | grep 'Columnar Vectors Skipped' | grep -oE '[0-9]+' | head -1)" "7"
 
 # Boundary and cross-vector ranges still return exactly the heap rows.
 check "cross-vector range parity" \
