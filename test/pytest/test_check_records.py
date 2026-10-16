@@ -391,7 +391,7 @@ def test_wrapping_a_method_twice_changes_nothing(expect):
     expect.num(e.count, 2, "and still takes one record per call")
 
 
-def test_a_recording_method_takes_exactly_one_record_per_call(expect):
+def test_a_recording_method_takes_exactly_one_record_per_call(expect, monkeypatch):
     """THE INVARIANT THE RESOLUTION RESTS ON, pinned because a mutation showed it
     was assumed.
 
@@ -452,7 +452,10 @@ def test_a_recording_method_takes_exactly_one_record_per_call(expect):
         ("cannot_run", lambda x: x.cannot_run("MISSING_DEPENDENCY", "none here", name="cannot_run")),
     ]
     # A FRESH RECORDER PER CALL: declines and cannot_run must be a test's first
-    # outcome, so they cannot share one with the others.
+    # outcome, so they cannot share one with the others. And no PGC_REQUIRE: CI sets
+    # it to pyarrow, under which declines("pyarrow") refuses by design. This counts
+    # records; it does not ask whether a capability may be declined here.
+    monkeypatch.delenv("PGC_REQUIRE", raising=False)
     deltas = []
     for method, call in calls:
         x = pgc_vacuity.Expect(f"records::one-per-call::{method}")
