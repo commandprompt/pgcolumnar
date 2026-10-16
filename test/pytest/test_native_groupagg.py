@@ -42,6 +42,7 @@ in the same function as anything else would make the refusal wider than the shel
 suite's, and a refusal that takes unrelated arms with it is a worse report than the
 one it replaces.
 """
+import json
 import psycopg
 
 ROWS = 20000
@@ -171,7 +172,7 @@ def _make_pair(expect, conn):
     heap = _one(conn, "SELECT count(*) FROM t_heap")
     col = _one(conn, "SELECT count(*) FROM t_col")
     expect.text(f"{heap}/{col}", f"{ROWS}/{ROWS}",
-                "premise: the pair loaded in full, so the mirror compares equal populations")
+                "the pair loaded in full, so the mirror compares equal populations")
     _groupvec(conn, True)
 
 
@@ -620,17 +621,19 @@ def test_the_group_estimate_bound_is_accurate_and_narrow(pgc_conn, expect):
     _exec(pgc_conn, "ANALYZE gb")
     _gb_session(pgc_conn)
 
-    expect.num(
-        _estimate(pgc_conn, "SELECT date_trunc('minute', ts) b, avg(v) FROM gb "
-                            f"{GB_WINDOW} GROUP BY b"), 12,
-        "the bound is accurate for a truncating time key, not just smaller")
+    bound = _estimate(pgc_conn, "SELECT date_trunc('minute', ts) b, avg(v) FROM gb "
+                                f"{GB_WINDOW} GROUP BY b")
+    expect.num(bound, 12, "the bound is accurate for a truncating time key, not just smaller")
 
     # An accurate bound is worthless if it is not a bound. Counted, not reasoned.
     actual = int(_rows(pgc_conn,
                        "SELECT count(*) FROM (SELECT date_trunc('minute', ts) "
                        f"FROM gb {GB_WINDOW} GROUP BY 1) z")[0][0])
     print(f"-- true group count in the window: {actual}")
-    expect.text("yes" if actual <= 12 else f"no [{actual} groups]", "yes",
+    # AGAINST THE ESTIMATE MEASURED, not the literal the arm above expects (#1339): a
+    # bound that fell below the true count failed only the arm above, and this one,
+    # comparing with 12, still said yes.
+    expect.text("yes" if actual <= bound else f"no [{actual} groups over a bound of {bound}]", "yes",
                 "and it is an UPPER bound: the true group count is at or below it")
 
     # A plain Var has statistics, so examine_variable reports informed and the
@@ -882,5 +885,11 @@ def test_a_null_key_counts_as_a_group_in_the_bucket_bound(pgc_conn, expect):
     _exec(conn, "CREATE TABLE nul_b (ts timestamptz, v int) USING pgcolumnar")
     for ts in ("'2026-03-01 10:00:59+00'", "'2026-03-01 10:01:05+00'", "'2026-03-01 10:02:00+00'", "NULL"):
         _exec(conn, f"INSERT INTO nul_b SELECT {ts}, g FROM generate_series(1, 40) g")
-    expect.text(_groups_or_error(conn, 3, "SELECT date_trunc('minute', ts) b, count(*) FROM nul_b GROUP BY b"), "4",
+    # DECLINED, NOT ONLY ANSWERED (#1339). The answer alone held for a node that took
+    # the query and did not stop at its cap, so the plan is read too.
+    q = "SELECT date_trunc('minute', ts) b, count(*) FROM nul_b GROUP BY b"
+    # the plan comes back as EXPLAIN's JSON, a list of dicts, so search its text: a
+    # membership test on the list itself is always false
+    taken = 1 if MARKER in json.dumps(_under_cap(conn, 3, q)) else 0
+    expect.text(f"{taken}|{_groups_or_error(conn, 3, q)}", "0|4",
                 "a NULL key counts as a group in the bucket bound: four groups under a cap of 3 are declined and all answered")
