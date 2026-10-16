@@ -3899,6 +3899,35 @@ settings_reference	settings_reference	each documented default is the server's	15
 settings_reference	settings_reference	every documented setting exists on the server	15;16;17;18;19	2026-10-15	the compression_level row renamed compression_levl in docs/configuration.md
 settings_reference	settings_reference	every setting the server defines is documented, the developer hooks aside	15;16;17;18;19	2026-10-15	the backticks around every setting name removed from docs/configuration.md;the compression_level row deleted from docs/configuration.md;the compression_level row renamed compression_levl in docs/configuration.md
 settings_reference	settings_reference	the reference documents at least thirty settings, so the comparisons below read something	15;16;17;18;19	2026-10-15	the backticks around every setting name removed from docs/configuration.md
+sorted_projection	sorted_projection	control: the set oracle is order-blind by design	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	count matches heap	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	idempotent sorted rewrite	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	index point lookup after sort	15;16;17;18;19	2026-10-16	columnar_vacuum.c: pgcolumnar_compact_relation no longer reindexes after its rewrite
+sorted_projection	sorted_projection	index sees deletion after sort	15;16;17;18;19	2026-10-16	columnar_vacuum.c: pgcolumnar_compact_relation no longer reindexes after its rewrite
+sorted_projection	sorted_projection	live count after delete+sort	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	multi-key range	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	post aggregate	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	post equality	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	post order-by	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	post range	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	post star	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	post-sort prunes more chunk groups	15;16;17;18;19	2026-10-16	columnar_vacuum.c: pgcolumnar_compact_relation never sorts the rows it rewrites
+sorted_projection	sorted_projection	pre aggregate	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	pre equality	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	pre order-by	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	pre range	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	pre star	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	pre-sort prunes little	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	premise: the deletion lookup reads t_col_id_idx	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	premise: the ordered oracle agrees with itself	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	premise: the ordered oracle is order-sensitive	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	premise: the point lookup reads t_col_id_idx	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	reject no sort columns	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	reject non-columnar table	15;16;17;18;19	2026-10-16	columnar_vacuum.c: pgcolumnar_vacuum_sorted no longer checks for a columnar relation
+sorted_projection	sorted_projection	reject non-sortable type	15;16;17;18;19	2026-10-16	columnar_vacuum.c: pgcolumnar_compact_relation never sorts the rows it rewrites
+sorted_projection	sorted_projection	reject unknown column	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	sum matches heap	15;16;17;18;19	never	-
+sorted_projection	sorted_projection	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
 statement_self_visibility	statement_self_visibility	INSERT INTO t SELECT FROM t runs to completion	15;16;17;18;19	2026-10-15	a serial scan re-reads its row-group list when it reaches the end, so it picks up groups its own statement flushed (src/columnar_reader.c pgcolumnar_next_group_index)
 statement_self_visibility	statement_self_visibility	UPDATE of every row runs to completion	15;16;17;18;19	2026-10-15	a serial scan re-reads its row-group list when it reaches the end, so it picks up groups its own statement flushed (src/columnar_reader.c pgcolumnar_next_group_index)
 statement_self_visibility	statement_self_visibility	an INSERT in a WITH clause reading its own table returns the rows it inserted, as heap does	15;16;17;18;19	2026-10-15	a serial scan re-reads its row-group list when it reaches the end, so it picks up groups its own statement flushed (src/columnar_reader.c pgcolumnar_next_group_index)
