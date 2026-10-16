@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 215
+suites_not_covered 214
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3002,4 +3002,19 @@ suites_not_covered 215
 #     never         2702 +  2 = 2704
 #     dated          985 +  2 = 987
 #     2704 + 987 == 3691
-checks_never_observed_red 2704
+#
+# #1341, native_decode_gating seeded, with its twin (OffgridwithJD): 2704 -> 2722, and
+# suites_not_covered 215 -> 214. The suite had no rows. It enters with all 29 checks
+# from five-major runs (29/29 on each of 15-19). 11 are dated by four mutations of
+# #452 phase 2: the per-vector evaluation never run (4), a deleted row counted as
+# filtered (1, the new arm), every vector marked skipped (7), and the producer
+# counting a gated group's rejections twice (2, one of them new). Eighteen arrive
+# never: the thirteen premises, the observable's presence, the full scan across
+# every group, the nomatch query's empty answer, and two exact counters that no
+# single mutation here moves.
+#
+#     ledger rows   3691 + 29 = 3720
+#     never         2704 + 18 = 2722
+#     dated          987 + 11 = 998
+#     2722 + 998 == 3720
+checks_never_observed_red 2722

@@ -757,4 +757,6 @@ guard_tests 438
 # by collection over the cluster files on this tree.
 # cluster_tests 673 -> 674 for #1341's test_native_dict_underfill.py, the twin of
 # native_dict_underfill.sh: one test, by collection over the cluster files on this tree.
-cluster_tests 674
+# cluster_tests 674 -> 676 for #1341's test_native_decode_gating.py, the twin of
+# native_decode_gating.sh: two tests, by collection over the cluster files on this tree.
+cluster_tests 676
