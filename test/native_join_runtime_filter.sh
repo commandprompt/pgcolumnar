@@ -181,7 +181,7 @@ SQLRE="${SQLR//(VALUES (0),(8000))/(VALUES (99999),(0))}"
 SQLRHE="${SQLRH//(VALUES (0),(8000))/(VALUES (99999),(0))}"
 check "premise: the empty-then-full rescan runs under the coordinator" \
 	"$(pc "${rf_on}SET max_parallel_workers_per_gather=0;EXPLAIN (COSTS OFF) $SQLRE" | grep -c 'Columnar Runtime Filter Coordinator')" 1
-check "premise: heap's empty-then-full rescan answer holds the 200 keys" "$(q "$SQLRHE" | head -1)" "0|200"
+check "premise: heap's empty-then-full rescan answer holds every dimension key" "$(q "$SQLRHE" | head -1)" "0|200"
 check "an empty build on one rescan does not empty the next" \
 	"$(pc "${rf_on}SET max_parallel_workers_per_gather=0;$SQLRE" | grep -v '^SET$')" "$(q "$SQLRHE")"
 
@@ -377,7 +377,7 @@ for dim in dim_gh dim_gc; do
 		"$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$ong")" 1
 	# the reference must hold rows, or a server that answered nothing on both
 	# sides would pass the comparisons below as equal
-	check "premise: heap's answer under a true gate over a $kind dimension holds 200 rows" \
+	check "premise: heap's answer under a true gate over a $kind dimension holds every joined row" \
 		"$(q "SELECT count(*) FROM heap_g JOIN $dim ON heap_g.k=$dim.k WHERE (SELECT true)")" 200
 	for gate in false true; do
 		check "a (SELECT $gate) gate over a $kind dimension equals heap" \

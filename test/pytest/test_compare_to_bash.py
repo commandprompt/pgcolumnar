@@ -140,6 +140,7 @@ COMPLETE = ["advisory_lock_class",
             "native_index_fetch_stripe_cost",
             "native_index_projection",
             "native_ios",
+            "native_join_runtime_filter",
             "native_join_vector_agg",
             "native_ownership",
             "native_parquet_dict_oob",
@@ -421,8 +422,9 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
                 "every name the loop reader returns appears verbatim in the file it "
                 "came from")
     expect.text(", ".join(files),
-                "build_refusal, differential, join_runtime_filter, native_groupagg_batch, "
-                "native_index_projection, native_parquet_pushdown, native_reclaim, native_repack, "
+                "build_refusal, differential, native_groupagg_batch, "
+                "native_index_projection, native_parquet_pushdown, "
+                "native_reclaim, native_repack, "
                 "native_saop_pushdown, native_vacuum_race, native_vecskip, sorted_pathkeys, "
                 "sorted_projection",
                 "and it is these files, so another appearing is a diff a reviewer "

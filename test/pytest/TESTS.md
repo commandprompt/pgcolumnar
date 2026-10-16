@@ -70,7 +70,7 @@ behaviour, the source of that number is named.
 - [22. test_writes_wrote_rows.py: a write that wrote nothing](#22-test_writes_wrote_rowspy-a-write-that-wrote-nothing)
 - [23. test_mutation_ledger.py: which checks have ever been red](#23-test_mutation_ledgerpy-which-checks-have-ever-been-red)
 - [24. test_loop_coverage_premise.py: a loop that never ran asserted nothing](#24-test_loop_coverage_premisepy-a-loop-that-never-ran-asserted-nothing)
-- [25. test_join_runtime_filter.py: serial join runtime filter](#25-test_join_runtime_filterpy-serial-join-runtime-filter)
+- [25. test_native_join_runtime_filter.py: serial join runtime filter](#25-test_native_join_runtime_filterpy-serial-join-runtime-filter)
 - [26. test_check_records.py: every counted assertion is a record](#26-test_check_recordspy-every-counted-assertion-is-a-record)
 - [27. test_skip_loop_arms.py: a skipped arm records under its own name](#27-test_skip_loop_armspy-a-skipped-arm-records-under-its-own-name)
 - [28. test_docs_join_clustering.py: the runtime filter's layout precondition](#28-test_docs_join_clusteringpy-the-runtime-filters-layout-precondition)
@@ -3004,7 +3004,7 @@ is how a guard gets switched off. **So the residual is a loop whose premise boun
 wrong collection**, which a reviewer catches and a sweep does not. 3.5 names it.
 
 
-## 25. test_join_runtime_filter.py: serial join runtime filter
+## 25. test_native_join_runtime_filter.py: serial join runtime filter
 
 Pytest twin of `test/native_join_runtime_filter.sh`. The two files are independent:
 each builds its own fixtures and expected values. They share only the public
@@ -3090,6 +3090,11 @@ A LATERAL whose first outer row builds nothing and whose second builds every key
 (#1447). An empty build now ends the join at once, so state left over from the first
 execution would answer the second with no rows. Premises check the coordinator and
 that heap's answer holds the keys.
+
+### `test_a_fact_qual_conjunction_with_late_materialization_matches_heap`
+
+The shell's fact-qual arms on the default path, late materialization on: a conjunction that also names a non-key column (`k > 100 AND n % 3 <> 0`) must still return heap's rows under the runtime filter coordinator. A premise first shows the qual removes matching rows on heap (100 of 150), so an answer that ignored it would not equal heap's. The late-mat-off test above covers the same shape with late materialization off. Added when this file was renamed to pair with `native_join_runtime_filter.sh` and aligned to the shell's names (#1341).
+
 
 ## 26. test_check_records.py: every counted assertion is a record
 
