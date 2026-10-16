@@ -811,4 +811,6 @@ guard_tests 438
 # two tests, by collection over the cluster files on this tree.
 # cluster_tests 744 -> 747 for #1341's test_sorted_projection.py, the twin of sorted_projection.sh:
 # three tests, by collection over the cluster files on this tree.
-cluster_tests 747
+# cluster_tests 747 -> 749 for #1341's test_native_ios.py, the twin of native_ios.sh:
+# two tests, by collection over the cluster files on this tree.
+cluster_tests 749

@@ -2774,6 +2774,17 @@ native_index_projection	native_index_projection	text expression index agrees	15;
 native_index_projection	native_index_projection	the oracle below really reads the parallel-built index	15;16;17;18;19	never	-
 native_index_projection	native_index_projection	the serial branch is still reached when workers are refused	15;16;17;18;19	never	-
 native_index_projection	native_index_projection	two-column index projects two	15;16;17;18;19	never	-
+native_ios	native_ios	VACUUM records the all-visible pages in pg_class (#507)	15;16;17;18;19	2026-10-16	columnar_tableam.c: VACUUM no longer records relallvisible
+native_ios	native_ios	after delete: some heap fetches occur	15;16;17;18;19	2026-10-16	columnar_visibilitymap.c: PgColumnarVMClearForRow no longer clears the all-visible bit
+native_ios	native_ios	all-visible interior: zero heap fetches	15;16;17;18;19	2026-10-16	columnar_visibilitymap.c: PgColumnarVMSetVisible sets no bit
+native_ios	native_ios	index-only results match heap (all-visible)	15;16;17;18;19	never	-
+native_ios	native_ios	index-only results match heap after delete	15;16;17;18;19	2026-10-16	columnar_visibilitymap.c: PgColumnarVMClearForRow no longer clears the all-visible bit
+native_ios	native_ios	index-only scan chosen	15;16;17;18;19	never	-
+native_ios	native_ios	premise: core records all-visible pages for the heap mirror (#507 oracle)	15;16;17;18;19	never	-
+native_ios	native_ios	premise: the relation has pages and rows to be a fraction of (#507)	15;16;17;18;19	never	-
+native_ios	native_ios	row count	15;16;17;18;19	never	-
+native_ios	native_ios	the all-visible fraction is most of the relation, as the heap's is (#507)	15;16;17;18;19	2026-10-16	columnar_tableam.c: VACUUM no longer records relallvisible
+native_ios	native_ios	the all-visible page count cannot exceed the relation (#507)	15;16;17;18;19	2026-10-16	columnar_tableam.c: relallvisible overshoots relpages by the VM's synthetic block count
 native_join_runtime_filter	native_join_runtime_filter	3-table answer equals filter-off	15;16;17;18;19	2026-09-23	the runtime bloom probe's verdict inverted, so the filter rejects what matches
 native_join_runtime_filter	native_join_runtime_filter	3-table join order matches filter-off	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	3-table plan has coordinator	15;16;17;18;19	never	-
