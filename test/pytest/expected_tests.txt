@@ -737,4 +737,6 @@ guard_tests 438
 # ten tests, by collection over the cluster files on this tree.
 # cluster_tests 627 -> 638 for #1341's test_update_conc.py, the twin of update_conc.sh:
 # eleven tests, by collection over the cluster files on this tree.
-cluster_tests 638
+# cluster_tests 638 -> 641 for #1341's test_recovery.py, the twin of recovery.sh: three
+# tests, by collection over the cluster files on this tree.
+cluster_tests 641
