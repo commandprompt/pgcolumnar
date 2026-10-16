@@ -54,7 +54,23 @@ ms_for() {
 ms_for "SELECT * FROM cancel_t LIMIT 1;" >/dev/null
 full="$(ms_for "SELECT * FROM cancel_t LIMIT 1;")"
 
-cancel="$(ms_for "SET statement_timeout = '50ms'; SELECT * FROM cancel_t LIMIT 1;")"
+# THE TIMEOUT IS A QUARTER OF THIS BOX'S LOAD, NOT A FIXED 50 ms (#1481). On a fast
+# runner the whole load finished in about 50 ms, so a 50 ms timeout had nothing left
+# to interrupt and the query returned with no error: the nightly's coverage job
+# measured "full load 57 ms" against it and went red with no product change. The
+# load is read from the server's own Execution Time, because `full` above also counts
+# psql's start and connect. A quarter of it, at least 5 ms, lands inside the load on
+# any machine, which is what both arms below need.
+exec_ms="$(q "SET max_parallel_workers_per_gather = 0;
+              EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON) SELECT * FROM cancel_t LIMIT 1;" |
+	sed -n 's/^Execution Time: \([0-9]*\)\..*/\1/p')"
+TIMEOUT_MS=$(( ${exec_ms:-0} / 4 ))
+[ "$TIMEOUT_MS" -lt 5 ] && TIMEOUT_MS=5
+check_num "premise: the load outlasts the timeout, so the timeout can fire during it" \
+	"$([ "${exec_ms:-0}" -gt "$TIMEOUT_MS" ] && echo 1 || echo "0 (load ${exec_ms:-?} ms, timeout ${TIMEOUT_MS} ms)")" "1"
+echo "-- server-side load ${exec_ms} ms; statement timeout ${TIMEOUT_MS} ms"
+
+cancel="$(ms_for "SET statement_timeout = '${TIMEOUT_MS}ms'; SELECT * FROM cancel_t LIMIT 1;")"
 err="$(grep -oE 'ERROR:.*' "$PGC_WORKDIR/cancel.out" | head -1)"
 
 echo "-- full load ${full} ms; cancel fired after ${cancel} ms"
@@ -88,7 +104,6 @@ check "the short timeout is what fired" \
 # (151 ms against 150) and fails this check, which is the behaviour the paragraph
 # above predicts. Stated so the next person does not remove the cheap guard on the
 # strength of a green run here.
-TIMEOUT_MS=50
 limit=$(( TIMEOUT_MS + (full - TIMEOUT_MS) / 2 ))
 check_timing "cancel arrives well before the load completes" \
 	"$( [ "$full" -gt $(( TIMEOUT_MS * 2 )) ] && [ "$cancel" -lt "$limit" ] && echo yes ||
