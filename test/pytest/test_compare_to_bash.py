@@ -159,6 +159,7 @@ COMPLETE = ["advisory_lock_class",
             "native_repack",
             "native_roundtrip",
             "native_saop_pushdown",
+            "native_skip",
             "native_toasted_write",
             "native_truncate",
             "native_vacuum_race",
@@ -236,13 +237,6 @@ INCOMPLETE = {
     "drop_cleanup": "the #1265 arms (a columnar matview's options row goes with its "
                     "DROP and survives its REFRESH, with an unrelated row as the "
                     "control) are ported; the storage and catalog cleanup arms are not",
-    # #1433 ported the arms it added: cidr, varchar and a domain over each prune
-    # as inet and text do, with heap's answer first. The rest of the shell suite
-    # (range, equality, bigint, the #477 and #483 arms, the partitioned table) is
-    # not.
-    "native_skip": "the #1433 binary-coercible arms and their inet and text "
-                   "controls are ported; the range, equality, bigint, #477, #483 "
-                   "and partitioned-table arms are not",
     # #1341 item 49 ported the arms it added: a delete or removed entry inside a
     # data manifest is refused, with a control that is listed. The rest of the
     # shell suite (the pyiceberg oracle, path rebasing and its escapes, the

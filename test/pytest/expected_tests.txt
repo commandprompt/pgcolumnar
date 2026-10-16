@@ -831,4 +831,6 @@ guard_tests 440
 # seven tests, one per check, by collection over the cluster files on this tree.
 # cluster_tests 779 -> 787 for #1341's test_native_toasted_write.py, the twin of native_toasted_write.sh:
 # eight tests, one per check, by collection over the cluster files on this tree.
-cluster_tests 787
+# cluster_tests 787 -> 792 for #1341's completion of test_native_skip.py, the twin of native_skip.sh:
+# five tests, by collection over the cluster files on this tree.
+cluster_tests 792

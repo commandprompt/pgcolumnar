@@ -356,10 +356,14 @@ fi
 # reports a red on a box missing btree_gist (#505). If none is usable the checks
 # say so and are skipped, rather than passing vacuously or failing for the
 # environment.
+# THE IDENTIFIER WAS CLOSED WITH A SINGLE QUOTE (#1341): `COLLATE \"$_c\')` is
+# malformed SQL, the probe failed for every candidate, and this whole half -- the
+# refusal under a genuinely non-C collation -- skipped on every run while reading as
+# a host without one. Found by the pytest twin, whose discovery works.
 NSK_NONC=""
 for _c in "en_US.utf8" "en_US.UTF-8" "unicode" "pg_unicode_fast"; do
 	if [ "$(q "SELECT 'x' LIKE 'x' COLLATE \"$_c\";" 2>/dev/null)" = "t" ] &&
-	   [ "$(q "SELECT ('b' < 'a' COLLATE \"$_c\');" 2>/dev/null)" = "f" ]; then
+	   [ "$(q "SELECT ('b' < 'a' COLLATE \"$_c\");" 2>/dev/null)" = "f" ]; then
 		NSK_NONC="$_c"; break
 	fi
 done
