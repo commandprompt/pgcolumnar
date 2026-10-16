@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 195
+suites_not_covered 194
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3416,4 +3416,18 @@ suites_not_covered 195
 #     never         3002 +  4 = 3006
 #     dated         1261 + 11 = 1272
 #     3006 + 1272 == 4278
-checks_never_observed_red 3006
+#
+# #1341, native_parquet_multifile seeded, with its twin (OffgridwithJD): 3006 -> 3010,
+# and suites_not_covered 195 -> 194. The suite had no rows. It enters with all 32
+# checks from five-major runs (32/32 on each of 15-19). 28 are dated by nine
+# mutations of the directory walk and glob expansion: an empty directory and an
+# unmatched glob reading as nothing, an unstat-able path dropped, a FIFO opened,
+# _ and . names walked, a symlinked directory descended, the files unsorted, no
+# depth bound, and every extension read. Four arrive never: the three glob arms
+# (subset, directory match skipped, only directories) and the schema mismatch.
+#
+#     ledger rows   4278 + 32 = 4310
+#     never         3006 +  4 = 3010
+#     dated         1272 + 28 = 1300
+#     3010 + 1300 == 4310
+checks_never_observed_red 3010

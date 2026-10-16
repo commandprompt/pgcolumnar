@@ -216,6 +216,7 @@ behaviour, the source of that number is named.
 - [168. test_native_fetch_cache.py: the fetch-by-row-number cache](#168-test_native_fetch_cachepy-the-fetch-by-row-number-cache)
 - [169. test_native_parquet_pushdown.py: the Parquet FDW skips row groups its statistics rule out](#169-test_native_parquet_pushdownpy-the-parquet-fdw-skips-row-groups-its-statistics-rule-out)
 - [170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays](#170-test_native_parquet_flbapy-uuid-and-decimal-read-from-fixed-length-byte-arrays)
+- [171. test_native_parquet_multifile.py: directories and globs read as one relation](#171-test_native_parquet_multifilepy-directories-and-globs-read-as-one-relation)
 
 ## 1. How to read a test in here
 
@@ -7746,3 +7747,17 @@ The pytest twin of `test/native_parquet_flba.sh` (ported for #1341), every check
 | `test_our_export_reads_back_through_every_surface` | uuid, numeric and whole rows round-trip through `read_parquet`, `import_parquet` and the FDW |
 | `test_pyarrow_written_flba_reads_exactly` | both pyarrow uuids read in order, decimal128 values are exact, and a crafted scale is refused at bind with the backend alive |
 | `test_a_decimal_held_in_an_integer_reads_as_numeric` | INT32 and INT64 DECIMALs read at their scale with their null, `parquet_schema` advises numeric, and bigint still binds to the unscaled integer |
+
+## 171. test_native_parquet_multifile.py: directories and globs read as one relation
+
+The pytest twin of `test/native_parquet_multifile.sh` (ported for #1341), every check by the shell's name. A directory reads every `*.parquet` file below it as one relation, and a glob expands the same way. The union must equal a single-file oracle through `read_parquet`, `import_parquet` and the FDW. Pushdown and the EXPLAIN counters aggregate across files.
+
+Several inputs must fail: an empty directory, a glob matching nothing, a schema-mismatched file, a dangling symlink, and a tree past the depth bound. A FIFO and a directory named `*.parquet` are skipped. The walk skips names that start with `_` or `.`, and it does not follow a symlinked directory, so a loop terminates. It still follows a symlinked file, and it orders files by full path. Reads that could block are bounded, as the shell's `timeout` bounds them.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_directories_and_globs_read_as_one_relation` | a directory and a glob equal the oracle on every surface, pushdown and counters aggregate, and every error case fails |
+| `test_a_fifo_named_parquet_is_skipped_not_opened` | a FIFO named `*.parquet` is skipped rather than opened, within a bound; declined as "the FIFO case" where mkfifo is unavailable |
+| `test_the_recursive_walk` | a nested tree reads as one relation in sorted path order, `_`/`.` names and symlinked directories are not walked, a symlinked file is read, and the depth bound errors |

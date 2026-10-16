@@ -803,4 +803,6 @@ guard_tests 438
 # four tests, by collection over the cluster files on this tree.
 # cluster_tests 734 -> 737 for #1341's test_native_parquet_flba.py, the twin of native_parquet_flba.sh:
 # three tests, by collection over the cluster files on this tree.
-cluster_tests 737
+# cluster_tests 737 -> 740 for #1341's test_native_parquet_multifile.py, the twin of native_parquet_multifile.sh:
+# three tests, by collection over the cluster files on this tree.
+cluster_tests 740

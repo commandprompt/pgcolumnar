@@ -2828,6 +2828,38 @@ native_parquet_flba	native_parquet_flba	pyarrow decimal128 values are exact	15;1
 native_parquet_flba	native_parquet_flba	pyarrow uuid reads as uuid	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	uuid round-trips through export/read	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	whole-row round-trip == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
+native_parquet_multifile	native_parquet_multifile	EXPLAIN reports 3 files	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	EXPLAIN sums row groups across files	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	FDW(directory) == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	FIFO named *.parquet is skipped, does not block	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension;columnar_parquet_reader.c: any non-directory entry is a candidate, a FIFO included
+native_parquet_multifile	native_parquet_multifile	_temporary and dot directories are not walked	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension;columnar_parquet_reader.c: the walk descends into names beginning with _ or .
+native_parquet_multifile	native_parquet_multifile	a file whose name starts with _ is skipped too	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension;columnar_parquet_reader.c: the walk descends into names beginning with _ or .
+native_parquet_multifile	native_parquet_multifile	a symlink loop terminates and does not multiply rows	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension;columnar_parquet_reader.c: the walk descends a symlinked directory
+native_parquet_multifile	native_parquet_multifile	a symlinked directory is not descended	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension;columnar_parquet_reader.c: the walk descends a symlinked directory
+native_parquet_multifile	native_parquet_multifile	a symlinked file is still read	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	a tree deeper than the bound is rejected, not truncated	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: the walk has no depth bound
+native_parquet_multifile	native_parquet_multifile	count(*) over directory is correct	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	count(*) over directory reads 0 columns	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	cross-file predicate result == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	dangling symlink in a glob errors, not skipped	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a path that cannot be stat'ed is dropped instead of handed to the reader
+native_parquet_multifile	native_parquet_multifile	dangling symlink in directory errors, not skipped	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a path that cannot be stat'ed is dropped instead of handed to the reader
+native_parquet_multifile	native_parquet_multifile	directory ignores a subdir named *.parquet	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	directory of only *.parquet subdirs errors	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a directory holding no .parquet files resolves to no files instead of an error
+native_parquet_multifile	native_parquet_multifile	directory read ignores non-parquet files	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	empty directory errors	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a directory holding no .parquet files resolves to no files instead of an error
+native_parquet_multifile	native_parquet_multifile	glob matching only directories errors	15;16;17;18;19	never	-
+native_parquet_multifile	native_parquet_multifile	glob part-[01] == first two files	15;16;17;18;19	never	-
+native_parquet_multifile	native_parquet_multifile	glob skips a directory match, reads the files	15;16;17;18;19	never	-
+native_parquet_multifile	native_parquet_multifile	import_parquet(directory) == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	import_parquet(directory) row count	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	nested tree reads every level as one relation	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	nested tree row count	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	non-matching glob errors	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a glob matching nothing resolves to no files instead of an error
+native_parquet_multifile	native_parquet_multifile	one column over directory reads 1	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	predicate skips the two non-matching files' groups	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	read_parquet(directory) == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_multifile	native_parquet_multifile	schema-mismatched file in directory errors	15;16;17;18;19	never	-
+native_parquet_multifile	native_parquet_multifile	tree read order follows the sorted full path	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked directory's files are not sorted;columnar_parquet_reader.c: a walked entry is read whatever its extension
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: predicate skips 3 of 4 groups	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: INT64 statistics are not decoded, so an INT64-backed DECIMAL never skips;columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: skipping did not drop rows	15;16;17;18;19	never	-
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: unfiltered scan skips nothing	15;16;17;18;19	never	-
