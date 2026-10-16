@@ -3277,4 +3277,12 @@ suites_not_covered 201
 #     never         2923 + 18 = 2941
 #     dated         1125 + 35 = 1160
 #     2941 + 1160 == 4101
-checks_never_observed_red 2941
+# #1478, selftest 340 gains an arm for two unreadable pg_configs whose short hashes
+# collide (jdatcmd): 2941 -> 2942. The arm is new and has not been seen red on a
+# merged tree, so it enters as never observed red. No row is renamed or removed.
+#
+#     ledger rows   4101 + 1 = 4102
+#     never         2941 + 1 = 2942
+#     dated         1160 + 0 = 1160
+#     2942 + 1160 == 4102
+checks_never_observed_red 2942
