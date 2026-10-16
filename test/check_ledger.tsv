@@ -2316,6 +2316,10 @@ native_delete_visibility_paths	native_delete_visibility_paths	aggregate over the
 native_delete_visibility_paths	native_delete_visibility_paths	index / bitmap scan sees the live set	15;16;17;18;19	never	-
 native_delete_visibility_paths	native_delete_visibility_paths	index-only scan sees the live set	15;16;17;18;19	never	-
 native_delete_visibility_paths	native_delete_visibility_paths	sequential scan sees the live set (row-emitting path)	15;16;17;18;19	never	-
+native_dict_underfill	native_dict_underfill	backend survives the under-filled DICT chunk	15;16;17;18;19	2026-10-16	columnar_encoding.c: the DICT fill refusal replaced by a backend crash
+native_dict_underfill	native_dict_underfill	premise: the inflation rewrote the DICT chunk's descriptor	15;16;17;18;19	never	-
+native_dict_underfill	native_dict_underfill	the text column is DICT-encoded (precondition)	15;16;17;18;19	never	-
+native_dict_underfill	native_dict_underfill	under-filled DICT chunk is rejected with a clean error	15;16;17;18;19	2026-10-16	columnar_encoding.c: a DICT chunk whose codes do not fill the raw length is no longer refused;columnar_encoding.c: the DICT fill refusal replaced by a backend crash
 native_dml	native_dml	PK still enforced after DML	15;16;17;18;19	never	-
 native_dml	native_dml	count after delete	15;16;17;18;19	2026-10-16	columnar_vector.c: count(*) from metadata no longer subtracts a group's deleted rows
 native_dml	native_dml	count after merge	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index fetch no longer checks the delete vector;columnar_vector.c: count(*) from metadata no longer subtracts a group's deleted rows
