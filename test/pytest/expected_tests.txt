@@ -743,4 +743,6 @@ guard_tests 438
 # collection over the cluster files on this tree.
 # cluster_tests 643 -> 646 for #1341's test_native_backend_crash.py, the twin of
 # native_backend_crash.sh: three tests, by collection over the cluster files on this tree.
-cluster_tests 646
+# cluster_tests 646 -> 653 for #1341's test_corruption.py, the twin of corruption.sh:
+# seven tests, by collection over the cluster files on this tree.
+cluster_tests 653
