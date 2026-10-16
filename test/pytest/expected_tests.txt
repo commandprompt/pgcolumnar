@@ -761,4 +761,6 @@ guard_tests 438
 # native_decode_gating.sh: two tests, by collection over the cluster files on this tree.
 # cluster_tests 676 -> 677 for #1341's test_native_decode_gate_width.py, the twin of
 # native_decode_gate_width.sh: one test, by collection over the cluster files on this tree.
-cluster_tests 677
+# cluster_tests 677 -> 680 for #1341's test_pg_dump_roundtrip.py, the twin of pg_dump_roundtrip.sh:
+# three tests, by collection over the cluster files on this tree.
+cluster_tests 680
