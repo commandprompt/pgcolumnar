@@ -450,10 +450,14 @@ gbest() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postg
 # The window is 300000 * 2160us = 648s = 10.8 minutes, so 11 buckets plus the two
 # partials the bound allows.
 W="WHERE ts >= '2026-01-01' AND ts < '2026-01-01 00:10:48'"
-check "the bound is accurate for a truncating time key, not just smaller" \
-	"$(gbest "SELECT date_trunc('minute', ts) b, avg(v) FROM gb $W GROUP BY b")" "12"
+gb_bound="$(gbest "SELECT date_trunc('minute', ts) b, avg(v) FROM gb $W GROUP BY b")"
+check "the bound is accurate for a truncating time key, not just smaller" "$gb_bound" "12"
+# Against the estimate measured, not the literal the arm above expects (#1339): a
+# bound that fell below the true count failed only the arm above, and this one,
+# comparing with 12, still said yes.
+gb_true="$(q "SELECT count(*) FROM (SELECT date_trunc('minute', ts) FROM gb $W GROUP BY 1) z")"
 check "and it is an UPPER bound: the true group count is at or below it" \
-	"$([ "$(q "SELECT count(*) FROM (SELECT date_trunc('minute', ts) FROM gb $W GROUP BY 1) z")" -le 12 ] && echo yes || echo no)" "yes"
+	"$([ -n "$gb_bound" ] && [ "$gb_true" -le "$gb_bound" ] && echo yes || echo "no ($gb_true groups over a bound of ${gb_bound:-none})")" "yes"
 
 # The informed case. A plain Var has statistics, so examine_variable reports informed and
 # the substitution must not run at all. Bit-identical, not merely still fast.
@@ -647,7 +651,9 @@ psql_run "CREATE TABLE gate_nb (ts timestamptz, v int) USING pgcolumnar;
 	INSERT INTO gate_nb SELECT '2026-01-01 00:01:30+00', g FROM generate_series(1, 50) g;
 	INSERT INTO gate_nb SELECT '2026-01-01 00:02:00+00', g FROM generate_series(1, 50) g;
 	INSERT INTO gate_nb SELECT NULL, g FROM generate_series(1, 50) g;"
+# Declined, not only answered (#1339): the answer alone held for a node that took the
+# query and did not stop at its cap.
 check "a NULL key counts as a group in the bucket bound: four groups under a cap of 3 are declined and all answered" \
-	"$(groups_or_error 3 "SELECT date_trunc('minute', ts) b, count(*) FROM gate_nb GROUP BY b")" "4"
+	"$(under_cap 3 "SELECT date_trunc('minute', ts) b, count(*) FROM gate_nb GROUP BY b")|$(groups_or_error 3 "SELECT date_trunc('minute', ts) b, count(*) FROM gate_nb GROUP BY b")" "0|4"
 
 pgc_summary

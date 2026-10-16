@@ -2476,7 +2476,7 @@ native_fetch_coalesce	native_fetch_coalesce	premise: fetching one projected colu
 native_fetch_coalesce	native_fetch_coalesce	premise: the coalescing helper holds both the bound and the validity copy	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	the validity copy is bounded by the chunk length before it runs	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	the wide fetch returns the projected values	15;16;17;18;19	2026-10-14	every column of a coalesced fetch is copied from the start of the span (off = 0)
-native_groupagg	native_groupagg	a NULL key counts as a group in the bucket bound: four groups under a cap of 3 are declined and all answered	15;16;17;18;19	never	-
+native_groupagg	native_groupagg	a NULL key counts as a group in the bucket bound: four groups under a cap of 3 are declined and all answered	15;16;17;18;19	2026-10-16	the bucket bound left out the NULL group and the runtime cap was off, so the node took the query and answered it (mutation, #1339)
 native_groupagg	native_groupagg	a cached plan run under a lower cap stops at the runtime cap, with its hint	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	a date_bin key is bounded as a truncating key is	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	a five-minute bucket query over more rows than the cap still takes the grouped path	15;16;17;18;19	never	-
@@ -2487,7 +2487,7 @@ native_groupagg	native_groupagg	a plain key over more rows than the cap is decli
 native_groupagg	native_groupagg	a skewed key whose estimate is far too low is declined under a cap of 30,000, and answers every group	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	an informed estimate (plain column) is not replaced	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	and a date_bin key with no time bound is bounded from the zone maps	15;16;17;18;19	never	-
-native_groupagg	native_groupagg	and it is an UPPER bound: the true group count is at or below it	15;16;17;18;19	never	-
+native_groupagg	native_groupagg	and it is an UPPER bound: the true group count is at or below it	15;16;17;18;19	2026-10-16	the bucket bound dropped its two partial buckets, 10 for 11 true groups (mutation, #1339)
 native_groupagg	native_groupagg	and the declined query answers what heap answers	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	answer: non-deterministic collation grouping is case-insensitive (10 groups)	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	avg(float8) overflow errors like core	15;16;17;18;19	never	-

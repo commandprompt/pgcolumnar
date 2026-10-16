@@ -3217,4 +3217,16 @@ suites_not_covered 203
 #     never         2895 + 1 = 2896
 #     dated          1111 + 0 = 1111
 #     2896 + 1111 == 4007
-checks_never_observed_red 2896
+#
+# #1339, native_groupagg's upper-bound and NULL-key arms (jdatcmd): 2896 -> 2894. The
+# upper-bound arm compared the true count with the literal 12, and now with the bound
+# measured; it is dated by the bound without its two partial buckets (10 for 11). The
+# NULL-key arm read only the answer, and now also that the node declined; it is dated
+# by the bound without the NULL group and the runtime cap off. Five-major runs, 94/94
+# on each of 15-19. No row is added or removed.
+#
+#     ledger rows   4007 + 0 = 4007
+#     never         2896 - 2 = 2894
+#     dated         1111 + 2 = 1113
+#     2894 + 1113 == 4007
+checks_never_observed_red 2894
