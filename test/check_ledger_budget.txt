@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 196
+suites_not_covered 195
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3401,4 +3401,19 @@ suites_not_covered 196
 #     never         2991 + 11 = 3002
 #     dated         1236 + 25 = 1261
 #     3002 + 1261 == 4263
-checks_never_observed_red 3002
+#
+# #1341, native_parquet_flba seeded, with its twin (OffgridwithJD): 3002 -> 3006,
+# and suites_not_covered 196 -> 195. The suite had no rows. It enters with all 15
+# checks from five-major runs (15/15 on each of 15-19). 11 are dated by six
+# mutations of the FLBA and DECIMAL read path: a uuid's bytes reversed, a narrow
+# negative DECIMAL read unsigned, the bind guard dropped, an integer DECIMAL
+# widened byte-reversed, parquet_schema advising an integer, and bigint scaled
+# like numeric. Four arrive never: the round-trip numeric arm (our export writes
+# 16-byte DECIMALs, whose sign no narrow-width mutation reaches), the INT32 null,
+# the INT64 schema advice, and the backend liveness after the crafted scale.
+#
+#     ledger rows   4263 + 15 = 4278
+#     never         3002 +  4 = 3006
+#     dated         1261 + 11 = 1272
+#     3006 + 1272 == 4278
+checks_never_observed_red 3006

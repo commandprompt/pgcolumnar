@@ -77,9 +77,12 @@ pq.write_table(pa.table({"d": pa.array(ds, pa.decimal128(10, 2))}), f"{W}/pa_dec
 PY
 	# uuid stored as raw bytes; declare bytea to compare, since pyarrow gives no
 	# uuid logical type, then also read as uuid (our exporter's convention).
+	# Both values, in order. The arm read only the smallest, the all-zero uuid,
+	# which every byte order leaves unchanged: with the reader reversing a
+	# uuid's bytes it stayed green (#1341).
 	check "pyarrow uuid reads as uuid" \
-		"$(q "SELECT u::text FROM pgcolumnar.read_parquet('$W/pa_uuid.parquet') AS t(u uuid) ORDER BY u LIMIT 1;")" \
-		"00000000-0000-0000-0000-000000000000"
+		"$(q "SELECT string_agg(u::text, ',' ORDER BY u) FROM pgcolumnar.read_parquet('$W/pa_uuid.parquet') AS t(u uuid);")" \
+		"00000000-0000-0000-0000-000000000000,11111111-2222-3333-4444-555555555555"
 	check "pyarrow decimal128 values are exact" \
 		"$(pgc_set_hash "SELECT d FROM pgcolumnar.read_parquet('$W/pa_dec.parquet') AS t(d numeric(10,2))")" \
 		"$(pgc_set_hash "SELECT * FROM (VALUES (123.45::numeric(10,2)),(-9999.99),(0.01),(0.00)) v(d)")"
@@ -172,13 +175,18 @@ PY
 
 	psql_run "CREATE FUNCTION pgc_try_flba(q text) RETURNS text LANGUAGE plpgsql AS \$\$
 	          BEGIN EXECUTE q; RETURN 'NO ERROR';
-	          EXCEPTION WHEN OTHERS THEN RETURN 'REJECTED'; END \$\$;"
+	          EXCEPTION WHEN OTHERS THEN RETURN 'REJECTED ' || SQLSTATE; END \$\$;"
 	# Fixed: the bind guard rejects scale > precision/38 -> REJECTED. Unguarded: the
 	# decoder accepts it and returns a wrong-but-valid numeric -> NO ERROR. So this
 	# check distinguishes fixed from unfixed without depending on a crash.
+	#
+	# BY THE BIND, WHICH IS WHAT "not decoded" MEANS. Any error used to count.
+	# With the bind guard removed, the decoder's own scale check still refused
+	# the file, as XX001 "could not decode Parquet column 0" -- after decoding
+	# began -- and the arm stayed green (#1341). The bind refuses with 42804.
 	check "crafted out-of-range scale is rejected, not decoded" \
 		"$(q "SELECT pgc_try_flba(\$q\$SELECT * FROM pgcolumnar.read_parquet('$W/dec_badscale.parquet') AS t(d numeric)\$q\$);")" \
-		"REJECTED"
+		"REJECTED 42804"
 	check "backend survived the crafted scale" "$(q 'SELECT 1;')" "1"
 
 	# ---- DECIMAL held in an INT32 or INT64 ----------------------------------

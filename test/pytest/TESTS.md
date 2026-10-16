@@ -215,6 +215,7 @@ behaviour, the source of that number is named.
 - [167. test_native_fetch_position.py: a fetch by row number costs the same anywhere in its group](#167-test_native_fetch_positionpy-a-fetch-by-row-number-costs-the-same-anywhere-in-its-group)
 - [168. test_native_fetch_cache.py: the fetch-by-row-number cache](#168-test_native_fetch_cachepy-the-fetch-by-row-number-cache)
 - [169. test_native_parquet_pushdown.py: the Parquet FDW skips row groups its statistics rule out](#169-test_native_parquet_pushdownpy-the-parquet-fdw-skips-row-groups-its-statistics-rule-out)
+- [170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays](#170-test_native_parquet_flbapy-uuid-and-decimal-read-from-fixed-length-byte-arrays)
 
 ## 1. How to read a test in here
 
@@ -7733,3 +7734,15 @@ The pytest twin of `test/native_parquet_pushdown.sh` (ported for #1341), every c
 | `test_a_nan_row_is_never_skipped` | seven float predicates over a file with one NaN agree with the heap |
 | `test_inverted_statistics_never_drive_a_skip` | a UINT_32 column whose statistics decode inverted agrees with the heap under six predicates and skips nothing |
 | `test_an_int64_backed_decimal_is_skippable` | a range inside one of four DECIMAL groups skips the other three without dropping rows |
+
+## 170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays
+
+The pytest twin of `test/native_parquet_flba.sh` (ported for #1341), every check by the shell's name. The reader handles uuid as a 16-byte FLBA, and DECIMAL as big-endian two's complement at the column's scale, in FLBA, BYTE_ARRAY or a little-endian INT32/INT64. Our own export is read back through `read_parquet`, `import_parquet` and the FDW and compared with the source table. pyarrow-written files serve as the foreign producer. A footer whose DECIMAL scale has been patched out of range must be refused at bind (42804), before any decoding.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_our_export_reads_back_through_every_surface` | uuid, numeric and whole rows round-trip through `read_parquet`, `import_parquet` and the FDW |
+| `test_pyarrow_written_flba_reads_exactly` | both pyarrow uuids read in order, decimal128 values are exact, and a crafted scale is refused at bind with the backend alive |
+| `test_a_decimal_held_in_an_integer_reads_as_numeric` | INT32 and INT64 DECIMALs read at their scale with their null, `parquet_schema` advises numeric, and bigint still binds to the unscaled integer |

@@ -2813,6 +2813,21 @@ native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses vectorized agg when GUC on	15;16;17;18;19	2026-09-12	drop JOINREL fold
+native_parquet_flba	native_parquet_flba	FDW scan == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
+native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL keeps its null	15;16;17;18;19	never	-
+native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL reads	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an INT32 or INT64 DECIMAL is widened byte-reversed;columnar_parquet_reader.c: pq_decimal_to_numeric reads a narrower-than-16-byte negative DECIMAL as its unsigned magnitude
+native_parquet_flba	native_parquet_flba	INT64-backed DECIMAL reads	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an INT32 or INT64 DECIMAL is widened byte-reversed;columnar_parquet_reader.c: pq_decimal_to_numeric reads a narrower-than-16-byte negative DECIMAL as its unsigned magnitude
+native_parquet_flba	native_parquet_flba	an INT64 DECIMAL still binds to bigint as the unscaled integer	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a bigint target over a DECIMAL column is scaled like numeric
+native_parquet_flba	native_parquet_flba	backend survived the crafted scale	15;16;17;18;19	never	-
+native_parquet_flba	native_parquet_flba	crafted out-of-range scale is rejected, not decoded	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: the bind guard pq_decimal_bounds_ok is dropped from pq_want_phys_for
+native_parquet_flba	native_parquet_flba	import_parquet == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
+native_parquet_flba	native_parquet_flba	numeric round-trips through export/read	15;16;17;18;19	never	-
+native_parquet_flba	native_parquet_flba	parquet_schema advises numeric for an INT32 DECIMAL	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema advises an integer for an INT32 DECIMAL
+native_parquet_flba	native_parquet_flba	parquet_schema advises numeric for an INT64 DECIMAL	15;16;17;18;19	never	-
+native_parquet_flba	native_parquet_flba	pyarrow decimal128 values are exact	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: pq_decimal_to_numeric reads a narrower-than-16-byte negative DECIMAL as its unsigned magnitude
+native_parquet_flba	native_parquet_flba	pyarrow uuid reads as uuid	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
+native_parquet_flba	native_parquet_flba	uuid round-trips through export/read	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
+native_parquet_flba	native_parquet_flba	whole-row round-trip == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: predicate skips 3 of 4 groups	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: INT64 statistics are not decoded, so an INT64-backed DECIMAL never skips;columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: skipping did not drop rows	15;16;17;18;19	never	-
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: unfiltered scan skips nothing	15;16;17;18;19	never	-
