@@ -4196,6 +4196,7 @@ the tool grades THIS tree.
 | `test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one` | `check_ratio` must not eat `check_ratio_needs_quiet_machine` |
 | `test_the_suite_local_helpers_are_known_and_excluded` | the four suite-local helpers, and that none of their suites is graded |
 | `test_every_pair_in_the_tree_is_declared` | the declaration is asserted BOTH ways, so a new pair cannot be silently ungraded |
+| `test_every_registered_suite_is_ported_or_declared_unported` | every registered suite with no twin is listed in `unported_suites.txt`, a ported one leaves it, and no listed stem is phantom (#1341); the parity goal (#432) is that file empty |
 | `test_the_ported_suites_in_this_tree_are_graded_one_for_one` | the standing arm: every pair in the tree, graded |
 
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
