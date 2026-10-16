@@ -783,4 +783,6 @@ guard_tests 438
 # one test, by collection over the cluster files on this tree.
 # cluster_tests 694 -> 695 for #1341's test_native_encdesc_golden.py, the twin of native_encdesc_golden.sh:
 # one test, by collection over the cluster files on this tree.
-cluster_tests 695
+# cluster_tests 695 -> 697 for #1341's test_native_parquet_schema.py, the twin of native_parquet_schema.sh:
+# two tests, by collection over the cluster files on this tree.
+cluster_tests 697

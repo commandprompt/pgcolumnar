@@ -81,8 +81,14 @@ notpq="$PGC_WORKDIR/not.parquet"
 psql_run "SELECT 1;" >/dev/null   # noop to keep ordering readable
 printf 'this is not a parquet file at all' > "$notpq"
 chmod 644 "$notpq"
-err="$(q "SELECT count(*) FROM pgcolumnar.parquet_schema('$notpq');" 2>&1)"
-check "bad magic rejected (empty At output)" "$err" ""
+# By the magic check, not by whatever fails next (#1341). This arm was "the query
+# printed nothing", which any error satisfies: measured, with the magic check gone
+# the 33-byte file is still refused, as a corrupt footer, and the arm passed. The
+# message is the magic check's own.
+err="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+	-c "SELECT count(*) FROM pgcolumnar.parquet_schema('$notpq');" 2>&1 | grep -m1 -oE 'ERROR:.*')"
+check "bad magic is rejected by the magic check" \
+	"$(case "$err" in *"is not a Parquet file (bad magic)"*) echo yes ;; *) echo "no (${err:-no error})" ;; esac)" "yes"
 
 # WHY NOT `pgc_skip`, which 25 pyarrow suites use (#1215). It is terminal, and
 # that is right for a suite with nothing else to do. Measured on pg18a, this

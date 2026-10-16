@@ -206,6 +206,7 @@ behaviour, the source of that number is named.
 - [158. test_native_writer.py: the native writer by its catalog rows](#158-test_native_writerpy-the-native-writer-by-its-catalog-rows)
 - [159. test_native_batch_fold_projection.py: the batch fold's column lists on a wide table](#159-test_native_batch_fold_projectionpy-the-batch-folds-column-lists-on-a-wide-table)
 - [160. test_native_encdesc_golden.py: the encoding descriptor's wire layout](#160-test_native_encdesc_goldenpy-the-encoding-descriptors-wire-layout)
+- [161. test_native_parquet_schema.py: parquet_schema round trip](#161-test_native_parquet_schemapy-parquet_schema-round-trip)
 
 ## 1. How to read a test in here
 
@@ -7604,3 +7605,14 @@ The pytest twin of `test/native_encdesc_golden.sh` (ported for #1341), every che
 | test | what it holds |
 | --- | --- |
 | `test_the_descriptor_layout` | the descriptor's bytes sit at their fixed offsets with the expected values, and every row decodes to what the generator wrote |
+
+## 161. test_native_parquet_schema.py: parquet_schema round trip
+
+The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.parquet_schema(path)` reports a Parquet file's leaf columns with the PostgreSQL type each maps to. A columnar table covering every exported type is exported, and each source type must come back, every column nullable. A file that isn't Parquet must be refused by the magic check itself: any error was the old arm, and with the magic check gone the same file is still refused, as a corrupt footer. pyarrow supplies what the exporter can't: a REQUIRED column, and field ids out of order, with absence reported as NULL.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_exported_schema_round_trips` | every exported type and its nullability come back from `parquet_schema`, and bad magic is refused by the magic check |
+| `test_required_columns_and_field_ids` | a pyarrow REQUIRED column reports nullable=f, and field ids report as written or as NULL when absent |
