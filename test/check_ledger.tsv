@@ -2452,6 +2452,23 @@ native_dml	native_dml	rows after merge match heap	15;16;17;18;19	2026-10-16	colu
 native_dml	native_dml	rows after update match heap	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index fetch no longer checks the delete vector
 native_dml	native_dml	sum(k) after delete	15;16;17;18;19	never	-
 native_dml	native_dml	sum(k) after update	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index fetch no longer checks the delete vector
+native_encdesc_golden	native_encdesc_golden	a full-column read is correct	15;16;17;18;19	never	-
+native_encdesc_golden	native_encdesc_golden	bigint column b rawLen parses as 2400 (300*8, at offset 11)	15;16;17;18;19	2026-10-16	columnar_encdesc.h: PgColumnarEncdescPutEntry writes encLen before rawLen
+native_encdesc_golden	native_encdesc_golden	column 0 descriptor flags byte says the bitmap was omitted	15;16;17;18;19	2026-10-16	columnar_encdesc.h: PgColumnarEncdescPutHeaderFlags writes flags before version;columnar_write_state.c: the writer never sets NO_VALIDITY in the descriptor flags
+native_encdesc_golden	native_encdesc_golden	column 0 descriptor version byte is 3	15;16;17;18;19	2026-10-16	columnar_encdesc.h: PgColumnarEncdescPutHeaderFlags writes flags before version
+native_encdesc_golden	native_encdesc_golden	column 0 entry valueCount parses as 300 (at offset 7)	15;16;17;18;19	never	-
+native_encdesc_golden	native_encdesc_golden	column 1 descriptor flags byte says the bitmap was omitted	15;16;17;18;19	2026-10-16	columnar_encdesc.h: PgColumnarEncdescPutHeaderFlags writes flags before version;columnar_write_state.c: the writer never sets NO_VALIDITY in the descriptor flags
+native_encdesc_golden	native_encdesc_golden	column 1 descriptor version byte is 3	15;16;17;18;19	2026-10-16	columnar_encdesc.h: PgColumnarEncdescPutHeaderFlags writes flags before version
+native_encdesc_golden	native_encdesc_golden	column 1 entry valueCount parses as 300 (at offset 7)	15;16;17;18;19	never	-
+native_encdesc_golden	native_encdesc_golden	column 2 descriptor flags byte says the bitmap was omitted	15;16;17;18;19	2026-10-16	columnar_encdesc.h: PgColumnarEncdescPutHeaderFlags writes flags before version;columnar_write_state.c: the writer never sets NO_VALIDITY in the descriptor flags
+native_encdesc_golden	native_encdesc_golden	column 2 descriptor version byte is 3	15;16;17;18;19	2026-10-16	columnar_encdesc.h: PgColumnarEncdescPutHeaderFlags writes flags before version
+native_encdesc_golden	native_encdesc_golden	column 2 entry valueCount parses as 300 (at offset 7)	15;16;17;18;19	never	-
+native_encdesc_golden	native_encdesc_golden	descriptor length is header + 1 entry + empty trailer (23)	15;16;17;18;19	never	-
+native_encdesc_golden	native_encdesc_golden	every row reads back as the generator wrote it (a decoding read)	15;16;17;18;19	2026-10-16	columnar_encdesc.h: PgColumnarEncdescPutEntry writes encLen before rawLen;columnar_encdesc.h: PgColumnarEncdescPutHeaderFlags writes flags before version;columnar_encdesc.h: PgColumnarEncdescReadEntry reads rawLen and encLen from each other's offsets;columnar_write_state.c: the writer never sets NO_VALIDITY in the descriptor flags
+native_encdesc_golden	native_encdesc_golden	int column a rawLen parses as 1200 (300*4, at offset 11)	15;16;17;18;19	2026-10-16	columnar_encdesc.h: PgColumnarEncdescPutEntry writes encLen before rawLen
+native_encdesc_golden	native_encdesc_golden	the table reads back all rows	15;16;17;18;19	never	-
+native_encdesc_golden	native_encdesc_golden	trailing sharedTableLen is 0 (u32 at offset 6+13=19)	15;16;17;18;19	never	-
+native_encdesc_golden	native_encdesc_golden	vectorCount parses as 1 (at offset 2)	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	a wide index fetch does not pin once per column	15;16;17;18;19	2026-10-13	the coalesced fetch merging no adjacent ranges, so each column is read on its own
 native_fetch_coalesce	native_fetch_coalesce	premise: a point lookup uses the index	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	premise: fetching every projected column touched a measurable number of buffers	15;16;17;18;19	never	-
