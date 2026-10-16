@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 212
+suites_not_covered 211
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3047,4 +3047,23 @@ suites_not_covered 212
 #     never         2754 + 24 = 2778
 #     dated         1001 + 16 = 1017
 #     2778 + 1017 == 3795
-checks_never_observed_red 2778
+#
+# #1341, replication seeded, with its twin (OffgridwithJD): 2778 -> 2811, and
+# suites_not_covered 212 -> 211. The suite had no rows. It enters with all 44 checks
+# from five-major runs (44/44 on each of 15-19). 11 are dated by four mutations: the
+# SMGR truncate record not emitted (the standby's fork stays long), data and gap pages
+# written without WAL (seven replay comparisons and the fork size), vacuum returning
+# before it rewrites, and compact retiring nothing (its new arm and the truncate's
+# precondition). Thirty-three arrive never: the backup, restore and standby controls
+# (the data directories, connections, recovery state, slot and upstream), the
+# primary's pins and the r2 premise, the projection arms a bytewise copy carries
+# without any columnar WAL, the base backup's rows, the row-count comparisons that
+# count(*) answers from the catalog, the paused-replay control, the standby's
+# recovery state after the truncate, and the module-less standby's arms, which no
+# product mutation can redden while every record is a core type.
+#
+#     ledger rows   3795 + 44 = 3839
+#     never         2778 + 33 = 2811
+#     dated         1017 + 11 = 1028
+#     2811 + 1028 == 3839
+checks_never_observed_red 2811

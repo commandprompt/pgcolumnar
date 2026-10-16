@@ -3065,6 +3065,50 @@ recovery_minimal_wal	recovery_minimal_wal	and after the truncate the columnar ta
 recovery_minimal_wal	recovery_minimal_wal	and the columnar table holds what its heap mirror holds, at wal_skip_threshold 0	15;16;17;18;19	2026-10-15	the relfilenode created with smgrcreate instead of RelationCreateStorage, so no commit-time sync is registered, and this assert-enabled build then fails relcache.c's RelFileLocatorSkippingWAL assertion during the load (src/columnar_tableam.c)
 recovery_minimal_wal	recovery_minimal_wal	and the columnar table holds what its heap mirror holds, at wal_skip_threshold 64MB	15;16;17;18;19	2026-10-15	the relfilenode created with smgrcreate instead of RelationCreateStorage, so no commit-time sync is registered, and this assert-enabled build then fails relcache.c's RelFileLocatorSkippingWAL assertion during the load (src/columnar_tableam.c)
 recovery_minimal_wal	recovery_minimal_wal	premise: the cluster runs at wal_level=minimal	15;16;17;18;19	never	-
+replication	replication	a physical backup alone preserves the projections, unlike pg_dump (#266)	15;16;17;18;19	never	-
+replication	replication	a physical slot exists to hold WAL for the standby	15;16;17;18;19	never	-
+replication	replication	a standby without pgcolumnar loaded still starts	15;16;17;18;19	never	-
+replication	replication	after resuming, the standby sees them	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
+replication	replication	and a non-empty projection to compare against	15;16;17;18;19	never	-
+replication	replication	and did not PANIC (still in recovery, still answering)	15;16;17;18;19	never	-
+replication	replication	and has no upstream configured	15;16;17;18;19	never	-
+replication	replication	and is a different cluster from the primary and the standby	15;16;17;18;19	never	-
+replication	replication	and it is not running the module	15;16;17;18;19	never	-
+replication	replication	and it reads on the primary	15;16;17;18;19	never	-
+replication	replication	and its storage, readable with the same content	15;16;17;18;19	never	-
+replication	replication	and that one reads on the standby too	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
+replication	replication	and the later projection is in this backup as well, so it is not stale	15;16;17;18;19	never	-
+replication	replication	and the projection's storage came across intact and readable	15;16;17;18;19	never	-
+replication	replication	and the row counts agree	15;16;17;18;19	never	-
+replication	replication	and the standby is actually connected through it	15;16;17;18;19	never	-
+replication	replication	compact replays identically	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
+replication	replication	compact retired the fully deleted row group on the primary	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact retires no fully deleted row group (retired = 0)
+replication	replication	content still matches after the truncate record	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
+replication	replication	insert, delete and update replay identically	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
+replication	replication	it replayed columnar WAL past the primary's LSN without the module	15;16;17;18;19	never	-
+replication	replication	pg_basebackup carried the projection catalog row, unlike pg_dump (#266)	15;16;17;18;19	never	-
+replication	replication	pg_basebackup produced a data directory	15;16;17;18;19	never	-
+replication	replication	premise: the primary wrote r2's second batch while the standby ran without the module	15;16;17;18;19	never	-
+replication	replication	streaming replay carried a projection created after the backup	15;16;17;18;19	never	-
+replication	replication	the base backup carried the initial rows	15;16;17;18;19	never	-
+replication	replication	the primary actually truncated (record was emitted)	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact retires no fully deleted row group (retired = 0)
+replication	replication	the primary has a projection to preserve, before the backup runs	15;16;17;18;19	never	-
+replication	replication	the primary now has a second, post-backup projection	15;16;17;18;19	never	-
+replication	replication	the primary still has both projections when the backup is taken	15;16;17;18;19	never	-
+replication	replication	the restored cluster accepts connections	15;16;17;18;19	never	-
+replication	replication	the restored cluster is not in recovery (it is not following anyone)	15;16;17;18;19	never	-
+replication	replication	the second base backup produced a data directory	15;16;17;18;19	never	-
+replication	replication	the standby accepts connections	15;16;17;18;19	never	-
+replication	replication	the standby is a different cluster from the primary	15;16;17;18;19	never	-
+replication	replication	the standby is in recovery	15;16;17;18;19	never	-
+replication	replication	the standby is still in recovery after the truncate record	15;16;17;18;19	never	-
+replication	replication	the standby's main fork shrank to match the primary	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarTruncateMainFork emits no XLOG_SMGR_TRUNCATE record (if (false && needs_wal));columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
+replication	replication	the truncate did not cost rows on the standby	15;16;17;18;19	never	-
+replication	replication	vacuum replays identically	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
+replication	replication	vacuum rewrote r into a new relfilenode on the primary	15;16;17;18;19	2026-10-16	columnar_vacuum.c: pgcolumnar_vacuum returns before rewriting
+replication	replication	with replay paused the standby does NOT see the new rows	15;16;17;18;19	never	-
+replication	replication	with the module back, the replayed table reads correctly	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
+replication	replication	with the same content the primary reads	15;16;17;18;19	never	-
 rewrite_storage_oid	rewrite_storage_oid	a matview created WITH DATA leaves its storage row pointing at itself	15;16;17;18;19	2026-10-12	the repair gate skips every relation, as if no inheritor were locked by the statement;the rewrite repair gate no longer covers CreateTableAsStmt, so a matview created WITH DATA keeps the transient's OID
 rewrite_storage_oid	rewrite_storage_oid	a type rewrite leaves the storage row pointing at the live table	15;16;17;18;19	2026-10-12	the repair gate skips every relation, as if no inheritor were locked by the statement;the rewrite hook does not retarget storage.relation_oid
 rewrite_storage_oid	rewrite_storage_oid	and REFRESH still leaves it pointing at itself	15;16;17;18;19	2026-10-12	the repair gate skips every relation, as if no inheritor were locked by the statement;the rewrite repair gate no longer covers RefreshMatViewStmt
