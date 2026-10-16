@@ -58,6 +58,7 @@ as() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" \
 # ---- premises, each run by the role it is about ----------------------------
 check "premise: the owner can open a session" "$(as t_stowner 'SELECT 1;')" "1"
 check "premise: the no-privilege role can open a session" "$(as t_stnone 'SELECT 1;')" "1"
+check "premise: the granted role can open a session" "$(as t_stsel 'SELECT 1;')" "1"
 check "premise: t_stowner really owns the table" \
 	"$(q "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname='st_t';")" "t_stowner"
 check "premise: none of these roles is a superuser" \
@@ -66,8 +67,25 @@ check "premise: the owner can read its own table by ordinary SQL" \
 	"$(as t_stowner 'SELECT count(*) FROM st_t;')" "$ROWS"
 check "premise: the no-privilege role cannot read it by ordinary SQL" \
 	"$(as t_stnone 'SELECT count(*) FROM st_t;' | grep -c 'permission denied')" "1"
+# Every role against every catalog stats() reads (#1339). One role against row_group
+# stayed green with zone_map -- per-column minimum, maximum and sum -- granted to
+# PUBLIC, which is the disclosure this suite exists to rule out.
+cat_open=""; cat_refused=0
+for r in t_stowner t_stnone t_stsel; do
+	for c in row_group delete_vector zone_map; do
+		# Captured first. psql exits 1 on the refused query, pipefail carries that out
+		# of `as`, and so `as ... | grep -q` failed on a line grep had matched:
+		# measured, PIPESTATUS (1 0) for all nine.
+		cat_got="$(as "$r" "SELECT count(*) FROM pgcolumnar.$c;")"
+		if grep -q "permission denied for table $c\$" <<<"$cat_got"; then
+			cat_refused=$((cat_refused + 1))
+		else
+			cat_open+=" $r/$c"
+		fi
+	done
+done
 check "premise: the catalog tables are NOT readable by these roles, so a GRANT is not the fix" \
-	"$(as t_stsel 'SELECT count(*) FROM pgcolumnar.row_group;' | grep -c 'permission denied')" "1"
+	"refused $cat_refused of 9${cat_open:+ (not refused:$cat_open)}" "refused 9 of 9"
 
 # ---- the defect ------------------------------------------------------------
 check_num "the OWNER of the table can read its stats" "$(as t_stowner "SELECT count(*) FROM pgcolumnar.stats('st_t');")" "1"

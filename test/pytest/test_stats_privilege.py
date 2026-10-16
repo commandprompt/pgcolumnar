@@ -115,10 +115,20 @@ def test_the_premises_each_role_is_what_the_suite_assumes(pgc_cluster, pgc_conn,
     expect.sqlstate(err, "42501",
                     "premise: the no-privilege role cannot read it by ordinary SQL")
 
-    _, err = _as(pgc_cluster, SEL, "SELECT count(*) FROM pgcolumnar.row_group")
-    expect.sqlstate(err, "42501",
-                    "premise: the catalog tables are NOT readable by these roles, "
-                    "so a GRANT is not the fix")
+    # EVERY ROLE AGAINST EVERY CATALOG stats() READS (#1339). One role against
+    # row_group stayed green with zone_map -- per-column minimum, maximum and sum --
+    # granted to PUBLIC, which is the disclosure this suite exists to rule out.
+    readable = []
+    for r in (OWNER, NONE, SEL):
+        for c in ("row_group", "delete_vector", "zone_map"):
+            _, err = _as(pgc_cluster, r, f"SELECT count(*) FROM pgcolumnar.{c}")
+            if getattr(err, "sqlstate", None) != "42501":
+                readable.append(f"{r}/{c}")
+    expect.text("refused 9 of 9" if not readable
+                else f"refused {9 - len(readable)} of 9 (not refused: {' '.join(readable)})",
+                "refused 9 of 9",
+                "premise: the catalog tables are NOT readable by these roles, "
+                "so a GRANT is not the fix")
 
 
 def test_who_may_read_the_stats(pgc_cluster, pgc_conn, expect):
