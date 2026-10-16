@@ -179,6 +179,87 @@ check "a snapshot with a delete manifest is refused (feature_not_supported 0A000
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$DT/metadata/v1.metadata.json')")" "0A000"
 check "backend still up after the delete refusal" "$(q 'SELECT 1')" "1"
 
+# ---- a delete ENTRY inside a data manifest is refused too (#1341 item 49) --
+# The arm above stops at the manifest LIST. A data manifest (content 0 in the
+# list) can still hold an entry the lister must not return: a position or
+# equality delete file (entry content 1 or 2), or a removed file (status 2,
+# DELETED). Returning a removed file would read rows a commit took out. Each
+# variant below is the same crafted table with one (status, content) pair; the
+# (1, 0) control is listed, so a refusal is the entry's doing, not a fault in
+# the crafted Avro.
+entry_tbl() {  # $1 name, $2 status, $3 content; echoes the metadata path
+	local d="$PGC_WORKDIR/entry_$1/db/t"
+	mkdir -p "$d/metadata"
+	python3 - "$d" "$2" "$3" <<'PY'
+import json, sys, os
+D, STATUS, CONTENT = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+LOC = "file:///tmp/pgc_ice_wh/db/t"
+def zz(n):
+    u = (n << 1) ^ (n >> 63) if n < 0 else (n << 1)
+    out = bytearray()
+    while True:
+        b = u & 0x7f; u >>= 7
+        out.append(b | 0x80 if u else b)
+        if not u: break
+    return bytes(out)
+def s(bs): return zz(len(bs)) + bs
+def ocf(schema, recs):
+    sync = b"\x00" * 16
+    meta = zz(2) + s(b"avro.schema") + s(json.dumps(schema).encode()) + s(b"avro.codec") + s(b"null") + zz(0)
+    out = b"Obj\x01" + meta + sync
+    for r in recs: out += zz(1) + zz(len(r)) + r + sync
+    return out
+entry = {"type": "record", "name": "manifest_entry", "fields": [
+    {"name": "status", "type": "int"},
+    {"name": "sequence_number", "type": ["null", "long"]},
+    {"name": "data_file", "type": {"type": "record", "name": "df", "fields": [
+        {"name": "content", "type": "int"},
+        {"name": "file_path", "type": "string"},
+        {"name": "file_format", "type": "string"},
+        {"name": "record_count", "type": "long"},
+        {"name": "file_size_in_bytes", "type": "long"}]}}]}
+ent = zz(STATUS) + (zz(1) + zz(1)) + zz(CONTENT) + s(f"{LOC}/data/f.parquet".encode()) + \
+      s(b"PARQUET") + zz(5) + zz(1000)
+open(os.path.join(D, "metadata", "dm.avro"), "wb").write(ocf(entry, [ent]))
+mfile = {"type": "record", "name": "manifest_file", "fields": [
+    {"name": "manifest_path", "type": "string"},
+    {"name": "manifest_length", "type": "long"},
+    {"name": "partition_spec_id", "type": "int"},
+    {"name": "content", "type": "int"},
+    {"name": "sequence_number", "type": ["null", "long"]},
+    {"name": "min_sequence_number", "type": "long"},
+    {"name": "added_snapshot_id", "type": "long"}]}
+mf = s(f"{LOC}/metadata/dm.avro".encode()) + zz(1000) + zz(0) + zz(0) + \
+     (zz(1) + zz(1)) + zz(1) + zz(1)        # content 0: a DATA manifest
+open(os.path.join(D, "metadata", "ml.avro"), "wb").write(ocf(mfile, [mf]))
+md = {"format-version": 2, "location": LOC, "current-snapshot-id": 1,
+      "current-schema-id": 0,
+      "schemas": [{"schema-id": 0, "type": "struct", "fields": [
+          {"id": 1, "name": "id", "required": False, "type": "long"}]}],
+      "snapshots": [{"snapshot-id": 1, "sequence-number": 1, "timestamp-ms": 0,
+                     "manifest-list": f"{LOC}/metadata/ml.avro",
+                     "summary": {"operation": "append"}, "schema-id": 0}]}
+open(os.path.join(D, "metadata", "v1.metadata.json"), "w").write(json.dumps(md))
+PY
+	chmod -R a+rX "$PGC_WORKDIR/entry_$1"
+	echo "$d/metadata/v1.metadata.json"
+}
+EC="$(entry_tbl ctl 1 0)"
+check "control: a data manifest with one added data entry lists that one file" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$EC')")" "1"
+# status 0 is EXISTING: a live file in a manifest that a later commit rewrote or
+# merged. A lister that refused every entry but ADDED would pass every other arm
+# here and fail an ordinary table after its second append.
+check "an EXISTING (status 0) data entry is listed, as an ADDED one is" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$(entry_tbl kept 0 0)')")" "1"
+check "a position-delete entry in a data manifest is refused (0A000)" \
+	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl pos 1 1)')")" "0A000"
+check "an equality-delete entry in a data manifest is refused (0A000)" \
+	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl eq 1 2)')")" "0A000"
+check "a DELETED (status 2) data entry is refused, not listed (0A000)" \
+	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl gone 2 0)')")" "0A000"
+check "backend still up after the entry refusals" "$(q 'SELECT 1')" "1"
+
 # ---- no current snapshot: zero rows ----------------------------------------
 NOSNAP="$PGC_WORKDIR/no_current.metadata.json"
 python3 - "$MD" "$NOSNAP" <<'PY'

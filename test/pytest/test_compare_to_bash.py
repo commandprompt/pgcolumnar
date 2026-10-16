@@ -174,6 +174,13 @@ COMPLETE = ["advisory_lock_class",
 # about the PORT rather than a licence: the standing arm does not grade it, so the
 # reason is the only thing standing between a declared gap and a forgotten one.
 INCOMPLETE = {
+    # #1341 item 49 ported the arms it added: a delete or removed entry inside a
+    # data manifest is refused, with a control that is listed. The rest of the
+    # shell suite (the pyiceberg oracle, path rebasing and its escapes, the
+    # delete-manifest refusal, no snapshot, the privilege refusal) is not.
+    "iceberg_data_files": "the delete-entry refusals and their control are ported; "
+                          "the oracle, rebasing, path-escape, delete-manifest, "
+                          "no-snapshot and privilege arms are not",
     # #1341's megabyte values: every arm is ported except the opt-in chunk over 1 GB
     # (PGC_RUN_OVER_1GB=1), which needs several GB of memory and which this layer,
     # having no SKIP verdict for an arm a run chooses not to make, does not carry.
