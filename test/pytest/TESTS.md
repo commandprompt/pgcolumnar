@@ -223,6 +223,7 @@ behaviour, the source of that number is named.
 - [175. test_native_ios.py: an index-only scan skips the fetch on all-visible row groups](#175-test_native_iospy-an-index-only-scan-skips-the-fetch-on-all-visible-row-groups)
 - [176. test_native_truncate.py: end-truncation shrinks the file and loses no row](#176-test_native_truncatepy-end-truncation-shrinks-the-file-and-loses-no-row)
 - [177. test_native_gap.py: a write beyond EOF fills the gap and loses no row](#177-test_native_gappy-a-write-beyond-eof-fills-the-gap-and-loses-no-row)
+- [178. test_native_roundtrip.py: a native table reads back what the heap holds](#178-test_native_roundtrippy-a-native-table-reads-back-what-the-heap-holds)
 
 ## 1. How to read a test in here
 
@@ -7857,3 +7858,18 @@ Each check is its own test over a module fixture that runs every step in the she
 | `test_the_indexed_lookup_reads_n_id` | the forced lookup plans an Index Scan on `n_id` |
 | `test_indexed_lookup_after_gap` | and finds all 7000 rows |
 | `test_parity_after_delete_on_gapped_layout` | a delete keeps parity |
+
+## 178. test_native_roundtrip.py: a native table reads back what the heap holds
+
+The pytest twin of `test/native_roundtrip.sh` (ported for #1341), every check by the shell's name. A native-format table with nulls in a text and a float column is read back through the native reader and compared with a heap mirror holding the same rows. Its 5000 rows are split into five row groups, and a check asserts the count. The row count is answered from metadata, so only the hashed reads see a lost row group. The comparisons cover every column, a filtered scan, a projection, the null counts, an aggregate and a filtered count. Rows are hashed order-independently, so the heap is the oracle.
+
+### Every test
+
+Each check is its own test, parametrized by the shell's name, so one red cannot stop the others.
+
+| test | what it holds |
+| --- | --- |
+| `test_native_row_count` | 5000 rows, as metadata counts them |
+| `test_the_native_table_holds_five_row_groups` | five row groups, so the read crosses them |
+| `test_a_read_matches_the_heap[...]` | every column, a filtered scan and a projection match the heap, one test per shell name |
+| `test_a_null_count_or_aggregate_matches_the_heap[...]` | the null counts of the text and float columns, `sum(k)` and `count(*) WHERE b` match the heap, one test per shell name |

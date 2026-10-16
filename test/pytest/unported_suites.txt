@@ -107,7 +107,6 @@ native_read_parquet
 native_reclaim_reconcile
 native_rewrite
 native_rewrite_conc
-native_roundtrip
 native_sort_by
 native_toasted_write
 native_varlena_bound
