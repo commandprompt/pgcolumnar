@@ -3320,4 +3320,14 @@ suites_not_covered 199
 #     never         2980 + 10 = 2990
 #     dated         1191 +  8 = 1199
 #     2990 + 1199 == 4189
-checks_never_observed_red 2990
+# #1339, validity_elision's two guard arms ask which guard refused (jdatcmd): 2990 ->
+# 2988. "a chunk claiming no bitmap while it holds fewer values than rows is refused"
+# and "an implausible row count on an elided chunk is refused before anything is
+# allocated" are dated by disabling the no-nulls guard, after which a later guard
+# raised the same XX001. No row is added, removed or renamed.
+#
+#     ledger rows   4189 + 0 = 4189
+#     never         2990 - 2 = 2988
+#     dated         1199 + 2 = 1201
+#     2988 + 1201 == 4189
+checks_never_observed_red 2988

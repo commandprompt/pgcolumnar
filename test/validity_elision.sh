@@ -319,18 +319,31 @@ check "single-row fetches of the null-bearing column return its nulls as nulls" 
 # catalog -- which is what a bit flip or a crafted file does, and what
 # corruption.sh does for the fields that predate this change.
 #
-# ASSERT THE SQLSTATE, NOT THE TEXT. `42501`, `22023`, a login FATAL and a
+# ASSERT THE SQLSTATE, NOT ONLY THE TEXT. `42501`, `22023`, a login FATAL and a
 # missing function all satisfy a grep for "ERROR"; XX001 is ERRCODE_DATA_CORRUPTED
 # and comes only from a guard that ran.
-sqlstate() {	# SQL -> the 5-char SQLSTATE it raises, or NOERR
-	local out
+#
+# AND WHICH GUARD (#1339). XX001 comes from sixteen guards in the reader: with the
+# no-nulls guard disabled, both arms below still saw XX001 from a later one and
+# stayed green. So each reads the message too, and a red names what fired.
+# SQL -> `SQLSTATE|the no-nulls guard`, `SQLSTATE|another guard: <message>` or NOERR.
+guard_of() {
+	local out state msg
 	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
 		-U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF
-\\set VERBOSITY sqlstate
+\\set VERBOSITY verbose
 $1;
 SQLEOF
 )"
-	printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1 | grep . || echo NOERR
+	state="$(printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' | head -1)"
+	msg="$(printf '%s\n' "$out" | sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' | head -1)"
+	if [ -z "$state" ]; then
+		echo NOERR
+	elif grep -qF "claims no nulls but does not account for every row" <<<"$msg"; then
+		echo "$state|the no-nulls guard"
+	else
+		echo "$state|another guard: $msg"
+	fi
 }
 
 # GUARD 1: a chunk that CLAIMS it stored no bitmap while its own descriptor
@@ -347,8 +360,8 @@ psql_run "UPDATE pgcolumnar.column_chunk c
 	  AND c.column_index = 1;"
 
 check "a chunk claiming no bitmap while it holds fewer values than rows is refused" \
-	"$(sqlstate "SELECT sum(v) FROM ve_nulls")" \
-	"XX001"
+	"$(guard_of "SELECT sum(v) FROM ve_nulls")" \
+	"XX001|the no-nulls guard"
 
 check "and the backend survives that refusal" "$(q "SELECT 1;" | tail -1)" "1"
 
@@ -368,8 +381,8 @@ psql_run "UPDATE pgcolumnar.row_group r
 	  AND s.relation_oid = 've_full'::regclass;"
 
 check "an implausible row count on an elided chunk is refused before anything is allocated" \
-	"$(sqlstate "SELECT sum(v) FROM ve_full")" \
-	"XX001"
+	"$(guard_of "SELECT sum(v) FROM ve_full")" \
+	"XX001|the no-nulls guard"
 
 check "and the backend survives that refusal too" "$(q "SELECT 1;" | tail -1)" "1"
 

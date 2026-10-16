@@ -4132,10 +4132,10 @@ vacuum_lock_privilege	vacuum_lock_privilege	truncate refuses a non-owner before 
 vacuum_lock_privilege	vacuum_lock_privilege	truncate tells a non-owner nothing about the relation type (#1384)	15;16;17;18;19	2026-10-14	truncate checking ownership after its lock and its type check (main before #1384's fix)
 vacuum_lock_privilege	vacuum_lock_privilege	vacuum refuses a non-owner before taking the exclusive lock	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock;pgcolumnar.vacuum checks ownership after taking its AccessExclusiveLock
 vacuum_lock_privilege	vacuum_lock_privilege	vacuum_sorted refuses a non-owner before taking the exclusive lock	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock
-validity_elision	validity_elision	a chunk claiming no bitmap while it holds fewer values than rows is refused	15;16;17;18;19	never	-
+validity_elision	validity_elision	a chunk claiming no bitmap while it holds fewer values than rows is refused	15;16;17;18;19	2026-10-16	the no-nulls guard (claims no nulls but does not account for every row) disabled, so a later guard raised the XX001 (mutation, #1339)
 validity_elision	validity_elision	a column with no nulls stores no validity bitmap	15;16;17;18;19	2026-09-18	writer: flush_one_column's presentCount == rowCount forced false, so the bitmap is written even when the chunk holds no null
 validity_elision	validity_elision	a null-free column elides its bitmap beside a null-bearing one in the same row group	15;16;17;18;19	never	-
-validity_elision	validity_elision	an implausible row count on an elided chunk is refused before anything is allocated	15;16;17;18;19	never	-
+validity_elision	validity_elision	an implausible row count on an elided chunk is refused before anything is allocated	15;16;17;18;19	2026-10-16	the no-nulls guard (claims no nulls but does not account for every row) disabled, so a later guard raised the XX001 (mutation, #1339)
 validity_elision	validity_elision	and the backend survives that refusal	15;16;17;18;19	never	-
 validity_elision	validity_elision	and the backend survives that refusal too	15;16;17;18;19	never	-
 validity_elision	validity_elision	premise: each fixture is a single row group, which is what the expected size assumes	15;16;17;18;19	never	-

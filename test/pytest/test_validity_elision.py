@@ -250,16 +250,27 @@ def test_the_layout_change_returns_the_same_rows(pgc_conn, expect):
             )
 
 
+def _guard(exc, phrase, label):
+    """`SQLSTATE|label` when the error is the guard whose message holds `phrase`;
+    otherwise `SQLSTATE|another guard: <message>`, so a red names what fired."""
+    if exc is None:
+        return "NOERR"
+    msg = getattr(getattr(exc, "diag", None), "message_primary", None) or str(exc)
+    state = getattr(exc, "sqlstate", None) or "none"
+    return f"{state}|{label}" if phrase in msg else f"{state}|another guard: {msg}"
+
+
 def test_the_guards_the_elision_added_refuse_a_lying_catalog(pgc_conn, expect):
     """The two guards, each corrupted into firing.
 
     Neither is reachable from a table written correctly, so the catalog is
     poisoned the way corruption.sh poisons the fields that predate this change.
 
-    THE SQLSTATE IS THE ASSERTION, not the message. `XX001` is
-    ERRCODE_DATA_CORRUPTED and comes only from a guard that ran; a message grep
-    is equally satisfied by a missing function, a bad argument or a login
-    failure.
+    THE SQLSTATE AND THE GUARD'S OWN MESSAGE. `XX001` is ERRCODE_DATA_CORRUPTED
+    and comes only from a guard that ran; a message grep alone is equally
+    satisfied by a missing function, a bad argument or a login failure. But
+    sixteen guards in the reader raise XX001, so the SQLSTATE alone cannot say
+    WHICH ran (#1339): `_guard` asks for both.
     """
     import psycopg
 
@@ -285,10 +296,13 @@ def test_the_guards_the_elision_added_refuse_a_lying_catalog(pgc_conn, expect):
             raised = None
         except psycopg.Error as exc:
             raised = exc
-        expect.sqlstate(
-            raised, "XX001",
-            "a chunk claiming no bitmap while it holds fewer values than rows is refused",
-        )
+        # WHICH GUARD, not only that one ran (#1339). XX001 comes from sixteen guards in
+        # the reader: with this one disabled, the scan still raised XX001 and the arm
+        # stayed green. So the message must be this guard's own.
+        expect.text(_guard(raised, "claims no nulls but does not account for every row",
+                           "the no-nulls guard"),
+                    "XX001|the no-nulls guard",
+                    "a chunk claiming no bitmap while it holds fewer values than rows is refused")
         expect.num(_count(c, "SELECT 1"), 1, "and the backend survives that refusal")
 
         # GUARD 2: a row count the chunk cannot hold. The descriptor still
@@ -314,10 +328,14 @@ def test_the_guards_the_elision_added_refuse_a_lying_catalog(pgc_conn, expect):
             raised = None
         except psycopg.Error as exc:
             raised = exc
-        expect.sqlstate(
-            raised, "XX001",
-            "an implausible row count on an elided chunk is refused before anything is allocated",
-        )
+        # Refused BEFORE anything is allocated means by the value-count guard, which
+        # runs first; the MaxAllocSize check after it is a backstop that 500 MB of
+        # bits does not reach. With the value-count guard disabled, the bitmap was
+        # allocated, a later guard raised XX001, and this arm stayed green (#1339).
+        expect.text(_guard(raised, "claims no nulls but does not account for every row",
+                           "the no-nulls guard"),
+                    "XX001|the no-nulls guard",
+                    "an implausible row count on an elided chunk is refused before anything is allocated")
         expect.num(_count(c, "SELECT 1"), 1, "and the backend survives that refusal too")
 
 
