@@ -3534,4 +3534,15 @@ suites_not_covered 190
 #     never         3058 -  3 = 3055
 #     dated         1330 + 11 = 1341
 #     3055 + 1341 == 4396
+#
+# #1339, latest_reading's GROUP BY form is held to reading the table once (jdatcmd):
+# 3055 -> 3055. The document says the form reads the table once, and the arms compared
+# only its rows, so a per-device subquery returning the same rows passed. The new arm
+# arrives dated by exactly that mutation, red on each of 15-19 in both twins while the
+# rows arm stayed green. From five-major runs, 9 checks green on each of 15-19.
+#
+#     ledger rows   4396 +  1 = 4397
+#     never         3055 +  0 = 3055
+#     dated         1341 +  1 = 1342
+#     3055 + 1342 == 4397
 checks_never_observed_red 3055

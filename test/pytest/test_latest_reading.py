@@ -6,10 +6,10 @@ Measured on #1293 with 10,000,000 rows and 1,000 devices: DISTINCT ON read 17,20
 blocks in 5.6 s; a btree on (device, ts) plus LATERAL read 1,013 blocks in 45 ms;
 the same LATERAL without the btree read 8.7 million blocks in 12.6 minutes.
 
-Asserted here: each documented form returns the rows DISTINCT ON returns; with
-the btree the LATERAL form reads under a tenth of the table, and at least one
-block (a query that reads nothing would otherwise pass); without it, it reads the
-table about once per device.
+Asserted here: each documented form returns the rows DISTINCT ON returns; the
+GROUP BY form reads the table at most once; with the btree the LATERAL form reads
+under a tenth of the table, and at least one block (a query that reads nothing
+would otherwise pass); without it, it reads the table about once per device.
 
 ON A PRIVATE DATABASE (`pgc_own_db`): the document names its tables, `readings`
 and `devices`, so they cannot carry a per-test prefix. Independent of
@@ -95,6 +95,13 @@ def test_the_latest_reading_recipe_does_what_the_document_says(pgc_own_db, expec
 
     expect.text(str(_rows(conn, group_sql)), str(oracle),
                 "the GROUP BY form returns what DISTINCT ON returns")
+    # The document says this form reads the table once (#1339). Rows alone cannot tell
+    # it from a per-device subquery, which returns the same rows and reads the table
+    # once per device. Reading nothing also reads under the table, so a zero is refused.
+    grp = _blocks(conn, group_sql)
+    print(f"-- table {pages} pages; the GROUP BY form read {grp} blocks")
+    expect.at_least(pages + 1 - grp if grp else 0, 1,
+                    "the GROUP BY form reads the table once")
 
     with conn.cursor() as cur:
         cur.execute(index_sql)

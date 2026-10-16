@@ -2241,6 +2241,7 @@ latest_reading	latest_reading	premise: the document's index exists	15;16;17;18;1
 latest_reading	latest_reading	premise: the document's three recipe blocks were found	15;16;17;18;19	never	-
 latest_reading	latest_reading	premise: the indexed LATERAL form read the table at all	15;16;17;18;19	never	-
 latest_reading	latest_reading	premise: the table holds every row	15;16;17;18;19	never	-
+latest_reading	latest_reading	the GROUP BY form reads the table once	15;16;17;18;19	2026-10-16	the document's GROUP BY recipe as a per-device subquery over devices, which returns the same rows and reads the table once per device
 latest_reading	latest_reading	the GROUP BY form returns what DISTINCT ON returns	15;16;17;18;19	never	-
 latest_reading	latest_reading	the LATERAL form returns what DISTINCT ON returns	15;16;17;18;19	2026-10-12	the document's LATERAL recipe orders by ts ascending, so it returns each device's FIRST reading
 latest_reading	latest_reading	with the btree the LATERAL form reads under a tenth of the table	15;16;17;18;19	never	-
