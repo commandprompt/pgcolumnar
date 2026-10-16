@@ -214,6 +214,7 @@ behaviour, the source of that number is named.
 - [166. test_native_fetch_projection.py: a fetch by row number decodes only what its caller needs](#166-test_native_fetch_projectionpy-a-fetch-by-row-number-decodes-only-what-its-caller-needs)
 - [167. test_native_fetch_position.py: a fetch by row number costs the same anywhere in its group](#167-test_native_fetch_positionpy-a-fetch-by-row-number-costs-the-same-anywhere-in-its-group)
 - [168. test_native_fetch_cache.py: the fetch-by-row-number cache](#168-test_native_fetch_cachepy-the-fetch-by-row-number-cache)
+- [169. test_native_parquet_pushdown.py: the Parquet FDW skips row groups its statistics rule out](#169-test_native_parquet_pushdownpy-the-parquet-fdw-skips-row-groups-its-statistics-rule-out)
 
 ## 1. How to read a test in here
 
@@ -7719,3 +7720,16 @@ The pytest twin of `test/native_fetch_cache.sh` (ported for #1341), every check 
 | `test_the_scoping_guards_are_in_the_source` | the cache key includes the storage id, an earlier command's entry is rejected, a hit re-checks four fields, and the cache is discarded at executor end and transaction end |
 | `test_a_wide_groups_decode_scratch_does_not_blow_the_cap` | a wide group's point query drives the fetch path, costs under five times a small group's, and answers the same |
 | `test_crossing_the_cap_costs_per_column` | four and five projected columns drive the fetch path, five costs under twelve times four, and every over-cap column reads back its value |
+
+## 169. test_native_parquet_pushdown.py: the Parquet FDW skips row groups its statistics rule out
+
+The pytest twin of `test/native_parquet_pushdown.sh` (ported for #1341), every check by the shell's name. The FDW reads each row group's min/max and skips a group that a pushable col-op-const clause proves empty. The executor still rechecks every row, so a sound skip can only save work. The checks run against a heap oracle, and the skips themselves are read from EXPLAIN ANALYZE's "Row Groups Skipped". The soundness cases follow. A NaN row sits outside the statistics, so a float `>`, `>=` or `= 'NaN'` must never skip. An inverted interval must never drive a skip. An INT64-backed DECIMAL is skippable. pyarrow writes every file.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_skipping_never_changes_the_answer_and_really_skips` | eight predicates agree with the heap, each confining range skips the groups it should, float `>=` is not pushed, and `read_parquet` reads the same rows |
+| `test_a_nan_row_is_never_skipped` | seven float predicates over a file with one NaN agree with the heap |
+| `test_inverted_statistics_never_drive_a_skip` | a UINT_32 column whose statistics decode inverted agrees with the heap under six predicates and skips nothing |
+| `test_an_int64_backed_decimal_is_skippable` | a range inside one of four DECIMAL groups skips the other three without dropping rows |
