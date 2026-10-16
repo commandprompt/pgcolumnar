@@ -805,4 +805,6 @@ guard_tests 438
 # three tests, by collection over the cluster files on this tree.
 # cluster_tests 737 -> 740 for #1341's test_native_parquet_multifile.py, the twin of native_parquet_multifile.sh:
 # three tests, by collection over the cluster files on this tree.
-cluster_tests 740
+# cluster_tests 740 -> 742 for #1341's test_native_index.py, the twin of native_index.sh:
+# two tests, by collection over the cluster files on this tree.
+cluster_tests 742
