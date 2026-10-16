@@ -6600,7 +6600,7 @@ Removal proof: the document's `LATERAL` edited to `ORDER BY ts` (ascending) retu
 
 | test | what it holds |
 | --- | --- |
-| `test_the_latest_reading_recipe_does_what_the_document_says` | the document's three blocks are found; the table holds its rows; without the btree the `LATERAL` form reads the table about once per device; the `GROUP BY` form and, with the document's index, the `LATERAL` form return the rows `DISTINCT ON` returns; the indexed `LATERAL` reads at least one block and under a tenth of the table |
+| `test_the_latest_reading_recipe_does_what_the_document_says` | the document's three blocks are found; the table holds its rows; without the btree the `LATERAL` form reads the table about once per device; the `GROUP BY` form and, with the document's index, the `LATERAL` form return the rows `DISTINCT ON` returns; the `GROUP BY` form reads at least one block and no more than the table, as the document says (#1339); the indexed `LATERAL` reads at least one block and under a tenth of the table |
 
 ## 88. test_storage_row_repair.py: the alpha5 release notes' repair procedure works as written
 
