@@ -787,4 +787,6 @@ guard_tests 438
 # two tests, by collection over the cluster files on this tree.
 # cluster_tests 697 -> 698 for #1341's test_native_vecskip.py, the twin of native_vecskip.sh:
 # one test, by collection over the cluster files on this tree.
-cluster_tests 698
+# cluster_tests 698 -> 702 for #1341's test_native_index_projection.py, the twin of native_index_projection.sh:
+# four tests, by collection over the cluster files on this tree.
+cluster_tests 702
