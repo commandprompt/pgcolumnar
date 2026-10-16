@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 213
+suites_not_covered 212
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3031,4 +3031,20 @@ suites_not_covered 213
 #     never         2722 + 32 = 2754
 #     dated          998 +  3 = 1001
 #     2754 + 1001 == 3755
-checks_never_observed_red 2754
+#
+# #1341, pg_dump_roundtrip seeded, with its twin (OffgridwithJD): 2754 -> 2778, and
+# suites_not_covered 213 -> 212. The suite had no rows. It enters with all 40 checks
+# from five-major runs (40/40 on each of 15-19). 16 are dated by five mutations: the
+# options and the projection-declaration catalogs no longer registered with
+# pg_extension_config_dump, rebuild_projections() skipping a missing projection,
+# drop_projection keeping its declaration, and vacuum_sorted sorting on column 1
+# (the strengthened sort arm). Twenty-four arrive never: the dump and restore exit
+# codes and the dump's columnar AM, the access method, the row count and checksum,
+# the index premise and its lookup, the pinned loss of projection storage, the
+# inversion premise, the second rebuild's no-op, and the source's own premises.
+#
+#     ledger rows   3755 + 40 = 3795
+#     never         2754 + 24 = 2778
+#     dated         1001 + 16 = 1017
+#     2778 + 1017 == 3795
+checks_never_observed_red 2778
