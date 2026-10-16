@@ -793,4 +793,6 @@ guard_tests 438
 # eight tests, by collection over the cluster files on this tree.
 # cluster_tests 710 -> 718 for #1341's test_native_groupagg_batch.py, the twin of native_groupagg_batch.sh:
 # eight tests, by collection over the cluster files on this tree.
-cluster_tests 718
+# cluster_tests 718 -> 722 for #1341's test_native_fetch_projection.py, the twin of native_fetch_projection.sh:
+# four tests, by collection over the cluster files on this tree.
+cluster_tests 722

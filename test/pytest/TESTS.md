@@ -211,6 +211,7 @@ behaviour, the source of that number is named.
 - [163. test_native_index_projection.py: CREATE INDEX projects only what it needs](#163-test_native_index_projectionpy-create-index-projects-only-what-it-needs)
 - [164. test_native_saop_pushdown.py: IN-lists and = ANY(array) prune row groups](#164-test_native_saop_pushdownpy-in-lists-and--anyarray-prune-row-groups)
 - [165. test_native_groupagg_batch.py: the grouped aggregate folds column-at-a-time](#165-test_native_groupagg_batchpy-the-grouped-aggregate-folds-column-at-a-time)
+- [166. test_native_fetch_projection.py: a fetch by row number decodes only what its caller needs](#166-test_native_fetch_projectionpy-a-fetch-by-row-number-decodes-only-what-its-caller-needs)
 
 ## 1. How to read a test in here
 
@@ -7677,3 +7678,16 @@ The pytest twin of `test/native_groupagg_batch.sh` (ported for #1341), every che
 | `test_the_fold_steps_over_skipped_vectors` | a scan that really skips vectors folds, and its one-column and four-column sums match the heap |
 | `test_the_parallel_partial_fold_equals_the_serial_one` | our parallel-aware node launches workers and folds, and equals the serial fold and the heap |
 | `test_a_column_added_after_some_row_groups_runs_the_row_path` | plain EXPLAIN predicts the fold, ANALYZE reports the row path that ran, and the answer is right |
+
+## 166. test_native_fetch_projection.py: a fetch by row number decodes only what its caller needs
+
+The pytest twin of `test/native_fetch_projection.sh` (ported for #1341), every check by the shell's name. A row fetched by number decoded every column whatever the caller wanted (#157). Two narrower entry points exist beside it: one decodes a given set of columns, and one answers visibility and decodes nothing. Neither has a SQL surface, so they are exercised through `pgcolumnar.read_projection` and `pgcolumnar.reconstruct_via_projection` on a 41-column table, against the base table as the oracle. The source arms read code with its comments blanked, as the shell's `code_of` does.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_projected_fetch_returns_the_base_tables_rows_and_sees_deletes` | every reconstructed row matches the base table, a deleted row stops being read or reconstructed, and an uncovered column still reads right |
+| `test_a_projection_covering_every_column_decodes_nothing_and_is_right` | with the computed base-column set empty, every row is reconstructed with the right values |
+| `test_no_caller_decodes_every_column_and_index_deletion_reads_no_row` | the projection path calls no full decode, and index deletion asks no row whether it is live |
+| `test_every_needed_set_test_consults_the_all_columns_flag` | every needed-set membership test in the reader consults the explicit all-columns flag |
