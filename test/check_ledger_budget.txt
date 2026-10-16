@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 205
+suites_not_covered 204
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3174,4 +3174,20 @@ suites_not_covered 205
 #     never         2845 +  8 = 2853
 #     dated         1094 +  9 = 1103
 #     2853 + 1103 == 3956
-checks_never_observed_red 2853
+#
+# #1341, native_parquet_schema seeded, with its twin (OffgridwithJD): 2853 -> 2883,
+# and suites_not_covered 205 -> 204. The suite had no rows. It enters with all 35
+# checks from five-major runs (35/35 on each of 15-19). 5 are dated by five mutations
+# of the Parquet reader: the PAR1 magic check skipped (the bad-magic arm, which now
+# requires the magic check's own message, since the same file is refused as a corrupt
+# footer without it), INT_16 mapped to integer, every column reported nullable, the
+# position reported as the field id, and an absent field id reported as -1. Thirty
+# arrive never: the other twelve type arms and the thirteen nullable arms, which no
+# single mapping mutation here moves, the export and column counts, and the pyarrow
+# fixture's premise and its OPTIONAL and int32 arms.
+#
+#     ledger rows   3956 + 35 = 3991
+#     never         2853 + 30 = 2883
+#     dated         1103 +  5 = 1108
+#     2883 + 1108 == 3991
+checks_never_observed_red 2883
