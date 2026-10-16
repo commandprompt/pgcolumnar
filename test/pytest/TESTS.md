@@ -182,6 +182,7 @@ behaviour, the source of that number is named.
 - [134. test_unique_conc.py: concurrent inserters of one unique key serialize](#134-test_unique_concpy-concurrent-inserters-of-one-unique-key-serialize)
 - [135. test_update_conc.py: two writers of one row serialize](#135-test_update_concpy-two-writers-of-one-row-serialize)
 - [136. test_recovery.py: committed writes survive a crash, uncommitted ones leave nothing](#136-test_recoverypy-committed-writes-survive-a-crash-uncommitted-ones-leave-nothing)
+- [137. test_native_backend_crash.py: one backend dies and committed data is intact](#137-test_native_backend_crashpy-one-backend-dies-and-committed-data-is-intact)
 
 ## 1. How to read a test in here
 
@@ -7296,3 +7297,17 @@ A private cluster, stopped with `-m immediate` for each crash. Each crash is pro
 | `test_the_pair_through_three_crashes` | rows committed after a checkpoint survive; an open transaction's checkpointed INSERT leaves no row; committed deletes survive; each against the heap pair |
 | `test_a_cleared_visibility_bit_stays_cleared` | a bit set and checkpointed, then cleared by a DELETE, stays cleared after the crash; a clean block's bit stays set; the rows match heap |
 | `test_a_projection_survives_a_crash` | a projection copy committed after the checkpoint replays, and reproduces the base's rows and a scan through it |
+
+## 137. test_native_backend_crash.py: one backend dies and committed data is intact
+
+The pytest twin of `test/native_backend_crash.sh` (#217, ported for #1341), every check by the shell's name. A SIGSEGV in one backend makes the postmaster drop every session and reinitialize, with crash recovery, while it stays up itself. Committed columnar rows must then match a heap mirror, and an INSERT killed before its commit must leave no row and no row group.
+
+The kill lands mid-write, once the INSERT has written pages to the relation and before it reaches its trailing `pg_sleep`, and after every stripe has flushed, while it sleeps; both are asserted. A sentinel session opened before each kill must be dropped by the reinit, which proves the crash happened. A private cluster, since the reinit drops every session on the server.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_kill_mid_write` | a 3,000,000-row INSERT killed after it has grown the relation: the cluster reinitialized, the postmaster kept its pid, and c holds exactly its committed rows and row groups |
+| `test_a_kill_after_the_stripes_flushed` | the same for a 100,000-row INSERT killed in its trailing `pg_sleep` |
+| `test_a_kill_with_a_second_reader` | the mid-write kill with a second parked reader, which the reinit drops too |
