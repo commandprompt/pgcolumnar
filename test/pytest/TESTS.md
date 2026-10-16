@@ -190,6 +190,7 @@ behaviour, the source of that number is named.
 - [142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP](#142-test_drop_cleanuppy-a-columnar-matviews-options-row-goes-with-its-drop)
 - [143. test_native_upgrade_converge.py: the upgrade window, before ALTER EXTENSION UPDATE](#143-test_native_upgrade_convergepy-the-upgrade-window-before-alter-extension-update)
 - [144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen](#144-test_fk_referencingpy-a-foreign-key-referencing-a-columnar-table-is-refused-where-it-is-chosen)
+- [145. test_truncate_cleanup.py: TRUNCATE leaves no catalog rows behind, and keeps what it must](#145-test_truncate_cleanuppy-truncate-leaves-no-catalog-rows-behind-and-keeps-what-it-must)
 
 ## 1. How to read a test in here
 
@@ -7403,3 +7404,18 @@ The pytest twin of `test/fk_referencing.sh` (ported for #1341), every check by t
 | `test_constraints_that_need_no_row_lock_are_unaffected` | primary key, unique, check and not-null on a columnar table, and a heap-to-heap foreign key, are unaffected |
 | `test_converting_a_referenced_table_is_refused_and_nothing_else_is` | SET ACCESS METHOD pgcolumnar on a referenced table and the helper are refused, the table stays heap and its child writable; an unreferenced table, the referencing side, an unrelated ALTER, a conversion back to heap and the referenced table to a row store all still work |
 | `test_a_partitioned_referenced_parent` | a columnar partition and setting the parent's access method are refused, the parent does not become columnar, an ordinary partition still works; an unreferenced partitioned table converts from PG17, and before 17 core refuses it |
+
+## 145. test_truncate_cleanup.py: TRUNCATE leaves no catalog rows behind, and keeps what it must
+
+The pytest twin of `test/truncate_cleanup.sh` (ported for #1341), every check by the shell's name. TRUNCATE installs a new storage id, and the old storage's catalog rows used to stay behind, so each truncate-and-reload cycle leaked one storage's worth and a later DROP removed only the empty current one. Retiring them made a cached write state stale, which is dropped with them. A relation created in the current transaction is truncated in place, on a different path, which must clear each projection's storage too. A private database, since the snapshot counts every pgcolumnar catalog row.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_truncate_and_drop_leave_the_catalog_as_they_found_it` | one TRUNCATE and three truncate-and-reload cycles return the catalog to the baseline, and a DROP of a reloaded table leaves nothing |
+| `test_a_projection_is_not_leaked_by_truncate` | no projection row names a retired storage id, the declaration survives, and a DROP of the reloaded table leaves nothing |
+| `test_repeated_truncates_accumulate_nothing` | ten transactional truncates of one table, and its DROP, leave the baseline |
+| `test_insert_truncate_insert_in_one_transaction` | the transaction commits and holds exactly the rows written after the TRUNCATE |
+| `test_a_rewrite_that_is_not_a_truncate_loses_nothing` | a type-changing rewrite keeps all 5000 rows readable |
+| `test_an_in_place_truncate_clears_the_projection_too` | the in-place truncate commits, the later rows are all there, the projection reads them back and its storage holds one group of exactly them |
