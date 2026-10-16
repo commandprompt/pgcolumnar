@@ -189,6 +189,7 @@ behaviour, the source of that number is named.
 - [141. test_phase5.py: set_options and reset_options agree](#141-test_phase5py-set_options-and-reset_options-agree)
 - [142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP](#142-test_drop_cleanuppy-a-columnar-matviews-options-row-goes-with-its-drop)
 - [143. test_native_upgrade_converge.py: the upgrade window, before ALTER EXTENSION UPDATE](#143-test_native_upgrade_convergepy-the-upgrade-window-before-alter-extension-update)
+- [144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen](#144-test_fk_referencingpy-a-foreign-key-referencing-a-columnar-table-is-refused-where-it-is-chosen)
 
 ## 1. How to read a test in here
 
@@ -7388,3 +7389,17 @@ Part of the pytest twin of `test/native_upgrade_converge.sh` (#1341 item 66): it
 | test | what it holds |
 | --- | --- |
 | `test_the_upgrade_window` | at the previous catalog: rows written, deleted and read; the three operations refused with the hint and nothing changed; after the update the rows are intact and all three succeed |
+
+## 144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen
+
+The pytest twin of `test/fk_referencing.sh` (ported for #1341), every check by the shell's name. Enforcing a foreign key locks the referenced row, and columnar tables cannot lock rows, so a constraint referencing one would make every insert into the referencing table fail. It is refused at DDL by either route into that state: creating the constraint against a columnar table, or converting a referenced table (or partitioned parent) to columnar. Only the referenced side is refused, and the controls hold everything else steady, including converting the referenced table itself to a row store.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_referenced_side_is_refused_at_ddl` | CREATE TABLE and ALTER TABLE ADD CONSTRAINT referencing a columnar table are refused, saying why, and nothing is left behind |
+| `test_the_referencing_side_still_works` | a columnar table referencing a heap table is created, accepts satisfying rows and rejects a violating one |
+| `test_constraints_that_need_no_row_lock_are_unaffected` | primary key, unique, check and not-null on a columnar table, and a heap-to-heap foreign key, are unaffected |
+| `test_converting_a_referenced_table_is_refused_and_nothing_else_is` | SET ACCESS METHOD pgcolumnar on a referenced table and the helper are refused, the table stays heap and its child writable; an unreferenced table, the referencing side, an unrelated ALTER, a conversion back to heap and the referenced table to a row store all still work |
+| `test_a_partitioned_referenced_parent` | a columnar partition and setting the parent's access method are refused, the parent does not become columnar, an ordinary partition still works; an unreferenced partitioned table converts from PG17, and before 17 core refuses it |

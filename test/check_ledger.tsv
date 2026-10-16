@@ -804,6 +804,34 @@ fdw_plan_privilege	fdw_plan_privilege	and a metadata_path that does not exist pl
 fdw_plan_privilege	fdw_plan_privilege	premise: the Parquet file was written	15;16;17;18;19	never	-
 fdw_plan_privilege	fdw_plan_privilege	premise: the reader is not a member of pg_read_server_files	15;16;17;18;19	never	-
 fdw_plan_privilege	fdw_plan_privilege	the unprivileged Iceberg scan is still refused (42501)	15;16;17;18;19	never	-
+fk_referencing	fk_referencing	ALTER TABLE ADD CONSTRAINT is refused by the same rule	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fk_referencing	fk_referencing	a columnar partition of an FK-referenced parent is refused	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fk_referencing	fk_referencing	a columnar table may reference a heap table	15;16;17;18;19	2026-10-16	columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fk_referencing	fk_referencing	a foreign key between two heap tables is unaffected	15;16;17;18;19	never	-
+fk_referencing	fk_referencing	a foreign key referencing a columnar table is refused	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fk_referencing	fk_referencing	a partitioned table with no foreign key still converts	17;18;19	never	-
+fk_referencing	fk_referencing	a row that violates it is still rejected	15;16;17;18;19	2026-10-16	columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fk_referencing	fk_referencing	a table with no foreign key still converts	15;16;17;18;19	never	-
+fk_referencing	fk_referencing	an FK-referenced table may still be set to a row store	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table refused whatever the target access method
+fk_referencing	fk_referencing	an unrelated ALTER TABLE on a referenced table is unaffected	15;16;17;18;19	never	-
+fk_referencing	fk_referencing	and a partition can still be created the ordinary way	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
+fk_referencing	fk_referencing	and its partitions inherit the columnar access method	17;18;19	never	-
+fk_referencing	fk_referencing	and rows that satisfy it are accepted	15;16;17;18;19	2026-10-16	columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fk_referencing	fk_referencing	and setting the parent's access method is refused as well	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
+fk_referencing	fk_referencing	and the error names the constraint	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
+fk_referencing	fk_referencing	and the error says why	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fk_referencing	fk_referencing	and they still work	15;16;17;18;19	never	-
+fk_referencing	fk_referencing	before 17, core refuses this for every partitioned table	15;16	never	-
+fk_referencing	fk_referencing	converting an FK-referenced table to columnar is refused	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
+fk_referencing	fk_referencing	converting back to heap is unaffected	15;16;17;18;19	never	-
+fk_referencing	fk_referencing	converting the referencing side is still allowed	15;16;17;18;19	never	-
+fk_referencing	fk_referencing	primary key, unique, check and not-null on a columnar table are unaffected	15;16;17;18;19	never	-
+fk_referencing	fk_referencing	so the parent did not become columnar	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
+fk_referencing	fk_referencing	the child is still writable afterwards	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
+fk_referencing	fk_referencing	the conversion helper is refused identically	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
+fk_referencing	fk_referencing	the parent is still a row store	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
+fk_referencing	fk_referencing	the primary key is still enforced	15;16;17;18;19	never	-
+fk_referencing	fk_referencing	the refused table was not left behind	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
 harness_selftest	030-assertions	nothing leaked into the squatter	15;16;17;18;19	never	-
 harness_selftest	030-assertions	pgc_port_free says the squatter's port is busy	15;16;17;18;19	never	-
 harness_selftest	030-assertions	squatter survived untouched	15;16;17;18;19	never	-

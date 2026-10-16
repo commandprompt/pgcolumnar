@@ -749,4 +749,6 @@ guard_tests 438
 # test_parquet_import.py (1), test_phase5.py (1) and test_drop_cleanup.py (3), by collection.
 # cluster_tests 660 -> 661 for #1341 item 66's test_native_upgrade_converge.py, one test,
 # by collection over the cluster files on this tree.
-cluster_tests 661
+# cluster_tests 661 -> 666 for #1341's test_fk_referencing.py, the twin of fk_referencing.sh:
+# five tests, by collection over the cluster files on this tree.
+cluster_tests 666

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 219
+suites_not_covered 218
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2943,4 +2943,22 @@ suites_not_covered 219
 #     never         2676 - 1 = 2675
 #     dated          943 + 1 = 944
 #     2675 + 944 == 3619
-checks_never_observed_red 2675
+#
+# #1341, fk_referencing seeded, with its twin (OffgridwithJD): 2675 -> 2686, and
+# suites_not_covered 219 -> 218. The suite had no rows. It enters with 28 rows
+# from five-major runs: 27 checks on PG17-19 and 26 on 15-16, where the
+# partitioned-control branch asserts core's refusal instead of a conversion. 17 are
+# dated by four mutations of the foreign-key guards: the referenced-side refusal
+# removed, the guard keyed on the referencing table, the conversion refusal
+# removed, and the conversion refused whatever the target access method (the new
+# referenced-table-to-row-store arm). Eleven arrive never: the over-rejection
+# controls that no single guard reaches (another constraint, a heap-to-heap key,
+# an unreferenced conversion, an unrelated ALTER, a conversion back to heap, the
+# referencing side, the partitioned control on either side of 17) and the primary
+# key's own arms.
+#
+#     ledger rows   3619 + 28 = 3647
+#     never         2675 + 11 = 2686
+#     dated          944 + 17 = 961
+#     2686 + 961 == 3647
+checks_never_observed_red 2686
