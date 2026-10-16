@@ -2645,6 +2645,41 @@ native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses vectorized agg when GUC on	15;16;17;18;19	2026-09-12	drop JOINREL fold
+native_parquet_schema	native_parquet_schema	OPTIONAL column reports nullable=t	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	REQUIRED column reports nullable=f	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports every column nullable
+native_parquet_schema	native_parquet_schema	REQUIRED int32 maps to integer	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	a file without field ids reports NULL, not zero	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports an absent field id as -1, not NULL
+native_parquet_schema	native_parquet_schema	bad magic is rejected by the magic check	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: the reader skips the PAR1 magic check
+native_parquet_schema	native_parquet_schema	export_parquet rows written	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	field ids report as written, in schema order	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports the position as the field id
+native_parquet_schema	native_parquet_schema	nullable of c_bool	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_bytea	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_date	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_f4	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_f8	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_i2	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_i4	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_i8	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_num	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_text	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_time	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_ts	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	nullable of c_uuid	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	parquet_schema column count	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	premise: pyarrow wrote the field-id file	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_bool	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_bytea	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_date	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_f4	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_f8	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_i2	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: INT_8 and INT_16 annotations map to integer
+native_parquet_schema	native_parquet_schema	type of c_i4	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_i8	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_num	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_text	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_time	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_ts	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	type of c_uuid	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	and every live row is still there, once	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 0.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac <= 0.0
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 1.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac >= 1.0
