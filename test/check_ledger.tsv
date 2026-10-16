@@ -2136,7 +2136,7 @@ inheritance	inheritance	SELECT * from an INHERITS parent plans an Append	15;16;1
 inheritance	inheritance	a columnar materialized view is still recognised as columnar	15;16;17;18;19	2026-09-24	the predicate narrowed to `relkind == RELKIND_RELATION` instead of RELKIND_HAS_STORAGE -- the obvious wrong fix, which also excludes RELKIND_MATVIEW and stops a columnar materialized view being recognised at all 31 call sites
 inheritance	inheritance	a large child is still visible through the parent	15;16;17;18;19	never	-
 inheritance	inheritance	a partitioned parent still returns every row	15;16;17;18;19	never	-
-inheritance	inheritance	add_projection on the parent is refused rather than aborting the backend	15;16;17;18;19	never	-
+inheritance	inheritance	add_projection on the parent is refused rather than aborting the backend	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarIsColumnarRelation answers from relam alone again, the #1259 predicate reverted
 inheritance	inheritance	and it still returns its rows	15;16;17;18;19	never	-
 inheritance	inheritance	and the cluster is still up after it	15;16;17;18;19	never	-
 inheritance	inheritance	and the cluster is still up after that too	15;16;17;18;19	never	-
@@ -2145,7 +2145,7 @@ inheritance	inheritance	control: add_projection on the LEAF still works	15;16;17
 inheritance	inheritance	control: get_storage_id on the LEAF still returns an id	15;16;17;18;19	never	-
 inheritance	inheritance	count(*) from an INHERITS parent plans an Append	15;16;17;18;19	never	-
 inheritance	inheritance	filtered rows match the heap	15;16;17;18;19	never	-
-inheritance	inheritance	get_storage_id on the parent is refused rather than reading storage	15;16;17;18;19	never	-
+inheritance	inheritance	get_storage_id on the parent is refused rather than reading storage	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarIsColumnarRelation answers from relam alone again, the #1259 predicate reverted
 inheritance	inheritance	premise: a materialized view is relkind m	15;16;17;18;19	never	-
 inheritance	inheritance	premise: and it carries the columnar access method	15;16;17;18;19	never	-
 inheritance	inheritance	premise: and it is partitioned	15;16;17;18;19	never	-

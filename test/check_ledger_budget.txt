@@ -2921,4 +2921,16 @@ suites_not_covered 219
 #     never         2669 +  9 = 2678
 #     dated          930 + 11 = 941
 #     2678 + 941 == 3619
-checks_never_observed_red 2678
+#
+# #1341 item 29, inheritance re-dated (OffgridwithJD): 2678 -> 2676. Its two #1259
+# refusal arms counted any error as a refusal, and with the #1259 predicate
+# reverted a release build fails with 58P01 opening relfilenode 0, which is the bug:
+# the suite stayed 26/26. They now require 42809, and the revert reddens both, so
+# both leave never. parquet_import, phase5 and drop_cleanup gain partial twins but
+# are not ledger-covered suites, so they owe no rows here.
+#
+#     ledger rows   3619
+#     never         2678 - 2 = 2676
+#     dated          941 + 2 = 943
+#     2676 + 943 == 3619
+checks_never_observed_red 2676

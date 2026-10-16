@@ -179,6 +179,20 @@ COMPLETE = ["advisory_lock_class",
 # about the PORT rather than a licence: the standing arm does not grade it, so the
 # reason is the only thing standing between a declared gap and a forgotten one.
 INCOMPLETE = {
+    # #1341 item 29 ported the arms four fixes added with shell arms only. Each
+    # pair below holds that fix's arms and nothing else of its shell suite.
+    "inheritance": "the #1259 arms (a partitioned columnar parent is refused with "
+                   "42809 and nothing crashes, its leaf and a columnar matview are "
+                   "accepted) are ported; the inheritance-tree arms are not",
+    "parquet_import": "the #1263 arms (a partitioned columnar parent is refused with "
+                      "42809 and nothing crashes, a leaf and a heap target import) "
+                      "are ported; the page-version, type and round-trip arms are not",
+    "phase5": "the #1265 arms (set_options and reset_options agree on every relkind, "
+              "accept a columnar matview and refuse a partitioned parent) are "
+              "ported; the projection, pushdown, compression and vacuum arms are not",
+    "drop_cleanup": "the #1265 arms (a columnar matview's options row goes with its "
+                    "DROP and survives its REFRESH, with an unrelated row as the "
+                    "control) are ported; the storage and catalog cleanup arms are not",
     # #1433 ported the arms it added: cidr, varchar and a domain over each prune
     # as inet and text do, with heap's answer first. The rest of the shell suite
     # (range, equality, bigint, the #477 and #483 arms, the partitioned table) is

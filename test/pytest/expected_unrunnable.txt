@@ -71,3 +71,10 @@
 17 test_temporal.py::test_for_portion_of
 18 test_temporal.py::test_for_portion_of
 19 test_temporal.py::test_for_portion_of
+
+# PostgreSQL 15 and 16: a partitioned table cannot carry an access method before 17,
+# so the #1259 and #1263 partitioned-parent fixtures cannot exist (#1341 item 29).
+15 test_inheritance.py::test_a_partitioned_parent_is_refused_and_its_leaf_is_not
+16 test_inheritance.py::test_a_partitioned_parent_is_refused_and_its_leaf_is_not
+15 test_parquet_import.py::test_a_partitioned_parent_is_refused
+16 test_parquet_import.py::test_a_partitioned_parent_is_refused
