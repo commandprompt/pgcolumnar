@@ -2479,6 +2479,21 @@ native_encdesc_golden	native_encdesc_golden	int column a rawLen parses as 1200 (
 native_encdesc_golden	native_encdesc_golden	the table reads back all rows	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	trailing sharedTableLen is 0 (u32 at offset 6+13=19)	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	vectorCount parses as 1 (at offset 2)	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	a narrow projection over a wide group is cached too (#433)	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	columns that fit are cached even when their group does not (#433)	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	every payload survived the round trip at full length	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: fetching one row touched a measurable number of buffers	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: fetching ten rows touched a measurable number of buffers	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: one row is fetched through an index scan	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: ten rows are fetched through an index scan	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: the fixture really has a row group above the cap	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: the medium projection is fetched through an index scan	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: the medium projection touched a measurable number of buffers	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: the narrow projection is fetched through an index scan	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: the narrow projection touched a measurable number of buffers	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: the table loaded every row	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	premise: the wide column is the one over the cap, so this arm is #359's	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	the fetched rows are the right rows	15;16;17;18;19	2026-10-16	columnar_tableam.c: the deferred slot decode reads tag as NULL on every 7th row number
 native_fetch_cache	native_fetch_cache	a hit re-checks the group's fileOffset against the row group	15;16;17;18;19	2026-10-16	columnar_reader.c: a fetch-cache hit no longer re-checks fileOffset
 native_fetch_cache	native_fetch_cache	a hit re-checks the group's firstRowNumber against the row group	15;16;17;18;19	2026-10-16	columnar_reader.c: a fetch-cache hit no longer re-checks firstRowNumber
 native_fetch_cache	native_fetch_cache	a hit re-checks the group's natts against the scan's column count	15;16;17;18;19	2026-10-16	columnar_reader.c: a fetch-cache hit no longer re-checks natts

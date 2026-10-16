@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 193
+suites_not_covered 192
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3467,4 +3467,17 @@ suites_not_covered 193
 #     never         3019 + 2 - 4 = 3017
 #     dated         1311 + 4 = 1315
 #     3017 + 1315 == 4332
-checks_never_observed_red 3017
+#
+# #1341, native_fetch_bigcap seeded, with its twin (OffgridwithJD): 3017 -> 3031,
+# and suites_not_covered 193 -> 192. The suite had no rows. It enters with all 15
+# checks from five-major runs (15/15 on each of 15-19). One is dated: the right-rows
+# arm, by the deferred decode reading tag as NULL on every 7th row number. Fourteen
+# arrive never: eleven premises; the payload length; and the two #433 ratios, which
+# the cache missing every lookup and the cap dropping every column cannot move,
+# because each re-reads only the projected columns.
+#
+#     ledger rows   4332 + 15 = 4347
+#     never         3017 + 14 = 3031
+#     dated         1315 +  1 = 1316
+#     3031 + 1316 == 4347
+checks_never_observed_red 3031
