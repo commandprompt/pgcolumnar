@@ -3229,4 +3229,16 @@ suites_not_covered 203
 #     never         2896 - 2 = 2894
 #     dated         1111 + 2 = 1113
 #     2894 + 1113 == 4007
-checks_never_observed_red 2894
+#
+# #1339, rewrite_storage_oid's five product premises become arms (jdatcmd): 2894 ->
+# 2889. Four row counts (the rewritten table, the matview, the CREATE TABLE AS
+# table, the refreshed matview) are dated by a bulk load discarding its buffered
+# rows at finish_bulk_insert; "a table that was not rewritten still points at
+# itself" by the storage repoint updating the first storage row, not the rewritten
+# table's. Each row is renamed with its history. No row is added or removed.
+#
+#     ledger rows   4007 + 0 = 4007
+#     never         2894 - 5 = 2889
+#     dated         1113 + 5 = 1118
+#     2889 + 1118 == 4007
+checks_never_observed_red 2889

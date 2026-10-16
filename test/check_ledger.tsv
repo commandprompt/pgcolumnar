@@ -3283,12 +3283,12 @@ rewrite_storage_oid	rewrite_storage_oid	and REFRESH still leaves it pointing at 
 rewrite_storage_oid	rewrite_storage_oid	and a rewrite through the parent still repoints every partition's storage row	15;16;17;18;19	2026-10-12	the repair gate skips every relation, as if no inheritor were locked by the statement
 rewrite_storage_oid	rewrite_storage_oid	control: reading lp_1 shows up as blocks read from it	15;16;17;18;19	never	-
 rewrite_storage_oid	rewrite_storage_oid	premise: CREATE TABLE ... AS leaves its storage row pointing at itself	15;16;17;18;19	never	-
-rewrite_storage_oid	rewrite_storage_oid	premise: a table that was not rewritten still points at itself	15;16;17;18;19	never	-
+rewrite_storage_oid	rewrite_storage_oid	a table that was not rewritten still points at itself	15;16;17;18;19	2026-10-16	the storage repoint after a rewrite updated the first storage row, not the rewritten table's (mutation, #1339)
 rewrite_storage_oid	rewrite_storage_oid	premise: both columnar partitions hold their rows	15;16;17;18;19	never	-
-rewrite_storage_oid	rewrite_storage_oid	premise: the CREATE TABLE AS table holds them too	15;16;17;18;19	never	-
-rewrite_storage_oid	rewrite_storage_oid	premise: the matview holds the rows it was created with	15;16;17;18;19	never	-
-rewrite_storage_oid	rewrite_storage_oid	premise: the refreshed matview still holds every row	15;16;17;18;19	never	-
-rewrite_storage_oid	rewrite_storage_oid	premise: the rewritten table still holds every row	15;16;17;18;19	never	-
+rewrite_storage_oid	rewrite_storage_oid	the CREATE TABLE AS table holds them too	15;16;17;18;19	2026-10-16	a bulk load (CREATE TABLE AS, REFRESH, ALTER TABLE rewrite) threw its buffered rows away at finish_bulk_insert (mutation, #1339)
+rewrite_storage_oid	rewrite_storage_oid	the matview holds the rows it was created with	15;16;17;18;19	2026-10-16	a bulk load (CREATE TABLE AS, REFRESH, ALTER TABLE rewrite) threw its buffered rows away at finish_bulk_insert (mutation, #1339)
+rewrite_storage_oid	rewrite_storage_oid	the refreshed matview still holds every row	15;16;17;18;19	2026-10-16	a bulk load (CREATE TABLE AS, REFRESH, ALTER TABLE rewrite) threw its buffered rows away at finish_bulk_insert (mutation, #1339)
+rewrite_storage_oid	rewrite_storage_oid	the rewritten table still holds every row	15;16;17;18;19	2026-10-16	a bulk load (CREATE TABLE AS, REFRESH, ALTER TABLE rewrite) threw its buffered rows away at finish_bulk_insert (mutation, #1339)
 rewrite_storage_oid	rewrite_storage_oid	premise: the storage row points at the live table before the rewrite	15;16;17;18;19	never	-
 rewrite_storage_oid	rewrite_storage_oid	premise: the table holds every inserted row	15;16;17;18;19	never	-
 rewrite_storage_oid	rewrite_storage_oid	the repair gate does not read a partition the ALTER did not touch: ONLY lp ALTER COLUMN v SET DEFAULT 0	15;16;17;18;19	2026-10-12	the repair gate opens every inheritor with NoLock again, so it reads the metapage of a partition the ALTER never locked (an Assert on assert builds)
