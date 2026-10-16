@@ -366,16 +366,25 @@ check "a chunk claiming no bitmap while it holds fewer values than rows is refus
 check "and the backend survives that refusal" "$(q "SELECT 1;" | tail -1)" "1"
 
 # GUARD 2: a row count the chunk cannot possibly hold. The elided chunk's
-# descriptor still accounts for its own 100,000 values, so a row_count of four
+# descriptor still accounts for its own 100,000 values, so a row_count of nine
 # billion makes the same claim false in the other direction, and the reader
-# refuses BEFORE it synthesizes anything -- which is the ordering that matters,
-# since the bitmap it would otherwise invent is half a gigabyte.
+# refuses BEFORE it synthesizes anything -- which is the ordering that matters.
+#
+# NINE BILLION, NOT FOUR, SO THE ORDER IS VISIBLE (#1339 review). The bitmap it
+# would need is 1.125 GB, over MaxAllocSize, so the "implausible row count"
+# backstop sits between the no-nulls guard and the allocation: a no-nulls guard
+# moved below the allocation is met by the backstop first and names it. At four
+# billion the bitmap was 500 MB, under the backstop, and that move stayed green.
+# It still cannot see a guard placed between the backstop and the allocation.
+#
+# A reworded guard message reddens both arms here and in the pytest twin, which
+# must then be updated together: the red prints the real message.
 #
 # BOUNDING THE SYNTHESIZED BITMAP BY THE ROW GROUP'S BYTE LENGTH DOES NOT WORK,
 # and this suite is where that was measured: ve_full's group is 360 bytes on
 # disk and would need 12,500 bytes of bits, which is the saving, not a defect.
 psql_run "UPDATE pgcolumnar.row_group r
-	SET row_count = 4000000000
+	SET row_count = 9000000000
 	FROM pgcolumnar.storage s
 	WHERE s.storage_id = r.storage_id
 	  AND s.relation_oid = 've_full'::regclass;"

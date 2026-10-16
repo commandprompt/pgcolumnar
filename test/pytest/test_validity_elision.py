@@ -307,8 +307,15 @@ def test_the_guards_the_elision_added_refuse_a_lying_catalog(pgc_conn, expect):
 
         # GUARD 2: a row count the chunk cannot hold. The descriptor still
         # accounts for its own rows, so the claim is false in the other
-        # direction and the reader refuses BEFORE synthesizing half a gigabyte
-        # of bits.
+        # direction and the reader refuses BEFORE synthesizing any bits.
+        #
+        # NINE BILLION, NOT FOUR, SO THE ORDER IS VISIBLE (#1339 review): 1.125 GB
+        # of bits is over MaxAllocSize, so the "implausible row count" backstop sits
+        # between the no-nulls guard and the allocation, and a no-nulls guard moved
+        # below the allocation is met by the backstop first. At four billion (500 MB)
+        # that move stayed green. A guard placed between the backstop and the
+        # allocation is still unseen. A reworded guard message reddens both arms in
+        # both twins, which must then be updated together.
         #
         # BOUNDING THE SYNTHESIZED BITMAP BY THE ROW GROUP'S BYTE LENGTH DOES
         # NOT WORK: an elided group of two well-encoded bigint columns measured
@@ -317,7 +324,7 @@ def test_the_guards_the_elision_added_refuse_a_lying_catalog(pgc_conn, expect):
         c.execute(
             """
             UPDATE pgcolumnar.row_group r
-               SET row_count = 4000000000
+               SET row_count = 9000000000
               FROM pgcolumnar.storage s
              WHERE s.storage_id = r.storage_id
                AND s.relation_oid = 'vb_full'::regclass
@@ -329,9 +336,9 @@ def test_the_guards_the_elision_added_refuse_a_lying_catalog(pgc_conn, expect):
         except psycopg.Error as exc:
             raised = exc
         # Refused BEFORE anything is allocated means by the value-count guard, which
-        # runs first; the MaxAllocSize check after it is a backstop that 500 MB of
-        # bits does not reach. With the value-count guard disabled, the bitmap was
-        # allocated, a later guard raised XX001, and this arm stayed green (#1339).
+        # runs first; the MaxAllocSize check after it is only a backstop. With the
+        # value-count guard disabled at four billion rows, the bitmap was allocated,
+        # a later guard raised XX001, and this arm stayed green (#1339).
         expect.text(_guard(raised, "claims no nulls but does not account for every row",
                            "the no-nulls guard"),
                     "XX001|the no-nulls guard",
