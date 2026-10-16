@@ -34,9 +34,13 @@ def _one(dsn, sql, setup=()):
         return f"ERROR: {str(exc).splitlines()[0]}"
 
 
+BY_INDEX = ("SET enable_seqscan = off", "SET enable_bitmapscan = off", "SET pgcolumnar.enable_custom_scan = off")
+
+
 def _state(dsn):
-    by_index = _one(dsn, ROWS + " WHERE id BETWEEN 1 AND 10000",
-                    ("SET enable_seqscan = off", "SET enable_bitmapscan = off"))
+    # the custom scan off too, and asserted by a premise: with only seqscan off this
+    # whole-table range planned as Custom Scan (PgColumnarScan) and read no index
+    by_index = _one(dsn, ROWS + " WHERE id BETWEEN 1 AND 10000", BY_INDEX)
     return f"{_one(dsn, ROWS)}|{_one(dsn, GROUPS)}|{by_index}"
 
 
@@ -73,6 +77,14 @@ def test_a_crash_part_way_through_maintenance_loses_nothing(pgc_cluster, expect)
         dsn = cluster.dsn()
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+
+        _fresh_table(dsn)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            for st in BY_INDEX:
+                c.execute(st)
+            plan = [r[0] for r in c.execute("EXPLAIN (COSTS OFF) " + ROWS + " WHERE id BETWEEN 1 AND 10000")]
+        expect.text("yes" if any("Index Scan using" in line for line in plan) else "no", "yes",
+                    "premise: the by-index reading is an Index Scan through mc_id")
 
         for f in ("compact_rewrite('mc', 0.0)", "recluster('mc', 'v')", "compact('mc')", "vacuum('mc')"):
             name = f.split("(")[0]

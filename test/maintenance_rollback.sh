@@ -40,14 +40,22 @@ rows() {	# the rows, by content
 }
 RG_SQL="SELECT count(*) || '/' || coalesce(sum(row_count), 0) FROM pgcolumnar.row_group
          WHERE storage_id = pgcolumnar.get_storage_id('mr')"
+BY_INDEX_SETS="SET enable_seqscan = off; SET enable_bitmapscan = off; SET pgcolumnar.enable_custom_scan = off;"
+BY_INDEX_SQL="SELECT count(*) || '/' || md5(string_agg(id || ':' || v || ':' || w, ',' ORDER BY id))
+	     FROM mr WHERE id BETWEEN 1 AND 10000"
 by_index() {	# the rows an index scan returns, by content
-	q "SET enable_seqscan = off; SET enable_bitmapscan = off;
-	   SELECT count(*) || '/' || md5(string_agg(id || ':' || v || ':' || w, ',' ORDER BY id))
-	     FROM mr WHERE id BETWEEN 1 AND 10000" | grep -E '^[0-9]+/' | tail -1
+	# pgcolumnar.enable_custom_scan = off as well, and a premise that this plan is an
+	# Index Scan: enable_seqscan alone leaves the columnar custom scan on, and this
+	# whole-table range planned as Custom Scan (PgColumnarScan). Measured (#1339):
+	# with the index fetch reading the neighbouring row, every "by index" arm stayed
+	# green, because none of them read the index.
+	q "$BY_INDEX_SETS $BY_INDEX_SQL" | grep -E '^[0-9]+/' | tail -1
 }
 ROWS0="$(rows)"
 RG0="$(q "$RG_SQL")"
 check "premise: the table holds the rows it was given" "${ROWS0%%/*}|$RG0" "5400|10/10000"
+check "premise: the by-index reading is an Index Scan through mr_id" \
+	"$(pgc_uses_row_fetch "$BY_INDEX_SETS" "$BY_INDEX_SQL")" yes
 
 # rolled_back FUNCTION -> "<groups inside the transaction>|<rows after>|<groups after>|<by index after>"
 rolled_back() {

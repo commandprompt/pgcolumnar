@@ -57,10 +57,16 @@ rows() {
 }
 RG_SQL="SELECT count(*) || '/' || coalesce(sum(row_count), 0) FROM pgcolumnar.row_group
          WHERE storage_id = pgcolumnar.get_storage_id('mc')"
+BY_INDEX_SETS="SET enable_seqscan = off; SET enable_bitmapscan = off; SET pgcolumnar.enable_custom_scan = off;"
+BY_INDEX_SQL="SELECT count(*) || '/' || md5(string_agg(id || ':' || v || ':' || w, ',' ORDER BY id))
+	     FROM mc WHERE id BETWEEN 1 AND 10000"
 by_index() {
-	q "SET enable_seqscan = off; SET enable_bitmapscan = off;
-	   SELECT count(*) || '/' || md5(string_agg(id || ':' || v || ':' || w, ',' ORDER BY id))
-	     FROM mc WHERE id BETWEEN 1 AND 10000" | grep -E '^[0-9]+/' | tail -1
+	# pgcolumnar.enable_custom_scan = off as well, and a premise that this plan is an
+	# Index Scan: enable_seqscan alone leaves the columnar custom scan on, and this
+	# whole-table range planned as Custom Scan (PgColumnarScan). Measured (#1339):
+	# with the index fetch reading the neighbouring row, every "by index" arm stayed
+	# green, because none of them read the index.
+	q "$BY_INDEX_SETS $BY_INDEX_SQL" | grep -E '^[0-9]+/' | tail -1
 }
 state() {	# the table, as "<rows>|<row groups>|<rows by index>"
 	echo "$(rows)|$(q "$RG_SQL" | grep -E '^[0-9]+/' | tail -1)|$(by_index)"
@@ -74,6 +80,10 @@ fresh_table() {
 	          DELETE FROM mc WHERE id % 5 IN (1, 2) OR id BETWEEN 3001 AND 4000;
 	          CHECKPOINT;" >/dev/null
 }
+
+fresh_table
+check "premise: the by-index reading is an Index Scan through mc_id" \
+	"$(pgc_uses_row_fetch "$BY_INDEX_SETS" "$BY_INDEX_SQL")" yes
 
 FUNCS=("pgcolumnar.compact_rewrite('mc', 0.0)" "pgcolumnar.recluster('mc', 'v')" "pgcolumnar.compact('mc')" "pgcolumnar.vacuum('mc')")
 
