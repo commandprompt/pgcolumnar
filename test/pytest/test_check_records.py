@@ -69,6 +69,15 @@ def test_the_count_cannot_be_moved_without_a_record(expect):
         e.count = 99
     except AttributeError:
         expect.num(e.count, 1, "the count refused to be written and did not move")
+        # AND IT IS THE STREAM ITSELF (#1339). A read-only count over a second counter,
+        # kept in step by the recorder, also refuses the assignment above, and the
+        # whole file stayed green against one. Moving the stream directly is the only
+        # way to tell them apart: a count derived from it follows, a second one cannot.
+        e._records.append(e._records[0])
+        grown = e.count
+        e._records.clear()
+        expect.text(f"{grown}/{e.count}", "2/0",
+                    "and it moves with the record stream and with nothing else")
     else:
         raise AssertionError(
             "the count was assignable, so it is a second variable that can drift "
@@ -395,23 +404,67 @@ def test_a_recording_method_takes_exactly_one_record_per_call(expect):
     wrapper marks the first and the second keeps a verdict nobody set. This is the
     arm that says so, rather than the comment.
     """
-    e = pgc_vacuity.Expect("records::one-per-call")
+    # EVERY RECORDING METHOD, not a hand-picked seven (#1339). The list named seven of
+    # the seventeen, so a method outside it could record twice and nothing here would
+    # say so. The arm after the loop requires this list to cover every method the
+    # resolution wraps, so a new one cannot be added without joining it.
+    class _Result:
+        ret = 1
+
+        def assert_outcomes(self, **want):
+            return None
+
+        class stdout:
+            @staticmethod
+            def fnmatch_lines(patterns):
+                import fnmatch
+                line = "E   refused: the reason"
+                missing = [p for p in patterns if not fnmatch.fnmatch(line, p)]
+                if missing:
+                    raise AssertionError(f"unmatched: {missing}")
+
+    class _Err(Exception):
+        sqlstate = "42501"
+
+    plan = [{"Plan": {"Node Type": "Custom Scan", "Custom Plan Provider": "PgColumnarScan",
+                      "Columnar Batch Fold": "yes"}}]
     calls = [
-        lambda: e.num(1, 1, "num"),
-        lambda: e.text("a", "a", "text"),
-        lambda: e.rows(["a"], ["a"], "rows"),
-        lambda: e.ordered_rows(["a", "b"], ["a", "b"], "ordered_rows"),
-        lambda: e.at_least(5, 1, "at_least"),
-        lambda: e.differ("x", "y", "differ"),
-        lambda: e.row_set(["a"], ["a"], "row_set -- delegates to rows"),
+        ("num", lambda x: x.num(1, 1, "num")),
+        ("text", lambda x: x.text("a", "a", "text")),
+        ("rows", lambda x: x.rows(["a"], ["a"], "rows")),
+        ("ordered_rows", lambda x: x.ordered_rows(["a", "b"], ["a", "b"], "ordered_rows")),
+        ("at_least", lambda x: x.at_least(5, 1, "at_least")),
+        ("differ", lambda x: x.differ("x", "y", "differ")),
+        ("rows", lambda x: x.row_set(["a"], ["a"], "row_set -- delegates to rows")),
+        ("hash", lambda x: x.hash("0123456789abcdef" * 2,
+                                "".join(["0123456789abcdef", "0123456789abcdef"]), "hash")),
+        ("contains", lambda x: x.contains("a b c", "b", "contains")),
+        ("sqlstate", lambda x: x.sqlstate(_Err("denied"), "42501", "sqlstate")),
+        ("ordering_observable", lambda x: x.ordering_observable(["a", "b"], ["b", "a"],
+                                                              "ordering_observable")),
+        ("outcomes", lambda x: x.outcomes(_Result(), "outcomes", passed=1)),
+        ("run_failed", lambda x: x.run_failed(_Result(), "run_failed")),
+        ("refusal", lambda x: x.refusal(_Result(), "refusal", "the reason")),
+        ("plan_node", lambda x: x.plan_node(plan, node_type="Custom Scan",
+                                          provider="PgColumnarScan", name="plan_node")),
+        ("plan_marker", lambda x: x.plan_marker(plan, "Columnar Batch Fold", name="plan_marker")),
+        ("declines", lambda x: x.declines("pyarrow", name="declines", detail="none here")),
+        ("cannot_run", lambda x: x.cannot_run("MISSING_DEPENDENCY", "none here", name="cannot_run")),
     ]
+    # A FRESH RECORDER PER CALL: declines and cannot_run must be a test's first
+    # outcome, so they cannot share one with the others.
     deltas = []
-    for call in calls:
-        before = e.count
-        call()
-        deltas.append(e.count - before)
-    expect.rows([str(d) for d in deltas], ["1"] * len(calls),
+    for method, call in calls:
+        x = pgc_vacuity.Expect(f"records::one-per-call::{method}")
+        before = x.count
+        call(x)
+        deltas.append(f"{method}:{x.count - before}")
+    expect.rows(deltas, [f"{m}:1" for m, _ in calls],
                 "every call, including the delegating one, took exactly one record")
+    wrapped = sorted(nm for nm in dir(pgc_vacuity.Expect)
+                     if getattr(getattr(pgc_vacuity.Expect, nm), "_pgc_resolves_verdict", False))
+    expect.text(", ".join(sorted({m for m, _ in calls})), ", ".join(wrapped),
+                "and the calls cover every method the resolution wraps")
 
 
 # ---- phase 3: the session's records reconcile, and the check can fail --------
