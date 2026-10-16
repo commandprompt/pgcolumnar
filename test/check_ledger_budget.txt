@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 204
+suites_not_covered 203
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3190,4 +3190,20 @@ suites_not_covered 204
 #     never         2853 + 30 = 2883
 #     dated         1103 +  5 = 1108
 #     2883 + 1108 == 3991
-checks_never_observed_red 2883
+#
+# #1341, native_vecskip seeded, with its twin (OffgridwithJD): 2883 -> 2895, and
+# suites_not_covered 204 -> 203. The suite had no rows. It enters with all 15 checks
+# from five-major runs (15/15 on each of 15-19). 3 are dated by three mutations of the
+# skip mask: the zone-map loop stopping before the last vector and the zone-map rule
+# removed (each caught only by the new decodes|ruled-by-value arm, since #452's
+# by-value refinement still skips the same seven), and every skip source off (the
+# exact counts of the scalar and aggregate nodes). Twelve arrive never: the two
+# premises, the plan-node, row-count and group arms, the non-selective arm, the four
+# parity arms, which skipping cannot change, and the aggregate's presence-of-the-line
+# arm.
+#
+#     ledger rows   3991 + 15 = 4006
+#     never         2883 + 12 = 2895
+#     dated         1108 +  3 = 1111
+#     2895 + 1111 == 4006
+checks_never_observed_red 2895
