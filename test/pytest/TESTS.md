@@ -218,6 +218,7 @@ behaviour, the source of that number is named.
 - [170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays](#170-test_native_parquet_flbapy-uuid-and-decimal-read-from-fixed-length-byte-arrays)
 - [171. test_native_parquet_multifile.py: directories and globs read as one relation](#171-test_native_parquet_multifilepy-directories-and-globs-read-as-one-relation)
 - [172. test_native_index.py: index lookups and unique enforcement fetch by row number](#172-test_native_indexpy-index-lookups-and-unique-enforcement-fetch-by-row-number)
+- [173. test_native_fetch_bigcap.py: fetching from a row group above the cache cap](#173-test_native_fetch_bigcappy-fetching-from-a-row-group-above-the-cache-cap)
 
 ## 1. How to read a test in here
 
@@ -7773,3 +7774,14 @@ The pytest twin of `test/native_index.sh` (ported for #1341), every check by the
 | --- | --- |
 | `test_index_lookups_match_the_heap` | four lookups plan as Index Scans and match the heap, and a duplicate primary key is refused with the row count unchanged |
 | `test_a_standalone_unique_index_enforces` | a standalone unique index refuses a duplicate and admits a new key |
+
+## 173. test_native_fetch_bigcap.py: fetching from a row group above the cache cap
+
+The pytest twin of `test/native_fetch_bigcap.sh` (ported for #1341), every check by the shell's name. Above the 32 MB fetch-cache cap, the entry used to be dropped whole after every fetch, so each fetched row re-read the whole group (#433). The measure is buffers, a count rather than a time. The fixture's premise is its on-disk size, read back from `pgcolumnar.row_group`. Every measured query is forced onto the index path with the custom scan off, and asserts its plan. A payload wider than the cap re-decodes per fetch by design (#359). A narrow projection, and columns that fit, must still be cached.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_group_above_the_cap_is_read_once_for_what_fits` | the fixture has a group above the cap, every measured query is an index fetch, and ten rows of a narrow or a fitting projection cost under three times one row |
+| `test_caching_changes_no_row` | the first ten rows equal the same rows read in key order, and every payload is full length |
