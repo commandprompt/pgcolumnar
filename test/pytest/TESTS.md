@@ -217,6 +217,7 @@ behaviour, the source of that number is named.
 - [169. test_native_parquet_pushdown.py: the Parquet FDW skips row groups its statistics rule out](#169-test_native_parquet_pushdownpy-the-parquet-fdw-skips-row-groups-its-statistics-rule-out)
 - [170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays](#170-test_native_parquet_flbapy-uuid-and-decimal-read-from-fixed-length-byte-arrays)
 - [171. test_native_parquet_multifile.py: directories and globs read as one relation](#171-test_native_parquet_multifilepy-directories-and-globs-read-as-one-relation)
+- [172. test_native_index.py: index lookups and unique enforcement fetch by row number](#172-test_native_indexpy-index-lookups-and-unique-enforcement-fetch-by-row-number)
 
 ## 1. How to read a test in here
 
@@ -7761,3 +7762,14 @@ Several inputs must fail: an empty directory, a glob matching nothing, a schema-
 | `test_directories_and_globs_read_as_one_relation` | a directory and a glob equal the oracle on every surface, pushdown and counters aggregate, and every error case fails |
 | `test_a_fifo_named_parquet_is_skipped_not_opened` | a FIFO named `*.parquet` is skipped rather than opened, within a bound; declined as "the FIFO case" where mkfifo is unavailable |
 | `test_the_recursive_walk` | a nested tree reads as one relation in sorted path order, `_`/`.` names and symlinked directories are not walked, a symlinked file is read, and the depth bound errors |
+
+## 172. test_native_index.py: index lookups and unique enforcement fetch by row number
+
+The pytest twin of `test/native_index.sh` (ported for #1341), every check by the shell's name. An index scan, unique enforcement and primary-key enforcement all fetch rows by number (Phase D6a). Before that, an index scan on a native table returned no rows, and unique was silently unenforced. Lookups are compared with a heap mirror under a forced index path. The columnar custom scan is off as well as seqscan, because with only seqscan off the range aggregate planned as the custom scan. Each lookup first asserts that its plan is an Index Scan through `n_pkey`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_index_lookups_match_the_heap` | four lookups plan as Index Scans and match the heap, and a duplicate primary key is refused with the row count unchanged |
+| `test_a_standalone_unique_index_enforces` | a standalone unique index refuses a duplicate and admits a new key |

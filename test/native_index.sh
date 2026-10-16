@@ -23,14 +23,30 @@ psql_run "INSERT INTO n $GEN;"
 
 check "row count" "$(q 'SELECT count(*) FROM n;')" "8000"
 
-# Force the index path (seqscan off) in a single session (two -c, quiet so the SET
-# tag is not printed), and confirm scalar results match the heap oracle. Filtered
-# aggregates fall back from the zone-map path to an index scan that fetches each
-# row via PgColumnarReadRowByNumber.
+# Force the index path in a single session (two -c, quiet so the SET tag is not
+# printed), and confirm scalar results match the heap oracle. Each lookup fetches
+# its rows by number through the index.
+#
+# enable_seqscan=off was all this set, and it leaves the columnar custom scan on.
+# Measured (#1341): the range aggregate planned as Custom Scan (PgColumnarScan),
+# so it fetched nothing by row number, and with the index fetch reading the
+# neighbouring row it stayed green. The custom scan is off now, and index-only
+# and bitmap scans with it, so every lookup is an Index Scan that fetches; each
+# asserts that plan first.
+FORCE_INDEX="SET enable_seqscan=off; SET enable_bitmapscan=off;
+	SET enable_indexonlyscan=off; SET pgcolumnar.enable_custom_scan=off;"
 iscan() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -q -At -c "SET enable_seqscan=off" -c "$1" 2>/dev/null
+		-d "$PGC_DB" -q -At -c "$FORCE_INDEX" -c "$1" 2>/dev/null
 }
+
+for _ni in "point lookup:SELECT v FROM n WHERE id = 4242" \
+		"range aggregate:SELECT count(*), sum(k), min(v), max(v) FROM n WHERE id BETWEEN 100 AND 400" \
+		"IN lookup:SELECT count(*), sum(k) FROM n WHERE id IN (1,2000,4000,6000,8000)" \
+		"lookup miss:SELECT count(*) FROM n WHERE id = 999999"; do
+	check "premise: the index ${_ni%%:*} fetches through n_pkey" \
+		"$(pgc_uses_row_fetch "$FORCE_INDEX" "${_ni#*:}")" yes
+done
 
 check "index point lookup" \
 	"$(iscan 'SELECT v FROM n WHERE id = 4242;')" \
