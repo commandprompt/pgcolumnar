@@ -65,6 +65,21 @@ def _inversions(cur, table, col):
                      f"FROM {table}) s WHERE p > {col}")
 
 
+def _order_breaks(cur, table):
+    """-> how many rows break (k ASC NULLS LAST, j ASC) in the order the scan returns
+    them, the order vacuum_sorted('c', 'k', 'j') promises (#1339).
+
+    `_inversions` on k cannot see it: `p > k` is NULL when either side is, so NULLs
+    sorted first count nothing, and it never reads j, so ties on k in any j order
+    count nothing either. Measured: with NULLS FIRST, and with the sort on k alone,
+    the fixture check that used it stayed green.
+    """
+    return _one(cur, f"SELECT count(*) FROM (SELECT k, j, lag(k) OVER () AS pk, "
+                     f"lag(j) OVER () AS pj, row_number() OVER () AS rn FROM {table}) s "
+                     "WHERE rn > 1 AND ((pk IS NULL AND k IS NOT NULL) OR pk > k "
+                     "OR (pk IS NOT DISTINCT FROM k AND pj > j))")
+
+
 def _sort_status(cur, table, field):
     return _one(cur, f"SELECT {field} FROM pgcolumnar.sort_status('{table}')")
 
@@ -113,14 +128,14 @@ def test_the_fixture_really_is_ordered(fx, expect):
     as the rows being in order, and a claim arm on an unordered fixture would pass for
     the wrong reason."""
     with fx.cursor() as cur:
-        expect.num(_inversions(cur, "c", "k"), 0,
-                   "premise: the fixture is physically ordered on k")
+        expect.num(_order_breaks(cur, "c"), 0,
+                   "the fixture is physically ordered on (k, j), NULLs last")
         expect.num(_sort_status(cur, "c", "appended_groups"), 0,
-                   "premise: with no unsorted tail")
+                   "with no unsorted tail")
         expect.text(_storage(cur, "c", "sorted_kind"), "lexicographic",
-                    "premise: recorded as a lexicographic run")
+                    "recorded as a lexicographic run")
         expect.text(str(_storage(cur, "c", "sorted_by::text")), "{k,j}",
-                    "premise: on the key it was given")
+                    "on the key it was given")
         expect.at_least(_one(cur, "SELECT count(*) FROM c WHERE k IS NULL"), 1,
                         "premise: the fixture has NULLs in the sort column")
         expect.at_least(_one(cur, "SELECT count(*) FROM (SELECT k FROM c "
@@ -341,9 +356,9 @@ def zorder(fx):
 def test_a_zorder_run_is_not_a_sort_on_its_lead_column(zorder, expect):
     with zorder.cursor() as cur:
         expect.num(_sort_status(cur, "zc", "appended_groups"), 0,
-                   "premise: the Z-ordered table records a full run with no tail")
+                   "the Z-ordered table records a full run with no tail")
         expect.text(_storage(cur, "zc", "sorted_kind"), "zorder",
-                    "premise: recorded as a zorder run, not lexicographic")
+                    "recorded as a zorder run, not lexicographic")
         expect.at_least(_inversions(cur, "zc", "k"), 1,
                         "premise: and it is NOT in k order")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM zc ORDER BY k") else 0, 1,
@@ -479,7 +494,7 @@ def test_a_recorded_name_that_no_longer_resolves_is_not_a_claim(fx, expect):
         cur.execute("SELECT pgcolumnar.vacuum_sorted('rnd', 'k', 'j')")
         cur.execute("ALTER TABLE rnd DROP COLUMN k")
         expect.text(str(_storage(cur, "rnd", "sorted_by::text")), "{k,j}",
-                    "premise: the recorded key still names the dropped column")
+                    "the recorded key still names the dropped column")
         expect.at_least(_one(cur, "SELECT count(*) FROM (SELECT j < lag(j) OVER () AS d "
                                   "FROM rnd) z WHERE d"), 1,
                         "premise: and j alone really is NOT ordered, so a claim on it "
@@ -552,10 +567,10 @@ def test_a_collatable_sort_column_is_not_claimed(collated, expect):
     conn, _alt = collated
     with conn.cursor() as cur:
         expect.text(_storage(cur, "colc", "sorted_kind"), "lexicographic",
-                    "premise: the rewrite recorded a lexicographic run on the text "
+                    "the rewrite recorded a lexicographic run on the text "
                     "column")
         expect.num(_sort_status(cur, "colc", "appended_groups"), 0,
-                   "premise: with no tail, so only the collation stands between it and "
+                   "with no tail, so only the collation stands between it and "
                    "a claim")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM colc ORDER BY k") else 0, 1,
                    "REFUSE: a collatable sort column is not claimed, whatever its "
@@ -600,7 +615,7 @@ def test_a_collation_alter_changes_the_order_without_rewriting(collated, expect)
         expect.text("same" if before == after else "rewritten", "same",
                     "premise: the collation ALTER rewrote nothing (same storage id)")
         expect.text(_storage(cur, "colc", "sorted_kind"), "lexicographic",
-                    "premise: so the run is still recorded as lexicographic")
+                    "so the run is still recorded as lexicographic")
         expect.text(str(_one(cur, "SELECT collname FROM pg_collation WHERE oid = "
                                   "(SELECT attcollation FROM pg_attribute WHERE "
                                   "attrelid = 'colc'::regclass AND attname = 'k')")),
@@ -670,7 +685,7 @@ def test_a_composite_is_claimed_and_postgres_closes_the_hole(fx, expect):
                     "premise: a composite column's attcollation is InvalidOid, so it "
                     "IS claimed")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM t_comp ORDER BY k") else 0, 0,
-                   "premise: and it is claimed")
+                   "and it is claimed")
     message = ""
     try:
         with fx.cursor() as cur:
@@ -698,7 +713,7 @@ def test_an_enum_add_value_before_does_not_renumber(fx, expect):
         cur.execute("INSERT INTO t_enum_h SELECT * FROM t_enum")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('t_enum', 'k')")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM t_enum ORDER BY k") else 0, 0,
-                   "premise: an enum sort key is claimed")
+                   "an enum sort key is claimed")
     with fx.cursor() as cur:
         cur.execute("ALTER TYPE enum_t ADD VALUE 'a' BEFORE 'b'")
     with fx.cursor() as cur:
@@ -911,7 +926,7 @@ def test_truncate_restarts_numbering_in_a_new_storage(fx, expect):
                     "pgcolumnar.get_storage_id('trunc') AND "
                     "pgcolumnar.row_group.storage_id = pgcolumnar.storage.storage_id "
                     "GROUP BY sorted_from")), "true",
-                    "premise: the mark is set and numbering starts at 1 before the "
+                    "the mark is set and numbering starts at 1 before the "
                     "truncate")
         cur.execute("TRUNCATE trunc")
         cur.execute("INSERT INTO trunc SELECT * FROM h")
@@ -1023,7 +1038,7 @@ def test_a_query_that_cannot_use_the_order_does_not_pay_to_decide(planbuf_fx, ex
                         "premise: the fixture has many groups, so a per-group read "
                         "would show")
         expect.text(_storage(cur, "pb", "sorted_kind"), "lexicographic",
-                    "premise: and it is marked, so the claim is not refused at "
+                    "and it is marked, so the claim is not refused at "
                     "condition 1")
     on = _group_list_rows(conn, "on", "SELECT count(*) FROM pb WHERE j = 3")
     off = _group_list_rows(conn, "off", "SELECT count(*) FROM pb WHERE j = 3")
@@ -1074,7 +1089,7 @@ def test_a_projection_does_not_lend_its_order_to_the_base_relation(fx, expect):
                                   "pgcolumnar.get_storage_id('prc')")), "{3}",
                     "premise: the projection exists and is sorted on a DIFFERENT key")
         expect.text(str(_storage(cur, "prc", "sorted_by::text")), "{k,j}",
-                    "premise: the base relation still records its own lexicographic "
+                    "the base relation still records its own lexicographic "
                     "run on {k,j}")
         for template, name in (
                 ("SELECT k, j FROM %T WHERE j = 3 ORDER BY k, j",
