@@ -57,6 +57,14 @@ inv() {		# inversions on the lead column in the order the scan returns rows
 	q "SELECT count(*) FROM (SELECT $2, lag($2) OVER () AS p FROM $1) s WHERE p > $2;"
 }
 ss() { q "SELECT $2 FROM pgcolumnar.sort_status('$1');"; }
+# rows that break (k ASC NULLS LAST, j ASC) in scan order, the order vacuum_sorted
+# ('c', 'k', 'j') promises (#1339). inv cannot see it: `p > k` is NULL when either
+# side is, so NULLs sorted first count nothing, and it never reads j, so ties on k in
+# any j order count nothing. Measured: with NULLS FIRST, and with the sort on k alone,
+# the fixture check that used inv stayed green.
+order_breaks() {
+	q "SELECT count(*) FROM (SELECT k, j, lag(k) OVER () AS pk, lag(j) OVER () AS pj, row_number() OVER () AS rn FROM $1) s WHERE rn > 1 AND ((pk IS NULL AND k IS NOT NULL) OR pk > k OR (pk IS NOT DISTINCT FROM k AND pj > j));"
+}
 
 # ---------------------------------------------------------------- the fixture
 #
@@ -73,12 +81,12 @@ psql_run "SELECT pgcolumnar.set_options('c', stripe_row_limit => 2000, chunk_gro
 psql_run "INSERT INTO c SELECT * FROM h;"
 psql_run "SELECT pgcolumnar.vacuum_sorted('c', 'k', 'j');"
 
-check_num "premise: the fixture is physically ordered on k" "$(inv c k)" "0"
-check "premise: with no unsorted tail" "$(ss c appended_groups)" "0"
-check "premise: recorded as a lexicographic run" \
+check_num "the fixture is physically ordered on (k, j), NULLs last" "$(order_breaks c)" "0"
+check "with no unsorted tail" "$(ss c appended_groups)" "0"
+check "recorded as a lexicographic run" \
 	"$(q "SELECT sorted_kind FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('c');")" \
 	"lexicographic"
-check "premise: on the key it was given" \
+check "on the key it was given" \
 	"$(q "SELECT sorted_by::text FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('c');")" \
 	"{k,j}"
 check "premise: the fixture has NULLs in the sort column" \
@@ -202,9 +210,9 @@ psql_run "SELECT pgcolumnar.cluster('zc', 'k', 'j');"
 psql_run "CREATE TABLE zh (LIKE h) USING heap;"
 psql_run "INSERT INTO zh SELECT * FROM zc;"
 
-check "premise: the Z-ordered table records a full run with no tail" \
+check "the Z-ordered table records a full run with no tail" \
 	"$(ss zc appended_groups)" "0"
-check "premise: recorded as a zorder run, not lexicographic" \
+check "recorded as a zorder run, not lexicographic" \
 	"$(q "SELECT sorted_kind FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('zc');")" \
 	"zorder"
 check "premise: and it is NOT in k order" \
@@ -259,10 +267,10 @@ psql_run "SELECT pgcolumnar.set_options('colc', stripe_row_limit => 1000, chunk_
 psql_run "INSERT INTO colc SELECT * FROM colh;"
 psql_run "SELECT pgcolumnar.vacuum_sorted('colc', 'k');"
 
-check "premise: the rewrite recorded a lexicographic run on the text column" \
+check "the rewrite recorded a lexicographic run on the text column" \
 	"$(q "SELECT sorted_kind FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('colc');")" \
 	"lexicographic"
-check "premise: with no tail, so only the collation stands between it and a claim" \
+check "with no tail, so only the collation stands between it and a claim" \
 	"$(ss colc appended_groups)" "0"
 check "REFUSE: a collatable sort column is not claimed, whatever its collation" \
 	"$(sorts 'SELECT k FROM colc ORDER BY k')" "yes"
@@ -284,7 +292,7 @@ if [ -z "$ALTCOLL" ] || \
 	# `check`.
 	for _sp_n in "premise: C and the alternate collation really disagree on this data" \
 			"premise: the collation ALTER rewrote nothing (same storage id)" \
-			"premise: so the run is still recorded as lexicographic" \
+			"so the run is still recorded as lexicographic" \
 			"premise: and the column's collation really did change" \
 			"REFUSE: the order the rows are in is no longer the order the column asks for" \
 			"and ORDER BY k LIMIT returns the new collation's first rows, matching heap" \
@@ -305,7 +313,7 @@ else
 	psql_run "ALTER TABLE colh ALTER COLUMN k TYPE text COLLATE \"$ALTCOLL\";"
 	check "premise: the collation ALTER rewrote nothing (same storage id)" \
 		"$([ "$SID_BEFORE_ALTER" = "$(storage_id_of colc)" ] && echo same || echo rewritten)" "same"
-	check "premise: so the run is still recorded as lexicographic" \
+	check "so the run is still recorded as lexicographic" \
 		"$(q "SELECT sorted_kind FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('colc');")" \
 		"lexicographic"
 	check "premise: and the column's collation really did change" \
@@ -357,7 +365,7 @@ psql_run "SELECT pgcolumnar.vacuum_sorted('t_comp', 'k');"
 check "premise: a composite column's attcollation is InvalidOid, so it IS claimed" \
 	"$(q "SELECT (attcollation = 0)::text FROM pg_attribute WHERE attrelid = 't_comp'::regclass AND attname = 'k';")" \
 	"true"
-check "premise: and it is claimed" "$(sorts 'SELECT k FROM t_comp ORDER BY k')" "no"
+check "and it is claimed" "$(sorts 'SELECT k FROM t_comp ORDER BY k')" "no"
 check_text "PostgreSQL refuses to change a composite's field collation while a column uses it" \
 	"$(psql_run "ALTER TYPE comp_t ALTER ATTRIBUTE a TYPE text COLLATE \"C\" CASCADE;" 2>&1 | grep -oE 'cannot alter type' | head -1)" \
 	"cannot alter type"
@@ -372,7 +380,7 @@ psql_run "INSERT INTO t_enum SELECT g, (ARRAY['b','d','f'])[1+(g%3)]::enum_t FRO
 psql_run "CREATE TABLE t_enum_h (id int, k enum_t) USING heap;"
 psql_run "INSERT INTO t_enum_h SELECT * FROM t_enum;"
 psql_run "SELECT pgcolumnar.vacuum_sorted('t_enum', 'k');"
-check "premise: an enum sort key is claimed" "$(sorts 'SELECT k FROM t_enum ORDER BY k')" "no"
+check "an enum sort key is claimed" "$(sorts 'SELECT k FROM t_enum ORDER BY k')" "no"
 psql_run "ALTER TYPE enum_t ADD VALUE 'a' BEFORE 'b';"
 check "an enum ADD VALUE ... BEFORE does not renumber the values already stored" \
 	"$(sorts 'SELECT k FROM t_enum ORDER BY k')" "no"
@@ -451,7 +459,7 @@ psql_run "SELECT pgcolumnar.vacuum_sorted('rnd', 'k', 'j');"
 # the first column gone nothing about the remaining order can be claimed: j is
 # ordered only WITHIN equal k, so claiming j alone would be a wrong answer.
 psql_run "ALTER TABLE rnd DROP COLUMN k;"
-check "premise: the recorded key still names the dropped column" \
+check "the recorded key still names the dropped column" \
 	"$(q "SELECT sorted_by::text FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('rnd');")" \
 	"{k,j}"
 check "premise: and j alone really is NOT ordered, so a claim on it would be wrong" \
@@ -551,7 +559,7 @@ psql_run "ANALYZE pb;"
 PB_GROUPS="$(ss pb total_groups)"
 check "premise: the fixture has many groups, so a per-group read would show" \
 	"$([ "$PB_GROUPS" -ge 900 ] && echo yes || echo "no ($PB_GROUPS)")" "yes"
-check_text "premise: and it is marked, so the claim is not refused at condition 1" \
+check_text "and it is marked, so the claim is not refused at condition 1" \
 	"$(q "SELECT sorted_kind FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('pb');")" \
 	"lexicographic"
 PB_NOORDER_ON="$(grouprows on  'SELECT count(*) FROM pb WHERE j = 3')"
@@ -594,7 +602,7 @@ psql_run "INSERT INTO prc_h SELECT * FROM h;"
 check "premise: the projection exists and is sorted on a DIFFERENT key" \
 	"$(q "SELECT sort_key::text FROM pgcolumnar.projection WHERE projection_id > 0 AND storage_id = pgcolumnar.get_storage_id('prc');")" \
 	"{3}"
-check "premise: the base relation still records its own lexicographic run on {k,j}" \
+check "the base relation still records its own lexicographic run on {k,j}" \
 	"$(q "SELECT sorted_by::text FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('prc');")" \
 	"{k,j}"
 ansp  "a query the projection can serve still answers in the requested order" prc_h prc \
@@ -740,7 +748,7 @@ check_text "cached plan retracted by pgcolumnar.parallel_copy" \
 
 mk_sorted trunc
 TRUNC_SID="$(storage_id_of trunc)"
-check "premise: the mark is set and numbering starts at 1 before the truncate" \
+check "the mark is set and numbering starts at 1 before the truncate" \
 	"$(q "SELECT (sorted_from = min(group_number))::text FROM pgcolumnar.row_group, pgcolumnar.storage WHERE pgcolumnar.storage.storage_id = pgcolumnar.get_storage_id('trunc') AND pgcolumnar.row_group.storage_id = pgcolumnar.storage.storage_id GROUP BY sorted_from;")" \
 	"true"
 psql_run "TRUNCATE trunc;"
