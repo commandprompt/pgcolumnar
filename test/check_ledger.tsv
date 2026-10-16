@@ -2261,6 +2261,7 @@ maintenance_crash	maintenance_crash	compact_rewrite changed the row groups befor
 maintenance_crash	maintenance_crash	compact_rewrite changed the row groups in its open transaction	15;16;17;18;19	2026-10-15	compact_rewrite rewrites nothing (rewritten = 0)
 maintenance_crash	maintenance_crash	compact_rewrite committed, and the cluster came back after a crash before any checkpoint	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	compact_rewrite ran in its open transaction, and the cluster came back after a crash	15;16;17;18;19	never	-
+maintenance_crash	maintenance_crash	premise: the by-index reading is an Index Scan through mc_id	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	recluster changed the row groups before the crash	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	recluster changed the row groups in its open transaction	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	recluster committed, and the cluster came back after a crash before any checkpoint	15;16;17;18;19	never	-
@@ -2269,15 +2270,16 @@ maintenance_crash	maintenance_crash	vacuum changed the row groups before the cra
 maintenance_crash	maintenance_crash	vacuum changed the row groups in its open transaction	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	vacuum committed, and the cluster came back after a crash before any checkpoint	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	vacuum ran in its open transaction, and the cluster came back after a crash	15;16;17;18;19	never	-
-maintenance_rollback	maintenance_rollback	after a savepoint rolls back two rewrites, the rows written later in the transaction commit beside the old ones	15;16;17;18;19	2026-10-15	PgColumnarAllocateFreeSpace reuses space whatever its freeing xid, so a rolled-back maintenance function's freed bytes are overwritten
-maintenance_rollback	maintenance_rollback	after compact rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	never	-
-maintenance_rollback	maintenance_rollback	after compact_rewrite rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	2026-10-15	PgColumnarAllocateFreeSpace reuses space whatever its freeing xid, so a rolled-back maintenance function's freed bytes are overwritten
-maintenance_rollback	maintenance_rollback	after recluster rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	never	-
-maintenance_rollback	maintenance_rollback	after vacuum rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	never	-
-maintenance_rollback	maintenance_rollback	after vacuum_sorted rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	never	-
+maintenance_rollback	maintenance_rollback	after a savepoint rolls back two rewrites, the rows written later in the transaction commit beside the old ones	15;16;17;18;19	2026-10-16	PgColumnarAllocateFreeSpace reuses space whatever its freeing xid, so a rolled-back maintenance function's freed bytes are overwritten;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
+maintenance_rollback	maintenance_rollback	after compact rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
+maintenance_rollback	maintenance_rollback	after compact_rewrite rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	2026-10-16	PgColumnarAllocateFreeSpace reuses space whatever its freeing xid, so a rolled-back maintenance function's freed bytes are overwritten;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
+maintenance_rollback	maintenance_rollback	after recluster rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
+maintenance_rollback	maintenance_rollback	after vacuum rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
+maintenance_rollback	maintenance_rollback	after vacuum_sorted rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
 maintenance_rollback	maintenance_rollback	and every function then runs for real and keeps the same rows	15;16;17;18;19	never	-
 maintenance_rollback	maintenance_rollback	compact changed the row groups inside its transaction	15;16;17;18;19	never	-
 maintenance_rollback	maintenance_rollback	compact_rewrite changed the row groups inside its transaction	15;16;17;18;19	never	-
+maintenance_rollback	maintenance_rollback	premise: the by-index reading is an Index Scan through mr_id	15;16;17;18;19	never	-
 maintenance_rollback	maintenance_rollback	premise: the table holds the rows it was given	15;16;17;18;19	never	-
 maintenance_rollback	maintenance_rollback	recluster changed the row groups inside its transaction	15;16;17;18;19	never	-
 maintenance_rollback	maintenance_rollback	vacuum changed the row groups inside its transaction	15;16;17;18;19	never	-

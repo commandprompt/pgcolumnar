@@ -3456,4 +3456,15 @@ suites_not_covered 193
 #     never         3017 + 7 - 5 = 3019
 #     dated         1306 + 5 = 1311
 #     3019 + 1311 == 4330
-checks_never_observed_red 3019
+#
+# #1339, maintenance_rollback's and maintenance_crash's by-index readings read the
+# index (OffgridwithJD): 3019 -> 3017. Two premises are new, one per suite, both
+# never. With pgcolumnar_index_fetch_tuple finding no row, maintenance_rollback's
+# six "by index" arms are red; four of them entered never and are now dated, and
+# the other two gain the mutation in their history. No row is removed.
+#
+#     ledger rows   4330 + 2 = 4332
+#     never         3019 + 2 - 4 = 3017
+#     dated         1311 + 4 = 1315
+#     3017 + 1315 == 4332
+checks_never_observed_red 3017
