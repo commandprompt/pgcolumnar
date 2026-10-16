@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 199
+suites_not_covered 198
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3343,4 +3343,30 @@ suites_not_covered 199
 #     never         2988 - 16 = 2972
 #     dated         1201 + 16 = 1217
 #     2972 + 1217 == 4189
-checks_never_observed_red 2972
+#
+# #1341, native_groupagg_batch's NULL-key mutation (OffgridwithJD, from jdatcmd's
+# #1485 review): 2972 -> 2969. The grouped fold's gather dropping the NULL-key
+# flag folds the NULL group into k = 0 on the batch path only. Nine checks redden,
+# shell and twin alike; three of them (plain, two keys and count(*) against the
+# heap mirror) entered never and are now dated, and the other six gain the
+# mutation in their history. No row is added or removed.
+#
+#     ledger rows   4189 + 0 = 4189
+#     never         2972 - 3 = 2969
+#     dated         1217 + 3 = 1220
+#     2969 + 1220 == 4189
+#
+# #1341, native_fetch_position seeded, with its twin (OffgridwithJD): 2969 -> 2975,
+# and suites_not_covered 199 -> 198. The suite had no rows. It enters with all 12
+# checks from five-major runs (12/12 on each of 15-19). 6 are dated by four
+# mutations of pgcolumnar_fetch_row: the rank counting rows, the rank one too far,
+# the rank walking the validity bits, and a varying-length value reached by
+# decoding every earlier one. The two timing arms are dated by the walks only now
+# that the fetches go through the index and the timed pass is a read. Six arrive
+# never: the one-row-group fixture fact and five premises.
+#
+#     ledger rows   4189 + 12 = 4201
+#     never         2969 +  6 = 2975
+#     dated         1220 +  6 = 1226
+#     2975 + 1226 == 4201
+checks_never_observed_red 2975

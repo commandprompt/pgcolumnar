@@ -65,8 +65,32 @@ check "the rows are in one row group" \
 
 # Fetch by row number is what an index scan drives, so force one. Each leading
 # SET prints its own line ahead of the result, so these queries take the last.
+#
+# enable_seqscan=off does NOT turn the columnar custom scan off, and it was all
+# this suite set: measured, the single-row fetch, the near and far UPDATEs and
+# the mirror join all planned as Custom Scan (PgColumnarScan), so none of them
+# fetched by row number. A rank off by one left the single-row arm green, and a
+# walk over every earlier row left both timing arms green. The custom scan is
+# off now, and each measurement asserts first that its plan reads the index.
 FORCE="SET enable_seqscan = off; SET enable_bitmapscan = off;
-	SET max_parallel_workers_per_gather = 0;"
+	SET max_parallel_workers_per_gather = 0;
+	SET pgcolumnar.enable_custom_scan = off;"
+
+# reads_index QUERY INDEX -> yes, or the plan's first line: the premise that a
+# query fetches by row number through INDEX rather than scanning
+reads_index() {
+	local plan
+	plan="$(q "$FORCE EXPLAIN (COSTS OFF) $1")"
+	case "$plan" in
+		*"Index Scan using $2 "*) echo yes ;;
+		*) echo "no: $(grep -m1 -E 'Scan|Update' <<<"$plan" | sed 's/^ *//')" ;;
+	esac
+}
+
+check "premise: the mirror comparison fetches through the index" \
+	"$(reads_index "SELECT count(*) FROM fp_c c JOIN fp_h h USING (id) WHERE c.fixed IS DISTINCT FROM h.fixed" fp_c_id)" "yes"
+check "premise: a single-row fetch goes through the index" \
+	"$(reads_index "SELECT fixed FROM fp_c WHERE id = 1001" fp_c_id)" "yes"
 
 # rows spread across the whole group, including the far end where the old walk
 # was longest
@@ -103,7 +127,7 @@ FAR_HI=$ROWS
 upd_once() {  # id-low, id-high -> milliseconds for one pass
 	local start end
 	start=$(date +%s%N)
-	psql_run "$FORCE UPDATE fp_c SET fixed = fixed + 1
+	psql_run "$FORCE SELECT sum(fixed), sum(length(txt)) FROM fp_c
 		WHERE id BETWEEN $1 AND $2;" >/dev/null 2>&1
 	end=$(date +%s%N)
 	echo $(( (end - start) / 1000000 ))
@@ -129,6 +153,17 @@ upd_ms() {  # id-low, id-high -> median of three passes
 	c=$(upd_once "$1" "$2")
 	printf '%s\n%s\n%s\n' "$a" "$b" "$c" | sort -n | sed -n 2p
 }
+
+# The timed pass is a SELECT, not the UPDATE it was. A columnar UPDATE writes
+# each row again into a new row group, so only the first of three passes
+# fetched from the far end of the big group; the second and third fetched from
+# the start of the new one, and the median was always one of those. Measured
+# with the rank walking every earlier row: the UPDATE form read near 122 ms,
+# far 132 ms, green. A read leaves every row where it was, so all three passes
+# fetch the same positions. sum(length(txt)) makes it decode a varying-length
+# column, which the offset table serves.
+check "premise: the timed reads fetch through the index" \
+	"$(reads_index "SELECT sum(fixed), sum(length(txt)) FROM fp_c WHERE id BETWEEN $FAR_LO AND $FAR_HI" fp_c_id)" "yes"
 
 near="$(upd_ms $NEAR_LO $NEAR_HI)"
 far="$(upd_ms $FAR_LO $FAR_HI)"
@@ -157,7 +192,7 @@ build() {  # table, rows
 fetch_once() {  # table, table-rows, count -> milliseconds for one pass
 	local start end
 	start=$(date +%s%N)
-	psql_run "$FORCE UPDATE $1 SET v = v + 1 WHERE id > $(( $2 - $3 ));" \
+	psql_run "$FORCE SELECT sum(v), sum(length(t)) FROM $1 WHERE id > $(( $2 - $3 ));" \
 		>/dev/null 2>&1
 	end=$(date +%s%N)
 	echo $(( (end - start) / 1000000 ))
@@ -205,6 +240,9 @@ build fp_small $((ROWS / 2))
 build fp_big "$ROWS"
 
 K=$((ROWS / 20))
+check "premise: the doubled group's reads fetch through its index" \
+	"$(reads_index "SELECT sum(v), sum(length(t)) FROM fp_big WHERE id > $(( ROWS - K ))" fp_big_id)" "yes"
+
 small="$(fetch_ms fp_small $((ROWS / 2)) $K)"
 big="$(fetch_ms fp_big "$ROWS" $K)"
 echo "-- $K fetches at the far end, median of three: group of $((ROWS / 2)) took ${small} ms, group of $ROWS took ${big} ms"

@@ -212,6 +212,7 @@ behaviour, the source of that number is named.
 - [164. test_native_saop_pushdown.py: IN-lists and = ANY(array) prune row groups](#164-test_native_saop_pushdownpy-in-lists-and--anyarray-prune-row-groups)
 - [165. test_native_groupagg_batch.py: the grouped aggregate folds column-at-a-time](#165-test_native_groupagg_batchpy-the-grouped-aggregate-folds-column-at-a-time)
 - [166. test_native_fetch_projection.py: a fetch by row number decodes only what its caller needs](#166-test_native_fetch_projectionpy-a-fetch-by-row-number-decodes-only-what-its-caller-needs)
+- [167. test_native_fetch_position.py: a fetch by row number costs the same anywhere in its group](#167-test_native_fetch_positionpy-a-fetch-by-row-number-costs-the-same-anywhere-in-its-group)
 
 ## 1. How to read a test in here
 
@@ -7691,3 +7692,16 @@ The pytest twin of `test/native_fetch_projection.sh` (ported for #1341), every c
 | `test_a_projection_covering_every_column_decodes_nothing_and_is_right` | with the computed base-column set empty, every row is reconstructed with the right values |
 | `test_no_caller_decodes_every_column_and_index_deletion_reads_no_row` | the projection path calls no full decode, and index deletion asks no row whether it is live |
 | `test_every_needed_set_test_consults_the_all_columns_flag` | every needed-set membership test in the reader consults the explicit all-columns flag |
+
+## 167. test_native_fetch_position.py: a fetch by row number costs the same anywhere in its group
+
+The pytest twin of `test/native_fetch_position.sh` (ported for #1341), every check by the shell's name. A cached row group still walked to the row: it counted the validity bits below the row, then decoded and discarded that many values (#143). A rank prefix over the validity bitmap and an offset table for varying-length columns make each fetch O(1). Every fetch here runs with the columnar custom scan off, and each measurement first asserts that its plan reads the index. With only `enable_seqscan=off`, every query scanned instead and none fetched by row number. The timing ratios read the same ranges three times. An UPDATE would write its rows into a new group, so later passes would fetch elsewhere.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_every_fetched_value_matches_the_heap_mirror` | the group is one row group, and fixed, varying-length and heavily-null columns fetched through the index match a heap mirror, at every probed position |
+| `test_the_cost_does_not_depend_on_the_position` | fetching the last twentieth of the group costs under three times the first |
+| `test_a_bigger_group_does_not_cost_more_per_fetch` | the same far-end fetches in a group twice the size cost under 1.8 times as much |
+| `test_the_indexes_that_make_it_constant_are_in_the_fetch` | `pgcolumnar_fetch_row` takes the rank from the prefix and a varying-length value from the offset table |
