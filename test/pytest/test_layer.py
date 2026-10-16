@@ -177,6 +177,15 @@ def test_layer_refuses_a_zero_expectation(pytester, expect):
     pytester.makepyfile("def test_one(expect): expect.num(1, 1, 'one')")
     result = pytester.runpytest("-p", "pgc_vacuity", "--pgc-expect-tests", "0")
     expect.run_failed(result, "an expectation of zero asserts nothing")
+    # AND FOR THAT REASON (#1339). One test collected against an expectation of 0 also
+    # fails the count check, so with the zero refusal removed the arm above stayed
+    # green. The refusal's own words, on stderr where a UsageError is written, are what
+    # only the refusal produces.
+    err = result.stderr.str()
+    expect.text("refused as zero" if "--pgc-expect-tests 0 would be satisfied by a run "
+                "that collected nothing" in err
+                else f"not refused as zero: {err.strip().splitlines()[-1:]!r}",
+                "refused as zero", "and it is refused because zero asserts nothing")
 
 
 # ---------------------------------------------------------------------------
