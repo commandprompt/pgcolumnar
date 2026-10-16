@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 194
+suites_not_covered 193
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3430,4 +3430,17 @@ suites_not_covered 194
 #     never         3006 +  4 = 3010
 #     dated         1272 + 28 = 1300
 #     3010 + 1300 == 4310
-checks_never_observed_red 3010
+#
+# #1341, native_index seeded, with its twin (OffgridwithJD): 3010 -> 3017, and
+# suites_not_covered 194 -> 193. The suite had no rows. It enters with all 13
+# checks from five-major runs (13/13 on each of 15-19). 6 are dated by two
+# mutations of pgcolumnar_index_fetch_tuple: the neighbouring row fetched, and no
+# row found. Seven arrive never: the four index-path premises, the row count, the
+# lookup miss (which no fetch mutation turns into a hit), and the unique index
+# admitting a new key.
+#
+#     ledger rows   4310 + 13 = 4323
+#     never         3010 +  7 = 3017
+#     dated         1300 +  6 = 1306
+#     3017 + 1306 == 4323
+checks_never_observed_red 3017

@@ -2696,6 +2696,19 @@ native_groupagg_batch	native_groupagg_batch	toggle-differential: two keys [premi
 native_groupagg_batch	native_groupagg_batch	two keys: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	two keys: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
 native_groupagg_batch	native_groupagg_batch	two keys: the grouped node is planned	15;16;17;18;19	never	-
+native_index	native_index	duplicate id rejected	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple fetches the neighbouring row number;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
+native_index	native_index	index IN lookup	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple fetches the neighbouring row number;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
+native_index	native_index	index lookup miss returns nothing	15;16;17;18;19	never	-
+native_index	native_index	index point lookup	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple fetches the neighbouring row number;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
+native_index	native_index	index range aggregate	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple fetches the neighbouring row number;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
+native_index	native_index	premise: the index IN lookup fetches through n_pkey	15;16;17;18;19	never	-
+native_index	native_index	premise: the index lookup miss fetches through n_pkey	15;16;17;18;19	never	-
+native_index	native_index	premise: the index point lookup fetches through n_pkey	15;16;17;18;19	never	-
+native_index	native_index	premise: the index range aggregate fetches through n_pkey	15;16;17;18;19	never	-
+native_index	native_index	row count	15;16;17;18;19	never	-
+native_index	native_index	row count unchanged after rejected dup	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple fetches the neighbouring row number;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
+native_index	native_index	unique index admits a new key	15;16;17;18;19	never	-
+native_index	native_index	unique index rejects duplicate	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple fetches the neighbouring row number;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
 native_index_projection	native_index_projection	a parallel build projects one column of twenty, not all twenty	15;16;17;18;19	never	-
 native_index_projection	native_index_projection	a parallel expression build projects its expression's columns	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Expressions' columns
 native_index_projection	native_index_projection	a parallel partial build projects the predicate's columns too	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Predicate's columns
