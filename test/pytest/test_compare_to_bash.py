@@ -1542,6 +1542,65 @@ def test_every_pair_in_the_tree_is_declared(expect):
                 "every incomplete pair says why, at more than a passing word")
 
 
+def _registered_suites():
+    """The SUITES array, read the way run_all_versions.sh itself reads it: the same
+    sed range and an eval, through bash, so this guard and the runner cannot disagree
+    about which suites exist."""
+    import subprocess
+    runner = HERE.parent / "run_all_versions.sh"
+    out = subprocess.run(
+        ["bash", "-c", 'eval "$(sed -n \'/^SUITES=(/,/)$/p\' "$1")"; printf "%s\\n" "${SUITES[@]}"',
+         "bash", str(runner)],
+        capture_output=True, text=True, check=True).stdout
+    return [s for s in out.split("\n") if s]
+
+
+UNPORTED_FILE = HERE / "unported_suites.txt"
+
+
+def _unported():
+    if not UNPORTED_FILE.exists():
+        return None
+    return [ln.strip() for ln in UNPORTED_FILE.read_text().splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def test_every_registered_suite_is_ported_or_declared_unported(expect):
+    """NO SUITE IS TWIN-LESS WITHOUT SAYING SO (#1341).
+
+    `test_every_pair_in_the_tree_is_declared` grades the pairs that EXIST. A registered
+    shell suite with no pytest twin was in no list at all, so the parity goal (#432)
+    could not be read off the tree: 168 suites were twin-less and nothing named them,
+    and a new shell-only suite could land with nobody noticing. `unported_suites.txt`
+    declares them, one stem per line so that a port's removal and another port's
+    removal never conflict, and this arm holds it in both directions:
+
+        a registered suite with no twin, not declared     reddens, named
+        a declared stem that now has its twin             reddens, so the port must
+                                                          also move it to COMPLETE or
+                                                          INCOMPLETE
+        a declared stem that is not a registered suite    reddens, so the list cannot rot
+    """
+    reg = _registered_suites()
+    expect.at_least(len(reg), 200, "premise: the runner's SUITES array was read, not an empty one")
+    unp = _unported()
+    expect.text("present" if unp is not None else f"missing: {UNPORTED_FILE.name}", "present",
+                "premise: the unported declaration exists")
+    if unp is None:
+        return
+    expect.num(len(unp), len(set(unp)), "premise: no stem is declared unported twice")
+    paired = {s for s in reg if (HERE / f"test_{s}.py").exists()}
+    undeclared = sorted(s for s in reg if s not in paired and s not in set(unp))
+    ported = sorted(s for s in unp if s in paired)
+    phantom = sorted(set(unp) - set(reg))
+    expect.text(", ".join(undeclared) or "none", "none",
+                "every registered suite without a pytest twin is declared unported")
+    expect.text(", ".join(ported) or "none", "none",
+                "and a suite that gained its twin is no longer declared unported")
+    expect.text(", ".join(phantom) or "none", "none",
+                "and every declared unported stem is a registered suite")
+
+
 def test_the_ported_suites_in_this_tree_are_graded_one_for_one(expect):
     """THE STANDING ARM, and the reason this file is not only about fixtures.
 

@@ -288,7 +288,9 @@
 # guard_tests 435 -> 438 for three arms in test_mutation_ledger.py: a mutation text holding
 # ';' is refused at merge, a ledger piece with whitespace at an end is refused, and the
 # committed ledger holds none, by collection over NO_CLUSTER.
-guard_tests 438
+# guard_tests 438 -> 439 for #1341's test_every_registered_suite_is_ported_or_declared_unported
+# in test_compare_to_bash.py: one test, by collection over NO_CLUSTER.
+guard_tests 439
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
