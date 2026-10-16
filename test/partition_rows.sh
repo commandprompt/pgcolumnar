@@ -52,9 +52,19 @@ check "an UPDATE moving 49 rows to the other partition succeeds, as on heap" \
 	"$(both "UPDATE %p SET id = id + 1000 WHERE id < 50")" "ok|ok"
 check "and each partition holds what heap's does" "$(answers "$SPLIT")" "950/49|950/49"
 check "and the parent holds the same rows as heap's" "$(same "$CONTENT")" "same"
-IDX="SET enable_seqscan = off; SET enable_bitmapscan = off;"
+# The custom scan off too, and a premise that the columnar lookup reads the key:
+# enable_seqscan alone leaves the columnar custom scan on. Measured (#1339): with
+# the index fetch finding no row, this arm stayed green, because the columnar
+# parent was answered by its partitions' custom scans, not by the primary key.
+IDX="SET enable_seqscan = off; SET enable_bitmapscan = off; SET pgcolumnar.enable_custom_scan = off;"
+# It plans as an Index Only Scan (it reads only id), which on a columnar table still
+# asks each row whether it is live; the premise accepts either index node.
+KEY_SQL="SELECT count(*) FILTER (WHERE id = 1001) || '/' || count(*) FILTER (WHERE id = 1) FROM %p WHERE id IN (1, 1001)"
+check "premise: the columnar key lookup reads the primary key" \
+	"$(case "$(q "$IDX EXPLAIN (COSTS OFF) ${KEY_SQL//%p/pr_pgcolumnar}")" in
+		*"Index Scan using"*|*"Index Only Scan using"*) echo yes ;; *) echo no ;; esac)" yes
 check "the primary key finds a moved row at its new key, and not at its old one, as on heap" \
-	"$(answers "$IDX SELECT count(*) FILTER (WHERE id = 1001) || '/' || count(*) FILTER (WHERE id = 1) FROM %p WHERE id IN (1, 1001)")" \
+	"$(answers "$IDX $KEY_SQL")" \
 	"1/0|1/0"
 
 # ---- the key on the parent ----------------------------------------------------------
