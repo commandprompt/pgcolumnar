@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 207
+suites_not_covered 206
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3145,4 +3145,18 @@ suites_not_covered 207
 #     never         2838 +  3 = 2841
 #     dated         1085 +  7 = 1092
 #     2841 + 1092 == 3933
-checks_never_observed_red 2841
+#
+# #1341, native_batch_fold_projection seeded, with its twin (OffgridwithJD): 2841 ->
+# 2845, and suites_not_covered 207 -> 206. The suite had no rows. It enters with all
+# 6 checks from five-major runs (6/6 on each of 15-19). 2 are dated: the payload list
+# omitting the last column (the fold-equals-reference arm) and the fold never taken
+# (the fold-ran arm). Four arrive never: the non-empty reference, the new premise that
+# the reference ran unfolded, the new arm comparing the reference with the generator's
+# own answer, which no product mutation here reaches because the reference runs on the
+# row path, and the liveness probe.
+#
+#     ledger rows   3933 +  6 = 3939
+#     never         2841 +  4 = 2845
+#     dated         1092 +  2 = 1094
+#     2845 + 1094 == 3939
+checks_never_observed_red 2845
