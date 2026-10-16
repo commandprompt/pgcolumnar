@@ -219,6 +219,7 @@ behaviour, the source of that number is named.
 - [171. test_native_parquet_multifile.py: directories and globs read as one relation](#171-test_native_parquet_multifilepy-directories-and-globs-read-as-one-relation)
 - [172. test_native_index.py: index lookups and unique enforcement fetch by row number](#172-test_native_indexpy-index-lookups-and-unique-enforcement-fetch-by-row-number)
 - [173. test_native_fetch_bigcap.py: fetching from a row group above the cache cap](#173-test_native_fetch_bigcappy-fetching-from-a-row-group-above-the-cache-cap)
+- [174. test_sorted_projection.py: vacuum_sorted reorders storage and changes no answer](#174-test_sorted_projectionpy-vacuum_sorted-reorders-storage-and-changes-no-answer)
 
 ## 1. How to read a test in here
 
@@ -7785,3 +7786,15 @@ The pytest twin of `test/native_fetch_bigcap.sh` (ported for #1341), every check
 | --- | --- |
 | `test_a_group_above_the_cap_is_read_once_for_what_fits` | the fixture has a group above the cap, every measured query is an index fetch, and ten rows of a narrow or a fitting projection cost under three times one row |
 | `test_caching_changes_no_row` | the first ten rows equal the same rows read in key order, and every payload is full length |
+
+## 174. test_sorted_projection.py: vacuum_sorted reorders storage and changes no answer
+
+The pytest twin of `test/sorted_projection.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.vacuum_sorted()` rewrites a columnar table physically sorted on a key. It must never change an answer: every query shape agrees with a heap oracle before and after, order-independently, and in order where the query orders. It must also reorder storage for real, so a narrow range on the sort key skips vectors it could not skip before. The rest covers a multi-column key, the reclaim of deleted rows with the index rebuilt, idempotence, and argument validation. Each index lookup is forced with the custom scan off and asserts that it reads the index. Each refusal must be the function's own, identified by its SQLSTATE.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_sorted_rewrite_changes_no_answer_and_really_reorders` | five query shapes match the heap before and after the sort, the ordered oracle is order-sensitive, and the sort makes the range skip vectors |
+| `test_a_multi_key_sort_reclaims_and_rebuilds_the_index` | a two-column sort matches, deletes are reclaimed, the rebuilt index finds and hides the right rows, and a second sort changes nothing |
+| `test_vacuum_sorted_refuses_what_it_cannot_sort` | a heap table, an unknown column, no sort key and a json key are each refused with their own SQLSTATE |
