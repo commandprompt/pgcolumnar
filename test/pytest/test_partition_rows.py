@@ -21,7 +21,9 @@ AMS = ("pgcolumnar", "heap")
 CONTENT = ("SELECT count(*) || '/' || md5(string_agg(id || ':' || k || ':' || v, ',' ORDER BY id)) "
            "FROM %p")
 SPLIT = "SELECT (SELECT count(*) FROM %p_1) || '/' || (SELECT count(*) FROM %p_2)"
-IDX = ("SET enable_seqscan = off", "SET enable_bitmapscan = off")
+# the custom scan off too: enable_seqscan alone leaves it on, and the columnar parent
+# was answered by its partitions' custom scans rather than the primary key (#1339)
+IDX = ("SET enable_seqscan = off", "SET enable_bitmapscan = off", "SET pgcolumnar.enable_custom_scan = off")
 
 
 def _connect(cluster, schema, name):
@@ -118,6 +120,17 @@ def test_rows_cross_columnar_partitions_and_keys_hold_through_the_parent(pgc_clu
     expect.text(_answers(pgc_conn, SPLIT), "950/49|950/49", "and each partition holds what heap's does")
     c, h = _answers(pgc_conn, CONTENT).split("|")
     expect.text("same" if c == h else f"{c}|{h}", "same", "and the parent holds the same rows as heap's")
+    with pgc_conn.cursor() as cur:
+        for s in IDX:
+            cur.execute(s)
+        cur.execute("EXPLAIN (COSTS OFF) SELECT count(*) FILTER (WHERE id = 1001) || '/' || "
+                    "count(*) FILTER (WHERE id = 1) FROM pr_pgcolumnar WHERE id IN (1, 1001)")
+        # an Index Only Scan here (only id is read), which still asks each row whether it is live
+        lookup = "yes" if any("Index Scan using" in r[0] or "Index Only Scan using" in r[0]
+                              for r in cur.fetchall()) else "no"
+        for s in IDX:
+            cur.execute(s.replace("SET ", "RESET ").split(" =")[0])
+    expect.text(lookup, "yes", "premise: the columnar key lookup reads the primary key")
     expect.text(_answers(pgc_conn, "SELECT count(*) FILTER (WHERE id = 1001) || '/' || "
                                    "count(*) FILTER (WHERE id = 1) FROM %p WHERE id IN (1, 1001)", IDX),
                 "1/0|1/0", "the primary key finds a moved row at its new key, and not at its old one, as on heap")
