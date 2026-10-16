@@ -1093,8 +1093,10 @@ def test_a_plain_gather_never_sits_above_a_scan_claiming_an_order(fx, expect):
     order the rows arrive in. Either the plan is not parallel, or something above the
     Gather restores the order -- a Gather Merge or a Sort.
 
-    Parallelism is forced on in this session because the harness pins gather workers to
-    zero, which would make the arm pass by never planning a parallel node at all.
+    Parallelism is forced on in this session, so that the arm cannot pass by never
+    planning a parallel node at all. The shell's harness pins gather workers to zero;
+    this one leaves PostgreSQL's default of 2, so the SET is a guarantee here, not the
+    only thing that allows a Gather.
     """
     with fx.cursor() as cur:
         expect.num(_inversions(cur, "c", "k"), 0,

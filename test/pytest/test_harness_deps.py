@@ -914,7 +914,12 @@ def test_the_gate_runs_the_membership_decision_rather_than_only_this_file(expect
     human (or a future part) calling it gets an answer, not a traceback."""
     ci = (HERE.parents[1] / ".github" / "workflows" / "ci.yml").read_text()
     cluster = ci[ci.index("pytest (cluster tests"):]
-    expect.at_least(cluster.count("if p.name not in NO_CLUSTER"), 1,
+    # NOT IN A COMMENT (#1339). Counted over the whole text, a YAML comment quoting
+    # the filter satisfied this arm while the job ran something else: measured with
+    # the job's filter inverted and the old one quoted in a comment, it stayed green.
+    code = "\n".join(line for line in cluster.splitlines()
+                      if not line.lstrip().startswith("#"))
+    expect.at_least(code.count("if p.name not in NO_CLUSTER"), 1,
                     "the gate's cluster job runs the complement of NO_CLUSTER")
     expect.text(repr(HERE.joinpath("test_harness_deps.py").name in NO_CLUSTER), "False",
                 "and this file is in that complement, so the gate runs its membership decision")
