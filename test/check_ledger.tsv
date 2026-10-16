@@ -2245,13 +2245,21 @@ latest_reading	latest_reading	the GROUP BY form returns what DISTINCT ON returns
 latest_reading	latest_reading	the LATERAL form returns what DISTINCT ON returns	15;16;17;18;19	2026-10-12	the document's LATERAL recipe orders by ts ascending, so it returns each device's FIRST reading
 latest_reading	latest_reading	with the btree the LATERAL form reads under a tenth of the table	15;16;17;18;19	never	-
 latest_reading	latest_reading	without the btree the LATERAL form reads the table once per device	15;16;17;18;19	never	-
+maintenance_crash	maintenance_crash	after a crash with compact committed, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with compact committed, the table is as compact left it, with the same rows	15;16;17;18;19	never	-
+maintenance_crash	maintenance_crash	after a crash with compact uncommitted, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with compact uncommitted, the table is as it was, by scan and by index	15;16;17;18;19	never	-
+maintenance_crash	maintenance_crash	after a crash with compact_rewrite committed, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with compact_rewrite committed, the table is as compact_rewrite left it, with the same rows	15;16;17;18;19	2026-10-15	PgColumnarWriteLogicalData writes data pages without WAL, so a committed rewrite's pages are lost in a crash
+maintenance_crash	maintenance_crash	after a crash with compact_rewrite uncommitted, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with compact_rewrite uncommitted, the table is as it was, by scan and by index	15;16;17;18;19	never	-
+maintenance_crash	maintenance_crash	after a crash with recluster committed, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with recluster committed, the table is as recluster left it, with the same rows	15;16;17;18;19	2026-10-15	PgColumnarWriteLogicalData writes data pages without WAL, so a committed rewrite's pages are lost in a crash
+maintenance_crash	maintenance_crash	after a crash with recluster uncommitted, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with recluster uncommitted, the table is as it was, by scan and by index	15;16;17;18;19	never	-
+maintenance_crash	maintenance_crash	after a crash with vacuum committed, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with vacuum committed, the table is as vacuum left it, with the same rows	15;16;17;18;19	2026-10-15	PgColumnarWriteLogicalData writes data pages without WAL, so a committed rewrite's pages are lost in a crash
+maintenance_crash	maintenance_crash	after a crash with vacuum uncommitted, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with vacuum uncommitted, the table is as it was, by scan and by index	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	compact changed the row groups before the crash	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	compact changed the row groups in its open transaction	15;16;17;18;19	never	-
@@ -2479,8 +2487,8 @@ native_encdesc_golden	native_encdesc_golden	int column a rawLen parses as 1200 (
 native_encdesc_golden	native_encdesc_golden	the table reads back all rows	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	trailing sharedTableLen is 0 (u32 at offset 6+13=19)	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	vectorCount parses as 1 (at offset 2)	15;16;17;18;19	never	-
-native_fetch_bigcap	native_fetch_bigcap	a narrow projection over a wide group is cached too (#433)	15;16;17;18;19	never	-
-native_fetch_bigcap	native_fetch_bigcap	columns that fit are cached even when their group does not (#433)	15;16;17;18;19	never	-
+native_fetch_bigcap	native_fetch_bigcap	a narrow projection over a wide group is cached too (#433)	15;16;17;18;19	2026-10-16	the fetch cache reads its row group whole and drops an entry whose group exceeds the cap after every fetch, the #433 defect (columnar_reader.c)
+native_fetch_bigcap	native_fetch_bigcap	columns that fit are cached even when their group does not (#433)	15;16;17;18;19	2026-10-16	the fetch cache reads its row group whole and drops an entry whose group exceeds the cap after every fetch, the #433 defect (columnar_reader.c)
 native_fetch_bigcap	native_fetch_bigcap	every payload survived the round trip at full length	15;16;17;18;19	never	-
 native_fetch_bigcap	native_fetch_bigcap	premise: fetching one row touched a measurable number of buffers	15;16;17;18;19	never	-
 native_fetch_bigcap	native_fetch_bigcap	premise: fetching ten rows touched a measurable number of buffers	15;16;17;18;19	never	-
@@ -2500,7 +2508,7 @@ native_fetch_cache	native_fetch_cache	a hit re-checks the group's natts against 
 native_fetch_cache	native_fetch_cache	a hit re-checks the group's rowCount against the row group	15;16;17;18;19	2026-10-16	columnar_reader.c: a fetch-cache hit no longer re-checks rowCount
 native_fetch_cache	native_fetch_cache	a wide group's fetch is not far dearer than a small group's (#353)	15;16;17;18;19	2026-10-16	columnar_reader.c: crossing the fetch-cache cap drops every column, not the one that crossed it;columnar_reader.c: every fetch-cache lookup misses, so each fetch decodes its group again
 native_fetch_cache	native_fetch_cache	an entry from an earlier command is rejected	15;16;17;18;19	2026-10-16	columnar_reader.c: a fetch-cache entry from an earlier command is not rejected
-native_fetch_cache	native_fetch_cache	crossing the fetch cache cap costs proportionally, not totally (#359)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	crossing the fetch cache cap costs proportionally, not totally (#359)	15;16;17;18;19	2026-10-16	the fetch cache releases no column over the cap and drops the whole entry after a fetch that crossed it, the #359 defect (columnar_reader.c)
 native_fetch_cache	native_fetch_cache	every fc_many reading measured ten row groups (#801)	15;16;17;18;19	never	-
 native_fetch_cache	native_fetch_cache	every fc_one reading measured one row group (#801)	15;16;17;18;19	never	-
 native_fetch_cache	native_fetch_cache	every group-number comparison is keyed by the storage id too	15;16;17;18;19	2026-10-16	columnar_reader.c: the fetch-cache key compares the group number without the storage id

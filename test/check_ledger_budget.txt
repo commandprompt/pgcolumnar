@@ -3518,4 +3518,20 @@ suites_not_covered 190
 #     never         3053 +  5 = 3058
 #     dated         1324 +  6 = 1330
 #     3058 + 1330 == 4388
-checks_never_observed_red 3058
+#
+# #1341 gaps, three arms that no mutation had reddened, and eight new (OffgridwithJD):
+# 3058 -> 3055. maintenance_crash gains eight arms, one per crash and function: after
+# recovery the index reads the rows a scan reads. Its as-before arms compare two
+# by-index readings, so an index fetch that finds nothing left all 25 green; the new
+# eight go red under it and are dated by it. Two #433 arms in native_fetch_bigcap
+# are dated by restoring the #433 defect (each entry reads its group whole, and a
+# group over the cap is dropped after every fetch), and native_fetch_cache's #359
+# ratio by restoring the #359 one (no column released, the whole entry dropped once
+# over the cap): 1956 ms against 68. All from five-major runs, 33, 15 and 26 checks
+# green on each of 15-19.
+#
+#     ledger rows   4388 +  8 = 4396
+#     never         3058 -  3 = 3055
+#     dated         1330 + 11 = 1341
+#     3055 + 1341 == 4396
+checks_never_observed_red 3055
