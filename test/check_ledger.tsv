@@ -2753,6 +2753,21 @@ native_repack	native_repack	the columnar table is unharmed: content hash	19	2026
 native_repack	native_repack	the columnar table is unharmed: row count	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing
 native_repack	native_repack	the columnar table is unharmed: storage options	19	never	-
 native_repack	native_repack	without an identity index it is refused by PostgreSQL, not by us	19	never	-
+native_vecskip	native_vecskip	and the aggregate skips the same seven vectors	15;16;17;18;19	2026-10-16	columnar_reader.c: no vector skip at all (zone-map rule off, refine_skipvec and qual_skipvec return at once)
+native_vecskip	native_vecskip	cross-vector range parity	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	empty range parity	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	last-vector range parity	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	no whole group removed	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	non-selective removes no vectors	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	premise: and it is not the scalar scan	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	premise: the aggregate arm really is a vectorized aggregate	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	range parity	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	row count	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	single row group	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	the seven vectors outside the range are skipped	15;16;17;18;19	2026-10-16	columnar_reader.c: no vector skip at all (zone-map rule off, refine_skipvec and qual_skipvec return at once)
+native_vecskip	native_vecskip	the vectorized aggregate reports Columnar Vectors Skipped	15;16;17;18;19	never	-
+native_vecskip	native_vecskip	the zone maps ruled them out without decoding them: one vector decoded, none ruled out by value	15;16;17;18;19	2026-10-16	columnar_reader.c: build_skipvec never excludes a vector by its zone map;columnar_reader.c: build_skipvec's zone-map loop stops before the last vector;columnar_reader.c: no vector skip at all (zone-map rule off, refine_skipvec and qual_skipvec return at once)
 native_writer	native_writer	drop clears native column chunks	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarDeleteMetadata leaves the column_chunk rows
 native_writer	native_writer	drop clears native row groups	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarDeleteMetadata leaves the row_group rows
 native_writer	native_writer	drop clears native storage row	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarDeleteMetadata leaves the storage row
