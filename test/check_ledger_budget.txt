@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 214
+suites_not_covered 213
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3017,4 +3017,18 @@ suites_not_covered 214
 #     never         2704 + 18 = 2722
 #     dated          987 + 11 = 998
 #     2722 + 998 == 3720
-checks_never_observed_red 2722
+#
+# #1341, native_decode_gate_width seeded, with its twin (OffgridwithJD): 2722 -> 2754,
+# and suites_not_covered 214 -> 213. The suite had no rows. It enters with all 35
+# checks from five-major runs (35/35 on each of 15-19). 3 are dated by three
+# mutations of the #595 width gate: gating whatever the width (the two "not gated"
+# arms), > for >= (the boundary arm), and a payload count one too high (the
+# raised-threshold arm). Thirty-two arrive never: the twenty-one premises, and the arms
+# the width policy does not move -- the gated counts, the gate-off and controls, the
+# correctness arms -- which the sibling native_decode_gating dates.
+#
+#     ledger rows   3720 + 35 = 3755
+#     never         2722 + 32 = 2754
+#     dated          998 +  3 = 1001
+#     2754 + 1001 == 3755
+checks_never_observed_red 2754
