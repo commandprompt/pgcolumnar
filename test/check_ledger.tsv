@@ -1355,6 +1355,7 @@ harness_selftest	340-the-binary-must-be-built-from	the stamp writer reports fail
 harness_selftest	340-the-binary-must-be-built-from	the writer writes the file the reader looks for	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	two installations of one major get different stamp paths	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	two unreadable pg_configs do not alias onto one stamp	15;16;17;18;19	never	-
+harness_selftest	340-the-binary-must-be-built-from	two unreadable pg_configs whose short hashes collide still get different stamps	15;16;17;18;19	never	-
 harness_selftest	350-the-pytest-corpus-must-be	and derives the pins from requirements-test.txt	15;16;17;18;19	never	-
 harness_selftest	350-the-pytest-corpus-must-be	and it derives the file list rather than repeating it	15;16;17;18;19	never	-
 harness_selftest	350-the-pytest-corpus-must-be	and the job asserts the driver is absent rather than assuming it	15;16;17;18;19	never	-
