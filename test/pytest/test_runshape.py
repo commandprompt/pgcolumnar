@@ -26,7 +26,13 @@ def test_layer_fails_when_a_collected_test_never_reports(pytester, expect):
     result = pytester.runpytest("-p", "pgc_vacuity", "-n", "2",
                                 "--max-worker-restart=0")
     expect.run_failed(result, "a lost test must fail the run")
-    result.stdout.fnmatch_lines(["*never reported*"])
+    # AND BY RECONCILIATION, COUNTED (#1339). The killed worker fails the run by itself,
+    # so the arm above holds with reconciliation removed; only its message says the
+    # lost test was found. That was an uncounted fnmatch line; it is an arm now.
+    out = result.stdout.str()
+    expect.text("named" if "never reported an outcome" in out
+                else f"not named: {out.strip().splitlines()[-1:]!r}",
+                "named", "and the reconciliation names the test that never reported")
 
 
 def test_layer_accepts_a_run_where_every_test_reports(pytester, expect):
@@ -183,6 +189,13 @@ def test_layer_allows_a_declared_unrunnable_test(pytester, expect):
     )
     result = pytester.runpytest("-p", "pgc_vacuity")
     expect.outcomes(result, "a declared unrunnable test is allowed", passed=1, failed=0)
+    # AND IT EXITS INCOMPLETE, NOT FAILED (#1339). The guards act on the exit status,
+    # not the outcomes: with the setup-skip guard catching every test, this run still
+    # read 1 passed. 67 is the declared-unrunnable state; 0 would be a silent pass and
+    # 1 a refusal.
+    from pgc_vacuity import EXIT_INCOMPLETE
+    expect.num(int(result.ret), EXIT_INCOMPLETE,
+               "and a declared unrunnable run exits incomplete, not failed")
 
 
 # ---------------------------------------------------------------------------
