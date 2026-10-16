@@ -12,7 +12,8 @@
 #
 # The table has row groups of 1000 rows, two rows in five deleted, one group deleted
 # whole, and an index. After each recovery the rows must match by content, the row
-# groups by count and rows, and an index scan must agree with them.
+# groups by count and rows, and an index scan must agree with them: with the state
+# before, and with a scan of the table after.
 #
 # Usage:  test/maintenance_crash.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -116,6 +117,11 @@ for f in "${FUNCS[@]}"; do
 		"yes|ok|recovered"
 	check "after a crash with $name uncommitted, the table is as it was, by scan and by index" \
 		"$(state)" "$before"
+	# The arm above compares after with before, both through by_index, so an index
+	# that was already wrong before the crash agrees with itself there. This one
+	# holds the index to the rows a scan reads, now.
+	check "after a crash with $name uncommitted, the index reads the rows the scan reads" \
+		"$(by_index)" "$(rows)"
 done
 
 # ---- committed, not checkpointed ----------------------------------------------------
@@ -134,6 +140,8 @@ for f in "${FUNCS[@]}"; do
 		"$(restart_cluster)|$(r1="$(redo_count)"; [ "$r1" -gt "$redo0" ] && echo recovered || echo "no recovery logged ($redo0 before, $r1 after)")" "ok|recovered"
 	check "after a crash with $name committed, the table is as $name left it, with the same rows" \
 		"$(state)|$(rows)" "$after|$before_rows"
+	check "after a crash with $name committed, the index reads the rows the scan reads" \
+		"$(by_index)" "$(rows)"
 done
 
 pgc_summary

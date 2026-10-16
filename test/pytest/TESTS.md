@@ -7162,13 +7162,13 @@ The pytest twin of `test/prepared_across_sessions.sh` (#1341), every check by th
 
 ## 123. test_maintenance_crash.py: a crash part-way through maintenance loses nothing
 
-The pytest twin of `test/maintenance_crash.sh` (#1341), every check by the shell's name. A private cluster, because each arm crashes the postmaster: the shell kills its process group, and this side stops it with `-m immediate`, which leaves the same redo for the next start. `compact_rewrite`, `recluster`, `compact` and `vacuum` each run twice on a fresh table with row groups of 1000 rows, two rows in five deleted, one group deleted whole, and an index. First the function runs in an open transaction, another session checkpoints, and the server crashes: after recovery the table is as it was. Then the function commits and the server crashes before any checkpoint: after recovery the table is as the function left it. Each arm also checks that the server logged a crash recovery.
+The pytest twin of `test/maintenance_crash.sh` (#1341), every check by the shell's name. A private cluster, because each arm crashes the postmaster: the shell kills its process group, and this side stops it with `-m immediate`, which leaves the same redo for the next start. `compact_rewrite`, `recluster`, `compact` and `vacuum` each run twice on a fresh table with row groups of 1000 rows, two rows in five deleted, one group deleted whole, and an index. First the function runs in an open transaction, another session checkpoints, and the server crashes: after recovery the table is as it was. Then the function commits and the server crashes before any checkpoint: after recovery the table is as the function left it. Each arm also checks that the server logged a crash recovery. After each recovery an index scan through `mc_id` must read the rows a scan reads: the as-before arms compare two by-index readings with each other, so an index already wrong before the crash agrees with itself there.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_a_crash_part_way_through_maintenance_loses_nothing` | for each function, the uncommitted crash and the committed crash, each with its recovery logged |
+| `test_a_crash_part_way_through_maintenance_loses_nothing` | for each function, the uncommitted crash and the committed crash, each with its recovery logged and the index agreeing with a scan after it |
 
 ## 124. test_serializable.py: SERIALIZABLE refuses a write skew on a columnar table
 

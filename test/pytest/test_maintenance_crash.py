@@ -9,6 +9,8 @@ Two crash points, each followed by crash recovery:
   - the function has committed, and nothing has checkpointed since, so its work exists
     only in WAL. Recovery must leave the table as the function left it.
 
+After each recovery an index scan must agree with the state before, and with a scan.
+
 A PRIVATE CLUSTER, because each crash takes the postmaster down. The shell kills the
 postmaster's process group; this side stops it with `-m immediate`, which leaves the
 same work for the next start: "database system was not properly shut down", and redo.
@@ -37,11 +39,14 @@ def _one(dsn, sql, setup=()):
 BY_INDEX = ("SET enable_seqscan = off", "SET enable_bitmapscan = off", "SET pgcolumnar.enable_custom_scan = off")
 
 
-def _state(dsn):
+def _by_index(dsn):
     # the custom scan off too, and asserted by a premise: with only seqscan off this
     # whole-table range planned as Custom Scan (PgColumnarScan) and read no index
-    by_index = _one(dsn, ROWS + " WHERE id BETWEEN 1 AND 10000", BY_INDEX)
-    return f"{_one(dsn, ROWS)}|{_one(dsn, GROUPS)}|{by_index}"
+    return _one(dsn, ROWS + " WHERE id BETWEEN 1 AND 10000", BY_INDEX)
+
+
+def _state(dsn):
+    return f"{_one(dsn, ROWS)}|{_one(dsn, GROUPS)}|{_by_index(dsn)}"
 
 
 def _fresh_table(dsn):
@@ -116,6 +121,10 @@ def test_a_crash_part_way_through_maintenance_loses_nothing(pgc_cluster, expect)
                         f"{name} ran in its open transaction, and the cluster came back after a crash")
             expect.text(_state(dsn), before,
                         f"after a crash with {name} uncommitted, the table is as it was, by scan and by index")
+            # the arm above compares with before, both by index: an index already wrong
+            # before the crash agrees with itself there, so hold it to a scan now
+            expect.text(_by_index(dsn), _one(dsn, ROWS),
+                        f"after a crash with {name} uncommitted, the index reads the rows the scan reads")
 
         for f in ("compact_rewrite('mc', 0.0)", "recluster('mc', 'v')", "compact('mc')", "vacuum('mc')"):
             name = f.split("(")[0]
@@ -139,6 +148,8 @@ def test_a_crash_part_way_through_maintenance_loses_nothing(pgc_cluster, expect)
                         f"{name} committed, and the cluster came back after a crash before any checkpoint")
             expect.text(f"{_state(dsn)}|{_one(dsn, ROWS)}", f"{after}|{before_rows}",
                         f"after a crash with {name} committed, the table is as {name} left it, with the same rows")
+            expect.text(_by_index(dsn), _one(dsn, ROWS),
+                        f"after a crash with {name} committed, the index reads the rows the scan reads")
     finally:
         cluster.stop()
         shutil.rmtree(work, ignore_errors=True)
