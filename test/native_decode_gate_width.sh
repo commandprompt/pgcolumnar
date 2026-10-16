@@ -106,10 +106,17 @@ check "premise: the width-gate GUC exists and defaults to the shipped $DEFAULT_G
 # unknown parameter errors; q swallows the error and returns empty, so an empty
 # result is the proof the parameter does not exist. The paired positive premise
 # above (min_payload_cols == 20) rules out an empty result from a dead connection.
+# By SQLSTATE rather than by an empty result (#1341): q returns empty for a dead
+# connection as well, and an empty expectation is the shape the pytest layer refuses.
+show_state() {	# show_state PARAM -> the SQLSTATE SHOW raised, or "shown"
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAtX -v VERBOSITY=verbose -c "SHOW $1;" >/dev/null 2>"$PGC_WORKDIR/show.err" && { echo shown; return; }
+	sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' "$PGC_WORKDIR/show.err" | head -1
+}
 check "premise: the rejected probe GUC qual_skipvec_probe_vecs was NOT shipped" \
-	"$(q "SHOW pgcolumnar.qual_skipvec_probe_vecs;")" ""
+	"$(show_state pgcolumnar.qual_skipvec_probe_vecs)" "42704"
 check "premise: the rejected probe GUC qual_skipvec_min_skip_pct was NOT shipped" \
-	"$(q "SHOW pgcolumnar.qual_skipvec_min_skip_pct;")" ""
+	"$(show_state pgcolumnar.qual_skipvec_min_skip_pct)" "42704"
 check "premise: one row group, so every count below is one group's" \
 	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('nw');")" \
 	"1"

@@ -194,6 +194,7 @@ behaviour, the source of that number is named.
 - [146. test_native_dml.py: DELETE, UPDATE and MERGE on a native table agree with heap](#146-test_native_dmlpy-delete-update-and-merge-on-a-native-table-agree-with-heap)
 - [147. test_native_dict_underfill.py: an under-filled DICT chunk is refused and no backend dies](#147-test_native_dict_underfillpy-an-under-filled-dict-chunk-is-refused-and-no-backend-dies)
 - [148. test_native_decode_gating.py: an unprunable qual gates payload decode per vector](#148-test_native_decode_gatingpy-an-unprunable-qual-gates-payload-decode-per-vector)
+- [149. test_native_decode_gate_width.py: decode gating runs only on a projection wide enough to pay](#149-test_native_decode_gate_widthpy-decode-gating-runs-only-on-a-projection-wide-enough-to-pay)
 
 ## 1. How to read a test in here
 
@@ -7453,3 +7454,13 @@ The pytest twin of `test/native_decode_gating.sh` (#452 phase 2, ported for #134
 | --- | --- |
 | `test_an_unprunable_qual_gates_payload_decode` | the premises (no skip predicate, the late-materialization path); the control decodes all 192 (vector, column) pairs, a zero-match LIKE 32 and the needle 37; every filter counter is exact, including rejections inside the surviving vector; the answers match heap |
 | `test_deleted_rows_across_several_groups` | with deletes over several groups the answers match heap, and Rows Removed by Filter counts only live rows |
+
+## 149. test_native_decode_gate_width.py: decode gating runs only on a projection wide enough to pay
+
+The pytest twin of `test/native_decode_gate_width.sh` (#595, ported for #1341), every check by the shell's name. Phase-2 gating runs only when the projection has at least `pgcolumnar.qual_skipvec_min_payload_cols` non-qual columns (default 20). The policy is pinned by moving the threshold across a fixed projection: a 24-payload `SELECT *` gates at the default, stops above 24 and gates again at exactly 24, and a three-column projection gates only once the setting is 0. The gate is output-invariant: the answers match heap with it on or off. The setting is held per session, where the shell sets it per database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_width_gate` | the premises, including that the two rejected probe settings are undefined (42704); the decode counts at the default, with the gate off, above the width and at it; and correctness against heap with the gate on and off |

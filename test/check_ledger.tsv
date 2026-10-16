@@ -2308,6 +2308,41 @@ native_chunk_length_bound	native_chunk_length_bound	backend survived the sequent
 native_chunk_length_bound	native_chunk_length_bound	backend survived the truncated-length fetch	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	premise: a point lookup uses the index, not a sequential columnar scan	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	that fetch returns the row	15;16;17;18;19	2026-10-16	the index fetch treated a flushed row as not live, so the lookup returned no row (mutation, #1339)
+native_decode_gate_width	native_decode_gate_width	control, gate forced on: a matches-everything narrow qual skips no vector (full decode)	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	control, gate forced on: a matches-everything wide qual skips no vector (full decode)	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	correctness: narrow needle matches the heap either way	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	correctness: the full scan matches the heap	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	correctness: wide needle, gate OFF, returns the identical rows (output-invariant)	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	correctness: wide needle, gate ON, matches the heap oracle	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	narrow, default: a zero-match LIKE decodes EVERY projected column of every vector -> NOT gated	15;16;17;18;19	2026-10-16	columnar_reader.c: phase-2 gating runs whatever the projection's payload width
+native_decode_gate_width	native_decode_gate_width	narrow, gate off (GUC=0): the SAME narrow projection now gates -> qual column alone	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: EXPLAIN reports Columnar Vector Decodes (the observable)	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: back to the shipped default	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: gate suppressed for the invariance arm	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: no vector is ruled out by VALUE (that is 1b-ii's path, not phase 2)	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: no whole row group is pruned	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: one row group, so every count below is one group's	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: still at the default before arm 1	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the LIKE is unprunable (no usable skip predicate)	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the control matches every row	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the narrow plan is a columnar custom scan with projection	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the narrow query takes the late-materialization path	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the needle matches exactly one vector's worth of rows	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the nomatch predicate matches no row	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the rejected probe GUC qual_skipvec_min_skip_pct was NOT shipped	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the rejected probe GUC qual_skipvec_probe_vecs was NOT shipped	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the wide plan is a columnar custom scan with projection	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the wide query takes the late-materialization path	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the width gate is now disabled (0)	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the width threshold is now above the projection width	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the width threshold now equals the projection width	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	premise: the width-gate GUC exists and defaults to the shipped 20	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	wide, default: a one-vector LIKE decodes the qual column plus payload for that vector only	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	wide, default: a zero-match LIKE decodes the qual column and NO payload -> gated	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	wide, default: and reports the payload vectors skipped	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	wide, default: skips exactly the vectors holding no match	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	wide, gate AT the width (>= boundary): gates again -> qual column alone	15;16;17;18;19	2026-10-16	columnar_reader.c: the width gate requires more payload columns than the threshold, not at least as many
+native_decode_gate_width	native_decode_gate_width	wide, gate raised above width: the SAME wide SELECT * stops gating -> full decode	15;16;17;18;19	2026-10-16	columnar_reader.c: phase-2 gating runs whatever the projection's payload width;columnar_reader.c: the payload-width count includes one column too many
 native_decode_gating	native_decode_gating	EXPLAIN reports Columnar Vector Decodes	15;16;17;18;19	never	-
 native_decode_gating	native_decode_gating	a one-vector LIKE decodes the qual column plus payload for that vector only	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluation between the decode passes never runs;columnar_reader.c: the per-vector qual evaluator marks every vector skipped
 native_decode_gating	native_decode_gating	a zero-matching LIKE decodes the qual column and no payload column	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluation between the decode passes never runs
