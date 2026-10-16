@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 208
+suites_not_covered 207
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3132,4 +3132,17 @@ suites_not_covered 208
 #     never         2827 + 11 = 2838
 #     dated         1074 + 11 = 1085
 #     2838 + 1085 == 3923
-checks_never_observed_red 2838
+#
+# #1341, native_writer seeded, with its twin (OffgridwithJD): 2838 -> 2841, and
+# suites_not_covered 208 -> 207. The suite had no rows. It enters with all 10 checks
+# from five-major runs (10/10 on each of 15-19). 7 are dated by six mutations: the
+# drop leaving each of the column_chunk, row_group and storage rows, the format
+# version and the vector length changed, and the writer ignoring the table's
+# stripe_row_limit (the row-group and column-chunk counts). Three arrive never: the
+# storage row's existence and the row and value totals, which no mutation here moves.
+#
+#     ledger rows   3923 + 10 = 3933
+#     never         2838 +  3 = 2841
+#     dated         1085 +  7 = 1092
+#     2841 + 1092 == 3933
+checks_never_observed_red 2841

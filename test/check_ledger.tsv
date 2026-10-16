@@ -2695,6 +2695,16 @@ native_repack	native_repack	the columnar table is unharmed: content hash	19	2026
 native_repack	native_repack	the columnar table is unharmed: row count	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing
 native_repack	native_repack	the columnar table is unharmed: storage options	19	never	-
 native_repack	native_repack	without an identity index it is refused by PostgreSQL, not by us	19	never	-
+native_writer	native_writer	drop clears native column chunks	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarDeleteMetadata leaves the column_chunk rows
+native_writer	native_writer	drop clears native row groups	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarDeleteMetadata leaves the row_group rows
+native_writer	native_writer	drop clears native storage row	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarDeleteMetadata leaves the storage row
+native_writer	native_writer	native column chunks (5 groups x 2 cols)	15;16;17;18;19	2026-10-16	columnar_write_state.c: the writer ignores the table's stripe_row_limit
+native_writer	native_writer	native column-chunk value total	15;16;17;18;19	never	-
+native_writer	native_writer	native format version recorded	15;16;17;18;19	2026-10-16	columnar.h: COLUMNAR_NATIVE_FORMAT_VERSION 3
+native_writer	native_writer	native row groups (5000 rows / 1000 limit)	15;16;17;18;19	2026-10-16	columnar_write_state.c: the writer ignores the table's stripe_row_limit
+native_writer	native_writer	native row-group row total	15;16;17;18;19	never	-
+native_writer	native_writer	native storage row written	15;16;17;18;19	never	-
+native_writer	native_writer	native vector length recorded	15;16;17;18;19	2026-10-16	columnar.h: COLUMNAR_NATIVE_VECTOR_LENGTH 2048
 objstore_allowlist	objstore_allowlist	a multi-entry list matches any entry	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	a non-superuser cannot widen the list (42501)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
 objstore_allowlist	objstore_allowlist	a superuser session SET works (admin override)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
