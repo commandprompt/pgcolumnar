@@ -2968,6 +2968,12 @@ native_parquet_pushdown	native_parquet_pushdown	predicate [val > 90000 AND val <
 native_parquet_pushdown	native_parquet_pushdown	range in one group skips 3	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
 native_parquet_pushdown	native_parquet_pushdown	read_parquet same file == oracle	15;16;17;18;19	never	-
 native_parquet_pushdown	native_parquet_pushdown	reports 4 row groups	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	row-group edge [id < 50001] == oracle	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	row-group edge [id <= 50000] == oracle	15;16;17;18;19	2026-10-16	col <= const skipping a group whose min equals const (mutation, #1496 review)
+native_parquet_pushdown	native_parquet_pushdown	row-group edge [id = 49999] == oracle	15;16;17;18;19	2026-10-16	col = const skipping a group whose max equals const (mutation, #1496 review)
+native_parquet_pushdown	native_parquet_pushdown	row-group edge [id = 50000] == oracle	15;16;17;18;19	2026-10-16	col = const skipping a group whose min equals const (mutation, #1496 review)
+native_parquet_pushdown	native_parquet_pushdown	row-group edge [id > 49998] == oracle	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	row-group edge [id >= 49999] == oracle	15;16;17;18;19	2026-10-16	col >= const skipping a group whose max equals const (mutation, #1496 review)
 native_parquet_pushdown	native_parquet_pushdown	spanning predicate skips 0	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: col < const skips the row groups that do hold matches
 native_parquet_schema	native_parquet_schema	OPTIONAL column reports nullable=t	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	REQUIRED column reports nullable=f	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports every column nullable
