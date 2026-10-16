@@ -2595,17 +2595,17 @@ native_groupagg_batch	native_groupagg_batch	<> filter: the fold declined	15;16;1
 native_groupagg_batch	native_groupagg_batch	add column: ANALYZE reports the row-path run	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped node's ANALYZE prints the predicted fold, not what ran (the #602 shape)
 native_groupagg_batch	native_groupagg_batch	add column: plain EXPLAIN reports the prediction	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	add column: the answer is still right	15;16;17;18;19	never	-
-native_groupagg_batch	native_groupagg_batch	count(*): answers match the heap mirror	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	count(*): answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	count(*): the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
 native_groupagg_batch	native_groupagg_batch	count(*): the grouped node is planned	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	date key: answers match the heap mirror	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	date key: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
 native_groupagg_batch	native_groupagg_batch	date key: the grouped node is planned	15;16;17;18;19	never	-
-native_groupagg_batch	native_groupagg_batch	deletes: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold ignores the delete mask
+native_groupagg_batch	native_groupagg_batch	deletes: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold ignores the delete mask;columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	deletes: the fold still ran	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
 native_groupagg_batch	native_groupagg_batch	expression key: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: an expression key's -1 attidx is not refused by the grouped fold's eligibility
 native_groupagg_batch	native_groupagg_batch	expression key: the fold declined	15;16;17;18;19	2026-10-16	columnar_vector.c: an expression key's -1 attidx is not refused by the grouped fold's eligibility
-native_groupagg_batch	native_groupagg_batch	filtered: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold applies no scan key per row
+native_groupagg_batch	native_groupagg_batch	filtered: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold applies no scan key per row;columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	filtered: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
 native_groupagg_batch	native_groupagg_batch	filtered: the grouped node is planned	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	float8 key: answers match the heap mirror	15;16;17;18;19	never	-
@@ -2619,13 +2619,13 @@ native_groupagg_batch	native_groupagg_batch	float8 zero: the grouped node is pla
 native_groupagg_batch	native_groupagg_batch	float8 zero: the grouped sums match the heap	15;16;17;18;19	2026-10-16	columnar_vector.c: float8 admitted as a simple key, so its group keys are hashed and compared by bits
 native_groupagg_batch	native_groupagg_batch	min/max: answers match the heap mirror	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	min/max: the fold declined	15;16;17;18;19	2026-10-16	columnar_vector.c: min and max admitted as batch fold kinds
-native_groupagg_batch	native_groupagg_batch	parallel: and they equal the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: a partial grouped node folds without the shared row-group counter;columnar_vector.c: the grouped fold ignores the delete mask
+native_groupagg_batch	native_groupagg_batch	parallel: and they equal the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: a partial grouped node folds without the shared row-group counter;columnar_vector.c: the grouped fold ignores the delete mask;columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	parallel: our parallel-aware grouped node is under the Gather	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	parallel: premise: the value arm's own plan launches workers	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	parallel: the answers equal the serial fold, byte for byte	15;16;17;18;19	2026-10-16	columnar_vector.c: a partial grouped node folds without the shared row-group counter
 native_groupagg_batch	native_groupagg_batch	parallel: the fold ran in the partial node (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
 native_groupagg_batch	native_groupagg_batch	parallel: workers actually launched for that node	15;16;17;18;19	never	-
-native_groupagg_batch	native_groupagg_batch	plain: answers match the heap mirror	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	plain: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	plain: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
 native_groupagg_batch	native_groupagg_batch	plain: the grouped node is planned	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	premise: fixture loaded every row (columnar)	15;16;17;18;19	never	-
@@ -2646,16 +2646,16 @@ native_groupagg_batch	native_groupagg_batch	text key: the fold declined	15;16;17
 native_groupagg_batch	native_groupagg_batch	timestamp key: answers match the heap mirror	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	timestamp key: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
 native_groupagg_batch	native_groupagg_batch	timestamp key: the grouped node is planned	15;16;17;18;19	never	-
-native_groupagg_batch	native_groupagg_batch	toggle-differential: filtered	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold applies no scan key per row;columnar_vector.c: the grouped fold ignores the delete mask
+native_groupagg_batch	native_groupagg_batch	toggle-differential: filtered	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold applies no scan key per row;columnar_vector.c: the grouped fold ignores the delete mask;columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	toggle-differential: filtered [premise: node fires with the path on]	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	toggle-differential: filtered [premise: the off arm is not the grouped node]	15;16;17;18;19	never	-
-native_groupagg_batch	native_groupagg_batch	toggle-differential: plain	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold ignores the delete mask
+native_groupagg_batch	native_groupagg_batch	toggle-differential: plain	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold ignores the delete mask;columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	toggle-differential: plain [premise: node fires with the path on]	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	toggle-differential: plain [premise: the off arm is not the grouped node]	15;16;17;18;19	never	-
-native_groupagg_batch	native_groupagg_batch	toggle-differential: two keys	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold ignores the delete mask
+native_groupagg_batch	native_groupagg_batch	toggle-differential: two keys	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold ignores the delete mask;columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	toggle-differential: two keys [premise: node fires with the path on]	15;16;17;18;19	never	-
 native_groupagg_batch	native_groupagg_batch	toggle-differential: two keys [premise: the off arm is not the grouped node]	15;16;17;18;19	never	-
-native_groupagg_batch	native_groupagg_batch	two keys: answers match the heap mirror	15;16;17;18;19	never	-
+native_groupagg_batch	native_groupagg_batch	two keys: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	two keys: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
 native_groupagg_batch	native_groupagg_batch	two keys: the grouped node is planned	15;16;17;18;19	never	-
 native_index_projection	native_index_projection	a parallel build projects one column of twenty, not all twenty	15;16;17;18;19	never	-
