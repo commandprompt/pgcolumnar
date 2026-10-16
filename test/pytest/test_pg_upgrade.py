@@ -38,6 +38,23 @@ def _sh(cmd, cwd=None):
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
 
 
+def _server_tool(bindir, argv, own=(), cwd=None, check=True):
+    """Run initdb, pg_ctl or pg_upgrade, as postgres when we are root: each refuses
+    root, which is why pgc_cluster._asroot and lib.sh's runuser exist. A refused step
+    raises naming itself and its stderr, so it cannot surface a step later as a
+    missing file (jdatcmd, review of #1461). `own` is chowned to postgres first."""
+    cmd = [str(pathlib.Path(bindir) / argv[0])] + list(argv[1:])
+    if os.geteuid() == 0:
+        for top in own:
+            for path in [top, *pathlib.Path(top).rglob("*")]:
+                shutil.chown(path, user="postgres")
+        cmd = ["runuser", "-u", "postgres", "--"] + cmd
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"{argv[0]} failed rc={proc.returncode}: {(proc.stderr or proc.stdout).strip()[-2000:]}")
+    return proc
+
+
 def _q(port, sql):
     """-> the first column of the first row, or '' when the query cannot run."""
     try:
@@ -56,16 +73,20 @@ def _run(port, *sqls):
 
 
 def _cluster(bindir, data, port):
-    """initdb -k (data checksums on both sides, or pg_upgrade refuses the pair) and conf."""
-    _sh([f"{bindir}/initdb", "-k", "-D", str(data), "-A", "trust"])
+    """initdb -k (data checksums on both sides, or pg_upgrade refuses the pair) and conf.
+    The socket directory is the datadir, as pgc_cluster pins it: a packaged build's
+    default is a directory only postgres can write."""
+    data.mkdir()
+    _server_tool(bindir, ["initdb", "-k", "-D", str(data), "-A", "trust", "-U", "postgres"], own=[data])
     with open(data / "postgresql.conf", "a") as fh:
-        fh.write(f"\nport={port}\nlisten_addresses='127.0.0.1'\nshared_preload_libraries='pgcolumnar'\n")
+        fh.write(f"\nport={port}\nlisten_addresses='127.0.0.1'\nunix_socket_directories='{data}'\n"
+                 "shared_preload_libraries='pgcolumnar'\n")
 
 
 def _ctl(bindir, data, action, log=None):
-    cmd = [f"{bindir}/pg_ctl", "-D", str(data), "-w"]
-    cmd += (["-l", str(log), "start"] if action == "start" else ["-m", "fast", "stop"])
-    return _sh(cmd).returncode
+    argv = ["pg_ctl", "-D", str(data), "-w"]
+    argv += (["-l", str(log), "start"] if action == "start" else ["-m", "fast", "stop"])
+    return _server_tool(bindir, argv, own=[data]).returncode
 
 
 def test_pg_upgrade_preserves_a_columnar_table(pgc_cluster, expect):
@@ -96,9 +117,10 @@ def test_pg_upgrade_preserves_a_columnar_table(pgc_cluster, expect):
         build = work / "src"
         shutil.copytree(REPO, build, ignore=shutil.ignore_patterns(".git", "*.o", "*.so", "*.bc", "__pycache__"))
         _sh(["make", "-C", str(build), "clean", f"PG_CONFIG={old_pgc}"])
-        built = _sh(["make", "-C", str(build), f"PG_CONFIG={old_pgc}"]).returncode == 0 and \
-            _sh(["make", "-C", str(build), "install", f"PG_CONFIG={old_pgc}"]).returncode == 0
-        assert built, "the extension did not build and install for the old major"
+        for target in ([], ["install"]):
+            made = _sh(["make", "-C", str(build), *target, f"PG_CONFIG={old_pgc}"])
+            assert made.returncode == 0, \
+                f"make {' '.join(target)} for the old major failed: {made.stderr.strip()[-2000:]}"
 
         _cluster(old_bin, old_data, old_port)
         _ctl(old_bin, old_data, "start", work / "old.log")
@@ -128,8 +150,12 @@ def test_pg_upgrade_preserves_a_columnar_table(pgc_cluster, expect):
         expect.num(int(_q(new_port, "SHOW server_version_num")) // 10000, new_maj, "and is genuinely the new major")
         _ctl(new_bin, new_data, "stop")
 
-        up = _sh([f"{new_bin}/pg_upgrade", "-b", old_bin, "-B", new_bin, "-d", str(old_data), "-D", str(new_data),
-                  "-p", str(old_port), "-P", str(new_port), "-U", "postgres"], cwd=work)
+        # pg_upgrade refuses root too, and writes its logs and socket into cwd
+        up = _server_tool(new_bin, ["pg_upgrade", "-b", old_bin, "-B", new_bin, "-d", str(old_data),
+                                    "-D", str(new_data), "-p", str(old_port), "-P", str(new_port),
+                                    "-U", "postgres"], own=[old_data, new_data], cwd=work, check=False)
+        if up.returncode != 0:
+            print(f"-- pg_upgrade said:\n{up.stdout[-3000:]}\n{up.stderr[-2000:]}")
         expect.num(up.returncode, 0, "pg_upgrade exited cleanly")
         _ctl(new_bin, new_data, "start", work / "new.log")
 
@@ -161,5 +187,5 @@ def test_pg_upgrade_preserves_a_columnar_table(pgc_cluster, expect):
     finally:
         for b, d in ((old_bin, old_data), (new_bin, new_data)):
             if (d / "postmaster.pid").exists():
-                _sh([f"{b}/pg_ctl", "-D", str(d), "-m", "immediate", "-w", "stop"])
+                _server_tool(b, ["pg_ctl", "-D", str(d), "-m", "immediate", "-w", "stop"], check=False)
         shutil.rmtree(work, ignore_errors=True)
