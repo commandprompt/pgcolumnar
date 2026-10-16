@@ -195,6 +195,7 @@ behaviour, the source of that number is named.
 - [147. test_native_dict_underfill.py: an under-filled DICT chunk is refused and no backend dies](#147-test_native_dict_underfillpy-an-under-filled-dict-chunk-is-refused-and-no-backend-dies)
 - [148. test_native_decode_gating.py: an unprunable qual gates payload decode per vector](#148-test_native_decode_gatingpy-an-unprunable-qual-gates-payload-decode-per-vector)
 - [149. test_native_decode_gate_width.py: decode gating runs only on a projection wide enough to pay](#149-test_native_decode_gate_widthpy-decode-gating-runs-only-on-a-projection-wide-enough-to-pay)
+- [150. test_pg_dump_roundtrip.py: a columnar table survives pg_dump and restore](#150-test_pg_dump_roundtrippy-a-columnar-table-survives-pg_dump-and-restore)
 
 ## 1. How to read a test in here
 
@@ -7464,3 +7465,15 @@ The pytest twin of `test/native_decode_gate_width.sh` (#595, ported for #1341), 
 | test | what it holds |
 | --- | --- |
 | `test_the_width_gate` | the premises, including that the two rejected probe settings are undefined (42704); the decode counts at the default, with the gate off, above the width and at it; and correctness against heap with the gate on and off |
+
+## 150. test_pg_dump_roundtrip.py: a columnar table survives pg_dump and restore
+
+The pytest twin of `test/pg_dump_roundtrip.sh` (ported for #1341), every check by the shell's name. A source database holds a columnar table with data, an option, an index and a projection, and a second table whose declared `sort_by` names columns after a dropped one (#288). It is dumped as plain SQL and as a custom archive and restored into fresh databases, where the rows, the access method, the option, the `sort_by` and the projection declaration survive, and `rebuild_projections()` recovers the projection whose storage pg_dump cannot carry (#266). The point lookup must take the restored index, and the restored `sort_by` must leave the rows in its order.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_dropping_a_projection_forgets_its_declaration` | a dropped projection's declaration goes with it, so a rebuild builds nothing |
+| `test_a_plain_dump_round_trips` | pg_dump and psql exit 0, and the restored database passes every survival arm |
+| `test_a_custom_archive_round_trips` | the same through `pg_dump -Fc` and `pg_restore --exit-on-error` |

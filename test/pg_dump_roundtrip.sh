@@ -95,6 +95,11 @@ verify() {  # label db
 	check "$label: row data survives (checksum)" "$(on "$db" "$sum_sql;")" "$before_sum"
 	check "$label: access method is pgcolumnar"  "$(on "$db" "$am_sql;")" "pgcolumnar"
 	# tail -1: the two SET statements each emit a command tag before the result.
+	# The plan premise is what makes this arm about the INDEX (#1341): the columnar
+	# scan is not disabled by enable_seqscan, and with the index dropped from the
+	# restored database the same lookup still answered 12345.
+	check "$label: premise: the point lookup takes the restored index" \
+		"$(on "$db" "SET enable_seqscan=off; SET enable_bitmapscan=off; EXPLAIN (COSTS off) SELECT id FROM dt WHERE id = 12345;" | grep -c 'Index.* using dt_id_idx')" "1"
 	check "$label: restored index answers a point lookup" "$(on "$db" "$idx_sql;" | tail -1)" "12345"
 	# Per-table options survive the round trip (#248). They did not until the
 	# extension registered pgcolumnar.options with pg_extension_config_dump:
@@ -119,8 +124,15 @@ verify() {  # label db
 	# the wrong or a missing column here.
 	check "$label: declared sort_by survives restore" \
 		"$(on "$db" "SELECT sort_by::text FROM pgcolumnar.options WHERE regclass='ds'::regclass;")" "{host,ts}"
+	# APPLIES means the rows end up in (host, ts) order, not merely that the call
+	# returns (#1341): the row count alone is 20000 whichever columns it sorted on.
+	# Inversions are counted in scan order, with a premise that there are some
+	# before the call, so a no-op cannot pass.
+	inversions="SELECT count(*) FROM (SELECT host, ts, lag(host) OVER () AS lh, lag(ts) OVER () AS lt FROM ds) x WHERE (lh, lt) > (host, ts)"
+	check "$label: premise: the restored ds is not yet in its sort_by order" \
+		"$(on "$db" "SELECT ($inversions) > 0;")" "t"
 	check "$label: restored sort_by resolves and applies" \
-		"$(on "$db" "SELECT pgcolumnar.vacuum_sorted('ds'); SELECT count(*) FROM ds;" 2>/dev/null | tail -1)" "20000"
+		"$(on "$db" "SELECT pgcolumnar.vacuum_sorted('ds'); SELECT count(*) || '|' || ($inversions) FROM ds;" 2>/dev/null | tail -1)" "20000|0"
 
 	# The DECLARATION is carried, which is the half #266 fixed. It is keyed by
 	# regclass and stores column names, so config_dump can restore it, and the
