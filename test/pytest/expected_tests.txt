@@ -773,4 +773,6 @@ guard_tests 438
 # four tests, by collection over the cluster files on this tree.
 # cluster_tests 687 -> 690 for #1341's test_native_reclaim.py, the twin of native_reclaim.sh:
 # three tests, by collection over the cluster files on this tree.
-cluster_tests 690
+# cluster_tests 690 -> 691 for #1341's test_native_repack.py, the twin of native_repack.sh:
+# one test, by collection over the cluster files on this tree.
+cluster_tests 691
