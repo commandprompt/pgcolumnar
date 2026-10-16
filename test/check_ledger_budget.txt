@@ -3330,4 +3330,17 @@ suites_not_covered 199
 #     never         2990 - 2 = 2988
 #     dated         1199 + 2 = 1201
 #     2988 + 1201 == 4189
-checks_never_observed_red 2988
+# #1339, tier_partition's injected-fault checks are arms, not premises (jdatcmd):
+# 2988 -> 2972. Removing the five injected-fault RAISEs from tier_partition reddens
+# "the call fails with the fault injected after <step>" for all five steps, so a
+# repository change reddens them; with "the first attempt failed after export and
+# left its file" they lose the prefix, renamed with their history. The same
+# mutation dates the ten "a failure after <step> leaves the rows exactly once, still
+# local" and "and no foreign table behind it after <step>" arms, and adds itself to
+# the already-dated retry arm. No row is added or removed.
+#
+#     ledger rows   4189 + 0 = 4189
+#     never         2988 - 16 = 2972
+#     dated         1201 + 16 = 1217
+#     2972 + 1217 == 4189
+checks_never_observed_red 2972

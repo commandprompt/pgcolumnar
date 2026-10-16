@@ -336,7 +336,7 @@ build o
 ob="$(digest o)"
 o_err="$(errtext "SET pgcolumnar.tier_fault_after = 'export'" \
 	"SELECT pgcolumnar.tier_partition('o_jan', 'tier_pq', '$W/o.parquet')")"
-check "premise: the first attempt failed after export and left its file" \
+check "the first attempt failed after export and left its file" \
 	"$(grep -o 'injected fault after export' <<<"$o_err")|$([ -e "$W/o.parquet" ] && echo file || echo nofile)" \
 	"injected fault after export|file"
 check "a retry over the failed attempt's file moves the partition, exactly once" \
@@ -455,7 +455,7 @@ for step in export detach drop create attach; do
 	fb="$(digest f)"
 	err="$(errtext "SET pgcolumnar.tier_fault_after = '$step'" \
 		"SELECT pgcolumnar.tier_partition('f_jan', 'tier_pq', '$W/f_$step.parquet')")"
-	check "premise: the call fails with the fault injected after $step" \
+	check "the call fails with the fault injected after $step" \
 		"$(grep -o "injected fault after $step" <<<"$err" || echo "$err")" "injected fault after $step"
 	check "a failure after $step leaves the rows exactly once, still local" \
 		"$(digest f)|$(jan_shape f)" "$fb|r:pgcolumnar:$JAN_BOUND"

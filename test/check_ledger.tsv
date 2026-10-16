@@ -3798,11 +3798,11 @@ tid_range_scan	tid_range_scan	premise: the table holds every row	15;16;17;18;19	
 tid_range_scan	tid_range_scan	rows inserted earlier in the same transaction are in the range, as the filter sees them	15;16;17;18;19	never	-
 tier_partition	tier_partition	a DEFAULT partition is refused	15;16;17;18;19	2026-10-13	tier_partition without the DEFAULT refusal
 tier_partition	tier_partition	a column with its own collation moves and reads back the same	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix;tier_partition returning 0 rows moved;tier_partition's foreign table without the columns' collations
-tier_partition	tier_partition	a failure after attach leaves the rows exactly once, still local	15;16;17;18;19	never	-
-tier_partition	tier_partition	a failure after create leaves the rows exactly once, still local	15;16;17;18;19	never	-
-tier_partition	tier_partition	a failure after detach leaves the rows exactly once, still local	15;16;17;18;19	never	-
-tier_partition	tier_partition	a failure after drop leaves the rows exactly once, still local	15;16;17;18;19	never	-
-tier_partition	tier_partition	a failure after export leaves the rows exactly once, still local	15;16;17;18;19	never	-
+tier_partition	tier_partition	a failure after attach leaves the rows exactly once, still local	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	a failure after create leaves the rows exactly once, still local	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	a failure after detach leaves the rows exactly once, still local	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	a failure after drop leaves the rows exactly once, still local	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	a failure after export leaves the rows exactly once, still local	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
 tier_partition	tier_partition	a fault step that is not one of tier_partition's is refused	15;16;17;18;19	2026-10-13	the tier_fault_after check hook accepting any value
 tier_partition	tier_partition	a grant to a role whose name needs quoting is carried to the foreign partition	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix;tier_partition not carrying the grants;tier_partition returning 0 rows moved
 tier_partition	tier_partition	a non-superuser owner tiers its own partition	15;16;17;18;19	never	-
@@ -3817,7 +3817,7 @@ tier_partition	tier_partition	a partition with a row-level policy is refused bef
 tier_partition	tier_partition	a partition with a trigger of its own is refused before anything moves	15;16;17;18;19	2026-10-13	tier_partition without the dependents check
 tier_partition	tier_partition	a query on the other range scans only the local partition, beside a foreign one	15;16;17;18;19	never	-
 tier_partition	tier_partition	a query on the tiered range scans only the foreign partition	15;16;17;18;19	never	-
-tier_partition	tier_partition	a retry over the failed attempt's file moves the partition, exactly once	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix;tier_partition refusing every existing path (the first version's rule);tier_partition returning 0 rows moved
+tier_partition	tier_partition	a retry over the failed attempt's file moves the partition, exactly once	15;16;17;18;19	2026-10-16	tier_partition naming the foreign table with a suffix;tier_partition refusing every existing path (the first version's rule);tier_partition returning 0 rows moved;tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
 tier_partition	tier_partition	a role that does not own the table is refused by its own privileges (42501)	15;16;17;18;19	2026-10-14	tier_partition made SECURITY DEFINER
 tier_partition	tier_partition	a rollback after the whole call leaves the rows local, exactly once	15;16;17;18;19	never	-
 tier_partition	tier_partition	a server of another wrapper is refused	15;16;17;18;19	2026-10-14	tier_partition without its wrong-wrapper branch, so the iceberg wrapper refuses only after the export;tier_partition without the wrapper check
@@ -3830,11 +3830,11 @@ tier_partition	tier_partition	after the move the caller's lock_timeout is the ca
 tier_partition	tier_partition	an existing path is refused, so no file a table reads is overwritten	15;16;17;18;19	2026-10-13	tier_partition without the path refusal
 tier_partition	tier_partition	an insert racing the move leaves every row exactly once, whichever side gives way	15;16;17;18;19	2026-10-13	tier_partition without the SHARE lock on the partition
 tier_partition	tier_partition	an insert routed to the tiered range is refused	15;16;17;18;19	never	-
-tier_partition	tier_partition	and no foreign table behind it after attach	15;16;17;18;19	never	-
-tier_partition	tier_partition	and no foreign table behind it after create	15;16;17;18;19	never	-
-tier_partition	tier_partition	and no foreign table behind it after detach	15;16;17;18;19	never	-
-tier_partition	tier_partition	and no foreign table behind it after drop	15;16;17;18;19	never	-
-tier_partition	tier_partition	and no foreign table behind it after export	15;16;17;18;19	never	-
+tier_partition	tier_partition	and no foreign table behind it after attach	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	and no foreign table behind it after create	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	and no foreign table behind it after detach	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	and no foreign table behind it after drop	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	and no foreign table behind it after export	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
 tier_partition	tier_partition	and the refusals moved nothing	15;16;17;18;19	2026-10-13	tier_partition without the path refusal
 tier_partition	tier_partition	and the refused call leaves the partition local and attached, every row once	15;16;17;18;19	2026-10-14	tier_partition made SECURITY DEFINER
 tier_partition	tier_partition	and the refused call wrote no export file	15;16;17;18;19	2026-10-14	tier_partition made SECURITY DEFINER
@@ -3851,23 +3851,23 @@ tier_partition	tier_partition	premise: at read committed the caller's snapshot w
 tier_partition	tier_partition	premise: at repeatable read the caller's snapshot was taken before the writer committed	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: at serializable the caller's snapshot was taken before the writer committed	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: one side of the race gave way or both went through, and nothing hung	15;16;17;18;19	never	-
-tier_partition	tier_partition	premise: the call fails with the fault injected after attach	15;16;17;18;19	never	-
-tier_partition	tier_partition	premise: the call fails with the fault injected after create	15;16;17;18;19	never	-
-tier_partition	tier_partition	premise: the call fails with the fault injected after detach	15;16;17;18;19	never	-
-tier_partition	tier_partition	premise: the call fails with the fault injected after drop	15;16;17;18;19	never	-
-tier_partition	tier_partition	premise: the call fails with the fault injected after export	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: the cold partition holds its share	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: the cold partition is local and columnar, with its bound	15;16;17;18;19	never	-
-tier_partition	tier_partition	premise: the first attempt failed after export and left its file	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: the move started while the insert was in flight, and waited for it	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: the parent holds every row	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: the storage id was read before the move	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: tier_own owns the parent and its partitions, and neither role is a superuser	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: tier_peer can open a session and read the partition	15;16;17;18;19	never	-
 tier_partition	tier_partition	the answers over the parent are the same after the move	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix
+tier_partition	tier_partition	the call fails with the fault injected after attach	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	the call fails with the fault injected after create	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	the call fails with the fault injected after detach	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	the call fails with the fault injected after drop	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
+tier_partition	tier_partition	the call fails with the fault injected after export	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
 tier_partition	tier_partition	the call holds ACCESS EXCLUSIVE on the parent until commit, as the docs say	15;16;17;18;19	never	-
 tier_partition	tier_partition	the cold partition is now a foreign partition with its own name and bound	15;16;17;18;19	2026-10-13	tier_partition attaching with the upper bound shifted a minute;tier_partition naming the foreign table with a suffix
 tier_partition	tier_partition	the cold partition was moved with its grant and comment set	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix;tier_partition returning 0 rows moved
+tier_partition	tier_partition	the first attempt failed after export and left its file	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
 tier_partition	tier_partition	the foreign partition keeps the partition's grants and comment	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix;tier_partition not carrying the grants
 tier_partition	tier_partition	the foreign partition reads the exported file	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix
 tier_partition	tier_partition	the local partition leaves no pgcolumnar storage row behind	15;16;17;18;19	2026-10-13	tier_partition renaming the partition aside instead of dropping it

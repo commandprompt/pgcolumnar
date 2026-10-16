@@ -213,7 +213,7 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
             cur.execute("RESET pgcolumnar.tier_fault_after")
         expect.text(f"injected fault after {step}" if f"injected fault after {step}" in err else err,
                     f"injected fault after {step}",
-                    f"premise: the call fails with the fault injected after {step}")
+                    f"the call fails with the fault injected after {step}")
         expect.text(f"{_digest(conn, 'f')}|{_mar_shape(conn, 'f')}", f"{fb}|r:pgcolumnar:{BOUND}",
                     f"a failure after {step} leaves the rows exactly once, still local")
         expect.num(_one(conn, "SELECT count(*) FROM pg_foreign_table t JOIN pg_class c ON c.oid = t.ftrelid"
@@ -496,7 +496,7 @@ def test_tier_partition_refuses_what_it_cannot_move_and_survives_concurrency(
         cur.execute("RESET pgcolumnar.tier_fault_after")
     expect.text(f"{'injected fault after export' if 'injected fault after export' in err else err}|"
                 f"{'file' if p.exists() else 'nofile'}", "injected fault after export|file",
-                "premise: the first attempt failed after export and left its file")
+                "the first attempt failed after export and left its file")
     try:
         retried = str(_one(conn, _tier("again", p)))
     except psycopg.Error as e:
