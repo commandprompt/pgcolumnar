@@ -33,8 +33,7 @@ named path is reachable and still correct:
         index-only                                Index Only Scan     4286
 
 So this port forces the path each arm is named for and ASSERTS THE NODE before reading
-the count. The shell suite is unchanged -- reported rather than edited, since this pull
-request adds no bash check.
+the count. The shell suite now does the same, with the same premise names (#1339).
 """
 import psycopg
 
@@ -85,7 +84,7 @@ def test_native_delete_visibility_paths(pgc_conn, expect):
         cur.execute(f"INSERT INTO t SELECT g, g FROM generate_series(1,{ROWS}) g")
         cur.execute("CREATE UNIQUE INDEX t_id ON t (id)")
         cur.execute("SELECT count(*) FROM t")
-        expect.num(cur.fetchone()[0], ROWS, f"premise: the table holds all {ROWS} rows")
+        expect.num(cur.fetchone()[0], ROWS, "premise: the table holds all 5000 rows")
         cur.execute("DELETE FROM t WHERE id % 7 = 0")
         cur.execute(
             "SELECT count(*) FROM pgcolumnar.storage s "

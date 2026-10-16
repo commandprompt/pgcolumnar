@@ -3443,4 +3443,17 @@ suites_not_covered 193
 #     never         3010 +  7 = 3017
 #     dated         1300 +  6 = 1306
 #     3017 + 1306 == 4323
-checks_never_observed_red 3017
+#
+# #1339, native_delete_visibility_paths' shell arms take the paths they name
+# (OffgridwithJD): 3017 -> 3019. Seven checks are new, all never: the six path and
+# fixture premises the twin already had, and the rolled-back row. Five arms that
+# entered never are now dated: the index / bitmap, index-only, deleted-row-via-index
+# and in-transaction arms by pgcolumnar_fetch_row ignoring the delete vector, and
+# the sequential arm by the row scan reading a deleted row as live. The #1394 arm
+# gains the second in its history.
+#
+#     ledger rows   4323 + 7 = 4330
+#     never         3017 + 7 - 5 = 3019
+#     dated         1306 + 5 = 1311
+#     3019 + 1311 == 4330
+checks_never_observed_red 3019
