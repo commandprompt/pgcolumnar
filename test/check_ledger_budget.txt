@@ -3206,4 +3206,15 @@ suites_not_covered 203
 #     never         2883 + 12 = 2895
 #     dated         1108 +  3 = 1111
 #     2895 + 1111 == 4006
-checks_never_observed_red 2895
+#
+# #1339, native_join_runtime_filter's fact-qual conjunction removed no matching row
+# (jdatcmd): 2895 -> 2896. Its qual held for all 200 matches, so an answer that
+# ignored it equalled heap's; the qual now removes 50 of them, and one premise checks
+# that on heap. Five-major runs, 56/56 on each of 15-19. The conjunction arm keeps its
+# date; the premise arrives never.
+#
+#     ledger rows   4006 + 1 = 4007
+#     never         2895 + 1 = 2896
+#     dated          1111 + 0 = 1111
+#     2896 + 1111 == 4007
+checks_never_observed_red 2896
