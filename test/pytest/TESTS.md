@@ -192,6 +192,7 @@ behaviour, the source of that number is named.
 - [144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen](#144-test_fk_referencingpy-a-foreign-key-referencing-a-columnar-table-is-refused-where-it-is-chosen)
 - [145. test_truncate_cleanup.py: TRUNCATE leaves no catalog rows behind, and keeps what it must](#145-test_truncate_cleanuppy-truncate-leaves-no-catalog-rows-behind-and-keeps-what-it-must)
 - [146. test_native_dml.py: DELETE, UPDATE and MERGE on a native table agree with heap](#146-test_native_dmlpy-delete-update-and-merge-on-a-native-table-agree-with-heap)
+- [147. test_native_dict_underfill.py: an under-filled DICT chunk is refused and no backend dies](#147-test_native_dict_underfillpy-an-under-filled-dict-chunk-is-refused-and-no-backend-dies)
 
 ## 1. How to read a test in here
 
@@ -7430,3 +7431,13 @@ The pytest twin of `test/native_dml.sh` (ported for #1341), every check by the s
 | test | what it holds |
 | --- | --- |
 | `test_delete_update_and_merge_match_heap` | after DELETE, UPDATE and MERGE, counts, rows, sum and min/max match heap; the index finds a live row and skips a deleted one; the primary key still rejects a duplicate |
+
+## 147. test_native_dict_underfill.py: an under-filled DICT chunk is refused and no backend dies
+
+The pytest twin of `test/native_dict_underfill.sh` (ported for #1341), every check by the shell's name. A DICT chunk's `value_raw_length` is inflated in its descriptor, so the codes decode to fewer bytes than declared; without the fill check the raw buffer's tail is uninitialized and a varlena length is read out of it. The read must raise XX001, and survival is read from the server log's crash count, not from a fresh connection, which succeeds once crash recovery has finished.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_an_under_filled_dict_chunk_is_refused` | the column is DICT-encoded, the inflation rewrites its descriptor, the read is refused with XX001, and no backend died |

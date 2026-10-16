@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 216
+suites_not_covered 215
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2990,4 +2990,16 @@ suites_not_covered 216
 #     never         2695 +  7 = 2702
 #     dated          977 +  8 = 985
 #     2702 + 985 == 3687
-checks_never_observed_red 2702
+#
+# #1341, native_dict_underfill seeded, with its twin (OffgridwithJD): 2702 -> 2704,
+# and suites_not_covered 216 -> 215. The suite had no rows. It enters with all 4
+# checks from five-major runs (4/4 on each of 15-19). 2 are dated by two mutations
+# of the DICT fill check: removed, so the garbage tail is read back with no error,
+# and replaced by a backend crash, which the rejection and the log-counted survival
+# arm both catch. The two premises arrive never.
+#
+#     ledger rows   3687 +  4 = 3691
+#     never         2702 +  2 = 2704
+#     dated          985 +  2 = 987
+#     2704 + 987 == 3691
+checks_never_observed_red 2704
