@@ -213,6 +213,7 @@ behaviour, the source of that number is named.
 - [165. test_native_groupagg_batch.py: the grouped aggregate folds column-at-a-time](#165-test_native_groupagg_batchpy-the-grouped-aggregate-folds-column-at-a-time)
 - [166. test_native_fetch_projection.py: a fetch by row number decodes only what its caller needs](#166-test_native_fetch_projectionpy-a-fetch-by-row-number-decodes-only-what-its-caller-needs)
 - [167. test_native_fetch_position.py: a fetch by row number costs the same anywhere in its group](#167-test_native_fetch_positionpy-a-fetch-by-row-number-costs-the-same-anywhere-in-its-group)
+- [168. test_native_fetch_cache.py: the fetch-by-row-number cache](#168-test_native_fetch_cachepy-the-fetch-by-row-number-cache)
 
 ## 1. How to read a test in here
 
@@ -7705,3 +7706,16 @@ The pytest twin of `test/native_fetch_position.sh` (ported for #1341), every che
 | `test_the_cost_does_not_depend_on_the_position` | fetching the last twentieth of the group costs under three times the first |
 | `test_a_bigger_group_does_not_cost_more_per_fetch` | the same far-end fetches in a group twice the size cost under 1.8 times as much |
 | `test_the_indexes_that_make_it_constant_are_in_the_fetch` | `pgcolumnar_fetch_row` takes the rank from the prefix and a varying-length value from the offset table |
+
+## 168. test_native_fetch_cache.py: the fetch-by-row-number cache
+
+The pytest twin of `test/native_fetch_cache.sh` (ported for #1341), every check by the shell's name. A fetch by row number decoded a whole row group per row (#143), and a statement-scoped cache of the decoded group removes the repeat. The cache is timed as a ratio: the same index fetches from one big row group and from ten small ones. Each reading runs on a freshly built fixture, because an UPDATE moves the rows it reads into a new group (#801). Then come the scoping guards in the source, a wide group's decode scratch (#353), and crossing the cache cap (#359).
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_cache_makes_one_big_group_cost_what_ten_small_ones_do` | each reading measured the geometry it meant to, one big group costs under three times ten small ones, and the updated rows are right |
+| `test_the_scoping_guards_are_in_the_source` | the cache key includes the storage id, an earlier command's entry is rejected, a hit re-checks four fields, and the cache is discarded at executor end and transaction end |
+| `test_a_wide_groups_decode_scratch_does_not_blow_the_cap` | a wide group's point query drives the fetch path, costs under five times a small group's, and answers the same |
+| `test_crossing_the_cap_costs_per_column` | four and five projected columns drive the fetch path, five costs under twelve times four, and every over-cap column reads back its value |

@@ -2470,6 +2470,32 @@ native_encdesc_golden	native_encdesc_golden	int column a rawLen parses as 1200 (
 native_encdesc_golden	native_encdesc_golden	the table reads back all rows	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	trailing sharedTableLen is 0 (u32 at offset 6+13=19)	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	vectorCount parses as 1 (at offset 2)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	a hit re-checks the group's fileOffset against the row group	15;16;17;18;19	2026-10-16	columnar_reader.c: a fetch-cache hit no longer re-checks fileOffset
+native_fetch_cache	native_fetch_cache	a hit re-checks the group's firstRowNumber against the row group	15;16;17;18;19	2026-10-16	columnar_reader.c: a fetch-cache hit no longer re-checks firstRowNumber
+native_fetch_cache	native_fetch_cache	a hit re-checks the group's natts against the scan's column count	15;16;17;18;19	2026-10-16	columnar_reader.c: a fetch-cache hit no longer re-checks natts
+native_fetch_cache	native_fetch_cache	a hit re-checks the group's rowCount against the row group	15;16;17;18;19	2026-10-16	columnar_reader.c: a fetch-cache hit no longer re-checks rowCount
+native_fetch_cache	native_fetch_cache	a wide group's fetch is not far dearer than a small group's (#353)	15;16;17;18;19	2026-10-16	columnar_reader.c: crossing the fetch-cache cap drops every column, not the one that crossed it;columnar_reader.c: every fetch-cache lookup misses, so each fetch decodes its group again
+native_fetch_cache	native_fetch_cache	an entry from an earlier command is rejected	15;16;17;18;19	2026-10-16	columnar_reader.c: a fetch-cache entry from an earlier command is not rejected
+native_fetch_cache	native_fetch_cache	crossing the fetch cache cap costs proportionally, not totally (#359)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	every fc_many reading measured ten row groups (#801)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	every fc_one reading measured one row group (#801)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	every group-number comparison is keyed by the storage id too	15;16;17;18;19	2026-10-16	columnar_reader.c: the fetch-cache key compares the group number without the storage id
+native_fetch_cache	native_fetch_cache	every over-cap column reads back its written value (#359)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	fetching from one big group is not far dearer than from ten small ones	15;16;17;18;19	2026-10-16	columnar_reader.c: every fetch-cache lookup misses, so each fetch decodes its group again
+native_fetch_cache	native_fetch_cache	premise: pgcolumnar_executor_end was extracted, not an empty range	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	premise: pgcolumnar_xact_callback was extracted, not an empty range	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	premise: the fetch-cache functions were extracted, not empty ranges	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	premise: there is a group-number comparison to key	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	the 4-column projection really drives the fetch path (#797)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	the 5-column projection really drives the fetch path (#797)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	the fc_wide point query really drives the fetch path (#797)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	the fc_wnarrow point query really drives the fetch path (#797)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	the fetch cache is discarded from pgcolumnar_executor_end	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_executor_end no longer discards the fetch cache
+native_fetch_cache	native_fetch_cache	the fetch cache is discarded from pgcolumnar_xact_callback	15;16;17;18;19	2026-10-16	columnar_tableam.c: the transaction callback no longer discards the fetch cache
+native_fetch_cache	native_fetch_cache	the over-cap projection returns the same values as the under-cap one (#359)	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	the untouched rows are unchanged	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	the updated rows are correct	15;16;17;18;19	never	-
+native_fetch_cache	native_fetch_cache	the wide-group point query is correct (#353)	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	a wide index fetch does not pin once per column	15;16;17;18;19	2026-10-13	the coalesced fetch merging no adjacent ranges, so each column is read on its own
 native_fetch_coalesce	native_fetch_coalesce	premise: a point lookup uses the index	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	premise: fetching every projected column touched a measurable number of buffers	15;16;17;18;19	never	-
