@@ -789,4 +789,6 @@ guard_tests 438
 # one test, by collection over the cluster files on this tree.
 # cluster_tests 698 -> 702 for #1341's test_native_index_projection.py, the twin of native_index_projection.sh:
 # four tests, by collection over the cluster files on this tree.
-cluster_tests 702
+# cluster_tests 702 -> 710 for #1341's test_native_saop_pushdown.py, the twin of native_saop_pushdown.sh:
+# eight tests, by collection over the cluster files on this tree.
+cluster_tests 710

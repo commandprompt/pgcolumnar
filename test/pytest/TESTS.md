@@ -209,6 +209,7 @@ behaviour, the source of that number is named.
 - [161. test_native_parquet_schema.py: parquet_schema round trip](#161-test_native_parquet_schemapy-parquet_schema-round-trip)
 - [162. test_native_vecskip.py: per-vector skipping by the zone maps](#162-test_native_vecskippy-per-vector-skipping-by-the-zone-maps)
 - [163. test_native_index_projection.py: CREATE INDEX projects only what it needs](#163-test_native_index_projectionpy-create-index-projects-only-what-it-needs)
+- [164. test_native_saop_pushdown.py: IN-lists and = ANY(array) prune row groups](#164-test_native_saop_pushdownpy-in-lists-and--anyarray-prune-row-groups)
 
 ## 1. How to read a test in here
 
@@ -7641,3 +7642,20 @@ The pytest twin of `test/native_index_projection.sh` (ported for #1341), every c
 | `test_each_build_projects_only_what_it_needs` | every serial and parallel build projects only its key, expression and predicate columns |
 | `test_the_parallel_built_index_agrees_and_holds_each_row_once` | the parallel-built index agrees with a sequential scan and holds each row once |
 | `test_amcheck_finds_every_index_sound` | `bt_index_check` finds all eleven indexes sound |
+
+## 164. test_native_saop_pushdown.py: IN-lists and = ANY(array) prune row groups
+
+The pytest twin of `test/native_saop_pushdown.sh` (ported for #1341), every check by the shell's name. The scan-key builder keeps an IN-list or `= ANY(array)` of up to 128 non-NULL elements as one set predicate (#704), and a group survives when any element can lie in its zone map and bloom filter. Larger sets keep the bounded [min,max] hull. The fixture is 40000 rows in 20 monotonic groups, plus an overlap column whose every group has the range [10,88] and only even values, so only the bloom filter can prune an odd probe. NOT IN builds no keys. An empty or all-NULL array neither crashes nor mis-counts. A generic plan's array parameter is frozen at Begin, and a correlated one is not. The batch fold never takes the conservative set keys as its exact filter.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_set_prunes_by_element_and_keeps_the_exact_answer` | an IN-list pushes one usable set filter that removes 19 groups, a scattered set prunes by element rather than by its hull, and both sides of the 128-element bound |
+| `test_nulls_types_and_collations_prune_exactly` | NULL elements, a by-reference text set, a cross-type array, a C-collated list and a domain-element array each prune and count exactly |
+| `test_only_the_bloom_filter_can_prune_the_overlap_column` | with 25 inside every group's range, the bloom filter alone removes all 20 groups for a set, a single value and a single distinct value |
+| `test_the_conservative_arms_build_nothing_wrong` | a range-spanning list prunes between its elements, NOT IN builds no range, and empty and all-NULL arrays count zero |
+| `test_a_parameter_array_is_frozen_at_begin` | a generic plan's array parameter and a mixed literal-and-parameter list prune |
+| `test_the_batch_fold_never_takes_the_set_keys_as_exact` | the batch fold refuses the IN-list but accepts the equivalent range, and the vectorized count stays exact |
+| `test_a_correlated_array_is_not_frozen_and_the_backend_lives` | a correlated LATERAL array is not frozen, and the session's backend is still alive; a crash is a named red |
+| `test_the_reader_refuses_every_special_flag_but_the_array_one` | the reader's reject expression names every special scan-key flag, and SK_SEARCHARRAY reaches its own arm |

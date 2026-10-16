@@ -4196,9 +4196,11 @@ pgcolumnar_batch_gates_ok(const PgColumnarAggSpec *specs, int naggs,
 	 * PgColumnarQualsExactlyKeyed demands one EXACT key per clause, so those keys
 	 * never serve as the fold's WHERE even if pgcolumnar_clause_to_predicate were
 	 * later taught to accept a SAOP. The byval gather guard below is a second,
-	 * independent reason LIKE and other varlena filters fall back. Both
-	 * native_saop_pushdown.sh's vector-agg arms and ungrouped_vector_agg.sh's
-	 * #715 arms go red if this regresses.
+	 * independent reason LIKE and other varlena filters fall back.
+	 * ungrouped_vector_agg.sh's #715 arms go red if this regresses. For a SAOP
+	 * it is one of three gates: allConvertible above and the sk_flags test on
+	 * the keys below refuse it too, so native_saop_pushdown.sh's vector-agg
+	 * arms go red only with all three removed (measured, #1341).
 	 */
 	if (!PgColumnarQualsExactlyKeyed(quals, scanrelid, tupdesc))
 		return false;
