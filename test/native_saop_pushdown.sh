@@ -162,8 +162,10 @@ check "the bloom-only multi-value set returns the exact empty answer" \
 
 # `IN (25)` parses to plain `= 25` (the parser collapses a one-element list),
 # so it exercises the OpExpr path; the `= ANY('{25,25}')` arm below is the
-# SAOP shape and is the removal proof for the single-distinct-value
-# equality-key refinement (as two range keys it removes 0).
+# SAOP shape. As two range keys [25,25] it removes 0, so it reddens when the
+# single-distinct-value case is emitted as a range. It does NOT prove the
+# equality-key refinement is needed: without it the list takes the set path,
+# whose bloom loop probes 25 too and removes all 20 (measured).
 check "a one-element IN-list (parser-collapsed to =) bloom-prunes (20 removed)" \
 	"$(groups_removed 'SELECT count(*) FROM t WHERE ov IN (25);')" "20"
 

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 202
+suites_not_covered 201
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3256,4 +3256,25 @@ suites_not_covered 202
 #     never         2889 + 34 = 2923
 #     dated         1118 +  7 = 1125
 #     2923 + 1125 == 4048
-checks_never_observed_red 2923
+#
+# #1341, native_saop_pushdown seeded, with its twin (OffgridwithJD): 2923 -> 2941,
+# and suites_not_covered 202 -> 201. The suite had no rows. It enters with all 53
+# checks from five-major runs (53/53 on each of 15-19). 35 are dated by twelve
+# mutations of the set key: the #704 fix reverted, the hull always taken, the
+# 128-element bound one short and one long, a NULL element bailing out, the single
+# distinct value emitted as a range, the reader's bloom and zone-map set loops, the
+# freeze of a mixed list and of a correlated PARAM_EXEC (which crashes the backend),
+# a cross-type key dropped, and the reader's reject expression cut to SK_ISNULL.
+# Eighteen arrive never: four premises; the NOT IN arm and the three batch-fold
+# arms, each behind more than one gate (useOr and the equality strategy; the fold's
+# allConvertible, exactness and sk_flags gates), so no single-gate mutation reddens
+# them; the parser-collapsed one-element list, which never reaches the set key;
+# seven exact counts no set-key mutation moves; SK_ISNULL, which cannot leave the
+# reject expression without reddening its premise; and the SK_SEARCHARRAY arm. The
+# merge also re-sorted five rewrite_storage_oid rows #1475 renamed in place.
+#
+#     ledger rows   4048 + 53 = 4101
+#     never         2923 + 18 = 2941
+#     dated         1125 + 35 = 1160
+#     2941 + 1160 == 4101
+checks_never_observed_red 2941
