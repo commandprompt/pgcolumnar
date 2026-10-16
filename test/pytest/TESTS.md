@@ -193,6 +193,7 @@ behaviour, the source of that number is named.
 - [145. test_truncate_cleanup.py: TRUNCATE leaves no catalog rows behind, and keeps what it must](#145-test_truncate_cleanuppy-truncate-leaves-no-catalog-rows-behind-and-keeps-what-it-must)
 - [146. test_native_dml.py: DELETE, UPDATE and MERGE on a native table agree with heap](#146-test_native_dmlpy-delete-update-and-merge-on-a-native-table-agree-with-heap)
 - [147. test_native_dict_underfill.py: an under-filled DICT chunk is refused and no backend dies](#147-test_native_dict_underfillpy-an-under-filled-dict-chunk-is-refused-and-no-backend-dies)
+- [148. test_native_decode_gating.py: an unprunable qual gates payload decode per vector](#148-test_native_decode_gatingpy-an-unprunable-qual-gates-payload-decode-per-vector)
 
 ## 1. How to read a test in here
 
@@ -7441,3 +7442,14 @@ The pytest twin of `test/native_dict_underfill.sh` (ported for #1341), every che
 | test | what it holds |
 | --- | --- |
 | `test_an_under_filled_dict_chunk_is_refused` | the column is DICT-encoded, the inflation rewrites its descriptor, the read is refused with XX001, and no backend died |
+
+## 148. test_native_decode_gating.py: an unprunable qual gates payload decode per vector
+
+The pytest twin of `test/native_decode_gating.sh` (#452 phase 2, ported for #1341), every check by the shell's name. A leading-wildcard LIKE is no skip predicate, so phase 2 evaluates the qual per 1024-row vector between the decode passes, and a vector no row passes is never decoded for its payload columns; "Columnar Vector Decodes" makes the saving exact arithmetic. The filter counters stay exact: a rejection is counted once, inside a surviving vector too, and a deleted row is not counted. The width gate is set off for the session.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_an_unprunable_qual_gates_payload_decode` | the premises (no skip predicate, the late-materialization path); the control decodes all 192 (vector, column) pairs, a zero-match LIKE 32 and the needle 37; every filter counter is exact, including rejections inside the surviving vector; the answers match heap |
+| `test_deleted_rows_across_several_groups` | with deletes over several groups the answers match heap, and Rows Removed by Filter counts only live rows |
