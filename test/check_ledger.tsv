@@ -2477,6 +2477,24 @@ native_fetch_coalesce	native_fetch_coalesce	premise: fetching one projected colu
 native_fetch_coalesce	native_fetch_coalesce	premise: the coalescing helper holds both the bound and the validity copy	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	the validity copy is bounded by the chunk length before it runs	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	the wide fetch returns the projected values	15;16;17;18;19	2026-10-14	every column of a coalesced fetch is copied from the start of the span (off = 0)
+native_fetch_projection	native_fetch_projection	a deleted row stops being read through the projection	15;16;17;18;19	2026-10-16	columnar_projection.c: read_projection ignores the base row's liveness
+native_fetch_projection	native_fetch_projection	an uncovered column still reads correctly after a delete	15;16;17;18;19	2026-10-16	columnar_projection.c: reconstruct's uncovered set misses the table's last column
+native_fetch_projection	native_fetch_projection	and does not decode the row to find out	15;16;17;18;19	2026-10-16	columnar_tableam.c: index deletion decodes each bottom-up row to decide
+native_fetch_projection	native_fetch_projection	and its values are right with nothing decoded from the base	15;16;17;18;19	never	-
+native_fetch_projection	native_fetch_projection	and stops being reconstructed too	15;16;17;18;19	2026-10-16	columnar_projection.c: reconstruct ignores the projected fetch's liveness answer
+native_fetch_projection	native_fetch_projection	every needed-set membership test consults that flag rather than a null set	15;16;17;18;19	2026-10-16	columnar_reader.c: one needed-set membership test no longer consults the all-columns flag
+native_fetch_projection	native_fetch_projection	every reconstructed row matches the base table	15;16;17;18;19	2026-10-16	columnar_projection.c: reconstruct's uncovered set misses the table's last column
+native_fetch_projection	native_fetch_projection	index deletion asks no row whether it is live: it vouches for nothing	15;16;17;18;19	2026-10-16	columnar_tableam.c: index deletion asks each bottom-up row whether it is live again
+native_fetch_projection	native_fetch_projection	neither caller decodes every column: no full decode in the projection path	15;16;17;18;19	2026-10-16	columnar_projection.c: a full decode of the base row planted beside the liveness check (the #157 regression)
+native_fetch_projection	native_fetch_projection	premise: the column-set caller is not counted as a full decode	15;16;17;18;19	never	-
+native_fetch_projection	native_fetch_projection	premise: the column-set entry point is called at all	15;16;17;18;19	never	-
+native_fetch_projection	native_fetch_projection	premise: the explicit all-columns flag is declared	15;16;17;18;19	never	-
+native_fetch_projection	native_fetch_projection	premise: the index deletion function was extracted, not blank	15;16;17;18;19	never	-
+native_fetch_projection	native_fetch_projection	premise: the visibility-only entry point is called at all	15;16;17;18;19	never	-
+native_fetch_projection	native_fetch_projection	premise: there is a needed-set membership test to guard	15;16;17;18;19	never	-
+native_fetch_projection	native_fetch_projection	the all-covering projection reconstructs every row	15;16;17;18;19	never	-
+native_fetch_projection	native_fetch_projection	the projection reads every row to start with	15;16;17;18;19	never	-
+native_fetch_projection	native_fetch_projection	the wide fixture has 41 columns	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	a NULL key counts as a group in the bucket bound: four groups under a cap of 3 are declined and all answered	15;16;17;18;19	2026-10-16	the bucket bound left out the NULL group and the runtime cap was off, so the node took the query and answered it (mutation, #1339)
 native_groupagg	native_groupagg	a cached plan run under a lower cap stops at the runtime cap, with its hint	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	a date_bin key is bounded as a truncating key is	15;16;17;18;19	never	-

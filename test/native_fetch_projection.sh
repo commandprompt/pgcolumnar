@@ -54,7 +54,9 @@ psql_run "DROP TABLE IF EXISTS fp_w;
 	CREATE TABLE fp_w (id int$cols) USING pgcolumnar;
 	INSERT INTO fp_w SELECT g$sel FROM generate_series(1, $ROWS) g;" >/dev/null
 
-check "the wide fixture has $((NCOLS + 1)) columns" \
+# A literal name, so the ledger and the twin's grader can read it. The
+# all-covering projection below names c1..c40, so NCOLS is 40 in practice.
+check "the wide fixture has 41 columns" \
 	"$(q "SELECT count(*) FROM information_schema.columns
 		WHERE table_name = 'fp_w';")" "$((NCOLS + 1))"
 
@@ -139,6 +141,20 @@ check "and its values are right with nothing decoded from the base" \
 # every check above while giving back what the change was for.
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src"
 
+# Every source arm below reads CODE, not prose. The index-deletion arm used to
+# pass on a comment: pgcolumnar_index_delete_tuples stopped asking any row
+# whether it is live (it vouches for nothing, #1341), and the only
+# PgColumnarRowIsLive left in it was the comment explaining why. String literals
+# are kept, so a "/*" inside one is not read as a comment.
+code_of() {	# code_of FILE -> FILE with its C comments blanked, line count kept
+	python3 -c '
+import re, sys
+s = open(sys.argv[1]).read()
+pat = re.compile(r"\"(?:\\.|[^\"\\])*\"|\x27(?:\\.|[^\x27\\])*\x27|/\*.*?\*/|//[^\n]*", re.S)
+sys.stdout.write(pat.sub(lambda m: m.group(0) if m.group(0)[0] in "\"\x27" else "\n" * m.group(0).count("\n"), s))
+' "$1"
+}
+
 # THE ARM NAMED "DECODES NOTHING" COULD NOT SEE A DECODE. Both of these counted a
 # CALL SITE, with its argument text, and pinned it at a literal 1 -- so they
 # asserted that a particular call is still written the way it was written, which is
@@ -162,9 +178,10 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src"
 #
 # The two premises keep the zero from being vacuous: a file that called NOTHING
 # would also report zero full decodes.
-_np_live="$(grep -c 'PgColumnarRowIsLive(' "$SRC/columnar_projection.c")"
-_np_cols="$(grep -c 'PgColumnarReadRowByNumberCols(' "$SRC/columnar_projection.c")"
-_np_full="$(grep -c 'PgColumnarReadRowByNumber(' "$SRC/columnar_projection.c")"
+_np_code="$(code_of "$SRC/columnar_projection.c")"
+_np_live="$(grep -c 'PgColumnarRowIsLive(' <<<"$_np_code")"
+_np_cols="$(grep -c 'PgColumnarReadRowByNumberCols(' <<<"$_np_code")"
+_np_full="$(grep -c 'PgColumnarReadRowByNumber(' <<<"$_np_code")"
 
 check "premise: the visibility-only entry point is called at all" \
 	"$([ "${_np_live:-0}" -ge 1 ] && echo yes || echo no)" "yes"
@@ -198,10 +215,19 @@ check "neither caller decodes every column: no full decode in the projection pat
 # string appears legitimately elsewhere now that the index fetch also asks only
 # for liveness, and a whole-file count turned that correct second use into a
 # failure.
-deltuples="$(awk '/^pgcolumnar_index_delete_tuples\(/,/^}/' "$SRC/columnar_tableam.c")"
+#
+# The first arm was "index deletion asks whether the row is live". It stopped
+# being true when the function stopped asking (an answer from this backend's
+# snapshot erased index entries of rows live to everyone else), and it stayed
+# green on the comment that says so. The property now is the absence: a
+# per-row liveness test here is the regression, so it is what reddens.
+deltuples="$(code_of "$SRC/columnar_tableam.c" | awk '/^pgcolumnar_index_delete_tuples\(/,/^}/')"
 
-check "index deletion asks whether the row is live" \
-	"$(case "$deltuples" in *PgColumnarRowIsLive*) echo yes ;; *) echo no ;; esac)" "yes"
+check "premise: the index deletion function was extracted, not blank" \
+	"$(case "$deltuples" in *ndeltids*) echo yes ;; *) echo "extracted=<${deltuples:-empty}>" ;; esac)" "yes"
+
+check "index deletion asks no row whether it is live: it vouches for nothing" \
+	"$(case "$deltuples" in *PgColumnarRowIsLive*) echo "no (asks per row)" ;; *) echo yes ;; esac)" "yes"
 
 check "and does not decode the row to find out" \
 	"$(case "$deltuples" in *PgColumnarReadRowByNumber*) echo "no (still decodes)" ;;
@@ -222,9 +248,10 @@ check "and does not decode the row to find out" \
 # first. Honest callers move both counts together; an unguarded test moves only
 # the total. Both numbers are printed in the arm so the comparison is the
 # reconciliation rather than a bare verdict.
-_afc_tests="$(grep -c 'bms_is_member(c, needed)' "$SRC/columnar_reader.c")"
-_afc_guarded="$(grep -c '!allColumns && !bms_is_member(c, needed)' "$SRC/columnar_reader.c")"
-_afc_flags="$(grep -c 'bool allColumns' "$SRC/columnar_reader.c")"
+_afc_code="$(code_of "$SRC/columnar_reader.c")"
+_afc_tests="$(grep -c 'bms_is_member(c, needed)' <<<"$_afc_code")"
+_afc_guarded="$(grep -c '!allColumns && !bms_is_member(c, needed)' <<<"$_afc_code")"
+_afc_flags="$(grep -c 'bool allColumns' <<<"$_afc_code")"
 
 check "premise: there is a needed-set membership test to guard" \
 	"$([ "${_afc_tests:-0}" -ge 1 ] && echo yes || echo no)" "yes"
