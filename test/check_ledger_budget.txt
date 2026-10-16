@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 198
+suites_not_covered 197
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3369,4 +3369,20 @@ suites_not_covered 198
 #     never         2969 +  6 = 2975
 #     dated         1220 +  6 = 1226
 #     2975 + 1226 == 4201
-checks_never_observed_red 2975
+#
+# #1341, native_fetch_cache seeded, with its twin (OffgridwithJD): 2975 -> 2991,
+# and suites_not_covered 198 -> 197. The suite had no rows. It enters with all 26
+# checks from five-major runs (26/26 on each of 15-19). 10 are dated by ten
+# mutations: the cache never hitting, the key without the storage id, no
+# earlier-command reject, each of the four recheck fields dropped, the discard
+# dropped from executor end and from transaction end, and the cap dropping every
+# column. Sixteen arrive never: four premises and the four #797 plan premises;
+# the two #801 geometry records; the four correctness arms; and the #359 ratio,
+# which the cap-drops-every-column mutation cannot redden on this fixture (it
+# slows one projected column as much as five, measured 46 -> 286 ms in-suite).
+#
+#     ledger rows   4201 + 26 = 4227
+#     never         2975 + 16 = 2991
+#     dated         1226 + 10 = 1236
+#     2991 + 1236 == 4227
+checks_never_observed_red 2991
