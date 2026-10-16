@@ -2348,6 +2348,10 @@ native_join_runtime_filter	native_join_runtime_filter	ANTI refusal	15;16;17;18;1
 native_join_runtime_filter	native_join_runtime_filter	CROSS refusal	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	LEFT refusal	15;16;17;18;19	2026-09-23	the join-type gate widened past JOIN_INNER to SEMI, LEFT and ANTI
 native_join_runtime_filter	native_join_runtime_filter	SEMI refusal	15;16;17;18;19	2026-09-23	the join-type gate widened past JOIN_INNER to SEMI, LEFT and ANTI
+native_join_runtime_filter	native_join_runtime_filter	a (SELECT false) gate over a columnar dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
+native_join_runtime_filter	native_join_runtime_filter	a (SELECT false) gate over a heap dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
+native_join_runtime_filter	native_join_runtime_filter	a (SELECT true) gate over a columnar dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
+native_join_runtime_filter	native_join_runtime_filter	a (SELECT true) gate over a heap dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
 native_join_runtime_filter	native_join_runtime_filter	baseline core Hash Join	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	baseline reads all groups	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	build rows omit NULL	15;16;17;18;19	never	-
@@ -2373,6 +2377,10 @@ native_join_runtime_filter	native_join_runtime_filter	join runtime filter defaul
 native_join_runtime_filter	native_join_runtime_filter	plan has build tap	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	plan has runtime coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	plan retains core Hash Join	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a columnar dimension holds 200 rows	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a heap dimension holds 200 rows	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the columnar-dimension join has the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the heap-dimension join has the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	projection join equals heap	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	projection outer is not wrapped	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	projection scan is chosen	15;16;17;18;19	never	-
@@ -3387,6 +3395,39 @@ type_matrix	type_matrix	premise: both tables hold 12000 rows, the columnar one i
 type_matrix	type_matrix	premise: the server supports xml (built with libxml)	15;16;17;18;19	never	-
 type_matrix	type_matrix	the aggregates over numeric NaN and Infinity and timestamp and date infinity are heap's	15;16;17;18;19	never	-
 type_matrix	type_matrix	the composite's fields and the enum's order read back as heap's	15;16;17;18;19	never	-
+unique_conc	unique_conc	1a pre-fix: lock disabled lets both same-key inserts commit (bug)	15;16;17;18;19	2026-10-15	pgcolumnar.enable_unique_insert_lock ignored, so the lock is taken when it is off
+unique_conc	unique_conc	1b post-fix: blocked inserter got a unique_violation	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	1b post-fix: exactly one row with key 1	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	1b post-fix: same-key second inserter blocks	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	2a pre-fix: numeric 1.0 and 1.00 both commit with lock off (bug)	15;16;17;18;19	2026-10-15	pgcolumnar.enable_unique_insert_lock ignored, so the lock is taken when it is off
+unique_conc	unique_conc	2b post-fix: exactly one row equal to 1.0	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	2b post-fix: numeric 1.00 serializes behind 1.0 (opclass-safe hash)	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	2b post-fix: numeric equal-but-different-bytes got unique_violation	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	2c post-fix: citext 'abc' serializes behind 'ABC' (case-folded hash)	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	2c post-fix: citext case-insensitive duplicate got unique_violation	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	2c post-fix: exactly one row equal to 'abc'	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	3 both distinct keys present	15;16;17;18;19	2026-10-15	every key hashed to one bucket, as the coarse lock is
+unique_conc	unique_conc	3 different keys do not block each other	15;16;17;18;19	2026-10-15	every key hashed to one bucket, as the coarse lock is
+unique_conc	unique_conc	4 exactly one (1,2) row	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	4 multi-column differing key does not block	15;16;17;18;19	2026-10-15	every key hashed to one bucket, as the coarse lock is;the bucket hash combines only the first key column
+unique_conc	unique_conc	4 multi-column duplicate got unique_violation	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	4 multi-column equal key serializes	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	5 both inactive k=2 rows kept (predicate not enforced)	15;16;17;18;19	2026-10-15	the partial index predicate ignored, so a row outside it takes the key lock
+unique_conc	unique_conc	5 exactly one active row with k=1	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	5 partial index in-predicate duplicate got unique_violation	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	5 partial index, row inside predicate serializes	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	5 partial index, rows outside predicate do not serialize	15;16;17;18;19	2026-10-15	the partial index predicate ignored, so a row outside it takes the key lock
+unique_conc	unique_conc	6 NULLS DISTINCT: both NULL rows kept	15;16;17;18;19	2026-10-15	a key holding a NULL locked under NULLS DISTINCT
+unique_conc	unique_conc	6 NULLS DISTINCT: two NULL keys do not block	15;16;17;18;19	2026-10-15	a key holding a NULL locked under NULLS DISTINCT
+unique_conc	unique_conc	6 NULLS NOT DISTINCT: exactly one NULL row	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	6 NULLS NOT DISTINCT: second NULL got unique_violation	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	6 NULLS NOT DISTINCT: second NULL key serializes	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
+unique_conc	unique_conc	7 same-statement duplicate inserted no rows	15;16;17;18;19	never	-
+unique_conc	unique_conc	7 same-statement duplicate raises unique_violation	15;16;17;18;19	never	-
+unique_conc	unique_conc	8 after first aborts, second insert succeeds; one row	15;16;17;18;19	never	-
+unique_conc	unique_conc	8 second inserter blocks behind uncommitted first	15;16;17;18;19	never	-
+unique_conc	unique_conc	the bucket count cannot be changed per session	15;16;17;18;19	never	-
+unique_conc	unique_conc	the cluster runs the bucket count the suite needs	15;16;17;18;19	never	-
 vacuum_lock_privilege	vacuum_lock_privilege	add_projection refuses a non-owner before taking its lock (#749)	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock
 vacuum_lock_privilege	vacuum_lock_privilege	cluster refuses a non-owner before taking the exclusive lock	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock
 vacuum_lock_privilege	vacuum_lock_privilege	compact does the same, which is the behaviour drop_projection now matches	15;16;17;18;19	never	-
@@ -3464,11 +3505,3 @@ vm_privilege	vm_privilege	vm entry point is covered by this boundary test: vm_se
 vm_privilege	vm_privilege	vm_is_visible refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
 vm_privilege	vm_privilege	vm_selftest did not report success to the unprivileged role	15;16;17;18;19	2026-10-14	vm_selftest without its owner check
 vm_privilege	vm_privilege	vm_selftest refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the heap-dimension join has the coordinator	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a heap dimension holds 200 rows	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	a (SELECT false) gate over a heap dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
-native_join_runtime_filter	native_join_runtime_filter	a (SELECT true) gate over a heap dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
-native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the columnar-dimension join has the coordinator	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a columnar dimension holds 200 rows	15;16;17;18;19	never	-
-native_join_runtime_filter	native_join_runtime_filter	a (SELECT false) gate over a columnar dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)
-native_join_runtime_filter	native_join_runtime_filter	a (SELECT true) gate over a columnar dimension equals heap	15;16;17;18;19	2026-10-15	the join runtime filter took a join carrying a gating qual and failed on the Result over it (the tree before #1437)

@@ -179,6 +179,7 @@ behaviour, the source of that number is named.
 - [131. test_type_matrix.py: types the differential matrix never stored answer as heap](#131-test_type_matrixpy-types-the-differential-matrix-never-stored-answer-as-heap)
 - [132. test_iceberg_data_files.py: a delete entry in a data manifest is refused](#132-test_iceberg_data_filespy-a-delete-entry-in-a-data-manifest-is-refused)
 - [133. test_native_skip.py: a type binary-coercible to its opclass's type prunes](#133-test_native_skippy-a-type-binary-coercible-to-its-opclasss-type-prunes)
+- [134. test_unique_conc.py: concurrent inserters of one unique key serialize](#134-test_unique_concpy-concurrent-inserters-of-one-unique-key-serialize)
 
 ## 1. How to read a test in here
 
@@ -7221,3 +7222,24 @@ A partial pytest twin of `test/native_skip.sh` (#1433). It ports only the arms t
 | --- | --- |
 | `test_a_range_on_a_coercible_type_prunes` | a range on inet, cidr, a domain over cidr, text, varchar and a domain over varchar returns heap's rows and removes chunk groups |
 | `test_equality_on_a_coercible_type_prunes` | equality on cidr and on varchar, which also takes the bloom probe, returns heap's row and removes chunk groups |
+
+## 134. test_unique_conc.py: concurrent inserters of one unique key serialize
+
+The pytest twin of `test/unique_conc.sh` (#5, ported for #1341), every check by the shell's name. A columnar row's btree entry is written at once while its data waits for the stripe to flush, so a second inserter of the same key could not see the first's row and would insert a duplicate. The table AM takes a transaction-scoped advisory lock per unique key, hashed with the key type's default hash. So the second inserter waits for the first to commit and gets 23505, asserted by SQLSTATE and the index's name. T1 is held mid-INSERT, its key row indexed and unflushed, by a second row that waits in `cq_block` on a lock a holder session has. Every barrier polls `pg_stat_activity` for a lock wait.
+
+The shapes: one key, with the lock off in T2 as the control that shows the bug; keys equal under the opclass with different bytes (numeric 1.0 and 1.00, and citext by case); different keys, which must not wait; a multi-column key, equal and differing in its second column; a partial index, inside and outside its predicate; NULL keys under NULLS DISTINCT and NULLS NOT DISTINCT; a duplicate within one statement; and a first inserter that aborts. A private cluster runs `pgcolumnar.unique_lock_buckets` at 100003, which is fixed at server start, so unrelated keys do not share a bucket.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_bucket_count_is_fixed_at_server_start` | `SET` of the bucket count is refused 55P02, and the cluster runs 100003 |
+| `test_one_key_serializes_and_the_lock_is_what_does_it` | with the lock off in T2 both inserts commit; with it on T2 waits, gets 23505, and one row is left |
+| `test_keys_equal_under_the_opclass_serialize` | numeric 1.0 and 1.00: the same pair, lock off and on |
+| `test_citext_keys_equal_by_case_serialize` | citext 'ABC' and 'abc' serialize and conflict; unrunnable without citext |
+| `test_different_keys_do_not_block_each_other` | T2's different key returns at once, and both rows are kept |
+| `test_a_multi_column_key` | (1,2) twice serializes and conflicts; (5,6) and (5,7) do not wait |
+| `test_a_partial_unique_index` | inside the predicate the keys serialize and conflict; outside it neither waits and both rows are kept |
+| `test_null_keys` | two NULLs never wait under NULLS DISTINCT; under NULLS NOT DISTINCT they serialize and conflict |
+| `test_a_duplicate_within_one_statement` | one INSERT of the same key twice raises 23505 and inserts nothing |
+| `test_an_aborted_first_inserter` | T2 waits behind T1's flushed, uncommitted row; T1 rolls back and T2's insert succeeds |
