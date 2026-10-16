@@ -134,7 +134,6 @@ native_fold_deferral	adaptive: eager groups load more than survivors alone (work
 native_fold_deferral	premise: the selective predicate is genuinely selective (<= 2%)
 native_gap	gap was physically materialized
 native_groupagg	a lookalike function with the same signature gets NO bound
-native_groupagg	and it is an UPPER bound: the true group count is at or below it
 native_groupagg	a non-time expression key gets no bound either
 native_reclaim_frag	coalesce merges adjacent frees (fewer free_space rows)
 native_reclaim_frag	coalesce never larger than whole-range reuse
