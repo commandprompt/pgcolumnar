@@ -2803,4 +2803,16 @@ suites_not_covered 224
 #     never         2598 + 4 = 2602
 #     dated          868 + 4 = 872
 #     2602 + 872 == 3474
-checks_never_observed_red 2602
+#
+# #1433, a cidr or varchar key was dropped as cross-type, so the column pruned nothing
+# (jdatcmd): 2602 -> 2601. type_matrix's cd range arm, pinned at 0 removed groups with
+# #1433 as its reason, becomes 'a range on cd lets the zone maps skip chunk groups'.
+# The pinned row leaves and the new one arrives dated, on PG17 by the tree before the
+# fix, where the range removed 0 of 12. Five-major runs, 57/57 on each of 15-19.
+# native_skip gains sixteen checks and is not a covered suite.
+#
+#     ledger rows   3474 - 1 + 1 = 3474
+#     never         2602 - 1     = 2601
+#     dated          872 + 1     = 873
+#     2601 + 873 == 3474
+checks_never_observed_red 2601

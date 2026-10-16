@@ -29,6 +29,7 @@
 #include "catalog/pg_am.h"
 #include "commands/defrem.h"
 #include "miscadmin.h"
+#include "parser/parse_coerce.h"
 #include "utils/lsyscache.h"
 #include "utils/rangetypes.h"
 #include "port/atomics.h"
@@ -883,6 +884,37 @@ pgcolumnar_make_predicates(SkipPredicate *out, int nkeys, ScanKey keys,
 			? getBaseType(key->sk_subtype) : InvalidOid;
 
 		crossType = (OidIsValid(argType) && argType != colType);
+
+		/*
+		 * Nor is a pair of types that are both binary-coercible to the type the
+		 * column's default btree opclass orders (#1433). A comparison on a cidr
+		 * column resolves to inet's operator and a varchar column's to text's,
+		 * so the key arrives with a column of cidr and an argument of inet. The
+		 * two share one representation and the opclass's ordering, but
+		 * network_ops registers an ordering proc only for (inet, inet), so the
+		 * opfamily lookup below found nothing and the key was dropped: the
+		 * column pruned nothing, as a domain did before #483.
+		 *
+		 * The column's own cmp and hash procs, from lookup_type_cache below,
+		 * are the opclass's (network_cmp and hashinet for cidr, bttextcmp and
+		 * hashtext for varchar). The writer builds the zone maps and bloom
+		 * filters with those same procs, so treating the key as same-type keeps
+		 * reader and writer in agreement, the bloom probe included.
+		 *
+		 * Not when the opclass orders a polymorphic type: two different enums
+		 * are each binary-coercible to anyenum without sharing an ordering.
+		 */
+		if (crossType)
+		{
+			Oid			opclass = GetDefaultOpClass(colType, BTREE_AM_OID);
+			Oid			inType = OidIsValid(opclass)
+				? get_opclass_input_type(opclass) : InvalidOid;
+
+			if (OidIsValid(inType) && !IsPolymorphicType(inType) &&
+				(colType == inType || IsBinaryCoercible(colType, inType)) &&
+				(argType == inType || IsBinaryCoercible(argType, inType)))
+				crossType = false;
+		}
 
 		tce = lookup_type_cache(att->atttypid,
 								TYPECACHE_CMP_PROC_FINFO |
