@@ -339,10 +339,14 @@ ANALYZE dim_fq;
 ANALYZE fact_fq;
 SQL
 )" >/dev/null
-SQLFQ="SELECT count(*),sum(fact_fq.k),sum(fact_fq.extra) FROM fact_fq JOIN dim_fq ON fact_fq.k=dim_fq.k WHERE fact_fq.k > 100 AND fact_fq.extra > 40"
+SQLFQ="SELECT count(*),sum(fact_fq.k),sum(fact_fq.extra) FROM fact_fq JOIN dim_fq ON fact_fq.k=dim_fq.k WHERE fact_fq.k > 100 AND fact_fq.extra % 4 <> 0"
 onfq="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLFQ")"
 check "fact-qual plan has coordinator" "$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$onfq")" 1
-check "fact-qual conjunction equals heap" "$(pc "${rf_on}$SQLFQ"|tail -1)" "$(q "SELECT count(*),sum(heap_fq.k),sum(heap_fq.extra) FROM heap_fq JOIN dim_fq ON heap_fq.k=dim_fq.k WHERE heap_fq.k > 100 AND heap_fq.extra > 40")"
+# The conjunction must REMOVE some matching rows (#1339). "extra > 40" held for
+# every one of the 200 matches, so an answer that ignored the qual equalled heap's.
+check "premise: the fact qual removes matching rows on heap" \
+	"$(q "SELECT count(*) FROM heap_fq JOIN dim_fq ON heap_fq.k=dim_fq.k WHERE heap_fq.k > 100 AND heap_fq.extra % 4 <> 0")|$(q "SELECT count(*) FROM heap_fq JOIN dim_fq ON heap_fq.k=dim_fq.k")" "150|200"
+check "fact-qual conjunction equals heap" "$(pc "${rf_on}$SQLFQ"|tail -1)" "$(q "SELECT count(*),sum(heap_fq.k),sum(heap_fq.extra) FROM heap_fq JOIN dim_fq ON heap_fq.k=dim_fq.k WHERE heap_fq.k > 100 AND heap_fq.extra % 4 <> 0")"
 # A gating qual, a WHERE that names no column (#1437). The planner puts a
 # Result with a One-Time Filter over the join, so the coordinator's child was a
 # Result rather than the Hash Join it expects, and every such query failed with

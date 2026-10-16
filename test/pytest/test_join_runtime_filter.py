@@ -696,7 +696,7 @@ def test_fact_qual_with_late_mat_off_matches_heap(pgc_conn, expect):
         sql = """
             SELECT count(*), sum(factq.k), sum(factq.n)
             FROM factq JOIN dimq ON factq.k = dimq.k
-            WHERE factq.n > 80
+            WHERE factq.n % 3 <> 0
         """
         cur.execute(
             "EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) " + sql
@@ -708,11 +708,18 @@ def test_fact_qual_with_late_mat_off_matches_heap(pgc_conn, expect):
             """
             SELECT count(*), sum(heapq.k), sum(heapq.n)
             FROM heapq JOIN dimq ON heapq.k = dimq.k
-            WHERE heapq.n > 80
+            WHERE heapq.n % 3 <> 0
             """
         )
         heap = cur.fetchone()
+        # The qual must REMOVE some matching rows (#1339). "n > 80" held for every
+        # one of the 150 matches, so an answer that ignored the qual equalled heap's.
+        cur.execute("SELECT count(*) FROM heapq JOIN dimq ON heapq.k = dimq.k WHERE heapq.n % 3 <> 0")
+        kept = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM heapq JOIN dimq ON heapq.k = dimq.k")
+        matched = cur.fetchone()[0]
 
+    expect.text(f"{kept}|{matched}", "100|150", "premise: the fact qual removes matching rows on heap")
     expect.plan_node(
         plan,
         provider="Columnar Runtime Filter Coordinator",

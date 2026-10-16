@@ -2614,6 +2614,7 @@ native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer und
 native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a heap dimension holds 200 rows	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: heap's empty-then-full rescan answer holds the 200 keys	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: the empty-then-full rescan runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the fact qual removes matching rows on heap	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: the large-dimension empty build runs under the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the columnar-dimension join has the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the heap-dimension join has the coordinator	15;16;17;18;19	never	-
