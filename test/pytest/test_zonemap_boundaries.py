@@ -60,9 +60,11 @@ def test_exact_zonemap_boundaries(pgc_conn, expect):
         _ids(pgc_conn, "zb_h", "v <= 1001"),
         "<= keeps the row at a row-group minimum",
     )
+    # The two "removes no group" checks are arms, not premises (#1339, #1236): a
+    # zone check that skipped a group whose bound EQUALS the constant reddens both.
     expect.num(
         _removed(_plan(pgc_conn, "v <= 1001")), 0,
-        "premise: <= at the second-group minimum removes no group",
+        "<= at the second-group minimum removes no group",
     )
     expect.rows(
         _ids(pgc_conn, "zb_c", "v >= 1000"),
@@ -71,7 +73,7 @@ def test_exact_zonemap_boundaries(pgc_conn, expect):
     )
     expect.num(
         _removed(_plan(pgc_conn, "v >= 1000")), 0,
-        "premise: >= at the first-group maximum removes no group",
+        ">= at the first-group maximum removes no group",
     )
     expect.num(
         _removed(_plan(pgc_conn, "v > 1000")), 1,
