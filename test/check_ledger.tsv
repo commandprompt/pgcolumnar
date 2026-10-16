@@ -2316,6 +2316,21 @@ native_delete_visibility_paths	native_delete_visibility_paths	aggregate over the
 native_delete_visibility_paths	native_delete_visibility_paths	index / bitmap scan sees the live set	15;16;17;18;19	never	-
 native_delete_visibility_paths	native_delete_visibility_paths	index-only scan sees the live set	15;16;17;18;19	never	-
 native_delete_visibility_paths	native_delete_visibility_paths	sequential scan sees the live set (row-emitting path)	15;16;17;18;19	never	-
+native_dml	native_dml	PK still enforced after DML	15;16;17;18;19	never	-
+native_dml	native_dml	count after delete	15;16;17;18;19	2026-10-16	columnar_vector.c: count(*) from metadata no longer subtracts a group's deleted rows
+native_dml	native_dml	count after merge	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index fetch no longer checks the delete vector;columnar_vector.c: count(*) from metadata no longer subtracts a group's deleted rows
+native_dml	native_dml	count after update	15;16;17;18;19	2026-10-16	columnar_vector.c: count(*) from metadata no longer subtracts a group's deleted rows
+native_dml	native_dml	deleted rows gone	15;16;17;18;19	never	-
+native_dml	native_dml	index finds live row	15;16;17;18;19	never	-
+native_dml	native_dml	index skips deleted row	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index fetch no longer checks the delete vector
+native_dml	native_dml	min/max after delete	15;16;17;18;19	2026-10-16	columnar_vector.c: a row group holding deletes still answers min and max from its zone maps
+native_dml	native_dml	premise: the deletes moved the smallest and largest id and k	15;16;17;18;19	never	-
+native_dml	native_dml	premise: the lookups take the primary-key index	15;16;17;18;19	never	-
+native_dml	native_dml	rows after delete match heap	15;16;17;18;19	never	-
+native_dml	native_dml	rows after merge match heap	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index fetch no longer checks the delete vector
+native_dml	native_dml	rows after update match heap	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index fetch no longer checks the delete vector
+native_dml	native_dml	sum(k) after delete	15;16;17;18;19	never	-
+native_dml	native_dml	sum(k) after update	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index fetch no longer checks the delete vector
 native_fetch_coalesce	native_fetch_coalesce	a wide index fetch does not pin once per column	15;16;17;18;19	2026-10-13	the coalesced fetch merging no adjacent ranges, so each column is read on its own
 native_fetch_coalesce	native_fetch_coalesce	premise: a point lookup uses the index	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	premise: fetching every projected column touched a measurable number of buffers	15;16;17;18;19	never	-
