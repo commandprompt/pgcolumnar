@@ -45,10 +45,14 @@ def test_rewrite_storage_oid(pgc_conn, expect):
         )
         cur.execute("ALTER TABLE rewrite_live ALTER COLUMN n TYPE bigint")
         cur.execute("SELECT count(*) FROM rewrite_live")
+        # Five checks here read product state and are arms, not premises (#1339,
+        # #1236): the row counts after a rewrite, a matview, CREATE TABLE AS and REFRESH,
+        # and the untouched table's storage row. A bulk load that drops its rows, or
+        # a repoint of the wrong storage row, reddens them.
         expect.num(
             cur.fetchone()[0],
             ROWS,
-            "premise: the rewritten table still holds every row",
+            "the rewritten table still holds every row",
         )
         cur.execute(
             "SELECT (relation_oid = 'keep_side'::regclass)::int "
@@ -58,7 +62,7 @@ def test_rewrite_storage_oid(pgc_conn, expect):
         expect.num(
             cur.fetchone()[0],
             1,
-            "premise: a table that was not rewritten still points at itself",
+            "a table that was not rewritten still points at itself",
         )
         pointed = _one(
             pgc_conn,
@@ -114,12 +118,12 @@ def test_a_matview_created_with_data_points_at_itself(pgc_conn, expect):
     expect.num(
         _one(pgc_conn, "SELECT count(*) FROM mv_data"),
         900,
-        "premise: the matview holds the rows it was created with",
+        "the matview holds the rows it was created with",
     )
     expect.num(
         _one(pgc_conn, "SELECT count(*) FROM mv_cta"),
         900,
-        "premise: the CREATE TABLE AS table holds them too",
+        "the CREATE TABLE AS table holds them too",
     )
 
     mv, cta = _points_at(pgc_conn, "mv_data"), _points_at(pgc_conn, "mv_cta")
@@ -143,7 +147,7 @@ def test_a_matview_created_with_data_points_at_itself(pgc_conn, expect):
     expect.num(
         _one(pgc_conn, "SELECT count(*) FROM mv_data"),
         900,
-        "premise: the refreshed matview still holds every row",
+        "the refreshed matview still holds every row",
     )
     expect.num(
         _points_at(pgc_conn, "mv_data"), 1, "and REFRESH still leaves it pointing at itself"

@@ -41,10 +41,14 @@ check_num "premise: the table holds every inserted row" \
 
 q "ALTER TABLE rew_oid ALTER COLUMN id TYPE bigint;" >/dev/null
 
-check_num "premise: the rewritten table still holds every row" \
+# Five checks here read product state and are arms, not premises (#1339,
+# #1236): the row counts after a rewrite, a matview, CREATE TABLE AS and REFRESH,
+# and the untouched table's storage row. A bulk load that drops its rows, or
+# a repoint of the wrong storage row, reddens them.
+check_num "the rewritten table still holds every row" \
 	"$(q "SELECT count(*) FROM rew_oid;")" "900"
 
-check_num "premise: a table that was not rewritten still points at itself" \
+check_num "a table that was not rewritten still points at itself" \
 	"$(q "SELECT (relation_oid = 'rew_keep'::regclass)::int
 	      FROM pgcolumnar.storage
 	      WHERE storage_id = pgcolumnar.get_storage_id('rew_keep');")" "1"
@@ -83,9 +87,9 @@ points_at() {	# points_at RELNAME -> 1 when its storage row names it
 # A ROW COUNT FIRST, so the arms below are about a relation that was actually
 # populated. A matview created WITH NO DATA writes no storage row at all, and
 # every arm here would then be asking about nothing.
-check_num "premise: the matview holds the rows it was created with" \
+check_num "the matview holds the rows it was created with" \
 	"$(q "SELECT count(*) FROM rew_mv;")" "900"
-check_num "premise: the CREATE TABLE AS table holds them too" \
+check_num "the CREATE TABLE AS table holds them too" \
 	"$(q "SELECT count(*) FROM rew_cta;")" "900"
 
 echo "-- mv=$(points_at rew_mv) cta=$(points_at rew_cta)"
@@ -103,7 +107,7 @@ check_num "a matview created WITH DATA leaves its storage row pointing at itself
 # different node type, so an arm here is what says the fix did not displace the
 # path that already worked.
 q "REFRESH MATERIALIZED VIEW rew_mv;" >/dev/null
-check_num "premise: the refreshed matview still holds every row" \
+check_num "the refreshed matview still holds every row" \
 	"$(q "SELECT count(*) FROM rew_mv;")" "900"
 check_num "and REFRESH still leaves it pointing at itself" \
 	"$(points_at rew_mv)" "1"
