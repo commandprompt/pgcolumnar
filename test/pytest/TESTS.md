@@ -188,6 +188,7 @@ behaviour, the source of that number is named.
 - [140. test_parquet_import.py: a partitioned columnar parent is refused by import_parquet](#140-test_parquet_importpy-a-partitioned-columnar-parent-is-refused-by-import_parquet)
 - [141. test_phase5.py: set_options and reset_options agree](#141-test_phase5py-set_options-and-reset_options-agree)
 - [142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP](#142-test_drop_cleanuppy-a-columnar-matviews-options-row-goes-with-its-drop)
+- [143. test_native_upgrade_converge.py: the upgrade window, before ALTER EXTENSION UPDATE](#143-test_native_upgrade_convergepy-the-upgrade-window-before-alter-extension-update)
 
 ## 1. How to read a test in here
 
@@ -7377,3 +7378,13 @@ Part of the pytest twin of `test/drop_cleanup.sh` (#1265, ported for #1341): its
 | `test_a_columnar_matview_takes_its_options_row_with_it` | a planted options row is gone after DROP MATERIALIZED VIEW |
 | `test_refresh_keeps_a_matviews_options_row` | a REFRESH that rewrote the matview leaves its set_options row in place |
 | `test_an_unrelated_options_row_survives` | another table's row survives a matview's DROP, and an ordinary columnar table still takes its own |
+
+## 143. test_native_upgrade_converge.py: the upgrade window, before ALTER EXTENSION UPDATE
+
+Part of the pytest twin of `test/native_upgrade_converge.sh` (#1341 item 66): its upgrade-window arms only, by the shell's names, and the pair is declared INCOMPLETE. Between installing a new library and running `ALTER EXTENSION pgcolumnar UPDATE`, a database runs the new library over its previous release's catalog. Reads and writes must work there. `DROP TABLE`, `TRUNCATE` and `pgcolumnar.vacuum()`, which need a catalog table the old one lacks, must be refused with 42P01, change nothing, and carry a hint naming the update; after the update all three succeed on the same rows. The previous release is the version the shipped upgrade script to the current `default_version` starts from; its base script is staged from `test/fixtures` for the test and removed after.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_upgrade_window` | at the previous catalog: rows written, deleted and read; the three operations refused with the hint and nothing changed; after the update the rows are intact and all three succeed |

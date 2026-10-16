@@ -400,6 +400,18 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+- **In the upgrade window, a refusal for a missing catalog table names `ALTER
+  EXTENSION UPDATE`.** After the new library is installed and the server restarted,
+  but before `ALTER EXTENSION pgcolumnar UPDATE`, `DROP TABLE`, `TRUNCATE` and
+  `pgcolumnar.vacuum()` on a columnar table fail, because the 1.0-alpha5 library
+  needs `pgcolumnar.retired_group` and a 1.0-alpha4 catalog lacks it. They change
+  nothing. The error used to name only the missing table, and it now carries a hint:
+  `The pgcolumnar catalog in this database may be older than the installed library.
+  Run ALTER EXTENSION pgcolumnar UPDATE in this database.` Reads and writes work
+  throughout, and after the update every one of these succeeds on the same rows
+  (#1341 item 66). `test/native_upgrade_converge.sh` and
+  `test_native_upgrade_converge.py`.
+
 
 - **A join whose runtime-filter build is empty no longer reads the fact table.** When
   a large dimension filtered to no row was joined to a columnar table, the hash join

@@ -239,11 +239,22 @@ open_columnar_table(const char *name, LOCKMODE lockmode)
 	nspOid = pgcolumnar_schema_oid();
 	relOid = get_relname_relid(name, nspOid);
 
+	/*
+	 * NAME THE REMEDY (#1341 item 66). The usual way here is the upgrade window:
+	 * the new library is installed and the server restarted (docs/installation.md
+	 * steps 1 and 2), but this database's catalog is still the previous release's
+	 * until ALTER EXTENSION UPDATE (step 3). A catalog table this library added,
+	 * such as retired_group in 1.0-alpha5, is then missing, and DROP TABLE,
+	 * TRUNCATE and pgcolumnar.vacuum() stop here. The error alone named only the
+	 * table, which says neither why nor what to do.
+	 */
 	if (!OidIsValid(relOid))
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_TABLE),
 				 errmsg("columnar metadata table \"%s.%s\" does not exist",
-						COLUMNAR_SCHEMA_NAME, name)));
+						COLUMNAR_SCHEMA_NAME, name),
+				 errhint("The pgcolumnar catalog in this database may be older than the installed library. "
+						 "Run ALTER EXTENSION pgcolumnar UPDATE in this database.")));
 
 	rel = table_open(relOid, lockmode);
 
