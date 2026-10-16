@@ -791,4 +791,6 @@ guard_tests 438
 # four tests, by collection over the cluster files on this tree.
 # cluster_tests 702 -> 710 for #1341's test_native_saop_pushdown.py, the twin of native_saop_pushdown.sh:
 # eight tests, by collection over the cluster files on this tree.
-cluster_tests 710
+# cluster_tests 710 -> 718 for #1341's test_native_groupagg_batch.py, the twin of native_groupagg_batch.sh:
+# eight tests, by collection over the cluster files on this tree.
+cluster_tests 718

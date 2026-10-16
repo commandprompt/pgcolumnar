@@ -210,6 +210,7 @@ behaviour, the source of that number is named.
 - [162. test_native_vecskip.py: per-vector skipping by the zone maps](#162-test_native_vecskippy-per-vector-skipping-by-the-zone-maps)
 - [163. test_native_index_projection.py: CREATE INDEX projects only what it needs](#163-test_native_index_projectionpy-create-index-projects-only-what-it-needs)
 - [164. test_native_saop_pushdown.py: IN-lists and = ANY(array) prune row groups](#164-test_native_saop_pushdownpy-in-lists-and--anyarray-prune-row-groups)
+- [165. test_native_groupagg_batch.py: the grouped aggregate folds column-at-a-time](#165-test_native_groupagg_batchpy-the-grouped-aggregate-folds-column-at-a-time)
 
 ## 1. How to read a test in here
 
@@ -7659,3 +7660,20 @@ The pytest twin of `test/native_saop_pushdown.sh` (ported for #1341), every chec
 | `test_the_batch_fold_never_takes_the_set_keys_as_exact` | the batch fold refuses the IN-list but accepts the equivalent range, and the vectorized count stays exact |
 | `test_a_correlated_array_is_not_frozen_and_the_backend_lives` | a correlated LATERAL array is not frozen, and the session's backend is still alive; a crash is a named red |
 | `test_the_reader_refuses_every_special_flag_but_the_array_one` | the reader's reject expression names every special scan-key flag, and SK_SEARCHARRAY reaches its own arm |
+
+## 165. test_native_groupagg_batch.py: the grouped aggregate folds column-at-a-time
+
+The pytest twin of `test/native_groupagg_batch.sh` (ported for #1341), every check by the shell's name. The grouped vectorized aggregate folds a whole row group at a time (#708), and two things are proved separately. The answers must be unchanged: each shape agrees with a heap mirror, and with the same rows when the path is off. The work must happen: "Columnar Batch Fold: yes" under EXPLAIN ANALYZE is the only check that goes red when the fold stops running. Each shape the fold must decline is read off the grouped node, so a shape the node stops taking is a red, not a skip.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fold_takes_every_eligible_shape_and_answers_as_the_heap_does` | seven shapes (plain, filtered, two keys, float8, count(*), timestamp and date keys) plan the grouped node, fold, and match the heap |
+| `test_the_fold_declines_every_ineligible_shape_and_still_answers` | a text key, an expression key, min/max and a `<>` filter make the fold decline on the grouped node, and each still matches the heap |
+| `test_the_fold_honours_the_delete_mask` | after deletes the fold still runs and matches the heap |
+| `test_the_fold_equals_the_row_path_over_the_same_rows` | three shapes answer the same with the path off and on, and the off arm really is not the grouped node |
+| `test_float8_keys_group_by_the_types_equality_not_by_bits` | a stored -0.0 and 0.0 are one group on the fold, as on the heap |
+| `test_the_fold_steps_over_skipped_vectors` | a scan that really skips vectors folds, and its one-column and four-column sums match the heap |
+| `test_the_parallel_partial_fold_equals_the_serial_one` | our parallel-aware node launches workers and folds, and equals the serial fold and the heap |
+| `test_a_column_added_after_some_row_groups_runs_the_row_path` | plain EXPLAIN predicts the fold, ANALYZE reports the row path that ran, and the answer is right |
