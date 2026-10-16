@@ -3369,6 +3369,31 @@ timeseries_recipes	timeseries_recipes	the how-to gives the LOCF recipe	15;16;17;
 timeseries_recipes	timeseries_recipes	the how-to gives the gap-fill recipe	15;16;17;18;19	2026-10-13	the how-to's 'Fill empty buckets' heading renamed, so the recipe is no longer found
 timeseries_recipes	timeseries_recipes	the how-to gives the interpolation recipe	15;16;17;18;19	2026-10-13	the how-to's 'Interpolate between known values' heading renamed, so the recipe is no longer found
 timeseries_recipes	timeseries_recipes	the interpolation recipe fills a gap linearly, and leaves both ends NULL	15;16;17;18;19	2026-10-13	the how-to's 'Interpolate between known values' heading renamed, so the recipe is no longer found;the how-to's interpolation recipe uses prev_v in place of next_v, so every gap is filled flat;the how-to's recipes join the series to the aggregate with JOIN instead of LEFT JOIN
+truncate_cleanup	truncate_cleanup	DROP of a loaded projected table leaves nothing	15;16;17;18;19	2026-10-16	columnar_tableam.c: a rewrite no longer deletes the retired storage's catalog rows;columnar_tableam.c: deleting a storage tree no longer reaches its projections' storages
+truncate_cleanup	truncate_cleanup	DROP of a loaded table after TRUNCATE leaves nothing	15;16;17;18;19	2026-10-16	columnar_tableam.c: a rewrite no longer deletes the retired storage's catalog rows
+truncate_cleanup	truncate_cleanup	INSERT, TRUNCATE, INSERT in one transaction commits and keeps the new rows	15;16;17;18;19	2026-10-16	columnar_tableam.c: a rewrite no longer drops the cached write state of the retired storage
+truncate_cleanup	truncate_cleanup	PREMISE the in-place transaction committed	15;16;17;18;19	2026-10-16	columnar_tableam.c: the in-place truncate no longer clears a projection's own storage
+truncate_cleanup	truncate_cleanup	PREMISE the projection has its own storage, distinct from the base	15;16;17;18;19	2026-10-16	columnar_tableam.c: the in-place truncate no longer clears a projection's own storage
+truncate_cleanup	truncate_cleanup	PREMISE the table exists after it	15;16;17;18;19	2026-10-16	columnar_tableam.c: the in-place truncate no longer clears a projection's own storage
+truncate_cleanup	truncate_cleanup	TRUNCATE leaves no projection row under a retired storage id	15;16;17;18;19	2026-10-16	columnar_tableam.c: a rewrite no longer deletes the retired storage's catalog rows
+truncate_cleanup	truncate_cleanup	TRUNCATE leaves no rows	15;16;17;18;19	never	-
+truncate_cleanup	truncate_cleanup	TRUNCATE returns the catalog to the empty baseline	15;16;17;18;19	2026-10-16	columnar_tableam.c: a rewrite no longer deletes the retired storage's catalog rows
+truncate_cleanup	truncate_cleanup	a full rewrite keeps every row, and they are still readable	15;16;17;18;19	never	-
+truncate_cleanup	truncate_cleanup	and dropping it afterwards still leaves nothing	15;16;17;18;19	2026-10-16	columnar_tableam.c: a rewrite no longer deletes the retired storage's catalog rows
+truncate_cleanup	truncate_cleanup	and that group describes only the rows written after it	15;16;17;18;19	2026-10-16	columnar_tableam.c: the in-place truncate no longer clears a projection's own storage
+truncate_cleanup	truncate_cleanup	and the declaration survives the TRUNCATE, so the projection is rebuildable	15;16;17;18;19	never	-
+truncate_cleanup	truncate_cleanup	and the projection reads them back	15;16;17;18;19	2026-10-16	columnar_tableam.c: the in-place truncate no longer clears a projection's own storage
+truncate_cleanup	truncate_cleanup	insert did add metadata	15;16;17;18;19	never	-
+truncate_cleanup	truncate_cleanup	premise: five thousand rows before the rewrite	15;16;17;18;19	never	-
+truncate_cleanup	truncate_cleanup	premise: the projected table carries metadata again before the DROP	15;16;17;18;19	never	-
+truncate_cleanup	truncate_cleanup	premise: the table carries metadata again, so the DROP has work to do	15;16;17;18;19	never	-
+truncate_cleanup	truncate_cleanup	premise: the table holds its first ten rows	15;16;17;18;19	never	-
+truncate_cleanup	truncate_cleanup	ten insert-and-truncate cycles on one table leave nothing	15;16;17;18;19	2026-10-16	columnar_tableam.c: a rewrite no longer deletes the retired storage's catalog rows
+truncate_cleanup	truncate_cleanup	the projection agrees with the base table	15;16;17;18;19	2026-10-16	columnar_tableam.c: the in-place truncate no longer clears a projection's own storage
+truncate_cleanup	truncate_cleanup	the projection did add metadata	15;16;17;18;19	never	-
+truncate_cleanup	truncate_cleanup	the projection storage holds exactly one row group after the truncate	15;16;17;18;19	2026-10-16	columnar_tableam.c: the in-place truncate no longer clears a projection's own storage
+truncate_cleanup	truncate_cleanup	the rows written after the in-place truncate are all there	15;16;17;18;19	2026-10-16	columnar_tableam.c: the in-place truncate no longer clears a projection's own storage
+truncate_cleanup	truncate_cleanup	three truncate-and-reload cycles still sit at the baseline	15;16;17;18;19	2026-10-16	columnar_tableam.c: a rewrite no longer deletes the retired storage's catalog rows
 ttl_expire	ttl_expire	NO row still inside the retention was dropped (#403 item 5a)	15;16;17;18;19	never	-
 ttl_expire	ttl_expire	NO row still inside the retention was dropped, on a date column	15;16;17;18;19	never	-
 ttl_expire	ttl_expire	a compaction's retired groups are not recorded as retention	15;16;17;18;19	2026-10-13	the early exit compares the extent's maximum to the cutoff instead of its minimum

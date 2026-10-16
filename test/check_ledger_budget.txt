@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 218
+suites_not_covered 217
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2961,4 +2961,19 @@ suites_not_covered 218
 #     never         2675 + 11 = 2686
 #     dated          944 + 17 = 961
 #     2686 + 961 == 3647
-checks_never_observed_red 2686
+#
+# #1341, truncate_cleanup seeded, with its twin (OffgridwithJD): 2686 -> 2695, and
+# suites_not_covered 218 -> 217. The suite had no rows. It enters with all 25 checks
+# from five-major runs (25/25 on each of 15-19). 16 are dated by four mutations of
+# the truncate paths: a rewrite that no longer deletes the retired storage's rows
+# (7), nor drops the stale write state (1), an in-place truncate that skips the
+# projections' storages (8), and a storage-tree delete that skips them (1). Nine
+# arrive never: the premises that each fixture holds rows or metadata, the
+# surviving projection declaration, the empty table after TRUNCATE, and the
+# rewrite that keeps every row.
+#
+#     ledger rows   3647 + 25 = 3672
+#     never         2686 +  9 = 2695
+#     dated          961 + 16 = 977
+#     2695 + 977 == 3672
+checks_never_observed_red 2695
