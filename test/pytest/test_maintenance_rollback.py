@@ -32,15 +32,25 @@ def _one(conn, sql):
         return f"ERROR: {str(exc).splitlines()[0]}"
 
 
-def _by_index(conn):
+BY_INDEX_SETS = ("enable_seqscan", "enable_bitmapscan", "pgcolumnar.enable_custom_scan")
+
+
+def _by_index(conn, explain=False):
+    # the custom scan off too, and asserted by a premise: with only seqscan off this
+    # whole-table range planned as Custom Scan (PgColumnarScan) and read no index
     with conn.cursor() as cur:
-        cur.execute("SET enable_seqscan = off")
-        cur.execute("SET enable_bitmapscan = off")
-    got = _one(conn, ROWS + " WHERE id BETWEEN 1 AND 10000")
-    with conn.cursor() as cur:
-        cur.execute("RESET enable_seqscan")
-        cur.execute("RESET enable_bitmapscan")
-    return got
+        for g in BY_INDEX_SETS:
+            cur.execute(f"SET {g} = off")
+    try:
+        if explain:
+            with conn.cursor() as cur:
+                cur.execute("EXPLAIN (COSTS OFF) " + ROWS + " WHERE id BETWEEN 1 AND 10000")
+                return "yes" if any("Index Scan using" in r[0] for r in cur.fetchall()) else "no"
+        return _one(conn, ROWS + " WHERE id BETWEEN 1 AND 10000")
+    finally:
+        with conn.cursor() as cur:
+            for g in BY_INDEX_SETS:
+                cur.execute(f"RESET {g}")
 
 
 def _build_mr(conn):
@@ -63,6 +73,7 @@ def test_a_maintenance_function_that_rolls_back_leaves_the_table_as_it_was(pgc_c
     rows0, groups0 = _one(pgc_conn, ROWS), _one(pgc_conn, GROUPS)
     expect.text(f"{rows0.split('/')[0]}|{groups0}", "5400|10/10000",
                 "premise: the table holds the rows it was given")
+    expect.text(_by_index(pgc_conn, explain=True), "yes", "premise: the by-index reading is an Index Scan through mr_id")
 
     for f in funcs:
         name = f.split("(")[0]
