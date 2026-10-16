@@ -202,6 +202,7 @@ behaviour, the source of that number is named.
 - [154. test_alter_am_cleanup.py: DROP after SET ACCESS METHOD heap cleans up](#154-test_alter_am_cleanuppy-drop-after-set-access-method-heap-cleans-up)
 - [155. test_native_reclaim.py: physical page reclaim and the compaction threshold guards](#155-test_native_reclaimpy-physical-page-reclaim-and-the-compaction-threshold-guards)
 - [156. test_native_repack.py: REPACK on a columnar table](#156-test_native_repackpy-repack-on-a-columnar-table)
+- [157. test_native_join_vector_agg.py: the vectorized aggregate over a unique-key inner join](#157-test_native_join_vector_aggpy-the-vectorized-aggregate-over-a-unique-key-inner-join)
 
 ## 1. How to read a test in here
 
@@ -7560,3 +7561,13 @@ The alternative must reclaim, not only return. With `vacuum()` returning before 
 | test | what it holds |
 | --- | --- |
 | `test_repack_on_a_columnar_table` | every REPACK spelling is refused naming REPACK, the concurrent form is refused for a stated reason, the table is unharmed, and `pgcolumnar.vacuum()` reclaims the deleted rows |
+
+## 157. test_native_join_vector_agg.py: the vectorized aggregate over a unique-key inner join
+
+The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every check by the shell's name. A star-schema inner Hash Join onto a unique dimension only filters the fact table, so the ungrouped vectorized aggregate can survive it and still answer exactly (#752). A dimension with duplicate keys, a LEFT join, and a Join Filter besides the hash clause must each refuse the fold, and every answer must equal the heap mirror's. Plans are read with parallel workers off and nested-loop and merge joins disabled, as in the shell.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join and an extra join filter each refuse it and answer as heap does |

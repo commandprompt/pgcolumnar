@@ -775,4 +775,6 @@ guard_tests 438
 # three tests, by collection over the cluster files on this tree.
 # cluster_tests 690 -> 691 for #1341's test_native_repack.py, the twin of native_repack.sh:
 # one test, by collection over the cluster files on this tree.
-cluster_tests 691
+# cluster_tests 691 -> 692 for #1341's test_native_join_vector_agg.py, the twin of native_join_vector_agg.sh:
+# one test, by collection over the cluster files on this tree.
+cluster_tests 692
