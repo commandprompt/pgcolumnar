@@ -66,6 +66,7 @@ check "no free space yet" "$(freerows)" "0"
 # With no reusable space yet it appends, so the file grows and free_space fills.
 psql_run "SELECT pgcolumnar.recluster('n', 'id');"
 size2="$(fsize)"
+free2="$(freerows)"
 check "free space recorded after first recluster" \
 	"$([ "$(freerows)" -gt 0 ] && echo yes || echo no)" "yes"
 check "data intact after first recluster" \
@@ -74,16 +75,28 @@ check "data intact after first recluster" \
 # Repeated reclusters must REUSE the previous cycle's freed space (its freeing
 # transaction has committed and the horizon has passed it), so the file plateaus
 # instead of growing every cycle. Without reuse it would grow by ~size1 each time.
-for i in 1 2 3 4; do
-	psql_run "SELECT pgcolumnar.recluster('n', 'id');"
+#
+# The key ALTERNATES (#1341). Measured: four more recluster('n', 'id') calls each
+# returned 0, because recluster self-gates on a table already in that key's order,
+# so they wrote nothing and the file "plateaued" with reuse disabled too. With v and
+# id in turn every call rewrites all six groups; without reuse the file then grows
+# 311296 -> 901120 and free_space gains a row per cycle.
+recs=""
+for key in v id v id; do
+	recs="$recs$(q "SELECT pgcolumnar.recluster('n', '$key');")|"
 done
 size3="$(fsize)"
+check "each repeated recluster rewrote the table, so none was skipped as already ordered" \
+	"$(awk -F'|' '{ ok = (NF == 5); for (i = 1; i <= 4; i++) if ($i + 0 <= 0) ok = 0; print ok ? "yes" : "no (" $0 ")" }' <<<"$recs")" "yes"
 echo "  (file size: initial=$size1 after-1-recluster=$size2 after-5-reclusters=$size3; free_space rows=$(freerows))"
 
 check "repeated recluster reuses space (file plateaus)" \
 	"$([ "$size3" -le "$((size2 + size1))" ] && echo yes || echo no)" "yes"
+# Against the count after the first cycle, not "> 0" (#1341): that was the arm
+# above again, and held with nothing reused.
+free3="$(freerows)"
 check "free space is being reused (bounded, not growing per cycle)" \
-	"$([ "$(freerows)" -gt 0 ] && echo yes || echo no)" "yes"
+	"$([ -n "$free3" ] && [ "$free3" -gt 0 ] && [ "$free3" -le "$free2" ] && echo yes || echo "no ($free2 -> $free3 rows)")" "yes"
 
 # The reused blocks hold correct data.
 check "reused-block data matches heap mirror" \
