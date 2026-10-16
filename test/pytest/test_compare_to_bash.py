@@ -188,6 +188,7 @@ COMPLETE = ["advisory_lock_class",
             "serializable",
             "settings_reference",
             "sorted_pathkeys",
+            "sorted_projection",
             "statement_self_visibility",
             "stats_privilege",
             "storage_row_repair",
@@ -421,7 +422,8 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
     expect.text(", ".join(files),
                 "build_refusal, differential, join_runtime_filter, native_groupagg_batch, "
                 "native_index_projection, native_parquet_pushdown, native_reclaim, native_repack, "
-                "native_saop_pushdown, native_vacuum_race, native_vecskip, sorted_pathkeys",
+                "native_saop_pushdown, native_vacuum_race, native_vecskip, sorted_pathkeys, "
+                "sorted_projection",
                 "and it is these files, so another appearing is a diff a reviewer "
                 "sees rather than a number that moved")
 

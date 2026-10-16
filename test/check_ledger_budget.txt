@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 192
+suites_not_covered 191
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3490,4 +3490,19 @@ suites_not_covered 192
 #     never         3031 + 1 - 3 = 3029
 #     dated         1316 + 3 = 1319
 #     3029 + 1319 == 4348
-checks_never_observed_red 3029
+#
+# #1341, sorted_projection seeded, with its twin (OffgridwithJD): 3029 -> 3053, and
+# suites_not_covered 192 -> 191. The suite had no rows. It enters with all 29 checks
+# from five-major runs (29/29 on each of 15-19). 5 are dated by three mutations:
+# the post-sort reindex removed (both index lookups), the compaction not sorting
+# (the pruning arm and the json refusal, which the sort raises), and vacuum_sorted's
+# columnar check removed. Twenty-four arrive never: the ten heap-oracle comparisons
+# and the multi-key and post-delete counts, which no rewrite mutation here moves;
+# the oracle and index premises; the pre-sort control; idempotence; and the
+# unknown-column and no-sort-key refusals.
+#
+#     ledger rows   4348 + 29 = 4377
+#     never         3029 + 24 = 3053
+#     dated         1319 +  5 = 1324
+#     3053 + 1324 == 4377
+checks_never_observed_red 3053

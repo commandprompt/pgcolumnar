@@ -809,4 +809,6 @@ guard_tests 438
 # two tests, by collection over the cluster files on this tree.
 # cluster_tests 742 -> 744 for #1341's test_native_fetch_bigcap.py, the twin of native_fetch_bigcap.sh:
 # two tests, by collection over the cluster files on this tree.
-cluster_tests 744
+# cluster_tests 744 -> 747 for #1341's test_sorted_projection.py, the twin of sorted_projection.sh:
+# three tests, by collection over the cluster files on this tree.
+cluster_tests 747
