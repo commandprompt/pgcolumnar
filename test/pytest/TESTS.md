@@ -200,6 +200,7 @@ behaviour, the source of that number is named.
 - [152. test_replication.py: physical replication and standby redo](#152-test_replicationpy-physical-replication-and-standby-redo)
 - [153. test_native_recluster.py: online reclustering under ShareUpdateExclusiveLock](#153-test_native_reclusterpy-online-reclustering-under-shareupdateexclusivelock)
 - [154. test_alter_am_cleanup.py: DROP after SET ACCESS METHOD heap cleans up](#154-test_alter_am_cleanuppy-drop-after-set-access-method-heap-cleans-up)
+- [155. test_native_reclaim.py: physical page reclaim and the compaction threshold guards](#155-test_native_reclaimpy-physical-page-reclaim-and-the-compaction-threshold-guards)
 
 ## 1. How to read a test in here
 
@@ -7532,3 +7533,17 @@ Each cleanup arm compares the catalogs with their state just before its own tabl
 | `test_the_hook_is_harmless_where_the_extension_never_was` | DROP, temp tables and every rewrite path succeed in a database without the extension |
 | `test_a_relation_older_than_the_extension_is_cleaned_up` | a table that predates CREATE EXTENSION isn't a member, so its options row goes on DROP |
 | `test_the_gate_is_on_the_options_table_not_the_schema` | DROP EXTENSION succeeds with populated catalogs, and afterwards, with only the schema left, every path still works |
+
+## 155. test_native_reclaim.py: physical page reclaim and the compaction threshold guards
+
+The pytest twin of `test/native_reclaim.sh` (ported for #1341, item 70), every check by the shell's name. Retiring a row group records its byte range in `pgcolumnar.free_space`, and a later online compaction reserves from a freed range instead of growing the file. So repeated reclusters plateau the file, free_space stays bounded, and the reused blocks read back the heap mirror's rows. The reclusters alternate their key, because recluster self-gates on a table already in that key's order: four more `recluster('n', 'id')` calls each returned 0, and the file "plateaued" with reuse disabled.
+
+`compact_rewrite()` and `maintenance_due()` refuse NaN, negative, above-1 and (for maintenance_due) NULL thresholds with 22023, and accept the boundaries 0.0 and 1.0. Controls pin that other failures carry other SQLSTATEs. `max_groups` caps one `compact_rewrite` call, which returns what it rewrote.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_repeated_recluster_reuses_space_and_compact_rewrite_is_guarded` | every repeated recluster rewrites, the file plateaus, free_space doesn't grow, reused blocks read back correctly, and compact_rewrite's threshold guard holds in both directions |
+| `test_maintenance_due_validates_both_thresholds` | each threshold is refused out of range or NULL by 22023 and accepted on its boundaries, and the verdict follows the deleted fraction |
+| `test_max_groups_caps_one_compact_rewrite` | a capped call rewrites three of ten half-deleted groups and an uncapped one the other seven, with every live row kept |

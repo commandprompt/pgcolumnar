@@ -771,4 +771,6 @@ guard_tests 438
 # one test, by collection over the cluster files on this tree.
 # cluster_tests 683 -> 687 for #1341's test_alter_am_cleanup.py, the twin of alter_am_cleanup.sh:
 # four tests, by collection over the cluster files on this tree.
-cluster_tests 687
+# cluster_tests 687 -> 690 for #1341's test_native_reclaim.py, the twin of native_reclaim.sh:
+# three tests, by collection over the cluster files on this tree.
+cluster_tests 690
