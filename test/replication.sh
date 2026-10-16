@@ -458,11 +458,27 @@ check "and the row counts agree" \
 # Scenario 2: compaction, and the SMGR truncate redo the issue asked for
 # ---------------------------------------------------------------------------
 
+# Each replay arm below is about a write the primary actually made (#1341): measured,
+# compact here retired nothing, because vacuum had already reclaimed every deleted
+# row, so "compact replays identically" compared a state compact never touched.
+# vacuum rewrites into a new relfilenode, and compact retires fully deleted row
+# groups, so each is asserted to have done that first.
+rg_sql="SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('r')"
+fn_before="$(q "SELECT pg_relation_filenode('r')")"
 psql_run "SELECT pgcolumnar.vacuum('r');" >/dev/null 2>&1
+check "vacuum rewrote r into a new relfilenode on the primary" \
+	"$([ -n "$fn_before" ] && [ "$(q "SELECT pg_relation_filenode('r')")" != "$fn_before" ] && echo yes || echo no)" "yes"
 sync_or_fail "sync 5"
 check "vacuum replays identically" "$(hash_standby r)" "$(hash_primary r)"
 
-psql_run "SELECT pgcolumnar.compact('r');" >/dev/null 2>&1
+# A row group of its own (one INSERT is one flush), then every row of it deleted,
+# so compact has exactly one group to retire.
+psql_run "INSERT INTO r SELECT g, 'doomed' || g FROM generate_series(50001,51000) g;" >/dev/null 2>&1
+psql_run "DELETE FROM r WHERE v LIKE 'doomed%';" >/dev/null 2>&1
+rg_before="$(q "$rg_sql")"
+retired="$(q "SELECT pgcolumnar.compact('r');")"
+check "compact retired the fully deleted row group on the primary" \
+	"$retired|$(( ${rg_before:-0} - $(q "$rg_sql") ))" "1|1"
 sync_or_fail "sync 6"
 check "compact replays identically" "$(hash_standby r)" "$(hash_primary r)"
 
@@ -542,6 +558,10 @@ check "and it is not running the module" \
 	"1"
 
 psql_run "INSERT INTO r2 SELECT g, 'y' || g FROM generate_series(5001,9000) g;" >/dev/null 2>&1
+# The replay arm below is only about columnar WAL if the primary wrote some: a
+# failed INSERT left the LSN arm and the final hash comparison green.
+check "premise: the primary wrote r2's second batch while the standby ran without the module" \
+	"$(q 'SELECT count(*) FROM r2')" "9000"
 target_lsn="$(q 'SELECT pg_current_wal_lsn()')"
 for _i in $(seq 1 120); do
 	rep="$(sb_q 'SELECT pg_last_wal_replay_lsn()')"

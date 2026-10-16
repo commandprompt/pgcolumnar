@@ -765,4 +765,6 @@ guard_tests 438
 # three tests, by collection over the cluster files on this tree.
 # cluster_tests 680 -> 681 for #1341's test_pg_upgrade.py, the twin of pg_upgrade.sh:
 # one test, by collection over the cluster files on this tree.
-cluster_tests 681
+# cluster_tests 681 -> 682 for #1341's test_replication.py, the twin of replication.sh:
+# one test, by collection over the cluster files on this tree.
+cluster_tests 682
