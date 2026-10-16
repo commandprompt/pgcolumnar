@@ -41,6 +41,10 @@ def test_layer_accepts_a_run_where_every_test_reports(pytester, expect):
     )
     result = pytester.runpytest("-p", "pgc_vacuity", "-n", "2")
     expect.outcomes(result, "an honest parallel run is untouched", passed=4, failed=0)
+    # AND IT EXITS 0 (#1339). Reconciliation acts at session finish, on the exit
+    # status, not on the outcomes: with it firing on every run, the four tests still
+    # passed and the arm above stayed green.
+    expect.num(int(result.ret), 0, "and the honest parallel run exits 0")
 
 
 def test_layer_rejects_a_parametrize_over_an_empty_list(pytester, expect):
