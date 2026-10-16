@@ -2426,14 +2426,21 @@ native_decode_gating	native_decode_gating	the needle removes exactly the non-mat
 native_decode_gating	native_decode_gating	the needle skips exactly the vectors holding no match	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluation between the decode passes never runs;columnar_reader.c: the per-vector qual evaluator marks every vector skipped
 native_decode_gating	native_decode_gating	the nomatch query returns nothing	15;16;17;18;19	never	-
 native_decode_gating	native_decode_gating	the zero-match query removes every row by filter, counted once	15;16;17;18;19	never	-
-native_delete_visibility_paths	native_delete_visibility_paths	a DELETE whose qual deletes another row of the table succeeds and leaves heap's rows (#1394)	15;16;17;18;19	2026-10-14	PgColumnarUpsertDeleteVector without the command advance (main before #1394's fix)
-native_delete_visibility_paths	native_delete_visibility_paths	a deleted row is invisible via the index	15;16;17;18;19	never	-
+native_delete_visibility_paths	native_delete_visibility_paths	a DELETE whose qual deletes another row of the table succeeds and leaves heap's rows (#1394)	15;16;17;18;19	2026-10-16	PgColumnarUpsertDeleteVector without the command advance (main before #1394's fix);columnar_reader.c: the row-at-a-time scan reads a deleted row as live
+native_delete_visibility_paths	native_delete_visibility_paths	a deleted row is invisible via the index	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row ignores the flushed delete vector
 native_delete_visibility_paths	native_delete_visibility_paths	a live row is visible via the index	15;16;17;18;19	never	-
-native_delete_visibility_paths	native_delete_visibility_paths	a row deleted in-transaction is invisible in the same transaction	15;16;17;18;19	never	-
+native_delete_visibility_paths	native_delete_visibility_paths	a row deleted in-transaction is invisible in the same transaction	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row ignores the flushed delete vector
 native_delete_visibility_paths	native_delete_visibility_paths	aggregate over the whole table sees the live set	15;16;17;18;19	never	-
-native_delete_visibility_paths	native_delete_visibility_paths	index / bitmap scan sees the live set	15;16;17;18;19	never	-
-native_delete_visibility_paths	native_delete_visibility_paths	index-only scan sees the live set	15;16;17;18;19	never	-
-native_delete_visibility_paths	native_delete_visibility_paths	sequential scan sees the live set (row-emitting path)	15;16;17;18;19	never	-
+native_delete_visibility_paths	native_delete_visibility_paths	index / bitmap scan sees the live set	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row ignores the flushed delete vector
+native_delete_visibility_paths	native_delete_visibility_paths	index-only scan sees the live set	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row ignores the flushed delete vector
+native_delete_visibility_paths	native_delete_visibility_paths	premise: the deletes span more than one row group	15;16;17;18;19	never	-
+native_delete_visibility_paths	native_delete_visibility_paths	premise: the index arm really plans an Index Scan	15;16;17;18;19	never	-
+native_delete_visibility_paths	native_delete_visibility_paths	premise: the index-only arm really plans an Index Only Scan	15;16;17;18;19	never	-
+native_delete_visibility_paths	native_delete_visibility_paths	premise: the sequential arm really plans a Seq Scan	15;16;17;18;19	never	-
+native_delete_visibility_paths	native_delete_visibility_paths	premise: the table holds all 5000 rows	15;16;17;18;19	never	-
+native_delete_visibility_paths	native_delete_visibility_paths	premise: the whole-table aggregate stays on the columnar path	15;16;17;18;19	never	-
+native_delete_visibility_paths	native_delete_visibility_paths	sequential scan sees the live set (row-emitting path)	15;16;17;18;19	2026-10-16	columnar_reader.c: the row-at-a-time scan reads a deleted row as live
+native_delete_visibility_paths	native_delete_visibility_paths	the rolled-back delete left the row in place	15;16;17;18;19	never	-
 native_dict_underfill	native_dict_underfill	backend survives the under-filled DICT chunk	15;16;17;18;19	2026-10-16	columnar_encoding.c: the DICT fill refusal replaced by a backend crash
 native_dict_underfill	native_dict_underfill	premise: the inflation rewrote the DICT chunk's descriptor	15;16;17;18;19	never	-
 native_dict_underfill	native_dict_underfill	the text column is DICT-encoded (precondition)	15;16;17;18;19	never	-
