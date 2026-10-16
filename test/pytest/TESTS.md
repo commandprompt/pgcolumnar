@@ -181,6 +181,7 @@ behaviour, the source of that number is named.
 - [133. test_native_skip.py: a type binary-coercible to its opclass's type prunes](#133-test_native_skippy-a-type-binary-coercible-to-its-opclasss-type-prunes)
 - [134. test_unique_conc.py: concurrent inserters of one unique key serialize](#134-test_unique_concpy-concurrent-inserters-of-one-unique-key-serialize)
 - [135. test_update_conc.py: two writers of one row serialize](#135-test_update_concpy-two-writers-of-one-row-serialize)
+- [136. test_recovery.py: committed writes survive a crash, uncommitted ones leave nothing](#136-test_recoverypy-committed-writes-survive-a-crash-uncommitted-ones-leave-nothing)
 
 ## 1. How to read a test in here
 
@@ -7266,3 +7267,17 @@ Each concurrent case runs one interleaving on a heap table, the oracle, and on a
 | `test_a_covering_unique_index` | with a unique index the loser still gets 40001, not 23505; the heap composes |
 | `test_a_savepoint_rolled_back` | an UPDATE rolled back to a savepoint leaves the pre-savepoint value, as on the heap |
 | `test_a_statement_failing_inside_a_savepoint` | an UPDATE that fails partway inside a savepoint leaves nothing behind: its buffered mark and row are discarded |
+
+## 136. test_recovery.py: committed writes survive a crash, uncommitted ones leave nothing
+
+The pytest twin of `test/recovery.sh` (ported for #1341), every check by the shell's name. Columnar stripes are written through the buffer manager with a full-page WAL record each, and the metadata lives in WAL-logged heap catalogs. So rows committed after the last checkpoint come back from WAL, a transaction open at the crash leaves nothing visible, and a visibility-map bit cleared after the checkpoint does not come back set from the page on disk. A heap mirror is the oracle.
+
+A private cluster, stopped with `-m immediate` for each crash. Each crash is proven by the server log gaining a "database system was not properly shut down" line, counted before that crash, so one recovered crash cannot vouch for a later one. The open transaction's INSERT is proven to have run by its session holding an xid.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_pair_through_three_crashes` | rows committed after a checkpoint survive; an open transaction's checkpointed INSERT leaves no row; committed deletes survive; each against the heap pair |
+| `test_a_cleared_visibility_bit_stays_cleared` | a bit set and checkpointed, then cleared by a DELETE, stays cleared after the crash; a clean block's bit stays set; the rows match heap |
+| `test_a_projection_survives_a_crash` | a projection copy committed after the checkpoint replays, and reproduces the base's rows and a scan through it |

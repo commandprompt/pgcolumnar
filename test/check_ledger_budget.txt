@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 222
+suites_not_covered 221
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -2854,4 +2854,23 @@ suites_not_covered 222
 #     never         2607 + 14 = 2621
 #     dated          900 + 14 = 914
 #     2621 + 914 == 3535
-checks_never_observed_red 2621
+#
+# #1341, recovery seeded, with its twin (OffgridwithJD): 2621 -> 2639, and
+# suites_not_covered 222 -> 221. The suite had no rows. It enters with all 29 checks
+# from five-major runs (29/29 on each of 15-19). 11 are dated by three mutations,
+# each a WAL record not written: a stripe data page's (the whole-row, aggregate and
+# range arms of s1, s2's whole-row, s3's four, and s5's two projection arms), the
+# metapage's reserved-offset advance (s2's whole-row and s3's four), and the
+# visibility-map clear (s4's cleared bit). Eighteen arrive never: the row counts
+# (s1, s2, s5's base, s2's phantom rows), the two heap counts, s4's three pre-crash
+# arms, its clean block, its count and contents, the five "recovery ran" arms and
+# the s2 INSERT premise. Those last six go red only under harness mutations, a crash
+# that does not happen and an INSERT that never runs, which observe the suite rather
+# than the code, so they date nothing here. The visibility-map set's WAL alone
+# reddens nothing: the bits it sets are checkpointed before the crash.
+#
+#     ledger rows   3535 + 29 = 3564
+#     never         2621 + 18 = 2639
+#     dated          914 + 11 = 925
+#     2639 + 925 == 3564
+checks_never_observed_red 2639

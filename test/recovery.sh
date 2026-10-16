@@ -26,6 +26,7 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 # then wait for the postmaster PID to actually disappear before returning.
 crash_cluster() {
 	local pm i
+	REDO_BEFORE="$(redo_count)"
 	pm="$(head -1 "$PGC_PGDATA/postmaster.pid" 2>/dev/null || true)"
 	echo "-- SIGKILL cluster (postmaster pid=$pm)"
 	if [ -n "$pm" ]; then
@@ -55,9 +56,17 @@ restart_cluster() {
 	return 1
 }
 
-# Confirm recovery actually happened (a redo entry in the log).
+# Confirm THIS crash was recovered from. The server log holds every restart, so a
+# count over the whole log stays above zero once the first crash has recovered:
+# with every crash after the first skipped, s4 and s5 "recovery ran" still passed,
+# and so did s4's cleared-bit arm with the VM clear's WAL removed (#1341). So each
+# crash notes the count, and recovery ran when the restart added a line to it.
+redo_count() {
+	# grep -c prints 0 itself when nothing matches, and then exits 1
+	pgc_pg "grep -c 'database system was not properly shut down' '$PGC_LOGFILE'" 2>/dev/null || true
+}
 recovery_ran() {
-	pgc_pg "grep -c -E 'redo (starts|done)|database system was not properly shut down' '$PGC_LOGFILE'" 2>/dev/null || echo 0
+	[ "$(redo_count)" -gt "${REDO_BEFORE:-0}" ] && echo ok || echo "no recovery since the crash"
 }
 
 make_pair "id int, v text, n numeric"
@@ -77,7 +86,7 @@ psql_run "INSERT INTO t_col  SELECT g, 'b'||g, g*2.5 FROM generate_series(3001,5
 crash_cluster
 restart_cluster
 
-check "s1 recovery ran"       "$([ "$(recovery_ran)" -ge 1 ] && echo ok)" "ok"
+check "s1 recovery ran" "$(recovery_ran)" "ok"
 check "s1 col count"          "$(q 'SELECT count(*) FROM t_col;')" "5000"
 check "s1 heap count"         "$(q 'SELECT count(*) FROM t_heap;')" "5000"
 diff_query "s1 whole-row"     "SELECT * FROM %T"
@@ -91,15 +100,23 @@ diff_query "s1 range"         "SELECT id FROM %T WHERE id BETWEEN 2500 AND 3500"
 #   count must be unchanged and the pair must still agree.
 # ---------------------------------------------------------------------------
 echo "-- scenario 2: uncommitted atomicity"
-env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+env PATH="$PGC_BINDIR:$PATH" PGAPPNAME=rec_s2 psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
 	-c "BEGIN; INSERT INTO t_col SELECT g,'c'||g,g FROM generate_series(9001,11000) g; SELECT pg_sleep(30);" \
 	>/dev/null 2>&1 &
 BGPID=$!
-sleep 5   # let the INSERT run inside the open transaction
+# The INSERT has run, inside the open transaction, once the session sleeps with an
+# xid assigned. A sleep stood here, and nothing checked it: with the INSERT made to
+# fail, scenario 2 still passed whole, having nothing to roll back (#1341).
+s2_inserted() {
+	q "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'rec_s2' AND wait_event = 'PgSleep' AND backend_xid IS NOT NULL;"
+}
+for i in $(seq 1 300); do [ "$(s2_inserted)" = 1 ] && break; sleep 0.1; done
+check "premise: s2's INSERT ran in its open transaction before the crash" "$(s2_inserted)" "1"
 psql_run "CHECKPOINT;"
 crash_cluster
 kill "$BGPID" 2>/dev/null || true
 restart_cluster
+check "s2 recovery ran" "$(recovery_ran)" "ok"
 
 check "s2 col count unchanged"  "$(q 'SELECT count(*) FROM t_col;')" "5000"
 check "s2 heap count unchanged" "$(q 'SELECT count(*) FROM t_heap;')" "5000"
@@ -116,6 +133,7 @@ expect_after_delete="$(q 'SELECT count(*) FROM t_heap;')"
 
 crash_cluster
 restart_cluster
+check "s3 recovery ran" "$(recovery_ran)" "ok"
 
 check "s3 col count == heap"  "$(q 'SELECT count(*) FROM t_col;')" "$expect_after_delete"
 check "s3 deletes persisted"  "$(q 'SELECT count(*) FROM t_col WHERE id % 7 = 0;')" "0"
@@ -150,7 +168,7 @@ check "s4 pre-crash deleted block cleared" "$(q "SELECT pgcolumnar.vm_is_visible
 
 crash_cluster
 restart_cluster
-check "s4 recovery ran" "$([ "$(recovery_ran)" -ge 1 ] && echo ok)" "ok"
+check "s4 recovery ran" "$(recovery_ran)" "ok"
 
 # The critical assertion: the cleared bit must not resurrect from the on-disk
 # checkpointed page -- WAL replay of the clear must win.
@@ -178,7 +196,7 @@ psql_run "INSERT INTO rp SELECT g, (g*7)%1000 FROM generate_series(4001,8000) g;
 
 crash_cluster
 restart_cluster
-check "s5 recovery ran" "$([ "$(recovery_ran)" -ge 1 ] && echo ok)" "ok"
+check "s5 recovery ran" "$(recovery_ran)" "ok"
 
 psql_run "CREATE TABLE rp_h (a int, c int) USING heap;"
 psql_run "INSERT INTO rp_h SELECT g, (g*7)%1000 FROM generate_series(1,8000) g;"

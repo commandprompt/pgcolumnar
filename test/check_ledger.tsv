@@ -2821,6 +2821,35 @@ range_pruning	range_pruning	premise: the range type collates differently from it
 range_pruning	range_pruning	so does a containment probe	15;16;17;18;19	never	-
 range_pruning	range_pruning	the overlap qual is pushed down, where it used to be dropped	15;16;17;18;19	never	-
 range_pruning	range_pruning	the same for a containment probe far to its right	15;16;17;18;19	never	-
+recovery	recovery	premise: s2's INSERT ran in its open transaction before the crash	15;16;17;18;19	never	-
+recovery	recovery	s1 aggregate	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record
+recovery	recovery	s1 col count	15;16;17;18;19	never	-
+recovery	recovery	s1 heap count	15;16;17;18;19	never	-
+recovery	recovery	s1 range	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record
+recovery	recovery	s1 recovery ran	15;16;17;18;19	never	-
+recovery	recovery	s1 whole-row	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record
+recovery	recovery	s2 col count unchanged	15;16;17;18;19	never	-
+recovery	recovery	s2 heap count unchanged	15;16;17;18;19	never	-
+recovery	recovery	s2 no phantom rows	15;16;17;18;19	never	-
+recovery	recovery	s2 recovery ran	15;16;17;18;19	never	-
+recovery	recovery	s2 whole-row	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record;columnar_storage.c: the metapage's reserved-offset advance written with no WAL record
+recovery	recovery	s3 aggregate	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record;columnar_storage.c: the metapage's reserved-offset advance written with no WAL record
+recovery	recovery	s3 col count == heap	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record;columnar_storage.c: the metapage's reserved-offset advance written with no WAL record
+recovery	recovery	s3 deletes persisted	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record;columnar_storage.c: the metapage's reserved-offset advance written with no WAL record
+recovery	recovery	s3 recovery ran	15;16;17;18;19	never	-
+recovery	recovery	s3 whole-row	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record;columnar_storage.c: the metapage's reserved-offset advance written with no WAL record
+recovery	recovery	s4 col count == heap oracle	15;16;17;18;19	never	-
+recovery	recovery	s4 contents match oracle	15;16;17;18;19	never	-
+recovery	recovery	s4 post-crash clean block still all-visible	15;16;17;18;19	never	-
+recovery	recovery	s4 post-crash deleted block stays not-all-visible	15;16;17;18;19	2026-10-16	columnar_visibilitymap.c: the visibility-map clear written with no WAL record
+recovery	recovery	s4 pre-crash deleted block cleared	15;16;17;18;19	never	-
+recovery	recovery	s4 pre-crash group-0 block all-visible	15;16;17;18;19	never	-
+recovery	recovery	s4 pre-crash group-3 block all-visible	15;16;17;18;19	never	-
+recovery	recovery	s4 recovery ran	15;16;17;18;19	never	-
+recovery	recovery	s5 base count == heap oracle	15;16;17;18;19	never	-
+recovery	recovery	s5 projection scan matches oracle after recovery	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record
+recovery	recovery	s5 projection survives crash	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record
+recovery	recovery	s5 recovery ran	15;16;17;18;19	never	-
 recovery_minimal_wal	recovery_minimal_wal	a table created and loaded in one transaction at wal_skip_threshold 0 committed its rows, and the server came back through recovery	15;16;17;18;19	2026-10-15	the relfilenode created with smgrcreate instead of RelationCreateStorage, so no commit-time sync is registered, and this assert-enabled build then fails relcache.c's RelFileLocatorSkippingWAL assertion during the load (src/columnar_tableam.c)
 recovery_minimal_wal	recovery_minimal_wal	a table created and loaded in one transaction at wal_skip_threshold 64MB committed its rows, and the server came back through recovery	15;16;17;18;19	2026-10-15	the relfilenode created with smgrcreate instead of RelationCreateStorage, so no commit-time sync is registered, and this assert-enabled build then fails relcache.c's RelFileLocatorSkippingWAL assertion during the load (src/columnar_tableam.c)
 recovery_minimal_wal	recovery_minimal_wal	a table truncated and reloaded in one transaction at wal_skip_threshold 0 committed its rows, and the server came back through recovery	15;16;17;18;19	2026-10-15	the relfilenode created with smgrcreate instead of RelationCreateStorage, so no commit-time sync is registered, and this assert-enabled build then fails relcache.c's RelFileLocatorSkippingWAL assertion during the load (src/columnar_tableam.c)
