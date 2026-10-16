@@ -132,6 +132,7 @@ COMPLETE = ["advisory_lock_class",
             "native_fetch_coalesce",
             "native_groupagg",
             "native_index_fetch_stripe_cost",
+            "native_index_projection",
             "native_join_vector_agg",
             "native_ownership",
             "native_parquet_dict_oob",
@@ -409,8 +410,8 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
                 "came from")
     expect.text(", ".join(files),
                 "build_refusal, differential, join_runtime_filter, "
-                "native_reclaim, native_repack, native_vacuum_race, native_vecskip, "
-                "sorted_pathkeys",
+                "native_index_projection, native_reclaim, native_repack, "
+                "native_vacuum_race, native_vecskip, sorted_pathkeys",
                 "and it is these files, so another appearing is a diff a reviewer "
                 "sees rather than a number that moved")
 

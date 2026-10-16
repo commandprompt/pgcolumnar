@@ -208,6 +208,7 @@ behaviour, the source of that number is named.
 - [160. test_native_encdesc_golden.py: the encoding descriptor's wire layout](#160-test_native_encdesc_goldenpy-the-encoding-descriptors-wire-layout)
 - [161. test_native_parquet_schema.py: parquet_schema round trip](#161-test_native_parquet_schemapy-parquet_schema-round-trip)
 - [162. test_native_vecskip.py: per-vector skipping by the zone maps](#162-test_native_vecskippy-per-vector-skipping-by-the-zone-maps)
+- [163. test_native_index_projection.py: CREATE INDEX projects only what it needs](#163-test_native_index_projectionpy-create-index-projects-only-what-it-needs)
 
 ## 1. How to read a test in here
 
@@ -7627,3 +7628,16 @@ The pytest twin of `test/native_vecskip.sh` (ported for #1341), every check by t
 | test | what it holds |
 | --- | --- |
 | `test_per_vector_skipping` | the zone maps skip exactly the seven vectors outside the range without decoding them, on the scalar scan and the vectorized aggregate, and every range returns the heap's rows |
+
+## 163. test_native_index_projection.py: CREATE INDEX projects only what it needs
+
+The pytest twin of `test/native_index_projection.sh` (ported for #1341), every check by the shell's name. CREATE INDEX projects only the columns the index needs (#413), serial and parallel: each build's own DEBUG1 line says which branch ran and how many columns its reader decodes. The built indexes must then answer as a sequential scan does: point lookups through the index, and the full ordered result of an index scan against a sequential scan. The index side runs with the columnar scan off, and each oracle asserts the index its own query reads. Before that, three of the oracles ran as the columnar scan on both sides.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_built_indexes_answer_as_a_sequential_scan_does` | each serial index finds its rows, and its full ordered result equals a sequential scan's, read through that index |
+| `test_each_build_projects_only_what_it_needs` | every serial and parallel build projects only its key, expression and predicate columns |
+| `test_the_parallel_built_index_agrees_and_holds_each_row_once` | the parallel-built index agrees with a sequential scan and holds each row once |
+| `test_amcheck_finds_every_index_sound` | `bt_index_check` finds all eleven indexes sound |
