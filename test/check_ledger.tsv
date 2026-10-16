@@ -2611,6 +2611,20 @@ native_reclaim	native_reclaim	repeated recluster reuses space (file plateaus)	15
 native_reclaim	native_reclaim	reused-block data matches heap mirror	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	row count correct after cycle	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	ten row groups, every one half deleted	15;16;17;18;19	2026-10-14	the write state ignores stripe_row_limit
+native_recluster	native_recluster	VACUUM set the visibility map, so the index-only count answers from the index before the recluster	15;16;17;18;19	never	-
+native_recluster	native_recluster	box parity (pre-recluster)	15;16;17;18;19	never	-
+native_recluster	native_recluster	full-table parity after recluster	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster_online retires none of the old groups (PgColumnarRetireGroup removed)
+native_recluster	native_recluster	index scan returns each row once	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster_online inserts no index entry for a rewritten row (PgColumnarIndexInsertRow removed);columnar_vacuum.c: recluster_online leaves the VM set over the retired row numbers (PgColumnarVMClearForRowRange removed);columnar_vacuum.c: recluster_online retires none of the old groups (PgColumnarRetireGroup removed)
+native_recluster	native_recluster	premise: the count takes an index-only scan of n_id_uq	15;16;17;18;19	never	-
+native_recluster	native_recluster	recluster holds ShareUpdateExclusiveLock	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster takes AccessExclusiveLock, not ShareUpdateExclusiveLock
+native_recluster	native_recluster	recluster holds no AccessExclusiveLock	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster takes AccessExclusiveLock, not ShareUpdateExclusiveLock
+native_recluster	native_recluster	reclustered the groups	15;16;17;18;19	never	-
+native_recluster	native_recluster	reclustering increases 2D skipping	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster_online sorts on a key of no columns, so the rows keep their order
+native_recluster	native_recluster	reclustering skips most groups	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster_online sorts on a key of no columns, so the rows keep their order
+native_recluster	native_recluster	row count	15;16;17;18;19	never	-
+native_recluster	native_recluster	row count after recluster	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster_online retires none of the old groups (PgColumnarRetireGroup removed)
+native_recluster	native_recluster	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
+native_recluster	native_recluster	unique still enforced, by SQLSTATE 23505 and not by any failure	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster_online inserts no index entry for a rewritten row (PgColumnarIndexInsertRow removed)
 objstore_allowlist	objstore_allowlist	a multi-entry list matches any entry	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	a non-superuser cannot widen the list (42501)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
 objstore_allowlist	objstore_allowlist	a superuser session SET works (admin override)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it

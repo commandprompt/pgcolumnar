@@ -198,6 +198,7 @@ behaviour, the source of that number is named.
 - [150. test_pg_dump_roundtrip.py: a columnar table survives pg_dump and restore](#150-test_pg_dump_roundtrippy-a-columnar-table-survives-pg_dump-and-restore)
 - [151. test_pg_upgrade.py: a columnar table survives pg_upgrade](#151-test_pg_upgradepy-a-columnar-table-survives-pg_upgrade)
 - [152. test_replication.py: physical replication and standby redo](#152-test_replicationpy-physical-replication-and-standby-redo)
+- [153. test_native_recluster.py: online reclustering under ShareUpdateExclusiveLock](#153-test_native_reclusterpy-online-reclustering-under-shareupdateexclusivelock)
 
 ## 1. How to read a test in here
 
@@ -7503,3 +7504,15 @@ Each replay arm is about a write the primary made. Vacuum must have rewritten th
 | test | what it holds |
 | --- | --- |
 | `test_a_streaming_standby_and_a_restore_replay_columnar_tables` | the standby and the isolated restore hold the primary's rows and projections, every write path replays identically, and a module-less standby replays |
+
+## 153. test_native_recluster.py: online reclustering under ShareUpdateExclusiveLock
+
+The pytest twin of `test/native_recluster.sh` (ported for #1341, item 70), every check by the shell's name. `pgcolumnar.recluster()` rewrites a table's live rows in Z-order online. It writes them back as fresh row groups, inserts their index entries, clears the visibility map over the row numbers it retires, and retires the old groups. A 2D box skips more groups afterwards, results match a heap mirror, the unique index still enforces by SQLSTATE 23505, and the lock is ShareUpdateExclusiveLock, never AccessExclusiveLock.
+
+The index arm counts through an index-only scan of the unique index, after a VACUUM has set the visibility map, so a recluster that left the old entries' VM bits set counts them twice. The plan is asserted too: with only seqscan and the custom scan off, the count came back right with the index dropped.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_online_recluster` | recluster tightens 2D skipping, keeps the rows, keeps the index exact through an index-only scan and the unique constraint enforced, and holds only ShareUpdateExclusiveLock |
