@@ -17,16 +17,18 @@ loop, the count is non-zero, the test passes, and the loop's assertions simply n
 ran. Nothing notices. That is the shape a query returning no rows produces, and the
 one a glob matching nothing produces.
 
-THE POPULATION, measured over the whole corpus before this was written:
+THE POPULATION, measured over the whole corpus, when this was written and again on
+2026-10-16 (#1339) over 170 files:
 
-    non-empty by construction (literal, range, local literal)   20  cannot be zero-trip
-    derived, loop holds the only assertions                      0  already refused
-    derived, WITH assertions outside the loop                    2  AT RISK
+                                                            written   2026-10-16
+    non-empty by construction (literal, range, local literal)   20        112  cannot be zero-trip
+    derived, loop holds the only assertions                      0          1  already refused
+    derived, WITH assertions outside the loop                    2         15  AT RISK
 
-Both at-risk loops already carry a premise, so this arm goes green on arrival. That is
-the point rather than a weakness: the property is true today and nothing was holding it
-there, so the next loop added without a premise is what this catches. It is not
-insurance against an imagined shape -- it has a population of two and locks it in.
+Every at-risk loop carried a premise both times, so this arm went green on arrival.
+That is the point rather than a weakness: the property was true and nothing was holding
+it there, so the next loop added without a premise is what this catches. The numbers
+move as the corpus grows, so the arms read them live rather than from this table.
 
 WHY THE RULE IS LOOSER THAN THE PROPERTY, said plainly. The honest requirement is "a
 premise bounding the cardinality of THIS iterable". What is enforced is "a counted
@@ -59,7 +61,8 @@ def _nonempty_by_construction(fn, iterable):
 
     A literal with elements, a `range(...)`, or a name bound in this function to a
     non-empty literal -- including through `.items()`, which is how the corpus spells
-    a table of cases. Twenty of the corpus's twenty-two such loops are this.
+    a table of cases. Most loops that carry an assertion are this: 112 of 128 on
+    2026-10-16.
     """
     if isinstance(iterable, (ast.List, ast.Tuple, ast.Set)) and iterable.elts:
         return True
@@ -90,6 +93,16 @@ def _nonempty_literal(value):
     return isinstance(value, (ast.List, ast.Tuple, ast.Set)) and bool(value.elts)
 
 
+def _pins_zero(call):
+    """`num` against 0 in either order, `at_most(x, 0)`, or `at_least(0, x)`: each says
+    the length is at most 0, which bounds the loop from the wrong side (#1339)."""
+    zero = [isinstance(a, ast.Constant) and a.value == 0 for a in call.args[:2]]
+    if len(zero) < 2:
+        return False
+    return {"num": zero[0] or zero[1], "at_most": zero[1],
+            "at_least": zero[0]}.get(call.func.attr, False)
+
+
 def _has_cardinality_premise(fn, loop):
     """A counted assertion OUTSIDE the loop whose arguments take `len(...)`, and that
     does not pin the length at 0 or below: that bounds the iterable from the wrong
@@ -98,8 +111,7 @@ def _has_cardinality_premise(fn, loop):
     for node in ast.walk(fn):
         if id(node) in inside or not _counted(node):
             continue
-        if (node.func.attr in ("num", "at_most") and len(node.args) > 1
-                and isinstance(node.args[1], ast.Constant) and node.args[1].value == 0):
+        if _pins_zero(node):
             continue
         for arg in node.args:
             for sub in ast.walk(arg):
@@ -109,17 +121,20 @@ def _has_cardinality_premise(fn, loop):
     return False
 
 
-def classify_loops(directory):
+def classify_loops(directory, parsed=None):
     """-> [(file, line, test, kind)] for every loop holding a counted assertion, with
     the kind the sweep gave it: "bounded" (non-empty by construction), "holds-all"
     (refused at runtime when zero-trip), "premised" or "unpremised". The sweep and its
-    coverage premise both read THIS, so the premise measures what the sweep saw."""
+    coverage premise both read THIS, so the premise measures what the sweep saw. `parsed`,
+    when given, collects the name of every file the sweep read."""
     out = []
     for path in sorted(pathlib.Path(directory).glob("test_*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
+        if parsed is not None:
+            parsed.append(path.name)
         for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                    and n.name.startswith("test_")]:
             counted_in_fn = [c for c in ast.walk(fn) if _counted(c)]
@@ -162,7 +177,13 @@ def test_the_sweep_finds_the_loops_it_is_meant_to_police(expect):
     walk of its own (#1339): the first version re-walked the files itself, so a sweep
     reading no file at all still had a green premise beside a green verdict.
     """
-    kinds = [k for *_, k in classify_loops(HERE)]
+    parsed = []
+    kinds = [k for *_, k in classify_loops(HERE, parsed)]
+    # EVERY FILE, NOT A FLOOR (#1339): a sweep reading every fourth file found 23 loops,
+    # 4 at risk, and cleared the floors below. The directory is the denominator, so the
+    # count cannot drift out of date as the corpus grows.
+    expect.num(len(parsed), len(list(HERE.glob("test_*.py"))),
+               "premise: the sweep parsed every test file in this directory")
     expect.at_least(len(kinds), 15,
                     "premise: the sweep found loops carrying assertions to classify")
     # and it found the shape it exists for: derived loops with assertions outside
@@ -212,6 +233,10 @@ def test_a_premise_in_name_only_is_still_caught(tmp_path, expect):
                     "expect.num(1, 1, 'outside')"),
         "zero": ("    rows = query()\n",
                  "expect.num(len(rows), 0, 'the length is zero')"),
+        "reversed": ("    rows = query()\n",
+                     "expect.num(0, len(rows), 'the length is zero, the other way round')"),
+        "atleastzero": ("    rows = query()\n",
+                        "expect.at_least(0, len(rows), 'zero is at least the length')"),
     }
     for name, (bind, outside) in shapes.items():
         f = tmp_path / f"test_{name}.py"
