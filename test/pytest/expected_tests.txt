@@ -779,4 +779,6 @@ guard_tests 438
 # one test, by collection over the cluster files on this tree.
 # cluster_tests 692 -> 693 for #1341's test_native_writer.py, the twin of native_writer.sh:
 # one test, by collection over the cluster files on this tree.
-cluster_tests 693
+# cluster_tests 693 -> 694 for #1341's test_native_batch_fold_projection.py, the twin of native_batch_fold_projection.sh:
+# one test, by collection over the cluster files on this tree.
+cluster_tests 694
