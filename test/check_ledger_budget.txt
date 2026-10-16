@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 203
+suites_not_covered 202
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3241,4 +3241,19 @@ suites_not_covered 203
 #     never         2894 - 5 = 2889
 #     dated         1113 + 5 = 1118
 #     2889 + 1118 == 4007
-checks_never_observed_red 2889
+#
+# #1341, native_index_projection seeded, with its twin (OffgridwithJD): 2889 -> 2923,
+# and suites_not_covered 203 -> 202. The suite had no rows. It enters with all 41
+# checks from five-major runs (41/41 on each of 15-19). 7 are dated by two mutations of
+# the index build's projection: ii_Expressions' columns omitted (the three expression
+# projection arms) and ii_Predicate's omitted (the partial projections, its lookup and
+# its oracle). Thirty-four arrive never: the six new oracle premises, which a harness
+# change reddens (an index dropped before the oracles), the fixture and the serial and
+# parallel branch arms, the plain and late-column projections, the oracles a projection
+# mutation cannot reach, and the eleven amcheck arms.
+#
+#     ledger rows   4007 + 41 = 4048
+#     never         2889 + 34 = 2923
+#     dated         1118 +  7 = 1125
+#     2923 + 1125 == 4048
+checks_never_observed_red 2923

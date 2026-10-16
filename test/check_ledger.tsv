@@ -2570,6 +2570,47 @@ native_groupagg	native_groupagg	toggle sum signed-zero (-0 preserved) [node fire
 native_groupagg	native_groupagg	while a matching-type predicate still gets one	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	with no time bound at all, a truncating key is bounded from the zone maps	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	with only a lower time bound, a truncating key is still bounded	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	a parallel build projects one column of twenty, not all twenty	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	a parallel expression build projects its expression's columns	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Expressions' columns
+native_index_projection	native_index_projection	a parallel partial build projects the predicate's columns too	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Predicate's columns
+native_index_projection	native_index_projection	a partial index projects the predicate's columns too	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Predicate's columns
+native_index_projection	native_index_projection	an expression index projects its expression's columns	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Expressions' columns
+native_index_projection	native_index_projection	an expression over a text column projects that column	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Expressions' columns
+native_index_projection	native_index_projection	an index on a late column projects one, not everything before it	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_c18)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_expr)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_k)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_k12)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_len)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_par)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_par2)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_pare)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_parp)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_part)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	bt_index_check(w_ser)	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	expression index agrees	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	expression index finds the row	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	fixture is wide	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	fixture rows	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	forcing parallel maintenance workers does reach the parallel branch	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	late-column index agrees	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	parallel-built index agrees with a sequential scan	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	parallel-built index returns each row once	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	partial index agrees on its subset	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Predicate's columns
+native_index_projection	native_index_projection	partial index finds the row inside its predicate	15;16;17;18;19	2026-10-16	columnar_tableam.c: the index build's projection omits ii_Predicate's columns
+native_index_projection	native_index_projection	plain index agrees with a sequential scan	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	plain index finds the row	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	plain index projects one column of twenty	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	premise: expression index agrees -- the index side reads w_expr	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	premise: late-column index agrees -- the index side reads w_c18	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	premise: parallel-built index agrees with a sequential scan -- the index side reads w_par2	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	premise: partial index agrees on its subset -- the index side reads w_part	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	premise: plain index agrees with a sequential scan -- the index side reads w_k(12)?	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	premise: text expression index agrees -- the index side reads w_len	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	text expression index agrees	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	the oracle below really reads the parallel-built index	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	the serial branch is still reached when workers are refused	15;16;17;18;19	never	-
+native_index_projection	native_index_projection	two-column index projects two	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	3-table answer equals filter-off	15;16;17;18;19	2026-09-23	the runtime bloom probe's verdict inverted, so the filter rejects what matches
 native_join_runtime_filter	native_join_runtime_filter	3-table join order matches filter-off	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	3-table plan has coordinator	15;16;17;18;19	never	-
