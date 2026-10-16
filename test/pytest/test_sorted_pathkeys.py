@@ -385,8 +385,10 @@ def test_an_unsorted_vacuum_retracts_the_ordered_path(fx, expect):
                     "chunk_group_row_limit => 500)")
         cur.execute("INSERT INTO rc SELECT * FROM h")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('rc', 'k', 'j')")
+        # "The claim is live" is an arm, not a premise (#1339, #1236): a vacuum_sorted
+        # that records no claim reddens it, here and in the four checks like it below.
         expect.num(1 if _plans_sort(cur, "SELECT k FROM rc ORDER BY k") else 0, 0,
-                   "premise: the claim is live before the unsorted rewrite")
+                   "the claim is live before the unsorted rewrite")
         cur.execute("SELECT pgcolumnar.vacuum('rc')")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM rc ORDER BY k") else 0, 1,
                    "REFUSE: an unsorted vacuum retracts the ordered path")
@@ -403,7 +405,7 @@ def test_a_type_change_rewrite_drops_the_mark(fx, expect):
                     "FROM generate_series(1,20000) g")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('atc', 'k')")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM atc ORDER BY k") else 0, 0,
-                   "premise: the claim is live before the type change")
+                   "the claim is live before the type change")
         before = _one(cur, "SELECT pgcolumnar.get_storage_id('atc')")
         cur.execute("ALTER TABLE atc ALTER COLUMN k TYPE text")
         after = _one(cur, "SELECT pgcolumnar.get_storage_id('atc')")
@@ -424,7 +426,7 @@ def test_one_updated_row_is_a_row_outside_the_run(fx, expect):
         cur.execute("INSERT INTO upc SELECT * FROM h")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('upc', 'k', 'j')")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM upc ORDER BY k") else 0, 0,
-                   "premise: the claim is live before the update")
+                   "the claim is live before the update")
         cur.execute("UPDATE upc SET k = -1 WHERE id = 1")
         expect.at_least(_sort_status(cur, "upc", "appended_groups"), 1,
                         "premise: the new row version appended past the run")
@@ -449,7 +451,7 @@ def test_the_mark_follows_a_rename(fx, expect):
         cur.execute("INSERT INTO rnc SELECT * FROM h")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('rnc', 'k', 'j')")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM rnc ORDER BY k") else 0, 0,
-                   "premise: the claim is live before the rename")
+                   "the claim is live before the rename")
         cur.execute("ALTER TABLE rnc RENAME COLUMN k TO kk")
         expect.text(str(_storage(cur, "rnc", "sorted_by::text")), "{kk,j}",
                    "the recorded key FOLLOWS the rename (#778)")
@@ -495,7 +497,7 @@ def test_the_guc_turns_the_claim_off(fx, expect):
     with fx.cursor() as cur:
         cur.execute("SET pgcolumnar.enable_sorted_pathkeys = on")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM c ORDER BY k") else 0, 0,
-                   "premise: the claim is live with the GUC on")
+                   "the claim is live with the GUC on")
         cur.execute("SET pgcolumnar.enable_sorted_pathkeys = off")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM c ORDER BY k") else 0, 1,
                    "control: pgcolumnar.enable_sorted_pathkeys = off restores the Sort")

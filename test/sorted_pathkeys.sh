@@ -233,7 +233,9 @@ psql_run "CREATE TABLE rc (LIKE c) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('rc', stripe_row_limit => 2000, chunk_group_row_limit => 500);"
 psql_run "INSERT INTO rc SELECT * FROM h;"
 psql_run "SELECT pgcolumnar.vacuum_sorted('rc', 'k', 'j');"
-check "premise: the claim is live before the unsorted rewrite" \
+# "The claim is live" is an arm, not a premise (#1339, #1236): a vacuum_sorted
+# that records no claim reddens it, here and in the four checks like it below.
+check "the claim is live before the unsorted rewrite" \
 	"$(sorts 'SELECT k FROM rc ORDER BY k')" "no"
 psql_run "SELECT pgcolumnar.vacuum('rc');"
 check "REFUSE: an unsorted vacuum retracts the ordered path" \
@@ -383,7 +385,7 @@ psql_run "CREATE TABLE atc (id int, k int) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('atc', stripe_row_limit => 2000, chunk_group_row_limit => 500);"
 psql_run "INSERT INTO atc SELECT g, (g*7919)%500 FROM generate_series(1,20000) g;"
 psql_run "SELECT pgcolumnar.vacuum_sorted('atc', 'k');"
-check "premise: the claim is live before the type change" \
+check "the claim is live before the type change" \
 	"$(sorts 'SELECT k FROM atc ORDER BY k')" "no"
 ATC_SID="$(storage_id_of atc)"
 psql_run "ALTER TABLE atc ALTER COLUMN k TYPE text;"
@@ -398,7 +400,7 @@ psql_run "CREATE TABLE upc (LIKE c) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('upc', stripe_row_limit => 2000, chunk_group_row_limit => 500);"
 psql_run "INSERT INTO upc SELECT * FROM h;"
 psql_run "SELECT pgcolumnar.vacuum_sorted('upc', 'k', 'j');"
-check "premise: the claim is live before the update" \
+check "the claim is live before the update" \
 	"$(sorts 'SELECT k FROM upc ORDER BY k')" "no"
 psql_run "UPDATE upc SET k = -1 WHERE id = 1;"
 check "premise: the new row version appended past the run" \
@@ -424,7 +426,7 @@ psql_run "CREATE TABLE rnc (LIKE c) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('rnc', stripe_row_limit => 2000, chunk_group_row_limit => 500);"
 psql_run "INSERT INTO rnc SELECT * FROM h;"
 psql_run "SELECT pgcolumnar.vacuum_sorted('rnc', 'k', 'j');"
-check "premise: the claim is live before the rename" \
+check "the claim is live before the rename" \
 	"$(sorts 'SELECT k FROM rnc ORDER BY k')" "no"
 psql_run "ALTER TABLE rnc RENAME COLUMN k TO kk;"
 check "the recorded key FOLLOWS the rename (#778)" \
@@ -471,7 +473,7 @@ sorts_off() {
 	[ "$(grep -cE '^ *(->)? *(Incremental )?Sort' <<<"$_plan" || true)" -ne 0 ] \
 		&& echo yes || echo no
 }
-check "premise: the claim is live with the GUC on" "$(sorts 'SELECT k FROM c ORDER BY k')" "no"
+check "the claim is live with the GUC on" "$(sorts 'SELECT k FROM c ORDER BY k')" "no"
 check "control: pgcolumnar.enable_sorted_pathkeys = off restores the Sort" \
 	"$(sorts_off 'SELECT k FROM c ORDER BY k')" "yes"
 
