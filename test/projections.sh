@@ -113,9 +113,11 @@ check "fp row count matches base" \
 # projection gives tight ranges the planner can use (gap 26). Native projections
 # carry the same skip metadata in the zone map (D6e).
 fp_sid="(SELECT proj_storage_id FROM pgcolumnar.projection WHERE storage_id = pgcolumnar.get_storage_id('fo') AND name='fp')"
-fp_minmax="$(q "SELECT count(*) FROM pgcolumnar.zone_map WHERE storage_id = $fp_sid AND minimum IS NOT NULL;")"
+# EVERY zone map, not one (#1339). "-ge 1" held for a projection whose chunks
+# carried min/max in one zone map and not in the rest.
+fp_minmax="$(q "SELECT count(*) FILTER (WHERE minimum IS NOT NULL) || '/' || count(*) FROM pgcolumnar.zone_map WHERE storage_id = $fp_sid;")"
 check "fp chunks carry min/max skip metadata" \
-	"$([ "$fp_minmax" -ge 1 ] && echo yes || echo no)" "yes"
+	"$([ "${fp_minmax%/*}" = "${fp_minmax#*/}" ] && [ "${fp_minmax#*/}" -ge 2 ] && echo yes || echo "no ($fp_minmax zone maps carry min/max)")" "yes"
 
 echo "-- phase 2: deletes reflected via the base delete_vector"
 psql_run "DELETE FROM fo WHERE a BETWEEN 1000 AND 2000;"

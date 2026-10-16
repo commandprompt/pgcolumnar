@@ -349,12 +349,15 @@ def test_projection_chunks_carry_skip_metadata(fanout, expect):
     what lets the scan skip. Without it the projection is read end to end and the
     planner arm below would still pass."""
     with fanout.cursor() as cur:
-        n = _one(cur,
-                 "SELECT count(*) FROM pgcolumnar.zone_map WHERE storage_id = "
-                 "(SELECT proj_storage_id FROM pgcolumnar.projection "
-                 " WHERE storage_id = pgcolumnar.get_storage_id('fo') AND name='fp') "
-                 "AND minimum IS NOT NULL")
-        expect.text("yes" if n >= 1 else "no", "yes",
+        # EVERY zone map, not one (#1339): "n >= 1" held for a projection whose
+        # chunks carried min/max in one zone map and not in the rest.
+        cur.execute("SELECT count(*) FILTER (WHERE minimum IS NOT NULL), count(*) "
+                    "FROM pgcolumnar.zone_map WHERE storage_id = "
+                    "(SELECT proj_storage_id FROM pgcolumnar.projection "
+                    " WHERE storage_id = pgcolumnar.get_storage_id('fo') AND name='fp')")
+        with_minmax, total = cur.fetchone()
+        expect.text("yes" if with_minmax == total and total >= 2
+                    else f"no ({with_minmax}/{total} zone maps carry min/max)", "yes",
                     "fp chunks carry min/max skip metadata")
 
 
