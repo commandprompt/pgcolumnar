@@ -203,6 +203,7 @@ behaviour, the source of that number is named.
 - [155. test_native_reclaim.py: physical page reclaim and the compaction threshold guards](#155-test_native_reclaimpy-physical-page-reclaim-and-the-compaction-threshold-guards)
 - [156. test_native_repack.py: REPACK on a columnar table](#156-test_native_repackpy-repack-on-a-columnar-table)
 - [157. test_native_join_vector_agg.py: the vectorized aggregate over a unique-key inner join](#157-test_native_join_vector_aggpy-the-vectorized-aggregate-over-a-unique-key-inner-join)
+- [158. test_native_writer.py: the native writer by its catalog rows](#158-test_native_writerpy-the-native-writer-by-its-catalog-rows)
 
 ## 1. How to read a test in here
 
@@ -7571,3 +7572,13 @@ The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every ch
 | test | what it holds |
 | --- | --- |
 | `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join and an extra join filter each refuse it and answer as heap does |
+
+## 158. test_native_writer.py: the native writer by its catalog rows
+
+The pytest twin of `test/native_writer.sh` (ported for #1341), every check by the shell's name. A columnar table writes the native format, judged by the catalog rows it produces. 5000 rows, a quarter of them NULL, under a 1000-row stripe limit give one storage row at format version 2 with 1024-value vectors, five row groups holding 5000 rows, and ten column chunks counting 10000 values. DROP clears the storage, row-group and column-chunk rows for its storage id.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_native_writer_by_its_catalog_rows` | the writer's storage, row-group and column-chunk rows match the fixture, and DROP deletes all three |
