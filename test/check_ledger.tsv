@@ -15,6 +15,53 @@ advisory_lock_class	advisory_lock_class	row_lock_buckets is fixed at server star
 advisory_lock_class	advisory_lock_class	the lock an insert takes is not in a SQL-reachable class	15;16;17;18;19	2026-10-15	PGCOLUMNAR_LOCKCLASS_UNIQUE_KEY 103 changed to 2, the #430 defect (src/columnar.h)
 advisory_lock_class	advisory_lock_class	the locks an UPDATE takes are not in a SQL-reachable class	15;16;17;18;19	2026-10-15	PGCOLUMNAR_LOCKCLASS_ROW_IDENTITY 104 changed to 2, the class SQL's two-int4 form produces (src/columnar.h)
 advisory_lock_class	advisory_lock_class	with bulk_parallel_writer set by hand, a second first write waits for the first and both rows land	15;16;17;18;19	2026-10-15	the storage-row creation lock skipped whenever bulk_parallel_writer is on, not only once the row is committed (src/columnar_metadata.c)
+alter_am_cleanup	alter_am_cleanup	ALTER COLUMN TYPE succeeds after DROP EXTENSION	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook gates on the pgcolumnar schema resolving, not pgcolumnar.options;columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	ALTER COLUMN TYPE succeeds without the extension	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	CLUSTER succeeds after DROP EXTENSION	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook gates on the pgcolumnar schema resolving, not pgcolumnar.options;columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	CLUSTER succeeds without the extension	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	CREATE MATERIALIZED VIEW succeeds after DROP EXTENSION	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook gates on the pgcolumnar schema resolving, not pgcolumnar.options;columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	CREATE MATERIALIZED VIEW succeeds without the extension	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	DROP EXTENSION succeeds with those catalogs populated	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook does not skip the extension's own members
+alter_am_cleanup	alter_am_cleanup	DROP after SET ACCESS METHOD heap leaves no options or declarations	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook clears relid-keyed rows only for a table still on the columnar AM (the #304 shape);columnar_tableam.c: the drop hook does not delete projection declarations;columnar_tableam.c: the drop hook does not delete the options row
+alter_am_cleanup	alter_am_cleanup	TRUNCATE succeeds after DROP EXTENSION	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	TRUNCATE succeeds without the extension	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	VACUUM FULL succeeds after DROP EXTENSION	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook gates on the pgcolumnar schema resolving, not pgcolumnar.options;columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	VACUUM FULL succeeds without the extension	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	a plain table is created after DROP EXTENSION	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	a plain table is created in a database without the extension	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	a round-tripped table still cleans up on DROP	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook does not delete the options row
+alter_am_cleanup	alter_am_cleanup	an explicit DROP of a temp table succeeds after DROP EXTENSION	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook gates on the pgcolumnar schema resolving, not pgcolumnar.options;columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	an explicit DROP of a temp table succeeds there	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	and ON COMMIT DROP commits there	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	and REFRESH MATERIALIZED VIEW does too, after DROP EXTENSION	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook gates on the pgcolumnar schema resolving, not pgcolumnar.options;columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	and REFRESH MATERIALIZED VIEW does too, without the extension	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	and dropped there, after DROP EXTENSION	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook gates on the pgcolumnar schema resolving, not pgcolumnar.options;columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	and dropped there, without the extension	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook opens the relid-keyed catalogs with no gate at all
+alter_am_cleanup	alter_am_cleanup	and dropping it after SET ACCESS METHOD heap leaves no orphan	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	and took pgcolumnar.options with it	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook does not skip the extension's own members
+alter_am_cleanup	alter_am_cleanup	control: VACUUM FULL still succeeds where the extension IS installed	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	converting to heap does not drop the declared options	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	dropping a heap table that was never columnar leaves the catalogs alone	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	dropping a table that lives in the extension's schema still cleans up	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook does not delete the options row;columnar_tableam.c: the drop hook skips everything in the pgcolumnar schema, not only the extension's members
+alter_am_cleanup	alter_am_cleanup	options survive a heap round-trip	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: DROP EXTENSION left the schema behind	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: a matview to refresh exists after DROP EXTENSION, made WITH NO DATA	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: a matview to refresh exists, made WITH NO DATA	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: a table exists before the extension does	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: a table in the extension's schema recorded its options	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: a table to rewrite exists after DROP EXTENSION	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: a table to rewrite exists in that database	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: and installed in this suite's own database	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: and the extension is installed after it	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: its options row is really there	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: options and a projection declaration were recorded	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: the extension installs in a third database	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: the extension is absent in the second database	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: the pre-existing table converts to columnar and records options	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: those rows are really there before the extension goes	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	premise: with a columnar table carrying both relid-keyed catalog rows	15;16;17;18;19	never	-
+alter_am_cleanup	alter_am_cleanup	the pre-extension table's options row is gone	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook clears relid-keyed rows only for a table still on the columnar AM (the #304 shape);columnar_tableam.c: the drop hook does not delete the options row
+alter_am_cleanup	alter_am_cleanup	the table is heap after the conversion	15;16;17;18;19	never	-
 alter_table_scans	alter_table_scans	ADD COLUMN with a volatile default rewrites the table, as on heap	15;16;17;18;19	2026-10-15	every scan returns deleted rows, the reader's delete filter disabled (src/columnar_reader.c)
 alter_table_scans	alter_table_scans	ADD PRIMARY KEY is refused over a duplicate (23505), as on heap	15;16;17;18;19	never	-
 alter_table_scans	alter_table_scans	ADD PRIMARY KEY succeeds once the duplicate is deleted, as on heap	15;16;17;18;19	2026-10-15	the index build marks every row alive, deleted ones included (src/columnar_tableam.c)
