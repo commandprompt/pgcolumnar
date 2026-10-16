@@ -191,6 +191,7 @@ behaviour, the source of that number is named.
 - [143. test_native_upgrade_converge.py: the upgrade window, before ALTER EXTENSION UPDATE](#143-test_native_upgrade_convergepy-the-upgrade-window-before-alter-extension-update)
 - [144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen](#144-test_fk_referencingpy-a-foreign-key-referencing-a-columnar-table-is-refused-where-it-is-chosen)
 - [145. test_truncate_cleanup.py: TRUNCATE leaves no catalog rows behind, and keeps what it must](#145-test_truncate_cleanuppy-truncate-leaves-no-catalog-rows-behind-and-keeps-what-it-must)
+- [146. test_native_dml.py: DELETE, UPDATE and MERGE on a native table agree with heap](#146-test_native_dmlpy-delete-update-and-merge-on-a-native-table-agree-with-heap)
 
 ## 1. How to read a test in here
 
@@ -7419,3 +7420,13 @@ The pytest twin of `test/truncate_cleanup.sh` (ported for #1341), every check by
 | `test_insert_truncate_insert_in_one_transaction` | the transaction commits and holds exactly the rows written after the TRUNCATE |
 | `test_a_rewrite_that_is_not_a_truncate_loses_nothing` | a type-changing rewrite keeps all 5000 rows readable |
 | `test_an_in_place_truncate_clears_the_projection_too` | the in-place truncate commits, the later rows are all there, the projection reads them back and its storage holds one group of exactly them |
+
+## 146. test_native_dml.py: DELETE, UPDATE and MERGE on a native table agree with heap
+
+The pytest twin of `test/native_dml.sh` (ported for #1341), every check by the shell's name. Each statement runs on a heap table and on a columnar one with 1000-row stripes, and every result is compared. After deletes an aggregate must not come from zone maps that still describe the deleted rows: the deletes include the smallest and largest ids, so min and max move, and they are taken over `k`, a column the primary key does not order. A deleted row's index lookup finds nothing, and the lookups are asserted to take the index.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_delete_update_and_merge_match_heap` | after DELETE, UPDATE and MERGE, counts, rows, sum and min/max match heap; the index finds a live row and skips a deleted one; the primary key still rejects a duplicate |
