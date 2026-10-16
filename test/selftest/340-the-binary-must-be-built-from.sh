@@ -410,6 +410,16 @@ check "and two pg_configs for one prefix share a stamp, keyed on pkglibdir" \
 # the aliasing defect one level down.
 printf '#!/bin/sh\nexit 1\n' > "$_fs_cfg/pg_config.broken"; chmod 755 "$_fs_cfg/pg_config.broken"
 printf '#!/bin/sh\nexit 1\n' > "$_fs_cfg/pg_config.broken2"; chmod 755 "$_fs_cfg/pg_config.broken2"
+# AND NOT ONE TIME IN 4096 (#1478). The check above uses a random directory, so a
+# key cut too short aliases the two only now and then: three hex characters failed
+# it once in about 4096 runs. These two paths collide on their first three md5 hex
+# characters (235) and differ at eight, so a three-character key aliases them on
+# every run. They need not exist: the key hashes the path string, and a pg_config
+# that cannot run is exactly the unreadable case.
+check "two unreadable pg_configs whose short hashes collide still get different stamps" \
+	"$([ "$(pgc_source_stamp_path /tree /tmp/pgc-collide-870/pg_config.broken)" \
+	    != "$(pgc_source_stamp_path /tree /tmp/pgc-collide-870/pg_config.broken2)" ] \
+	    && echo different || echo SAME)" "different"
 check "two unreadable pg_configs do not alias onto one stamp" \
 	"$([ "$(pgc_source_stamp_path /tree "$_fs_cfg/pg_config.broken")" \
 	    != "$(pgc_source_stamp_path /tree "$_fs_cfg/pg_config.broken2")" ] \
@@ -430,7 +440,7 @@ unset _fs_bad _fs_ok _fs_rp _fs_before _fs_cfg _fs_n _fs_pa _fs_pb
 # What the mismatch costs, measured by driving the real function both ways:
 #
 #     correct (PG_CONFIG):     /t/.pgc_source_stamp.18.603d6145
-#     a major passed instead:  /t/.pgc_source_stamp.0.nolib6f4
+#     a major passed instead:  /t/.pgc_source_stamp.0.nolib6f4922f4
 #
 # `pgc_major_of 18` finds no version in the string "18", so the major becomes 0
 # and the id becomes a hash of the literal "18". The writer and the reader then

@@ -1221,11 +1221,13 @@ pgc_source_stamp_path() {	# pgc_source_stamp_path DIR PG_CONFIG
 	_pgc_sp_lib="$("$_pgc_sp_cfg" --pkglibdir 2>/dev/null)"
 	# An unreadable pg_config gets a key that matches nothing rather than one
 	# every broken config shares: `unknown` would alias them together, which is
-	# the defect being fixed, one level down.
+	# the defect being fixed, one level down. Eight hex characters, as the
+	# readable branch keeps (#1478): three aliased two broken configs once in
+	# about 4096 runs, and selftest 340 failed CI on it.
 	if [ -n "$_pgc_sp_lib" ]; then
 		_pgc_sp_id="$(printf '%s' "$_pgc_sp_lib" | md5sum | cut -c1-8)"
 	else
-		_pgc_sp_id="nolib$(printf '%s' "$_pgc_sp_cfg" | md5sum | cut -c1-3)"
+		_pgc_sp_id="nolib$(printf '%s' "$_pgc_sp_cfg" | md5sum | cut -c1-8)"
 	fi
 	printf '%s/.pgc_source_stamp.%s.%s\n' \
 		"$_pgc_sp_dir" "${_pgc_sp_major:-0}" "$_pgc_sp_id"
