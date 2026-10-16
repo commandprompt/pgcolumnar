@@ -221,6 +221,7 @@ behaviour, the source of that number is named.
 - [173. test_native_fetch_bigcap.py: fetching from a row group above the cache cap](#173-test_native_fetch_bigcappy-fetching-from-a-row-group-above-the-cache-cap)
 - [174. test_sorted_projection.py: vacuum_sorted reorders storage and changes no answer](#174-test_sorted_projectionpy-vacuum_sorted-reorders-storage-and-changes-no-answer)
 - [175. test_native_ios.py: an index-only scan skips the fetch on all-visible row groups](#175-test_native_iospy-an-index-only-scan-skips-the-fetch-on-all-visible-row-groups)
+- [176. test_native_truncate.py: end-truncation shrinks the file and loses no row](#176-test_native_truncatepy-end-truncation-shrinks-the-file-and-loses-no-row)
 
 ## 1. How to read a test in here
 
@@ -7823,3 +7824,15 @@ The pytest twin of `test/native_ios.sh` (ported for #1341), every check by the s
 | --- | --- |
 | `test_an_all_visible_range_needs_no_fetch_and_vacuum_records_it` | the index-only scan is chosen, fetches nothing, matches the heap, and VACUUM records a page count no larger than the relation and most of it, as the heap's is |
 | `test_a_delete_clears_the_bit_and_is_never_returned` | after a delete the scan matches the heap and fetches where the bit was cleared |
+
+## 176. test_native_truncate.py: end-truncation shrinks the file and loses no row
+
+The pytest twin of `test/native_truncate.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.truncate()` returns trailing reclaimed blocks to the OS. After the trailing half is deleted and compacted, the file shrinks and the rows still match a heap mirror. A second truncate has nothing to do, and the table stays usable: reinsert, index, and an indexed lookup forced through the index and asserted to read it. With `pgcolumnar.enable_end_truncation` off, truncate must return 0 and leave the file alone. The call is a statement of its own on both sides, because sent with the `SET` as one string it ran in an implicit transaction block and was refused, which passed whatever the GUC did. Inside a transaction block truncate is refused and changes nothing, because its shrink is not transactional, and a truncate followed by reinsert and compaction keeps parity.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_truncate_shrinks_the_file_and_keeps_every_row` | a truncate with nothing freed returns 0; after delete and compact it returns blocks, the file shrinks, the rows match the heap, and a second truncate returns 0 |
+| `test_the_table_stays_usable_and_the_guc_turns_it_off` | reinsert and an index lookup through the index after truncation; with the GUC off truncate returns 0 and the file keeps its size, with it on the file shrinks |
+| `test_truncate_refuses_a_transaction_block_and_reuse_stays_clean` | refused inside BEGIN with the file and rows unchanged; truncate, reinsert and compaction keep parity |

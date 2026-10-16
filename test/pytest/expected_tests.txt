@@ -821,4 +821,6 @@ guard_tests 440
 # when test_join_runtime_filter.py became test_native_join_runtime_filter.py: one test, by collection.
 # cluster_tests 750 -> 751 for #1341's completion of test_native_agg.py, the twin of native_agg.sh:
 # one test, by collection over the cluster files on this tree.
-cluster_tests 751
+# cluster_tests 751 -> 754 for #1341's test_native_truncate.py, the twin of native_truncate.sh:
+# three tests, by collection over the cluster files on this tree.
+cluster_tests 754
