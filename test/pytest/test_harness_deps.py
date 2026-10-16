@@ -912,10 +912,24 @@ def test_the_gate_runs_the_membership_decision_rather_than_only_this_file(expect
 
     The command line is still asserted below: it must run and refuse a misuse, so a
     human (or a future part) calling it gets an answer, not a traceback."""
-    ci = (HERE.parents[1] / ".github" / "workflows" / "ci.yml").read_text()
-    cluster = ci[ci.index("pytest (cluster tests"):]
-    expect.at_least(cluster.count("if p.name not in NO_CLUSTER"), 1,
-                    "the gate's cluster job runs the complement of NO_CLUSTER")
+    # RUN THE JOB'S OWN PROGRAM, NOT A SEARCH FOR ITS TEXT (#1339). Counting the
+    # filter's text let a comment quoting it pass with the job's filter inverted: a
+    # whole-line comment first, then one trailing the job's own line (OffgridwithJD,
+    # review of #1445). The program on the job's FILES= line is what CI runs, so it
+    # is run here, and what it prints must be exactly the complement of NO_CLUSTER.
+    job = _ci_job((HERE.parents[1] / ".github" / "workflows" / "ci.yml").read_text(),
+                  "pytest-cluster")
+    files_lines = [l for l in _code_lines(job) if l.strip().startswith('FILES="$(python3 -c \'')]
+    expect.num(len(files_lines), 1,
+               "the cluster job computes its file list on exactly one FILES= line")
+    prog = re.search(r"python3 -c '([^']*)'", files_lines[0]).group(1) if files_lines else ""
+    ran = subprocess.run([sys.executable, "-c", prog], cwd=HERE, capture_output=True, text=True)
+    got = set(ran.stdout.split())
+    want = {p.name for p in HERE.glob("test_*.py")} - set(NO_CLUSTER)
+    expect.text("same" if got == want else
+                f"missing {sorted(want - got)[:5]} extra {sorted(got - want)[:5]} "
+                f"(rc {ran.returncode}: {ran.stderr[-200:]})",
+                "same", "the gate's cluster job runs the complement of NO_CLUSTER")
     expect.text(repr(HERE.joinpath("test_harness_deps.py").name in NO_CLUSTER), "False",
                 "and this file is in that complement, so the gate runs its membership decision")
     # The command line must work, rather than being a string nobody ran.
