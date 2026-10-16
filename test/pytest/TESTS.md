@@ -184,6 +184,10 @@ behaviour, the source of that number is named.
 - [136. test_recovery.py: committed writes survive a crash, uncommitted ones leave nothing](#136-test_recoverypy-committed-writes-survive-a-crash-uncommitted-ones-leave-nothing)
 - [137. test_native_backend_crash.py: one backend dies and committed data is intact](#137-test_native_backend_crashpy-one-backend-dies-and-committed-data-is-intact)
 - [138. test_corruption.py: a corrupt catalog row is refused cleanly and no backend dies](#138-test_corruptionpy-a-corrupt-catalog-row-is-refused-cleanly-and-no-backend-dies)
+- [139. test_inheritance.py: a partitioned columnar parent is refused, a columnar matview is not](#139-test_inheritancepy-a-partitioned-columnar-parent-is-refused-a-columnar-matview-is-not)
+- [140. test_parquet_import.py: a partitioned columnar parent is refused by import_parquet](#140-test_parquet_importpy-a-partitioned-columnar-parent-is-refused-by-import_parquet)
+- [141. test_phase5.py: set_options and reset_options agree](#141-test_phase5py-set_options-and-reset_options-agree)
+- [142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP](#142-test_drop_cleanuppy-a-columnar-matviews-options-row-goes-with-its-drop)
 
 ## 1. How to read a test in here
 
@@ -7330,3 +7334,46 @@ A crash is read from the server log, counted from the test's start, since a clie
 | `test_a_corrupt_encoding_descriptor` | a descriptor of `\xffffffff`: XX001, no crash |
 | `test_a_negative_column_index` | `column_index = -1`: no crash |
 | `test_a_corrupt_bloom_header_is_no_filter` | a huge nbits over a short buffer: an absent value is 0 rows, a held value is still found, no crash |
+
+## 139. test_inheritance.py: a partitioned columnar parent is refused, a columnar matview is not
+
+Part of the pytest twin of `test/inheritance.sh` (#1259, ported for #1341): its #1259 arms only, by the shell's names, and the pair is declared INCOMPLETE. From PostgreSQL 17 a partitioned table may carry relam = pgcolumnar and has no storage. `get_storage_id` and `add_projection` on it must be refused with 42809, not any error: with the fix reverted a release build fails with 58P01 opening relfilenode 0. Liveness is read from the server log. PostgreSQL 15 and 16 cannot build the fixture, so that test declines there.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_partitioned_parent_is_refused_and_its_leaf_is_not` | the parent is refused with 42809 by both calls and no backend crashed; its leaf is accepted by both |
+| `test_a_columnar_materialized_view_is_still_columnar` | a columnar matview is still recognised and returns its rows |
+
+## 140. test_parquet_import.py: a partitioned columnar parent is refused by import_parquet
+
+Part of the pytest twin of `test/parquet_import.sh` (#1263, ported for #1341): its #1263 arms only, by the shell's names, and the pair is declared INCOMPLETE. Handed a partitioned parent, import_parquet used to SIGSEGV. The file is exported first, so the import reaches the relation; a leaf and a heap target must still import; the parent must be refused with 42809, and no backend may crash, read from the server log. It declines on PostgreSQL 15 and 16.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_partitioned_parent_is_refused` | the file exists, a leaf and a heap target import 50 rows each, and the parent is refused with 42809 and no crash |
+
+## 141. test_phase5.py: set_options and reset_options agree
+
+Part of the pytest twin of `test/phase5.sh` (#1265, ported for #1341): its #1265 arms only, by the shell's names, and the pair is declared INCOMPLETE. reset_options had no guard, so it reported success where set_options refused. The property is parity on a columnar table, a heap table, a partitioned parent and a columnar matview, with an ordinary columnar table as the control both must accept, and the settled verdicts named: both accept the matview and refuse the partitioned parent.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_set_and_reset_options_agree` | the four fixtures' kinds, the control, parity on each, and the matview and partitioned-parent verdicts |
+
+## 142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP
+
+Part of the pytest twin of `test/drop_cleanup.sh` (#1265, ported for #1341): its #1265 arms only, by the shell's names, and the pair is declared INCOMPLETE. The drop hook skipped anything that was not an ordinary table, so a matview's options row outlived it. The row is planted directly, so the hook is the only subject. REFRESH must keep the row, and an unrelated table's row is the control against a hook that deletes every row.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_columnar_matview_takes_its_options_row_with_it` | a planted options row is gone after DROP MATERIALIZED VIEW |
+| `test_refresh_keeps_a_matviews_options_row` | a REFRESH that rewrote the matview leaves its set_options row in place |
+| `test_an_unrelated_options_row_survives` | another table's row survives a matview's DROP, and an ordinary columnar table still takes its own |

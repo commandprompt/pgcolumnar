@@ -281,14 +281,28 @@ else
 	check_num "control: a HEAP target still imports, so the guard is about storage" \
 		"$(q "SELECT pgcolumnar.import_parquet('pq_heap', '$PQFILE');")" "50"
 
-	expect_error "importing into the partitioned parent is refused" \
-		"SELECT pgcolumnar.import_parquet('pq_parent', '$PQFILE');"
+	# A REFUSAL IS 42809, AND THE CRASH IS READ FROM THE SERVER LOG (#1341). With
+	# the guard removed the import SIGSEGVs, and "is refused" passed on the crash,
+	# since a dropped connection is an error too; only the liveness check went red,
+	# and only because it reached the server before crash recovery finished. A
+	# check that connects after recovery reads a live cluster.
+	pq_crashes() {
+		# grep -c prints 0 itself when nothing matches, and then exits 1
+		pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null || true
+	}
+	pq_crashes0="$(pq_crashes)"
+	pq_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAtX -v VERBOSITY=verbose -c "SELECT pgcolumnar.import_parquet('pq_parent', '$PQFILE');" 2>&1)" \
+		&& pq_state=accepted \
+		|| pq_state="$(sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' <<<"$pq_out" | head -1 | grep . \
+			|| echo "no SQLSTATE ($(head -1 <<<"$pq_out"))")"
+	check "importing into the partitioned parent is refused" "$pq_state" "42809"
 	# `q`, not `psql_run`: psql_run runs -q with no -At and prints nothing, so this
 	# arm returned empty on a LIVE cluster and could never pass. It read as a
 	# correct red against the unfixed build and would have stayed red against the
 	# fix -- a discriminator that discriminates nothing.
 	check "and the cluster is still up, so the refusal was not an abort" \
-		"$(q "SELECT 1;")" "1"
+		"$(q "SELECT 1;")|$(( $(pq_crashes) - pq_crashes0 )) backend crashes" "1|0 backend crashes"
 fi
 
 pgc_summary

@@ -143,19 +143,37 @@ check "premise: so it has no storage of its own" \
 check "premise: while its leaf is an ordinary relation" \
 	"$(q "SELECT relkind::text FROM pg_class WHERE relname = 'inh_pp1'")" "r"
 
-# EACH CALL IS FOLLOWED BY A LIVENESS CHECK taken from a new backend, because a
-# crashed cluster restarts and a later query succeeds -- a delayed check reads
-# "up" for a backend that aborted.
-inh_up() { psql_run "SELECT 1;" >/dev/null 2>&1 && echo up || echo DOWN; }
+# EACH CALL IS FOLLOWED BY A LIVENESS CHECK, and the liveness is read from the
+# server log, not from a new backend (#1341). A crashed cluster restarts and a
+# later query succeeds, so a connection reads "up" for a backend that aborted
+# once crash recovery has finished.
+#
+# AND A REFUSAL IS 42809, NOT ANY ERROR (#1341). With the #1259 predicate
+# reverted, a release build does not abort: each call opens relfilenode 0 and
+# fails with 58P01 "could not open file .../0/0", which is the bug, and the arms
+# counted it as refused. inheritance stayed 26/26. CI runs release builds.
+inh_crashes() {
+	# grep -c prints 0 itself when nothing matches, and then exits 1
+	pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null || true
+}
+INH_CRASHES="$(inh_crashes)"
+inh_up() {
+	[ "$(q 'SELECT 1;')" = 1 ] && [ "$(inh_crashes)" = "$INH_CRASHES" ] && echo up \
+		|| echo "DOWN ($(( $(inh_crashes) - INH_CRASHES )) backend crashes)"
+}
+inh_sqlstate() {	# inh_sqlstate SQL -> the SQLSTATE of the ERROR it raised, or "accepted"
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAtX -v VERBOSITY=verbose -c "$1" 2>&1)" && { echo accepted; return; }
+	sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' <<<"$out" | head -1 | grep . || echo "no SQLSTATE ($(head -1 <<<"$out"))"
+}
 
 check "get_storage_id on the parent is refused rather than reading storage" \
-	"$(psql_run "SELECT pgcolumnar.get_storage_id('inh_pp'::regclass);" >/dev/null 2>&1 \
-		&& echo accepted || echo refused)" "refused"
+	"$(inh_sqlstate "SELECT pgcolumnar.get_storage_id('inh_pp'::regclass);")" "42809"
 check "and the cluster is still up after it" "$(inh_up)" "up"
 
 check "add_projection on the parent is refused rather than aborting the backend" \
-	"$(psql_run "SELECT pgcolumnar.add_projection('inh_pp'::regclass, 'p1', ARRAY['a']);" \
-		>/dev/null 2>&1 && echo accepted || echo refused)" "refused"
+	"$(inh_sqlstate "SELECT pgcolumnar.add_projection('inh_pp'::regclass, 'p1', ARRAY['a']);")" "42809"
 check "and the cluster is still up after that too" "$(inh_up)" "up"
 
 # THE CONTROL THAT THE CALLS WORK AT ALL. Without it "refused" is satisfied by a
