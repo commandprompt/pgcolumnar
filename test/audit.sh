@@ -213,9 +213,26 @@ check "add-column aggregate" \
 	"$(q "SELECT sum(c) || '/' || count(d) || '/' || count(b) FROM ac;")" "218/6/1"
 
 # index scan over an added column
+#
+# FORCED THROUGH THE INDEX, AND ASSERTED (#1339). enable_seqscan alone leaves the
+# columnar custom scan on, so this and "create index rows indexed once" below could
+# be answered without reading the index they name. Both lookups now turn the
+# custom scan and bitmap scans off (a bitmap scan would also collapse a duplicate
+# index entry), and assert an Index Scan or Index Only Scan through their index.
+IDXONLY="SET enable_seqscan=off; SET enable_bitmapscan=off; SET pgcolumnar.enable_custom_scan=off;"
+reads_index() {	# reads_index INDEX QUERY -> yes, or the plan's scan line
+	local plan
+	plan="$(q "$IDXONLY EXPLAIN (COSTS OFF) $2")"
+	case "$plan" in
+		*"Index Scan using $1 "*|*"Index Only Scan using $1 "*) echo yes ;;
+		*) echo "no: $(grep -m1 'Scan' <<<"$plan" | sed 's/^ *//')" ;;
+	esac
+}
 q "CREATE INDEX ac_c_idx ON ac(c);" >/dev/null
+check "premise: the add-column lookup reads ac_c_idx" \
+	"$(reads_index ac_c_idx "SELECT count(*) FROM ac WHERE c=42")" "yes"
 check "add-column index scan" \
-	"$(q "SET enable_seqscan=off; SELECT count(*) FROM ac WHERE c=42;")" "5"
+	"$(q "$IDXONLY SELECT count(*) FROM ac WHERE c=42;" | tail -1)" "5"
 q "DROP TABLE ac;" >/dev/null
 
 # ---------------------------------------------------------------------------
@@ -369,8 +386,10 @@ LEAKS="$(run_pg "grep -c 'resource was not closed' '$LOGFILE'" || true)"
 check "create index no relation leak" "$LEAKS" "0"
 
 # and every row is indexed exactly once (no duplicate TIDs from a per-worker rescan)
+check "premise: the indexed-once count reads idxleak_a_idx" \
+	"$(reads_index idxleak_a_idx "SELECT count(*) FROM idxleak WHERE a>0")" "yes"
 check "create index rows indexed once" \
-	"$(q "SET enable_seqscan=off; SELECT count(*) FROM idxleak WHERE a>0;")" "50000"
+	"$(q "$IDXONLY SELECT count(*) FROM idxleak WHERE a>0;" | tail -1)" "50000"
 q "DROP TABLE idxleak;" >/dev/null
 
 # ---------------------------------------------------------------------------
