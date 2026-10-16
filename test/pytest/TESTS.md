@@ -183,6 +183,7 @@ behaviour, the source of that number is named.
 - [135. test_update_conc.py: two writers of one row serialize](#135-test_update_concpy-two-writers-of-one-row-serialize)
 - [136. test_recovery.py: committed writes survive a crash, uncommitted ones leave nothing](#136-test_recoverypy-committed-writes-survive-a-crash-uncommitted-ones-leave-nothing)
 - [137. test_native_backend_crash.py: one backend dies and committed data is intact](#137-test_native_backend_crashpy-one-backend-dies-and-committed-data-is-intact)
+- [138. test_corruption.py: a corrupt catalog row is refused cleanly and no backend dies](#138-test_corruptionpy-a-corrupt-catalog-row-is-refused-cleanly-and-no-backend-dies)
 
 ## 1. How to read a test in here
 
@@ -7311,3 +7312,21 @@ The kill lands mid-write, once the INSERT has written pages to the relation and 
 | `test_a_kill_mid_write` | a 3,000,000-row INSERT killed after it has grown the relation: the cluster reinitialized, the postmaster kept its pid, and c holds exactly its committed rows and row groups |
 | `test_a_kill_after_the_stripes_flushed` | the same for a 100,000-row INSERT killed in its trailing `pg_sleep` |
 | `test_a_kill_with_a_second_reader` | the mid-write kill with a second parked reader, which the reinit drops too |
+
+## 138. test_corruption.py: a corrupt catalog row is refused cleanly and no backend dies
+
+The pytest twin of `test/corruption.sh` (ported for #1341), every check by the shell's name. The reader trusts the lengths, counts, offsets and descriptors the catalog stores. Each test corrupts one field on a fresh table and asserts that a read raises XX001, or, for a field the reader tolerates, that it does not crash.
+
+A crash is read from the server log, counted from the test's start, since a client error cannot tell a refusal from a crash and a liveness probe passes once crash recovery has finished. Each corrupting UPDATE must change a catalog row. The bloom test also looks up a value the table holds, since an absent value answers 0 even when a corrupt filter wrongly says "absent". A private cluster, since a crash drops every session.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_corrupt_byte_length` | `row_group.byte_length` inflated: the read raises XX001, and no backend died |
+| `test_a_corrupt_row_count` | `row_group.row_count` inflated: XX001, no crash |
+| `test_a_corrupt_page_length` | `column_chunk.page_length` inflated: XX001, no crash |
+| `test_a_corrupt_value_count_degrades_safely` | `column_chunk.value_count` inflated: the read may answer or refuse, and no backend died |
+| `test_a_corrupt_encoding_descriptor` | a descriptor of `\xffffffff`: XX001, no crash |
+| `test_a_negative_column_index` | `column_index = -1`: no crash |
+| `test_a_corrupt_bloom_header_is_no_filter` | a huge nbits over a short buffer: an absent value is 0 rows, a held value is still found, no crash |
