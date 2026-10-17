@@ -453,6 +453,15 @@ def test_the_population_partitions_and_prints_its_identity(tmp_path, expect):
                          "known debt=1, unaccounted=1 | sum=4"), 1,
                "the population partitions and prints inputs == sum(buckets)")
     expect.num(rc, 1, "and the one outside every excuse still fails")
+    # THE REAL INPUT IS UNSORTED (#1339). `--list-suites` prints SUITES order, and
+    # every fixture above was already sorted, so dropping the function's own sort left
+    # this test green while comm read unsorted input. The same names, out of order,
+    # must partition the same way.
+    reg2 = _write(tmp_path, "reg2", "d\nb\na\nc\n")
+    out2, _rc2 = _call("pgc_reconcile_population", reg2, acct, nd, debt)
+    expect.num(out2.count("registered=4 | accounted=1, not dispatched=1, "
+                          "known debt=1, unaccounted=1 | sum=4"), 1,
+               "an unsorted registered list partitions as a sorted one does")
 
 
 def test_the_debt_file_is_tracked_and_holds_only_registered_suites(expect):

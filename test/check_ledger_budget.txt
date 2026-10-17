@@ -3639,4 +3639,16 @@ suites_not_covered 185
 #     never         3078 + 2 = 3080
 #     dated         1370 + 4 = 1374
 #     3080 + 1374 == 4454
+#
+# #1339, selftest part 390 feeds the population reconciliation an unsorted list
+# (jdatcmd): 3080 -> 3080. --list-suites prints SUITES order, and every fixture
+# was one name or already sorted, so dropping the function's own sort left every
+# arm green while comm read unsorted input. The new arm arrives dated by exactly
+# that mutation, red on each of 15-19 with nothing else red, and its pytest twin
+# reddens beside it. From five-major runs, 1247 checks green on each.
+#
+#     ledger rows   4454 + 1 = 4455
+#     never         3080 + 0 = 3080
+#     dated         1374 + 1 = 1375
+#     3080 + 1375 == 4455
 checks_never_observed_red 3080

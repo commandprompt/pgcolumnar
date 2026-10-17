@@ -1416,6 +1416,7 @@ harness_selftest	390-a-registered-suite-must-account	an absent log shows no acco
 harness_selftest	390-a-registered-suite-must-account	an accounting line that does not start its line is refused	15;16;17;18;19	2026-10-13	part 590's narrow reader answers yes where it found no accounting line
 harness_selftest	390-a-registered-suite-must-account	an indented comment is still a comment	15;16;17;18;19	never	-
 harness_selftest	390-a-registered-suite-must-account	an undeclared suite that DID account is caught too	15;16;17;18;19	never	-
+harness_selftest	390-a-registered-suite-must-account	an unsorted registered list partitions as a sorted one does	15;16;17;18;19	2026-10-17	pgc_reconcile_population reads the registered list with cat instead of LC_ALL=C sort -u, so comm reads it unsorted
 harness_selftest	390-a-registered-suite-must-account	and a failed population reconciliation fails the major	15;16;17;18;19	never	-
 harness_selftest	390-a-registered-suite-must-account	and a failed reconciliation sets the per-major failure flag	15;16;17;18;19	never	-
 harness_selftest	390-a-registered-suite-must-account	and a log carrying only its OWN checks-run line is accounted too	15;16;17;18;19	never	-

@@ -586,6 +586,15 @@ check "and the excused one is not named as a failure" \
 	"$(pgc_reconcile_population "$_reg_f" "$_acct_f" "$_notdisp" "$_debt_f" 2>&1 \
 		| grep -c '^[[:space:]]*registered but accounted by nothing: alpha$')" "0"
 
+# THE REAL INPUT IS UNSORTED (#1339). --list-suites prints SUITES order, and every
+# fixture above is one name or already sorted, so the function's own `sort -u`
+# could be dropped with every arm here green while comm read unsorted input.
+printf 'd\nb\na\nc\n' > "$_reg_f"; printf 'a\n' > "$_acct_f"; printf 'b\n' > "$_notdisp"; printf 'c\n' > "$_debt_f"
+check "an unsorted registered list partitions as a sorted one does" \
+	"$(pgc_reconcile_population "$_reg_f" "$_acct_f" "$_notdisp" "$_debt_f" 2>/dev/null \
+		| grep -c 'registered=4 | accounted=1, not dispatched=1, known debt=1, unaccounted=1 | sum=4')" "1"
+: > "$_notdisp"
+
 # Debt that no longer exists is debt that should have been removed. A name in the
 # file that is not registered, or that now accounts, means the file is stale --
 # and a stale debt file is how a burn-down stops burning down.
