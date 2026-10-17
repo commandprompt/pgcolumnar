@@ -3704,13 +3704,20 @@ Four selectivities from one row to most. `wide nomatch` is the second arm in the
 cannot fail alone, and gets the same treatment as `empty scan`: a stated reason and a positive
 control at a value that is present.
 
-### `test_a_covering_count_agrees_with_the_path_on_and_off`
+### `test_the_delete_and_update_leave_a_count_neither_gives_alone`, `test_each_count_mode_takes_the_path_it_names`, `test_the_covering_count_agrees_with_the_heap`
 
 An UPDATE appends the new row and masks the old, so the stored per-group count and the visible
 count diverge -- which is the arithmetic the metadata path has to get right and a plain scan
 gets right for free. Run both ways through `enable_vectorization`, which is what distinguishes
-"the fast path is correct" from "the fast path was not taken". `SET` on the connection rather
-than the bash suite's `ALTER DATABASE`, which exists because each psql there is a new session.
+"the fast path is correct" from "the fast path was not taken". A fallback returns the same
+count, so each mode also checks the plan: `on` must show the metadata node ("Columnar
+Vectorized Aggregates"), and `off` must show `Custom Scan (PgColumnarScan)` without it.
+
+One check per test: the `covering` module fixture takes each mode's path and count pair as
+values, so an inverted switch reddens both path checks, as it does in the shell, rather than
+stopping at the first. `SET` on the connection rather than the bash suite's `ALTER DATABASE`,
+which exists because each psql there is a new session.
+
 ## 32. test_stats_privilege.py: stats is readable only by a caller who may read the table
 
 Port of `test/stats_privilege.sh` (#560, ported for #432).

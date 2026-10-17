@@ -723,7 +723,9 @@ differential	differential	cg boundary N=99 scan	15;16;17;18;19	never	-
 differential	differential	compound	15;16;17;18;19	never	-
 differential	differential	control: the set oracle is order-blind by design	15;16;17;18;19	never	-
 differential	differential	count meta=off	15;16;17;18;19	never	-
+differential	differential	count meta=off takes the path it names	15;16;17;18;19	2026-10-17	columnar_vector.c:1404 the hook ignores pgcolumnar.enable_vectorization, so count(*) takes the metadata node with it off
 differential	differential	count meta=on	15;16;17;18;19	never	-
+differential	differential	count meta=on takes the path it names	15;16;17;18;19	2026-10-17	columnar_vector.c:1404 the upper-path hook always returns, so count(*) never takes the metadata node
 differential	differential	dict text agg	15;16;17;18;19	never	-
 differential	differential	dict text eq	15;16;17;18;19	never	-
 differential	differential	dict text group	15;16;17;18;19	never	-

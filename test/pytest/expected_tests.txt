@@ -844,4 +844,6 @@ guard_tests 442
 # test (2 -> 34 tests), by collection over the cluster files.
 # cluster_tests 932 -> 943 for #1341's test_native_varlena_bound.py, the twin of native_varlena_bound.sh:
 # eleven tests, one per check, by collection over the cluster files on this tree.
-cluster_tests 943
+# cluster_tests 943 -> 947 for #1339, one check per test in test_differential.py's covering
+# count (1 -> 5 tests), by collection over the cluster files.
+cluster_tests 947
