@@ -3629,4 +3629,14 @@ suites_not_covered 185
 #     never         3079 - 1 = 3078
 #     dated         1369 + 1 = 1370
 #     3078 + 1370 == 4448
-checks_never_observed_red 3078
+# #1496 review, native_parquet_pushdown's row-group edges (jdatcmd): 3078 -> 3080.
+# Six oracle arms whose constants sit on a group's max (49999) or min (50000), where
+# an inclusive bound read as exclusive skips the group holding the match. Four are
+# dated by that mutation for >=, <=, and = at the max and at the min; "id > 49998"
+# and "id < 50001" enter never, as no natural off-by-one over-skips them.
+#
+#     ledger rows   4448 + 6 = 4454
+#     never         3078 + 2 = 3080
+#     dated         1370 + 4 = 1374
+#     3080 + 1374 == 4454
+checks_never_observed_red 3080

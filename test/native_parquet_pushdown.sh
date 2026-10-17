@@ -62,6 +62,24 @@ do
 		"$(pgc_set_hash "SELECT * FROM h  WHERE $pred")"
 done
 
+# ---- the row-group edges: an inclusive bound skips nothing it matches --------
+# Group 0 ends at 49999 and group 1 starts at 50000. A predicate whose constant is
+# a group's max or min is where an inclusive comparison read as exclusive skips a
+# group that holds the matching row -- and every predicate above stays clear of
+# them (#1496 review): with `col >= c` skipping on max <= c, this suite was green.
+for pred in \
+	"id >= 49999" \
+	"id > 49998" \
+	"id <= 50000" \
+	"id < 50001" \
+	"id = 49999" \
+	"id = 50000"
+do
+	check "row-group edge [$pred] == oracle" \
+		"$(pgc_set_hash "SELECT * FROM ft WHERE $pred")" \
+		"$(pgc_set_hash "SELECT * FROM h  WHERE $pred")"
+done
+
 # ---- skipping actually happens (EXPLAIN ANALYZE counter) --------------------
 skipped_for() {  # skipped_for WHERE
 	q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)

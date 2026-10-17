@@ -70,6 +70,12 @@ def test_skipping_never_changes_the_answer_and_really_skips(pgc_conn, server_dir
                      "id > 60000 AND id < 60010", "id <= 5 OR id >= 199995", "val > 90000 AND val < 90030"):
             expect.text(_hash(cur, f"SELECT * FROM ft WHERE {pred}"), _hash(cur, f"SELECT * FROM h  WHERE {pred}"),
                         f"predicate [{pred}] == oracle")
+        # THE ROW-GROUP EDGES (#1496 review): group 0 ends at 49999, group 1 starts at
+        # 50000, and an inclusive bound read as exclusive skips the group holding the
+        # match. Every predicate above stays clear of an edge.
+        for pred in ("id >= 49999", "id > 49998", "id <= 50000", "id < 50001", "id = 49999", "id = 50000"):
+            expect.text(_hash(cur, f"SELECT * FROM ft WHERE {pred}"), _hash(cur, f"SELECT * FROM h  WHERE {pred}"),
+                        f"row-group edge [{pred}] == oracle")
 
         expect.text(_counter(cur, "ft", "id >= 0", "Row Groups:"), "4", "reports 4 row groups")
         for name, where, want in (
