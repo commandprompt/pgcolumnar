@@ -344,7 +344,10 @@ load_pair "SELECT g, 'k' || ((g*2654435761)%50000), 'c' || ((g*40503)%50000)
 diff_query "textbloom present"  "SELECT id FROM %T WHERE tk = 'k' || ((7*2654435761)%50000)"
 diff_query "textbloom absent"   "SELECT count(*) FROM %T WHERE tk = 'zzzzzzzz'"
 diff_query "textbloom C absent" "SELECT count(*) FROM %T WHERE tc = 'zzzzzzzz'"
-diff_query "textbloom C eq"     "SELECT count(*) FROM %T WHERE tc = 'c123'"
+# A PRESENT value (#1339). 'c123' is in no row (tc is 16,000 distinct values of 50,000),
+# so both sides counted 0 and a bloom wrongly skipping the chunk could not show. Row 7's
+# value is present exactly once, the way "textbloom present" probes tk.
+diff_query "textbloom C eq"     "SELECT count(*) FROM %T WHERE tc = 'c' || ((7*40503)%50000)"
 # mismatched explicit COLLATE must still return correct results (not pushed)
 diff_query "textbloom collate-mismatch" "SELECT count(*) FROM %T WHERE tk = 'k100' COLLATE \"C\""
 
