@@ -2972,25 +2972,26 @@ non-zero, the test passes, and the loop's assertions simply never ran. Nothing n
 That is the shape a query returning no rows produces, and the shape a glob matching
 nothing produces.
 
-**The population, measured before the arm was written:**
+**The population**, measured when the arm was written and again on 2026-10-16 over 170
+files (#1339):
 
-| shape | loops | state |
-| --- | ---: | --- |
-| non-empty by construction (literal, `range`, local literal) | 20 | cannot be zero-trip |
-| derived, loop holds the only assertions | 0 | already refused |
-| derived, **with** assertions outside the loop | 2 | at risk, now guarded |
+| shape | when written | 2026-10-16 | state |
+| --- | ---: | ---: | --- |
+| non-empty by construction (literal, `range`, local literal) | 20 | 112 | cannot be zero-trip |
+| derived, loop holds the only assertions | 0 | 1 | already refused |
+| derived, **with** assertions outside the loop | 2 | 15 | at risk, now guarded |
 
-Both at-risk loops already carried a premise, so this arm is **green on arrival**. That
-is the point rather than a weakness: the property was true of the corpus and nothing was
-holding it there, so what this catches is the third one. It is not insurance against an
-imagined shape — it has a population of two and locks it in.
+Every at-risk loop carried a premise both times, so this arm was **green on arrival**.
+That is the point rather than a weakness: the property was true of the corpus and nothing
+was holding it there, so what this catches is the next loop added without one. The arms
+read these numbers live, so this table records them and does not bound them.
 
 | test | asserts |
 | --- | --- |
 | `test_every_at_risk_loop_carries_a_coverage_premise` | the corpus itself: every derived loop carrying an assertion has a cardinality premise |
-| `test_the_sweep_finds_the_loops_it_is_meant_to_police` | **premise**: the sweep classified loops, because one that parses nothing reports no offenders either. It counts the sweep's own classification (`classify_loops`), not a second walk of its own, so a sweep reading no file reddens it (#1339) |
+| `test_the_sweep_finds_the_loops_it_is_meant_to_police` | **premise**: the sweep classified loops, because one that parses nothing reports no offenders either. It counts the sweep's own classification (`classify_loops`), not a second walk of its own, so a sweep reading no file reddens it. And the sweep parsed every `test_*.py` in the directory: a sweep reading every fourth file cleared the loop-count floors, and a count tied to the directory does not go out of date (#1339) |
 | `test_a_loop_with_no_premise_is_caught` | **removal proof**: the real shape with the premise removed, with the clean control beside it |
-| `test_a_premise_in_name_only_is_still_caught` | a name bound to a literal and later rebound to a query is not exempt, and a premise pinning the length at 0 is not a premise (#1339) |
+| `test_a_premise_in_name_only_is_still_caught` | a name bound to a literal and later rebound to a query is not exempt, and a premise pinning the length at 0 is not a premise, in any argument order (#1339) |
 | `test_a_bounded_loop_needs_no_premise` | a literal, a `range` and a local dict's `.items()` are all exempt, because demanding a premise there would be noise a reader edits away |
 | `test_the_layer_already_refuses_a_loop_holding_every_assertion` | the measured half, so this file does not claim the whole mode: a planted test in a child pytest is refused, and the sweep classifies a planted loop of that shape as already refused rather than double-reporting it. Both run the behaviour; neither reads source (#1339) |
 
@@ -3007,8 +3008,9 @@ wrong collection**, which a reviewer catches and a sweep does not. 3.5 names it.
 
 Two narrower holes are closed (#1339). A name counts as non-empty by construction only
 when **every** binding of it in the function is a non-empty literal. And a `len(...)`
-assertion that pins the length at 0 (`num` or `at_most` against `0`) does not count as
-a premise, because it says the loop runs no times.
+assertion that pins the length at 0 does not count as a premise, because it says the
+loop runs no times: `num` against `0` in either order, `at_most(x, 0)`, and
+`at_least(0, x)`.
 
 
 ## 25. test_native_join_runtime_filter.py: serial join runtime filter
