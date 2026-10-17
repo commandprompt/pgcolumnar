@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 187
+suites_not_covered 186
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3587,4 +3587,17 @@ suites_not_covered 187
 #     never         3069 +  2 = 3071
 #     dated         1355 +  7 = 1362
 #     3071 + 1362 == 4433
-checks_never_observed_red 3071
+#
+# #1341, native_bloom seeded, with its twin (OffgridwithJD): 3071 -> 3074, and
+# suites_not_covered 187 -> 186. The suite had no rows. It enters with all 7 checks
+# from five-major runs (7/7 on each of 15-19). 4 are dated by four mutations: the
+# bloom consulted whatever the GUC says, never consulted, answering absent for every
+# value (a false negative pruning the match), and never written. Three arrive never:
+# the row count, the custom-scan premise, and the absent-value parity, whose value
+# lies outside every group's range, so min/max prunes it before the bloom is asked.
+#
+#     ledger rows   4433 +  7 = 4440
+#     never         3071 +  3 = 3074
+#     dated         1362 +  4 = 1366
+#     3074 + 1366 == 4440
+checks_never_observed_red 3074

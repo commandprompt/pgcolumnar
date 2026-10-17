@@ -75,7 +75,6 @@ logical_subscriber
 maintenance_due
 native_agg_addcolumn
 native_agg_deletes
-native_bloom
 native_cancel
 native_cluster
 native_compact

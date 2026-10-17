@@ -224,6 +224,7 @@ behaviour, the source of that number is named.
 - [176. test_native_truncate.py: end-truncation shrinks the file and loses no row](#176-test_native_truncatepy-end-truncation-shrinks-the-file-and-loses-no-row)
 - [177. test_native_gap.py: a write beyond EOF fills the gap and loses no row](#177-test_native_gappy-a-write-beyond-eof-fills-the-gap-and-loses-no-row)
 - [178. test_native_roundtrip.py: a native table reads back what the heap holds](#178-test_native_roundtrippy-a-native-table-reads-back-what-the-heap-holds)
+- [179. test_native_bloom.py: a bloom filter prunes the equality probe min/max cannot](#179-test_native_bloompy-a-bloom-filter-prunes-the-equality-probe-minmax-cannot)
 
 ## 1. How to read a test in here
 
@@ -7875,3 +7876,21 @@ Each check is its own test, parametrized by the shell's name, so one red cannot 
 | `test_the_native_table_holds_five_row_groups` | five row groups, so the read crosses them |
 | `test_a_read_matches_the_heap[...]` | every column, a filtered scan and a projection match the heap, one test per shell name |
 | `test_a_null_count_or_aggregate_matches_the_heap[...]` | the null counts of the text and float columns, `sum(k)` and `count(*) WHERE b` match the heap, one test per shell name |
+
+## 179. test_native_bloom.py: a bloom filter prunes the equality probe min/max cannot
+
+The pytest twin of `test/native_bloom.sh` (ported for #1341), every check by the shell's name. A native table carries a bloom filter per column chunk over each hashable column. An equality probe on an unsorted column can then skip row groups that provably lack the value, even where the min/max zone map cannot. The fixture spreads its values so that every group's range spans the domain. Groups are therefore skipped only with `pgcolumnar.enable_bloom_filter` on, and the probe's answer matches a heap mirror. The skip counter reads -1 when the plan has none, so a plan without the columnar scan can't pass as "skipped nothing".
+
+### Every test
+
+Each check is its own test, so one red cannot stop the next.
+
+| test | what it holds |
+| --- | --- |
+| `test_row_count` | 20480 rows |
+| `test_bloom_rows_written` | one filter per row group for the tag column |
+| `test_the_plan_under_test_is_a_columnar_custom_scan` | the probe plans the columnar scan, the only source of the skip counter |
+| `test_equality_probe_parity` | the probe for a present value matches the heap |
+| `test_bloom_on_skips_groups` | the probe skips groups with the bloom on |
+| `test_bloom_off_skips_nothing` | and none with it off |
+| `test_absent_value_parity` | a value outside every group's range matches the heap |
