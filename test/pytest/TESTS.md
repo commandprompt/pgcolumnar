@@ -6055,37 +6055,48 @@ Assertion names match.
 
 ## 75. test_range_pruning.py: a range prunes on overlap, containment, and under its own collation
 
-    SELECT id FROM rp_col WHERE span && tstzrange('2024-03-01', '2024-03-01 06:00')
+    SELECT count(*) FROM r_col WHERE span && tstzrange('2020-01-02 00:00+00','2020-01-02 01:00+00')
 
 A zone map recorded `minimum` and `maximum` only. Those are the range type's btree
 ordering, which sorts by lower bound and then upper bound, so the largest range is
 not the one reaching furthest right: a unit holding `[1,2)` and `[3,100)` has the
 same `maximum` as one holding `[1,2)` and `[3,4)`. Neither `&&` nor `@>` can be
-answered from that, and both read every chunk group. `zone_map.max_upper` records
-the greatest upper bound, and the scan skips a unit only when the summary proves it
-cannot match.
+answered from that. `zone_map.max_upper` records the greatest upper bound in three
+states: a bound, NULL for no bound (an empty range), and present but empty for an
+unbounded range. The scan skips a unit only when the summary proves it cannot match.
 
-**THE HEAP IS THE ORACLE.** A pruning defect returns FEWER rows rather than an
-error, so every predicate is answered by a heap table built from the same generator
-and the row IDENTIFIERS are compared, not the counts.
+The port of `test/range_pruning.sh`, by name, one check per test (#1341, #1339). The
+fixture is the shell's: 50,000 rows in one stripe, which is one row group of five
+vectors, so pruning shows at both levels. Module fixtures build the tables once.
 
-**THE SCATTERED ZERO IS AN ASSERTION, NOT AN OMISSION.** On a column whose spans are
-not clustered, every group holds a bound near the maximum and no summary can exclude
-any of them, so `Columnar Chunk Groups Read` equals `Columnar Chunk Groups Total`.
+| test | what it holds |
+| --- | --- |
+| `test_the_clustered_fixture_holds_the_rows`, `test_the_heap_mirror_holds_the_same_rows` | both tables hold 50,000 rows |
+| `test_the_range_column_is_summarised_in_several_units`, `test_every_unit_carries_an_upper_bound`, `test_a_non_range_column_carries_none` | the range column has at least 4 units, each with an upper bound; no other column has one |
+| `test_the_columnar_side_returns_the_heaps_rows` | 8 heap-oracle arms, compared by count and two sums: the one-hour, week, point, never-met and late windows, the scattered table, and the two unbounded-range probes |
+| `test_the_first_three_oracle_probes_are_not_vacuously_empty` | the window, week and point probes match rows on the heap |
+| `test_the_overlap_qual_is_pushed_down`, `test_the_zone_map_is_probed_for_it` | the overlap qual is pushed down and probes the zone map |
+| `test_a_clustered_overlap_skips_vectors`, `test_a_containment_probe_skips_vectors` | overlap and containment skip vectors |
+| `test_a_late_overlap_skips_the_four_vectors_only_upper_bounds_rule_out` | the late window skips exactly the 4 vectors only upper bounds rule out |
+| `test_a_window_no_row_can_meet_reads_no_chunk_group` | the never-met window reads no chunk group |
+| `test_a_scattered_column_skips_nothing` | the documented zero |
+| `test_the_unbounded_row_really_is_matched` | the unbounded row is matched on the heap |
+| `test_the_all_empty_table_is_summarised`, `test_an_empty_range_contributes_no_bound` | the all-empty table is summarised, and records NULL |
+| `test_an_unbounded_range_records_a_present_but_empty_bound` | the unbounded unit records a present but empty bound |
+| `test_a_discriminating_collation_was_found`, `test_the_collated_pair`, `test_a_collated_overlap_returns_the_heaps_rows` | a range compares under its declared collation: the type's collation differs from text's, the pair holds the same rows and is summarised, four overlaps and the row ids agree with the heap |
 
-**AND A RANGE COMPARES UNDER THE COLLATION IT WAS DECLARED WITH**, which the type
-cache carries as `rng_collation`. Reading the ELEMENT type's `typcollation` instead
-made the writer summarise under one ordering and the reader prune under another, and
-the scan MISSED ROWS. Not reachable with a built-in range type, so it needs a
-user-defined range over a collatable subtype with an explicit non-default
-`COLLATION`. Found by @jdatcmd reviewing #1144.
+**THE UNBOUNDED ARMS COULD NOT FAIL UNTIL #1341.** In the shell, the unbounded tables
+lacked the `payload` column the fingerprint sums, so both sides errored and `check`
+compared "" with "". Once that was fixed, an empty row in the same unit kept them
+green: an empty range sorts first, and a unit whose minimum is empty is never
+pruned. And a separate `INSERT` put the unbounded row in a row group of its own.
+With all three fixed, a writer that ignores unbounded ranges reddens both arms in
+both twins.
 
-`test_range_pruning` asserts the counters, the heap oracle and the scattered zero.
-`test_a_range_prunes_under_its_declared_collation` asserts the collation property,
-on a user-defined range type it creates for the purpose.
+**THE COLLATION IS DISCOVERED, NOT ASSUMED.** A host with no collation ordering
+differently from the database default declines the collation tests by name.
 
-Independent of `test/range_pruning.sh`: same public seam, own fixture, own row
-counts, own observations. Neither file reads or runs the other.
+Independent of `test/range_pruning.sh`: neither file reads or runs the other.
 
 ## 76. test_docs_upgrade_chain.py: the documented upgrade chain must be the one that ships
 
