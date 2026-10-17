@@ -225,6 +225,7 @@ behaviour, the source of that number is named.
 - [177. test_native_gap.py: a write beyond EOF fills the gap and loses no row](#177-test_native_gappy-a-write-beyond-eof-fills-the-gap-and-loses-no-row)
 - [178. test_native_roundtrip.py: a native table reads back what the heap holds](#178-test_native_roundtrippy-a-native-table-reads-back-what-the-heap-holds)
 - [179. test_native_bloom.py: a bloom filter prunes the equality probe min/max cannot](#179-test_native_bloompy-a-bloom-filter-prunes-the-equality-probe-minmax-cannot)
+- [180. test_native_toasted_write.py: a toasted value is written once and read back whole](#180-test_native_toasted_writepy-a-toasted-value-is-written-once-and-read-back-whole)
 
 ## 1. How to read a test in here
 
@@ -7894,3 +7895,22 @@ Each check is its own test, so one red cannot stop the next.
 | `test_bloom_on_skips_groups` | the probe skips groups with the bloom on |
 | `test_bloom_off_skips_nothing` | and none with it off |
 | `test_absent_value_parity` | a value outside every group's range matches the heap |
+
+## 180. test_native_toasted_write.py: a toasted value is written once and read back whole
+
+The pytest twin of `test/native_toasted_write.sh` (ported for #1341), every check by the shell's name. The writer flattens each varlena once per row and reuses the flat value for the encoder, the bloom hash and the min/max (#445). The source is a heap table whose wide column is stored pglz-compressed (named, since PG19 defaults to lz4), so the columnar writer is handed already-toasted values. The columnar table is six row groups, so a zone map or a bloom can prune a group. The checks cover byte-identity with a heap mirror, two ranges that each select some rows but not all, one bounded below so the max is asked and one bounded above so the min is, and an equality probed with the value itself, so it is a usable skip predicate and the bloom is asked.
+
+### Every test
+
+Each check is its own test.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_source_values_are_toasted` | the source column reads back pglz |
+| `test_toasted_values_are_byte_identical` | the wide column's digest matches the heap |
+| `test_each_range_selects_some_rows_and_not_all` | both ranges are selective on the heap |
+| `test_the_min_max_zone_map_is_correct` | `big >= 'e'`, pruned by the max, matches the heap |
+| `test_the_min_max_zone_map_is_correct_below_a_bound` | `big < '1'`, pruned by the min, matches the heap |
+| `test_the_equality_probe_reaches_the_bloom` | the probe is a usable skip predicate |
+| `test_equality_on_a_toasted_value_matches_heap` | and its count matches the heap |
+| `test_the_non_toasted_column_is_byte_identical` | the short column's digest matches the heap |

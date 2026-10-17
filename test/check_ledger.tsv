@@ -3139,6 +3139,14 @@ native_saop_pushdown	native_saop_pushdown	the predicate builder's reject express
 native_saop_pushdown	native_saop_pushdown	the predicate builder's reject expression contains SK_SEARCHNULL	15;16;17;18;19	2026-10-16	columnar_reader.c: the reject expression keeps only SK_ISNULL
 native_saop_pushdown	native_saop_pushdown	vector-agg count over an IN-list is exact (conservative keys not folded)	15;16;17;18;19	2026-10-16	columnar_reader.c: a set key never probes the bloom filter (it probes zero values and rules the group out)
 native_saop_pushdown	native_saop_pushdown	vector-agg path engaged for the guard arm (plan shape)	15;16;17;18;19	never	-
+native_toasted_write	native_toasted_write	equality on a toasted value (bloom + recheck) matches heap	15;16;17;18;19	2026-10-17	columnar_write_state.c: the bloom hash of a varlena is taken from a fixed value, not the row's flattened one;columnar_write_state.c: the running maximum is never raised past a chunk's first value
+native_toasted_write	native_toasted_write	premise: each range selects some rows and not all	15;16;17;18;19	never	-
+native_toasted_write	native_toasted_write	premise: the source values are toasted (pglz)	15;16;17;18;19	never	-
+native_toasted_write	native_toasted_write	the equality probe reaches the bloom (a usable skip predicate)	15;16;17;18;19	never	-
+native_toasted_write	native_toasted_write	the min/max zone map is correct (range count matches heap)	15;16;17;18;19	2026-10-17	columnar_write_state.c: the running maximum is never raised past a chunk's first value
+native_toasted_write	native_toasted_write	the min/max zone map is correct below a bound (range count matches heap)	15;16;17;18;19	2026-10-17	columnar_write_state.c: the running minimum is never lowered past a chunk's first value
+native_toasted_write	native_toasted_write	the non-toasted column is byte-identical too	15;16;17;18;19	never	-
+native_toasted_write	native_toasted_write	toasted values are byte-identical to the heap mirror	15;16;17;18;19	never	-
 native_truncate	native_truncate	GUC off: truncate does nothing	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (columnar_vacuum.c)
 native_truncate	native_truncate	GUC on: file shrank	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
 native_truncate	native_truncate	GUC on: truncate reclaims	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (columnar_vacuum.c);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)

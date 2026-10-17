@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 186
+suites_not_covered 185
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3600,4 +3600,23 @@ suites_not_covered 186
 #     never         3071 +  3 = 3074
 #     dated         1362 +  4 = 1366
 #     3074 + 1366 == 4440
-checks_never_observed_red 3074
+#
+# #1341, native_toasted_write seeded, with its twin (OffgridwithJD): 3074 -> 3079,
+# and suites_not_covered 186 -> 185. The suite had no rows. It enters with 8 checks
+# from five-major runs (8/8 on each of 15-19), after three fixes: its table was one
+# row group, so no zone map or bloom could prune a group; its range selected no rows,
+# so a zone map pruning everything matched heap's 0; and its equality compared a
+# scalar subquery, an InitPlan parameter the scan cannot push, so the bloom was never
+# asked. A range below a bound now asks the minimum, which the first range never
+# did (#1521 review). Its source column names pglz (a PG19 built with lz4 defaults to
+# it). 3 are dated by three mutations: the running maximum never raised (the upper
+# range and the equality), the running minimum never lowered (the lower range), and
+# the bloom hash taken from a fixed value (the equality); the old suite stays 5/5
+# under the first and third. Five arrive never: the two byte-identity digests, the
+# pglz premise, the range premise and the skip-predicate check.
+#
+#     ledger rows   4440 +  8 = 4448
+#     never         3074 +  5 = 3079
+#     dated         1366 +  3 = 1369
+#     3079 + 1369 == 4448
+checks_never_observed_red 3079
