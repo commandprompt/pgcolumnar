@@ -222,6 +222,7 @@ behaviour, the source of that number is named.
 - [174. test_sorted_projection.py: vacuum_sorted reorders storage and changes no answer](#174-test_sorted_projectionpy-vacuum_sorted-reorders-storage-and-changes-no-answer)
 - [175. test_native_ios.py: an index-only scan skips the fetch on all-visible row groups](#175-test_native_iospy-an-index-only-scan-skips-the-fetch-on-all-visible-row-groups)
 - [176. test_native_truncate.py: end-truncation shrinks the file and loses no row](#176-test_native_truncatepy-end-truncation-shrinks-the-file-and-loses-no-row)
+- [177. test_native_gap.py: a write beyond EOF fills the gap and loses no row](#177-test_native_gappy-a-write-beyond-eof-fills-the-gap-and-loses-no-row)
 
 ## 1. How to read a test in here
 
@@ -7838,3 +7839,23 @@ The pytest twin of `test/native_truncate.sh` (ported for #1341), every check by 
 | `test_truncate_shrinks_the_file_and_keeps_every_row` | a truncate with nothing freed returns 0; after delete and compact it returns blocks, the file shrinks, the rows match the heap, and a second truncate returns 0 |
 | `test_the_table_stays_usable_and_the_guc_turns_it_off` | reinsert and an index lookup through the index after truncation; with the GUC off truncate returns 0 and the file keeps its size, with it on the file shrinks |
 | `test_truncate_refuses_a_transaction_block_and_reuse_stays_clean` | refused inside BEGIN with the file and rows unchanged; truncate, reinsert and compaction keep parity |
+
+## 177. test_native_gap.py: a write beyond EOF fills the gap and loses no row
+
+The pytest twin of `test/native_gap.sh` (ported for #1341), every check by the shell's name. The metapage highwater can sit ahead of the physical EOF, which is the state an aborted or crash-interrupted end-truncation leaves. A write whose target block lies beyond EOF must fill the gap with empty pages and succeed. A test-only hook, bound by the test as the shell binds it, pushes the highwater 50 pages past EOF. The next insert must keep every row against a heap mirror and grow the file by at least 40 pages. The table then stays usable: another insert, an index lookup forced through the index and asserted to read it, and a delete.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order and records each reading, so one red cannot stop the checks after it.
+
+| test | what it holds |
+| --- | --- |
+| `test_baseline_row_count` | 3000 rows before the gap |
+| `test_baseline_parity` | and they match the heap |
+| `test_row_count_after_gapped_insert` | 6000 rows after the insert across a 50-page gap |
+| `test_parity_after_gapped_insert` | and they match the heap |
+| `test_gap_was_physically_materialized` | the file grew by more than 40 pages |
+| `test_parity_after_post_gap_insert` | a later insert keeps parity |
+| `test_the_indexed_lookup_reads_n_id` | the forced lookup plans an Index Scan on `n_id` |
+| `test_indexed_lookup_after_gap` | and finds all 7000 rows |
+| `test_parity_after_delete_on_gapped_layout` | a delete keeps parity |

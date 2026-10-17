@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 189
+suites_not_covered 188
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3560,4 +3560,17 @@ suites_not_covered 189
 #     never         3055 + 11 = 3066
 #     dated         1342 +  7 = 1349
 #     3066 + 1349 == 4415
-checks_never_observed_red 3066
+#
+# #1341, native_gap seeded, with its twin (OffgridwithJD): 3066 -> 3069, and
+# suites_not_covered 189 -> 188. The suite had no rows. It enters with all 9 checks
+# from five-major runs (9/9 on each of 15-19). 6 are dated by three mutations: the
+# gap fill removed (6a165821's pre-fix write path, where the write lands short of
+# its block and errors), the test hook advancing nothing, and an index fetch finding
+# no row (the indexed lookup, now forced through n_id with a premise). Three arrive
+# never: the two baseline checks and the index premise.
+#
+#     ledger rows   4415 +  9 = 4424
+#     never         3066 +  3 = 3069
+#     dated         1349 +  6 = 1355
+#     3069 + 1355 == 4424
+checks_never_observed_red 3069

@@ -823,4 +823,6 @@ guard_tests 440
 # one test, by collection over the cluster files on this tree.
 # cluster_tests 751 -> 754 for #1341's test_native_truncate.py, the twin of native_truncate.sh:
 # three tests, by collection over the cluster files on this tree.
-cluster_tests 754
+# cluster_tests 754 -> 763 for #1341's test_native_gap.py, the twin of native_gap.sh:
+# nine tests, one per check, by collection over the cluster files on this tree.
+cluster_tests 763
