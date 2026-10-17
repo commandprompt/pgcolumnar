@@ -86,6 +86,7 @@ from compare_to_bash import (_as_names, _bash_names, _bodies,  # noqa: E402
 # The shape is `SHELL_REFERENCES`' in `test_harness_deps.py`, asserted in both
 # directions for the same reason: a one-way list rots into a permanent exemption.
 COMPLETE = ["advisory_lock_class",
+            "range_pruning",
             "alter_table_scans",
             "fdw_plan_privilege",
             "am_contracts",
@@ -249,14 +250,6 @@ INCOMPLETE = {
     # having no SKIP verdict for an arm a run chooses not to make, does not carry.
     "large_values": "the 1 MB to 200 MB round trips and the TOASTed-update arms are "
                     "ported; the opt-in chunk-over-1-GB refusal is not",
-    # The port asserts the engine counters, the heap oracle, the scattered zero
-    # and the declared-collation property. The shell suite additionally pins the
-    # three states of max_upper and its own fixture geometry by name, and those
-    # arms are not ported, so the pair does not grade to zero and is declared
-    # here rather than listed as complete.
-    "range_pruning": "counters, heap oracle, scattered zero and the declared "
-                     "collation are ported; the three-state and fixture-geometry "
-                     "premises of the shell suite are not",
     # #1137 ported the arms it added and the format-version pin. The rest of the
     # shell suite needs a C hook bound at test time (the metapage version) and
     # lib.sh's heap-mirror pair, and porting those is #432's work, not this one.

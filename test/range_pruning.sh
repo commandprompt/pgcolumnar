@@ -169,25 +169,38 @@ check_text "and still returns the right rows" \
 	"$(fingerprint s_col "span && $WINDOW")" "$(fingerprint s_heap "span && $WINDOW")"
 
 # ---- the two values upper() cannot tell apart ------------------------------
+#
+# THE PAYLOAD COLUMN IS WHAT fingerprint SUMS. These tables lacked it until #1341,
+# so both sides of the two arms below errored, q turned each error into "", and
+# `check` compared "" with "" and passed: measured on PG17, u_col=[] u_heap=[].
+# check_text refuses an empty side, so a failed query is now a red.
+#
+# AND NO EMPTY RANGE IN THIS UNIT. An empty range sorts first, so it becomes the
+# unit's minimum, and a unit whose minimum is empty is never pruned at all
+# (native_range_excludes returns false before reading max_upper). With the empty
+# row here, a writer that ignored unbounded ranges left both arms green; e_col
+# below holds the empty case on its own.
+#
+# AND ONE STATEMENT, SO ONE UNIT. A separate INSERT for the unbounded row wrote it
+# to a row group of its own, which records no finite bound to prune on, so the
+# arms passed with the unbounded state ignored by the writer.
 psql_run "DROP TABLE IF EXISTS u_col; DROP TABLE IF EXISTS u_heap;
-          CREATE TABLE u_col (id bigint, span tstzrange) USING pgcolumnar;
-          CREATE TABLE u_heap (id bigint, span tstzrange);
+          CREATE TABLE u_col (id bigint, span tstzrange, payload int) USING pgcolumnar;
+          CREATE TABLE u_heap (id bigint, span tstzrange, payload int);
           INSERT INTO u_col SELECT g,
             tstzrange('2020-01-01'::timestamptz + (g||' minutes')::interval,
-                      '2020-01-01'::timestamptz + (g||' minutes')::interval + interval '1 hour')
-            FROM generate_series(1,20000) g;
-          INSERT INTO u_col VALUES (20001, tstzrange('2020-01-03'::timestamptz, NULL));
-          INSERT INTO u_col VALUES (20002, 'empty'::tstzrange);
+                      '2020-01-01'::timestamptz + (g||' minutes')::interval + interval '1 hour'),
+            g % 97 FROM generate_series(1,20000) g
+          UNION ALL SELECT 20001, tstzrange('2020-01-03'::timestamptz, NULL), 5;
           INSERT INTO u_heap SELECT g,
             tstzrange('2020-01-01'::timestamptz + (g||' minutes')::interval,
-                      '2020-01-01'::timestamptz + (g||' minutes')::interval + interval '1 hour')
-            FROM generate_series(1,20000) g;
-          INSERT INTO u_heap VALUES (20001, tstzrange('2020-01-03'::timestamptz, NULL));
-          INSERT INTO u_heap VALUES (20002, 'empty'::tstzrange);
+                      '2020-01-01'::timestamptz + (g||' minutes')::interval + interval '1 hour'),
+            g % 97 FROM generate_series(1,20000) g
+          UNION ALL SELECT 20001, tstzrange('2020-01-03'::timestamptz, NULL), 5;
           ANALYZE u_col;" >/dev/null
-check "a unit holding an unbounded range is never pruned from above" \
+check_text "a unit holding an unbounded range is never pruned from above" \
 	"$(fingerprint u_col "span && $FUTURE")" "$(fingerprint u_heap "span && $FUTURE")"
-check "the same for a containment probe far to its right" \
+check_text "the same for a containment probe far to its right" \
 	"$(fingerprint u_col "span @> '2099-06-06 00:00+00'::timestamptz")" \
 	"$(fingerprint u_heap "span @> '2099-06-06 00:00+00'::timestamptz")"
 check "premise: that unbounded row really is matched, so the arm is not vacuous" \

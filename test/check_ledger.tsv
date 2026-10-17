@@ -3584,11 +3584,11 @@ projections	projections	unknown column rejected	15;16;17;18;19	never	-
 range_pruning	range_pruning	a clustered overlap near the end skips the four vectors only their upper bounds rule out	15;16;17;18;19	2026-10-13	native_range_excludes never using max_upper (haveUpper forced false)
 range_pruning	range_pruning	a clustered overlap skips vectors instead of decoding them	15;16;17;18;19	never	-
 range_pruning	range_pruning	a scattered column skips nothing, which is what the documentation says	15;16;17;18;19	never	-
-range_pruning	range_pruning	a unit holding an unbounded range is never pruned from above	15;16;17;18;19	never	-
+range_pruning	range_pruning	a unit holding an unbounded range is never pruned from above	15;16;17;18;19	2026-10-17	columnar_write_state.c: the writer ignores an unbounded range, so its unit records only the largest finite upper bound
 range_pruning	range_pruning	a window no row can meet reads no chunk group at all	15;16;17;18;19	2026-10-13	native_range_excludes never using max_upper (haveUpper forced false)
 range_pruning	range_pruning	a window no row can meet returns nothing, from both	15;16;17;18;19	never	-
 range_pruning	range_pruning	an empty range contributes no bound, so its units record NULL	15;16;17;18;19	never	-
-range_pruning	range_pruning	and an unbounded range records a bound that is present but empty	15;16;17;18;19	never	-
+range_pruning	range_pruning	and an unbounded range records a bound that is present but empty	15;16;17;18;19	2026-10-17	columnar_write_state.c: the writer ignores an unbounded range, so its unit records only the largest finite upper bound
 range_pruning	range_pruning	and still returns the right rows	15;16;17;18;19	never	-
 range_pruning	range_pruning	and that late overlap returns the heap's rows	15;16;17;18;19	never	-
 range_pruning	range_pruning	and the rows themselves match, not only the count	15;16;17;18;19	never	-
@@ -3613,7 +3613,7 @@ range_pruning	range_pruning	premise: the range column is summarised in several u
 range_pruning	range_pruning	premise: the range type collates differently from its element type	15;16;17;18;19	never	-
 range_pruning	range_pruning	so does a containment probe	15;16;17;18;19	never	-
 range_pruning	range_pruning	the overlap qual is pushed down, where it used to be dropped	15;16;17;18;19	never	-
-range_pruning	range_pruning	the same for a containment probe far to its right	15;16;17;18;19	never	-
+range_pruning	range_pruning	the same for a containment probe far to its right	15;16;17;18;19	2026-10-17	columnar_write_state.c: the writer ignores an unbounded range, so its unit records only the largest finite upper bound
 recovery	recovery	premise: s2's INSERT ran in its open transaction before the crash	15;16;17;18;19	never	-
 recovery	recovery	s1 aggregate	15;16;17;18;19	2026-10-16	columnar_storage.c: a stripe data page written with no WAL record
 recovery	recovery	s1 col count	15;16;17;18;19	never	-
