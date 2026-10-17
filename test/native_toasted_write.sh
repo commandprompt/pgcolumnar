@@ -23,10 +23,15 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 # big is ~3.2 kB and compressible, so heap stores it toasted (pglz). small is a
 # non-toasted varlena, so both branches of the flatten (copy vs no-copy) run.
-psql_run "CREATE TABLE src (k int, big text, small text);"
+# pglz named, not defaulted (#1341): PG19's default_toast_compression is lz4, and the
+# premise below read [lz4] there
+psql_run "CREATE TABLE src (k int, big text COMPRESSION pglz, small text);"
 psql_run "INSERT INTO src SELECT g, repeat(md5((g % 777)::text), 100) || chr(65 + (g % 26)), (g % 50)::text FROM generate_series(1, 60000) g;"
 psql_run "CREATE TABLE h (k int, big text, small text);"
 psql_run "CREATE TABLE c (k int, big text, small text) USING pgcolumnar;"
+# six row groups (#1341): under the default limit all 60000 rows were one group, so
+# no zone map or bloom could prune a group at all
+psql_run "SELECT pgcolumnar.set_options('c', stripe_row_limit => 10000);"
 psql_run "INSERT INTO h SELECT * FROM src;"
 psql_run "INSERT INTO c SELECT * FROM src;"
 
@@ -45,15 +50,30 @@ check_text "toasted values are byte-identical to the heap mirror" \
 	"$(q "SELECT md5(string_agg(big, '|' ORDER BY k)) FROM c")" \
 	"$(q "SELECT md5(string_agg(big, '|' ORDER BY k)) FROM h")"
 
-# min/max is built from the flattened value; a range prune must match heap.
+# min/max is built from the flattened value; a range prune must match heap. The
+# range selects rows (#1341): every value starts with a hex digit, so the old
+# "big > repeat('z', 10)" selected none, and a zone map that pruned every group
+# still matched heap's 0.
+check "premise: each range selects some rows and not all" \
+	"$(q "SELECT bool_and(n > 0 AND n < 60000) FROM (SELECT count(*) FILTER (WHERE big >= 'e') AS n FROM h UNION ALL SELECT count(*) FILTER (WHERE big < '1') FROM h) s")" "t"
 check_num "the min/max zone map is correct (range count matches heap)" \
-	"$(q "SELECT count(*) FROM c WHERE big > repeat('z', 10)")" \
-	"$(q "SELECT count(*) FROM h WHERE big > repeat('z', 10)")"
+	"$(q "SELECT count(*) FROM c WHERE big >= 'e'")" \
+	"$(q "SELECT count(*) FROM h WHERE big >= 'e'")"
+# an upper bound prunes by the minimum, which the range above never asks; below
+# a typical first value, so a minimum left too high skips matching groups (#1521 review)
+check_num "the min/max zone map is correct below a bound (range count matches heap)" \
+	"$(q "SELECT count(*) FROM c WHERE big < '1'")" \
+	"$(q "SELECT count(*) FROM h WHERE big < '1'")"
 
-# the bloom hash is taken from the flattened value; equality must match heap.
+# the bloom hash is taken from the flattened value; equality must match heap. The
+# probe is the value itself (#1341): compared with a scalar subquery, the scan saw an
+# InitPlan parameter, pushed no skip predicate and never asked the bloom.
+BIGV="$(q "SELECT big FROM src WHERE k = 12345")"
+check "the equality probe reaches the bloom (a usable skip predicate)" \
+	"$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM c WHERE big = '$BIGV'" | grep -c 'Columnar Usable Skip Predicates: 1')" "1"
 check_num "equality on a toasted value (bloom + recheck) matches heap" \
-	"$(q "SELECT count(*) FROM c WHERE big = (SELECT big FROM src WHERE k = 12345)")" \
-	"$(q "SELECT count(*) FROM h WHERE big = (SELECT big FROM src WHERE k = 12345)")"
+	"$(q "SELECT count(*) FROM c WHERE big = '$BIGV'")" \
+	"$(q "SELECT count(*) FROM h WHERE big = '$BIGV'")"
 
 # the short non-toasted column must be unaffected.
 check_text "the non-toasted column is byte-identical too" \
