@@ -12,6 +12,8 @@ column that is never toasted.
 import psycopg
 import pytest
 
+from pgc_vacuity import query_error
+
 RANGE = "SELECT count(*) FROM {} WHERE big >= 'e'"
 BELOW = "SELECT count(*) FROM {} WHERE big < '1'"
 EQUAL = "SELECT count(*) FROM {} WHERE big = '{}'"
@@ -22,7 +24,7 @@ def _one(c, sql):
     try:
         return str(c.execute(sql).fetchone()[0])
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _count(c, sql):
@@ -30,7 +32,7 @@ def _count(c, sql):
     try:
         return int(c.execute(sql).fetchone()[0])
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 @pytest.fixture(scope="module")

@@ -15,6 +15,8 @@ import re
 import psycopg
 import pytest
 
+from pgc_vacuity import query_error
+
 ANALYZE = "EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)"
 PLAIN = "EXPLAIN (COSTS OFF)"
 MARKER = "Columnar Vectorized Group Keys"
@@ -48,7 +50,7 @@ def _rows(c, sql):
     try:
         return sorted(tuple("\0" if v is None else str(v) for v in r) for r in c.execute(sql))
     except psycopg.Error as exc:
-        return [(f"error: {exc.diag.message_primary}",)]
+        return [(query_error(exc.diag.message_primary),)]
 
 
 def _one(c, sql):
@@ -60,7 +62,7 @@ def _text(c, sql):
     try:
         return "\n".join(str(r[0]) for r in c.execute(sql))
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _groupvec(c, sql):

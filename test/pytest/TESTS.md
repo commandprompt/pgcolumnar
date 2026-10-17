@@ -2282,6 +2282,8 @@ parameter is `cur` is excluded for the same reason `wrote` is.
 | `test_a_hardcoded_sentinel_survives_the_same_rewrite` | a sentinel no producer minted — the corpus writes three, one from inside SQL — is still refused after a rewrite | a matcher reading a rewritable global would stop seeing them |
 | `test_the_ordering_premise_refuses_a_failed_reading` | `ordering_observable` refuses a failed reading on either side | with the old shared constant two failed readings were identical and it went RED; unique sentinels differ, so it passed and greenlit every ordered assertion resting on it |
 | `test_a_legitimate_comparison_is_untouched` | equal text, rows, sets and numbers still pass | a refusal that also refuses real data is not a refusal |
+| `test_the_minted_failure_scan_sees_the_shape` | the scan finds an except handler returning `f'error: {exc}'`, and not `query_error()`, a SQLSTATE, or the shape inside a string literal | a scan that sees nothing would make the corpus arm below vacuous |
+| `test_no_test_mints_its_own_failure_text` | no except handler under test/pytest builds an "error..." string from the error's message (#1525 review) | a helper that mints its own failure text is not the producer's prefix, so no refusal fires and two failures with the same message compare equal; on main it finds 32 sites in 22 files |
 
 **Each refusal is proved load-bearing.** Removing the one call from each assertion,
 one at a time, with `__pycache__` cleared between runs:

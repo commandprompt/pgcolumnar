@@ -29,6 +29,8 @@ another that reads statistics.
 import psycopg
 import pytest
 
+from pgc_vacuity import query_error
+
 ROWS = 300000
 
 
@@ -48,7 +50,7 @@ def _try(fn, *args, **kw):
     try:
         return fn(*args, **kw)
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _blocks(conn, table, sql):

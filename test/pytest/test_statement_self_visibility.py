@@ -14,6 +14,8 @@ columnar failure cannot leave heap untouched and the comparison vacuous.
 """
 import psycopg
 
+from pgc_vacuity import query_error
+
 AMS = ("pgcolumnar", "heap")
 
 
@@ -44,7 +46,7 @@ def _answer(conn, sql, am):
             cur.execute(sql.replace("%t", f"sv_{am}"))
             return cur.fetchone()
     except psycopg.Error as exc:
-        return f"ERROR: {str(exc).splitlines()[0]}"
+        return query_error(str(exc).splitlines()[0])
 
 
 def _same(conn, sql):

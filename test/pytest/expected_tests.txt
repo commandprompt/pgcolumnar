@@ -292,7 +292,10 @@
 # in test_compare_to_bash.py: one test, by collection over NO_CLUSTER.
 # guard_tests 439 -> 440 for #1339's test_a_premise_in_name_only_is_still_caught in
 # test_loop_coverage_premise.py: one test, by collection over NO_CLUSTER.
-guard_tests 440
+# guard_tests 440 -> 442 for #1339's test_the_minted_failure_scan_sees_the_shape and
+# test_no_test_mints_its_own_failure_text in test_failed_query_sentinel.py: two tests,
+# by collection over NO_CLUSTER.
+guard_tests 442
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

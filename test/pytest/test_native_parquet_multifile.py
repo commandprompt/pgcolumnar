@@ -16,6 +16,8 @@ import threading
 
 import psycopg
 
+from pgc_vacuity import query_error
+
 COLS = "id int, v int8"
 HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
         "FROM (SELECT _row::text AS t FROM ({}) _row) _s")
@@ -26,7 +28,7 @@ def _hash(cur, sql):
         cur.execute(HASH.format(sql))
         return cur.fetchone()[0]
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary} [{sql}]"
+        return query_error(f"{exc.diag.message_primary} [{sql}]")
 
 
 def _one(cur, sql):
@@ -34,7 +36,7 @@ def _one(cur, sql):
         cur.execute(sql)
         return str(cur.fetchone()[0])
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _errs(cur, sql):
@@ -53,7 +55,7 @@ def _plan(cur, sql):
         cur.execute(f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {sql}")
         return [r[0] for r in cur.fetchall()]
     except psycopg.Error as exc:
-        return [f"error: {exc.diag.message_primary}"]
+        return [query_error(exc.diag.message_primary)]
 
 
 def _counter(cur, where, label):
@@ -95,7 +97,7 @@ def _bounded(cluster, sql, seconds, fifo=None):
             with psycopg.connect(cluster.dsn(), autocommit=True) as c:
                 out.append(str(c.execute(sql).fetchone()[0]))
         except psycopg.Error as exc:
-            out.append(f"error: {exc.diag.message_primary}")
+            out.append(query_error(exc.diag.message_primary))
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
@@ -259,7 +261,7 @@ def test_the_recursive_walk(pgc_conn, pgc_cluster, server_dir, expect):
             cur.execute(f"SELECT id FROM pgcolumnar.read_parquet('{tree}') AS t({COLS}) LIMIT 3")
             first = " ".join(str(r[0]) for r in cur.fetchall()) + " "
         except psycopg.Error as exc:
-            first = f"error: {exc.diag.message_primary}"
+            first = query_error(exc.diag.message_primary)
         expect.text(first, "1000 1001 1002 ",
                     "tree read order follows the sorted full path")
 

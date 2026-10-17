@@ -12,6 +12,8 @@ each reading, and each check is its own test, so one red cannot hide the next.
 import psycopg
 import pytest
 
+from pgc_vacuity import query_error
+
 HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
         "FROM (SELECT _row::text AS t FROM ({}) _row) _s")
 IDX_SETS = ("SET enable_seqscan = off", "SET enable_bitmapscan = off", "SET pgcolumnar.enable_custom_scan = off")
@@ -22,7 +24,7 @@ def _one(c, sql):
     try:
         return str(c.execute(sql).fetchone()[0])
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _size(c):

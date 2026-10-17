@@ -11,6 +11,8 @@ idempotence, and argument validation.
 import psycopg
 import pytest
 
+from pgc_vacuity import query_error
+
 SET_HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
             "FROM (SELECT _row::text AS t FROM ({}) _row) _s")
 SEQ_HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY n)), $e$EMPTY$e$) "
@@ -22,14 +24,14 @@ def _hash(c, tmpl, sql):
     try:
         return c.execute(tmpl.format(sql)).fetchone()[0]
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _one(c, sql):
     try:
         return str(c.execute(sql).fetchone()[0])
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _pair(c, tmpl, hashing=SET_HASH):

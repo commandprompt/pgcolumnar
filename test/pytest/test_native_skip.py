@@ -20,13 +20,15 @@ different table names and values where the names allow.
 ONE CHECK PER TEST (#1339). Module fixtures build each data set once; every reading
 is read-only after that, so each test runs one query pair and asserts one thing, and
 a red cannot stop the next check from running. Every reading goes through `_try`, so
-an error is a named red rather than an unnamed test ERROR.
+an error is a named red rather than an unnamed test ERROR, and each failure is its own
+`query_error()`, so two failed readings never agree (#1527).
 """
 import json
 import re
 
 import psycopg
 import pytest
+from pgc_vacuity import QUERY_ERROR, query_error
 
 REMOVED = re.compile(r"Columnar Chunk Groups Removed by Filter: (\d+)")
 
@@ -36,16 +38,15 @@ def _try(fn, *args, **kw):
     try:
         return fn(*args, **kw)
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _num(v, what=""):
-    """A count for expect.num, or -1 with the error printed: expect.num refuses a
-    non-number with a VacuityError rather than a named red."""
-    if isinstance(v, int):
-        return v
-    print(f"-- {what or 'reading'}: not a count: {v}")
-    return -1
+    """A count for expect.num, or the failed reading itself, printed: expect.num refuses
+    it by the check's name. A -1 stand-in made two failed counts agree (#1527)."""
+    if not isinstance(v, int):
+        print(f"-- {what or 'reading'}: not a count: {v}")
+    return v
 
 
 def _rowsv(v):
@@ -135,7 +136,7 @@ COERCE_RANGES = [
 @pytest.mark.parametrize("col, what, pred", COERCE_RANGES)
 def test_heaps_range_on_a_coercible_type_holds_121_rows(tables, expect, col, what, pred):
     heap = _ids(tables, "skh", f"{col} {pred}")
-    expect.num(len(heap.split(",")) if heap and not heap.startswith("error") else 0, 121,
+    expect.num(len(heap.split(",")) if heap and not heap.startswith(QUERY_ERROR) else 0, 121,
                f"premise: heap's range on {what} holds 121 rows")
 
 
@@ -204,7 +205,7 @@ def scalar(pgc_cluster):
 def test_the_scalar_plan_is_a_columnar_custom_scan(scalar, expect):
     plan = _try(lambda: scalar.execute("EXPLAIN (COSTS OFF, FORMAT JSON) "
                                        "SELECT id FROM sqn WHERE id BETWEEN 5000 AND 5100").fetchone()[0])
-    if isinstance(plan, str) and plan.startswith("error"):
+    if isinstance(plan, str) and plan.startswith(QUERY_ERROR):
         plan = [{"Plan": {"Node Type": plan}}]
     expect.plan_marker(plan if isinstance(plan, list) else json.loads(plan),
                        "Columnar Projected Columns",
