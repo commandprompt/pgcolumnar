@@ -848,4 +848,6 @@ guard_tests 442
 # count (1 -> 5 tests), by collection over the cluster files.
 # cluster_tests 947 -> 966 for #1341's test_native_agg_addcolumn.py, the twin of native_agg_addcolumn.sh:
 # nineteen tests, one per check, by collection over the cluster files on this tree.
-cluster_tests 966
+# cluster_tests 966 -> 990 for #1341, test_native_format.py ported by name, one check per
+# test (1 -> 25 tests), by collection over the cluster files.
+cluster_tests 990
