@@ -87,6 +87,7 @@ from compare_to_bash import (_as_names, _bash_names, _bodies,  # noqa: E402
 # directions for the same reason: a one-way list rots into a permanent exemption.
 COMPLETE = ["advisory_lock_class",
             "range_pruning",
+            "native_format",
             "alter_table_scans",
             "fdw_plan_privilege",
             "am_contracts",
@@ -252,12 +253,6 @@ INCOMPLETE = {
     # having no SKIP verdict for an arm a run chooses not to make, does not carry.
     "large_values": "the 1 MB to 200 MB round trips and the TOASTed-update arms are "
                     "ported; the opt-in chunk-over-1-GB refusal is not",
-    # #1137 ported the arms it added and the format-version pin. The rest of the
-    # shell suite needs a C hook bound at test time (the metapage version) and
-    # lib.sh's heap-mirror pair, and porting those is #432's work, not this one.
-    "native_format": "the format-stamp range arms and the version pin are "
-                     "ported; the metapage-version hook arms and the diverse-type "
-                     "round trip are not",
 }
 
 
