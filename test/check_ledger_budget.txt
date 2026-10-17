@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 185
+suites_not_covered 184
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3651,4 +3651,25 @@ suites_not_covered 185
 #     never         3080 + 0 = 3080
 #     dated         1374 + 1 = 1375
 #     3080 + 1375 == 4455
-checks_never_observed_red 3080
+#
+# #1341, native_agg_addcolumn seeded, with its twin (OffgridwithJD): 3080 -> 3087,
+# and suites_not_covered 185 -> 184. The suite had no rows. It enters with 19 checks
+# from five-major runs (19/19 on each of 15-19), after two fixes and one new arm.
+# both() turned an empty answer into "(null)" and kept the last line, which for a
+# failed oracle was its SET's tag; a NULL now prints as "(null)" through psql, the
+# setting rides in PGOPTIONS, and check_text refuses an empty side, with a premise
+# that the oracle plans the scan. Each reading waits out crash recovery, so a crash
+# fails its own arm only. And since both paths read an old group's added column from
+# the reader's missing value, the oracle's own count and sum are pinned once. 12 are
+# dated by three mutations: the fold reading a group with no chunk for the column
+# from its absent zone map (11), skipping such a group rather than reading it (9),
+# and the reader losing the missing value (the pinned arm alone). Seven arrive
+# never: the two premises, count(*), the two no-default arms (right by accident
+# under all three), and the two arms after the delete, which stay green under both
+# fold mutations.
+#
+#     ledger rows   4455 + 19 = 4474
+#     never         3080 +  7 = 3087
+#     dated         1375 + 12 = 1387
+#     3087 + 1387 == 4474
+checks_never_observed_red 3087

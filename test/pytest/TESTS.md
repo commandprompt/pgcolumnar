@@ -226,6 +226,7 @@ behaviour, the source of that number is named.
 - [178. test_native_roundtrip.py: a native table reads back what the heap holds](#178-test_native_roundtrippy-a-native-table-reads-back-what-the-heap-holds)
 - [179. test_native_bloom.py: a bloom filter prunes the equality probe min/max cannot](#179-test_native_bloompy-a-bloom-filter-prunes-the-equality-probe-minmax-cannot)
 - [180. test_native_toasted_write.py: a toasted value is written once and read back whole](#180-test_native_toasted_writepy-a-toasted-value-is-written-once-and-read-back-whole)
+- [181. test_native_agg_addcolumn.py: a metadata aggregate over an added column reads what the metadata cannot hold](#181-test_native_agg_addcolumnpy-a-metadata-aggregate-over-an-added-column-reads-what-the-metadata-cannot-hold)
 
 ## 1. How to read a test in here
 
@@ -7967,3 +7968,18 @@ Each check is its own test.
 | `test_the_equality_probe_reaches_the_bloom` | the probe is a usable skip predicate |
 | `test_equality_on_a_toasted_value_matches_heap` | and its count matches the heap |
 | `test_the_non_toasted_column_is_byte_identical` | the short column's digest matches the heap |
+
+## 181. test_native_agg_addcolumn.py: a metadata aggregate over an added column reads what the metadata cannot hold
+
+The pytest twin of `test/native_agg_addcolumn.sh` (ported for #1341), every check by the shell's name. An ungrouped, unfiltered aggregate is answered from row-group metadata, but a column added by ALTER TABLE ADD COLUMN has no chunk, and so no zone map, in a row group written before it. The fold must send such a group to be read, where the reader supplies the attribute's missing value. Each aggregate is compared with the same bare query on a second connection that starts with `pgcolumnar.enable_vectorization` off, as the shell's PGOPTIONS does. The aggregates run over a column added with a constant default, one added with none, groups on both sides of the ALTER, and the same after a delete.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order and records each reading, so one red cannot stop the checks after it. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_metadata_aggregate_path_is_the_one_under_test` | `count(d)` plans the metadata node |
+| `test_the_oracle_reads_the_rows` | premise: the oracle's connection plans a scan, so the two sides take different paths |
+| `test_the_scan_reads_an_added_columns_default_for_the_rows_written_before_it` | the oracle's own `count(d)` and `sum(d)` are 3000 and 21000: both paths read old groups through the reader's missing value, so agreement alone cannot see it lost |
+| `test_the_metadata_path_agrees_with_the_scan` | parametrized by the shell's 16 names: count, sum, min, max and avg over the added columns, count(*), and the same across both sides of the ALTER and after a delete |
