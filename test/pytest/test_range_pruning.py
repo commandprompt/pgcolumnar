@@ -292,9 +292,10 @@ def test_an_unbounded_range_records_a_present_but_empty_bound(rp, expect):
 # NOT REACHABLE WITH A BUILT-IN RANGE TYPE: every built-in range is over a
 # non-collatable subtype. It needs a user-defined range over text with a COLLATION
 # whose ordering differs from the database default, and the collation is discovered,
-# not assumed. ASKED OF THE CATALOG, NOT OF A FAILED STATEMENT: an ICU collation is
-# listed even in a build without ICU, and naming one raises.
+# not assumed: the shell's candidates are tried in the shell's order, and the first
+# whose ordering differs from the database default is used.
 
+COLLATION_CANDIDATES = ["en_US.utf8", "en_GB.utf8", "unicode", "ucs_basic", "C"]
 COLLATED_PROBES = ['["A","C"]', '["a","b"]', '["B","M"]', '["m","z"]']
 NO_COLLATION = ("no available collation orders differently from this database's "
                 "default, so the arm cannot discriminate")
@@ -309,12 +310,13 @@ def rc(pgc_cluster):
     c = _schema_conn(pgc_cluster, "pgc_rp_coll")
     try:
         coll = None
-        available = [r[0] for r in c.execute(
-            "SELECT collname FROM pg_collation WHERE collname = ANY(%s) "
-            "AND collprovider <> 'i' AND (collencoding = -1 OR collencoding = "
-            "(SELECT encoding FROM pg_database WHERE datname = current_database()))",
-            (["en_US.utf8", "en_GB.utf8", "unicode", "ucs_basic", "C"],)).fetchall()]
-        for candidate in available:
+        # The shell's candidates, in the shell's order, each asked directly: a
+        # collation that does not exist, or an ICU one in a build without ICU, raises,
+        # _q turns that into a query_error (never True), and the next is tried. On an
+        # autocommit connection the failure poisons nothing. Asking the catalog first,
+        # in its own order and without ICU, chose differently from the shell on some
+        # hosts (#1529 review).
+        for candidate in COLLATION_CANDIDATES:
             if _q(c, f"SELECT ('B' < 'a' COLLATE \"{candidate}\") <> ('B' < 'a')") is True:
                 coll = f'"{candidate}"'
                 break
