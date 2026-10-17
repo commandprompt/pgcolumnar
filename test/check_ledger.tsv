@@ -3070,6 +3070,15 @@ native_repack	native_repack	the columnar table is unharmed: content hash	19	2026
 native_repack	native_repack	the columnar table is unharmed: row count	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing
 native_repack	native_repack	the columnar table is unharmed: storage options	19	never	-
 native_repack	native_repack	without an identity index it is refused by PostgreSQL, not by us	19	never	-
+native_roundtrip	native_roundtrip	native aggregate (sum over a scanned column)	15;16;17;18;19	2026-10-17	columnar_reader.c: the native reader never loads the last row group
+native_roundtrip	native_roundtrip	native count with filter	15;16;17;18;19	2026-10-17	columnar_reader.c: the native reader never loads the last row group
+native_roundtrip	native_roundtrip	native filtered scan	15;16;17;18;19	2026-10-17	columnar_reader.c: a null by-reference column reads back as a present empty value;columnar_reader.c: zone-map pruning skips the groups that can match and keeps the ones that cannot
+native_roundtrip	native_roundtrip	native null handling (f)	15;16;17;18;19	2026-10-17	columnar_reader.c: a null by-value column reads back as a present 0;columnar_reader.c: the native reader never loads the last row group
+native_roundtrip	native_roundtrip	native null handling (v)	15;16;17;18;19	2026-10-17	columnar_reader.c: a null by-reference column reads back as a present empty value;columnar_reader.c: the native reader never loads the last row group
+native_roundtrip	native_roundtrip	native projection (subset of columns)	15;16;17;18;19	2026-10-17	columnar_reader.c: a null by-reference column reads back as a present empty value;columnar_reader.c: the native reader never loads the last row group
+native_roundtrip	native_roundtrip	native reads back all columns	15;16;17;18;19	2026-10-17	columnar_reader.c: a null by-reference column reads back as a present empty value;columnar_reader.c: a null by-value column reads back as a present 0;columnar_reader.c: the native reader never loads the last row group
+native_roundtrip	native_roundtrip	native row count	15;16;17;18;19	never	-
+native_roundtrip	native_roundtrip	the native table holds five row groups	15;16;17;18;19	never	-
 native_saop_pushdown	native_saop_pushdown	IN-list count matches the OR-literal equivalent	15;16;17;18;19	2026-10-16	columnar_reader.c: a set key never probes the bloom filter (it probes zero values and rules the group out)
 native_saop_pushdown	native_saop_pushdown	NOT IN builds no range (0 removed) and stays correct	15;16;17;18;19	never	-
 native_saop_pushdown	native_saop_pushdown	NULL-element count is exact	15;16;17;18;19	never	-

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 188
+suites_not_covered 187
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3573,4 +3573,18 @@ suites_not_covered 188
 #     never         3066 +  3 = 3069
 #     dated         1349 +  6 = 1355
 #     3069 + 1355 == 4424
-checks_never_observed_red 3069
+#
+# #1341, native_roundtrip seeded, with its twin (OffgridwithJD): 3069 -> 3071, and
+# suites_not_covered 188 -> 187. The suite had no rows. It enters with all 9 checks
+# from five-major runs (9/9 on each of 15-19), one of them new: the table holds five
+# row groups, so the read crosses them. 7 are dated by four mutations in the native
+# reader: a null by-value column read back as a present 0, a null by-reference one
+# read back as a present empty value (jdatcmd's, #1518 review), the last row group
+# never loaded, and zone-map pruning inverted. Two arrive never: the row count,
+# which the metadata path answers, and the row-group count.
+#
+#     ledger rows   4424 +  9 = 4433
+#     never         3069 +  2 = 3071
+#     dated         1355 +  7 = 1362
+#     3071 + 1362 == 4433
+checks_never_observed_red 3071

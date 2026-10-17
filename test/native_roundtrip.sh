@@ -29,6 +29,10 @@ psql_run "INSERT INTO h $GEN;"
 psql_run "INSERT INTO n $GEN;"
 
 check "native row count" "$(q 'SELECT count(*) FROM n;')" "5000"
+# the header's claim, asserted (#1341): stripe_row_limit 1000 over 5000 rows, so the
+# read crosses row groups rather than decoding one
+check "the native table holds five row groups" \
+	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('n');")" "5"
 check "native reads back all columns" \
 	"$(pgc_set_hash 'SELECT id, k, v, f, b FROM n')" \
 	"$(pgc_set_hash 'SELECT id, k, v, f, b FROM h')"

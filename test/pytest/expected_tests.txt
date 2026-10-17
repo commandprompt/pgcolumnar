@@ -825,4 +825,6 @@ guard_tests 440
 # three tests, by collection over the cluster files on this tree.
 # cluster_tests 754 -> 763 for #1341's test_native_gap.py, the twin of native_gap.sh:
 # nine tests, one per check, by collection over the cluster files on this tree.
-cluster_tests 763
+# cluster_tests 763 -> 772 for #1341's test_native_roundtrip.py, the twin of native_roundtrip.sh:
+# nine tests, one per check, by collection over the cluster files on this tree.
+cluster_tests 772
