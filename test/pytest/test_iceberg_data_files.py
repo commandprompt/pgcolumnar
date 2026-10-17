@@ -26,12 +26,15 @@ suite: neither file reads or runs the other.
 
 ONE CHECK PER TEST (#1339). The `ice` module fixture stages every table once and
 records every reading; each test asserts one. A failed query is a `query_error()`.
+Each reading runs in a session of its own, as the shell's psql per statement does,
+so a backend that dies fails its own arm and leaves the other names standing.
 """
 import json
 import os
 import pathlib
 import shutil
 import stat
+import time
 
 import psycopg
 import pytest
@@ -165,20 +168,54 @@ def _open_to_the_server(root):
 
 # ---- readings ------------------------------------------------------------------------
 
-def _one(conn, sql, *params):
-    try:
-        return conn.execute(sql, params or None).fetchone()[0]
-    except psycopg.Error as exc:
-        return query_error(exc.diag.message_primary)
+def _failed(exc):
+    """A failed reading. A backend that died carries no SQLSTATE and no primary."""
+    return query_error(exc.diag.message_primary or str(exc).splitlines()[0]
+                       if str(exc) else type(exc).__name__)
 
 
-def _sqlstate(conn, path):
-    """The SQLSTATE listing `path` fails with, or "ok"."""
+def _one(dsn, sql, *params):
+    """One value, read in a session of its own, as the shell's `q` reads it: a backend
+    that dies here fails this reading and no other."""
     try:
-        conn.execute("SELECT * FROM pgcolumnar.iceberg_data_files(%s)", (str(path),)).fetchall()
-        return "ok"
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            return conn.execute(sql, params or None).fetchone()[0]
     except psycopg.Error as exc:
-        return exc.sqlstate or "?"
+        return _failed(exc)
+
+
+def _sqlstate(dsn, path, role=None):
+    """The SQLSTATE listing `path` fails with, or "ok", in a session of its own;
+    `role`, if given, is SET first. A failure with no SQLSTATE is a failed reading."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            if role:
+                conn.execute(f"SET ROLE {role}")
+            conn.execute("SELECT * FROM pgcolumnar.iceberg_data_files(%s)", (str(path),)).fetchall()
+            return "ok"
+    except psycopg.Error as exc:
+        return exc.sqlstate or _failed(exc)
+
+
+def _run(dsn, *stmts):
+    """Statements in a session of their own -> None, or the failed reading."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            for st in stmts:
+                conn.execute(st)
+        return None
+    except psycopg.Error as exc:
+        return _failed(exc)
+
+
+# The unprivileged role reaches the function: USAGE on the schema and EXECUTE on the
+# function, or its 42501 is the schema's and the pg_read_server_files gate never runs.
+DROP_UNPRIV = ("DO $$BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'icedf_unpriv') "
+               "THEN EXECUTE 'DROP OWNED BY icedf_unpriv'; END IF; END$$",
+               "DROP ROLE IF EXISTS icedf_unpriv")
+MAKE_UNPRIV = DROP_UNPRIV + ("CREATE ROLE icedf_unpriv LOGIN",
+                             "GRANT USAGE ON SCHEMA pgcolumnar TO icedf_unpriv",
+                             "GRANT EXECUTE ON FUNCTION pgcolumnar.iceberg_data_files TO icedf_unpriv")
 
 
 def _alive(pgc_cluster):
@@ -188,6 +225,18 @@ def _alive(pgc_cluster):
             return c.execute("SELECT 1").fetchone()[0]
     except psycopg.Error as exc:
         return query_error(str(exc).splitlines()[0])
+
+
+def _recovered(pgc_cluster, alive):
+    """`alive` as read. If the backend did not answer, wait (up to 60s) until the
+    server accepts connections again before the next reading. The shell spends that
+    time building its next table, so its later arms run on a recovered server; read
+    at once, they would each fail on the recovery and not on their own refusal."""
+    for _ in range(240):
+        if alive == 1 or _alive(pgc_cluster) == 1:
+            break
+        time.sleep(0.25)
+    return alive
 
 
 def _tampered(md, name, manifest_list):
@@ -237,47 +286,38 @@ def ice(pgc_cluster, tmp_path_factory):
     oracle = sorted("%d|%s|%s" % (r["record_count"], r["region"], r["file_basename"])
                     for r in json.loads((WH / "expected_files.json").read_text())["data_files"])
 
-    c = psycopg.connect(pgc_cluster.dsn(), autocommit=True)
+    dsn = pgc_cluster.dsn()
+    lst = "SELECT {} FROM pgcolumnar.iceberg_data_files(%s)"
     try:
-        lst = "SELECT {} FROM pgcolumnar.iceberg_data_files(%s)"
-        try:
+        with psycopg.connect(dsn, autocommit=True) as c:
             got["decoded"] = "\n".join(r[0] for r in c.execute(
                 lst.format("record_count || '|' || split_part(partition,'=',2) || '|' || "
                            "(regexp_match(file_path,'[^/]+$'))[1]") + " ORDER BY 1",
                 (str(md),)).fetchall())
-        except psycopg.Error as exc:
-            got["decoded"] = query_error(exc.diag.message_primary)
-        got["oracle"] = "\n".join(oracle)
-        got["parquet"] = str(_one(c, lst.format("bool_and(file_format = 'PARQUET')"), str(md)))
-        got["rebased"] = str(_one(c, lst.format("bool_and(file_path LIKE %s)"),
-                                  aroot + "/%", str(md)))
-        got["leaks"] = _one(c, lst.format("count(*)") + " WHERE file_path LIKE %s",
-                            str(md), RECORDED + "/%")
-        for k, path in escapes.items():
-            got[f"escape {k}"] = _sqlstate(c, path)
-        got["alive traversal"] = _alive(pgc_cluster)
-        got["delete list"] = _sqlstate(c, dlist)
-        got["alive delete"] = _alive(pgc_cluster)
-        got["entry ctl"] = _one(c, lst.format("count(*)"), str(entries["ctl"]))
-        got["entry kept"] = _one(c, lst.format("count(*)"), str(entries["kept"]))
-        for k in ("pos", "eq", "gone"):
-            got[f"entry {k}"] = _sqlstate(c, entries[k])
-        got["alive entries"] = _alive(pgc_cluster)
-        got["no snapshot"] = _one(c, lst.format("count(*)"), str(nosnap))
-        try:
-            c.execute("DROP ROLE IF EXISTS icedf_unpriv")
-            c.execute("CREATE ROLE icedf_unpriv LOGIN")
-            c.execute("SET ROLE icedf_unpriv")
-            got["unprivileged"] = _sqlstate(c, md)
-        finally:
-            c.execute("RESET ROLE")
+    except psycopg.Error as exc:
+        got["decoded"] = _failed(exc)
+    got["oracle"] = "\n".join(oracle)
+    got["parquet"] = str(_one(dsn, lst.format("bool_and(file_format = 'PARQUET')"), str(md)))
+    got["rebased"] = str(_one(dsn, lst.format("bool_and(file_path LIKE %s)"),
+                              aroot + "/%", str(md)))
+    got["leaks"] = _one(dsn, lst.format("count(*)") + " WHERE file_path LIKE %s",
+                        str(md), RECORDED + "/%")
+    for k, path in escapes.items():
+        got[f"escape {k}"] = _sqlstate(dsn, path)
+    got["alive traversal"] = _recovered(pgc_cluster, _alive(pgc_cluster))
+    got["delete list"] = _sqlstate(dsn, dlist)
+    got["alive delete"] = _recovered(pgc_cluster, _alive(pgc_cluster))
+    got["entry ctl"] = _one(dsn, lst.format("count(*)"), str(entries["ctl"]))
+    got["entry kept"] = _one(dsn, lst.format("count(*)"), str(entries["kept"]))
+    for k in ("pos", "eq", "gone"):
+        got[f"entry {k}"] = _sqlstate(dsn, entries[k])
+    got["alive entries"] = _recovered(pgc_cluster, _alive(pgc_cluster))
+    got["no snapshot"] = _one(dsn, lst.format("count(*)"), str(nosnap))
+    got["unprivileged"] = _run(dsn, *MAKE_UNPRIV) or _sqlstate(dsn, md, role="icedf_unpriv")
+    try:
         yield got
     finally:
-        try:
-            c.execute("DROP ROLE IF EXISTS icedf_unpriv")
-        except psycopg.Error:
-            pass
-        c.close()
+        _run(dsn, *DROP_UNPRIV)
 
 
 def _need(ice, expect):
@@ -301,6 +341,7 @@ def test_python_json_and_zlib_are_available(expect):
     """The shell's other skip name. The crafted Avro here needs json; zlib is what the
     shell's helper imports."""
     try:
+        import json as _json  # noqa: F401
         import zlib  # noqa: F401
     except ImportError:
         expect.cannot_run("MISSING_DEPENDENCY", "zlib is not importable",

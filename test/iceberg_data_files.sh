@@ -83,6 +83,18 @@ LOC="$(python3 -c "import json;print(json.load(open('$MD'))['location'].replace(
 # symlink planted there resolves under it -- writing them elsewhere would derive a
 # wrong actual root and mask the boundary under a "file not found".
 MDDIR="$(dirname "$MD")"
+# After a survival check, wait (up to 60s) until the server accepts connections
+# again. A refusal that crashes the backend fails its own arm and the survival check;
+# without the wait, whether the NEXT arm also failed on the recovery depended on how
+# long the python step before it took (#1341).
+recovered() {
+	local i
+	for i in $(seq 240); do
+		[ "$(q 'SELECT 1')" = "1" ] && return 0
+		sleep 0.25
+	done
+}
+
 esc_case() {  # $1 payload manifest-list, writes a metadata variant, echoes its path
 	local payload="$1" out="$MDDIR/esc_$2.metadata.json"
 	python3 - "$MD" "$out" "$payload" <<'PY'
@@ -113,6 +125,7 @@ ln -sf "$OUTSIDE" "$DEST/db/events/metadata/sneaky.avro"
 check "a symlink under the location targeting outside is refused (22023, not XX001)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(esc_case "file://$LOC/metadata/sneaky.avro" d)')")" "22023"
 check "backend still up after the traversal attempts" "$(q 'SELECT 1')" "1"
+recovered
 
 # ---- deletes are refused, not ignored --------------------------------------
 # pyiceberg 0.11.1 cannot write merge-on-read deletes, so craft the deny input:
@@ -178,6 +191,7 @@ PY
 check "a snapshot with a delete manifest is refused (feature_not_supported 0A000)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$DT/metadata/v1.metadata.json')")" "0A000"
 check "backend still up after the delete refusal" "$(q 'SELECT 1')" "1"
+recovered
 
 # ---- a delete ENTRY inside a data manifest is refused too (#1341 item 49) --
 # The arm above stops at the manifest LIST. A data manifest (content 0 in the
@@ -259,6 +273,7 @@ check "an equality-delete entry in a data manifest is refused (0A000)" \
 check "a DELETED (status 2) data entry is refused, not listed (0A000)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl gone 2 0)')")" "0A000"
 check "backend still up after the entry refusals" "$(q 'SELECT 1')" "1"
+recovered
 
 # ---- no current snapshot: zero rows ----------------------------------------
 NOSNAP="$PGC_WORKDIR/no_current.metadata.json"
@@ -273,7 +288,16 @@ check "a table with no current snapshot yields no data files" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$NOSNAP')")" "0"
 
 # ---- privilege: needs pg_read_server_files ---------------------------------
-psql_run "DROP ROLE IF EXISTS icedf_unpriv; CREATE ROLE icedf_unpriv LOGIN;"
+# The role gets USAGE on the schema and EXECUTE on the function, so the refusal is
+# the function's own gate. Without them the 42501 is "permission denied for schema
+# pgcolumnar", the function never runs, and the arm cannot fail on the gate it names.
+DROP_UNPRIV="DO \$\$BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'icedf_unpriv')
+	THEN EXECUTE 'DROP OWNED BY icedf_unpriv'; END IF; END\$\$;
+DROP ROLE IF EXISTS icedf_unpriv;"
+psql_run "$DROP_UNPRIV
+CREATE ROLE icedf_unpriv LOGIN;
+GRANT USAGE ON SCHEMA pgcolumnar TO icedf_unpriv;
+GRANT EXECUTE ON FUNCTION pgcolumnar.iceberg_data_files TO icedf_unpriv;"
 check "an unprivileged role is refused (42501)" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U icedf_unpriv -d "$PGC_DB" \
 		-qtA 2>&1 <<SQL | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
@@ -281,5 +305,6 @@ check "an unprivileged role is refused (42501)" \
 SELECT count(*) FROM pgcolumnar.iceberg_data_files('$MD');
 SQL
 )" "42501"
+psql_run "$DROP_UNPRIV"
 
 pgc_summary
