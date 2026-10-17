@@ -39,11 +39,14 @@ def _one(conn, sql):
     return row[0] if row else None
 
 
-def _try(fn, *args):
+def _try(fn, *args, **kw):
     """A reading, or the error that replaced it, so a failed step reddens its own
-    check rather than erroring the fixture and every check with it."""
+    check rather than erroring the fixture and every check with it. EVERY reading in
+    a fixture goes through this (#1522 review): one bare call that raises takes down
+    every test on that fixture as an unnamed ERROR, which is the hiding this file's
+    one-check-per-test shape exists to prevent."""
     try:
-        return fn(*args)
+        return fn(*args, **kw)
     except psycopg.Error as exc:
         return f"error: {exc.diag.message_primary}"
 
@@ -70,8 +73,23 @@ def _blocks(conn, table, sql):
     return int(row[0]) if row else None
 
 
-def _int(v):
-    return v if isinstance(v, int) else 0
+def _int(v, what=""):
+    """A count, or 0 with the error printed, so a bound it was meant to meet fails by
+    name and the reason is in the output rather than lost (#1522 review)."""
+    if isinstance(v, int):
+        return v
+    print(f"-- {what or 'reading'}: not a count: {v}")
+    return 0
+
+
+def _num(v, what=""):
+    """A count for expect.num, or -1 with the error printed. expect.num refuses a
+    non-number with a VacuityError rather than a named red (#1522 review)."""
+    return v if isinstance(v, int) else _int(v, what) - 1
+
+
+def _explain(c, sql):
+    return "\n".join(r[0] for r in c.execute(sql))
 
 
 def _schema_conn(pgc_cluster, schema):
@@ -109,11 +127,13 @@ def ts(pgc_cluster):
         gen = ("SELECT g % 37, '2025-11-15'::timestamptz"
                f" + ((g::bigint * 104729) % {ROWS}) * interval '2 min'"
                f" FROM generate_series(1, {ROWS}) g")
-        c.execute(f"INSERT INTO readings {gen}")
+        # the INSERTs too: the shell's psql_run carries on after a failed write and names
+        # its reds, so a write-path mutant must not error the fixture here
+        _try(c.execute, f"INSERT INTO readings {gen}")
         c.execute("CREATE TABLE readings_heap (sensor bigint, at timestamptz) USING heap")
-        c.execute(f"INSERT INTO readings_heap {gen}")
+        _try(c.execute, f"INSERT INTO readings_heap {gen}")
         got["count"] = _try(_one, c, "SELECT count(*) FROM readings")
-        got["plan"] = "\n".join(r[0] for r in c.execute("EXPLAIN SELECT max(at) FROM readings"))
+        got["plan"] = str(_try(_explain, c, "EXPLAIN SELECT max(at) FROM readings"))
         got["decode"] = _try(_blocks, c, "readings", "SELECT max(at + interval '0 s') FROM readings")
         got["max"] = _try(_blocks, c, "readings", "SELECT max(at) FROM readings")
         got["min"] = _try(_blocks, c, "readings", "SELECT min(at) FROM readings")
@@ -126,10 +146,10 @@ def ts(pgc_cluster):
         got["min parity"] = both("SELECT min(at) FROM {t}")
         # The newest and oldest readings deleted: a zone map still records them.
         for t in ("readings", "readings_heap"):
-            c.execute(f"DELETE FROM {t} WHERE at > (SELECT max(at) FROM readings_heap) - interval '1 hour'"
-                      f" OR at < (SELECT min(at) FROM readings_heap) + interval '45 min'")
-        got["after delete"] = (_one(c, "SELECT count(*) FROM readings"),
-                               _one(c, "SELECT count(*) FROM readings_heap"))
+            _try(c.execute, f"DELETE FROM {t} WHERE at > (SELECT max(at) FROM readings_heap) - interval '1 hour'"
+                            f" OR at < (SELECT min(at) FROM readings_heap) + interval '45 min'")
+        got["after delete"] = (_try(_one, c, "SELECT count(*) FROM readings"),
+                               _try(_one, c, "SELECT count(*) FROM readings_heap"))
         got["max parity after"] = both("SELECT max(at) FROM {t}")
         got["min parity after"] = both("SELECT min(at) FROM {t}")
         yield got
@@ -138,16 +158,16 @@ def ts(pgc_cluster):
 
 
 def test_the_timestamptz_table_holds_every_row(ts, expect):
-    expect.num(ts["count"], ROWS, "premise: the timestamptz table holds every row inserted")
+    expect.num(_num(ts["count"], "count"), ROWS, "premise: the timestamptz table holds every row inserted")
 
 
 def test_max_ts_plans_the_metadata_agg_node(ts, expect):
-    expect.text("yes" if "Columnar Vectorized Aggregates" in ts["plan"] else "no", "yes",
+    expect.text("yes" if "Columnar Vectorized Aggregates" in ts["plan"] else f"no ({ts['plan']})", "yes",
                 "max(ts) over timestamptz plans the metadata agg node")
 
 
 def test_decoding_ts_reads_the_tables_blocks(ts, expect):
-    expect.at_least(_int(ts["decode"]), 10, "control: decoding ts reads the table's blocks")
+    expect.at_least(_int(ts["decode"], "decode"), 10, "control: decoding ts reads the table's blocks")
 
 
 @pytest.mark.parametrize("key, name", [
@@ -157,7 +177,8 @@ def test_decoding_ts_reads_the_tables_blocks(ts, expect):
 def test_min_max_ts_read_under_a_tenth_of_a_decode(ts, expect, key, name):
     # The margin is decode - 10 * reading: positive passes, and a failure
     # reports by how much it fell short.
-    expect.at_least(_int(ts["decode"]) - 10 * _int(ts[key]) if isinstance(ts[key], int) else 0, 1, name)
+    reading = _int(ts[key], key)
+    expect.at_least(_int(ts["decode"], "decode") - 10 * reading if reading else 0, 1, name)
 
 
 @pytest.mark.parametrize("key, name", [
@@ -172,7 +193,8 @@ def test_timestamptz_parity(ts, expect, key, name):
 
 def test_the_deletes_removed_the_same_rows_at_both_ends(ts, expect):
     n, nh = ts["after delete"]
-    expect.text(f"{n < ROWS}|{n}", f"True|{nh}",
+    # isinstance first, so an error string reds the check instead of raising TypeError
+    expect.text(f"{isinstance(n, int) and n < ROWS}|{n}", f"True|{nh}",
                 "the deletes removed rows at both ends, the same rows from each")
 
 
@@ -199,10 +221,9 @@ def gate(pgc_cluster):
         c.execute("CREATE TABLE gn (id int) USING pgcolumnar")
         c.execute("CREATE TABLE gh (id int) USING heap")
         c.execute("SELECT pgcolumnar.set_options('gn', stripe_row_limit => 1000)")
-        c.execute("INSERT INTO gn SELECT g FROM generate_series(1, 5000) g")
-        c.execute("INSERT INTO gh SELECT g FROM generate_series(1, 5000) g")
-        got = {"plan": "\n".join(r[0] for r in c.execute(
-            "EXPLAIN (COSTS OFF) SELECT count(*), min(id), max(id) FROM gn"))}
+        _try(c.execute, "INSERT INTO gn SELECT g FROM generate_series(1, 5000) g")
+        _try(c.execute, "INSERT INTO gh SELECT g FROM generate_series(1, 5000) g")
+        got = {"plan": str(_try(_explain, c, "EXPLAIN (COSTS OFF) SELECT count(*), min(id), max(id) FROM gn"))}
         for where, _ in GATES:
             got[where] = (_try(_one, c, f"{GATED} gn WHERE {where}"),
                           _try(_one, c, f"{GATED} gh WHERE {where}"))
@@ -264,6 +285,18 @@ def _zm_scans(conn):
         return int(cur.fetchone()[0])
 
 
+def _zm_delta(conn, sql):
+    """Zone-map scans `sql` made: the counter after it, less the counter before.
+
+    The query's own error is recorded and the counter still read, as the shell's
+    psql_run does, so the twin reports the shell's red set (#1522 review). Both twins
+    therefore pass "reads no zone maps" on a count(*) that errors; the count(*)
+    parity arm is what reds then."""
+    before = _zm_scans(conn)
+    _try(_one, conn, sql)
+    return _zm_scans(conn) - before
+
+
 PARITY = [
     ("count(*)", "SELECT count(*) FROM {t}"),
     ("count(col,nulls)", "SELECT count(s) FROM {t}"),
@@ -292,26 +325,23 @@ def meta(pgc_cluster):
                   "chunk_group_row_limit => 1024)")
         gen = ("SELECT g, CASE WHEN g % 5 = 0 THEN NULL ELSE g % 997 END, (g * 11)::bigint, "
                "'tag-' || (g % 37) FROM generate_series(1, 12000) g")
-        c.execute(f"INSERT INTO ah {gen}")
-        c.execute(f"INSERT INTO an {gen}")
+        _try(c.execute, f"INSERT INTO ah {gen}")
+        _try(c.execute, f"INSERT INTO an {gen}")
         # the node first: every parity arm also holds for a correct fallback
-        got["count node"] = _aggnode(_plan(c, "SELECT count(*) FROM an"))
-        got["sum node"] = _aggnode(_plan(c, "SELECT sum(id), min(id), max(id) FROM an"))
+        got["count node"] = _aggnode(str(_try(_plan, c, "SELECT count(*) FROM an")))
+        got["sum node"] = _aggnode(str(_try(_plan, c, "SELECT sum(id), min(id), max(id) FROM an")))
         for name, sql in PARITY:
             got[name] = (str(_try(_one, c, sql.format(t="an"))), str(_try(_one, c, sql.format(t="ah"))))
         # it has to win on cost, not only exist (#133)
-        got["par count"] = _plan(c, "SELECT count(*) FROM an", parallel=True)
-        got["par multi"] = _plan(c, "SELECT count(*), sum(id), min(id), max(id) FROM an", parallel=True)
+        got["par count"] = str(_try(_plan, c, "SELECT count(*) FROM an", parallel=True))
+        got["par multi"] = str(_try(_plan, c, "SELECT count(*), sum(id), min(id), max(id) FROM an",
+                                    parallel=True))
         # count(*) needs no zone map; an aggregate that needs one must be seen reading it,
         # so the zero cannot pass because the counter never moves
-        before = _zm_scans(c)
-        _one(c, "SELECT count(*) FROM an")
-        got["zm count"] = _zm_scans(c) - before
-        before = _zm_scans(c)
-        _one(c, "SELECT count(*), sum(id) FROM an")
-        got["zm sum"] = _zm_scans(c) - before
-        got["filtered node"] = _aggnode(_plan(c, "SELECT count(*), sum(id) FROM an WHERE id > 6000"))
-        c.execute("CREATE TABLE ae (id int, label text) USING pgcolumnar")
+        got["zm count"] = _try(_zm_delta, c, "SELECT count(*) FROM an")
+        got["zm sum"] = _try(_zm_delta, c, "SELECT count(*), sum(id) FROM an")
+        got["filtered node"] = _aggnode(str(_try(_plan, c, "SELECT count(*), sum(id) FROM an WHERE id > 6000")))
+        _try(c.execute, "CREATE TABLE ae (id int, label text) USING pgcolumnar")
         got["empty count"] = _try(_one, c, "SELECT count(*) FROM ae")
         got["empty sum"] = str(_try(_one, c, "SELECT sum(id) IS NULL FROM ae"))
         got["empty min"] = str(_try(_one, c, "SELECT min(label) IS NULL FROM ae"))
@@ -351,12 +381,12 @@ def test_the_metadata_plan_has_no_gather(meta, expect, key, name):
 
 
 def test_count_reads_no_zone_maps(meta, expect):
-    expect.num(meta["zm count"], 0, "count(*) reads no zone maps")
+    expect.num(_num(meta["zm count"], "zm count"), 0, "count(*) reads no zone maps")
 
 
 def test_an_aggregate_that_needs_zone_maps_reads_them(meta, expect):
     # the measured delta, not a yes/no (#1514 review, item 1)
-    expect.at_least(meta["zm sum"], 1, "an aggregate that needs zone maps reads them")
+    expect.at_least(_int(meta["zm sum"], "zm sum"), 1, "an aggregate that needs zone maps reads them")
 
 
 def test_a_filtered_aggregate_is_not_the_metadata_node(meta, expect):
@@ -364,7 +394,7 @@ def test_a_filtered_aggregate_is_not_the_metadata_node(meta, expect):
 
 
 def test_an_empty_table_counts_zero(meta, expect):
-    expect.num(meta["empty count"], 0, "empty count(*)")
+    expect.num(_num(meta["empty count"], "empty count"), 0, "empty count(*)")
 
 
 @pytest.mark.parametrize("key, name", [

@@ -92,22 +92,22 @@ def recipe(pgc_cluster):
             conn.execute("CREATE TABLE readings (device int, ts timestamptz, v float8) USING pgcolumnar")
             conn.execute("CREATE TABLE devices (device int PRIMARY KEY)")
             conn.execute(f"INSERT INTO devices SELECT g FROM generate_series(1, {DEVICES}) g")
-            conn.execute(
-                f"INSERT INTO readings SELECT 1 + (h % {DEVICES}), '2025-12-01'::timestamptz"
-                f" + (h % {ROWS}) * interval '30 s', (h % 613)::float8"
-                f" FROM (SELECT (hashint8(g) & 9223372036854775807) AS h"
-                f"       FROM generate_series(1::bigint, {ROWS}) g) x")
+            _try(conn.execute,
+                 f"INSERT INTO readings SELECT 1 + (h % {DEVICES}), '2025-12-01'::timestamptz"
+                 f" + (h % {ROWS}) * interval '30 s', (h % 613)::float8"
+                 f" FROM (SELECT (hashint8(g) & 9223372036854775807) AS h"
+                 f"       FROM generate_series(1::bigint, {ROWS}) g) x")
             got["count"] = _try(_one, conn, "SELECT count(*) FROM readings")
-            got["oracle"] = str(_rows(conn, "SELECT DISTINCT ON (device) device, ts FROM readings"
-                                            " ORDER BY device, ts DESC"))
-            got["pages"] = _one(conn, "SELECT pg_relation_size('readings') / 8192")
+            got["oracle"] = str(_try(_rows, conn, "SELECT DISTINCT ON (device) device, ts FROM readings"
+                                                  " ORDER BY device, ts DESC"))
+            got["pages"] = _try(_one, conn, "SELECT pg_relation_size('readings') / 8192")
             if len(got["blocks"]) == 3:
                 index_sql, group_sql, lateral_sql = got["blocks"]
                 got["trap"] = _try(_blocks, conn, lateral_sql)
                 got["group rows"] = str(_try(_rows, conn, group_sql))
                 got["group blocks"] = _try(_blocks, conn, group_sql)
                 _try(conn.execute, index_sql)
-                got["indexes"] = _one(conn, "SELECT count(*) FROM pg_indexes WHERE tablename = 'readings'")
+                got["indexes"] = _try(_one, conn, "SELECT count(*) FROM pg_indexes WHERE tablename = 'readings'")
                 got["lateral rows"] = str(_try(_rows, conn, lateral_sql))
                 got["lateral blocks"] = _try(_blocks, conn, lateral_sql)
             print(f"-- table {got['pages']} pages; readings: "
@@ -118,10 +118,19 @@ def recipe(pgc_cluster):
             a.execute(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
 
 
-def _int(v):
-    """A block count, or 0 for anything else, so an error or an absent step fails
-    the bound it was meant to meet rather than raising inside the assertion."""
-    return v if isinstance(v, int) else 0
+def _int(v, what=""):
+    """A block count, or 0 with the error printed, so an error or an absent step
+    fails the bound it was meant to meet by name, with its reason in the output."""
+    if isinstance(v, int):
+        return v
+    print(f"-- {what or 'reading'}: not a count: {v}")
+    return 0
+
+
+def _num(v, what=""):
+    """A count for expect.num, or -1 with the error printed: expect.num refuses a
+    non-number with a VacuityError rather than a named red (#1522 review)."""
+    return v if isinstance(v, int) else _int(v, what) - 1
 
 
 def test_the_documents_three_recipe_blocks_were_found(recipe, expect):
@@ -129,11 +138,11 @@ def test_the_documents_three_recipe_blocks_were_found(recipe, expect):
 
 
 def test_the_table_holds_every_row(recipe, expect):
-    expect.num(recipe["count"], ROWS, "premise: the table holds every row")
+    expect.num(_num(recipe["count"], "count"), ROWS, "premise: the table holds every row")
 
 
 def test_without_the_btree_the_lateral_form_reads_the_table_once_per_device(recipe, expect):
-    expect.at_least(_int(recipe.get("trap")), recipe["pages"] * DEVICES // 2,
+    expect.at_least(_int(recipe.get("trap")), _int(recipe["pages"], "pages") * DEVICES // 2,
                     "without the btree the LATERAL form reads the table once per device")
 
 
@@ -147,12 +156,12 @@ def test_the_group_by_form_reads_the_table_once(recipe, expect):
     # it from a per-device subquery, which returns the same rows and reads the table
     # once per device. Reading nothing also reads under the table, so a zero is refused.
     grp = _int(recipe.get("group blocks"))
-    expect.at_least(recipe["pages"] + 1 - grp if grp else 0, 1,
+    expect.at_least(_int(recipe["pages"], "pages") + 1 - grp if grp else 0, 1,
                     "the GROUP BY form reads the table once")
 
 
 def test_the_documents_index_exists(recipe, expect):
-    expect.num(recipe.get("indexes", 0), 1, "premise: the document's index exists")
+    expect.num(_num(recipe.get("indexes", 0), "indexes"), 1, "premise: the document's index exists")
 
 
 def test_the_lateral_form_returns_what_distinct_on_returns(recipe, expect):
@@ -168,5 +177,5 @@ def test_the_indexed_lateral_form_read_the_table_at_all(recipe, expect):
 
 def test_with_the_btree_the_lateral_form_reads_under_a_tenth_of_the_table(recipe, expect):
     lat = _int(recipe.get("lateral blocks"))
-    expect.at_least(recipe["pages"] - 10 * lat if lat else 0, 1,
+    expect.at_least(_int(recipe["pages"], "pages") - 10 * lat if lat else 0, 1,
                     "with the btree the LATERAL form reads under a tenth of the table")
