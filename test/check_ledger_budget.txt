@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 190
+suites_not_covered 189
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3545,4 +3545,19 @@ suites_not_covered 190
 #     never         3055 +  0 = 3055
 #     dated         1341 +  1 = 1342
 #     3055 + 1342 == 4397
-checks_never_observed_red 3055
+#
+# #1341, native_truncate seeded, with its twin (OffgridwithJD): 3055 -> 3066, and
+# suites_not_covered 190 -> 189. The suite had no rows. It enters with all 18 checks
+# from five-major runs (18/18 on each of 15-19), restated over #1516. 7 are
+# dated by four mutations: the transaction-block refusal removed, the GUC not
+# consulted (the GUC-off arm, which had sent SET and the call as one implicit
+# transaction block and passed on the refusal, and the GUC-on reclaim after it),
+# truncate returning 0 without truncating, and an index fetch finding no row.
+# Eleven arrive never: the six heap-parity comparisons, the row count, the two
+# no-op truncates, the unchanged file after the refused call, and the index premise.
+#
+#     ledger rows   4397 + 18 = 4415
+#     never         3055 + 11 = 3066
+#     dated         1342 +  7 = 1349
+#     3066 + 1349 == 4415
+checks_never_observed_red 3066

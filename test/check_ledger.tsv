@@ -3114,6 +3114,24 @@ native_saop_pushdown	native_saop_pushdown	the predicate builder's reject express
 native_saop_pushdown	native_saop_pushdown	the predicate builder's reject expression contains SK_SEARCHNULL	15;16;17;18;19	2026-10-16	columnar_reader.c: the reject expression keeps only SK_ISNULL
 native_saop_pushdown	native_saop_pushdown	vector-agg count over an IN-list is exact (conservative keys not folded)	15;16;17;18;19	2026-10-16	columnar_reader.c: a set key never probes the bloom filter (it probes zero values and rules the group out)
 native_saop_pushdown	native_saop_pushdown	vector-agg path engaged for the guard arm (plan shape)	15;16;17;18;19	never	-
+native_truncate	native_truncate	GUC off: truncate does nothing	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (columnar_vacuum.c)
+native_truncate	native_truncate	GUC on: file shrank	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
+native_truncate	native_truncate	GUC on: truncate reclaims	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (columnar_vacuum.c);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
+native_truncate	native_truncate	file shrank	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
+native_truncate	native_truncate	file unchanged after refused in-txn truncate	15;16;17;18;19	never	-
+native_truncate	native_truncate	indexed lookup after truncate	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
+native_truncate	native_truncate	load parity	15;16;17;18;19	never	-
+native_truncate	native_truncate	parity after guard cycle	15;16;17;18;19	never	-
+native_truncate	native_truncate	parity after post-truncate insert	15;16;17;18;19	never	-
+native_truncate	native_truncate	parity after refused in-txn truncate	15;16;17;18;19	never	-
+native_truncate	native_truncate	parity after truncate	15;16;17;18;19	never	-
+native_truncate	native_truncate	parity after truncate + reinsert + compaction	15;16;17;18;19	never	-
+native_truncate	native_truncate	premise: the indexed lookup reads n_id	15;16;17;18;19	never	-
+native_truncate	native_truncate	row count after truncate	15;16;17;18;19	never	-
+native_truncate	native_truncate	second truncate is a no-op	15;16;17;18;19	never	-
+native_truncate	native_truncate	truncate before any delete is a no-op	15;16;17;18;19	never	-
+native_truncate	native_truncate	truncate refused inside a transaction block	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() runs inside a transaction block, its IsTransactionBlock refusal removed (columnar_vacuum.c)
+native_truncate	native_truncate	truncate returned blocks	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
 native_vecskip	native_vecskip	and the aggregate skips the same seven vectors	15;16;17;18;19	2026-10-16	columnar_reader.c: no vector skip at all (zone-map rule off, refine_skipvec and qual_skipvec return at once)
 native_vecskip	native_vecskip	cross-vector range parity	15;16;17;18;19	never	-
 native_vecskip	native_vecskip	empty range parity	15;16;17;18;19	never	-
