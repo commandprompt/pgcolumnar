@@ -240,6 +240,14 @@ def test_a_dynamic_request_is_treated_as_cluster_bound(tmp_path, expect):
                                    "    c = request.getfixturevalue('pgc_conn')\n"
                                    "    assert c\n"),
                 "bound", "an unresolvable request is cluster-bound, not free")
+    # THE CASE THE DOCSTRING DESCRIBES (#1339). The literal above names a cluster root,
+    # so a classifier that resolved literals, or one that skipped every non-literal,
+    # passed it too. Here the name is computed, which no AST can resolve.
+    expect.text(_verdict(tmp_path, "def test_a(request):\n"
+                                   "    name = 'pgc_' + 'conn'\n"
+                                   "    c = request.getfixturevalue(name)\n"
+                                   "    assert c\n"),
+                "bound", "a request whose name is computed at run time is cluster-bound")
 
 
 def test_an_aliased_cluster_root_is_found_under_the_name_tests_request(tmp_path, expect):
