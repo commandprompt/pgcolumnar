@@ -227,6 +227,7 @@ behaviour, the source of that number is named.
 - [179. test_native_bloom.py: a bloom filter prunes the equality probe min/max cannot](#179-test_native_bloompy-a-bloom-filter-prunes-the-equality-probe-minmax-cannot)
 - [180. test_native_toasted_write.py: a toasted value is written once and read back whole](#180-test_native_toasted_writepy-a-toasted-value-is-written-once-and-read-back-whole)
 - [181. test_native_varlena_bound.py: a corrupt varlena length is refused, not read past its buffer](#181-test_native_varlena_boundpy-a-corrupt-varlena-length-is-refused-not-read-past-its-buffer)
+- [182. test_native_agg_addcolumn.py: a metadata aggregate over an added column reads what the metadata cannot hold](#182-test_native_agg_addcolumnpy-a-metadata-aggregate-over-an-added-column-reads-what-the-metadata-cannot-hold)
 
 ## 1. How to read a test in here
 
@@ -8008,3 +8009,18 @@ Each check is its own test.
 | `test_a_min_whose_length_exactly_fits_its_buffer_reads_cleanly` | an exact-fit length reads all 2000 rows |
 | `test_a_min_whose_length_runs_one_byte_past_its_buffer_is_refused` | one byte past raises XX001 |
 | `test_a_4_byte_header_cut_off_by_the_buffers_end_is_refused` | a header with fewer than 4 bytes left raises XX001 |
+
+## 182. test_native_agg_addcolumn.py: a metadata aggregate over an added column reads what the metadata cannot hold
+
+The pytest twin of `test/native_agg_addcolumn.sh` (ported for #1341), every check by the shell's name. An ungrouped, unfiltered aggregate is answered from row-group metadata, but a column added by ALTER TABLE ADD COLUMN has no chunk, and so no zone map, in a row group written before it. The fold must send such a group to be read, where the reader supplies the attribute's missing value. Each aggregate is compared with the same bare query on a second connection that starts with `pgcolumnar.enable_vectorization` off, as the shell's PGOPTIONS does. The aggregates run over a column added with a constant default, one added with none, groups on both sides of the ALTER, and the same after a delete in the newer group (a group with deletes goes whole to the scan, so a delete in the only pre-ALTER group would keep it from the fold under test).
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order and records each reading, so one red cannot stop the checks after it. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_metadata_aggregate_path_is_the_one_under_test` | `count(d)` plans the metadata node |
+| `test_the_oracle_reads_the_rows` | premise: the oracle's connection plans `Custom Scan (PgColumnarScan)`, so the two sides take different paths; an empty or other plan cannot pass |
+| `test_the_scan_reads_an_added_columns_default_for_the_rows_written_before_it` | the oracle's own `count(d)` and `sum(d)` are 3000 and 21000: both paths read old groups through the reader's missing value, so agreement alone cannot see it lost |
+| `test_the_metadata_path_agrees_with_the_scan` | parametrized by the shell's 16 names: count, sum, min, max and avg over the added columns, count(*), and the same across both sides of the ALTER and after a delete |

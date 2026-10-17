@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 184
+suites_not_covered 183
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3702,4 +3702,27 @@ suites_not_covered 184
 #     never         3081 + 0 = 3081
 #     dated         1385 + 2 = 1387
 #     3081 + 1387 == 4468
-checks_never_observed_red 3081
+#
+# #1341, native_agg_addcolumn seeded, with its twin (OffgridwithJD): 3081 -> 3085,
+# and suites_not_covered 184 -> 183. The suite had no rows. It enters with 19 checks
+# from five-major runs (19/19 on each of 15-19), after three fixes and one new arm.
+# both() turned an empty answer into "(null)" and kept the last line, which for a
+# failed oracle was its SET's tag; a NULL now prints as "(null)" through psql, the
+# setting rides in PGOPTIONS, and check_text refuses an empty side, with a premise
+# that the oracle plans the scan node. Each reading waits out crash recovery, so a
+# crash fails its own arm only. The delete moved to the newer group: a group with
+# deletes goes whole to the scan, and in the only pre-ALTER group it kept that group
+# from the fold, so the two arms after it could not fail (#1530 review). And since
+# both paths read an old group's added column from the reader's missing value, the
+# oracle's own count and sum are pinned once. 15 are dated by four mutations: the
+# fold reading a group with no chunk for the column from its absent zone map (13),
+# skipping such a group rather than reading it (11), the same fold counting such a
+# group as all non-null (10, @jdatcmd's, which dates the no-default count), and the
+# reader losing the missing value (the pinned arm alone). Four arrive never: the two
+# premises, count(*), and the no-default sum (null under every mutation, rightly).
+#
+#     ledger rows   4468 + 19 = 4487
+#     never         3081 +  4 = 3085
+#     dated         1387 + 15 = 1402
+#     3085 + 1402 == 4487
+checks_never_observed_red 3085
