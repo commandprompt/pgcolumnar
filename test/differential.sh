@@ -387,12 +387,25 @@ psql_run "DELETE FROM t_col  WHERE id % 13 = 0;"
 psql_run "UPDATE t_heap SET v = v + 1 WHERE id % 17 = 0;"
 psql_run "UPDATE t_col  SET v = v + 1 WHERE id % 17 = 0;"
 
+# A fallback returns the same count, so the oracle check alone cannot say which
+# path answered it. native_agg proves the metadata node on a table with no
+# deletes; here the table has deletes and updates, which is what makes the
+# per-group arithmetic matter. So each mode first names the path it took: the
+# metadata node reports "Columnar Vectorized Aggregates", and the scan shows
+# "Custom Scan (PgColumnarScan)" without it. An empty plan is "no plan" and any
+# other plan is "other plan", so neither an error nor a plan that lost the
+# columnar scan can pass as the scan.
 for mode in on off; do
 	q "ALTER DATABASE $PGC_DB SET pgcolumnar.enable_vectorization=$mode;" >/dev/null
+	plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM t_col;")"
+	path="no plan"
+	[ -n "$plan" ] && path="other plan"
+	grep -qF 'Custom Scan (PgColumnarScan)' <<<"$plan" && path=scan
+	grep -q 'Columnar Vectorized Aggregates' <<<"$plan" && path=metadata
+	want=metadata; [ "$mode" = off ] && want=scan
+	check "count meta=$mode takes the path it names" "$path" "$want"
 	diff_query "count meta=$mode" "SELECT count(*) FROM %T"
 done
 q "ALTER DATABASE $PGC_DB RESET pgcolumnar.enable_vectorization;" >/dev/null
-# The metadata count fast path is proven by the native_agg suite; the oracle
-# checks above prove the count is correct with the path on and off.
 
 pgc_summary

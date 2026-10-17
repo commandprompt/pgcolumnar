@@ -3665,4 +3665,16 @@ suites_not_covered 185
 #     never         3080 - 3 = 3077
 #     dated         1375 + 3 = 1378
 #     3077 + 1378 == 4455
+#
+# #1339, differential's covering count names the path it took (jdatcmd):
+# 3077 -> 3077. "count meta=on" and "count meta=off" compared the count to the
+# heap, and a fallback returns the same count, so neither said which path ran.
+# Each mode now checks the plan, one check per test. Both checks arrive dated:
+# the hook returning early reddens the "on" check alone, and the hook ignoring
+# enable_vectorization reddens the "off" check alone, on each of 15-19.
+#
+#     ledger rows   4455 + 2 = 4457
+#     never         3077 + 0 = 3077
+#     dated         1378 + 2 = 1380
+#     3077 + 1380 == 4457
 checks_never_observed_red 3077
