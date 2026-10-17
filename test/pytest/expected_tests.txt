@@ -850,4 +850,6 @@ guard_tests 442
 # nineteen tests, one per check, by collection over the cluster files on this tree.
 # cluster_tests 966 -> 990 for #1341, test_native_format.py ported by name, one check per
 # test (1 -> 25 tests), by collection over the cluster files.
-cluster_tests 990
+# cluster_tests 990 -> 1006 for #1341, test_iceberg_data_files.py ported by name, one check
+# per test (5 -> 21 tests), by collection over the cluster files.
+cluster_tests 1006

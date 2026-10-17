@@ -88,6 +88,7 @@ from compare_to_bash import (_as_names, _bash_names, _bodies,  # noqa: E402
 COMPLETE = ["advisory_lock_class",
             "range_pruning",
             "native_format",
+            "iceberg_data_files",
             "alter_table_scans",
             "fdw_plan_privilege",
             "am_contracts",
@@ -241,13 +242,6 @@ INCOMPLETE = {
     "drop_cleanup": "the #1265 arms (a columnar matview's options row goes with its "
                     "DROP and survives its REFRESH, with an unrelated row as the "
                     "control) are ported; the storage and catalog cleanup arms are not",
-    # #1341 item 49 ported the arms it added: a delete or removed entry inside a
-    # data manifest is refused, with a control that is listed. The rest of the
-    # shell suite (the pyiceberg oracle, path rebasing and its escapes, the
-    # delete-manifest refusal, no snapshot, the privilege refusal) is not.
-    "iceberg_data_files": "the delete-entry refusals and their control are ported; "
-                          "the oracle, rebasing, path-escape, delete-manifest, "
-                          "no-snapshot and privilege arms are not",
     # #1341's megabyte values: every arm is ported except the opt-in chunk over 1 GB
     # (PGC_RUN_OVER_1GB=1), which needs several GB of memory and which this layer,
     # having no SKIP verdict for an arm a run chooses not to make, does not carry.
