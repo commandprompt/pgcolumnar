@@ -416,7 +416,7 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
                 "every name the loop reader returns appears verbatim in the file it "
                 "came from")
     expect.text(", ".join(files),
-                "build_refusal, differential, native_agg, native_groupagg_batch, "
+                "build_refusal, differential, native_groupagg_batch, "
                 "native_index_projection, native_parquet_pushdown, "
                 "native_reclaim, native_repack, "
                 "native_saop_pushdown, native_vacuum_race, native_vecskip, sorted_pathkeys, "

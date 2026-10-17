@@ -6573,9 +6573,26 @@ The rest of the shell suite was ported for #1341, every check by its name: the `
 
 | test | what it holds |
 | --- | --- |
-| `test_min_max_over_timestamptz_read_no_data` | the table holds every row; `max(ts)` plans the metadata node; a decode reads at least 10 blocks; `max` and `min` each read under a tenth of that; parity with heap before and after deleting rows at both ends |
-| `test_a_where_with_no_column_in_it_is_applied` | a WHERE that references no column, such as `(SELECT false)`, `now() < ...` or `current_user = ...`, gives heap's answer, with a premise that the same aggregate with no WHERE is the vectorized node (#1435) |
-| `test_the_metadata_aggregates_answer_as_heap_and_win_their_plans` | count, sum, avg, min and max over int4 and text equal heap with the metadata node asserted first; the node beats a parallel plan with no Gather; `count(*)` reads no zone maps while `count(*), sum(id)` does; filtered, `sum(bigint)` and empty-table answers are right |
+| `test_the_timestamptz_table_holds_every_row` | **premise**: the table holds every row inserted |
+| `test_max_ts_plans_the_metadata_agg_node` | `max(ts)` over timestamptz plans the metadata node |
+| `test_decoding_ts_reads_the_tables_blocks` | **control**: a decode of `ts` reads at least 10 blocks |
+| `test_min_max_ts_read_under_a_tenth_of_a_decode` | `max(ts)` and `min(ts)` each read under a tenth of the decode's blocks (parametrized) |
+| `test_timestamptz_parity` | `max` and `min` equal heap's, before and after deleting rows at both ends (parametrized) |
+| `test_the_deletes_removed_the_same_rows_at_both_ends` | the deletes removed rows, the same rows from each table |
+| `test_count_min_max_with_no_where_are_the_vectorized_aggregate` | **premise**: with no WHERE, the aggregate is the vectorized node |
+| `test_a_where_with_no_column_in_it_gives_heaps_answer` | `(SELECT false)`, `now() < ...` and `current_user = ...` each give heap's answer (#1435) (parametrized) |
+| `test_heaps_answer_to_a_false_gate_is_no_rows` | **premise**: heap's answer to a false gate is no rows |
+| `test_the_aggregate_uses_the_metadata_node` | `count(*)` and sum/min/max plan the metadata node (parametrized) |
+| `test_the_aggregate_answers_as_heap` | count, sum, avg, min and max over int4 and text, the multi-aggregate, the filtered aggregate and the `sum(bigint)` fallback each equal heap (parametrized, 13 names) |
+| `test_the_metadata_node_beats_a_parallel_plan` | the node wins against a parallel plan, for `count(*)` and the multi-aggregate (#133) (parametrized) |
+| `test_the_metadata_plan_has_no_gather` | neither plan has a Gather (parametrized) |
+| `test_count_reads_no_zone_maps` | `count(*)` reads no zone maps |
+| `test_an_aggregate_that_needs_zone_maps_reads_them` | `count(*), sum(id)` reads at least one: the measured delta, so the zero above cannot pass on a counter that never moves |
+| `test_a_filtered_aggregate_is_not_the_metadata_node` | a filtered aggregate falls back |
+| `test_an_empty_table_counts_zero` | an empty table counts 0 |
+| `test_an_empty_table_aggregates_to_null` | an empty table's `sum` and `min` are NULL (parametrized) |
+
+ONE CHECK PER TEST (#1339). Three module fixtures take every reading in order, and each test asserts one, so a red cannot stop the next check from running. Measured with #133 restored (the metadata path priced at the scan's cost) on PG17: the shell reddens 4 arms, the parallel-plan and no-Gather pairs. The earlier twin, three tests holding 40 checks, reported 1. This one reports the same 4.
 
 ## 86. test_format_downgrade.py: an alpha4 binary refuses what this build wrote
 
@@ -6606,7 +6623,7 @@ A ZERO IS NOT A MEASUREMENT. On the shell twin, the red run before the section e
 
 THE FIXTURE NEEDS MANY ROWS PER DEVICE. The `LATERAL` form costs about a block per device whatever the table's size, so at 5,000 rows per device it read 45 blocks of a 177-page table and "a tenth" failed. Here it is 36,000 rows per device.
 
-On a private database, because the document names its tables, `readings` and `devices`.
+On a private database, built once by a module fixture, because the document names its tables, `readings` and `devices`.
 
 Removal proof: the document's `LATERAL` edited to `ORDER BY ts` (ascending) returns each device's first reading, and `the LATERAL form returns what DISTINCT ON returns` fails. On the shell twin that is the only red, on every major.
 
@@ -6614,7 +6631,17 @@ Removal proof: the document's `LATERAL` edited to `ORDER BY ts` (ascending) retu
 
 | test | what it holds |
 | --- | --- |
-| `test_the_latest_reading_recipe_does_what_the_document_says` | the document's three blocks are found; the table holds its rows; without the btree the `LATERAL` form reads the table about once per device; the `GROUP BY` form and, with the document's index, the `LATERAL` form return the rows `DISTINCT ON` returns; the `GROUP BY` form reads at least one block and no more than the table, as the document says (#1339); the indexed `LATERAL` reads at least one block and under a tenth of the table |
+| `test_the_documents_three_recipe_blocks_were_found` | **premise**: the document's three recipe blocks are found |
+| `test_the_table_holds_every_row` | **premise**: the table holds every row |
+| `test_without_the_btree_the_lateral_form_reads_the_table_once_per_device` | the trap the document warns about: without the btree, the `LATERAL` form reads the table about once per device |
+| `test_the_group_by_form_returns_what_distinct_on_returns` | the `GROUP BY` form returns the rows `DISTINCT ON` returns |
+| `test_the_group_by_form_reads_the_table_once` | the `GROUP BY` form reads at least one block and no more than the table, as the document says (#1339) |
+| `test_the_documents_index_exists` | **premise**: the document's index exists |
+| `test_the_lateral_form_returns_what_distinct_on_returns` | with the index, the `LATERAL` form returns the rows `DISTINCT ON` returns |
+| `test_the_indexed_lateral_form_read_the_table_at_all` | **premise**: the indexed `LATERAL` form read at least one block |
+| `test_with_the_btree_the_lateral_form_reads_under_a_tenth_of_the_table` | with the index, the `LATERAL` form reads under a tenth of the table |
+
+ONE CHECK PER TEST (#1339). A module fixture runs every step in the shell's order, the trap before the document's index exists, and records each reading; each test asserts one. Measured with the document's index statement replaced by `SELECT 1` on PG17: the shell reddens "the document's index exists" and "reads under a tenth of the table". The earlier one-test twin reported only the first. This one reports both.
 
 ## 88. test_storage_row_repair.py: the alpha5 release notes' repair procedure works as written
 
