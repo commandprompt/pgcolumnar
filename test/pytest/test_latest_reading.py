@@ -11,14 +11,19 @@ GROUP BY form reads the table at most once; with the btree the LATERAL form read
 under a tenth of the table, and at least one block (a query that reads nothing
 would otherwise pass); without it, it reads the table about once per device.
 
-ON A PRIVATE DATABASE (`pgc_own_db`): the document names its tables, `readings`
-and `devices`, so they cannot carry a per-test prefix. Independent of
+ON A PRIVATE DATABASE, built once by a module fixture: the document names its
+tables, `readings` and `devices`, so they cannot carry a per-test prefix. The fixture
+runs every step in the shell's order and records each reading; each test asserts one,
+so one red cannot stop the next from running (#1339, as #1517-#1519 do). Independent of
 `test/latest_reading.sh`: its own extraction of the document (Python, not awk),
 its own data, device count and row count.
 """
 
 import pathlib
 import re
+
+import psycopg
+import pytest
 
 DOC = pathlib.Path(__file__).resolve().parent.parent.parent / "docs" / "how-to.md"
 SECTION = "## Find the latest reading per device"
@@ -63,55 +68,105 @@ def _blocks(conn, sql):
     return int(row[0]) if row else None
 
 
-def test_the_latest_reading_recipe_does_what_the_document_says(pgc_own_db, expect):
-    conn = pgc_own_db
-    blocks = _recipe_blocks()
-    expect.num(len(blocks), 3, "premise: the document's three recipe blocks were found")
-    if len(blocks) != 3:
-        return
-    index_sql, group_sql, lateral_sql = blocks
+def _try(fn, *args):
+    """A reading, or the error that replaced it: a failed step reddens its own test
+    rather than erroring the fixture and every test with it."""
+    try:
+        return fn(*args)
+    except psycopg.Error as exc:
+        return f"error: {exc.diag.message_primary}"
 
-    with conn.cursor() as cur:
-        cur.execute("CREATE TABLE readings (device int, ts timestamptz, v float8) USING pgcolumnar")
-        cur.execute("CREATE TABLE devices (device int PRIMARY KEY)")
-        cur.execute(f"INSERT INTO devices SELECT g FROM generate_series(1, {DEVICES}) g")
-        cur.execute(
-            f"INSERT INTO readings SELECT 1 + (h % {DEVICES}), '2025-12-01'::timestamptz"
-            f" + (h % {ROWS}) * interval '30 s', (h % 613)::float8"
-            f" FROM (SELECT (hashint8(g) & 9223372036854775807) AS h"
-            f"       FROM generate_series(1::bigint, {ROWS}) g) x"
-        )
-    expect.num(_one(conn, "SELECT count(*) FROM readings"), ROWS,
-               "premise: the table holds every row")
 
-    oracle = _rows(conn, "SELECT DISTINCT ON (device) device, ts FROM readings"
-                         " ORDER BY device, ts DESC")
-    pages = _one(conn, "SELECT pg_relation_size('readings') / 8192")
+@pytest.fixture(scope="module")
+def recipe(pgc_cluster):
+    """-> the readings, taken in the shell's order: the trap before the document's
+    index exists, the indexed form after."""
+    db = "pgc_latest_reading"
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {db}")
+    got = {"blocks": _recipe_blocks()}
+    try:
+        with psycopg.connect(pgc_cluster.dsn(dbname=db), autocommit=True) as conn:
+            conn.execute("CREATE EXTENSION pgcolumnar")
+            conn.execute("CREATE TABLE readings (device int, ts timestamptz, v float8) USING pgcolumnar")
+            conn.execute("CREATE TABLE devices (device int PRIMARY KEY)")
+            conn.execute(f"INSERT INTO devices SELECT g FROM generate_series(1, {DEVICES}) g")
+            conn.execute(
+                f"INSERT INTO readings SELECT 1 + (h % {DEVICES}), '2025-12-01'::timestamptz"
+                f" + (h % {ROWS}) * interval '30 s', (h % 613)::float8"
+                f" FROM (SELECT (hashint8(g) & 9223372036854775807) AS h"
+                f"       FROM generate_series(1::bigint, {ROWS}) g) x")
+            got["count"] = _try(_one, conn, "SELECT count(*) FROM readings")
+            got["oracle"] = str(_rows(conn, "SELECT DISTINCT ON (device) device, ts FROM readings"
+                                            " ORDER BY device, ts DESC"))
+            got["pages"] = _one(conn, "SELECT pg_relation_size('readings') / 8192")
+            if len(got["blocks"]) == 3:
+                index_sql, group_sql, lateral_sql = got["blocks"]
+                got["trap"] = _try(_blocks, conn, lateral_sql)
+                got["group rows"] = str(_try(_rows, conn, group_sql))
+                got["group blocks"] = _try(_blocks, conn, group_sql)
+                _try(conn.execute, index_sql)
+                got["indexes"] = _one(conn, "SELECT count(*) FROM pg_indexes WHERE tablename = 'readings'")
+                got["lateral rows"] = str(_try(_rows, conn, lateral_sql))
+                got["lateral blocks"] = _try(_blocks, conn, lateral_sql)
+            print(f"-- table {got['pages']} pages; readings: "
+                  + ", ".join(f"{k}={got.get(k)}" for k in ("trap", "group blocks", "lateral blocks")))
+            yield got
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
 
-    trap = _blocks(conn, lateral_sql)
-    print(f"-- table {pages} pages; LATERAL without the btree read {trap} blocks")
-    expect.at_least(trap, pages * DEVICES // 2,
+
+def _int(v):
+    """A block count, or 0 for anything else, so an error or an absent step fails
+    the bound it was meant to meet rather than raising inside the assertion."""
+    return v if isinstance(v, int) else 0
+
+
+def test_the_documents_three_recipe_blocks_were_found(recipe, expect):
+    expect.num(len(recipe["blocks"]), 3, "premise: the document's three recipe blocks were found")
+
+
+def test_the_table_holds_every_row(recipe, expect):
+    expect.num(recipe["count"], ROWS, "premise: the table holds every row")
+
+
+def test_without_the_btree_the_lateral_form_reads_the_table_once_per_device(recipe, expect):
+    expect.at_least(_int(recipe.get("trap")), recipe["pages"] * DEVICES // 2,
                     "without the btree the LATERAL form reads the table once per device")
 
-    expect.text(str(_rows(conn, group_sql)), str(oracle),
+
+def test_the_group_by_form_returns_what_distinct_on_returns(recipe, expect):
+    expect.text(recipe.get("group rows", "absent"), recipe["oracle"],
                 "the GROUP BY form returns what DISTINCT ON returns")
+
+
+def test_the_group_by_form_reads_the_table_once(recipe, expect):
     # The document says this form reads the table once (#1339). Rows alone cannot tell
     # it from a per-device subquery, which returns the same rows and reads the table
     # once per device. Reading nothing also reads under the table, so a zero is refused.
-    grp = _blocks(conn, group_sql)
-    print(f"-- table {pages} pages; the GROUP BY form read {grp} blocks")
-    expect.at_least(pages + 1 - grp if grp else 0, 1,
+    grp = _int(recipe.get("group blocks"))
+    expect.at_least(recipe["pages"] + 1 - grp if grp else 0, 1,
                     "the GROUP BY form reads the table once")
 
-    with conn.cursor() as cur:
-        cur.execute(index_sql)
-    expect.num(_one(conn, "SELECT count(*) FROM pg_indexes WHERE tablename = 'readings'"), 1,
-               "premise: the document's index exists")
-    expect.text(str(_rows(conn, lateral_sql)), str(oracle),
+
+def test_the_documents_index_exists(recipe, expect):
+    expect.num(recipe.get("indexes", 0), 1, "premise: the document's index exists")
+
+
+def test_the_lateral_form_returns_what_distinct_on_returns(recipe, expect):
+    expect.text(recipe.get("lateral rows", "absent"), recipe["oracle"],
                 "the LATERAL form returns what DISTINCT ON returns")
-    lat = _blocks(conn, lateral_sql)
-    print(f"-- with the btree the LATERAL form read {lat} blocks")
+
+
+def test_the_indexed_lateral_form_read_the_table_at_all(recipe, expect):
     # Reading nothing also reads under a tenth of the table, so a zero is refused.
-    expect.at_least(lat, 1, "premise: the indexed LATERAL form read the table at all")
-    expect.at_least(pages - 10 * lat, 1,
+    expect.at_least(_int(recipe.get("lateral blocks")), 1,
+                    "premise: the indexed LATERAL form read the table at all")
+
+
+def test_with_the_btree_the_lateral_form_reads_under_a_tenth_of_the_table(recipe, expect):
+    lat = _int(recipe.get("lateral blocks"))
+    expect.at_least(recipe["pages"] - 10 * lat if lat else 0, 1,
                     "with the btree the LATERAL form reads under a tenth of the table")

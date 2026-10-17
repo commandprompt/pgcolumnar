@@ -833,4 +833,6 @@ guard_tests 440
 # eight tests, one per check, by collection over the cluster files on this tree.
 # cluster_tests 787 -> 792 for #1341's completion of test_native_skip.py, the twin of native_skip.sh:
 # five tests, by collection over the cluster files on this tree.
-cluster_tests 792
+# cluster_tests 792 -> 837 for #1339, one check per test in test_native_agg.py (3 -> 40
+# tests) and test_latest_reading.py (1 -> 9 tests), by collection over the cluster files.
+cluster_tests 837
