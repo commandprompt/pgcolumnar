@@ -3172,6 +3172,17 @@ native_truncate	native_truncate	second truncate is a no-op	15;16;17;18;19	never	
 native_truncate	native_truncate	truncate before any delete is a no-op	15;16;17;18;19	never	-
 native_truncate	native_truncate	truncate refused inside a transaction block	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() runs inside a transaction block, its IsTransactionBlock refusal removed (columnar_vacuum.c)
 native_truncate	native_truncate	truncate returned blocks	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
+native_varlena_bound	native_varlena_bound	a 4-byte header cut off by the buffer's end is refused (XX001)	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded reads a 4-byte header with fewer than 4 bytes left
+native_varlena_bound	native_varlena_bound	a max with an over-long varlena length is refused, not an OOB read (XX001)	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded trusts the stored length (no check that it fits the stream);columnar_reader.c: native_zone_excludes decodes the zone map's maximum with no bound (its end 2 GB away)
+native_varlena_bound	native_varlena_bound	a min whose length exactly fits its buffer reads cleanly	15;16;17;18;19	never	-
+native_varlena_bound	native_varlena_bound	a min whose length runs one byte past its buffer is refused (XX001)	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded lets the stored length run one byte past the stream end;columnar.h: PgColumnarVarSizeAnyUnalignedBounded trusts the stored length (no check that it fits the stream)
+native_varlena_bound	native_varlena_bound	a min with an over-long varlena length is refused, not an OOB read (XX001)	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded trusts the stored length (no check that it fits the stream)
+native_varlena_bound	native_varlena_bound	an external-TOAST-tagged min value is refused (XX001)	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded accepts an external-TOAST tag
+native_varlena_bound	native_varlena_bound	backend survived the corrupt maximum	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded trusts the stored length (no check that it fits the stream);columnar_reader.c: native_zone_excludes decodes the zone map's maximum with no bound (its end 2 GB away)
+native_varlena_bound	native_varlena_bound	backend survived the corrupt minimum	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded trusts the stored length (no check that it fits the stream)
+native_varlena_bound	native_varlena_bound	backend survived the external-tagged minimum	15;16;17;18;19	never	-
+native_varlena_bound	native_varlena_bound	the txt column has a whole-chunk zone map to corrupt	15;16;17;18;19	never	-
+native_varlena_bound	native_varlena_bound	with the minimum restored, the range read is clean	15;16;17;18;19	never	-
 native_vecskip	native_vecskip	and the aggregate skips the same seven vectors	15;16;17;18;19	2026-10-16	columnar_reader.c: no vector skip at all (zone-map rule off, refine_skipvec and qual_skipvec return at once)
 native_vecskip	native_vecskip	cross-vector range parity	15;16;17;18;19	never	-
 native_vecskip	native_vecskip	empty range parity	15;16;17;18;19	never	-

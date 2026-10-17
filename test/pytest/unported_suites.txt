@@ -107,7 +107,6 @@ native_reclaim_reconcile
 native_rewrite
 native_rewrite_conc
 native_sort_by
-native_varlena_bound
 native_vecdecode
 native_zonemap
 native_zonemap_narrow
