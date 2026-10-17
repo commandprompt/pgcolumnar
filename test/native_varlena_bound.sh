@@ -58,18 +58,54 @@ errcode() { # SQL -> the 5-char SQLSTATE it raises, or NOERR
 		-qtA -v VERBOSITY=sqlstate -c "$1" 2>&1 \
 		| sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
 }
-alive() { [ "$(q 'SELECT 1;')" = "1" ] && echo yes || echo no; }
+refusal() { # SQL -> "SQLSTATE: message" of the error it raises, or NOERR's empty
+	# the SQLSTATE alone cannot tell which bound refused: with the header bound gone,
+	# the length check after it raises the same XX001 (#1524 review)
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qtA -v VERBOSITY=verbose -c "$1" 2>&1 \
+		| sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)/\1: \2/p' | head -1
+}
+# A liveness probe alone passes once crash recovery finishes, so survival also
+# requires that no backend has died since its scenario started, read from the server
+# log rather than from timing (corruption.sh measured the same hole).
+crashes() {
+	# grep -c prints 0 itself when nothing matches, and then exits 1
+	pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null || true
+}
+alive() {	# since this scenario's corruption, which notes the count
+	# a crash puts the server through recovery: wait it out, so the next scenario
+	# starts on a server that answers and one crash cannot fail the checks after it
+	local _i
+	for _i in $(seq 60); do [ "$(q 'SELECT 1;' 2>/dev/null)" = "1" ] && break; sleep 1; done
+	[ "$(q 'SELECT 1;')" = "1" ] && [ "$(crashes)" = "$CRASHES_BEFORE" ] && echo yes \
+		|| echo "no ($(( $(crashes) - CRASHES_BEFORE )) backend crashes)"
+}
+# the zone map's untouched bounds, to put back: native_zone_excludes decodes the
+# minimum BEFORE the maximum, so a corrupt minimum left in place answers for the
+# maximum's check, which then never reaches the maximum
+ORIG_MIN="$(q "SELECT encode(minimum, 'hex') FROM pgcolumnar.zone_map
+   WHERE storage_id=$SID AND column_index=1 AND vector_index=-1;")"
+ORIG_MAX="$(q "SELECT encode(maximum, 'hex') FROM pgcolumnar.zone_map
+   WHERE storage_id=$SID AND column_index=1 AND vector_index=-1;")"
 
 # --- corrupt the MINIMUM ------------------------------------------------------
 q "UPDATE pgcolumnar.zone_map SET minimum = E'\\\\xfcffffff00'::bytea
    WHERE storage_id=$SID AND column_index=1 AND vector_index=-1;" >/dev/null
+CRASHES_BEFORE="$(crashes)"
 check "a min with an over-long varlena length is refused, not an OOB read (XX001)" \
 	"$(errcode "SELECT count(*) FROM t WHERE txt > 'a';")" "XX001"
 check "backend survived the corrupt minimum" "$(alive)" "yes"
 
 # --- restore, then corrupt the MAXIMUM ---------------------------------------
+q "UPDATE pgcolumnar.zone_map SET minimum = decode('$ORIG_MIN', 'hex')
+   WHERE storage_id=$SID AND column_index=1 AND vector_index=-1;" >/dev/null
+# put back from a saved hex: an empty or wrong restore would leave the minimum
+# corrupt, and its XX001 would answer for the maximum
+check "with the minimum restored, the range read is clean" \
+	"$(q "SELECT count(*) FROM t WHERE txt < 'zzz';")" "2000"
 q "UPDATE pgcolumnar.zone_map SET maximum = E'\\\\xfcffffff00'::bytea
    WHERE storage_id=$SID AND column_index=1 AND vector_index=-1;" >/dev/null
+CRASHES_BEFORE="$(crashes)"
 check "a max with an over-long varlena length is refused, not an OOB read (XX001)" \
 	"$(errcode "SELECT count(*) FROM t WHERE txt < 'zzz';")" "XX001"
 check "backend survived the corrupt maximum" "$(alive)" "yes"
@@ -77,10 +113,35 @@ check "backend survived the corrupt maximum" "$(alive)" "yes"
 # --- an external-TOAST tag in the raw value stream is refused -----------------
 # 0x01 is the 1-byte external-TOAST tag; native storage never holds one, and
 # detoasting it would deref a bogus pointer. VARSIZE alone would accept it.
+# The maximum is restored first, so only the tagged minimum is wrong.
+q "UPDATE pgcolumnar.zone_map SET maximum = decode('$ORIG_MAX', 'hex')
+   WHERE storage_id=$SID AND column_index=1 AND vector_index=-1;" >/dev/null
 q "UPDATE pgcolumnar.zone_map SET minimum = E'\\\\x0102030405060708090a0b0c0d0e0f1011'::bytea
    WHERE storage_id=$SID AND column_index=1 AND vector_index=-1;" >/dev/null
+CRASHES_BEFORE="$(crashes)"
 check "an external-TOAST-tagged min value is refused (XX001)" \
 	"$(errcode "SELECT count(*) FROM t WHERE txt > 'a';")" "XX001"
 check "backend survived the external-tagged minimum" "$(alive)" "yes"
+
+# --- the boundary: a length that fits exactly, and one that runs one byte past --
+# A length far past the stream cannot tell a correct bound from an off-by-one,
+# and a one-byte overread is what the bound exists to stop (#1524 review). 0x07 is
+# a 1-byte header saying 3 bytes, header included: 'v1', exactly the stream. 0x09
+# says 4, one past it. Then 3 bytes whose first is a 4-byte header: the header
+# itself runs past the stream end, read by its message: the length check after the
+# header bound raises the same XX001. (The header bytes are little-endian's layout.)
+q "UPDATE pgcolumnar.zone_map SET minimum = E'\\\\x077631'::bytea
+   WHERE storage_id=$SID AND column_index=1 AND vector_index=-1;" >/dev/null
+check "a min whose length exactly fits its buffer reads cleanly" \
+	"$(q "SELECT count(*) FROM t WHERE txt > 'a';")" "2000"
+q "UPDATE pgcolumnar.zone_map SET minimum = E'\\\\x097631'::bytea
+   WHERE storage_id=$SID AND column_index=1 AND vector_index=-1;" >/dev/null
+check "a min whose length runs one byte past its buffer is refused (XX001)" \
+	"$(errcode "SELECT count(*) FROM t WHERE txt > 'a';")" "XX001"
+q "UPDATE pgcolumnar.zone_map SET minimum = E'\\\\x0c0000'::bytea
+   WHERE storage_id=$SID AND column_index=1 AND vector_index=-1;" >/dev/null
+check "a 4-byte header cut off by the buffer's end is refused (XX001)" \
+	"$(refusal "SELECT count(*) FROM t WHERE txt > 'a';")" \
+	"XX001: pgcolumnar: varlena header runs past the value stream end"
 
 pgc_summary

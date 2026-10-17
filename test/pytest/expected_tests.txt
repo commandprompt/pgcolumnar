@@ -840,4 +840,6 @@ guard_tests 442
 # tests) and test_latest_reading.py (1 -> 9 tests), by collection over the cluster files.
 # cluster_tests 837 -> 900 for #1339, one check per test in test_native_skip.py (13 -> 76
 # tests), by collection over the cluster files.
-cluster_tests 900
+# cluster_tests 900 -> 911 for #1341's test_native_varlena_bound.py, the twin of native_varlena_bound.sh:
+# eleven tests, one per check, by collection over the cluster files on this tree.
+cluster_tests 911

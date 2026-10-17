@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 185
+suites_not_covered 184
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3651,4 +3651,29 @@ suites_not_covered 185
 #     never         3080 + 0 = 3080
 #     dated         1374 + 1 = 1375
 #     3080 + 1375 == 4455
-checks_never_observed_red 3080
+#
+# #1341, native_varlena_bound seeded, with its twin (OffgridwithJD): 3080 -> 3084,
+# and suites_not_covered 185 -> 184. The suite had no rows. It enters with 11 checks
+# from five-major runs (11/11 on each of 15-19), after two fixes and three new arms.
+# It never restored the corrupt minimum before corrupting the maximum, and the zone
+# map decodes the minimum first, so the maximum's check was answered by the minimum
+# (the old suite is 7/7 with the maximum alone decoded unbounded); and "backend
+# survived" was a liveness probe, which passes once crash recovery finishes, so it
+# now also counts crashes in the server log and waits recovery out. A ~1 GB length
+# cannot tell a correct bound from an off-by-one (#1524 review), so the boundary is
+# planted too: a length that fits exactly, one that runs one byte past, and a 4-byte
+# header with fewer than 4 bytes left, read by its message, since with the header
+# bound gone the length check after it can raise the same XX001 (#1524 review: it
+# did on @jdatcmd's build; on these the mis-read length is accepted and no error
+# comes, red either way). 7 are dated by five mutations: the bounded
+# reader trusting the stored length, letting it run one byte past, reading a cut-off
+# 4-byte header, accepting an external-TOAST tag, and the maximum alone decoded
+# unbounded. Four arrive never: the zone-map premise, the restore, the exact fit,
+# and survival of the external tag (under the tag's mutation the read returns with
+# no error and no backend dies).
+#
+#     ledger rows   4455 + 11 = 4466
+#     never         3080 +  4 = 3084
+#     dated         1375 +  7 = 1382
+#     3084 + 1382 == 4466
+checks_never_observed_red 3084
