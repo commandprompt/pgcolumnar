@@ -7290,7 +7290,7 @@ A partial pytest twin of `test/iceberg_data_files.sh` (#1341 item 49). It ports 
 
 ## 133. test_native_skip.py: a type binary-coercible to its opclass's type prunes
 
-A partial pytest twin of `test/native_skip.sh` (#1433). It ports only the arms that issue added, by the shell's names; the rest of the shell suite is declared INCOMPLETE in `test_compare_to_bash.py`. A comparison on a cidr column resolves to inet's operator, and a varchar column's to text's. The reader called such a key cross-type and asked the opfamily for an ordering proc over the pair, which `network_ops` and `text_ops` do not register, so the key was dropped and the column pruned nothing. inet and text hold the same values and are the controls. Each arm asserts heap's answer, then that chunk groups were removed. A premise checks that heap's answer holds the rows the arm expects.
+The pytest twin of `test/native_skip.sh`, every check by the shell's name (#1433, completed for #1341). A comparison on a cidr column resolves to inet's operator, and a varchar column's to text's. The reader called such a key cross-type and asked the opfamily for an ordering proc over the pair, which `network_ops` and `text_ops` do not register, so the key was dropped and the column pruned nothing. inet and text hold the same values and are the controls. Each arm asserts heap's answer, then that chunk groups were removed. A premise checks that heap's answer holds the rows the arm expects. The rest of the suite covers scalar ranges and equality, including a bigint column against an integer literal (#477) and domains (#483); an anchored LIKE as a range under the C collation, with its refusals under the default and a discovered non-C collation (#426); a default-collation column in a `--locale=C` database, which must derive the bounds; and a columnar partition taking the custom scan (#436). The port found the shell's non-C half had never run: its collation probe closed a quoted identifier with a single quote.
 
 ### Every test
 
@@ -7298,6 +7298,11 @@ A partial pytest twin of `test/native_skip.sh` (#1433). It ports only the arms t
 | --- | --- |
 | `test_a_range_on_a_coercible_type_prunes` | a range on inet, cidr, a domain over cidr, text, varchar and a domain over varchar returns heap's rows and removes chunk groups |
 | `test_equality_on_a_coercible_type_prunes` | equality on cidr and on varchar, which also takes the bloom probe, returns heap's row and removes chunk groups |
+| `test_scalar_ranges_and_equality_prune_and_agree` | the plan is the columnar scan; ranges and equality on int, bigint (with and without casts, #477) and domains over both (#483) return heap's rows and remove chunk groups; a non-selective scan removes none |
+| `test_an_anchored_like_prunes_under_c_and_only_then` | an anchored LIKE prunes under COLLATE "C" with heap's rows, unanchored and escaped patterns and `_` wildcards included; under this cluster's non-C default it is refused (#426) |
+| `test_a_default_collation_in_a_locale_c_database_derives_the_bounds` | in a database created with LC_COLLATE 'C', a default-collation column derives both bounds and returns the right row (#426) |
+| `test_an_anchored_like_does_not_prune_under_a_non_c_collation` | under a discovered non-C collation a range still prunes but an anchored LIKE does not, and rows match heap; declares unrunnable when the build has none (#426) |
+| `test_a_columnar_partition_takes_the_custom_scan_and_prunes` | both partitions are columnar, the partitioned table returns heap's rows, plans the columnar custom scan and prunes (#436) |
 
 ## 134. test_unique_conc.py: concurrent inserters of one unique key serialize
 
