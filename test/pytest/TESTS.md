@@ -6550,7 +6550,11 @@ The two halves share no code and no fixture. The shell suite adds 400 tables wit
 
 ## 84. test_native_format.py: the format stamp is a range, and an append raises it
 
-A partial port of `native_format.sh`: the arms #1137 added and the format-version pin. #1130 stopped writing a validity bitmap for a chunk with no nulls, and an alpha4 binary misreads such a chunk without refusing it. Measured with the real alpha4 `.so`, 40 single-row fetches gave 9 NULL values for rows that hold one. So this build stamps `format_version` 2, and alpha4, which refuses any stamp but 1, refuses the table. The check became a range, `1 <= v <= 2`, so this build still reads what alpha4 wrote.
+The port of `native_format.sh`, by name, one check per test (#1341). The `nf` module fixture runs the shell's sequence once, in its order, and records every reading; each test asserts one of them.
+
+THE METAPAGE VERSION IS PLANTED THROUGH A C HOOK BOUND AT TEST TIME, `pgcolumnar_debug_set_metapage_version`, as the shell binds it and `test_native_gap.py` binds its own. Re-stamping the current major must read cleanly; a major of 99 must be refused by `PgColumnarReadMetapage`, naming `99.0`.
+
+#1130 stopped writing a validity bitmap for a chunk with no nulls, and an alpha4 binary misreads such a chunk without refusing it. Measured with the real alpha4 `.so`, 40 single-row fetches gave 9 NULL values for rows that hold one. So this build stamps `format_version` 2, and alpha4, which refuses any stamp but 1, refuses the table. The check became a range, `1 <= v <= 2`, so this build still reads what alpha4 wrote.
 
 THE FIRST WRITE RAISES THE STAMP, AND A READ DOES NOT. A table stamped 1 that this build appends to holds chunks alpha4 misreads, so the stamp has to move on that write. The arms set a stamp of 1 by catalog `UPDATE`, which is what an alpha4 table looks like, and check that reading leaves it at 1 and appending raises it to 2.
 
@@ -6562,13 +6566,21 @@ REFUSED BY SQLSTATE, `0A000`, not by the absence of a wrong answer. Stamps 3 and
 
 Removal proof, on this twin: making the append path skip the raise reddens `appending to a table stamped 1 raises its stamp` (got 1, want 2).
 
-Not ported, and declared INCOMPLETE in `test_compare_to_bash.py`: the metapage-version arms, which need a C hook bound at test time, and the diverse-type round trip against a heap mirror.
+THE PART-4 INDEX ARMS NEED THE CUSTOM SCAN OFF TOO (#1341). The shell ran that query with it on, so with the fetch path's stamp check deleted, "an index-scan fetch of a decoded column fails" and the two message arms on the same query stayed green: the scan-open guard refused it instead. Both twins now turn it off, and that mutant reddens all three.
+
+"Backend survives" is read on a new connection, as the shell's `q` reads it.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_the_format_stamp_is_a_range_and_an_append_raises_it` | this build stamps 2; a table stamped 1 is read on all four entry points and returns its rows; reading leaves its stamp at 1 and appending raises it to 2; stamps 3 and 0 are refused with `0A000` on all four; the backend survives |
+| `test_the_native_format_version_is_2`, `test_the_native_vector_length_is_1024` | the stamped identifiers |
+| `test_a_diverse_type_round_trip_matches_heap` | eight storage classes read back in order, as the heap returns them |
+| `test_the_table_reads_at_the_version_this_build_wrote`, `test_the_metapage_major_this_build_writes_is_still_2` | the metapage version this build writes reads cleanly, re-stamped or not |
+| `test_a_read_of_the_bumped_version_fails`, `test_the_failure_is_the_format_version_guard`, `test_the_error_names_the_offending_version`, `test_the_backend_survives_the_rejection` | a metapage major of 99 is refused by its guard, by name, and the server survives |
+| `test_the_table_reads_at_the_native_format_version_this_build_writes`, `test_a_future_native_format_version_is_refused`, `test_the_failure_is_the_native_format_version_guard`, `test_the_native_format_error_names_the_offending_version`, `test_the_backend_survives_the_native_format_rejection` | a format_version of 99 is refused on the seq scan, the aggregate and the row fetch, by its guard, and the server survives |
+| `test_the_fixture_was_stamped_by_this_build`, `test_a_table_stamped_1_is_read_on_all_four_paths`, `test_a_table_stamped_1_returns_its_rows`, `test_reading_a_table_stamped_1_does_not_raise_its_stamp`, `test_appending_to_a_table_stamped_1_raises_its_stamp`, `test_the_appended_table_still_reads_whole` | the range's lower end, and an append raising the stamp |
+| `test_a_stamp_above_this_builds_is_refused`, `test_a_stamp_below_min_readable_is_refused`, `test_the_backend_survives_the_range_rejections` | stamps 3 and 0 are refused with `0A000` on all four paths |
 
 ## 85. test_native_agg.py: min/max over timestamptz read no data
 

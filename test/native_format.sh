@@ -115,7 +115,10 @@ psql_run "UPDATE pgcolumnar.storage SET format_version = 99 WHERE storage_id = $
 # UPDATE standing in for a future format version.
 fverr_scan="$(err_of 'SELECT v FROM fv LIMIT 1;')"
 fverr_agg="$(err_of 'SELECT count(*) FROM fv;')"
-fverr_idx="$(err_of 'SET enable_seqscan=off; SET enable_bitmapscan=off; SELECT v FROM fv WHERE id = 42;')"
+# THE CUSTOM SCAN IS OFF HERE TOO (#1341), as in part 5 below: with it on, pgcolumnar's
+# own node serves the index query, and with the fetch path's stamp check deleted the
+# three arms on this query stayed green, refused by the scan-open guard instead.
+fverr_idx="$(err_of 'SET pgcolumnar.enable_custom_scan=off; SET enable_seqscan=off; SET enable_bitmapscan=off; SELECT v FROM fv WHERE id = 42;')"
 check "a seq-scan read of a future native format_version fails (not silently misread)" \
 	"$([ -n "$fverr_scan" ] && echo yes || echo no)" "yes"
 check "an aggregate over a future native format_version fails (not silently misread)" \
