@@ -226,6 +226,7 @@ behaviour, the source of that number is named.
 - [178. test_native_roundtrip.py: a native table reads back what the heap holds](#178-test_native_roundtrippy-a-native-table-reads-back-what-the-heap-holds)
 - [179. test_native_bloom.py: a bloom filter prunes the equality probe min/max cannot](#179-test_native_bloompy-a-bloom-filter-prunes-the-equality-probe-minmax-cannot)
 - [180. test_native_toasted_write.py: a toasted value is written once and read back whole](#180-test_native_toasted_writepy-a-toasted-value-is-written-once-and-read-back-whole)
+- [181. test_native_varlena_bound.py: a corrupt varlena length is refused, not read past its buffer](#181-test_native_varlena_boundpy-a-corrupt-varlena-length-is-refused-not-read-past-its-buffer)
 
 ## 1. How to read a test in here
 
@@ -7978,3 +7979,25 @@ Each check is its own test.
 | `test_the_equality_probe_reaches_the_bloom` | the probe is a usable skip predicate |
 | `test_equality_on_a_toasted_value_matches_heap` | and its count matches the heap |
 | `test_the_non_toasted_column_is_byte_identical` | the short column's digest matches the heap |
+
+## 181. test_native_varlena_bound.py: a corrupt varlena length is refused, not read past its buffer
+
+The pytest twin of `test/native_varlena_bound.sh` (ported for #1341), every check by the shell's name. Every decode site reads a varlena's stored length through `PgColumnarVarSizeAnyUnalignedBounded`, which refuses a length, or an external-TOAST tag, that would read past the value stream. The zone map's min/max is a catalog bytea, so a plain UPDATE reaches it: a 5-byte value whose header claims ~1 GB, then a predicate that consults it. The text column is corrupted, since the int id's min/max is no varlena. A length far past the stream cannot tell a correct bound from an off-by-one, so the boundary is planted too: a length that fits exactly, one that runs one byte past, and a 4-byte header with fewer than 4 bytes left. The minimum is restored before the maximum is corrupted, because the zone map decodes the minimum first and a corrupt minimum left in place would answer for the maximum. A crash is read from the server log, counted from each corruption, since a liveness probe alone passes once crash recovery finishes. It runs on a private cluster, because a crash drops every session on the server.
+
+### Every test
+
+Each check is its own test.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_txt_column_has_a_whole_chunk_zone_map_to_corrupt` | there is one zone-map row to corrupt |
+| `test_a_min_with_an_over_long_varlena_length_is_refused` | a ~1 GB minimum raises XX001 |
+| `test_backend_survived_the_corrupt_minimum` | and no backend died |
+| `test_with_the_minimum_restored_the_range_read_is_clean` | the restored minimum reads back all 2000 rows |
+| `test_a_max_with_an_over_long_varlena_length_is_refused` | a ~1 GB maximum raises XX001 |
+| `test_backend_survived_the_corrupt_maximum` | and no backend died |
+| `test_an_external_toast_tagged_min_value_is_refused` | an external-TOAST tag raises XX001 |
+| `test_backend_survived_the_external_tagged_minimum` | and no backend died |
+| `test_a_min_whose_length_exactly_fits_its_buffer_reads_cleanly` | an exact-fit length reads all 2000 rows |
+| `test_a_min_whose_length_runs_one_byte_past_its_buffer_is_refused` | one byte past raises XX001 |
+| `test_a_4_byte_header_cut_off_by_the_buffers_end_is_refused` | a header with fewer than 4 bytes left raises XX001 |

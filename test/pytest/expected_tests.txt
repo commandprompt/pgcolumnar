@@ -842,4 +842,6 @@ guard_tests 442
 # tests), by collection over the cluster files.
 # cluster_tests 900 -> 932 for #1341, test_range_pruning.py ported by name, one check per
 # test (2 -> 34 tests), by collection over the cluster files.
-cluster_tests 932
+# cluster_tests 932 -> 943 for #1341's test_native_varlena_bound.py, the twin of native_varlena_bound.sh:
+# eleven tests, one per check, by collection over the cluster files on this tree.
+cluster_tests 943
