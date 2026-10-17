@@ -45,6 +45,8 @@ one it replaces.
 import json
 import psycopg
 
+from pgc_vacuity import query_error
+
 ROWS = 20000
 MARKER = "Columnar Vectorized Group Keys"
 
@@ -801,7 +803,7 @@ def _groups_or_error(conn, cap, sql):
     try:
         return str(len(_rows(conn, sql)))
     except psycopg.Error as exc:
-        return f"ERROR: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
     finally:
         _gate_reset(conn)
 

@@ -23,7 +23,9 @@ first. A non-unique sentinel is safe against the layer, because no comparison
 accepts one at all; it is NOT safe against a helper that compares by hand, which is
 why the producer exists and why new code should use it.
 """
+import ast
 import inspect
+import pathlib
 
 import pgc_vacuity
 from pgc_vacuity import QUERY_ERROR, VacuityError, query_error
@@ -398,3 +400,58 @@ def test_a_legitimate_comparison_is_untouched(expect):
     e.row_set([(1,), (2,)], [(2,), (1,)], "a set comparison still ignores order")
     e.num(7, 7, "equal numbers still pass")
     expect.num(1, 1, "four honest comparisons passed through the new refusal")
+
+
+# A HELPER THAT MINTS ITS OWN FAILURE TEXT REOPENS THE MODE (#1525 review). Seventeen
+# twins caught a failed query and returned f"error: {message}": not the producer's
+# prefix, so no refusal fires, and two failures with the same message compare equal.
+# Measured on test_native_skip.py's copy: with the backend aborting on one LIKE, the
+# check on that query PASSED, as did two more read on the dead connection afterwards,
+# and the run named no red at all.
+#
+# Parsed, not grepped, for the reason the layer's other scans give: a string literal
+# that merely contains the shape is not an except handler.
+def _minted_failure_text(source):
+    """-> line numbers where an except handler builds a string starting "error" from
+    the error's message. A SQLSTATE alone is a typed field, which a test compares
+    with the code it expects (test_rls_query_paths.py's "ERROR: 0A000"), so an
+    f-string whose every interpolation is a `.sqlstate` is not this shape."""
+    def starts_error(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value.lower().startswith("error")
+        if isinstance(node, ast.JoinedStr) and node.values:
+            return starts_error(node.values[0]) and not all(
+                isinstance(v.value, ast.Attribute) and v.value.attr == "sqlstate"
+                for v in node.values if isinstance(v, ast.FormattedValue))
+        return False
+    tree = ast.parse(source)
+    # an f-string's literal parts are judged with the f-string, not alone
+    parts = {id(v) for j in ast.walk(tree) if isinstance(j, ast.JoinedStr) for v in j.values}
+    hits = []
+    for h in ast.walk(tree):
+        if isinstance(h, ast.ExceptHandler):
+            hits += [n.lineno for stmt in h.body for n in ast.walk(stmt)
+                     if id(n) not in parts and starts_error(n)]
+    return sorted(set(hits))
+
+
+def test_the_minted_failure_scan_sees_the_shape(expect):
+    """The scan's own control: it finds the shape, and not the producer's form."""
+    bad = ("def f(c):\n    try:\n        return c()\n"
+           "    except Exception as exc:\n        return f'error: {exc}'\n")
+    good = bad.replace("f'error: {exc}'", "query_error(str(exc))")
+    code = bad.replace("f'error: {exc}'", "f'error {exc.sqlstate}'")
+    in_a_string = "SRC = " + repr(bad) + "\n"
+    expect.text(" ".join(str(_minted_failure_text(x)) for x in (bad, good, code, in_a_string)),
+                "[5] [] [] []", "the scan finds a minted failure string, and not "
+                "query_error(), a SQLSTATE, or the shape inside a literal")
+
+
+def test_no_test_mints_its_own_failure_text(expect):
+    """A failed query becomes a value through query_error(), so it is refused, never
+    compared. The corpus is every test file and helper under test/pytest/."""
+    here = pathlib.Path(__file__).resolve().parent
+    hits = [f"{p.name}:{n}" for p in sorted(here.glob("*.py"))
+            for n in _minted_failure_text(p.read_text())]
+    expect.text(" ".join(hits) or "none", "none",
+                "no except handler turns a failed query into its own error text")

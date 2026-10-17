@@ -12,6 +12,8 @@ that fit, must be cached anyway. Correctness last.
 import psycopg
 import pytest
 
+from pgc_vacuity import query_error
+
 CAP = 32 * 1024 * 1024
 FORCE_INDEX = ("max_parallel_workers_per_gather=0", "enable_seqscan=off", "enable_bitmapscan=off",
                "pgcolumnar.enable_index_fetch_penalty=off", "pgcolumnar.enable_custom_scan=off")
@@ -34,7 +36,7 @@ def _one(c, sql):
     try:
         return c.execute(sql).fetchone()[0]
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _index_scan(c, sql):

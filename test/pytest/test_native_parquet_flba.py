@@ -12,6 +12,8 @@ import uuid
 
 import psycopg
 
+from pgc_vacuity import query_error
+
 HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
         "FROM (SELECT _row::text AS t FROM ({}) _row) _s")
 SHAPE = "t(id int, u uuid, d numeric(12,4), dn numeric(12,4), fb bytea)"
@@ -23,7 +25,7 @@ def _hash(cur, sql):
         cur.execute(HASH.format(sql))
         return cur.fetchone()[0]
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary} [{sql}]"
+        return query_error(f"{exc.diag.message_primary} [{sql}]")
 
 
 def _one(cur, sql):
@@ -31,7 +33,7 @@ def _one(cur, sql):
         cur.execute(sql)
         return str(cur.fetchone()[0])
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _patch_scale(path):

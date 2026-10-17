@@ -25,6 +25,8 @@ import re
 import psycopg
 import pytest
 
+from pgc_vacuity import query_error
+
 DOC = pathlib.Path(__file__).resolve().parent.parent.parent / "docs" / "how-to.md"
 SECTION = "## Find the latest reading per device"
 DEVICES = 25
@@ -74,7 +76,7 @@ def _try(fn, *args):
     try:
         return fn(*args)
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 @pytest.fixture(scope="module")

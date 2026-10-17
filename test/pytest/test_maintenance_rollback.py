@@ -16,6 +16,8 @@ function for real.
 """
 import psycopg
 
+from pgc_vacuity import query_error
+
 ROWS = ("SELECT count(*) || '/' || md5(string_agg(id || ':' || v || ':' || w, ',' ORDER BY id)) "
         "FROM mr")
 GROUPS = ("SELECT count(*) || '/' || coalesce(sum(row_count), 0) FROM pgcolumnar.row_group "
@@ -29,7 +31,7 @@ def _one(conn, sql):
             cur.execute(sql)
             return cur.fetchone()[0]
     except psycopg.Error as exc:
-        return f"ERROR: {str(exc).splitlines()[0]}"
+        return query_error(str(exc).splitlines()[0])
 
 
 BY_INDEX_SETS = ("enable_seqscan", "enable_bitmapscan", "pgcolumnar.enable_custom_scan")

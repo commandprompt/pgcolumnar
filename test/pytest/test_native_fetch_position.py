@@ -18,6 +18,8 @@ import time
 import psycopg
 import pytest
 
+from pgc_vacuity import query_error
+
 # the shell reads PGC_FETCHPOS_ROWS, and so does this
 ROWS = int(os.environ.get("PGC_FETCHPOS_ROWS", "120000"))
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src"
@@ -50,7 +52,7 @@ def _rows_or_error(c, sql):
     try:
         return _one(c, sql)
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _median_ms(c, sql):

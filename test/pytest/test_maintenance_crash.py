@@ -21,6 +21,8 @@ import tempfile
 
 import psycopg
 
+from pgc_vacuity import query_error
+
 ROWS = ("SELECT count(*) || '/' || md5(string_agg(id || ':' || v || ':' || w, ',' ORDER BY id)) FROM mc")
 GROUPS = ("SELECT count(*) || '/' || coalesce(sum(row_count), 0) FROM pgcolumnar.row_group "
           "WHERE storage_id = pgcolumnar.get_storage_id('mc')")
@@ -33,7 +35,7 @@ def _one(dsn, sql, setup=()):
                 c.execute(s)
             return c.execute(sql).fetchone()[0]
     except psycopg.Error as exc:
-        return f"ERROR: {str(exc).splitlines()[0]}"
+        return query_error(str(exc).splitlines()[0])
 
 
 BY_INDEX = ("SET enable_seqscan = off", "SET enable_bitmapscan = off", "SET pgcolumnar.enable_custom_scan = off")

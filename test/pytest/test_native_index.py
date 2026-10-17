@@ -10,6 +10,8 @@ plan is an Index Scan through n_pkey.
 """
 import psycopg
 
+from pgc_vacuity import query_error
+
 FORCE_INDEX = ("SET enable_seqscan=off", "SET enable_bitmapscan=off", "SET enable_indexonlyscan=off",
                "SET pgcolumnar.enable_custom_scan=off")
 
@@ -27,7 +29,7 @@ def _forced(cur, sql):
             cur.execute(s)
         return _one(cur, sql)
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
     finally:
         for g in ("enable_seqscan", "enable_bitmapscan", "enable_indexonlyscan", "pgcolumnar.enable_custom_scan"):
             cur.execute(f"RESET {g}")

@@ -11,6 +11,8 @@ import re
 import psycopg
 import pytest
 
+from pgc_vacuity import query_error
+
 HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
         "FROM (SELECT _row::text AS t FROM ({}) _row) _s")
 # a well-spread tag over a large domain: each 2048-row group's [min,max] spans almost
@@ -23,7 +25,7 @@ def _one(c, sql):
     try:
         return str(c.execute(sql).fetchone()[0])
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary}"
+        return query_error(exc.diag.message_primary)
 
 
 def _skipped(c, sql, bloom):

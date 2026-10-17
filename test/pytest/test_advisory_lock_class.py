@@ -30,6 +30,8 @@ test rather than per check -- and lets the duplicate-key arm run regardless.
 """
 import psycopg
 
+from pgc_vacuity import query_error
+
 # The two field4 values an application can produce, from lockfuncs.c.
 SQL_REACHABLE = (1, 2)
 PROBE_KEY = 900001
@@ -213,7 +215,7 @@ def test_a_user_advisory_lock_on_that_tag_does_not_block_an_insert(
         except psycopg.errors.QueryCanceled:
             verdict = "BLOCKED by the user lock"
         except psycopg.Error as exc:
-            verdict = f"ERROR: {str(exc).splitlines()[0]}"
+            verdict = query_error(str(exc).splitlines()[0])
         finally:
             with pgc_conn.cursor() as cur:
                 cur.execute("RESET statement_timeout")
@@ -366,7 +368,7 @@ def test_the_row_identity_lock_cannot_be_reached_from_sql(pgc_cluster, pgc_conn,
         except psycopg.errors.QueryCanceled:
             verdict = "BLOCKED by the user lock"
         except psycopg.Error as exc:
-            verdict = f"ERROR: {str(exc).splitlines()[0]}"
+            verdict = query_error(str(exc).splitlines()[0])
         finally:
             with pgc_conn.cursor() as cur:
                 cur.execute("RESET statement_timeout")
@@ -407,7 +409,7 @@ def test_bulk_parallel_writer_set_by_hand_still_serialises_a_first_write(
                     sc.execute("INSERT INTO bw VALUES (2)")
                 result["verdict"] = "ok"
             except psycopg.Error as exc:
-                result["verdict"] = f"ERROR: {str(exc).splitlines()[0]}"
+                result["verdict"] = query_error(str(exc).splitlines()[0])
 
         import threading
         import time

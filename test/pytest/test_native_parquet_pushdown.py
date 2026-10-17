@@ -14,6 +14,8 @@ import decimal
 
 import psycopg
 
+from pgc_vacuity import query_error
+
 HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
         "FROM (SELECT _row::text AS t FROM ({}) _row) _s")
 ANALYZE = "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM {} WHERE {}"
@@ -25,7 +27,7 @@ def _hash(cur, sql):
         cur.execute(HASH.format(sql))
         return cur.fetchone()[0]
     except psycopg.Error as exc:
-        return f"error: {exc.diag.message_primary} [{sql}]"
+        return query_error(f"{exc.diag.message_primary} [{sql}]")
 
 
 def _counter(cur, table, where, label):

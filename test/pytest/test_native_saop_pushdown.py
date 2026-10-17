@@ -17,6 +17,8 @@ import re
 import psycopg
 import pytest
 
+from pgc_vacuity import query_error
+
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "columnar_reader.c"
 REMOVED = "Chunk Groups Removed by Filter"
 
@@ -47,7 +49,7 @@ def _answer(c, sql):
     try:
         return str(_one(c, sql))
     except psycopg.Error as exc:
-        return f"error: {exc}"
+        return query_error(str(exc))
 
 
 def _removed(c, sql):
