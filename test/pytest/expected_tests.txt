@@ -842,4 +842,6 @@ guard_tests 442
 # tests), by collection over the cluster files.
 # cluster_tests 900 -> 932 for #1341, test_range_pruning.py ported by name, one check per
 # test (2 -> 34 tests), by collection over the cluster files.
-cluster_tests 932
+# cluster_tests 932 -> 956 for #1341, test_native_format.py ported by name, one check per
+# test (1 -> 25 tests), by collection over the cluster files.
+cluster_tests 956
