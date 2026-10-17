@@ -902,31 +902,99 @@ def test_a_selective_filter_with_a_wide_projection_agrees(pgc_conn, expect):
 # ---------------------------------------------------------------------------
 
 
-def test_a_covering_count_agrees_with_the_path_on_and_off(pgc_conn, expect):
-    """The same count, both ways through `enable_vectorization`, after a delete and an
-    update.
+COUNT_MODES = ["on", "off"]
 
-    An UPDATE on a columnar table appends the new row and masks the old, so the stored
-    per-group count and the visible count diverge -- which is exactly the arithmetic the
-    metadata path has to get right, and exactly what a plain scan gets right for free.
-    Running it both ways is what distinguishes "the fast path is correct" from "the fast
-    path was not taken".
+
+def _count_path(plan):
+    """The path a covering count took: "metadata" when the plan shows the metadata
+    node, "scan" when it shows the columnar scan without it. Anything else is named,
+    so a plan that lost the columnar scan, or a failed EXPLAIN, cannot pass as either."""
+    if not plan:
+        return "no plan"
+    if "Columnar Vectorized Aggregates" in plan:
+        return "metadata"
+    if "Custom Scan (PgColumnarScan)" in plan:
+        return "scan"
+    return "other plan: " + plan.replace("\n", " | ")
+
+
+@pytest.fixture(scope="module")
+def covering(pgc_cluster):
+    """The covering-count pair after a delete and an update, and each mode's readings.
+
+    ONE CHECK PER TEST (#1339). Each mode's path and count pair are taken here as
+    values, so a red in one cannot hide another: the #1528 review measured an
+    inverted switch reddening both path checks in the shell and only the first in a
+    loop that asserted as it went. A failed query is a query_error(), which every
+    comparison refuses.
 
     `SET` on this connection rather than the bash suite's `ALTER DATABASE`: that form
     exists because each psql invocation there is a new session, and this one is not.
     """
-    p = _pair(pgc_conn, "id int, v int",
-              load="SELECT g, g%10 FROM generate_series(1,20000) g",
-              options="chunk_group_row_limit => 1000, stripe_row_limit => 3000")
-    pgc_conn.execute("DELETE FROM t_heap WHERE id % 13 = 0")
-    pgc_conn.execute("DELETE FROM t_col  WHERE id % 13 = 0")
-    pgc_conn.execute("UPDATE t_heap SET v = v + 1 WHERE id % 17 = 0")
-    pgc_conn.execute("UPDATE t_col  SET v = v + 1 WHERE id % 17 = 0")
-    expect.num(p.one("SELECT count(*) FROM t_heap"), 18462,
+    import psycopg
+    from pgc_vacuity import query_error
+
+    conn = psycopg.connect(pgc_cluster.dsn(), autocommit=True)
+    schema = "pgc_differential_count"
+
+    def rows(sql):
+        try:
+            return [tuple(r) for r in conn.execute(sql).fetchall()]
+        except psycopg.Error as exc:
+            return query_error(exc.diag.message_primary)
+
+    got = {}
+    try:
+        conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.execute(f'CREATE SCHEMA "{schema}"')
+        conn.execute(f'SET search_path TO "{schema}", public')
+        try:
+            _pair(conn, "id int, v int",
+                  load="SELECT g, g%10 FROM generate_series(1,20000) g",
+                  options="chunk_group_row_limit => 1000, stripe_row_limit => 3000")
+            conn.execute("DELETE FROM t_heap WHERE id % 13 = 0")
+            conn.execute("DELETE FROM t_col  WHERE id % 13 = 0")
+            conn.execute("UPDATE t_heap SET v = v + 1 WHERE id % 17 = 0")
+            conn.execute("UPDATE t_col  SET v = v + 1 WHERE id % 17 = 0")
+        except psycopg.Error as exc:
+            print(f"-- building the covering-count pair failed: {exc.diag.message_primary}")
+        heap = rows("SELECT count(*) FROM t_heap")
+        got["count"] = heap[0][0] if isinstance(heap, list) and heap else heap
+        for mode in COUNT_MODES:
+            conn.execute(f"SET pgcolumnar.enable_vectorization = {mode}")
+            plan = rows("EXPLAIN (COSTS OFF) SELECT count(*) FROM t_col")
+            got[mode] = {
+                "path": _count_path("\n".join(r[0] for r in plan))
+                        if isinstance(plan, list) else f"no plan: {plan}",
+                "col": rows("SELECT count(*) FROM t_col"),
+                "heap": rows("SELECT count(*) FROM t_heap"),
+            }
+        conn.execute("RESET pgcolumnar.enable_vectorization")
+        yield got
+    finally:
+        try:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        finally:
+            conn.close()
+
+
+def test_the_delete_and_update_leave_a_count_neither_gives_alone(covering, expect):
+    """An UPDATE on a columnar table appends the new row and masks the old, so the
+    stored per-group count and the visible count diverge: the arithmetic the
+    metadata path has to get right, and a plain scan gets right for free."""
+    expect.num(covering["count"], 18462,
                "premise: the delete and update leave a count neither one would give alone")
 
-    for mode in ("on", "off"):
-        pgc_conn.execute(f"SET pgcolumnar.enable_vectorization = {mode}")
-        c, h = p.both("SELECT count(*) FROM %T")
-        expect.row_set(c, h, f"count meta={mode}")
-    pgc_conn.execute("RESET pgcolumnar.enable_vectorization")
+
+@pytest.mark.parametrize("mode", COUNT_MODES)
+def test_each_count_mode_takes_the_path_it_names(covering, expect, mode):
+    """A fallback returns the same count, so the count arm alone cannot say which path
+    answered it. native_agg proves the metadata node on a table with no deletes, not
+    on this one."""
+    expect.text(covering[mode]["path"], "metadata" if mode == "on" else "scan",
+                f"count meta={mode} takes the path it names")
+
+
+@pytest.mark.parametrize("mode", COUNT_MODES)
+def test_the_covering_count_agrees_with_the_heap(covering, expect, mode):
+    expect.row_set(covering[mode]["col"], covering[mode]["heap"], f"count meta={mode}")
