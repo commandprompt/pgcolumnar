@@ -177,7 +177,7 @@ behaviour, the source of that number is named.
 - [129. test_savepoint_flush.py: a savepoint rolled back after a flush](#129-test_savepoint_flushpy-a-savepoint-rolled-back-after-a-flush)
 - [130. test_rls_query_paths.py: row-level security holds on every read path](#130-test_rls_query_pathspy-row-level-security-holds-on-every-read-path)
 - [131. test_type_matrix.py: types the differential matrix never stored answer as heap](#131-test_type_matrixpy-types-the-differential-matrix-never-stored-answer-as-heap)
-- [132. test_iceberg_data_files.py: a delete entry in a data manifest is refused](#132-test_iceberg_data_filespy-a-delete-entry-in-a-data-manifest-is-refused)
+- [132. test_iceberg_data_files.py: an Iceberg table's live data files, listed inside its location](#132-test_iceberg_data_filespy-an-iceberg-tables-live-data-files-listed-inside-its-location)
 - [133. test_native_skip.py: a type binary-coercible to its opclass's type prunes](#133-test_native_skippy-a-type-binary-coercible-to-its-opclasss-type-prunes)
 - [134. test_unique_conc.py: concurrent inserters of one unique key serialize](#134-test_unique_concpy-concurrent-inserters-of-one-unique-key-serialize)
 - [135. test_update_conc.py: two writers of one row serialize](#135-test_update_concpy-two-writers-of-one-row-serialize)
@@ -7316,17 +7316,28 @@ The pytest twin of `test/type_matrix.sh` (#1341), every check by the shell's nam
 | --- | --- |
 | `test_types_the_matrix_never_stored_answer_as_heap` | the 21 columns against heap: rows, counts, sixteen ranges, the three non-btree matches, and the special values |
 
-## 132. test_iceberg_data_files.py: a delete entry in a data manifest is refused
+## 132. test_iceberg_data_files.py: an Iceberg table's live data files, listed inside its location
 
-A partial pytest twin of `test/iceberg_data_files.sh` (#1341 item 49). It ports only the arms that item added, by the shell's names; the rest of the shell suite is declared INCOMPLETE in `test_compare_to_bash.py`. The lister refuses a delete manifest in the manifest list without opening it, but a data manifest can still hold an entry it must not list: a position or equality delete file (entry content 1 or 2), or a removed file (status 2, DELETED). Each table is crafted Avro, the same one-entry data manifest with one (status, content) pair, because no available writer emits these shapes. The (1, 0) control must be listed, so a refusal of the others comes from the entry and not from a fault in the crafted Avro. An EXISTING (0, 0) entry must be listed too, so a lister that keeps only ADDED entries fails.
+The port of `test/iceberg_data_files.sh`, by name, one check per test (#1341). The `ice` module fixture copies the committed warehouse away from its recorded root (`/tmp/pgc_ice_wh`), so rebasing is exercised for real. It stages every tampered and crafted table once and records every reading.
+
+- **The oracle is pyiceberg's own view,** committed as `expected_files.json`, so pyiceberg is not needed at test time.
+- **A manifest list outside the table's location is refused with 22023, by four routes:** a foreign absolute path, a `..` traversal, a sibling sharing the byte prefix, and a symlink under the location that targets a file outside it. XX001 would mean the backend opened the file.
+- **Deletes are refused, not ignored:** a delete manifest in the list, and a delete or removed entry inside a data manifest (#1341 item 49). Each table is crafted Avro, because no available writer emits these shapes. The added and the EXISTING entry must be listed, so a refusal comes from the entry, and a lister that keeps only ADDED entries fails.
+- **The privilege** is read under `SET ROLE` to a role without `pg_read_server_files`.
+
+The shell's two skip names, "iceberg warehouse fixture is missing" and "python3 (json, zlib) is needed", are carried as the same declines.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_the_control_entry_is_listed` | a data manifest with one added data entry lists that one file |
-| `test_an_existing_entry_is_listed` | an EXISTING (status 0) entry is listed too, so a lister that keeps only ADDED entries fails |
-| `test_a_delete_entry_is_refused` | a position-delete entry, an equality-delete entry and a DELETED entry are each refused with 0A000, and the backend stays up |
+| `test_the_warehouse_fixture_is_present`, `test_python_json_and_zlib_are_available` | the shell's skip names; when present, the oracle lists data files and zlib round-trips |
+| `test_the_data_files_match_pyicebergs_oracle`, `test_every_data_file_is_parquet` | the live data files, by record count, region and file name, all PARQUET |
+| `test_returned_paths_are_rebased_under_the_actual_location`, `test_no_returned_path_leaks_the_recorded_root` | the rebasing |
+| `test_a_manifest_list_outside_the_location_is_refused`, `test_the_backend_survives_the_traversal_attempts` | the four escapes, refused with 22023 |
+| `test_a_snapshot_with_a_delete_manifest_is_refused`, `test_the_backend_survives_the_delete_refusal` | a delete manifest in the list, refused with 0A000 |
+| `test_the_control_entry_is_listed`, `test_an_existing_entry_is_listed`, `test_a_delete_entry_is_refused`, `test_the_backend_survives_the_entry_refusals` | an added and an existing entry are listed; a position-delete, an equality-delete and a DELETED entry are refused with 0A000 |
+| `test_a_table_with_no_current_snapshot_yields_no_data_files`, `test_an_unprivileged_role_is_refused` | no current snapshot lists nothing; a caller without `pg_read_server_files` gets 42501 |
 
 ## 133. test_native_skip.py: a type binary-coercible to its opclass's type prunes
 
