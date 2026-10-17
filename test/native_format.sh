@@ -32,12 +32,16 @@ psql_run "CREATE FUNCTION pgcolumnar.debug_set_metapage_version(regclass, int, i
   RETURNS void AS 'pgcolumnar', 'pgcolumnar_debug_set_metapage_version'
   LANGUAGE C;"
 
-# Error text (stderr) of a failing statement; empty when it succeeds. Used to
-# assert the guard rejects rather than misreads. ON_ERROR_STOP so a failure is an
-# error, not a warning; stdout discarded so only the diagnostic is captured.
+# Error text (stderr) of a statement that fails with an ERROR; empty otherwise. Used
+# to assert the guard rejects rather than misreads. stdout is discarded so only the
+# diagnostic is captured. Only an ERROR counts (#1341): a guard that fell to a
+# WARNING, or a backend that died with a FATAL, also writes to stderr, and taking
+# that as the refusal kept these arms green under both (#1531 review).
 err_of() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -v ON_ERROR_STOP=1 -Atq -c "$1" 2>&1 >/dev/null
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -Atq -c "$1" 2>&1 >/dev/null)"
+	case "$out" in *"ERROR:"*) printf '%s\n' "$out" ;; esac
 }
 contains() { case "$1" in *"$2"*) echo yes;; *) echo no;; esac; }
 
@@ -136,13 +140,17 @@ check "backend survives the native-format rejection" "$(q 'SELECT 1;')" "1"
 # binary misreads: some rows that hold a value come back NULL. So this build
 # stamps 2, and alpha4 -- which refuses any stamp but 1 -- refuses the table at
 # every decode entry point. This build still reads 1 (MIN_READABLE). Each arm
-# below drives all four entry points that check the stamp:
+# below runs one query per entry point that checks the stamp:
 #
 #     seq scan        PgColumnarBeginReadWithStorage   SELECT v ... LIMIT
 #     aggregate scan  PgColumnarBeginAggScan           count(*)
 #     group agg scan  PgColumnarBeginGroupAggScan      GROUP BY
 #     row fetch       pgcolumnar_fetch_row             index scan of a non-key column,
 #                                                      custom scan OFF
+#
+# THE GROUP BY QUERY DOES NOT PROVE THE GROUP AGG SCAN'S OWN CHECK. It plans the
+# group agg node, but with that node's stamp check removed no arm here goes red
+# (#1531 review): an earlier check refuses the query first.
 #
 # THE CUSTOM SCAN HAS TO BE OFF FOR THE FOURTH, and that was measured rather
 # than assumed. With it on, the index query is served by pgcolumnar's own scan

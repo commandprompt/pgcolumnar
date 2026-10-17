@@ -7,7 +7,7 @@ point checks it, so a future encoding that keeps the metapage layout is rejected
 not misread. 1.0-alpha5 stamps 2 (chunks with no validity bitmap, #1130), still
 reads 1, and an append to a table stamped 1 raises its stamp.
 
-Each range arm drives all four entry points that check the stamp:
+Each range arm runs one query per entry point that checks the stamp:
 
     seq scan        PgColumnarBeginReadWithStorage   a non-aggregate SELECT
     aggregate scan  PgColumnarBeginAggScan           count(*)
@@ -16,6 +16,10 @@ Each range arm drives all four entry points that check the stamp:
 
 The custom scan has to be off for the fourth. With it on, the index query is served
 by pgcolumnar's own node and never reaches `pgcolumnar_fetch_row`.
+
+The GROUP BY query does not prove the group agg scan's own check. It plans the group
+agg node, but with that node's stamp check removed no arm here goes red (#1531
+review): an earlier check refuses the query first.
 
 THE PORT OF test/native_format.sh, BY NAME (#1341). The metapage version is planted
 through the internal test hook `pgcolumnar_debug_set_metapage_version`, bound here
@@ -37,35 +41,59 @@ DIVERSE_LOAD = ("SELECT s, (s * 7) % 1000, md5(s::text), (s * 1.25)::numeric(12,
                 "s::float8 / 3, (s % 2 = 0), "
                 "'2020-01-01'::timestamptz + (s || ' minutes')::interval, "
                 "decode(md5(s::text), 'hex') FROM generate_series(1, 5000) s")
+# The severity a refusal is raised at. Named here, not spelled in the except handler,
+# where test_failed_query_sentinel.py's scan reads any string starting "error" as a
+# failure the handler minted (#1527); this one is compared, never returned.
+REFUSAL_SEVERITY = "ERROR"
 FETCH_GUCS = ("pgcolumnar.enable_custom_scan", "enable_seqscan", "enable_bitmapscan")
 
 
-def _one(conn, sql):
+def _failed(exc):
+    """A failed reading. A backend that died carries no primary message."""
+    return query_error(exc.diag.message_primary or (str(exc).splitlines() or [""])[0]
+                       or type(exc).__name__)
+
+
+def _session(db):
+    """A NEW session on the suite's schema, as each of the shell's psql calls is.
+    The read paths cache a table's format check per session, so a reading on a
+    shared connection could skip a check the shell's next psql would make."""
+    dsn, schema = db
+    conn = psycopg.connect(dsn, autocommit=True)
+    conn.execute(f"SET search_path = {schema}, public")
+    return conn
+
+
+def _one(db, sql):
     """The first column of the first row, or a query_error naming the failure."""
     try:
-        return conn.execute(sql).fetchone()[0]
+        with _session(db) as conn:
+            return conn.execute(sql).fetchone()[0]
     except psycopg.Error as exc:
-        return query_error(exc.diag.message_primary)
+        return _failed(exc)
 
 
-def _refusal(conn, statements):
-    """(SQLSTATE, message) of the statement that failed, or ("ok", "") when none did.
-    Resets only what the fetch path SET, so the schema on the search_path survives."""
+def _refusal(db, statements):
+    """(SQLSTATE, message and detail) of the ERROR the statements fail with, or
+    ("ok", "") when none did, in a session of their own. The shell's `err_of` and
+    `sqlstate_of` read an ERROR line and nothing else: a warning or a FATAL is not
+    the refusal, so either one is a failed reading here and reads as no refusal."""
     try:
-        for s in statements:
-            cur = conn.execute(s)
-            if cur.description:
-                cur.fetchall()
+        with _session(db) as conn:
+            for s in statements:
+                cur = conn.execute(s)
+                if cur.description:
+                    cur.fetchall()
         return "ok", ""
     except psycopg.Error as exc:
-        return exc.sqlstate or "?", exc.diag.message_primary or ""
-    finally:
-        for g in FETCH_GUCS:
-            conn.execute(f"RESET {g}")
+        if exc.diag.severity_nonlocalized != REFUSAL_SEVERITY or not exc.sqlstate:
+            return _failed(exc), ""
+        return exc.sqlstate, "\n".join(filter(None, (exc.diag.message_primary,
+                                                      exc.diag.message_detail)))
 
 
-def _four_paths(conn, t):
-    return " ".join(_refusal(conn, s)[0] for s in (
+def _four_paths(db, t):
+    return " ".join(_refusal(db, s)[0] for s in (
         [f"SELECT v FROM {t} LIMIT 1"],
         [f"SELECT count(*) FROM {t}"],
         [f"SELECT id % 3, count(*) FROM {t} GROUP BY 1"],
@@ -73,27 +101,23 @@ def _four_paths(conn, t):
          "SET enable_bitmapscan = off", f"SELECT v FROM {t} WHERE id = 42"]))
 
 
-def _alive(pgc_cluster, schema):
+def _alive(db):
     """What the shell's `q 'SELECT 1;'` reads: a NEW session still gets an answer."""
+    return _one(db, "SELECT 1")
+
+
+def _ordered(db, table):
     try:
-        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
-            c.execute(f"SET search_path = {schema}, public")
-            return c.execute("SELECT 1").fetchone()[0]
+        with _session(db) as conn:
+            return [r[0] for r in conn.execute(
+                f"SELECT t::text FROM (SELECT * FROM {table} ORDER BY id) t").fetchall()]
     except psycopg.Error as exc:
-        return query_error(str(exc).splitlines()[0])
+        return _failed(exc)
 
 
-def _ordered(conn, table):
-    try:
-        return [r[0] for r in conn.execute(
-            f"SELECT t::text FROM (SELECT * FROM {table} ORDER BY id) t").fetchall()]
-    except psycopg.Error as exc:
-        return query_error(exc.diag.message_primary)
-
-
-def _stamp(conn, table):
-    return _one(conn, "SELECT format_version FROM pgcolumnar.storage "
-                      f"WHERE storage_id = pgcolumnar.get_storage_id('{table}')")
+def _stamp(db, table):
+    return _one(db, "SELECT format_version FROM pgcolumnar.storage "
+                    f"WHERE storage_id = pgcolumnar.get_storage_id('{table}')")
 
 
 def _run(conn, sql):
@@ -109,6 +133,7 @@ def nf(pgc_cluster):
     schema = "pgc_native_format"
     c = psycopg.connect(pgc_cluster.dsn(), autocommit=True)
     got = {}
+    db = (pgc_cluster.dsn(), schema)
     try:
         c.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         c.execute(f"CREATE SCHEMA {schema}")
@@ -123,58 +148,58 @@ def nf(pgc_cluster):
         _run(c, f"CREATE TABLE t_col ({DIVERSE}) USING pgcolumnar")
         _run(c, f"INSERT INTO t_heap {DIVERSE_LOAD}")
         _run(c, "INSERT INTO t_col SELECT * FROM t_heap")
-        got["format_version"] = _stamp(c, "t_col")
-        got["vector_length"] = _one(c, "SELECT vector_length FROM pgcolumnar.storage "
+        got["format_version"] = _stamp(db, "t_col")
+        got["vector_length"] = _one(db, "SELECT vector_length FROM pgcolumnar.storage "
                                        "WHERE storage_id = pgcolumnar.get_storage_id('t_col')")
-        got["diverse col"] = _ordered(c, "t_col")
-        got["diverse heap"] = _ordered(c, "t_heap")
+        got["diverse col"] = _ordered(db, "t_col")
+        got["diverse heap"] = _ordered(db, "t_heap")
 
         # --- 2: an unsupported metapage version is rejected, not misread -------
         _run(c, "CREATE TABLE bad (id int, v text) USING pgcolumnar")
         _run(c, "INSERT INTO bad SELECT s, md5(s::text) FROM generate_series(1, 2000) s")
-        got["bad wrote"] = _one(c, "SELECT count(*) FROM bad")
+        got["bad wrote"] = _one(db, "SELECT count(*) FROM bad")
         _run(c, "SELECT pgcolumnar.debug_set_metapage_version('bad', 2, 2)")
-        got["bad same major"] = _one(c, "SELECT count(*) FROM bad")
+        got["bad same major"] = _one(db, "SELECT count(*) FROM bad")
         _run(c, "SELECT pgcolumnar.debug_set_metapage_version('bad', 99, 0)")
-        got["bad bumped"] = _refusal(c, ["SELECT count(*) FROM bad"])
-        got["bad alive"] = _alive(pgc_cluster, schema)
+        got["bad bumped"] = _refusal(db, ["SELECT count(*) FROM bad"])
+        got["bad alive"] = _alive(db)
 
         # --- 4: the native format_version is enforced on read ------------------
         _run(c, "CREATE TABLE fv (id int, v text) USING pgcolumnar")
         _run(c, "INSERT INTO fv SELECT s, md5(s::text) FROM generate_series(1, 2000) s")
         _run(c, "CREATE INDEX fv_id ON fv (id)")
-        got["fv reads"] = _one(c, "SELECT count(*) FROM fv")
+        got["fv reads"] = _one(db, "SELECT count(*) FROM fv")
         _run(c, "UPDATE pgcolumnar.storage SET format_version = 99 "
                 "WHERE storage_id = pgcolumnar.get_storage_id('fv')")
-        got["fv scan"] = _refusal(c, ["SELECT v FROM fv LIMIT 1"])
-        got["fv agg"] = _refusal(c, ["SELECT count(*) FROM fv"])
+        got["fv scan"] = _refusal(db, ["SELECT v FROM fv LIMIT 1"])
+        got["fv agg"] = _refusal(db, ["SELECT count(*) FROM fv"])
         # The custom scan is off, as in part 5: with it on, pgcolumnar's own node
         # serves this query and it never reaches pgcolumnar_fetch_row.
-        got["fv idx"] = _refusal(c, ["SET pgcolumnar.enable_custom_scan = off",
+        got["fv idx"] = _refusal(db, ["SET pgcolumnar.enable_custom_scan = off",
                                      "SET enable_seqscan = off", "SET enable_bitmapscan = off",
                                      "SELECT v FROM fv WHERE id = 42"])
-        got["fv alive"] = _alive(pgc_cluster, schema)
+        got["fv alive"] = _alive(db)
 
         # --- 5: the stamp is a range, and an append raises it (#1137) ----------
         _run(c, "CREATE TABLE fr (id int, v text) USING pgcolumnar")
         _run(c, "INSERT INTO fr SELECT s, md5(s::text) FROM generate_series(1, 2000) s")
         _run(c, "CREATE INDEX fr_id ON fr (id)")
-        got["fr stamped"] = _stamp(c, "fr")
+        got["fr stamped"] = _stamp(db, "fr")
         _run(c, "UPDATE pgcolumnar.storage SET format_version = 1 "
                 "WHERE storage_id = pgcolumnar.get_storage_id('fr')")
-        got["fr 1 paths"] = _four_paths(c, "fr")
-        got["fr 1 rows"] = str(_one(c, "SELECT count(*) || '|' || sum(id) FROM fr"))
-        got["fr 1 stamp"] = _stamp(c, "fr")
+        got["fr 1 paths"] = _four_paths(db, "fr")
+        got["fr 1 rows"] = str(_one(db, "SELECT count(*) || '|' || sum(id) FROM fr"))
+        got["fr 1 stamp"] = _stamp(db, "fr")
         _run(c, "INSERT INTO fr SELECT s, md5(s::text) FROM generate_series(2001, 2100) s")
-        got["fr appended stamp"] = _stamp(c, "fr")
-        got["fr appended rows"] = str(_one(c, "SELECT count(*) || '|' || sum(id) FROM fr"))
+        got["fr appended stamp"] = _stamp(db, "fr")
+        got["fr appended rows"] = str(_one(db, "SELECT count(*) || '|' || sum(id) FROM fr"))
         _run(c, "UPDATE pgcolumnar.storage SET format_version = 3 "
                 "WHERE storage_id = pgcolumnar.get_storage_id('fr')")
-        got["fr 3 paths"] = _four_paths(c, "fr")
+        got["fr 3 paths"] = _four_paths(db, "fr")
         _run(c, "UPDATE pgcolumnar.storage SET format_version = 0 "
                 "WHERE storage_id = pgcolumnar.get_storage_id('fr')")
-        got["fr 0 paths"] = _four_paths(c, "fr")
-        got["fr alive"] = _alive(pgc_cluster, schema)
+        got["fr 0 paths"] = _four_paths(db, "fr")
+        got["fr alive"] = _alive(db)
         yield got
     finally:
         try:
@@ -185,12 +210,12 @@ def nf(pgc_cluster):
 
 
 def _fails(reading):
-    """The shell's `[ -n "$emsg" ] && echo yes || echo no`."""
-    return "yes" if reading[0] != "ok" else "no"
+    """The shell's `[ -n "$emsg" ] && echo yes || echo no`: an ERROR was raised."""
+    return "yes" if len(reading[0]) == 5 and reading[0].isalnum() else "no"
 
 
 def _says(reading, text):
-    """The shell's `contains "$emsg" TEXT`."""
+    """The shell's `contains "$emsg" TEXT`, over the message and its detail."""
     return "yes" if text in reading[1] else f"no: {reading}"
 
 
