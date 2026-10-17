@@ -7323,13 +7323,32 @@ The pytest twin of `test/native_skip.sh`, every check by the shell's name (#1433
 
 | test | what it holds |
 | --- | --- |
-| `test_a_range_on_a_coercible_type_prunes` | a range on inet, cidr, a domain over cidr, text, varchar and a domain over varchar returns heap's rows and removes chunk groups |
-| `test_equality_on_a_coercible_type_prunes` | equality on cidr and on varchar, which also takes the bloom probe, returns heap's row and removes chunk groups |
-| `test_scalar_ranges_and_equality_prune_and_agree` | the plan is the columnar scan; ranges and equality on int, bigint (with and without casts, #477) and domains over both (#483) return heap's rows and remove chunk groups; a non-selective scan removes none |
-| `test_an_anchored_like_prunes_under_c_and_only_then` | an anchored LIKE prunes under COLLATE "C" with heap's rows, unanchored and escaped patterns and `_` wildcards included; under this cluster's non-C default it is refused (#426) |
-| `test_a_default_collation_in_a_locale_c_database_derives_the_bounds` | in a database created with LC_COLLATE 'C', a default-collation column derives both bounds and returns the right row (#426) |
-| `test_an_anchored_like_does_not_prune_under_a_non_c_collation` | under a discovered non-C collation a range still prunes but an anchored LIKE does not, and rows match heap; declares unrunnable when the build has none (#426) |
-| `test_a_columnar_partition_takes_the_custom_scan_and_prunes` | both partitions are columnar, the partitioned table returns heap's rows, plans the columnar custom scan and prunes (#436) |
+| `test_heaps_range_on_a_coercible_type_holds_121_rows` | **premise**: heap's range on each of inet, cidr, a domain over cidr, text, varchar and a domain over varchar holds 121 rows (parametrized) |
+| `test_a_range_on_a_coercible_type_returns_heaps_rows` | the columnar range returns heap's rows, for each of the six types (#1433) (parametrized) |
+| `test_a_range_on_a_coercible_type_skips_groups` | and removes chunk groups, for each of the six types (#1433) (parametrized) |
+| `test_equality_on_a_coercible_type_returns_heaps_rows` | equality on cidr and on varchar, which also takes the bloom probe, returns heap's row (parametrized) |
+| `test_heaps_equality_on_a_coercible_type_finds_the_row` | **premise**: heap's equality finds row 11009 (parametrized) |
+| `test_equality_on_a_coercible_type_skips_groups` | and the columnar equality removes chunk groups (parametrized) |
+| `test_the_scalar_plan_is_a_columnar_custom_scan` | the plan under test is the columnar custom scan |
+| `test_scalar_rows_agree_with_heap` | ranges on int, bigint (with and without casts, #477) and domains over both (#483) return heap's rows (parametrized) |
+| `test_scalar_counts_agree_with_heap` | counts under equality, one-sided and non-selective predicates equal heap's (parametrized) |
+| `test_scalar_counts_are_known` | the row count, absent values, out-of-range values and a present boundary give known counts (parametrized) |
+| `test_a_scalar_predicate_skips_groups` | each selective predicate, cast or not, on a column or a domain, removes chunk groups (#477, #483) (parametrized) |
+| `test_a_non_selective_scan_skips_nothing` | a non-selective scan removes none |
+| `test_a_like_or_range_prunes` | under COLLATE "C" an anchored LIKE, a trailing `_` and a low-end prefix prune, and the equivalent ranges do on both tables (#426) (parametrized) |
+| `test_a_like_does_not_prune` | an unanchored LIKE, and an anchored one under this cluster's non-C default, remove nothing (#426) (parametrized) |
+| `test_a_like_returns_heaps_rows` | every LIKE form, escaped and `_` wildcards included, returns heap's rows (#426) (parametrized) |
+| `test_a_default_collation_in_a_locale_c_database_derives_the_bounds` | in a database created with LC_COLLATE 'C', a default-collation column derives both bounds (#426) |
+| `test_and_it_returns_the_right_rows` | and it returns the right row (#426) |
+| `test_a_range_still_prunes_under_a_non_c_collation` | **premise**: under a discovered non-C collation a range still prunes; declares unrunnable when the build has none |
+| `test_an_anchored_like_does_not_prune_under_a_non_c_collation` | but an anchored LIKE does not (#426) |
+| `test_a_non_c_collation_like_returns_heaps_rows` | and its rows match heap's (#426) |
+| `test_both_partitions_are_columnar` | **premise**: both partitions are columnar (#436) |
+| `test_a_partitioned_columnar_table_returns_heaps_rows` | the partitioned table returns heap's rows (#436) |
+| `test_a_partition_takes_the_columnar_custom_scan` | it plans the columnar custom scan (#436) |
+| `test_a_partition_prunes_row_groups` | and it prunes row groups (#436) |
+
+ONE CHECK PER TEST (#1339): module fixtures build each data set once, and each test asserts one reading. Measured with zone-map skipping disabled in the scan on PG17: the shell reddens 21 checks. The earlier twin, 13 tests holding 76 checks, reported 10. This one reports the same 21.
 
 ## 134. test_unique_conc.py: concurrent inserters of one unique key serialize
 
