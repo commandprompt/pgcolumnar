@@ -449,7 +449,14 @@ def test_the_minted_failure_scan_sees_the_shape(expect):
 
 def test_no_test_mints_its_own_failure_text(expect):
     """A failed query becomes a value through query_error(), so it is refused, never
-    compared. The corpus is every test file and helper under test/pytest/."""
+    compared. The corpus is every test file and helper under test/pytest/.
+
+    The scan keys on the spelling the tree used, a handler value starting "error"
+    (any case, f-string, `+`, `.format` or `%`). A handler that builds other text from
+    the exception (`f"failed: {exc}"`, a bare `str(exc)`) is not seen: most such
+    handlers are deliberate refusal capture, compared with a fixed message or
+    SQLSTATE, and the mode is only live when that text reaches a two-sided
+    comparison (#1527 review)."""
     here = pathlib.Path(__file__).resolve().parent
     hits = [f"{p.name}:{n}" for p in sorted(here.glob("*.py"))
             for n in _minted_failure_text(p.read_text())]
