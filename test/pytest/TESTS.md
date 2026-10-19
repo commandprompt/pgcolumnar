@@ -236,6 +236,7 @@ behaviour, the source of that number is named.
 - [188. test_concurrent_diff.py: concurrent writers to one columnar relation end equal to a heap oracle](#188-test_concurrent_diffpy-concurrent-writers-to-one-columnar-relation-end-equal-to-a-heap-oracle)
 - [189. test_write_minmax_fastpath.py: zone min/max through the direct comparison path are the true bounds](#189-test_write_minmax_fastpathpy-zone-minmax-through-the-direct-comparison-path-are-the-true-bounds)
 - [190. test_catalog_natts.py: every Natts_ constant equals the width of the catalog it sizes](#190-test_catalog_nattspy-every-natts_-constant-equals-the-width-of-the-catalog-it-sizes)
+- [191. test_write_fsst_compressed.py: FSST is kept only where it wins after the block compressor](#191-test_write_fsst_compressedpy-fsst-is-kept-only-where-it-wins-after-the-block-compressor)
 
 ## 1. How to read a test in here
 
@@ -8214,3 +8215,22 @@ The source is read with the shell's own patterns; the widths come from `pg_attri
 | `test_heap_modify_tuple_is_still_called_here` | premise: `heap_modify_tuple`, the consumer, is still called there |
 | `test_each_constant_matches_its_catalogs_width` | parametrized by the constants: each equals its catalog's live width (`Natts_native_storage` addresses `storage`); a catalog absent from the server fails its own premise |
 | `test_every_constant_found_was_swept` | premise: every constant found was compared |
+
+## 191. test_write_fsst_compressed.py: FSST is kept only where it wins after the block compressor
+
+The pytest twin of `test/write_fsst_compressed.sh` (ported for #1341), every check by the shell's name. FSST used to be picked per vector against the raw length, but what reaches disk is the stream after the codec, and FSST turns repetitive text into codes that compress worse than the text did. The writer now keeps FSST only when it is smaller after the codec. Three shapes of 300,000 rows: short `'s' || g` and a repeated md5, where FSST loses under zstd, and an e-mail-like control, where it must be kept. The choice is read from the chunk descriptor (type 8 per vector), which does not depend on the zstd build. On a private database.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order. A failed query is a `query_error()`. A round-trip reading is `mismatches/rows` over a full join against a heap mirror built from the same generator, never copied from the columnar table, and a vector count says `no vectors` for a column with none, so neither an empty table nor a consistently wrong decoder can read as agreement.
+
+| test | what it holds |
+| --- | --- |
+| `test_every_value_round_trips_where_fsst_is_dropped` | a table with nulls, empty strings and short values matches its heap mirror: `0/300000` |
+| `test_the_null_and_empty_values_survive` | the null, empty and row counts equal the heap's, which holds every row |
+| `test_every_value_round_trips_where_fsst_is_kept` | the e-mail table matches its heap mirror: `0/300000` |
+| `test_fsst_is_not_chosen_for_text_the_codec_compresses_better_alone` | no vector of the short shape under zstd is FSST |
+| `test_fsst_is_not_chosen_where_it_cost_more_write_time_for_a_larger_file` | none of the md5 shape is either |
+| `test_fsst_is_still_chosen_where_it_genuinely_wins` | every vector of the e-mail shape under zstd is FSST: the control a fix that removed FSST, or a wrongly reused verdict, would fail |
+| `test_with_compression_off_fsst_is_still_chosen` | parametrized by the shell's two names: with no codec, the short and md5 shapes keep FSST |
+| `test_values_round_trip_with_compression_off` | the short shape uncompressed matches its heap mirror: `0/300000` |

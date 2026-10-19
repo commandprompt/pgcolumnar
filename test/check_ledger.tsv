@@ -4538,6 +4538,15 @@ vm_privilege	vm_privilege	vm entry point is covered by this boundary test: vm_se
 vm_privilege	vm_privilege	vm_is_visible refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
 vm_privilege	vm_privilege	vm_selftest did not report success to the unprivileged role	15;16;17;18;19	2026-10-14	vm_selftest without its owner check
 vm_privilege	vm_privilege	vm_selftest refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
+write_fsst_compressed	write_fsst_compressed	FSST is not chosen for text the codec compresses better alone	15;16;17;18;19	2026-10-19	FSST kept however the codec scores it, and the post-codec encoding choice (#1132) off by default
+write_fsst_compressed	write_fsst_compressed	FSST is not chosen where it cost 5.8x the write time for a larger file	15;16;17;18;19	2026-10-19	FSST kept however the codec scores it, and the post-codec encoding choice (#1132) off by default
+write_fsst_compressed	write_fsst_compressed	FSST is still chosen where it genuinely wins after compression	15;16;17;18;19	2026-10-19	FSST always dropped (if (true) on the keep/drop decision);a reused HELPS verdict read as HURTS
+write_fsst_compressed	write_fsst_compressed	every value round-trips on a shape where FSST is dropped	15;16;17;18;19	never	-
+write_fsst_compressed	write_fsst_compressed	every value round-trips on a shape where FSST is kept	15;16;17;18;19	2026-10-19	FSST decode turns a symbol's leading '.' into '!' (a consistently wrong decoder)
+write_fsst_compressed	write_fsst_compressed	the null and empty values survive	15;16;17;18;19	never	-
+write_fsst_compressed	write_fsst_compressed	values round-trip with compression off	15;16;17;18;19	never	-
+write_fsst_compressed	write_fsst_compressed	with compression off FSST is still chosen for hient	15;16;17;18;19	2026-10-19	FSST always dropped (if (true) on the keep/drop decision)
+write_fsst_compressed	write_fsst_compressed	with compression off FSST is still chosen for short	15;16;17;18;19	2026-10-19	FSST always dropped (if (true) on the keep/drop decision)
 write_minmax_fastpath	write_minmax_fastpath	-Infinity is found by an equality predicate	15;16;17;18;19	2026-10-19	the running minimum is never lowered
 write_minmax_fastpath	write_minmax_fastpath	Infinity is found by an equality predicate	15;16;17;18;19	2026-10-19	the running maximum is never raised
 write_minmax_fastpath	write_minmax_fastpath	a narrow range still skips row groups	15;16;17;18;19	never	-
