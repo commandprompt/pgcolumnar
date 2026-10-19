@@ -304,8 +304,15 @@ icedf_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U ic
 SELECT count(*) FROM pgcolumnar.iceberg_data_files('$MD');
 SQL
 )"
+# Only the ERROR line's message counts, as the twin reads message_primary: a role
+# named in a HINT or DETAIL line is not the gate saying so.
+icedf_err="${icedf_out#*ERROR:  }"; icedf_err="${icedf_err%%$'\n'*}"
 case "$icedf_out" in
-	*"ERROR:  42501: "*pg_read_server_files*) icedf_got=42501 ;;
+	*"ERROR:  "*) ;;
+	*) icedf_err="" ;;
+esac
+case "$icedf_err" in
+	"42501: "*pg_read_server_files*) icedf_got=42501 ;;
 	*) icedf_got="${icedf_out%%$'\n'*}"; icedf_got="${icedf_got:-no output}" ;;
 esac
 check "an unprivileged role is refused (42501)" "$icedf_got" "42501"
