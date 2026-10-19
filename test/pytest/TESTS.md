@@ -235,6 +235,7 @@ behaviour, the source of that number is named.
 - [187. test_zonemap_cost.py: a scan is priced for what the zone maps let it skip, and only for that](#187-test_zonemap_costpy-a-scan-is-priced-for-what-the-zone-maps-let-it-skip-and-only-for-that)
 - [188. test_concurrent_diff.py: concurrent writers to one columnar relation end equal to a heap oracle](#188-test_concurrent_diffpy-concurrent-writers-to-one-columnar-relation-end-equal-to-a-heap-oracle)
 - [189. test_write_minmax_fastpath.py: zone min/max through the direct comparison path are the true bounds](#189-test_write_minmax_fastpathpy-zone-minmax-through-the-direct-comparison-path-are-the-true-bounds)
+- [190. test_catalog_natts.py: every Natts_ constant equals the width of the catalog it sizes](#190-test_catalog_nattspy-every-natts_-constant-equals-the-width-of-the-catalog-it-sizes)
 
 ## 1. How to read a test in here
 
@@ -8196,3 +8197,20 @@ Each check is its own test over a module fixture that runs every step in the she
 | `test_the_float_fixture_is_one_chunk_group` | premise: the float table is one group, with NaN and the infinities at its end |
 | `test_a_float_reading_matches_heap` | parametrized by the shell's five names: NaN as the float8 and real maximum, NaN by equality, and each infinity by an equality of its own (an OR never prunes a group) |
 | `test_float_types_are_not_on_the_direct_comparison_list` | the writer's source names no float direct-comparison kind |
+
+## 190. test_catalog_natts.py: every Natts_ constant equals the width of the catalog it sizes
+
+The pytest twin of `test/catalog_natts.sh` (ported for #1341), every check by the shell's name. The `Natts_*` constants in `src/columnar_metadata.c` size the stack arrays handed to `heap_modify_tuple`, which iterates the live tuple descriptor, so a constant smaller than its catalog is a stack overflow (`Natts_options` stayed at 7 when `options` grew to 9, and a RENAME COLUMN on a sorted table aborted the backend). Each constant is compared with the width the LIVE SERVER reports, not the shipped `.sql`, since an upgrade script changes the server without changing any CREATE TABLE text.
+
+### Every test
+
+The source is read with the shell's own patterns; the widths come from `pg_attribute` on the cluster. A failed query is a `query_error()`.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_metadata_source_is_where_we_think_it_is` | premise: `src/columnar_metadata.c` exists |
+| `test_the_source_defines_natts_constants` | premise: it defines `Natts_*` constants |
+| `test_those_constants_size_arrays` | premise: they size arrays (`[Natts_...]`), so a wrong one is a real overflow |
+| `test_heap_modify_tuple_is_still_called_here` | premise: `heap_modify_tuple`, the consumer, is still called there |
+| `test_each_constant_matches_its_catalogs_width` | parametrized by the constants: each equals its catalog's live width (`Natts_native_storage` addresses `storage`); a catalog absent from the server fails its own premise |
+| `test_every_constant_found_was_swept` | premise: every constant found was compared |

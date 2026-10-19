@@ -412,6 +412,24 @@ catalog_delete_index	catalog_delete_index	the phase A compaction retired the emp
 catalog_delete_index	catalog_delete_index	the phase B compaction retired the emptied groups	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	the vacuum's default does less row_group work than reading it whole	15;16;17;18;19	2026-10-12	pgcolumnar_index_min_blocks default 3 -> 2147483647, so no site probes;pgcolumnar_scan_index_oid stops asking the relation its size, so every site probes;the eight converted scan sites back to InvalidOid
 catalog_delete_index	catalog_delete_index	with few catalog pages the drop's default does less work than probing every one	15;16;17;18;19	2026-10-12	pgcolumnar_index_min_blocks default 3 -> 2147483647, so no site probes;pgcolumnar_scan_index_oid stops asking the relation its size, so every site probes
+catalog_natts	catalog_natts	Natts_bloom matches the width of pgcolumnar.bloom	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_column_chunk matches the width of pgcolumnar.column_chunk	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_column_extent matches the width of pgcolumnar.column_extent	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_delete_vector matches the width of pgcolumnar.delete_vector	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_free_space matches the width of pgcolumnar.free_space	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_load_fingerprint matches the width of pgcolumnar.load_fingerprint	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_native_storage matches the width of pgcolumnar.storage	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_options matches the width of pgcolumnar.options	15;16;17;18;19	2026-10-19	Natts_options left one short of the options catalog (the original overflow)
+catalog_natts	catalog_natts	Natts_projection matches the width of pgcolumnar.projection	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_projection_declaration matches the width of pgcolumnar.projection_declaration	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_retired_group matches the width of pgcolumnar.retired_group	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_row_group matches the width of pgcolumnar.row_group	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_zone_map matches the width of pgcolumnar.zone_map	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	premise: every constant found was swept	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	premise: heap_modify_tuple is still called here (the consumer of those arrays)	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	premise: the metadata source is where we think it is	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	premise: the source defines Natts_* constants at all	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	premise: those constants SIZE arrays, so a wrong one is a real overflow	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	a no-qual count did not sequentially scan pgcolumnar.storage	15;16;17;18;19	2026-09-23	both storage_id scans reverted to InvalidOid, so the catalog is swept sequentially on its own primary key
 catalog_plan_index	catalog_plan_index	a reading takes in none of another session's reads of pgcolumnar.storage (#1298)	15;16;17;18;19	2026-10-14	stor_blocks read pg_statio_all_tables after a reset, as main's storage_blks did
 catalog_plan_index	catalog_plan_index	and touches the empty catalogs not at all	15;16;17;18;19	2026-09-24	only the five options_pkey sites reverted, the two projection ones kept;pgcolumnar_scan_index_oid stops asking the relation its size;the seven planner sites back to the unconditional pgcolumnar_index_oid
