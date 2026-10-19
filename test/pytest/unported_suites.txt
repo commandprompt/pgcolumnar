@@ -15,7 +15,6 @@ audit
 autovacuum
 autovacuum_yield
 avro_manifest
-batch_fold_explain
 bench_guards
 bloom_lazy
 bloom_setting

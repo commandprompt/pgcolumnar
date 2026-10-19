@@ -231,6 +231,7 @@ behaviour, the source of that number is named.
 - [183. test_native_groupagg_wide_cost.py: the grouped fold prices its own input scan as the scan node does](#183-test_native_groupagg_wide_costpy-the-grouped-fold-prices-its-own-input-scan-as-the-scan-node-does)
 - [184. test_hardening.py: corrupted native metadata is refused or ignored, never trusted](#184-test_hardeningpy-corrupted-native-metadata-is-refused-or-ignored-never-trusted)
 - [185. test_dependency_estimate.py: a functional-dependency estimate is not collapsed by a truncated extended MCV](#185-test_dependency_estimatepy-a-functional-dependency-estimate-is-not-collapsed-by-a-truncated-extended-mcv)
+- [186. test_batch_fold_explain.py: EXPLAIN ANALYZE reports the fold that ran, not the one predicted](#186-test_batch_fold_explainpy-explain-analyze-reports-the-fold-that-ran-not-the-one-predicted)
 
 ## 1. How to read a test in here
 
@@ -8109,3 +8110,22 @@ A module fixture builds the three tables on a private database and takes every r
 | `test_and_it_is_not_an_over_correction` | and at most twice the actual count |
 | `test_a_case_core_already_estimates_well_is_unchanged` | the 10-value table's estimate is within 20% of its actual count |
 | `test_a_table_with_no_dependency_statistic_is_untouched` | with no extended statistic the estimate stays at core's (at most 10) |
+
+## 186. test_batch_fold_explain.py: EXPLAIN ANALYZE reports the fold that ran, not the one predicted
+
+The pytest twin of `test/batch_fold_explain.sh` (ported for #1341), every check by the shell's name. A column added after some row groups exist is predicted fold-eligible, but the first old group lacks it, so the ungrouped vectorized aggregate refuses before claiming a group and the scan runs the row path. EXPLAIN ANALYZE must say `Columnar Batch Fold: no` for that run (#602), plain EXPLAIN keeps the prediction, a control table whose columns exist from the start genuinely folds, and the parallel partial fold, which cannot take the fallback, refuses the relation with an error.
+
+### Every test
+
+A module fixture builds `bfe_old` (50,000 rows before `ADD COLUMN v`, 10,000 after) and `bfe_ctrl` on a private database and takes every reading in the shell's order, each on a connection of its own with the suite's settings in its options. A plan with no `Columnar Batch Fold` line reads `""`, which `expect.text` refuses; a failed query is a `query_error()`.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_loaded_every_row` | premise: `bfe_old` holds 60,000 rows |
+| `test_the_fallback_table_returns_the_right_sum` | premise: the fallback table's sum equals an oracle over `generate_series` |
+| `test_the_control_table_returns_the_right_sum` | premise: so does the control table's |
+| `test_analyze_reports_the_fold_that_ran` | ANALYZE on the control reports `yes` |
+| `test_plain_explain_still_reports_the_prediction` | plain EXPLAIN on the fallback table reports `yes` |
+| `test_analyze_reports_the_row_path_that_ran` | ANALYZE on the fallback table reports `no` |
+| `test_the_planner_gives_the_parallel_partial_fold` | premise: with parallelism free the plan is a Gather over the fold (planned on 15-19; the shell used to print a note and drop the next check when it was not) |
+| `test_the_parallel_partial_fold_refuses_the_fallback` | the parallel partial fold errors with "cannot fold a relation with a column added" |

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 180
+suites_not_covered 179
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3795,4 +3795,20 @@ suites_not_covered 180
 #     never         3092 + 2 = 3094
 #     dated         1408 + 4 = 1412
 #     3094 + 1412 == 4506
-checks_never_observed_red 3094
+#
+# #1341, batch_fold_explain seeded, with its twin (OffgridwithJD): 3094 -> 3098, and
+# suites_not_covered 180 -> 179. The suite had no rows. It enters with 8 checks from
+# five-major runs (8/8 on each of 15-19), after one fix: with no parallel partial fold
+# planned, the suite printed a note and its parallel check did not run, so it reported
+# 6/6 and rc=0 with that arm gone (measured, max_parallel_workers_per_gather=0). A
+# premise now asserts the plan, and the parallel check is recorded either way. 4 are
+# dated by four mutations: ANALYZE printing the prediction (the pre-#602 report, 1),
+# EXPLAIN printing only what ran (1), ANALYZE printing the inverse (2, one shared), and
+# the parallel fold taking the unsafe fallback instead of refusing (1). The four
+# premises arrive never.
+#
+#     ledger rows   4506 + 8 = 4514
+#     never         3094 + 4 = 3098
+#     dated         1412 + 4 = 1416
+#     3098 + 1416 == 4514
+checks_never_observed_red 3098

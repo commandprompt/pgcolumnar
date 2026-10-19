@@ -353,6 +353,14 @@ base_scan_io	base_scan_io	premise: the later plan is still a base columnar scan	
 base_scan_io	base_scan_io	premise: the later plan still does not name a covering projection	15;16;17;18;19	never	-
 base_scan_io	base_scan_io	premise: the plan is a base columnar scan	15;16;17;18;19	never	-
 base_scan_io	base_scan_io	premise: the table holds every inserted row	15;16;17;18;19	never	-
+batch_fold_explain	batch_fold_explain	control: ANALYZE reports the fold that ran	15;16;17;18;19	2026-10-19	ANALYZE prints the inverse of what ran
+batch_fold_explain	batch_fold_explain	fallback table: ANALYZE reports the row path that actually ran	15;16;17;18;19	2026-10-19	ANALYZE prints the inverse of what ran;ANALYZE prints the shape prediction, not what ran (the pre-#602 report)
+batch_fold_explain	batch_fold_explain	fallback table: plain EXPLAIN still reports the prediction	15;16;17;18;19	2026-10-19	EXPLAIN prints only what ran, so plain EXPLAIN loses the prediction
+batch_fold_explain	batch_fold_explain	parallel partial fold refuses the fallback relation	15;16;17;18;19	2026-10-19	the parallel partial fold takes the unsafe row-path fallback instead of refusing
+batch_fold_explain	batch_fold_explain	premise: control table returns the right sum	15;16;17;18;19	never	-
+batch_fold_explain	batch_fold_explain	premise: fallback table returns the right sum	15;16;17;18;19	never	-
+batch_fold_explain	batch_fold_explain	premise: fixture loaded every row	15;16;17;18;19	never	-
+batch_fold_explain	batch_fold_explain	premise: with parallelism free, the planner gives the parallel partial fold	15;16;17;18;19	never	-
 capability_sweep	capability_sweep	and no member of the population is this very file	15;16;17;18;19	2026-09-23	the self-exclusion removed from pgc_cap_population, so the sweep enters its own population
 capability_sweep	capability_sweep	and pyarrow.parquet with it	15;16;17;18;19	2026-09-23	the shim's pyarrow.py emptied, so both runs are the present run
 capability_sweep	capability_sweep	no suite loses a check without recording a skip or a refusal	15;16;17;18;19	2026-10-12	a check_skip block removed from a suite so its arms vanish with no skip and no fail;the pyarrow decline reason stops naming the capability, so no skip counts as declined
