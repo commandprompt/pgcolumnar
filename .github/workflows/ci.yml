@@ -168,6 +168,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # THE RELEASE TAGS, for native_upgrade_converge's fixture checks (#1341). Each
+      # fixture in test/fixtures must be byte-identical to what its tag shipped, and
+      # the pytest twin compares it with `git rev-parse v<version>:<file>`.
+      # actions/checkout fetches no tags, and with none the twin declares those
+      # checks unrunnable, which leaves this job incomplete. Depth 1 is enough: only
+      # the file at each tag is read.
+      - name: fetch the release tags, for the fixture checks
+        run: git fetch --depth=1 origin '+refs/tags/v*:refs/tags/v*'
+
       - name: Add the PGDG repository and install PostgreSQL ${{ matrix.pg }} with its headers
         run: |
           set -euo pipefail

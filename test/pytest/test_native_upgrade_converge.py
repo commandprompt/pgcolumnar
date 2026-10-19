@@ -40,6 +40,12 @@ BACKUP = ".pytest-bak"
 # The released starting points, oldest first; the last is the previous release.
 VERSIONS = ["1.0-alpha", "1.0-alpha2", "1.0-alpha3", "1.0-alpha4"]
 
+# The fixtures a release tag shipped, read from disk so a fixture added at the next
+# cycle-open is checked without anyone adding it here. 1.0-alpha is synthetic: v1.0-alpha
+# shipped pgcolumnar--1.0-dev.sql, so no tag holds a pgcolumnar--1.0-alpha.sql.
+TAGGED = sorted(p.name[len("pgcolumnar--"):-len(".sql")] for p in FIXTURES.glob("pgcolumnar--*.sql")
+                if p.name != "pgcolumnar--1.0-alpha.sql")
+
 # One line per object in the pgcolumnar schema: every function's definition, ACL and
 # comment; every relation's kind, ACL and comment; every column's type, NOT NULL and
 # comment; every non-base type; every foreign-data wrapper's handler and validator. The
@@ -292,6 +298,34 @@ def reference(pgc_cluster):
         yield target, _snapshot(dsn)
     finally:
         _admin(pgc_cluster, "DROP DATABASE IF EXISTS pgc_conv_fresh WITH (FORCE)")
+
+
+def _git(*args):
+    """-> git's output in the tree under test, or None when it fails."""
+    r = subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def test_the_fixture_sweep_found_fixtures(expect):
+    expect.num(len(TAGGED) > 0 and 1 or 0, 1,
+               "premise: the fixture sweep found fixtures to compare against their tags")
+
+
+@pytest.mark.parametrize("v", TAGGED)
+def test_each_tagged_fixture_is_what_its_tag_shipped(v, expect):
+    """Each fixture is the released starting point only if it is what its tag shipped
+    (#901): compared by blob id, which is a lookup and has no similarity heuristic. The
+    local tag is trusted; if this fails and the fixture looks right, check the tag with
+    `git ls-remote origin refs/tags/v<version>`."""
+    name = f"the {v} fixture is byte-identical to what v{v} shipped"
+    if _git("rev-parse", "--git-dir") is None:
+        expect.cannot_run("UNMET_PRECONDITION", "no git repository in the tree under test", name=name)
+        return
+    if not _git("tag", "-l", "v1.0-alpha*"):
+        expect.cannot_run("UNMET_PRECONDITION", "no release tags in this checkout", name=name)
+        return
+    expect.text(_git("hash-object", str(FIXTURES / f"pgcolumnar--{v}.sql")) or "fixture missing",
+                _git("rev-parse", f"v{v}:pgcolumnar--{v}.sql") or f"no such path at v{v}", name)
 
 
 def test_the_staged_fixtures_are_the_committed_ones(staging, expect):

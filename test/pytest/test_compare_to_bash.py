@@ -86,6 +86,7 @@ from compare_to_bash import (_as_names, _bash_names, _bodies,  # noqa: E402
 # The shape is `SHELL_REFERENCES`' in `test_harness_deps.py`, asserted in both
 # directions for the same reason: a one-way list rots into a permanent exemption.
 COMPLETE = ["advisory_lock_class",
+            "native_upgrade_converge",
             "range_pruning",
             "native_format",
             "iceberg_data_files",
@@ -226,12 +227,6 @@ COMPLETE = ["advisory_lock_class",
 # about the PORT rather than a licence: the standing arm does not grade it, so the
 # reason is the only thing standing between a declared gap and a forgotten one.
 INCOMPLETE = {
-    # #1341 ported every arm but the release-tag ones: each tagged fixture is
-    # byte-identical to what its tag shipped. CI checks out without tags, so the shell
-    # skips them there with check_skip, and this layer has no verdict for an arm that
-    # runs on one checkout and not another.
-    "native_upgrade_converge": "every arm is ported except the release-tag sweep and "
-                               "the per-tag fixture-blob comparisons",
     # #1341 item 29 ported the arms four fixes added with shell arms only. Each
     # pair below holds that fix's arms and nothing else of its shell suite.
     "inheritance": "the #1259 arms (a partitioned columnar parent is refused with "
