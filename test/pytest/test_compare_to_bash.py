@@ -168,6 +168,7 @@ COMPLETE = ["advisory_lock_class",
             "native_skip",
             "native_toasted_write",
             "native_truncate",
+            "native_upgrade_converge",
             "native_vacuum_race",
             "native_varlena_bound",
             "native_vecskip",
@@ -226,12 +227,6 @@ COMPLETE = ["advisory_lock_class",
 # about the PORT rather than a licence: the standing arm does not grade it, so the
 # reason is the only thing standing between a declared gap and a forgotten one.
 INCOMPLETE = {
-    # #1341 ported every arm but the release-tag ones: each tagged fixture is
-    # byte-identical to what its tag shipped. CI checks out without tags, so the shell
-    # skips them there with check_skip, and this layer has no verdict for an arm that
-    # runs on one checkout and not another.
-    "native_upgrade_converge": "every arm is ported except the release-tag sweep and "
-                               "the per-tag fixture-blob comparisons",
     # #1341 item 29 ported the arms four fixes added with shell arms only. Each
     # pair below holds that fix's arms and nothing else of its shell suite.
     "inheritance": "the #1259 arms (a partitioned columnar parent is refused with "
