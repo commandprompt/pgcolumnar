@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 182
+suites_not_covered 181
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3746,4 +3746,24 @@ suites_not_covered 182
 #     never         3085 + 2 = 3087
 #     dated         1402 + 3 = 1405
 #     3087 + 1405 == 4492
-checks_never_observed_red 3087
+#
+# #1341, hardening seeded, with its twin (OffgridwithJD): 3087 -> 3091, and
+# suites_not_covered 182 -> 181. The suite had no rows. It enters with 7 checks from
+# five-major runs (7/7 on each of 15-19), after three fixes and two new premises.
+# "invalid descriptor raises error" read an empty result as the error, which a crash
+# also gives: with the descriptor's refusal turned into abort() it passed, and the
+# crash failed the bloom section's setup and both its arms instead. It now reads the
+# SQLSTATE (XX001), survival counts crashes in the server log, and each survival
+# check waits recovery out, so a crash fails its own two arms only. A premise per
+# corruption asserts its UPDATE replaced one row. 3 are dated by two mutations: an
+# unrecognized descriptor aborting with the value-stream bounds before it off (2),
+# and a too-short bloom filter read as definitely absent (1). Four arrive never: the
+# two premises, the absent probe (424242424 lies outside k's range, so a bloom
+# read as absent changes no answer), and survival of the bloom. Removing the descriptor's backstops one at a
+# time reddens nothing, rightly: each layer left refuses with the same XX001.
+#
+#     ledger rows   4492 + 7 = 4499
+#     never         3087 + 4 = 3091
+#     dated         1405 + 3 = 1408
+#     3091 + 1408 == 4499
+checks_never_observed_red 3091

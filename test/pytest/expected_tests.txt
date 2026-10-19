@@ -854,4 +854,6 @@ guard_tests 442
 # per test (5 -> 21 tests), by collection over the cluster files.
 # cluster_tests 1006 -> 1011 for #1341's test_native_groupagg_wide_cost.py, the twin of
 # native_groupagg_wide_cost.sh: five tests, one per check, by collection over the cluster files.
-cluster_tests 1011
+# cluster_tests 1011 -> 1018 for #1341's test_hardening.py, the twin of hardening.sh: seven
+# tests, one per check, by collection over the cluster files.
+cluster_tests 1018
