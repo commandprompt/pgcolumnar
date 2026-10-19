@@ -4512,3 +4512,22 @@ vm_privilege	vm_privilege	vm entry point is covered by this boundary test: vm_se
 vm_privilege	vm_privilege	vm_is_visible refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
 vm_privilege	vm_privilege	vm_selftest did not report success to the unprivileged role	15;16;17;18;19	2026-10-14	vm_selftest without its owner check
 vm_privilege	vm_privilege	vm_selftest refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	a correlated restriction picks the columnar scan (#434)	15;16;17;18;19	2026-10-19	the reader skips a cross-type scan key again (#477);the zone-map survival estimate gives no discount (survival 1.0)
+zonemap_cost	zonemap_cost	a demonstrably pruning restriction is discounted whatever its correlation (#461)	15;16;17;18;19	2026-10-19	a blanket discount: every restriction's survival is 0.2;the reader skips a cross-type scan key again (#477);the zone-map survival estimate gives no discount (survival 1.0)
+zonemap_cost	zonemap_cost	an uncorrelated restriction gets no pruning discount (#434)	15;16;17;18;19	2026-10-19	a blanket discount: every restriction's survival is 0.2;the reader skips a cross-type scan key again (#477);the zone-map survival estimate gives no discount (survival 1.0)
+zonemap_cost	zonemap_cost	and it is priced below the index scan it used to lose to (#434)	15;16;17;18;19	2026-10-19	the reader skips a cross-type scan key again (#477);the zone-map survival estimate gives no discount (survival 1.0)
+zonemap_cost	zonemap_cost	and priced close to the correlated arm it matches physically (#461)	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	and the planner picks the columnar scan for it	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	premise: and it prunes as hard as the correlated column, measured	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	premise: and the scattered arm removes none, so the two differ physically	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	premise: every row loaded	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	premise: the columnar cost is a measurement	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	premise: the index cost is a measurement	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	premise: the ordered key really is correlated	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	premise: the sawtooth column is uncorrelated, like TSBS time (#391)	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	premise: the sawtooth columnar cost is a measurement	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	premise: the scattered columnar cost is a measurement	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	premise: the scattered key really is not	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	the correlated arm actually removes chunk groups (#477)	15;16;17;18;19	2026-10-19	the reader skips a cross-type scan key again (#477)
+zonemap_cost	zonemap_cost	the correlated query returns the right count	15;16;17;18;19	never	-
+zonemap_cost	zonemap_cost	the correlated query returns the same rows either way	15;16;17;18;19	never	-

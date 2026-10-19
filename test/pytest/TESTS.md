@@ -232,6 +232,7 @@ behaviour, the source of that number is named.
 - [184. test_hardening.py: corrupted native metadata is refused or ignored, never trusted](#184-test_hardeningpy-corrupted-native-metadata-is-refused-or-ignored-never-trusted)
 - [185. test_dependency_estimate.py: a functional-dependency estimate is not collapsed by a truncated extended MCV](#185-test_dependency_estimatepy-a-functional-dependency-estimate-is-not-collapsed-by-a-truncated-extended-mcv)
 - [186. test_batch_fold_explain.py: EXPLAIN ANALYZE reports the fold that ran, not the one predicted](#186-test_batch_fold_explainpy-explain-analyze-reports-the-fold-that-ran-not-the-one-predicted)
+- [187. test_zonemap_cost.py: a scan is priced for what the zone maps let it skip, and only for that](#187-test_zonemap_costpy-a-scan-is-priced-for-what-the-zone-maps-let-it-skip-and-only-for-that)
 
 ## 1. How to read a test in here
 
@@ -8129,3 +8130,30 @@ A module fixture builds `bfe_old` (50,000 rows before `ADD COLUMN v`, 10,000 aft
 | `test_analyze_reports_the_row_path_that_ran` | ANALYZE on the fallback table reports `no` |
 | `test_the_planner_gives_the_parallel_partial_fold` | premise: with parallelism free the plan is a Gather over the fold (planned on 15-19; the shell used to print a note and drop the next check when it was not) |
 | `test_the_parallel_partial_fold_refuses_the_fallback` | the parallel partial fold errors with "cannot fold a relation with a column added" |
+
+## 187. test_zonemap_cost.py: a scan is priced for what the zone maps let it skip, and only for that
+
+The pytest twin of `test/zonemap_cost.sh` (ported for #1341), every check by the shell's name. The cost model used to quote a full columnar scan whatever the zone maps excluded, so an index scan priced at its best case won a plan it ran 11.6 times slower (#434). One 200,000-row table holds three keys over the same values: `seq` ascends with physical order and prunes 16 of 20 row groups; `scat` is scattered and prunes none, the control a blanket discount would fail; `saw` is uncorrelated globally but tight inside each group, so it prunes as hard as `seq` while its correlation says otherwise (#461). Pruning is measured from EXPLAIN ANALYZE's chunk-groups-removed counter before any price is compared (#477). Plans and cost relations only, never wall clock. On a private database, because `pg_stats` is read by table name.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order, each reading's SETs on the connection that runs it. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_every_row_loaded` | premise: 200,000 rows |
+| `test_the_ordered_key_really_is_correlated`, `test_the_scattered_key_really_is_not` | premise: \|correlation\| above 0.9 for `seq`, below 0.2 for `scat` |
+| `test_the_correlated_arm_actually_removes_chunk_groups` | `seq` removes chunk groups: an arm, since a cross-type scan key the reader drops removes none (#477) |
+| `test_the_scattered_arm_removes_none` | premise: `scat` removes none, so the two differ physically |
+| `test_the_columnar_cost_is_a_measurement`, `test_the_index_cost_is_a_measurement` | premise: both costs on `seq` were read and are positive |
+| `test_a_correlated_restriction_picks_the_columnar_scan` | the plan for `seq` is the columnar scan |
+| `test_it_is_priced_below_the_index_scan_it_used_to_lose_to` | and costs less than the index scan |
+| `test_the_scattered_columnar_cost_is_a_measurement` | premise: the cost on `scat` was read |
+| `test_an_uncorrelated_restriction_gets_no_pruning_discount` | `scat` costs more than twice what `seq` costs: a margin, because a bare comparison passed under a blanket discount |
+| `test_the_sawtooth_column_is_uncorrelated`, `test_it_prunes_as_hard_as_the_correlated_column` | premise: `saw` has \|correlation\| below 0.2 and removes at least as many groups as `seq` |
+| `test_the_sawtooth_columnar_cost_is_a_measurement` | premise: the cost on `saw` was read |
+| `test_a_demonstrably_pruning_restriction_is_discounted` | `saw` costs under 0.8 of `scat` |
+| `test_it_is_priced_close_to_the_correlated_arm` | and under 1.5 times `seq` |
+| `test_the_planner_picks_the_columnar_scan_for_it` | the plan for `saw` is the columnar scan |
+| `test_the_correlated_query_returns_the_same_rows_either_way` | the grouped counts agree with the custom scan on and off |
+| `test_the_correlated_query_returns_the_right_count` | 40,000 rows match `seq` |

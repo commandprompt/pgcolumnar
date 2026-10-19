@@ -864,4 +864,6 @@ guard_tests 442
 # dependency_estimate.sh: six tests, one per check, by collection over the cluster files.
 # cluster_tests 1035 -> 1043 for #1341's test_batch_fold_explain.py, the twin of
 # batch_fold_explain.sh: eight tests, one per check, by collection over the cluster files.
-cluster_tests 1043
+# cluster_tests 1043 -> 1062 for #1341's test_zonemap_cost.py, the twin of zonemap_cost.sh:
+# 19 tests, one per check, by collection over the cluster files.
+cluster_tests 1062

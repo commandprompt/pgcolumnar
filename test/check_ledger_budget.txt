@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 179
+suites_not_covered 178
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3811,4 +3811,25 @@ suites_not_covered 179
 #     never         3094 + 4 = 3098
 #     dated         1412 + 4 = 1416
 #     3098 + 1416 == 4514
-checks_never_observed_red 3098
+#
+# #1341, zonemap_cost seeded, with its twin (jdatcmd): 3098 -> 3112, and
+# suites_not_covered 179 -> 178. The suite had no rows. It enters with 19 checks from
+# five-major runs (19/19 on each of 15-19, shell and twin alike), after two changes.
+# The control "an uncorrelated restriction gets no pruning discount" compared two
+# prices with a bare `>`, and under a blanket discount (every restriction's survival
+# 0.2) the two are equal up to ANALYZE's sampling noise, so the control caught it
+# about half the time (4 of 9 runs, measured by OffgridwithJD; it passed on 921.01
+# against 919.29 in mine). It now demands the scattered arm cost twice the correlated
+# one (4.56x on every major). And "the correlated arm actually removes chunk groups
+# (#477)" lost its `premise:` prefix, since a mutation reddens it. 5 are dated by
+# three mutations, each reddening the same names in both twins: a cross-type scan key
+# skipped again (#477: that arm and the four price checks), no discount at all (the
+# four price checks) and the blanket discount (the control and the #461 discount). 14
+# arrive never: the premises, the sawtooth's closeness to the correlated arm, the
+# plan for it, and the two correctness checks.
+#
+#     ledger rows   4514 + 19 = 4533
+#     never         3098 + 14 = 3112
+#     dated         1416 +  5 = 1421
+#     3112 + 1421 == 4533
+checks_never_observed_red 3112
