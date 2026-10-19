@@ -67,8 +67,9 @@ check_text "the fold result matches a plain aggregate on a wide table" "$got" "$
 # cost can be read. Measured on PG17: 800.19 both ways, and 503.01 through the
 # fallback with the bare seqscan formula.
 FREE="-c parallel_setup_cost=0 -c parallel_tuple_cost=0 -c min_parallel_table_scan_size=0 -c max_parallel_workers_per_gather=4"
-check "premise: with parallelism free, a Gather displaces the serial scan" \
-	"$(qn "EXPLAIN (COSTS OFF) $EXPLAINQ" "$FREE" | grep -q 'Gather' && echo yes)" "yes"
+FREEPLAN="$(qn "EXPLAIN (COSTS OFF) $EXPLAINQ" "$FREE")"
+case "$FREEPLAN" in *Gather*) FREEGATHER=yes ;; *) FREEGATHER="no Gather in: $FREEPLAN" ;; esac
+check "premise: with parallelism free, a Gather displaces the serial scan" "$FREEGATHER" "yes"
 check_text "the fallback prices the fold as a surviving serial scan does" \
 	"$(fold_cost "$FREE -c enable_hashagg=off -c enable_sort=off")" "$(fold_cost "")"
 
