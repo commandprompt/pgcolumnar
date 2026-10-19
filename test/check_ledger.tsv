@@ -881,6 +881,13 @@ fk_referencing	fk_referencing	the conversion helper is refused identically	15;16
 fk_referencing	fk_referencing	the parent is still a row store	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
 fk_referencing	fk_referencing	the primary key is still enforced	15;16;17;18;19	never	-
 fk_referencing	fk_referencing	the refused table was not left behind	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+hardening	hardening	backend alive after corrupt bloom	15;16;17;18;19	never	-
+hardening	hardening	backend alive after invalid descriptor	15;16;17;18;19	2026-10-17	columnar_reader.c: an unrecognized native encoding descriptor aborts the backend, with the value-stream bounds before it off
+hardening	hardening	corrupt bloom absent	15;16;17;18;19	never	-
+hardening	hardening	corrupt bloom present	15;16;17;18;19	2026-10-17	columnar_bloom.c: a bloom filter too short for its header reads as definitely absent
+hardening	hardening	invalid descriptor raises error	15;16;17;18;19	2026-10-17	columnar_reader.c: an unrecognized native encoding descriptor aborts the backend, with the value-stream bounds before it off
+hardening	hardening	premise: the corrupt descriptor replaces one chunk's	15;16;17;18;19	never	-
+hardening	hardening	premise: the malformed bloom replaces k's filter	15;16;17;18;19	never	-
 harness_selftest	030-assertions	nothing leaked into the squatter	15;16;17;18;19	never	-
 harness_selftest	030-assertions	pgc_port_free says the squatter's port is busy	15;16;17;18;19	never	-
 harness_selftest	030-assertions	squatter survived untouched	15;16;17;18;19	never	-

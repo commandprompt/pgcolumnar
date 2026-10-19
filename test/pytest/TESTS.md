@@ -229,6 +229,7 @@ behaviour, the source of that number is named.
 - [181. test_native_varlena_bound.py: a corrupt varlena length is refused, not read past its buffer](#181-test_native_varlena_boundpy-a-corrupt-varlena-length-is-refused-not-read-past-its-buffer)
 - [182. test_native_agg_addcolumn.py: a metadata aggregate over an added column reads what the metadata cannot hold](#182-test_native_agg_addcolumnpy-a-metadata-aggregate-over-an-added-column-reads-what-the-metadata-cannot-hold)
 - [183. test_native_groupagg_wide_cost.py: the grouped fold prices its own input scan as the scan node does](#183-test_native_groupagg_wide_costpy-the-grouped-fold-prices-its-own-input-scan-as-the-scan-node-does)
+- [184. test_hardening.py: corrupted native metadata is refused or ignored, never trusted](#184-test_hardeningpy-corrupted-native-metadata-is-refused-or-ignored-never-trusted)
 
 ## 1. How to read a test in here
 
@@ -8064,3 +8065,21 @@ Each check is its own test over a module fixture that takes every reading in the
 | `test_with_parallelism_free_a_gather_displaces_the_serial_scan` | premise: with parallelism free the plan is a Gather, the state in which the fallback prices the scan |
 | `test_the_fallback_prices_the_fold_as_a_surviving_serial_scan_does` | the fold node's cost through the fallback equals its cost when a serial scan survives (800.19 on PG17; 503.01 with the bare seqscan formula) |
 | `test_backend_alive` | the backend still answers |
+
+## 184. test_hardening.py: corrupted native metadata is refused or ignored, never trusted
+
+The pytest twin of `test/hardening.sh` (ported for #1341), every check by the shell's name. A plain UPDATE corrupts a chunk's encoding descriptor, then a bloom filter, both catalog byteas. The descriptor must be refused with a clean XX001 and a surviving backend; the malformed bloom must be read as "may match", so the probe for a present value still finds it. An empty result is not read as the error, since a crash and a missing table give one too, and a crash is counted from the server log: a liveness probe alone passes once recovery has finished. On a private cluster, because a crash drops every session on the server.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order, each reading on a connection of its own opened once any recovery is over. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_corrupt_descriptor_replaces_one_chunks` | premise: the descriptor UPDATE reports `UPDATE 1` |
+| `test_an_invalid_descriptor_raises_an_error` | reading the table raises XX001 |
+| `test_the_backend_is_alive_after_an_invalid_descriptor` | the server answers and no backend died since the corruption |
+| `test_the_malformed_bloom_replaces_ks_filter` | premise: the bloom UPDATE reports `UPDATE 1` |
+| `test_a_corrupt_bloom_still_finds_a_present_value` | the equality probe returns the heap's rows |
+| `test_a_corrupt_bloom_still_counts_an_absent_value` | the absent probe's count equals the heap's |
+| `test_the_backend_is_alive_after_a_corrupt_bloom` | the server answers and no backend died since the corruption |
