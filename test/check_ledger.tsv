@@ -2767,6 +2767,11 @@ native_groupagg_batch	native_groupagg_batch	toggle-differential: two keys [premi
 native_groupagg_batch	native_groupagg_batch	two keys: answers match the heap mirror	15;16;17;18;19	2026-10-16	columnar_vector.c: the grouped fold's gather drops the NULL-key flag, so the NULL group folds into k = 0 (jdatcmd's #1485 review)
 native_groupagg_batch	native_groupagg_batch	two keys: the fold ran (work done)	15;16;17;18;19	2026-10-16	columnar_vector.c: pgcolumnar_groupagg_build never calls the grouped batch fold (the removal proof)
 native_groupagg_batch	native_groupagg_batch	two keys: the grouped node is planned	15;16;17;18;19	never	-
+native_groupagg_wide_cost	native_groupagg_wide_cost	backend alive	15;16;17;18;19	never	-
+native_groupagg_wide_cost	native_groupagg_wide_cost	premise: with parallelism free, a Gather displaces the serial scan	15;16;17;18;19	never	-
+native_groupagg_wide_cost	native_groupagg_wide_cost	the fallback prices the fold as a surviving serial scan does	15;16;17;18;19	2026-10-17	columnar_vector.c: the grouped aggregate's no-serial-survivor fallback prices its input with the bare seqscan formula;columnar_vector.c: the grouped vector aggregate path is never planned
+native_groupagg_wide_cost	native_groupagg_wide_cost	the fold path is used on the wide grouped aggregate	15;16;17;18;19	2026-10-17	columnar_vector.c: the grouped vector aggregate path is never planned
+native_groupagg_wide_cost	native_groupagg_wide_cost	the fold result matches a plain aggregate on a wide table	15;16;17;18;19	2026-10-17	columnar_vector.c: the grouped batch fold loses the first row of each row group
 native_index	native_index	duplicate id rejected	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple fetches the neighbouring row number;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
 native_index	native_index	index IN lookup	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple fetches the neighbouring row number;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
 native_index	native_index	index lookup miss returns nothing	15;16;17;18;19	never	-

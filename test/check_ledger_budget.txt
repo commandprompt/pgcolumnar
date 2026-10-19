@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 183
+suites_not_covered 182
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3725,4 +3725,25 @@ suites_not_covered 183
 #     never         3081 +  4 = 3085
 #     dated         1387 + 15 = 1402
 #     3085 + 1402 == 4487
-checks_never_observed_red 3085
+#
+# #1341, native_groupagg_wide_cost seeded, with its twin (OffgridwithJD): 3085 -> 3087,
+# and suites_not_covered 183 -> 182. The suite had no rows. It enters with 5 checks
+# from five-major runs (5/5 on each of 15-19), after two fixes and two new arms. The
+# fallback it is named for never ran: with 40,000 rows a serial scan survives
+# add_path, so the fold was priced from it (traced), and the old suite is 3/3 with
+# the fallback pricing by the bare seqscan formula. Free parallelism now lets a Gather
+# displace the serial scan, hash and sort off keep the fold node the plan, and its
+# cost must equal the cost a surviving serial scan gives. The readings kept the last
+# line of "SET ...; SELECT", so a failed SELECT read "SET" on both sides and agreed
+# (the old suite is 3/3 with the query naming a missing column); the settings now
+# ride in PGOPTIONS and check_text refuses an empty side. The plan check matched any
+# custom scan, which the reference plan's input is too; it now reads the fold's own
+# line. 3 are dated by three mutations: the fallback pricing by the bare formula, the
+# grouped path never planned, and the batch fold losing a row. Two arrive never: the
+# Gather premise and "backend alive".
+#
+#     ledger rows   4487 + 5 = 4492
+#     never         3085 + 2 = 3087
+#     dated         1402 + 3 = 1405
+#     3087 + 1405 == 4492
+checks_never_observed_red 3087
