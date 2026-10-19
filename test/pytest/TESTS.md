@@ -228,6 +228,7 @@ behaviour, the source of that number is named.
 - [180. test_native_toasted_write.py: a toasted value is written once and read back whole](#180-test_native_toasted_writepy-a-toasted-value-is-written-once-and-read-back-whole)
 - [181. test_native_varlena_bound.py: a corrupt varlena length is refused, not read past its buffer](#181-test_native_varlena_boundpy-a-corrupt-varlena-length-is-refused-not-read-past-its-buffer)
 - [182. test_native_agg_addcolumn.py: a metadata aggregate over an added column reads what the metadata cannot hold](#182-test_native_agg_addcolumnpy-a-metadata-aggregate-over-an-added-column-reads-what-the-metadata-cannot-hold)
+- [183. test_native_groupagg_wide_cost.py: the grouped fold prices its own input scan as the scan node does](#183-test_native_groupagg_wide_costpy-the-grouped-fold-prices-its-own-input-scan-as-the-scan-node-does)
 
 ## 1. How to read a test in here
 
@@ -8047,3 +8048,19 @@ Each check is its own test over a module fixture that runs every step in the she
 | `test_the_oracle_reads_the_rows` | premise: the oracle's connection plans `Custom Scan (PgColumnarScan)`, so the two sides take different paths; an empty or other plan cannot pass |
 | `test_the_scan_reads_an_added_columns_default_for_the_rows_written_before_it` | the oracle's own `count(d)` and `sum(d)` are 3000 and 21000: both paths read old groups through the reader's missing value, so agreement alone cannot see it lost |
 | `test_the_metadata_path_agrees_with_the_scan` | parametrized by the shell's 16 names: count, sum, min, max and avg over the added columns, count(*), and the same across both sides of the ALTER and after a delete |
+
+## 183. test_native_groupagg_wide_cost.py: the grouped fold prices its own input scan as the scan node does
+
+The pytest twin of `test/native_groupagg_wide_cost.sh` (ported for #1341), every check by the shell's name. The grouped vector aggregate prices the scan it performs from the cheapest serial scan path that survived add_path. When none survived, because a Gather over the partial path dominated it, it prices that scan itself, and must do so as the columnar scan node does, not with the bare seqscan formula (#12). On the suite's 40,000-row wide table a serial scan survives, so the fold and result readings never reach that fallback. Free parallelism (`parallel_setup_cost`, `parallel_tuple_cost` and `min_parallel_table_scan_size` at 0) lets a Gather displace it, and with `enable_hashagg` and `enable_sort` off the parallel finalize cannot win, so the fold node is the plan and its cost can be read. Each reading's settings ride in the connection's options, as the shell's PGOPTIONS do.
+
+### Every test
+
+Each check is its own test over a module fixture that takes every reading in the shell's order, each on a connection of its own. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fold_path_is_used_on_the_wide_grouped_aggregate` | the plan carries `Columnar Batch Fold: yes`, not merely a custom scan, which the reference plan's input is too |
+| `test_the_fold_result_matches_a_plain_aggregate_on_a_wide_table` | the folded per-group sums and counts equal the plan without vectorized grouping |
+| `test_with_parallelism_free_a_gather_displaces_the_serial_scan` | premise: with parallelism free the plan is a Gather, the state in which the fallback prices the scan |
+| `test_the_fallback_prices_the_fold_as_a_surviving_serial_scan_does` | the fold node's cost through the fallback equals its cost when a serial scan survives (800.19 on PG17; 503.01 with the bare seqscan formula) |
+| `test_backend_alive` | the backend still answers |

@@ -852,4 +852,6 @@ guard_tests 442
 # test (1 -> 25 tests), by collection over the cluster files.
 # cluster_tests 990 -> 1006 for #1341, test_iceberg_data_files.py ported by name, one check
 # per test (5 -> 21 tests), by collection over the cluster files.
-cluster_tests 1006
+# cluster_tests 1006 -> 1011 for #1341's test_native_groupagg_wide_cost.py, the twin of
+# native_groupagg_wide_cost.sh: five tests, one per check, by collection over the cluster files.
+cluster_tests 1011
