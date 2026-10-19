@@ -23,7 +23,6 @@ cancel_decode
 catalog_natts
 column_projection
 concurrency
-concurrent_diff
 cost_written_geometry
 decode_interrupts
 decode_skip_interrupts

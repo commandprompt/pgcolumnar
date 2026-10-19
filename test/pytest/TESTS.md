@@ -233,6 +233,7 @@ behaviour, the source of that number is named.
 - [185. test_dependency_estimate.py: a functional-dependency estimate is not collapsed by a truncated extended MCV](#185-test_dependency_estimatepy-a-functional-dependency-estimate-is-not-collapsed-by-a-truncated-extended-mcv)
 - [186. test_batch_fold_explain.py: EXPLAIN ANALYZE reports the fold that ran, not the one predicted](#186-test_batch_fold_explainpy-explain-analyze-reports-the-fold-that-ran-not-the-one-predicted)
 - [187. test_zonemap_cost.py: a scan is priced for what the zone maps let it skip, and only for that](#187-test_zonemap_costpy-a-scan-is-priced-for-what-the-zone-maps-let-it-skip-and-only-for-that)
+- [188. test_concurrent_diff.py: concurrent writers to one columnar relation end equal to a heap oracle](#188-test_concurrent_diffpy-concurrent-writers-to-one-columnar-relation-end-equal-to-a-heap-oracle)
 
 ## 1. How to read a test in here
 
@@ -8157,3 +8158,22 @@ Each check is its own test over a module fixture that runs every step in the she
 | `test_the_planner_picks_the_columnar_scan_for_it` | the plan for `saw` is the columnar scan |
 | `test_the_correlated_query_returns_the_same_rows_either_way` | the grouped counts agree with the custom scan on and off |
 | `test_the_correlated_query_returns_the_right_count` | 40,000 rows match `seq` |
+
+## 188. test_concurrent_diff.py: concurrent writers to one columnar relation end equal to a heap oracle
+
+The pytest twin of `test/concurrent_diff.sh` (ported for #1341), every check by the shell's name. Six backends run the same INSERT/DELETE/UPDATE workload over disjoint id ranges against a heap table and a columnar one (`chunk_group_row_limit` 500, `stripe_row_limit` 2000), so the final state is deterministic whatever the interleaving and the columnar table must end equal to the heap. It exercises stripe and row-number reservation, the delete vector and the encoding and bloom write paths under concurrent writers.
+
+### Every test
+
+A module fixture runs six threads, each on a connection of its own sending its workload as one simple-protocol query (one implicit transaction, as `psql -c`), then takes every reading. Each comparison hashes both sides on the server as lib.sh's `pgc_set_hash` does; a failed query is a `query_error()`.
+
+| test | what it holds |
+| --- | --- |
+| `test_all_workers_succeeded` | every worker's transaction committed |
+| `test_every_worker_started_before_any_finished` | premise: the workers overlapped (the latest start precedes the earliest end), or this is a serial differential |
+| `test_the_whole_row_agrees` | every row equals the heap's |
+| `test_count_and_sum_agree` | count, sum(v) and count(distinct cat) agree |
+| `test_the_price_aggregates_agree` | min, max and count of the float8 column agree |
+| `test_the_bloom_equality_agrees` | the count for `v = 900` agrees |
+| `test_the_range_agrees` | the count for `id BETWEEN 4000 AND 12000` agrees |
+| `test_the_row_count_is_sane` | the columnar table is not empty |

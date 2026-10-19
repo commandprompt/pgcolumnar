@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 178
+suites_not_covered 177
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3832,4 +3832,20 @@ suites_not_covered 178
 #     never         3098 + 14 = 3112
 #     dated         1416 +  5 = 1421
 #     3112 + 1421 == 4533
-checks_never_observed_red 3112
+#
+# #1341, concurrent_diff seeded, with its twin (OffgridwithJD): 3112 -> 3115, and
+# suites_not_covered 178 -> 177. The suite had no rows. It enters with 8 checks from
+# five-major runs (8/8 on each of 15-19), including a new premise: every worker starts
+# before any finishes, or the suite is a serial differential (measured: with the
+# workers run one after another it passed 7/7, and now that premise reds). 5 are
+# dated by three mutations of row-number reservation: a lost update with the metapage
+# lock dropped between read and write ("all workers succeeded", 5 of 5 runs), every
+# stripe given the same id (that and "row count sane"), and reservations overlapping
+# by one (the whole-row, count/sum and price diffs; it reds in about half the runs,
+# in both twins). The premise, the bloom equality and the range arrive never.
+#
+#     ledger rows   4533 + 8 = 4541
+#     never         3112 + 3 = 3115
+#     dated         1421 + 5 = 1426
+#     3115 + 1426 == 4541
+checks_never_observed_red 3115

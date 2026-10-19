@@ -552,6 +552,14 @@ column_extent	column_extent	the extent of ty.s is the data's min and max, in the
 column_extent	column_extent	the extent of ty.ts is the data's min and max, in the type's order	15;16;17;18;19	2026-10-14	a writer that finds no complete extent does not recompute one;no extent row is ever written (PgColumnarExtentPreCommit returns at once)
 column_extent	column_extent	while the column that was there from the start still has one	15;16;17;18;19	2026-10-14	a writer that finds no complete extent does not recompute one;no extent row is ever written (PgColumnarExtentPreCommit returns at once)
 column_extent	column_extent	without the extent rows the planner falls back to one zone_map scan	15;16;17;18;19	2026-10-13	the planner's zone-map fallback removed: with no complete extent it reads nothing and bounds nothing
+concurrent_diff	concurrent_diff	all workers succeeded	15;16;17;18;19	2026-10-19	every stripe reserves the same stripe id;row-number reservation loses an update (the metapage lock dropped between read and write)
+concurrent_diff	concurrent_diff	concurrent bloom eq	15;16;17;18;19	never	-
+concurrent_diff	concurrent_diff	concurrent count/sum	15;16;17;18;19	2026-10-19	row-number reservations overlap by one (rowCount - 1)
+concurrent_diff	concurrent_diff	concurrent price agg	15;16;17;18;19	2026-10-19	row-number reservations overlap by one (rowCount - 1)
+concurrent_diff	concurrent_diff	concurrent range	15;16;17;18;19	never	-
+concurrent_diff	concurrent_diff	concurrent whole-row	15;16;17;18;19	2026-10-19	row-number reservations overlap by one (rowCount - 1)
+concurrent_diff	concurrent_diff	premise: every worker started before any worker finished	15;16;17;18;19	never	-
+concurrent_diff	concurrent_diff	row count sane	15;16;17;18;19	2026-10-19	every stripe reserves the same stripe id
 corruption	corruption	alive after bad descriptor	15;16;17;18;19	2026-10-16	columnar_reader.c: the unrecognized-descriptor refusal replaced by a backend crash
 corruption	corruption	alive after bloom corruption	15;16;17;18;19	2026-10-16	columnar_bloom.c: the bloom length check removed
 corruption	corruption	alive after byte_length	15;16;17;18;19	2026-10-16	columnar_reader.c: the row group span refusal replaced by a backend crash
