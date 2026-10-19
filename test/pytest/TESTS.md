@@ -230,6 +230,7 @@ behaviour, the source of that number is named.
 - [182. test_native_agg_addcolumn.py: a metadata aggregate over an added column reads what the metadata cannot hold](#182-test_native_agg_addcolumnpy-a-metadata-aggregate-over-an-added-column-reads-what-the-metadata-cannot-hold)
 - [183. test_native_groupagg_wide_cost.py: the grouped fold prices its own input scan as the scan node does](#183-test_native_groupagg_wide_costpy-the-grouped-fold-prices-its-own-input-scan-as-the-scan-node-does)
 - [184. test_hardening.py: corrupted native metadata is refused or ignored, never trusted](#184-test_hardeningpy-corrupted-native-metadata-is-refused-or-ignored-never-trusted)
+- [185. test_dependency_estimate.py: a functional-dependency estimate is not collapsed by a truncated extended MCV](#185-test_dependency_estimatepy-a-functional-dependency-estimate-is-not-collapsed-by-a-truncated-extended-mcv)
 
 ## 1. How to read a test in here
 
@@ -8091,3 +8092,20 @@ Each check is its own test over a module fixture that runs every step in the she
 | `test_a_corrupt_bloom_still_finds_a_present_value` | the equality probe returns the heap's rows |
 | `test_a_corrupt_bloom_still_counts_an_absent_value` | the absent probe's count equals the heap's |
 | `test_the_backend_is_alive_after_a_corrupt_bloom` | the server answers and no backend died since the corruption |
+
+## 185. test_dependency_estimate.py: a functional-dependency estimate is not collapsed by a truncated extended MCV
+
+The pytest twin of `test/dependency_estimate.sh` (ported for #1341), every check by the shell's name. Core applies a capacity-truncated extended MCV before the functional dependency, which clamps the joint estimate of `a=5 AND b=10` to 1 against an actual 300 (#438); the columnar path recomputes a dependency-consistent estimate and raises the row count to it when core's is lower. Three tables of 300,000 rows: the #438 case, probed at a pair outside its truncated extended MCV (1000 values, `b = a*2`, full extended statistics), a case core already gets right (10 values, each an MCV), and one with no extended statistic.
+
+### Every test
+
+A module fixture builds the three tables on a private database and takes every reading in the shell's order. An estimate is the top plan node's `rows=`, or a `query_error()` when EXPLAIN fails or prints none, so a missing estimate is never read as 0 (the shell's `${EST:-0}` did, which passed "bounded" and "untouched" with every EXPLAIN failing).
+
+| test | what it holds |
+| --- | --- |
+| `test_the_438_probe_is_outside_the_truncated_mcv` | premise: the probe is the first pair the extended MCV does not hold (the clamp happens only then; a fixed `a=5` sat in the MCV in 1 run of 6, and the arm then passed with the correction off) |
+| `test_the_438_case_really_matches_about_300_rows` | premise: the #438 probe matches 300 rows |
+| `test_the_dependency_estimate_is_not_collapsed` | the #438 estimate is at least 100, not clamped to the floor |
+| `test_and_it_is_not_an_over_correction` | and at most twice the actual count |
+| `test_a_case_core_already_estimates_well_is_unchanged` | the 10-value table's estimate is within 20% of its actual count |
+| `test_a_table_with_no_dependency_statistic_is_untouched` | with no extended statistic the estimate stays at core's (at most 10) |
