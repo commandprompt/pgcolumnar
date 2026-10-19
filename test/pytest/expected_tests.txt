@@ -862,4 +862,6 @@ guard_tests 442
 # fixture sweep premise and one test per tagged fixture: 1 + 3), by collection over the cluster files.
 # cluster_tests 1029 -> 1035 for #1341's test_dependency_estimate.py, the twin of
 # dependency_estimate.sh: six tests, one per check, by collection over the cluster files.
-cluster_tests 1035
+# cluster_tests 1035 -> 1043 for #1341's test_batch_fold_explain.py, the twin of
+# batch_fold_explain.sh: eight tests, one per check, by collection over the cluster files.
+cluster_tests 1043
