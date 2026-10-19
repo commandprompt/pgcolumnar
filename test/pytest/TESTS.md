@@ -234,6 +234,7 @@ behaviour, the source of that number is named.
 - [186. test_batch_fold_explain.py: EXPLAIN ANALYZE reports the fold that ran, not the one predicted](#186-test_batch_fold_explainpy-explain-analyze-reports-the-fold-that-ran-not-the-one-predicted)
 - [187. test_zonemap_cost.py: a scan is priced for what the zone maps let it skip, and only for that](#187-test_zonemap_costpy-a-scan-is-priced-for-what-the-zone-maps-let-it-skip-and-only-for-that)
 - [188. test_concurrent_diff.py: concurrent writers to one columnar relation end equal to a heap oracle](#188-test_concurrent_diffpy-concurrent-writers-to-one-columnar-relation-end-equal-to-a-heap-oracle)
+- [189. test_write_minmax_fastpath.py: zone min/max through the direct comparison path are the true bounds](#189-test_write_minmax_fastpathpy-zone-minmax-through-the-direct-comparison-path-are-the-true-bounds)
 
 ## 1. How to read a test in here
 
@@ -8177,3 +8178,21 @@ A module fixture runs six threads, each on a connection of its own sending its w
 | `test_the_bloom_equality_agrees` | the count for `v = 900` agrees |
 | `test_the_range_agrees` | the count for `id BETWEEN 4000 AND 12000` agrees |
 | `test_the_row_count_is_sane` | the columnar table is not empty |
+
+## 189. test_write_minmax_fastpath.py: zone min/max through the direct comparison path are the true bounds
+
+The pytest twin of `test/write_minmax_fastpath.sh` (ported for #1341), every check by the shell's name. The writer tracks each chunk's minimum and maximum, comparing integer-family values directly (#155) and testing the maximum first. A bound that is wrong skips a group holding matching rows, so the query silently returns fewer. So the checks compare a columnar table with a heap mirror, over predicates on chunk-group bounds. Floats stay off the direct path: btree orders NaN above every value, and a C comparison never would. On a private database.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order. A failed query is a `query_error()`, and a comparison counts a failure on either side as a mismatch, never as agreement.
+
+| test | what it holds |
+| --- | --- |
+| `test_every_column_returns_the_same_rows_as_heap` | sixteen range and equality predicates on every column type return heap's counts |
+| `test_min_and_max_match_heap_on_every_column` | each column's min and max, answered from the zone maps, equal heap's |
+| `test_the_narrow_range_plan_is_a_columnar_custom_scan` | premise: the narrow-range query plans the columnar scan |
+| `test_a_narrow_range_still_skips_row_groups` | that query removes chunk groups, so the bounds were not widened |
+| `test_the_float_fixture_is_one_chunk_group` | premise: the float table is one group, with NaN and the infinities at its end |
+| `test_a_float_reading_matches_heap` | parametrized by the shell's five names: NaN as the float8 and real maximum, NaN by equality, and each infinity by an equality of its own (an OR never prunes a group) |
+| `test_float_types_are_not_on_the_direct_comparison_list` | the writer's source names no float direct-comparison kind |

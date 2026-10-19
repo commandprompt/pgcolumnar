@@ -66,11 +66,13 @@ echo "-- $ROWS rows, $(q "SELECT count(*) FROM pgcolumnar.row_group r
 
 # Predicates chosen to land on and around chunk-group boundaries, which is where a
 # botched bound shows up: a group is skipped or kept wrongly only at its edges.
+# A count is a number or it is not a reading: q swallows a failure, and two empty
+# readings compared equal, so with both tables gone this check and the next passed.
 diff_count() {  # label, predicate
 	local c h
 	c="$(q "SELECT count(*) FROM mm_c WHERE $2;")"
 	h="$(q "SELECT count(*) FROM mm_h WHERE $2;")"
-	[ "$c" = "$h" ] || echo "$1(columnar=$c heap=$h)"
+	[[ "$c" =~ ^[0-9]+$ && "$c" = "$h" ]] || echo "$1(columnar=$c heap=$h)"
 }
 
 bad=""
@@ -103,7 +105,7 @@ bad=""
 for col in i2 i4 i8 d ts tz asc_i desc_i rand_i neg_i nullable_i t; do
 	c="$(q "SELECT min($col)::text || '|' || max($col)::text FROM mm_c;")"
 	h="$(q "SELECT min($col)::text || '|' || max($col)::text FROM mm_h;")"
-	[ "$c" = "$h" ] || bad="$bad $col(columnar=$c heap=$h)"
+	[ -n "$c" ] && [ "$c" = "$h" ] || bad="$bad $col(columnar=$c heap=$h)"
 done
 check "min and max match heap on every column" "${bad:-same}" "same"
 
@@ -157,19 +159,26 @@ check "the float fixture is one chunk group" \
 
 # btree orders NaN above everything, so it is the maximum of both columns. A C
 # comparison would never make it one, and then a query for it can be skipped.
-check "max of a float column with NaN matches heap" \
+# check_text, not check: two failed readings are both empty and compared equal.
+check_text "max of a float column with NaN matches heap" \
 	"$(q "SELECT max(f8)::text FROM mm_f;")" "$(q "SELECT max(f8)::text FROM mm_fh;")"
 
-check "max of a real column with NaN matches heap" \
+check_text "max of a real column with NaN matches heap" \
 	"$(q "SELECT max(f4)::text FROM mm_f;")" "$(q "SELECT max(f4)::text FROM mm_fh;")"
 
-check "a row holding NaN is still found by an equality predicate" \
+check_text "a row holding NaN is still found by an equality predicate" \
 	"$(q "SELECT count(*) FROM mm_f WHERE f8 = 'NaN';")" \
 	"$(q "SELECT count(*) FROM mm_fh WHERE f8 = 'NaN';")"
 
-check "infinities are found too" \
-	"$(q "SELECT count(*) FROM mm_f WHERE f8 = 'Infinity' OR f8 = '-Infinity';")" \
-	"$(q "SELECT count(*) FROM mm_fh WHERE f8 = 'Infinity' OR f8 = '-Infinity';")"
+# One equality per infinity, not an OR: an OR never prunes a chunk group, so with
+# either bound wrong it still counted both while each infinity, asked for alone,
+# was skipped (found by OffgridwithJD reviewing #1547).
+check_text "Infinity is found by an equality predicate" \
+	"$(q "SELECT count(*) FROM mm_f WHERE f8 = 'Infinity';")" \
+	"$(q "SELECT count(*) FROM mm_fh WHERE f8 = 'Infinity';")"
+check_text "-Infinity is found by an equality predicate" \
+	"$(q "SELECT count(*) FROM mm_f WHERE f8 = '-Infinity';")" \
+	"$(q "SELECT count(*) FROM mm_fh WHERE f8 = '-Infinity';")"
 
 # --- 5. the fast path is restricted to the types that can take it --------------
 

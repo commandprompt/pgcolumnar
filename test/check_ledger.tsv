@@ -4520,6 +4520,17 @@ vm_privilege	vm_privilege	vm entry point is covered by this boundary test: vm_se
 vm_privilege	vm_privilege	vm_is_visible refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
 vm_privilege	vm_privilege	vm_selftest did not report success to the unprivileged role	15;16;17;18;19	2026-10-14	vm_selftest without its owner check
 vm_privilege	vm_privilege	vm_selftest refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
+write_minmax_fastpath	write_minmax_fastpath	-Infinity is found by an equality predicate	15;16;17;18;19	2026-10-19	the running minimum is never lowered
+write_minmax_fastpath	write_minmax_fastpath	Infinity is found by an equality predicate	15;16;17;18;19	2026-10-19	the running maximum is never raised
+write_minmax_fastpath	write_minmax_fastpath	a narrow range still skips row groups	15;16;17;18;19	never	-
+write_minmax_fastpath	write_minmax_fastpath	a row holding NaN is still found by an equality predicate	15;16;17;18;19	2026-10-19	float8 put on the direct comparison path with a C double compare;the running maximum is never raised
+write_minmax_fastpath	write_minmax_fastpath	every column returns the same rows as heap under range predicates	15;16;17;18;19	2026-10-19	the int64 direct comparison truncated to int32;the running maximum is never raised;the running minimum is never lowered
+write_minmax_fastpath	write_minmax_fastpath	float types are not on the direct comparison list	15;16;17;18;19	2026-10-19	float8 put on the direct comparison path with a C double compare
+write_minmax_fastpath	write_minmax_fastpath	max of a float column with NaN matches heap	15;16;17;18;19	2026-10-19	float8 put on the direct comparison path with a C double compare;the running maximum is never raised
+write_minmax_fastpath	write_minmax_fastpath	max of a real column with NaN matches heap	15;16;17;18;19	2026-10-19	the running maximum is never raised
+write_minmax_fastpath	write_minmax_fastpath	min and max match heap on every column	15;16;17;18;19	2026-10-19	the int64 direct comparison truncated to int32;the running maximum is never raised;the running minimum is never lowered
+write_minmax_fastpath	write_minmax_fastpath	the float fixture is one chunk group	15;16;17;18;19	never	-
+write_minmax_fastpath	write_minmax_fastpath	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
 zonemap_cost	zonemap_cost	a correlated restriction picks the columnar scan (#434)	15;16;17;18;19	2026-10-19	the reader skips a cross-type scan key again (#477);the zone-map survival estimate gives no discount (survival 1.0)
 zonemap_cost	zonemap_cost	a demonstrably pruning restriction is discounted whatever its correlation (#461)	15;16;17;18;19	2026-10-19	a blanket discount: every restriction's survival is 0.2;the reader skips a cross-type scan key again (#477);the zone-map survival estimate gives no discount (survival 1.0)
 zonemap_cost	zonemap_cost	an uncorrelated restriction gets no pruning discount (#434)	15;16;17;18;19	2026-10-19	a blanket discount: every restriction's survival is 0.2;the reader skips a cross-type scan key again (#477);the zone-map survival estimate gives no discount (survival 1.0)
