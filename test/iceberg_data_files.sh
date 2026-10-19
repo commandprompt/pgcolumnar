@@ -288,23 +288,27 @@ check "a table with no current snapshot yields no data files" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$NOSNAP')")" "0"
 
 # ---- privilege: needs pg_read_server_files ---------------------------------
-# The role gets USAGE on the schema and EXECUTE on the function, so the refusal is
-# the function's own gate. Without them the 42501 is "permission denied for schema
-# pgcolumnar", the function never runs, and the arm cannot fail on the gate it names.
+# The role gets USAGE on the schema, so the refusal is the function's own gate (EXECUTE
+# it already has, through PUBLIC). Without USAGE the 42501 is "permission denied for
+# schema pgcolumnar" and the function never runs, so the arm requires the gate's own
+# message, naming pg_read_server_files, and not only the SQLSTATE they share.
 DROP_UNPRIV="DO \$\$BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'icedf_unpriv')
 	THEN EXECUTE 'DROP OWNED BY icedf_unpriv'; END IF; END\$\$;
 DROP ROLE IF EXISTS icedf_unpriv;"
 psql_run "$DROP_UNPRIV
 CREATE ROLE icedf_unpriv LOGIN;
-GRANT USAGE ON SCHEMA pgcolumnar TO icedf_unpriv;
-GRANT EXECUTE ON FUNCTION pgcolumnar.iceberg_data_files TO icedf_unpriv;"
-check "an unprivileged role is refused (42501)" \
-	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U icedf_unpriv -d "$PGC_DB" \
-		-qtA 2>&1 <<SQL | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
+GRANT USAGE ON SCHEMA pgcolumnar TO icedf_unpriv;"
+icedf_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U icedf_unpriv -d "$PGC_DB" \
+	-qtA 2>&1 <<SQL
+\\set VERBOSITY verbose
 SELECT count(*) FROM pgcolumnar.iceberg_data_files('$MD');
 SQL
-)" "42501"
+)"
+case "$icedf_out" in
+	*"ERROR:  42501: "*pg_read_server_files*) icedf_got=42501 ;;
+	*) icedf_got="${icedf_out%%$'\n'*}"; icedf_got="${icedf_got:-no output}" ;;
+esac
+check "an unprivileged role is refused (42501)" "$icedf_got" "42501"
 psql_run "$DROP_UNPRIV"
 
 pgc_summary

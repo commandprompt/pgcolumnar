@@ -184,17 +184,31 @@ def _one(dsn, sql, *params):
         return _failed(exc)
 
 
-def _sqlstate(dsn, path, role=None):
-    """The SQLSTATE listing `path` fails with, or "ok", in a session of its own;
-    `role`, if given, is SET first. A failure with no SQLSTATE is a failed reading."""
+def _sqlstate(dsn, path):
+    """The SQLSTATE listing `path` fails with, or "ok", in a session of its own. A
+    failure with no SQLSTATE is a failed reading."""
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
-            if role:
-                conn.execute(f"SET ROLE {role}")
             conn.execute("SELECT * FROM pgcolumnar.iceberg_data_files(%s)", (str(path),)).fetchall()
             return "ok"
     except psycopg.Error as exc:
         return exc.sqlstate or _failed(exc)
+
+
+def _gate_refusal(dsn, path, role):
+    """"42501" when `role` listing `path` is refused by the pg_read_server_files gate;
+    otherwise what happened instead, or the failed reading."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(f"SET ROLE {role}")
+            conn.execute("SELECT * FROM pgcolumnar.iceberg_data_files(%s)", (str(path),)).fetchall()
+            return "ok"
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return _failed(exc)
+        primary = exc.diag.message_primary or ""
+        return "42501" if exc.sqlstate == "42501" and "pg_read_server_files" in primary \
+            else f"{exc.sqlstate}: {primary}"
 
 
 def _run(dsn, *stmts):
@@ -208,14 +222,14 @@ def _run(dsn, *stmts):
         return _failed(exc)
 
 
-# The unprivileged role reaches the function: USAGE on the schema and EXECUTE on the
-# function, or its 42501 is the schema's and the pg_read_server_files gate never runs.
+# The unprivileged role reaches the function: USAGE on the schema (EXECUTE it has
+# through PUBLIC), or its 42501 is the schema's and the pg_read_server_files gate never
+# runs. The arm requires the gate's own message, not only the SQLSTATE they share.
 DROP_UNPRIV = ("DO $$BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'icedf_unpriv') "
                "THEN EXECUTE 'DROP OWNED BY icedf_unpriv'; END IF; END$$",
                "DROP ROLE IF EXISTS icedf_unpriv")
 MAKE_UNPRIV = DROP_UNPRIV + ("CREATE ROLE icedf_unpriv LOGIN",
-                             "GRANT USAGE ON SCHEMA pgcolumnar TO icedf_unpriv",
-                             "GRANT EXECUTE ON FUNCTION pgcolumnar.iceberg_data_files TO icedf_unpriv")
+                             "GRANT USAGE ON SCHEMA pgcolumnar TO icedf_unpriv")
 
 
 def _alive(pgc_cluster):
@@ -313,7 +327,7 @@ def ice(pgc_cluster, tmp_path_factory):
         got[f"entry {k}"] = _sqlstate(dsn, entries[k])
     got["alive entries"] = _recovered(pgc_cluster, _alive(pgc_cluster))
     got["no snapshot"] = _one(dsn, lst.format("count(*)"), str(nosnap))
-    got["unprivileged"] = _run(dsn, *MAKE_UNPRIV) or _sqlstate(dsn, md, role="icedf_unpriv")
+    got["unprivileged"] = _run(dsn, *MAKE_UNPRIV) or _gate_refusal(dsn, md, "icedf_unpriv")
     try:
         yield got
     finally:
