@@ -83,20 +83,25 @@ def _sqlstate(cluster, sql):
             rows = c.execute(sql).fetchall()
         return f"no error ({len(rows)} rows)"
     except psycopg.Error as exc:
-        return exc.sqlstate or f"no error ({str(exc).splitlines()[0]})"
+        return exc.sqlstate or _failed(exc)
 
 
 def _crashes(cluster):
+    """-> how many backends the server log says died, or a failed reading when the
+    log can't be read: a blind count must not read as "no crashes"."""
     try:
         return (cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
-    except OSError:
-        return 0
+    except OSError as exc:
+        return query_error(f"crash count unreadable: {exc}")
 
 
 def _alive(cluster, before):
     """-> "yes" when the server answers and no backend died since `before`."""
+    now = _crashes(cluster)
+    if not (isinstance(before, int) and isinstance(now, int)):
+        return now if isinstance(before, int) else before
     up = _one(cluster, "SELECT 1") == "1"
-    died = _crashes(cluster) - before
+    died = now - before
     return "yes" if up and died == 0 else f"no ({died} backend crashes)"
 
 

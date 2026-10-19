@@ -69,16 +69,26 @@ refusal() { # SQL -> "SQLSTATE: message" of the error it raises, or NOERR's empt
 # requires that no backend has died since its scenario started, read from the server
 # log rather than from timing (corruption.sh measured the same hole).
 crashes() {
-	# grep -c prints 0 itself when nothing matches, and then exits 1
-	pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null || true
+	# a number, or nothing when the log can't be read: grep -c prints 0 itself when
+	# nothing matches (and exits 1), but nothing at all for a file it cannot open,
+	# and a blind count must not read as "no crashes"
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
 }
 alive() {	# since this scenario's corruption, which notes the count
 	# a crash puts the server through recovery: wait it out, so the next scenario
 	# starts on a server that answers and one crash cannot fail the checks after it
 	local _i
 	for _i in $(seq 60); do [ "$(q 'SELECT 1;' 2>/dev/null)" = "1" ] && break; sleep 1; done
-	[ "$(q 'SELECT 1;')" = "1" ] && [ "$(crashes)" = "$CRASHES_BEFORE" ] && echo yes \
-		|| echo "no ($(( $(crashes) - CRASHES_BEFORE )) backend crashes)"
+	local _now; _now="$(crashes)"
+	if ! [[ "$CRASHES_BEFORE" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then
+		echo "no (crash count unreadable)"
+	elif [ "$(q 'SELECT 1;')" = "1" ] && [ "$_now" = "$CRASHES_BEFORE" ]; then
+		echo yes
+	else
+		echo "no ($(( _now - CRASHES_BEFORE )) backend crashes)"
+	fi
 }
 # the zone map's untouched bounds, to put back: native_zone_excludes decodes the
 # minimum BEFORE the maximum, so a corrupt minimum left in place answers for the
