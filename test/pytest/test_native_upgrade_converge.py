@@ -23,6 +23,39 @@ import psycopg
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+FIXTURES = REPO / "test" / "fixtures"
+BACKUP = ".pytest-bak"
+
+
+def _extdir(pgc_cluster):
+    sharedir = subprocess.run([pgc_cluster.pg_config, "--sharedir"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+    return pathlib.Path(sharedir) / "extension"
+
+
+def _stage(extdir, versions):
+    """Copy each version's fixture into `extdir`, keeping what was there. -> staged paths."""
+    staged = []
+    for v in versions:
+        dst = extdir / f"pgcolumnar--{v}.sql"
+        backup = dst.with_name(dst.name + BACKUP)
+        # A backup already here is the original, left by a run that died: taking it
+        # again would copy the installed fixture over it.
+        if dst.exists() and not backup.exists():
+            shutil.copy2(dst, backup)
+        shutil.copy2(FIXTURES / f"pgcolumnar--{v}.sql", dst)
+        staged.append(dst)
+    return staged
+
+
+def _unstage(staged):
+    """Put back what `_stage` found, or remove what it added."""
+    for dst in staged:
+        backup = dst.with_name(dst.name + BACKUP)
+        if backup.exists():
+            shutil.move(backup, dst)
+        else:
+            dst.unlink(missing_ok=True)
 
 
 def _target_and_previous():
@@ -39,13 +72,7 @@ def window_db(pgc_cluster):
     target, prev = _target_and_previous()
     assert len(prev) == 1, f"one upgrade script should lead to {target}, found {prev}"
     prev = prev[0]
-    sharedir = subprocess.run([pgc_cluster.pg_config, "--sharedir"], capture_output=True,
-                              text=True, check=True).stdout.strip()
-    dst = pathlib.Path(sharedir) / "extension" / f"pgcolumnar--{prev}.sql"
-    backup = dst.with_name(dst.name + ".pytest-bak")
-    if dst.exists():
-        shutil.copy2(dst, backup)
-    shutil.copy2(REPO / "test" / "fixtures" / f"pgcolumnar--{prev}.sql", dst)
+    staged = _stage(_extdir(pgc_cluster), [prev])
 
     def admin(sql):
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
@@ -60,10 +87,7 @@ def window_db(pgc_cluster):
         yield dsn, prev
     finally:
         admin("DROP DATABASE IF EXISTS pgc_upgrade_window WITH (FORCE)")
-        if backup.exists():
-            shutil.move(backup, dst)
-        else:
-            dst.unlink(missing_ok=True)
+        _unstage(staged)
 
 
 def _one(dsn, sql):
@@ -90,6 +114,24 @@ def _succeeds(dsn, *sqls):
         return "succeeded"
     except psycopg.Error as exc:
         return f"refused ({exc.sqlstate}: {str(exc).splitlines()[0]})"
+
+
+def test_a_run_after_one_that_died_keeps_the_original(tmp_path, expect):
+    """A run that dies before `_unstage` leaves the fixture installed and the original in
+    the backup. The next run must not back up again: that copies the fixture over the
+    original, and the prefix's own file is gone for good."""
+    v = "1.0-alpha4"
+    dst = tmp_path / f"pgcolumnar--{v}.sql"
+    shutil.copy2(FIXTURES / dst.name, dst)
+    original = "-- the prefix's own install script\n"
+    dst.with_name(dst.name + BACKUP).write_text(original)
+    _unstage(_stage(tmp_path, [v]))
+    left = dst.read_text() if dst.exists() else None
+    expect.text({original: "the prefix's own file", None: "no file"}.get(
+                    left, "the fixture" if left == (FIXTURES / dst.name).read_text()
+                    else "some other file"),
+                "the prefix's own file",
+                "a run after one that died restores the prefix's own file, not the fixture")
 
 
 def test_the_upgrade_window(window_db, expect):
