@@ -38,7 +38,8 @@
 # definition (pg_get_functiondef, which includes the AS '...','symbol' clause, so
 # a wrong link symbol shows up here), its ACL, and its comment; every relation's
 # kind, ACL, and comment; every column's type, NOT NULL, and comment; every
-# non-base type; and every foreign-data wrapper's handler and validator.
+# non-base type; every foreign-data wrapper's handler and validator; and every
+# column default, index definition, constraint, row-level-security flag and policy.
 # Convergence = an empty diff on all of it. The comment (pg_description) is in the
 # snapshot on purpose: pg_get_functiondef does NOT emit COMMENT, so without this a
 # generator that diffs only function definitions is blind to a missing comment,
@@ -281,6 +282,19 @@ snap() {
 	  UNION ALL SELECT 'FDW|'||w.fdwname||'|'||coalesce(h.oid::regproc::text,'-')||'|'||coalesce(v.oid::regproc::text,'-')
 	    FROM pg_foreign_data_wrapper w LEFT JOIN pg_proc h ON h.oid=w.fdwhandler LEFT JOIN pg_proc v ON v.oid=w.fdwvalidator
 	    WHERE w.fdwname LIKE 'pgcolumnar%'
+	  UNION ALL SELECT 'DEF|'||c.relname||'.'||a.attname||'|'||pg_get_expr(d.adbin,d.adrelid)
+	    FROM pg_attrdef d JOIN pg_class c ON c.oid=d.adrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+	    JOIN pg_attribute a ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE n.nspname='pgcolumnar'
+	  UNION ALL SELECT 'IDX|'||pg_get_indexdef(i.indexrelid)
+	    FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar'
+	  UNION ALL SELECT 'CON|'||coalesce(k.conrelid::regclass::text,k.contypid::regtype::text)||'|'||k.conname||'|'||pg_get_constraintdef(k.oid)
+	    FROM pg_constraint k JOIN pg_namespace n ON n.oid=k.connamespace WHERE n.nspname='pgcolumnar'
+	  UNION ALL SELECT 'RLS|'||c.relname||'|'||c.relrowsecurity::text||'|'||c.relforcerowsecurity::text
+	    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar' AND c.relkind IN ('r','p')
+	  UNION ALL SELECT 'POL|'||c.relname||'|'||p.polname||'|'||p.polcmd::text||'|'||p.polpermissive::text||'|'
+	      ||array_to_string(ARRAY(SELECT CASE WHEN r=0 THEN 'public' ELSE r::regrole::text END FROM unnest(p.polroles) r ORDER BY 1),',')
+	      ||'|'||coalesce(pg_get_expr(p.polqual,p.polrelid),'-')||'|'||coalesce(pg_get_expr(p.polwithcheck,p.polrelid),'-')
+	    FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar'
 	  ORDER BY 1;" | sort
 }
 

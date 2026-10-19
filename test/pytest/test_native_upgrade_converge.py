@@ -3,7 +3,8 @@ release-tag arms (see INCOMPLETE in test_compare_to_bash.py).
 
 ALTER EXTENSION pgcolumnar UPDATE must bring a database on any released version to a
 catalog identical to a fresh install of the current default_version: every function's
-definition, ACL and comment, every relation, column, type and foreign-data wrapper.
+definition, ACL and comment, every relation, column, type and foreign-data wrapper, and
+every column default, index, constraint, row-level-security flag and policy.
 The released starting points are frozen install scripts in test/fixtures. They are not
 shipped, so each is staged into the extension directory for the module, keeping what
 was there, and put back after. A backup already there means an earlier run died before
@@ -42,7 +43,8 @@ VERSIONS = ["1.0-alpha", "1.0-alpha2", "1.0-alpha3", "1.0-alpha4"]
 
 # One line per object in the pgcolumnar schema: every function's definition, ACL and
 # comment; every relation's kind, ACL and comment; every column's type, NOT NULL and
-# comment; every non-base type; every foreign-data wrapper's handler and validator. The
+# comment; every non-base type; every foreign-data wrapper's handler and validator; and every
+# column default, index definition, constraint, row-level-security flag and policy. The
 # comments are here because pg_get_functiondef does not emit COMMENT.
 SNAPSHOT = """
   SELECT 'FN|'||p.oid::regprocedure||'|'||md5(pg_get_functiondef(p.oid))||'|'||coalesce(p.proacl::text,'(def)')||'|'||md5(coalesce(obj_description(p.oid,'pg_proc'),''))
@@ -57,6 +59,19 @@ SNAPSHOT = """
   UNION ALL SELECT 'FDW|'||w.fdwname||'|'||coalesce(h.oid::regproc::text,'-')||'|'||coalesce(v.oid::regproc::text,'-')
     FROM pg_foreign_data_wrapper w LEFT JOIN pg_proc h ON h.oid=w.fdwhandler LEFT JOIN pg_proc v ON v.oid=w.fdwvalidator
     WHERE w.fdwname LIKE 'pgcolumnar%'
+  UNION ALL SELECT 'DEF|'||c.relname||'.'||a.attname||'|'||pg_get_expr(d.adbin,d.adrelid)
+    FROM pg_attrdef d JOIN pg_class c ON c.oid=d.adrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+    JOIN pg_attribute a ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE n.nspname='pgcolumnar'
+  UNION ALL SELECT 'IDX|'||pg_get_indexdef(i.indexrelid)
+    FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar'
+  UNION ALL SELECT 'CON|'||coalesce(k.conrelid::regclass::text,k.contypid::regtype::text)||'|'||k.conname||'|'||pg_get_constraintdef(k.oid)
+    FROM pg_constraint k JOIN pg_namespace n ON n.oid=k.connamespace WHERE n.nspname='pgcolumnar'
+  UNION ALL SELECT 'RLS|'||c.relname||'|'||c.relrowsecurity::text||'|'||c.relforcerowsecurity::text
+    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar' AND c.relkind IN ('r','p')
+  UNION ALL SELECT 'POL|'||c.relname||'|'||p.polname||'|'||p.polcmd::text||'|'||p.polpermissive::text||'|'
+      ||array_to_string(ARRAY(SELECT CASE WHEN r=0 THEN 'public' ELSE r::regrole::text END FROM unnest(p.polroles) r ORDER BY 1),',')
+      ||'|'||coalesce(pg_get_expr(p.polqual,p.polrelid),'-')||'|'||coalesce(pg_get_expr(p.polwithcheck,p.polrelid),'-')
+    FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar'
 """
 
 
