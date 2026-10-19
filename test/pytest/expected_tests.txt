@@ -858,4 +858,6 @@ guard_tests 442
 # tests, one per check, by collection over the cluster files.
 # cluster_tests 1018 -> 1025 for #1341, test_native_upgrade_converge.py ported by name except its
 # release-tag arms (1 -> 8 tests), by collection over the cluster files.
-cluster_tests 1025
+# cluster_tests 1025 -> 1029 for #1341, test_native_upgrade_converge.py's release-tag arms (the
+# fixture sweep premise and one test per tagged fixture: 1 + 3), by collection over the cluster files.
+cluster_tests 1029

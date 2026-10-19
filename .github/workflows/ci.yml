@@ -168,6 +168,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # THE RELEASE TAGS, FOR native_upgrade_converge'S FIXTURE ARMS (#1341). Each
+      # released fixture must be byte-identical to what its tag shipped, compared by
+      # blob id against `v<version>:pgcolumnar--<version>.sql`. actions/checkout
+      # fetches no tags, so these arms used to skip on every CI run. Depth 1 is
+      # enough: only the file at each tagged commit is read.
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
+
       - name: Add the PGDG repository and install PostgreSQL ${{ matrix.pg }} with its headers
         run: |
           set -euo pipefail
@@ -556,6 +564,14 @@ jobs:
         run: |
           git fetch --depth=1 origin \
             "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+      # THE RELEASE TAGS, FOR native_upgrade_converge'S FIXTURE ARMS (#1341). Each
+      # released fixture must be byte-identical to what its tag shipped, compared by
+      # blob id against `v<version>:pgcolumnar--<version>.sql`. actions/checkout
+      # fetches no tags, so these arms used to skip on every CI run. Depth 1 is
+      # enough: only the file at each tagged commit is read.
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
 
       # The repository and the package lists first, on their own, because the
       # cache key below is derived from the versions apt resolves and cannot be

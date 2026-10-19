@@ -219,23 +219,26 @@ _fx_git() { git -C "$HERE/.." "$@" 2>/dev/null; }
 if ! _fx_git rev-parse --git-dir >/dev/null; then
 	_fx_why="no git repository in the tree under test"
 elif [ -z "$(_fx_git tag -l 'v1.0-alpha*')" ]; then
-	# CI checks out at depth 1 with no tags, so this cannot run there. It runs
-	# locally and in the five-major release gate, which is where a fixture is
-	# captured and therefore where it can be captured wrongly.
+	# actions/checkout fetches no tags, so CI fetches the release tags in a step
+	# of its own for these arms (#1341). A local checkout without them still
+	# lands here, and the arms skip rather than compare against nothing.
 	_fx_why="no release tags in this checkout"
 else
 	_fx_why=""
 fi
 
+# The name is written out in each call rather than held in a variable: the twin
+# grader reads a check's name from the call, and `check "$_fx_name"` was invisible
+# to it, so a port could drop this arm and still grade complete.
 for v in $_FX_TAGGED; do
-	_fx_name="the $v fixture is byte-identical to what v$v shipped"
 	if [ -n "$_fx_why" ]; then
-		check_skip "$_fx_name" "SKIP  $_fx_name ($_fx_why)" "$_fx_why"
+		check_skip "the $v fixture is byte-identical to what v$v shipped" \
+			"SKIP  the $v fixture is byte-identical to what v$v shipped ($_fx_why)" "$_fx_why"
 		continue
 	fi
 	_fx_tag="$(_fx_git rev-parse "v$v:pgcolumnar--$v.sql" || echo "no such path at v$v")"
 	_fx_fix="$(_fx_git hash-object "$HERE/fixtures/pgcolumnar--$v.sql" || echo "fixture missing")"
-	check "$_fx_name" "$_fx_fix" "$_fx_tag"
+	check "the $v fixture is byte-identical to what v$v shipped" "$_fx_fix" "$_fx_tag"
 done
 
 # THE ARM THAT CATCHES THE QUIET HALF. Staging unconditionally fixes it; this

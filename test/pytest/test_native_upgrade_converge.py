@@ -306,6 +306,46 @@ def test_the_staged_fixtures_are_the_committed_ones(staging, expect):
                 "every staged install script is the committed fixture, not a leftover")
 
 
+# The fixtures to compare against their tags, derived from the fixtures on disk as
+# the shell derives them, so a fixture added at the next cycle-open is checked
+# without anyone listing it. 1.0-alpha is synthetic: v1.0-alpha shipped
+# pgcolumnar--1.0-dev.sql, so no tag holds a pgcolumnar--1.0-alpha.sql.
+TAGGED = sorted(p.name[len("pgcolumnar--"):-len(".sql")] for p in FIXTURES.glob("pgcolumnar--*.sql")
+                if p.name != "pgcolumnar--1.0-alpha.sql")
+
+
+def _git(*args):
+    """-> git's stripped stdout in the repository under test, or None when it fails."""
+    r = subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def test_the_fixture_sweep_found_fixtures(expect):
+    # An empty sweep would leave nothing below to compare and report clean.
+    expect.text("yes" if TAGGED else "no", "yes",
+                "premise: the fixture sweep found fixtures to compare against their tags")
+
+
+@pytest.mark.parametrize("v", TAGGED)
+def test_each_fixture_is_what_its_tag_shipped(v, expect):
+    """Blob ids, not a diff: a blob id is a lookup that no similarity heuristic can
+    distort. The local tag is trusted, as in the shell; if this fails and the fixture
+    looks right, check the tag with `git ls-remote origin refs/tags/v<version>`."""
+    if _git("rev-parse", "--git-dir") is None:
+        why = "no git repository in the tree under test"
+    elif not _git("tag", "-l", "v1.0-alpha*"):
+        why = "no release tags in this checkout"
+    else:
+        why = ""
+    if why:
+        expect.cannot_run("UNMET_PRECONDITION", why,
+                          name=f"the {v} fixture is byte-identical to what v{v} shipped")
+        return
+    tag = _git("rev-parse", f"v{v}:pgcolumnar--{v}.sql") or query_error(f"no such path at v{v}")
+    fixture = _git("hash-object", str(FIXTURES / f"pgcolumnar--{v}.sql")) or query_error("fixture missing")
+    expect.text(fixture, tag, f"the {v} fixture is byte-identical to what v{v} shipped")
+
+
 @pytest.mark.parametrize("from_", VERSIONS)
 def test_each_release_upgrades_to_a_fresh_catalog(pgc_cluster, staging, reference, from_, expect):
     extdir, _, _ = staging

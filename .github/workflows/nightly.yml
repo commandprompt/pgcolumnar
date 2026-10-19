@@ -90,6 +90,15 @@ jobs:
         with:
           fetch-depth: 2
 
+      # THE RELEASE TAGS, FOR native_upgrade_converge'S FIXTURE ARMS (#1341). Each
+      # released fixture must be byte-identical to what its tag shipped, compared by
+      # blob id against `v<version>:pgcolumnar--<version>.sql`. actions/checkout
+      # fetches no tags, so these arms used to skip on every CI run. Depth 1 is
+      # enough: only the file at each tagged commit is read, and it leaves the
+      # checkout's own history as it was (HEAD~1 still resolves at fetch-depth 2).
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
+
       # The packages are ~102 MB, of which ~91 MB is the LLVM toolchain that
       # postgresql-server-dev-N depends on. That download is what stalls: every
       # failure of this step sat at the 600s bound while every success finished
@@ -726,6 +735,15 @@ jobs:
         pg: ['15', '16', '17', '18']
     steps:
       - uses: actions/checkout@v4
+
+      # THE RELEASE TAGS, FOR native_upgrade_converge'S FIXTURE ARMS (#1341). Each
+      # released fixture must be byte-identical to what its tag shipped, compared by
+      # blob id against `v<version>:pgcolumnar--<version>.sql`. actions/checkout
+      # fetches no tags, so these arms used to skip on every CI run. Depth 1 is
+      # enough: only the file at each tagged commit is read, and it leaves the
+      # checkout's own history as it was (HEAD~1 still resolves at fetch-depth 2).
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
 
       - name: Add the PGDG repository and install PostgreSQL ${{ matrix.pg }} with its headers
         run: |

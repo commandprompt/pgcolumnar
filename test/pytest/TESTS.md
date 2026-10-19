@@ -7531,7 +7531,7 @@ Part of the pytest twin of `test/drop_cleanup.sh` (#1265, ported for #1341): its
 
 ## 143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it
 
-The pytest twin of `test/native_upgrade_converge.sh` (#1341), by the shell's names, except its release-tag checks, so the pair is declared INCOMPLETE. `ALTER EXTENSION pgcolumnar UPDATE` must bring a database on any released version to a catalog identical to a fresh install of the current `default_version`: every function's definition, ACL and comment, and every relation, column, type and foreign-data wrapper. The released starting points are the install scripts in `test/fixtures`. They are staged into the extension directory once for the module, under a lock that makes a second stager wait, and whatever was there is put back after. A backup already there means an earlier run died, so it holds the original and is kept.
+The pytest twin of `test/native_upgrade_converge.sh` (#1341), every check by the shell's name, so the pair is declared COMPLETE. `ALTER EXTENSION pgcolumnar UPDATE` must bring a database on any released version to a catalog identical to a fresh install of the current `default_version`: every function's definition, ACL and comment, and every relation, column, type and foreign-data wrapper. The released starting points are the install scripts in `test/fixtures`. They are staged into the extension directory once for the module, under a lock that makes a second stager wait, and whatever was there is put back after. A backup already there means an earlier run died, so it holds the original and is kept.
 
 Between installing a new library and running the update, a database runs the new library over its previous release's catalog (#1341 item 66). Reads and writes must work there. `DROP TABLE`, `TRUNCATE` and `pgcolumnar.vacuum()` need a catalog table the old one lacks, so they must be refused with 42P01, change nothing, and carry a hint naming the update. After the update all three succeed on the same rows.
 
@@ -7544,6 +7544,8 @@ Between installing a new library and running the update, a database runs the new
 | `test_the_staged_fixtures_are_the_committed_ones` | the control's `default_version`; no backup was already staged; every fixture was staged, and each staged script is the committed fixture |
 | `test_each_release_upgrades_to_a_fresh_catalog` | parametrized by the four fixtures: a fresh install of the target has more than 100 objects to compare, the upgrade applies, the extension is at the target, and its catalog equals the fresh install's |
 | `test_the_upgrade_window` | at the previous catalog: rows written, deleted and read; the three operations refused with the hint and nothing changed; after the update the rows are intact and all three succeed |
+| `test_the_fixture_sweep_found_fixtures` | the fixtures on disk, less the synthetic `1.0-alpha`, are not an empty list: an empty sweep would compare nothing and report clean |
+| `test_each_fixture_is_what_its_tag_shipped` | parametrized by those fixtures: each one's blob id equals `v<version>:pgcolumnar--<version>.sql`'s; with no git repository or no release tags it cannot run (UNMET_PRECONDITION) rather than pass. CI fetches the tags for it |
 
 ## 144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen
 
