@@ -868,4 +868,6 @@ guard_tests 442
 # 19 tests, one per check, by collection over the cluster files.
 # cluster_tests 1062 -> 1070 for #1341's test_concurrent_diff.py, the twin of
 # concurrent_diff.sh: eight tests, one per check, by collection over the cluster files.
-cluster_tests 1070
+# cluster_tests 1070 -> 1081 for #1341's test_write_minmax_fastpath.py, the twin of write_minmax_fastpath.sh:
+# 11 checks in 11 tests, by collection over the cluster files.
+cluster_tests 1081

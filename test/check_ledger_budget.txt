@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 177
+suites_not_covered 176
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3848,4 +3848,27 @@ suites_not_covered 177
 #     never         3112 + 3 = 3115
 #     dated         1421 + 5 = 1426
 #     3115 + 1426 == 4541
-checks_never_observed_red 3115
+#
+# #1341, write_minmax_fastpath seeded, with its twin (jdatcmd): 3115 -> 3118, and
+# suites_not_covered 177 -> 176. The suite had no rows. It enters with 11 checks from
+# five-major runs (11/11 on each of 15-19, shell and twin alike), after two fixes. q
+# swallows a failure, and the heap comparisons read two failed queries as two equal
+# empty strings, so with every table dropped six checks passed; counts now must be
+# numbers, a bound must be non-empty, and the float comparisons use check_text. And
+# "infinities are found too" counted both infinities under one OR, which never prunes
+# a chunk group, so it stayed green while each infinity asked for alone was lost
+# (found by OffgridwithJD reviewing #1547); it is now one equality check per
+# infinity. 8 are dated by four mutations of the writer's min/max tracking, each
+# reddening the same names in both twins: the running maximum never raised (both
+# differential checks, the float8 and real NaN maxima, NaN by equality, +Infinity);
+# the running minimum never lowered (both differential checks, -Infinity); the int64
+# direct comparison truncated to int32 (both differential checks); and float8 on the
+# direct path with a C double compare (NaN as the maximum, NaN by equality, the
+# source guard). 3 arrive never: the plan premise, the skipping check and the float
+# fixture's shape.
+#
+#     ledger rows   4541 + 11 = 4552
+#     never         3115 + 3 = 3118
+#     dated         1426 + 8 = 1434
+#     3118 + 1434 == 4552
+checks_never_observed_red 3118
