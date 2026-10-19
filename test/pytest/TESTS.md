@@ -188,7 +188,7 @@ behaviour, the source of that number is named.
 - [140. test_parquet_import.py: a partitioned columnar parent is refused by import_parquet](#140-test_parquet_importpy-a-partitioned-columnar-parent-is-refused-by-import_parquet)
 - [141. test_phase5.py: set_options and reset_options agree](#141-test_phase5py-set_options-and-reset_options-agree)
 - [142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP](#142-test_drop_cleanuppy-a-columnar-matviews-options-row-goes-with-its-drop)
-- [143. test_native_upgrade_converge.py: the upgrade window, before ALTER EXTENSION UPDATE](#143-test_native_upgrade_convergepy-the-upgrade-window-before-alter-extension-update)
+- [143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it](#143-test_native_upgrade_convergepy-every-release-upgrades-to-a-fresh-catalog-and-the-window-before-it)
 - [144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen](#144-test_fk_referencingpy-a-foreign-key-referencing-a-columnar-table-is-refused-where-it-is-chosen)
 - [145. test_truncate_cleanup.py: TRUNCATE leaves no catalog rows behind, and keeps what it must](#145-test_truncate_cleanuppy-truncate-leaves-no-catalog-rows-behind-and-keeps-what-it-must)
 - [146. test_native_dml.py: DELETE, UPDATE and MERGE on a native table agree with heap](#146-test_native_dmlpy-delete-update-and-merge-on-a-native-table-agree-with-heap)
@@ -7529,14 +7529,20 @@ Part of the pytest twin of `test/drop_cleanup.sh` (#1265, ported for #1341): its
 | `test_refresh_keeps_a_matviews_options_row` | a REFRESH that rewrote the matview leaves its set_options row in place |
 | `test_an_unrelated_options_row_survives` | another table's row survives a matview's DROP, and an ordinary columnar table still takes its own |
 
-## 143. test_native_upgrade_converge.py: the upgrade window, before ALTER EXTENSION UPDATE
+## 143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it
 
-Part of the pytest twin of `test/native_upgrade_converge.sh` (#1341 item 66): its upgrade-window arms only, by the shell's names, and the pair is declared INCOMPLETE. Between installing a new library and running `ALTER EXTENSION pgcolumnar UPDATE`, a database runs the new library over its previous release's catalog. Reads and writes must work there. `DROP TABLE`, `TRUNCATE` and `pgcolumnar.vacuum()`, which need a catalog table the old one lacks, must be refused with 42P01, change nothing, and carry a hint naming the update; after the update all three succeed on the same rows. The previous release is the version the shipped upgrade script to the current `default_version` starts from; its base script is staged from `test/fixtures` for the test and removed after.
+The pytest twin of `test/native_upgrade_converge.sh` (#1341), by the shell's names, except its release-tag checks, so the pair is declared INCOMPLETE. `ALTER EXTENSION pgcolumnar UPDATE` must bring a database on any released version to a catalog identical to a fresh install of the current `default_version`: every function's definition, ACL and comment, and every relation, column, type and foreign-data wrapper. The released starting points are the install scripts in `test/fixtures`. They are staged into the extension directory once for the module, under a lock that makes a second stager wait, and whatever was there is put back after. A backup already there means an earlier run died, so it holds the original and is kept.
+
+Between installing a new library and running the update, a database runs the new library over its previous release's catalog (#1341 item 66). Reads and writes must work there. `DROP TABLE`, `TRUNCATE` and `pgcolumnar.vacuum()` need a catalog table the old one lacks, so they must be refused with 42P01, change nothing, and carry a hint naming the update. After the update all three succeed on the same rows.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
+| `test_a_run_after_one_that_died_keeps_the_original` | with a died run's state in a temporary directory, staging and restoring leave the prefix's own file, not the fixture |
+| `test_two_stagings_at_once_keep_the_original` | a second staging that starts inside the first, as another `pytest -n` worker's would, waits for it under the staging lock, and the prefix's own file survives both |
+| `test_the_staged_fixtures_are_the_committed_ones` | the control's `default_version`; no backup was already staged; every fixture was staged, and each staged script is the committed fixture |
+| `test_each_release_upgrades_to_a_fresh_catalog` | parametrized by the four fixtures: a fresh install of the target has more than 100 objects to compare, the upgrade applies, the extension is at the target, and its catalog equals the fresh install's |
 | `test_the_upgrade_window` | at the previous catalog: rows written, deleted and read; the three operations refused with the hint and nothing changed; after the update the rows are intact and all three succeed |
 
 ## 144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen

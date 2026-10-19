@@ -856,4 +856,6 @@ guard_tests 442
 # native_groupagg_wide_cost.sh: five tests, one per check, by collection over the cluster files.
 # cluster_tests 1011 -> 1018 for #1341's test_hardening.py, the twin of hardening.sh: seven
 # tests, one per check, by collection over the cluster files.
-cluster_tests 1018
+# cluster_tests 1018 -> 1025 for #1341, test_native_upgrade_converge.py ported by name except its
+# release-tag arms (1 -> 8 tests), by collection over the cluster files.
+cluster_tests 1025
