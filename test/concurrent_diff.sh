@@ -38,9 +38,15 @@ for w in $(seq 0 $((WORKERS - 1))); do
 		DELETE FROM t_col  WHERE id BETWEEN $lo AND $hi AND id % 7 = 0;
 		UPDATE t_heap SET v = v + 1 WHERE id BETWEEN $lo AND $hi AND id % 5 = 0;
 		UPDATE t_col  SET v = v + 1 WHERE id BETWEEN $lo AND $hi AND id % 5 = 0;"
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -v ON_ERROR_STOP=1 -q -c "$sql" \
-		>/dev/null 2>>"$PGC_WORKDIR/worker.$w.err" &
+	(
+		date +%s%N > "$PGC_WORKDIR/worker.$w.start"
+		env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+			-d "$PGC_DB" -v ON_ERROR_STOP=1 -q -c "$sql" \
+			>/dev/null 2>>"$PGC_WORKDIR/worker.$w.err"
+		rc=$?
+		date +%s%N > "$PGC_WORKDIR/worker.$w.end"
+		exit $rc
+	) &
 	pids+=($!)
 done
 
@@ -49,6 +55,20 @@ for pid in "${pids[@]}"; do
 	wait "$pid" || fail_workers=1
 done
 check "all workers succeeded" "$fail_workers" "0"
+
+# THE WORKERS MUST OVERLAP, or this is a serial differential with extra steps. Every
+# worker starts before any finishes: the latest start precedes the earliest end
+# (measured on PG17: all six inside the first 6 ms, the first done at about 90 ms).
+overlap="$(cat "$PGC_WORKDIR"/worker.*.start "$PGC_WORKDIR"/worker.*.end 2>/dev/null | wc -l)"
+if [ "$overlap" != "$((2 * WORKERS))" ]; then
+	overlap="no timing for every worker ($overlap of $((2 * WORKERS)) stamps)"
+else
+	overlap="$(awk 'FNR==1 && FILENAME ~ /start$/ { if ($1 > ls) ls = $1 }
+		FNR==1 && FILENAME ~ /end$/ { if (ee == "" || $1 < ee) ee = $1 }
+		END { print (ls < ee) ? "yes" : "no (the last start came after the first end)" }' \
+		"$PGC_WORKDIR"/worker.*.start "$PGC_WORKDIR"/worker.*.end)"
+fi
+check "premise: every worker started before any worker finished" "$overlap" "yes"
 
 # The columnar table must match the heap oracle exactly after concurrent DML.
 # The whole-row and price checks cover the ALP-encoded decimal column flushed

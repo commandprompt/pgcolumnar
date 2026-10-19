@@ -866,4 +866,6 @@ guard_tests 442
 # batch_fold_explain.sh: eight tests, one per check, by collection over the cluster files.
 # cluster_tests 1043 -> 1062 for #1341's test_zonemap_cost.py, the twin of zonemap_cost.sh:
 # 19 tests, one per check, by collection over the cluster files.
-cluster_tests 1062
+# cluster_tests 1062 -> 1070 for #1341's test_concurrent_diff.py, the twin of
+# concurrent_diff.sh: eight tests, one per check, by collection over the cluster files.
+cluster_tests 1070
