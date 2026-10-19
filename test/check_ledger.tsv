@@ -574,6 +574,12 @@ debug_hook_privilege	debug_hook_privilege	peon may even brick its OWN scratch ta
 debug_hook_privilege	debug_hook_privilege	premise: the peon role runs its own statements	15;16;17;18;19	never	-
 debug_hook_privilege	debug_hook_privilege	the gated table still reads (version untouched by the refused calls)	15;16;17;18;19	2026-10-14	the debug set-metapage-version hook without its owner check
 debug_hook_privilege	debug_hook_privilege	the owner can call the advance hook (no-op advance)	15;16;17;18;19	2026-10-14	the debug advance hook refuses every caller including the owner
+dependency_estimate	dependency_estimate	a case core already estimates well is unchanged (within 20%)	15;16;17;18;19	2026-10-19	core's estimate overridden where it is right (rel->rows = depRows * 3 unconditionally)
+dependency_estimate	dependency_estimate	a table with no dependency statistic is left to core's estimate (not raised)	15;16;17;18;19	2026-10-19	the #438 correction fires with no dependency statistic (degree forced to 1)
+dependency_estimate	dependency_estimate	and it is not an over-correction (bounded by the most selective marginal)	15;16;17;18;19	2026-10-19	core's estimate overridden where it is right (rel->rows = depRows * 3 unconditionally);the #438 raise overshoots tenfold (rel->rows = depRows * 10)
+dependency_estimate	dependency_estimate	premise: the #438 case really matches ~300 rows	15;16;17;18;19	never	-
+dependency_estimate	dependency_estimate	premise: the #438 probe is a pair the truncated extended MCV does not hold	15;16;17;18;19	never	-
+dependency_estimate	dependency_estimate	the functional-dependency estimate is not collapsed to the clamp floor	15;16;17;18;19	2026-10-19	the #438 raise turned off (rel->rows never raised to depRows)
 differential	differential	agg avg	15;16;17;18;19	never	-
 differential	differential	agg count	15;16;17;18;19	never	-
 differential	differential	agg minmax	15;16;17;18;19	never	-

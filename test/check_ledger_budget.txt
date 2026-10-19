@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 181
+suites_not_covered 180
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3778,4 +3778,21 @@ suites_not_covered 181
 #     never         3091 + 1 = 3092
 #     dated         1408 + 0 = 1408
 #     3092 + 1408 == 4500
-checks_never_observed_red 3092
+#
+# #1341, dependency_estimate seeded, with its twin (OffgridwithJD): 3092 -> 3094, and
+# suites_not_covered 181 -> 180. The suite had no rows. It enters with 6 checks from
+# five-major runs (6/6 on each of 15-19), after two fixes. The #438 arm probed a=5,
+# which ANALYZE's random sample put in the truncated extended MCV in 1 run of 6, and
+# then core estimated 400 on its own and the arm passed with the correction off; the
+# probe is now the first pair outside the MCV, under a premise of its own. And a
+# failed EXPLAIN read as 0 through `${EST:-0}`, which passed "bounded" and
+# "untouched"; every reading now requires a number. 4 are dated by four mutations:
+# the raise turned off (1), the raise overshooting tenfold (1), the correction firing
+# with no dependency statistic (1), and core's estimate overridden where it is right
+# (2, one of them the over-correction arm again). The two premises arrive never.
+#
+#     ledger rows   4500 + 6 = 4506
+#     never         3092 + 2 = 3094
+#     dated         1408 + 4 = 1412
+#     3094 + 1412 == 4506
+checks_never_observed_red 3094
