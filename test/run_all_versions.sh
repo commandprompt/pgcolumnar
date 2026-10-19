@@ -1750,10 +1750,15 @@ pgc_tally_suite() {	# pgc_tally_suite NAME VERDICT LOGFILE
 		# the gate unable to do its job at all, where regenerating helps nothing.
 		# Collapsing them printed "has a check the ledger has never seen" three
 		# lines below the gate's own "new this run=0", which contradicts it and
-		# sends the reader at the wrong repair. Reported by OffgridwithJD.
+		# sends the reader at the wrong repair. Reported by OffgridwithJD. rc=1
+		# itself has several causes (an unseen check, a census that disagrees,
+		# coverage over the ceiling, a ceiling raised against the prior), so its
+		# sentence points at the gate's own line rather than naming one (#1537).
 		case "$_led_rc" in
 			0)	;;
-			1)	echo "  PG$major has a check the ledger has never seen, which is not a pass"
+			1)	echo "  PG$major: the ledger gate refused, which is not a pass. Its reason is the"
+				echo "  gate's own line above: for a check the ledger has never seen, regenerate the"
+				echo "  ledger; for a census, coverage or ceiling line, restate the budget."
 				verfail=1 ;;
 			*)	echo "  PG$major could not run the ledger gate at all, which is not a pass:"
 				echo "  the input or the prior ceiling was unusable, and regenerating the"

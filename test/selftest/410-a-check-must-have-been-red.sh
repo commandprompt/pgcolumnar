@@ -1289,7 +1289,13 @@ check "premise: the gate's status block was found in the runner" \
 check "the runner captures the gate's status rather than only its success" \
 	"$(grep -c '_led_rc=\$?' "$_rv")" "1"
 check "a refusal keeps the regenerate-the-ledger wording" \
-	"$(printf '%s' "$_ledcase" | grep -c 'has a check the ledger has never seen')" "1"
+	"$(printf '%s' "$_ledcase" | grep -c 'regenerate the')" "1"
+# A REFUSAL HAS MORE THAN ONE CAUSE. rc=1 is an unseen check, a census that disagrees,
+# coverage over the ceiling, or a ceiling raised against the prior. The runner named
+# the first for all of them: #1537's CI refused a ceiling rise and printed "has a
+# check the ledger has never seen" under the gate's own "new this run=0".
+check "a refusal does not name one cause for all of them" \
+	"$(printf '%s' "$_ledcase" | grep -c 'has a check the ledger has never seen')" "0"
 check "an integrity failure says regenerating will not help" \
 	"$(printf '%s' "$_ledcase" | grep -c 'will not help')" "1"
 check "and it is a different sentence from the refusal, not the same one twice" \
