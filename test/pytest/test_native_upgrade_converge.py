@@ -119,6 +119,8 @@ def window_db(pgc_cluster, staging):
     target, prev = _target_and_previous()
     assert len(prev) == 1, f"one upgrade script should lead to {target}, found {prev}"
     prev = prev[0]
+    extdir, staged, _ = staging
+    assert extdir / f"pgcolumnar--{prev}.sql" in staged, f"{prev} is not among the staged fixtures"
 
     def admin(sql):
         _admin(pgc_cluster, sql)
@@ -218,7 +220,7 @@ def _snapshot(dsn):
 
 
 @pytest.fixture(scope="module")
-def reference(pgc_cluster, staging):
+def reference(pgc_cluster):
     """-> (target version, snapshot of a fresh install of it): what every upgrade must reach."""
     target, _ = _target_and_previous()
     _admin(pgc_cluster, "DROP DATABASE IF EXISTS pgc_conv_fresh")
