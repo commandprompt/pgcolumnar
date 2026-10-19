@@ -12,12 +12,26 @@ does for its database, so the fixture is DICT-encoded whether or not DICT beats 
 """
 import psycopg
 
+from pgc_vacuity import query_error
+
 
 def _crashes(pgc_cluster):
+    """-> how many backends the server log says died, or a failed reading when the
+    log can't be read: a blind count must not read as "no crashes"."""
     try:
         return (pgc_cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
-    except OSError:
-        return 0
+    except OSError as exc:
+        return query_error(f"crash count unreadable: {exc}")
+
+
+def _since(pgc_cluster, before):
+    """-> backends died since `before`, or the failed reading when either count is
+    one: a blind count must not read as "no crashes"."""
+    now = _crashes(pgc_cluster)
+    for v in (before, now):
+        if not isinstance(v, int):
+            return v
+    return now - before
 
 
 def _one(conn, sql):
@@ -66,5 +80,6 @@ def test_an_under_filled_dict_chunk_is_refused(pgc_conn, pgc_cluster, expect):
             alive = c.execute("SELECT 1").fetchone()[0] == 1
     except psycopg.Error:
         alive = False
-    expect.text(f"{'1' if alive else ''}|{_crashes(pgc_cluster) - crashes} backend crashes", "1|0 backend crashes",
+    died = _since(pgc_cluster, crashes)
+    expect.text(f"{'1' if alive else ''}|{died} backend crashes" if isinstance(died, int) else died, "1|0 backend crashes",
                 "backend survives the under-filled DICT chunk")

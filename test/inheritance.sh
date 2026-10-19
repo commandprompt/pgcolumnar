@@ -153,13 +153,24 @@ check "premise: while its leaf is an ordinary relation" \
 # fails with 58P01 "could not open file .../0/0", which is the bug, and the arms
 # counted it as refused. inheritance stayed 26/26. CI runs release builds.
 inh_crashes() {
-	# grep -c prints 0 itself when nothing matches, and then exits 1
-	pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null || true
+	# a number, or nothing when the log can't be read: grep -c prints 0 itself when
+	# nothing matches (and exits 1), but nothing at all for a file it cannot open,
+	# and a blind count must not read as "no crashes"
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
 }
 INH_CRASHES="$(inh_crashes)"
 inh_up() {
-	[ "$(q 'SELECT 1;')" = 1 ] && [ "$(inh_crashes)" = "$INH_CRASHES" ] && echo up \
-		|| echo "DOWN ($(( $(inh_crashes) - INH_CRASHES )) backend crashes)"
+	local _up _now
+	_up="$(q 'SELECT 1;')"; _now="$(inh_crashes)"
+	if ! [[ "$INH_CRASHES" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then
+		echo "DOWN (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$INH_CRASHES" ]; then
+		echo up
+	else
+		echo "DOWN ($(( _now - INH_CRASHES )) backend crashes)"
+	fi
 }
 inh_sqlstate() {	# inh_sqlstate SQL -> the SQLSTATE of the ERROR it raised, or "accepted"
 	local out

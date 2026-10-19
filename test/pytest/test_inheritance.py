@@ -13,12 +13,26 @@ since a crashed cluster restarts and a later connection succeeds.
 """
 import psycopg
 
+from pgc_vacuity import query_error
+
 
 def _crashes(pgc_cluster):
+    """-> how many backends the server log says died, or a failed reading when the
+    log can't be read: a blind count must not read as "no crashes"."""
     try:
         return (pgc_cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
-    except OSError:
-        return 0
+    except OSError as exc:
+        return query_error(f"crash count unreadable: {exc}")
+
+
+def _since(pgc_cluster, before):
+    """-> backends died since `before`, or the failed reading when either count is
+    one: a blind count must not read as "no crashes"."""
+    now = _crashes(pgc_cluster)
+    for v in (before, now):
+        if not isinstance(v, int):
+            return v
+    return now - before
 
 
 def _sqlstate(conn, sql):
@@ -65,7 +79,9 @@ def test_a_partitioned_parent_is_refused_and_its_leaf_is_not(pgc_conn, pgc_clust
 
     def up():
         alive = _sqlstate(conn, "SELECT 1") == "accepted"
-        crashed = _crashes(pgc_cluster) - crashes
+        crashed = _since(pgc_cluster, crashes)
+        if not isinstance(crashed, int):
+            return crashed
         return "up" if alive and crashed == 0 else f"DOWN ({crashed} backend crashes)"
 
     expect.text(_sqlstate(conn, "SELECT pgcolumnar.get_storage_id('inh_pp'::regclass)"), "42809",

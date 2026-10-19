@@ -55,10 +55,12 @@ def _one(cluster, sql):
 
 
 def _crashes(cluster):
+    """-> how many backends the server log says died, or a failed reading when the
+    log can't be read: a blind count must not read as "no crashes"."""
     try:
         return (cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
-    except OSError:
-        return 0
+    except OSError as exc:
+        return query_error(f"crash count unreadable: {exc}")
 
 
 class _Scenario:
@@ -99,8 +101,14 @@ class _Scenario:
             pass
 
     def alive(self):
-        crashed = _crashes(self.cluster) - self.crashes
-        return "yes" if _one(self.cluster, "SELECT 1") == 1 and crashed == 0 else f"no ({crashed} backend crashes)"
+        # probe first: the postmaster logs a backend's death when it reaps it, so a
+        # count read before the server answers again can miss the crash it is for
+        up = _one(self.cluster, "SELECT 1") == 1
+        now = _crashes(self.cluster)
+        if not (isinstance(self.crashes, int) and isinstance(now, int)):
+            return now if isinstance(self.crashes, int) else self.crashes
+        crashed = now - self.crashes
+        return "yes" if up and crashed == 0 else f"no ({crashed} backend crashes)"
 
 
 def test_a_corrupt_byte_length(cor, expect):

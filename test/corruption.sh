@@ -29,12 +29,23 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 # requires that no backend has died since the scenario started, read from the
 # server log rather than from timing.
 crashes() {
-	# grep -c prints 0 itself when nothing matches, and then exits 1
-	pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null || true
+	# a number, or nothing when the log can't be read: grep -c prints 0 itself when
+	# nothing matches (and exits 1), but nothing at all for a file it cannot open,
+	# and a blind count must not read as "no crashes"
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
 }
 alive() {	# since this scenario's mkc, which notes the count
-	[ "$(q 'SELECT 1;')" = "1" ] && [ "$(crashes)" = "$CRASHES_BEFORE" ] && echo yes \
-		|| echo "no ($(( $(crashes) - CRASHES_BEFORE )) backend crashes)"
+	local _up _now
+	_up="$(q 'SELECT 1;')"; _now="$(crashes)"
+	if ! [[ "$CRASHES_BEFORE" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then
+		echo "no (crash count unreadable)"
+	elif [ "$_up" = "1" ] && [ "$_now" = "$CRASHES_BEFORE" ]; then
+		echo yes
+	else
+		echo "no ($(( _now - CRASHES_BEFORE )) backend crashes)"
+	fi
 }
 refused() {	# refused SQL -> the SQLSTATE of the ERROR it raised, or what it printed instead
 	local out
