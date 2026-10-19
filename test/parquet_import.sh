@@ -287,8 +287,20 @@ else
 	# and only because it reached the server before crash recovery finished. A
 	# check that connects after recovery reads a live cluster.
 	pq_crashes() {
-		# grep -c prints 0 itself when nothing matches, and then exits 1
-		pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null || true
+		# a number, or nothing when the log can't be read: grep -c prints 0 itself when
+		# nothing matches (and exits 1), but nothing at all for a file it cannot open,
+		# and a blind count must not read as "no crashes"
+		local _n
+		_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+		case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+	}
+	pq_crashes_since() {	# pq_crashes_since BEFORE -> "N backend crashes", or why it can't count
+		local _now; _now="$(pq_crashes)"
+		if [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then
+			echo "$(( _now - $1 )) backend crashes"
+		else
+			echo "crash count unreadable"
+		fi
 	}
 	pq_crashes0="$(pq_crashes)"
 	pq_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
@@ -302,7 +314,7 @@ else
 	# correct red against the unfixed build and would have stayed red against the
 	# fix -- a discriminator that discriminates nothing.
 	check "and the cluster is still up, so the refusal was not an abort" \
-		"$(q "SELECT 1;")|$(( $(pq_crashes) - pq_crashes0 )) backend crashes" "1|0 backend crashes"
+		"$(q "SELECT 1;")|$(pq_crashes_since "$pq_crashes0")" "1|0 backend crashes"
 fi
 
 pgc_summary

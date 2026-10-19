@@ -28,8 +28,20 @@ check "the text column is DICT-encoded (precondition)" "$ENC" "6"
 
 # read old rawLen (uint32 LE at descriptor offset 11), inflate by 64, write back
 crashes() {
-	# grep -c prints 0 itself when nothing matches, and then exits 1
-	pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null || true
+	# a number, or nothing when the log can't be read: grep -c prints 0 itself when
+	# nothing matches (and exits 1), but nothing at all for a file it cannot open,
+	# and a blind count must not read as "no crashes"
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+crashes_since() {	# crashes_since BEFORE -> "N backend crashes", or why it can't count
+	local _now; _now="$(crashes)"
+	if [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then
+		echo "$(( _now - $1 )) backend crashes"
+	else
+		echo "crash count unreadable"
+	fi
 }
 crashes0="$(crashes)"
 q "WITH u AS (UPDATE pgcolumnar.column_chunk c SET encoding_descriptor =
@@ -50,8 +62,8 @@ echo "-- select stderr:"; sed 's/^/     /' "$PGC_WORKDIR/uf.err" | head -3
 # crashed backend passes once crash recovery has finished. The crash flag below was
 # computed and never checked.
 rejected="$(sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' "$PGC_WORKDIR/uf.err" | head -1 | grep . || echo "no SQLSTATE ($(head -1 "$PGC_WORKDIR/uf.err"))")"
-echo "-- rejected=$rejected crashes=$(( $(crashes) - crashes0 ))"
+echo "-- rejected=$rejected crashes=$(crashes_since "$crashes0")"
 check "under-filled DICT chunk is rejected with a clean error" "$rejected" "XX001"
 check "backend survives the under-filled DICT chunk" \
-	"$(q 'SELECT 1')|$(( $(crashes) - crashes0 )) backend crashes" "1|0 backend crashes"
+	"$(q 'SELECT 1')|$(crashes_since "$crashes0")" "1|0 backend crashes"
 pgc_summary
