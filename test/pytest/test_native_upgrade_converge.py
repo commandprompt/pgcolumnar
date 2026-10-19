@@ -17,11 +17,17 @@ deletes from catalog tables the old one does not have (retired_group, new in
 must be refused cleanly, change nothing and name step 3; and after step 3 every one of
 them must work on the same rows.
 """
+import contextlib
 import difflib
+import fcntl
+import hashlib
+import os
 import pathlib
 import re
 import shutil
 import subprocess
+import tempfile
+import threading
 
 import psycopg
 import pytest
@@ -87,6 +93,29 @@ def _unstage(staged):
             dst.unlink(missing_ok=True)
 
 
+@contextlib.contextmanager
+def _staged(extdir, versions):
+    """Stage `versions` into `extdir` for the life of the block, then put back what was
+    there. -> (staged paths, versions whose backup was already there: an earlier run died).
+
+    Holds an exclusive lock for the whole block, so a second stager of the same directory
+    (another `pytest -n` worker) waits until this one has put everything back. Without it,
+    the second keeps the first's backup and restores it, and the first then deletes the
+    original. The lock file lives with the build lock in pgc_cluster.build_once, keyed by
+    the directory, so nothing is added to the prefix."""
+    lock_dir = pathlib.Path(tempfile.gettempdir()) / f"pgc-pytest-{os.getuid()}"
+    lock_dir.mkdir(mode=0o700, exist_ok=True)
+    key = hashlib.sha256(str(extdir.resolve()).encode()).hexdigest()[:16]
+    with open(lock_dir / f"staging-{key}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        died = [v for v in versions if (extdir / f"pgcolumnar--{v}.sql{BACKUP}").exists()]
+        staged = _stage(extdir, versions)
+        try:
+            yield staged, died
+        finally:
+            _unstage(staged)
+
+
 def _target_and_previous():
     target = re.search(r"^default_version\s*=\s*'([^']+)'",
                        (REPO / "pgcolumnar.control").read_text(), re.M).group(1)
@@ -105,12 +134,8 @@ def staging(pgc_cluster):
     """Stage every fixture once for the module. -> (extdir, staged paths, versions whose
     backup was already there before staging, which means an earlier run died)."""
     extdir = _extdir(pgc_cluster)
-    died = [v for v in VERSIONS if (extdir / f"pgcolumnar--{v}.sql{BACKUP}").exists()]
-    staged = _stage(extdir, VERSIONS)
-    try:
+    with _staged(extdir, VERSIONS) as (staged, died):
         yield extdir, staged, died
-    finally:
-        _unstage(staged)
 
 
 @pytest.fixture
@@ -180,6 +205,41 @@ def test_a_run_after_one_that_died_keeps_the_original(tmp_path, expect):
                 "a run after one that died restores the prefix's own file, not the fixture")
 
 
+def test_two_stagings_at_once_keep_the_original(tmp_path, expect):
+    """Two processes staging one extension directory at once, as `pytest -n` workers
+    do. Unserialised, B keeps A's backup and restores it, and then A, finding no backup,
+    deletes the file it takes for its own fixture: the prefix's original (review of
+    #1536). B starts inside A's staging and is given a moment to interleave."""
+    v = "1.0-alpha4"
+    dst = tmp_path / f"pgcolumnar--{v}.sql"
+    original = "-- the prefix's own install script\n"
+    dst.write_text(original)
+    a_in, a_go = threading.Event(), threading.Event()
+
+    def a():
+        with _staged(tmp_path, [v]):
+            a_in.set()
+            a_go.wait(10)
+
+    def b():
+        with _staged(tmp_path, [v]):
+            pass
+
+    ta = threading.Thread(target=a)
+    ta.start()
+    a_in.wait(10)
+    tb = threading.Thread(target=b)
+    tb.start()
+    tb.join(0.5)
+    a_go.set()
+    ta.join(10)
+    tb.join(10)
+    left = dst.read_text() if dst.exists() else None
+    expect.text({original: "the prefix's own file", None: "no file"}.get(left, "some other file"),
+                "the prefix's own file",
+                "two stagings at once leave the prefix's own file in place")
+
+
 def test_the_upgrade_window(window_db, expect):
     dsn, prev = window_db
     expect.text(_one(dsn, "SELECT extversion FROM pg_extension WHERE extname = 'pgcolumnar'"), prev,
@@ -246,15 +306,13 @@ def test_the_staged_fixtures_are_the_committed_ones(staging, expect):
                 "every staged install script is the committed fixture, not a leftover")
 
 
-def test_a_fresh_install_is_the_reference(reference, expect):
-    target, ref = reference
-    expect.at_least(len(ref), 101, f"fresh {target} install has objects to compare")
-
-
 @pytest.mark.parametrize("from_", VERSIONS)
 def test_each_release_upgrades_to_a_fresh_catalog(pgc_cluster, staging, reference, from_, expect):
     extdir, _, _ = staging
     target, ref = reference
+    # In this test, not one of its own: two empty snapshots compare equal, so the
+    # comparison below is evidence only where this holds.
+    expect.at_least(len(ref), 101, f"fresh {target} install has objects to compare")
     if not (extdir / f"pgcolumnar--{from_}.sql").exists():
         expect.text("missing", "present", f"fixture for {from_} present")
     db = "pgc_conv_from_" + re.sub(r"[.-]", "_", from_)
