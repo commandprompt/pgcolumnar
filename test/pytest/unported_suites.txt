@@ -20,7 +20,6 @@ bloom_lazy
 bloom_setting
 bloom_sizing
 cancel_decode
-catalog_natts
 column_projection
 concurrency
 cost_written_geometry

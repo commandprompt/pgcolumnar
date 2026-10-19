@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 176
+suites_not_covered 175
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3871,4 +3871,18 @@ suites_not_covered 176
 #     never         3115 + 3 = 3118
 #     dated         1426 + 8 = 1434
 #     3118 + 1434 == 4552
-checks_never_observed_red 3118
+#
+# #1341, catalog_natts seeded, with its twin (OffgridwithJD): 3118 -> 3135, and
+# suites_not_covered 176 -> 175. The suite had no rows. It enters with 18 checks from
+# five-major runs (18/18 on each of 15-19): five premises and one check per Natts_
+# constant (13). 1 is dated: Natts_options left one short of its catalog, the
+# overflow this suite was written for. The other twelve constants arrive never, as
+# do the five premises; a constant that drifts from its live catalog reds by name
+# (measured with a column added to pgcolumnar.bloom on the server, a harness
+# mutation, so it dates nothing).
+#
+#     ledger rows   4552 + 18 = 4570
+#     never         3118 + 17 = 3135
+#     dated         1434 +  1 = 1435
+#     3135 + 1435 == 4570
+checks_never_observed_red 3135
