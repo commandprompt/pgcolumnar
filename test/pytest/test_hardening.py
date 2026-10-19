@@ -97,10 +97,12 @@ def _crashes(cluster):
 
 def _alive(cluster, before):
     """-> "yes" when the server answers and no backend died since `before`."""
+    # probe first: the postmaster logs a backend's death when it reaps it, so a
+    # count read before the server answers again can miss the crash it is for
+    up = _one(cluster, "SELECT 1") == "1"
     now = _crashes(cluster)
     if not (isinstance(before, int) and isinstance(now, int)):
         return now if isinstance(before, int) else before
-    up = _one(cluster, "SELECT 1") == "1"
     died = now - before
     return "yes" if up and died == 0 else f"no ({died} backend crashes)"
 

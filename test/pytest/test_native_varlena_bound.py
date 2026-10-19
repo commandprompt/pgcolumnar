@@ -92,10 +92,12 @@ def _scenario(cluster, sql):
     """-> (the SQLSTATE sql raised, whether the backend survived it)."""
     before = _crashes(cluster)
     state = _refused(cluster, sql)
+    # probe first: the postmaster logs a backend's death when it reaps it, so a
+    # count read before the server answers again can miss the crash it is for
+    up = _one(cluster, "SELECT 1") == "1"
     now = _crashes(cluster)
     if not (isinstance(before, int) and isinstance(now, int)):
         return state, now if isinstance(before, int) else before
-    up = _one(cluster, "SELECT 1") == "1"
     died = now - before
     return state, "yes" if up and died == 0 else f"no ({died} backend crashes)"
 
