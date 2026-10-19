@@ -628,8 +628,13 @@ def test_the_runner_invokes_the_gate_before_it_removes_the_logs(expect):
     block = "\n".join(l for l in block.splitlines() if not l.strip().startswith("#"))
     expect.num(block.count("verfail=1"), 2,
                "both failure arms fail the major")
-    expect.num(block.count("has a check the ledger has never seen"), 1,
+    expect.num(block.count("regenerate the"), 1,
                "a refusal keeps the regenerate-the-ledger wording")
+    # rc=1 is an unseen check, a census mismatch, coverage over the ceiling or a ceiling
+    # raised against the prior; naming the first for all of them sent #1537's reader
+    # after an unseen check under the gate's own "new this run=0".
+    expect.num(block.count("has a check the ledger has never seen"), 0,
+               "a refusal does not name one cause for all of them")
     expect.num(block.count("could not run the ledger gate at all"), 1,
                "and an integrity failure gets its own sentence, since regenerating "
                "the ledger would not help")

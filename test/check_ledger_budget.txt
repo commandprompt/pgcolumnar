@@ -3766,4 +3766,16 @@ suites_not_covered 181
 #     never         3087 + 4 = 3091
 #     dated         1405 + 3 = 1408
 #     3091 + 1408 == 4499
-checks_never_observed_red 3091
+#
+# #1341, the runner's ledger-gate sentence (OffgridwithJD): 3091 -> 3092. rc=1 has
+# several causes, and the runner named one for all of them: #1537's CI refused a
+# ceiling rise and printed "has a check the ledger has never seen" under the gate's
+# own "new this run=0". The sentence now points at the gate's line instead. One
+# check enters harness_selftest part 410, red on the old runner and green on the new
+# (measured; the runner is the harness, so it dates nothing), so it arrives never.
+#
+#     ledger rows   4499 + 1 = 4500
+#     never         3091 + 1 = 3092
+#     dated         1408 + 0 = 1408
+#     3092 + 1408 == 4500
+checks_never_observed_red 3092

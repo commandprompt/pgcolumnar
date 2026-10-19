@@ -1641,6 +1641,7 @@ harness_selftest	410-a-check-must-have-been-red	a real refusal is a different st
 harness_selftest	410-a-check-must-have-been-red	a ref that does not resolve is an integrity failure, not a bootstrap	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a ref that exists with the budget still compares	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a ref that exists without the budget is still the bootstrap case	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a refusal does not name one cause for all of them	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a refusal keeps the regenerate-the-ledger wording	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a rename in one part survives an addition in another	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a row claiming 15;18 is an orphan on a PG18 run that did not emit it	15;16;17;18;19	never	-
