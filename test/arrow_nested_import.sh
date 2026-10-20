@@ -27,20 +27,34 @@ check "export rows" "$(q "SELECT pgcolumnar.export_arrow('na', '$AF');")" "5000"
 psql_run "CREATE TABLE na2 (id int, ia int[], ta text[], c nic) USING pgcolumnar;"
 check "import rows" "$(q "SELECT pgcolumnar.import_arrow('na2', '$AF');")" "5000"
 
+# the source's reading, but only when the source holds the rows it should: two
+# empty tables hash alike and count alike, so an empty source passed every agreement
+# below. A short source reads as a sentence, which no reading of na2 equals.
+of_source() {  # of_source ROWS VALUE -> VALUE, or why the source cannot be compared
+	local n
+	n="$(q 'SELECT count(*) FROM na;')"
+	[ "$n" = "$1" ] && echo "$2" || echo "source holds [$n], not $1 rows"
+}
+
 # the reconstructed table must equal the original (canonical text of every column)
 SEL="SELECT id, ia::text, ta::text, c::text FROM"
 check "nested import round-trips (arrays + composite)" \
 	"$(pgc_set_hash "$SEL na2")" \
-	"$(pgc_set_hash "$SEL na")"
-check "import count matches" "$(q 'SELECT count(*) FROM na2;')" "$(q 'SELECT count(*) FROM na;')"
+	"$(of_source 5000 "$(pgc_set_hash "$SEL na")")"
+# check_num, not check: q prints nothing for a failed query, and two failed counts
+# compared "" with "" and passed
+check_num "import count matches" "$(q 'SELECT count(*) FROM na2;')" "$(of_source 5000 "$(q 'SELECT count(*) FROM na;')")"
 
 # after a delete on the source, a fresh export+import still round-trips the live set
 psql_run "DELETE FROM na WHERE id BETWEEN 1000 AND 2000;"
+# a failed DELETE left all 5000 rows on both sides, and the round-trip passed
+# without a deleted row in the source
+check_num "premise: the delete left 3999 live rows in the source" "$(q 'SELECT count(*) FROM na;')" "3999"
 psql_run "SELECT pgcolumnar.export_arrow('na', '$AF');"
 psql_run "TRUNCATE na2;"
 psql_run "SELECT pgcolumnar.import_arrow('na2', '$AF');"
 check "round-trips after delete" \
 	"$(pgc_set_hash "$SEL na2")" \
-	"$(pgc_set_hash "$SEL na")"
+	"$(of_source 3999 "$(pgc_set_hash "$SEL na")")"
 
 pgc_summary

@@ -239,6 +239,7 @@ behaviour, the source of that number is named.
 - [191. test_write_fsst_compressed.py: FSST is kept only where it wins after the block compressor](#191-test_write_fsst_compressedpy-fsst-is-kept-only-where-it-wins-after-the-block-compressor)
 - [192. test_zonemap_estimate_sample.py: the planner's zone-map sample is one-based, complete and per-column](#192-test_zonemap_estimate_samplepy-the-planners-zone-map-sample-is-one-based-complete-and-per-column)
 - [193. test_wal_envelope.py: pgColumnar emits only core's WAL, inside RelationTruncate's envelope](#193-test_wal_envelopepy-pgcolumnar-emits-only-cores-wal-inside-relationtruncates-envelope)
+- [194. test_arrow_nested_import.py: arrays and composites round-trip through Arrow](#194-test_arrow_nested_importpy-arrays-and-composites-round-trip-through-arrow)
 
 ## 1. How to read a test in here
 
@@ -8291,3 +8292,20 @@ Each check is its own test. Every "none found" count reads `no .c files under ..
 | `test_envelope_steps_are_ordered` | parametrized by the shell's six names: delay set, critical section entered, record, flush, truncate, delay cleared, critical section left, in that order |
 | `test_the_truncate_record_covers_the_main_fork_only` | the record's flags are `SMGR_TRUNCATE_HEAP`, once |
 | `test_no_fork_mask_other_than_the_heap_fork_is_used_here` | no `SMGR_TRUNCATE_VM`, `_FSM` or `_ALL` in the function |
+
+## 194. test_arrow_nested_import.py: arrays and composites round-trip through Arrow
+
+The pytest twin of `test/arrow_nested_import.sh` (ported for #1341), every check by the shell's name. A table with `int[]`, `text[]` and composite columns is exported with `pgcolumnar.export_arrow` and imported with `pgcolumnar.import_arrow` into a fresh table, which must equal the original: the arrays and composites are rebuilt from the Arrow List and Struct buffers, with NULL arrays, empty arrays, NULL elements and NULL composites all in the fixture. After a DELETE on the source, a fresh export and import must carry the live rows alone.
+
+### Every test
+
+A module fixture on a private database takes every reading in the shell's order; each test asserts one. Each comparison hashes both sides on the server as `pgc_set_hash` does, a failed query is a `query_error()`, the source's side of each agreement reads a sentence unless the source holds the rows it should, and the file lives in `server_dir`, since the backend writes and reads it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_export_writes_every_row` | the export reports 5000 rows |
+| `test_the_import_reads_every_row` | the import reports 5000 rows |
+| `test_the_nested_import_round_trips` | the imported table equals the source, every column as text, read only while the source holds its 5000 rows |
+| `test_the_import_count_matches` | both row counts are numbers and equal, with the source at 5000 (two failed counts, or two empty tables, no longer pass) |
+| `test_the_delete_left_the_live_rows` | premise: the DELETE left 3999 live rows in the source, so the next check has deleted rows to leave out |
+| `test_a_fresh_round_trip_after_a_delete` | a fresh export and import after the DELETE equals the live source, read only while it holds its 3999 rows |

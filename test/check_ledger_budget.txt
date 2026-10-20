@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 172
+suites_not_covered 171
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3951,4 +3951,24 @@ suites_not_covered 172
 #     never         3160 + 0 = 3160
 #     dated         1451 + 20 = 1471
 #     3160 + 1471 == 4631
-checks_never_observed_red 3160
+#
+# #1341, arrow_nested_import seeded, with its twin (OffgridwithJD): 3160 -> 3162, and
+# suites_not_covered 172 -> 171. The suite had no rows. It enters with 6 checks from
+# five-major runs (6/6 on each of 15-19, shell and twin alike), after three fixes:
+# "import count matches" compared two counts with check, so two failed counts passed
+# as "" = "", and it is now check_num; a failed DELETE left all 5000 rows on both
+# sides, so "round-trips after delete" passed with no deleted row in the source, and a
+# new premise asserts the 3999 live rows; and with the source left empty, both
+# round-trips and the count agreed on two empty tables (found by jdatcmd reviewing
+# #1551), so the source's side now reads a sentence unless it holds its rows. 4 are dated by five mutations, each reddening
+# the same names in both twins: an imported NULL List element read as a value, a NULL
+# Struct's validity bit ignored, and an empty List read as a NULL array (both
+# round-trips); the export's final partial batch never written (both row counts and
+# both round-trips); and deleted rows exported too (the round-trip after the delete
+# alone). 2 arrive never: the export's row count and the delete premise.
+#
+#     ledger rows   4631 + 6 = 4637
+#     never         3160 + 2 = 3162
+#     dated         1471 + 4 = 1475
+#     3162 + 1475 == 4637
+checks_never_observed_red 3162
