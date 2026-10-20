@@ -890,4 +890,6 @@ guard_tests 462
 # 63 tests: one per check, except that the oracle's three run in one test and the empty and all-NULL four in another, by collection over the cluster files.
 # cluster_tests 1242 -> 1264 for #1341's test_alter_column_type.py, the twin of alter_column_type.sh:
 # 22 checks in 22 tests, by collection over the cluster files.
-cluster_tests 1264
+# cluster_tests 1264 -> 1287 for #1341's test_vector_agg_rescan_memory.py, the twin of vector_agg_rescan_memory.sh:
+# 23 tests, one per check, by collection over the cluster files.
+cluster_tests 1287

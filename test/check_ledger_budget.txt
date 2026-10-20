@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 166
+suites_not_covered 165
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4079,4 +4079,24 @@ suites_not_covered 166
 #     never         3227 +  8 = 3235
 #     dated         1511 + 14 = 1525
 #     3235 + 1525 == 4760
-checks_never_observed_red 3235
+#
+# #1341, vector_agg_rescan_memory seeded, with its twin (jdatcmd): 3235 -> 3255, and
+# suites_not_covered 166 -> 165. The suite had no rows. It enters with 23 checks from
+# five-major runs (23/23 on each of 15-19, shell and twin alike), after two fixes.
+# The three memory claims computed an excess in awk, which reads a missing peak as 0:
+# with both memory readers made to return nothing, all three passed as "no growth" and
+# only the premises failed. A slope is now empty when a peak is, and each claim reads
+# "no reading" unless both slopes were measured. And the four reading premises were
+# named through a loop variable, which compare_to_bash cannot read; each is literal
+# now. 3 are dated by three mutations, each reddening the same names in both twins:
+# the scan with no scratch context at all (#717 at 181,548 bytes per rescan, and
+# #727), the scratch context never deleted (#727 alone), and the row-group list never
+# reset on rescan (#734). The second leaves #717 green: the leak sits in a child of
+# ExecutorState, and the #717 instrument reads ExecutorState's own total. 20 arrive
+# never: the premises, the two answer checks and the row path's pruning.
+#
+#     ledger rows   4760 + 23 = 4783
+#     never         3235 + 20 = 3255
+#     dated         1525 + 3 = 1528
+#     3255 + 1528 == 4783
+checks_never_observed_red 3255
