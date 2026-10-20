@@ -12,7 +12,6 @@ autovacuum_yield
 avro_manifest
 bench_guards
 bloom_lazy
-bloom_setting
 cancel_decode
 column_projection
 concurrency

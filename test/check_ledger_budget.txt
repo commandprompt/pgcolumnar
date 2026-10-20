@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 160
+suites_not_covered 159
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4255,4 +4255,23 @@ suites_not_covered 160
 #     never         3328 - 4 = 3324
 #     dated         1601 + 5 = 1606
 #     3324 + 1606 == 4930
-checks_never_observed_red 3324
+#
+# #1341, bloom_setting seeded, with its twin (OffgridwithJD): 3324 -> 3332, and
+# suites_not_covered 160 -> 159. The suite had no rows. It enters with 11 checks from
+# five-major runs (11/11 on each of 15-19, shell and twin alike), after three fixes. "a
+# projection still gets filters when the setting is on" counted every filter in the
+# database, so bs_on's alone made it read "some": with the projection's write state
+# dropping its filters, the defect it describes, main passed it. It now counts the
+# projection's own storage. "no filters are written when the setting is off" read 0 for
+# an empty table, and "the two tables hold identical data" read 0 mismatches for two;
+# each now carries the rows it was read over. And the four read checks were named
+# through a loop variable; each is literal now. 3 are dated by three mutations, each
+# reddening the same name in both twins: filters built whatever the setting says, a
+# projection's write state dropping them, and a chunk with no filter read as no match.
+# 8 arrive never.
+#
+#     ledger rows   4930 + 11 = 4941
+#     never         3324 +  8 = 3332
+#     dated         1606 +  3 = 1609
+#     3332 + 1609 == 4941
+checks_never_observed_red 3332

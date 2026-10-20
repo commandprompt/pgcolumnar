@@ -252,6 +252,7 @@ behaviour, the source of that number is named.
 - [204. test_vacuum_sorted_gate.py: pgcolumnar.vacuum_sorted skips its rewrite only when there is nothing to do](#204-test_vacuum_sorted_gatepy-pgcolumnarvacuum_sorted-skips-its-rewrite-only-when-there-is-nothing-to-do)
 - [205. test_ungrouped_vector_agg.py: the ungrouped vectorized aggregate returns what core Agg returns](#205-test_ungrouped_vector_aggpy-the-ungrouped-vectorized-aggregate-returns-what-core-agg-returns)
 - [206. test_tablesample.py: TABLESAMPLE on a columnar table raises 0A000](#206-test_tablesamplepy-tablesample-on-a-columnar-table-raises-0a000)
+- [207. test_bloom_setting.py: enable_bloom_filter governs the write side too](#207-test_bloom_settingpy-enable_bloom_filter-governs-the-write-side-too)
 
 ## 1. How to read a test in here
 
@@ -8684,3 +8685,24 @@ A statement reads as the SQLSTATE it raised, `00000` when it ran, or `no reading
 | `test_the_table_holds_its_rows` | premise: `n` has 10,000 rows |
 | `test_a_sampled_shape_raises_0a000` | count, sum, SYSTEM, a projection and a grouped query over `TABLESAMPLE` each raise 0A000 |
 | `test_a_control_raises_nothing` | an unsampled count, and the same sample on a heap table, raise nothing |
+## 207. test_bloom_setting.py: enable_bloom_filter governs the write side too
+
+The pytest twin of `test/bloom_setting.sh` (ported for #1341), every check by the shell's name. The setting was consulted only by the reader, so turning it off still hashed every value and stored a filter for every chunk. With it off nothing is written, a chunk written with no filter still answers equality in both directions, and a projection, written through its own write state, gets its own filters.
+
+### Every test
+
+A module fixture on a private database builds the tables in the shell's order; each test asserts one reading. A reading carries what it was read over, so a load that failed cannot pass as "no filters" or "no mismatch".
+
+| test | what it holds |
+| --- | --- |
+| `test_filters_are_written_when_the_setting_is_on` | filters are written when the setting is on |
+| `test_no_filters_are_written_when_the_setting_is_off` | no filters are written when the setting is off -- over the 20000 rows the table holds (a load that failed no longer passes) |
+| `test_written_off_read_on_finds_a_present_value` | written off, read with the setting on: present value found |
+| `test_written_off_read_on_does_not_find_an_absent_value` | written off, read with the setting on: absent value not found |
+| `test_written_off_read_off_finds_a_present_value` | written off, read with the setting off: present value found |
+| `test_written_off_read_off_does_not_find_an_absent_value` | written off, read with the setting off: absent value not found |
+| `test_written_on_read_off_finds_a_present_value` | written on, read with the setting off: present value found |
+| `test_a_full_scan_of_the_unfiltered_table_is_complete` | a full scan of the unfiltered table is complete |
+| `test_the_filtered_and_unfiltered_tables_hold_identical_data` | the two tables hold identical data -- read as mismatches of rows compared (two empty tables no longer pass) |
+| `test_a_projection_still_gets_filters_when_the_setting_is_on` | a projection still gets filters when the setting is on -- counted on the projection's own storage (a projection written without filters no longer passes) |
+| `test_the_projected_table_reads_correctly` | the projected table reads correctly |
