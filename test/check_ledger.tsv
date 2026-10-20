@@ -4528,6 +4528,29 @@ vacuum_lock_privilege	vacuum_lock_privilege	truncate refuses a non-owner before 
 vacuum_lock_privilege	vacuum_lock_privilege	truncate tells a non-owner nothing about the relation type (#1384)	15;16;17;18;19	2026-10-14	truncate checking ownership after its lock and its type check (main before #1384's fix)
 vacuum_lock_privilege	vacuum_lock_privilege	vacuum refuses a non-owner before taking the exclusive lock	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock;pgcolumnar.vacuum checks ownership after taking its AccessExclusiveLock
 vacuum_lock_privilege	vacuum_lock_privilege	vacuum_sorted refuses a non-owner before taking the exclusive lock	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock
+vacuum_stripe_count	vacuum_stripe_count	a non-default stripe_count is refused rather than ignored	15;16;17;18;19	2026-10-20	pgcolumnar.vacuum accepts and ignores a non-default stripe_count again (#560)
+vacuum_stripe_count	vacuum_stripe_count	and 0 also did the work	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	and it combined the groups	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	and it combined the groups, so it did the work	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	and it is offered as a HINT, where psql shows it to the user	15;16;17;18;19	2026-10-20	pgcolumnar.vacuum accepts and ignores a non-default stripe_count again (#560)
+vacuum_stripe_count	vacuum_stripe_count	and it preserved every row	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	and no rows were lost to it	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	and the refusal names the function that does bound the work	15;16;17;18;19	2026-10-20	pgcolumnar.vacuum accepts and ignores a non-default stripe_count again (#560)
+vacuum_stripe_count	vacuum_stripe_count	premise: compact_rewrite's bounded form is accepted	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	premise: err_of cannot mistake an unreachable server for success	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	premise: err_of reports a clean call	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	premise: err_of reports a real error	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	premise: the fixture constants are non-zero, so the arms can fail	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	premise: the fixture has the rows it should	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	premise: the fixture really has several row groups to combine	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	premise: the whole fixture fits in one stripe, so combining is possible	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	the explicit default 0 is still accepted	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	the named alternative rewrote exactly its bound and left the other groups alone	15;16;17;18;19	2026-10-20	compact_rewrite does its bounded work but reports one group more;compact_rewrite does no work and reports none;compact_rewrite ignores max_groups
+vacuum_stripe_count	vacuum_stripe_count	the one-argument form still vacuums	15;16;17;18;19	never	-
+vacuum_stripe_count	vacuum_stripe_count	the refused call did no work: the groups are untouched	15;16;17;18;19	2026-10-20	pgcolumnar.vacuum accepts and ignores a non-default stripe_count again (#560)
+vacuum_stripe_count	vacuum_stripe_count	the refused vacuum_full did no work either	15;16;17;18;19	2026-10-20	pgcolumnar.vacuum accepts and ignores a non-default stripe_count again (#560)
+vacuum_stripe_count	vacuum_stripe_count	vacuum_full inherits the refusal for a non-default stripe_count	15;16;17;18;19	2026-10-20	pgcolumnar.vacuum accepts and ignores a non-default stripe_count again (#560)
+vacuum_stripe_count	vacuum_stripe_count	vacuum_full's own default form still works	15;16;17;18;19	never	-
 validity_elision	validity_elision	a chunk claiming no bitmap while it holds fewer values than rows is refused	15;16;17;18;19	2026-10-16	the no-nulls guard (claims no nulls but does not account for every row) disabled, so a later guard raised the XX001 (mutation, #1339)
 validity_elision	validity_elision	a column with no nulls stores no validity bitmap	15;16;17;18;19	2026-09-18	writer: flush_one_column's presentCount == rowCount forced false, so the bitmap is written even when the chunk holds no null
 validity_elision	validity_elision	a null-free column elides its bitmap beside a null-bearing one in the same row group	15;16;17;18;19	never	-

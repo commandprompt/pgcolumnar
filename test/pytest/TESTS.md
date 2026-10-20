@@ -247,6 +247,7 @@ behaviour, the source of that number is named.
 - [199. test_alter_column_type.py: ALTER COLUMN TYPE converts every value, and the column really changes type](#199-test_alter_column_typepy-alter-column-type-converts-every-value-and-the-column-really-changes-type)
 - [200. test_vector_agg_rescan_memory.py: rescanning a columnar aggregate does not grow query memory](#200-test_vector_agg_rescan_memorypy-rescanning-a-columnar-aggregate-does-not-grow-query-memory)
 - [201. test_analyze_stats.py: ANALYZE collects statistics that agree with heap, and the planner prices what they feed](#201-test_analyze_statspy-analyze-collects-statistics-that-agree-with-heap-and-the-planner-prices-what-they-feed)
+- [202. test_vacuum_stripe_count.py: pgcolumnar.vacuum refuses a stripe_count bound rather than ignoring it](#202-test_vacuum_stripe_countpy-pgcolumnarvacuum-refuses-a-stripe_count-bound-rather-than-ignoring-it)
 
 ## 1. How to read a test in here
 
@@ -8523,3 +8524,37 @@ A module fixture on a private database builds every table in the shell's order, 
 | `test_both_all_visible_estimates_were_taken` | premise: both estimates were taken (#507) |
 | `test_the_all_visible_pages_buy_the_index_only_scan_a_saving` | the all-visible pages buy the index-only scan a saving (#507) -- the index scan's cost minus the index-only scan's is positive after VACUUM (a fraction hardcoded to zero, which still gets the index-only plan here, no longer passes) |
 | `test_growth_without_vacuum_does_not_inflate_the_saving` | growth without vacuum does not inflate the all-visible saving (#507) -- both estimates were taken (a missing grown estimate no longer passes) |
+
+## 202. test_vacuum_stripe_count.py: pgcolumnar.vacuum refuses a stripe_count bound rather than ignoring it
+
+The pytest twin of `test/vacuum_stripe_count.sh` (ported for #1341), every check by the shell's name. `stripe_count` was documented as bounding how many row groups one vacuum combines, but the code never read it. It cannot simply be honoured, because the compaction swaps the relation to a new relfilenode, so a non-default value is refused, with a hint naming `pgcolumnar.compact_rewrite`, which does bound its work. On a private database.
+
+### Every test
+
+Each check is its own test over a module fixture that runs the shell's steps in order. A call reads `noerror`, `connfail` or `SQLSTATE <code>: <message>`, so an unreachable server cannot read as success. A refusal reads `refused` only for pgcolumnar's own message, so any other error reads as itself. The bounded rewrite is read as work: how many groups it rewrote, and how many still hold deleted rows.
+
+| test | what it holds |
+| --- | --- |
+| `test_err_reports_a_clean_call` | premise: the reader says `noerror` for `SELECT 1` |
+| `test_err_reports_a_real_error` | premise: and `SQLSTATE 22012: division by zero` for `SELECT 1/0` |
+| `test_err_cannot_mistake_an_unreachable_server_for_success` | premise: and `connfail` for port 1 |
+| `test_the_fixture_constants_are_non_zero` | premise: six groups of 1,000 rows |
+| `test_the_whole_fixture_fits_in_one_stripe` | premise: so combining them is possible |
+| `test_the_fixture_has_several_row_groups` | premise: the table has six row groups |
+| `test_the_fixture_has_its_rows` | premise: and 6,000 rows |
+| `test_the_one_argument_form_still_vacuums` | `vacuum('vsc')` succeeds |
+| `test_it_combined_the_groups` | and leaves one group |
+| `test_it_preserved_every_row` | and 6,000 rows |
+| `test_the_explicit_default_zero_is_still_accepted` | `vacuum('vsc', 0)` succeeds |
+| `test_zero_also_did_the_work` | and leaves one group |
+| `test_a_non_default_stripe_count_is_refused` | `vacuum('vsc', 4)` fails with pgcolumnar's own refusal |
+| `test_the_refusal_names_compact_rewrite` | one diagnostic field names `compact_rewrite` |
+| `test_the_name_is_offered_as_a_hint` | and it is the HINT |
+| `test_the_refused_call_did_no_work` | the six groups are untouched |
+| `test_no_rows_were_lost_to_it` | and the 6,000 rows |
+| `test_vacuum_full_inherits_the_refusal` | `vacuum_full('public', 0.0, 4)` fails with the same refusal |
+| `test_the_refused_vacuum_full_did_no_work` | the six groups are untouched |
+| `test_vacuum_fulls_default_form_still_works` | `vacuum_full('public', 0.0)` succeeds |
+| `test_vacuum_full_combined_the_groups` | and leaves one group |
+| `test_compact_rewrites_bounded_form_is_accepted` | premise: `compact_rewrite('vsc', 0.1, 2)` succeeds |
+| `test_the_named_alternative_rewrote_exactly_its_bound` | it rewrote 2 of 6 groups, and 4 still hold deleted rows |

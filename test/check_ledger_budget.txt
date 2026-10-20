@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 165
+suites_not_covered 164
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4129,4 +4129,25 @@ suites_not_covered 165
 #     never         3255 - 20 = 3235
 #     dated         1528 + 21 = 1549
 #     3235 + 1549 == 4784
-checks_never_observed_red 3235
+#
+# #1341, vacuum_stripe_count seeded, with its twin (jdatcmd): 3235 -> 3251, and
+# suites_not_covered 165 -> 164. The suite had no rows. It enters with 23 checks from
+# five-major runs (23/23 on each of 15-19, shell and twin alike), after three fixes.
+# The bounded-rewrite check read the group count, which cannot move: each rewritten
+# group is replaced by one new one, so six groups remained whether compact_rewrite
+# rewrote two, all six or none, and the check passed all three. It now reads the work
+# (groups rewritten, and groups still holding deleted rows) and is renamed "the named
+# alternative rewrote exactly its bound and left the other groups alone". The two
+# refusal checks passed on any error, a missing table's included; each now requires
+# pgcolumnar's own message. And the two "did no work" checks compared with a count read
+# before the call, which an empty rebuild made 0 = 0; each now wants six groups. 7
+# are dated by four mutations, each reddening the same names in both twins: the refusal
+# removed (the six refusal-side checks), and compact_rewrite doing nothing, ignoring its
+# bound, or reporting one group more than it rewrote (the bounded-work check each). 16
+# arrive never, among them the premises and the default forms.
+#
+#     ledger rows   4784 + 23 = 4807
+#     never         3235 + 16 = 3251
+#     dated         1549 + 7 = 1556
+#     3251 + 1556 == 4807
+checks_never_observed_red 3251
