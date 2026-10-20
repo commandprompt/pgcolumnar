@@ -62,6 +62,38 @@ psql_run "CREATE TABLE u (k int, v text) USING pgcolumnar;
 check "premise: the lock is enabled, or nothing below proves anything" \
 	"$(q "SHOW pgcolumnar.enable_unique_insert_lock")" "on"
 
+# The lock under test is TAKEN at all. Nothing else here says so: every check below
+# reads whatever locks an insert takes, and an insert also takes the storage-row lock
+# (102), so with the unique-key lock never taken the premise below still saw a lock,
+# the class check still read "unreachable", and the duplicate check still passed --
+# the btree's own uniqueness check waits on the winner and rejects the loser without
+# it (#1339). Read from the inserting session's own pg_locks, with the setting as the
+# control rather than the class number, so a renumbered class still counts: the
+# classes taken with the lock on that are not taken with it off. Both readings must
+# hold a lock, since the storage-row lock is taken either way: with the off reading
+# failing, an empty control made every class "extra" and this read "taken" (found by
+# jdatcmd reviewing #1565).
+lock_classes() {	# $1 = on|off -> the advisory classes one insert into u takes
+	q "SET pgcolumnar.enable_unique_insert_lock = $1;
+	   BEGIN;
+	   INSERT INTO u VALUES (900003, 'classes');
+	   SELECT coalesce(string_agg(DISTINCT objsubid::text, ',' ORDER BY objsubid::text), '')
+	     FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid();
+	   ROLLBACK;" | grep -vxE 'SET|BEGIN|INSERT 0 1|ROLLBACK'
+}
+cls_on="$(lock_classes on)"
+cls_off="$(lock_classes off)"
+cls_extra="$(awk -v on="$cls_on" -v off=",$cls_off," 'BEGIN {
+	n = split(on, c, ","); for (i = 1; i <= n; i++) if (c[i] != "" && index(off, "," c[i] ",") == 0) x = x "," c[i]
+	print substr(x, 2) }')"
+echo "      advisory classes an insert takes: lock on [$cls_on], lock off [$cls_off]"
+check "an insert takes the unique-key lock, and only while enable_unique_insert_lock is on" \
+	"$(if [ -z "$cls_on" ]; then echo "no reading (no advisory lock with the setting on)"
+	   elif [ -z "$cls_off" ]; then echo "no reading (no advisory lock with the setting off)"
+	   elif [ -n "$cls_extra" ]; then echo taken
+	   else echo "not taken (on [$cls_on], off [$cls_off])"; fi)" \
+	"taken"
+
 # ---------------------------------------------------------------------------
 # 1. Discover the advisory lock an insert actually takes.
 # ---------------------------------------------------------------------------
@@ -188,8 +220,11 @@ fi
 # ---------------------------------------------------------------------------
 # 3. The internal lock still does its job.
 # ---------------------------------------------------------------------------
-# Removing the collision by removing the lock would satisfy everything above and
-# silently give back issue #5.
+# This asserts that a duplicate is rejected, NOT that the lock is what rejects it.
+# The lock's presence is the "an insert takes the unique-key lock" check above. With
+# the lock never taken, a duplicate is still rejected: measured on PG17, even a
+# CONCURRENT duplicate waits on the first insert and gets 23505, because the btree's
+# uniqueness check waits on the winner (#1339).
 #
 # IT PLANTS ITS OWN KEY. This arm used to re-insert 900001 and rely on the
 # contention arm above having inserted it successfully -- so under a mutation
