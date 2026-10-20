@@ -8,10 +8,13 @@ both and must get past it (the call then fails on the missing file, which is fin
 Then every function in the install script that takes a path or filename must be one of
 those entry points, so a new file function cannot ship without a gate test.
 
-HOW A CALL IS READ: "refused" when the reply names the gate role, "passed" when it does
-not, and "no reading" when the role never took effect. Without that last step a failed
-SET ROLE named no gate, and with it failing for the privileged role all 21 "gets past
-the gate" checks passed.
+HOW A CALL IS READ: "refused" when the reply names the gate role; "passed" when the
+reply shows the call got past it; "no reading" when the role never took effect; and
+"not past the gate: <error>" otherwise. Without the role check a failed SET ROLE named
+no gate, and with it failing for the privileged role all 21 "gets past the gate" checks
+passed. "Passed" is positive evidence, the reply the entry point gives once past the
+gate (PAST below), not the absence of the gate's name: read as absence, a call refused
+for another reason passed, as with EXECUTE on import_parquet revoked (#1582 review).
 
 ON A PRIVATE DATABASE, with the two roles created for the module and dropped after.
 """
@@ -24,6 +27,15 @@ import pytest
 DB = "pgc_server_file_privilege"
 ROLES = ("t_none", "t_priv")
 NOPE = "/tmp/pgc_sfp_does_not_exist.parquet"
+
+# What each entry point says once past the gate, measured on PG17. None: the call
+# succeeds. Two of the four are 42501 themselves, so a SQLSTATE cannot stand in.
+NOFILE = "58P01: could not open file"
+DETACH = "42501: must be owner of table sfp_parent"
+ENDPOINT = '42501: columnar: endpoint "127.0.0.1:1" is not in pgcolumnar.objstore_allowed_endpoints'
+PAST = {"export_parquet": None, "export_arrow": None, "parallel_export_parquet": None,
+        "tier_partition": DETACH, "iceberg_rest_table_location": ENDPOINT, "iceberg_rest_scan": ENDPOINT,
+        "iceberg_rest_namespaces": ENDPOINT, "iceberg_rest_tables": ENDPOINT}
 
 ENTRIES = [  # label, the server-file role it must be gated by, the call
     ("import_parquet", "pg_read_server_files", "SELECT pgcolumnar.import_parquet('imp_target'::regclass, '{nope}')"),
@@ -133,8 +145,9 @@ def _discovered():
     return found
 
 
-def _gate(dsn, role, gate, sql):
-    """-> "refused", "passed", or "no reading" when `role` never took effect."""
+def _gate(dsn, role, gate, sql, past=None):
+    """-> "refused", "passed", "no reading" when `role` never took effect, or
+    "not past the gate: <error>" when the reply is not `past` (None: no error)."""
     with psycopg.connect(dsn, autocommit=True) as conn:
         try:
             conn.execute(f"SET ROLE {role}")
@@ -144,10 +157,15 @@ def _gate(dsn, role, gate, sql):
             return f"no reading (SET ROLE {role} did not take: {str(exc).splitlines()[0]})"
         try:
             conn.execute(sql).fetchall()
-            reply = ""
+            reply, err = "", ""
         except psycopg.Error as exc:
             reply = str(exc)
-    return "refused" if gate.lower() in reply.lower() else "passed"
+            err = f"{exc.sqlstate}: {exc.diag.message_primary}"
+    if gate.lower() in reply.lower():
+        return "refused"
+    if (past is None and not err) or (past is not None and past in err):
+        return "passed"
+    return f"not past the gate: {err or 'no error, where one was expected'}"
 
 
 @pytest.fixture(scope="module")
@@ -157,8 +175,11 @@ def sf(pgc_cluster, server_dir):
         for r in ROLES:
             a.execute(f"DROP ROLE IF EXISTS {r}")
         a.execute(f"CREATE DATABASE {DB}")
-        for r in ROLES:
-            a.execute(f"CREATE ROLE {r} NOSUPERUSER")
+        # t_priv logs in: before PostgreSQL 17 a background worker cannot connect as a
+        # NOLOGIN role, so parallel_export_parquet's worker failed on PG15 and PG16 after
+        # the gate. The gate reads role membership, which LOGIN does not change.
+        a.execute("CREATE ROLE t_none NOSUPERUSER")
+        a.execute("CREATE ROLE t_priv NOSUPERUSER LOGIN")
     try:
         dsn = pgc_cluster.dsn(dbname=DB)
         with psycopg.connect(dsn, autocommit=True) as conn:
@@ -186,7 +207,7 @@ def sf(pgc_cluster, server_dir):
             r[("none", label)] = _gate(dsn, "t_none", gate, call)
             for p in (out + ".parquet", out + ".arrow"):
                 pathlib.Path(p).unlink(missing_ok=True)
-            r[("priv", label)] = _gate(dsn, "t_priv", gate, call)
+            r[("priv", label)] = _gate(dsn, "t_priv", gate, call, PAST.get(label, NOFILE))
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
