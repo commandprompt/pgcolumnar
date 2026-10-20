@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 168
+suites_not_covered 167
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4032,4 +4032,26 @@ suites_not_covered 168
 #     never         3175 +  6 = 3181
 #     dated         1485 +  4 = 1489
 #     3181 + 1489 == 4670
-checks_never_observed_red 3181
+#
+# #1341, vector_agg_tlist_shape seeded, with its twin (jdatcmd): 3181 -> 3227, and
+# suites_not_covered 168 -> 167. The suite had no rows. It enters with 68 checks from
+# five-major runs (68/68 on each of 15-19, shell and twin alike), after two fixes.
+# The plan reading counted marker lines with psql's errors discarded, so a failed
+# EXPLAIN counted 0: with table c never created, all seven REFUSE checks and the GUC-off
+# premise passed. It now reads "vectorized", "not vectorized" or "EXPLAIN failed: ...".
+# And 44 of the 68 names were composed inside helpers ("$label: vectorized") or a loop,
+# which compare_to_bash reads as templates; every name is literal at its call site
+# now, and the recorded names are unchanged. 22 are dated by three mutations, each
+# reddening the same names in both twins: FILTER no longer refused (both FILTER
+# refusals and their answers), DISTINCT no longer refused (its refusal and answer), and
+# the #755 relaxation reverted (every wrapped shape's plan check, the wrapped scan-fold
+# check and the three parallel arms). Two more mutations reddened nothing in either
+# twin: the aggregate list built in reverse, and a non-aggregate skipped rather than
+# refused. 46 arrive never, among them every answer check of a shape that plans
+# correctly and the oracle, fixture and parallel premises.
+#
+#     ledger rows   4670 + 68 = 4738
+#     never         3181 + 46 = 3227
+#     dated         1489 + 22 = 1511
+#     3227 + 1511 == 4738
+checks_never_observed_red 3227

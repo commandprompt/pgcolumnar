@@ -53,71 +53,95 @@ check "premise: the sort column has NULLs, which the aggregates must skip" \
 # ran, so this is asserted per arm rather than assumed.
 # The grouped path is pinned off: this suite is about the UNGROUPED fold, and since
 # #1292 phase 2 the grouped path is on by default and prints the same marker.
-vec() { q "SELECT count(*) FROM (SELECT 1) z;" >/dev/null
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -At -c "SET pgcolumnar.enable_group_vectorization = off" -c "EXPLAIN (COSTS OFF) $1" 2>/dev/null \
-		| grep -cE 'Columnar Vectorized Aggregates: [1-9]'; }
+#
+# THREE ANSWERS, NOT A COUNT: "vectorized", "not vectorized", or "EXPLAIN failed: ...".
+# This counted marker lines with psql's errors discarded, so a failed EXPLAIN counted 0
+# and every REFUSE arm, which wants 0, passed on the error (measured: with table c
+# never created, all seven REFUSE arms and the GUC-off premise passed).
+plan_of() {  # plan_of SQL [SET-statement] -> one of the three readings
+	local out
+	if ! out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -v ON_ERROR_STOP=1 -c "${2:-SELECT 1}" -c "EXPLAIN (COSTS OFF) $1" 2>&1)"; then
+		echo "EXPLAIN failed: $(printf '%s' "$out" | grep -m1 ERROR)"
+	elif grep -qE 'Columnar Vectorized Aggregates: [1-9]' <<<"$out"; then
+		echo "vectorized"
+	else
+		echo "not vectorized"
+	fi
+}
+vec() { plan_of "$1" "SET pgcolumnar.enable_group_vectorization = off"; }
 
 # ansq LABEL QUERY-with-%T : identical answer from heap and columnar.
 ansq() {
 	local label="$1" tmpl="$2"
 	check_text "$label" "$(pgc_seq_hash "${tmpl//%T/c}")" "$(pgc_seq_hash "${tmpl//%T/h}")"
 }
-# both: the plan took the fast path AND the answer matches heap
-both() {
-	local label="$1" tmpl="$2" q_c="${2//%T/c}"
-	check "$label: vectorized" "$([ "$(vec "$q_c")" -gt 0 ] && echo yes || echo no)" "yes"
-	ansq "$label: answer matches heap" "$tmpl"
+# fast NAME QUERY-with-%T : the plan over c took the fast path. Each arm is a `fast`
+# line and an `ansq` line, each naming its check in full: a name composed inside a
+# helper ("$label: vectorized") is one template to compare_to_bash, so a port could
+# omit every arm but one and still grade complete.
+fast() {
+	check "$1" "$(vec "${2//%T/c}")" "vectorized"
 }
 
 # ---------------------------------------------------------- already worked
 
-both "a bare aggregate"            'SELECT avg(a) FROM %T'
-both "two bare aggregates"         'SELECT avg(a), avg(b) FROM %T'
-both "count(*)"                    'SELECT count(*) FROM %T'
-both "min and max"                 'SELECT min(a), max(a) FROM %T'
+fast "a bare aggregate: vectorized" 'SELECT avg(a) FROM %T'
+ansq "a bare aggregate: answer matches heap" 'SELECT avg(a) FROM %T'
+fast "two bare aggregates: vectorized" 'SELECT avg(a), avg(b) FROM %T'
+ansq "two bare aggregates: answer matches heap" 'SELECT avg(a), avg(b) FROM %T'
+fast "count(*): vectorized" 'SELECT count(*) FROM %T'
+ansq "count(*): answer matches heap" 'SELECT count(*) FROM %T'
+fast "min and max: vectorized" 'SELECT min(a), max(a) FROM %T'
+ansq "min and max: answer matches heap" 'SELECT min(a), max(a) FROM %T'
 
 # ------------------------------------------------- newly accepted shapes
 
-both "a cast on an aggregate"      'SELECT count(*)::text FROM %T'
-both "a sum of two aggregates"     'SELECT avg(a)+avg(b) FROM %T'
-both "a difference of aggregates"  'SELECT max(a)-min(a) FROM %T'
-both "an aggregate in a function"  'SELECT round(avg(a)::numeric, 2) FROM %T'
-both "an aggregate times a const"  'SELECT avg(a)*2 FROM %T'
-both "mixed bare and wrapped"      'SELECT count(*), count(*)::text, avg(a) FROM %T'
-both "a constant beside aggregates" 'SELECT 1, count(*), avg(a) FROM %T'
-both "the same aggregate twice"    'SELECT avg(a)+avg(a) FROM %T'
-both "aggregates in both orders"   'SELECT max(a)-min(a), min(a)-max(a) FROM %T'
-both "a CASE over aggregates"      'SELECT CASE WHEN count(*) > 0 THEN avg(a) ELSE NULL END FROM %T'
+fast "a cast on an aggregate: vectorized" 'SELECT count(*)::text FROM %T'
+ansq "a cast on an aggregate: answer matches heap" 'SELECT count(*)::text FROM %T'
+fast "a sum of two aggregates: vectorized" 'SELECT avg(a)+avg(b) FROM %T'
+ansq "a sum of two aggregates: answer matches heap" 'SELECT avg(a)+avg(b) FROM %T'
+fast "a difference of aggregates: vectorized" 'SELECT max(a)-min(a) FROM %T'
+ansq "a difference of aggregates: answer matches heap" 'SELECT max(a)-min(a) FROM %T'
+fast "an aggregate in a function: vectorized" 'SELECT round(avg(a)::numeric, 2) FROM %T'
+ansq "an aggregate in a function: answer matches heap" 'SELECT round(avg(a)::numeric, 2) FROM %T'
+fast "an aggregate times a const: vectorized" 'SELECT avg(a)*2 FROM %T'
+ansq "an aggregate times a const: answer matches heap" 'SELECT avg(a)*2 FROM %T'
+fast "mixed bare and wrapped: vectorized" 'SELECT count(*), count(*)::text, avg(a) FROM %T'
+ansq "mixed bare and wrapped: answer matches heap" 'SELECT count(*), count(*)::text, avg(a) FROM %T'
+fast "a constant beside aggregates: vectorized" 'SELECT 1, count(*), avg(a) FROM %T'
+ansq "a constant beside aggregates: answer matches heap" 'SELECT 1, count(*), avg(a) FROM %T'
+fast "the same aggregate twice: vectorized" 'SELECT avg(a)+avg(a) FROM %T'
+ansq "the same aggregate twice: answer matches heap" 'SELECT avg(a)+avg(a) FROM %T'
+fast "aggregates in both orders: vectorized" 'SELECT max(a)-min(a), min(a)-max(a) FROM %T'
+ansq "aggregates in both orders: answer matches heap" 'SELECT max(a)-min(a), min(a)-max(a) FROM %T'
+fast "a CASE over aggregates: vectorized" 'SELECT CASE WHEN count(*) > 0 THEN avg(a) ELSE NULL END FROM %T'
+ansq "a CASE over aggregates: answer matches heap" 'SELECT CASE WHEN count(*) > 0 THEN avg(a) ELSE NULL END FROM %T'
 
 # A WHERE routes to the SCAN-FOLD path, which is behind
 # pgcolumnar.enable_ungrouped_vector_agg and that GUC is OFF by default. So a
 # filtered aggregate declines with or without this change, and an arm that did
 # not set it would be measuring the opt-in rather than the target-list shape.
 # With it on, the relaxation applies there too.
-vec_sf() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -At -c "SET pgcolumnar.enable_ungrouped_vector_agg=on" \
-		-c "EXPLAIN (COSTS OFF) $1" 2>/dev/null \
-		| grep -cE 'Columnar Vectorized Aggregates: [1-9]'
-}
+vec_sf() { plan_of "$1" "SET pgcolumnar.enable_ungrouped_vector_agg = on"; }
 check "premise: the scan-fold GUC is off by default, so a filter declines" \
-	"$([ "$(vec 'SELECT avg(a) FROM c WHERE b < 40')" -gt 0 ] && echo yes || echo no)" "no"
+	"$(vec 'SELECT avg(a) FROM c WHERE b < 40')" "not vectorized"
 check "premise: and a BARE aggregate takes it once the GUC is on" \
-	"$([ "$(vec_sf 'SELECT avg(a) FROM c WHERE b < 40')" -gt 0 ] && echo yes || echo no)" "yes"
+	"$(vec_sf 'SELECT avg(a) FROM c WHERE b < 40')" "vectorized"
 check "a wrapped aggregate takes the scan-fold path too" \
-	"$([ "$(vec_sf 'SELECT round(avg(a)::numeric,2) FROM c WHERE b < 40')" -gt 0 ] && echo yes || echo no)" "yes"
+	"$(vec_sf 'SELECT round(avg(a)::numeric,2) FROM c WHERE b < 40')" "vectorized"
 ansq "and the filtered wrapped answer matches heap" \
 	'SELECT round(avg(a)::numeric,2) FROM %T WHERE b < 40'
-both "count of a nullable column wrapped" 'SELECT count(a)::text, count(*)::text FROM %T'
+fast "count of a nullable column wrapped: vectorized" 'SELECT count(a)::text, count(*)::text FROM %T'
+ansq "count of a nullable column wrapped: answer matches heap" 'SELECT count(a)::text, count(*)::text FROM %T'
 
 # Column ORDER is what a mis-built projection gets wrong while every individual
 # value is still right, so an arm whose columns are deliberately not in
 # aggregate order.
-both "output order differs from aggregate order" \
-	'SELECT max(a), min(a), count(*), avg(a) FROM %T'
-both "an aggregate used in two different expressions" \
-	'SELECT avg(a)+1, avg(a)*2, avg(a) FROM %T'
+fast "output order differs from aggregate order: vectorized" 'SELECT max(a), min(a), count(*), avg(a) FROM %T'
+ansq "output order differs from aggregate order: answer matches heap" 'SELECT max(a), min(a), count(*), avg(a) FROM %T'
+fast "an aggregate used in two different expressions: vectorized" 'SELECT avg(a)+1, avg(a)*2, avg(a) FROM %T'
+ansq "an aggregate used in two different expressions: answer matches heap" 'SELECT avg(a)+1, avg(a)*2, avg(a) FROM %T'
 
 # --------------------------------------------------------- refusal arms
 #
@@ -125,12 +149,12 @@ both "an aggregate used in two different expressions" \
 # removed, so the over-accepting mutation in the PR is what proves them.
 
 check "REFUSE: a bare column is not an ungrouped aggregate shape" \
-	"$([ "$(vec 'SELECT a, count(*) FROM c GROUP BY a')" -gt 0 ] && echo yes || echo no)" "no"
+	"$(vec 'SELECT a, count(*) FROM c GROUP BY a')" "not vectorized"
 ansq "and GROUP BY still answers correctly" \
 	'SELECT a, count(*) FROM %T GROUP BY a ORDER BY a NULLS LAST'
 
 check "REFUSE: an unsupported aggregate declines the whole target list" \
-	"$([ "$(vec "SELECT count(*)::text, string_agg(t, ',') FROM c")" -gt 0 ] && echo yes || echo no)" "no"
+	"$(vec "SELECT count(*)::text, string_agg(t, ',') FROM c")" "not vectorized"
 ansq "and the unsupported aggregate still answers correctly" \
 	"SELECT count(*)::text, length(string_agg(t, ',')) FROM %T"
 
@@ -160,20 +184,20 @@ ansq "and the unsupported aggregate still answers correctly" \
 # to hide these before they got there.
 
 check "REFUSE: FILTER on a wrapped aggregate" \
-	"$([ "$(vec 'SELECT count(*) FILTER (WHERE a > 5)::text FROM c')" -gt 0 ] && echo yes || echo no)" "no"
+	"$(vec 'SELECT count(*) FILTER (WHERE a > 5)::text FROM c')" "not vectorized"
 ansq "and FILTER still answers correctly" \
 	'SELECT count(*) FILTER (WHERE a > 5)::text FROM %T'
 
 check "REFUSE: DISTINCT on a wrapped aggregate" \
-	"$([ "$(vec 'SELECT count(DISTINCT b)::text FROM c')" -gt 0 ] && echo yes || echo no)" "no"
+	"$(vec 'SELECT count(DISTINCT b)::text FROM c')" "not vectorized"
 ansq "and DISTINCT still answers correctly" 'SELECT count(DISTINCT b)::text FROM %T'
 
 check "REFUSE: FILTER inside an expression over aggregates" \
-	"$([ "$(vec 'SELECT avg(a) FILTER (WHERE b < 50) + 1 FROM c')" -gt 0 ] && echo yes || echo no)" "no"
+	"$(vec 'SELECT avg(a) FILTER (WHERE b < 50) + 1 FROM c')" "not vectorized"
 ansq "and FILTER inside an expression still answers correctly" 'SELECT avg(a) FILTER (WHERE b < 50) + 1 FROM %T'
 
 check "REFUSE: ORDER BY inside an aggregate, wrapped" \
-	"$([ "$(vec "SELECT length(string_agg(t, ',' ORDER BY a)) FROM c")" -gt 0 ] && echo yes || echo no)" "no"
+	"$(vec "SELECT length(string_agg(t, ',' ORDER BY a)) FROM c")" "not vectorized"
 ansq "and a wrapped ORDER BY still answers correctly" \
 	"SELECT length(string_agg(t, ',' ORDER BY a NULLS LAST, id)) FROM %T"
 
@@ -195,7 +219,7 @@ check_text "an all-NULL relation answers the wrapped shape as heap does" \
 	"$(pgc_seq_hash 'SELECT count(*)::text, avg(a), avg(a)+avg(b) FROM eh')"
 
 check "REFUSE: an aggregate over an expression of two columns" \
-	"$([ "$(vec 'SELECT sum(a + b) FROM c')" -gt 0 ] && echo yes || echo no)" "no"
+	"$(vec 'SELECT sum(a + b) FROM c')" "not vectorized"
 ansq "and an aggregate over an expression still answers correctly" 'SELECT sum(a + b) FROM %T'
 
 # --- the parallel arm, which this change also unblocked ---------------------
@@ -230,13 +254,23 @@ check "premise: a BARE aggregate on the scan-fold path really goes parallel" \
 	"$([ "$PG" -ge 1 ] && [ "$PW" -ge 1 ] && [ "$PV" -ge 1 ] && echo yes \
 	   || echo "no (gather=$PG workers=$PW vec=$PV)")" "yes"
 
-for pq in 'SELECT avg(v)+avg(v) FROM c' 'SELECT round(avg(v)::numeric,3) FROM c' 'SELECT avg(v)::text FROM c'; do
-	read -r G W V <<<"$(par "$pq")"
-	check "parallel accepts a wrapped target list: ${pq:7:34}" \
+# par_arm NAME QUERY: the wrapped target list went parallel; par_match NAME QUERY: and its
+# parallel answer equals the heap's. Unrolled with literal names, for the reason `fast` is.
+par_arm() {
+	local G W V
+	read -r G W V <<<"$(par "$2")"
+	check "$1" \
 		"$([ "$G" -ge 1 ] && [ "$W" -ge 1 ] && [ "$V" -ge 1 ] && echo yes \
 		   || echo "no (gather=$G workers=$W vec=$V)")" "yes"
-	check_text "and its answer matches the heap twin: ${pq:7:34}" \
-		"$(par_ans "$pq")" "$(q "${pq//FROM c/FROM h}")"
-done
+}
+par_match() {
+	check_text "$1" "$(par_ans "$2")" "$(q "${2//FROM c/FROM h}")"
+}
+par_arm "parallel accepts a wrapped target list: avg(v)+avg(v) FROM c" 'SELECT avg(v)+avg(v) FROM c'
+par_match "and its answer matches the heap twin: avg(v)+avg(v) FROM c" 'SELECT avg(v)+avg(v) FROM c'
+par_arm "parallel accepts a wrapped target list: round(avg(v)::numeric,3) FROM c" 'SELECT round(avg(v)::numeric,3) FROM c'
+par_match "and its answer matches the heap twin: round(avg(v)::numeric,3) FROM c" 'SELECT round(avg(v)::numeric,3) FROM c'
+par_arm "parallel accepts a wrapped target list: avg(v)::text FROM c" 'SELECT avg(v)::text FROM c'
+par_match "and its answer matches the heap twin: avg(v)::text FROM c" 'SELECT avg(v)::text FROM c'
 
 pgc_summary

@@ -4530,6 +4530,74 @@ validity_elision	validity_elision	the nulls column preserves its null count	15;1
 validity_elision	validity_elision	the nulls column reads back exactly what the heap holds	15;16;17;18;19	2026-10-13	reader: PgColumnarEncdescOmitsValidity returns false, so every reader expects a bitmap the writer did not write;the reader returning row 5 of every row group as NULL;the validity-elision predicate forced true, so every column reads as if its bitmap were elided
 validity_elision	validity_elision	the second fixture holds nulls, so its bitmap is load-bearing	15;16;17;18;19	2026-09-23	the validity-elision predicate forced true, so every column reads as if its bitmap were elided
 validity_elision	validity_elision	while a column with nulls still stores one, sized one bit per row	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	REFUSE: DISTINCT on a wrapped aggregate	15;16;17;18;19	2026-10-20	classify_aggref accepts aggdistinct (DISTINCT no longer refused)
+vector_agg_tlist_shape	vector_agg_tlist_shape	REFUSE: FILTER inside an expression over aggregates	15;16;17;18;19	2026-10-20	classify_aggref accepts aggfilter (FILTER no longer refused)
+vector_agg_tlist_shape	vector_agg_tlist_shape	REFUSE: FILTER on a wrapped aggregate	15;16;17;18;19	2026-10-20	classify_aggref accepts aggfilter (FILTER no longer refused)
+vector_agg_tlist_shape	vector_agg_tlist_shape	REFUSE: ORDER BY inside an aggregate, wrapped	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	REFUSE: a bare column is not an ungrouped aggregate shape	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	REFUSE: an aggregate over an expression of two columns	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	REFUSE: an unsupported aggregate declines the whole target list	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	a CASE over aggregates: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	a CASE over aggregates: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	a bare aggregate: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	a bare aggregate: vectorized	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	a cast on an aggregate: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	a cast on an aggregate: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	a constant beside aggregates: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	a constant beside aggregates: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	a difference of aggregates: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	a difference of aggregates: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	a sum of two aggregates: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	a sum of two aggregates: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	a wrapped aggregate takes the scan-fold path too	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	aggregates in both orders: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	aggregates in both orders: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	an aggregate in a function: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	an aggregate in a function: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	an aggregate times a const: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	an aggregate times a const: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	an aggregate used in two different expressions: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	an aggregate used in two different expressions: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	an all-NULL relation answers the wrapped shape as heap does	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	an empty relation answers the wrapped shape as heap does	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	and DISTINCT still answers correctly	15;16;17;18;19	2026-10-20	classify_aggref accepts aggdistinct (DISTINCT no longer refused)
+vector_agg_tlist_shape	vector_agg_tlist_shape	and FILTER inside an expression still answers correctly	15;16;17;18;19	2026-10-20	classify_aggref accepts aggfilter (FILTER no longer refused)
+vector_agg_tlist_shape	vector_agg_tlist_shape	and FILTER still answers correctly	15;16;17;18;19	2026-10-20	classify_aggref accepts aggfilter (FILTER no longer refused)
+vector_agg_tlist_shape	vector_agg_tlist_shape	and GROUP BY still answers correctly	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	and a wrapped ORDER BY still answers correctly	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	and an aggregate over an expression still answers correctly	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	and its answer matches the heap twin: avg(v)+avg(v) FROM c	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	and its answer matches the heap twin: avg(v)::text FROM c	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	and its answer matches the heap twin: round(avg(v)::numeric,3) FROM c	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	and the filtered wrapped answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	and the unsupported aggregate still answers correctly	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	control: the set oracle is order-blind by design	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	count of a nullable column wrapped: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	count of a nullable column wrapped: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	count(*): answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	count(*): vectorized	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	min and max: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	min and max: vectorized	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	mixed bare and wrapped: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	mixed bare and wrapped: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	output order differs from aggregate order: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	output order differs from aggregate order: vectorized	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	parallel accepts a wrapped target list: avg(v)+avg(v) FROM c	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	parallel accepts a wrapped target list: avg(v)::text FROM c	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	parallel accepts a wrapped target list: round(avg(v)::numeric,3) FROM c	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	premise: a BARE aggregate on the scan-fold path really goes parallel	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	premise: and a BARE aggregate takes it once the GUC is on	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	premise: both tables hold the same rows	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	premise: the all-NULL pair has rows but no values	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	premise: the empty pair really is empty	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	premise: the ordered oracle agrees with itself	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	premise: the ordered oracle is order-sensitive	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	premise: the scan-fold GUC is off by default, so a filter declines	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	premise: the sort column has NULLs, which the aggregates must skip	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	the same aggregate twice: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	the same aggregate twice: vectorized	15;16;17;18;19	2026-10-20	the #755 relaxation reverted: a target list that is not bare aggregates declines
+vector_agg_tlist_shape	vector_agg_tlist_shape	two bare aggregates: answer matches heap	15;16;17;18;19	never	-
+vector_agg_tlist_shape	vector_agg_tlist_shape	two bare aggregates: vectorized	15;16;17;18;19	never	-
 vm_clear_on_renumber	vm_clear_on_renumber	compact_rewrite rewrote exactly the one qualifying group	15;16;17;18;19	2026-10-20	compact_rewrite reports one more group than it rewrote
 vm_clear_on_renumber	vm_clear_on_renumber	control: a group the rewrite did not touch keeps its all-visible bit	15;16;17;18;19	2026-10-20	rewrite_one_group clears rows 1..100000000 of the relation
 vm_clear_on_renumber	vm_clear_on_renumber	control: a relation that was not reclustered keeps its all-visible bits	15;16;17;18;19	never	-

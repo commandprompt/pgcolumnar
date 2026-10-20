@@ -886,4 +886,6 @@ guard_tests 462
 # 17 tests, one per check, by collection over the cluster files.
 # cluster_tests 1169 -> 1179 for #1341's test_arrow_export.py, the twin of arrow_export.sh:
 # 10 checks in 10 tests, by collection over the cluster files.
-cluster_tests 1179
+# cluster_tests 1179 -> 1242 for #1341's test_vector_agg_tlist_shape.py, the twin of vector_agg_tlist_shape.sh:
+# 63 tests: one per check, except that the oracle's three run in one test and the empty and all-NULL four in another, by collection over the cluster files.
+cluster_tests 1242
