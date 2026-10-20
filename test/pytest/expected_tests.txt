@@ -892,4 +892,6 @@ guard_tests 462
 # 22 checks in 22 tests, by collection over the cluster files.
 # cluster_tests 1264 -> 1287 for #1341's test_vector_agg_rescan_memory.py, the twin of vector_agg_rescan_memory.sh:
 # 23 tests, one per check, by collection over the cluster files.
-cluster_tests 1287
+# cluster_tests 1287 -> 1329 for #1341's test_analyze_stats.py, the twin of analyze_stats.sh:
+# 42 checks in 42 tests, by collection over the cluster files.
+cluster_tests 1329

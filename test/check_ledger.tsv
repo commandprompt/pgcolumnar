@@ -213,44 +213,45 @@ analyze_function	analyze_function	reltuples is untouched, as the doc says	18;19	
 analyze_function	analyze_function	so the bottom bound is the smallest non-most-common value, not the column minimum	18;19	never	-
 analyze_function	analyze_function	the histogram honours the column's statistics target, not the global default	18;19	never	-
 analyze_function	analyze_function	the two routes agree which storage a WITH DATA matview owns	18;19	never	-
-analyze_stats	analyze_stats	ANALYZE now collects statistics at all	15;16;17;18;19	never	-
+analyze_stats	analyze_stats	ANALYZE now collects statistics at all	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
 analyze_stats	analyze_stats	ANALYZE on a wide table completes well inside its derived cap	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	a fast machine still gets the floor, not a bound that shrinks with it	15;16;17;18;19	2026-09-24	the cap loses its absolute floor, so the bound shrinks with the machine it runs on;the floor moved by one, so the boundary where floor and derived bound meet is off by one
-analyze_stats	analyze_stats	a late column's wide decode prefix costs it off the index (#363)	15;16;17;18;19	never	-
+analyze_stats	analyze_stats	a late column's wide decode prefix costs it off the index (#363)	15;16;17;18;19	2026-10-20	columnar_customscan.c: the decode sized from the last referenced column alone, not the attribute prefix (#363)
 analyze_stats	analyze_stats	a malformed insert time yields the floor rather than an arithmetic error	15;16;17;18;19	2026-09-24	the cap loses its absolute floor, so the bound shrinks with the machine it runs on;the floor moved by one, so the boundary where floor and derived bound meet is off by one;the input guard removed, so a partially numeric insert time raises an arithmetic error and the cap prints nothing;the input guard removed, so anything bash will not read as an int64 reaches `$(( ))`: a partially numeric token raises an arithmetic error and an overflowing one wraps to a cap that can never fail
 analyze_stats	analyze_stats	a missing or zero insert time still yields the floor, not zero	15;16;17;18;19	2026-09-24	the cap loses its absolute floor, so the bound shrinks with the machine it runs on;the floor moved by one, so the boundary where floor and derived bound meet is off by one
-analyze_stats	analyze_stats	a point lookup on an indexed column still uses the index after ANALYZE	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	a selective equality is estimated from the data, not the 0.5% default	15;16;17;18;19	never	-
+analyze_stats	analyze_stats	a point lookup on an indexed column still uses the index after ANALYZE	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_stats	analyze_stats	a selective equality is estimated from the data, not the 0.5% default	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
 analyze_stats	analyze_stats	a small LIMIT still reaches the index through the fetch penalty (#376)	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	a vacuumed columnar table can reach an index-only scan (#507)	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	an early column's short decode prefix leaves it on the index (#363)	15;16;17;18;19	never	-
+analyze_stats	analyze_stats	an early column's short decode prefix leaves it on the index (#363)	15;16;17;18;19	2026-10-20	columnar_tableam.c: the slot's heap copy drops the item pointer (tuple->t_self), so ANALYZE sorts an unordered sample
 analyze_stats	analyze_stats	and a slow one gets a budget proportional to its own insert	15;16;17;18;19	2026-09-24	the cap stops scaling with the run, so a slow machine gets the same budget as a fast one
 analyze_stats	analyze_stats	and an insert time past int64 yields the floor rather than a cap that cannot fail	15;16;17;18;19	2026-09-24	the input guard removed, so anything bash will not read as an int64 reaches `$(( ))`: a partially numeric token raises an arithmetic error and an overflowing one wraps to a cap that can never fail
 analyze_stats	analyze_stats	and one millisecond past it the derived bound takes over	15;16;17;18;19	2026-09-24	the cap stops scaling with the run, so a slow machine gets the same budget as a fast one
-analyze_stats	analyze_stats	correlation on an ascending column is near 1	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	growth without vacuum does not inflate the all-visible saving (#507)	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	having an index available saves the point lookup real work	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	most_common_vals holds the same set as heap	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	n_distinct on a clustered column is within 10% of the truth	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	n_distinct on nullable matches heap	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	n_distinct on status matches heap	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	n_distinct on v matches heap	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	no row is offered to the sampler twice	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	null_frac matches heap within 0.02	15;16;17;18;19	never	-
+analyze_stats	analyze_stats	correlation on an ascending column is near 1	15;16;17;18;19	2026-10-20	columnar_tableam.c: the slot's heap copy drops the item pointer (tuple->t_self), so ANALYZE sorts an unordered sample
+analyze_stats	analyze_stats	growth without vacuum does not inflate the all-visible saving (#507)	15;16;17;18;19	2026-10-20	columnar_tableam.c: the all-visible fraction divided by the catalog relpages, not the live block count (#507)
+analyze_stats	analyze_stats	having an index available saves the point lookup real work	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_stats	analyze_stats	most_common_vals holds the same set as heap	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_stats	analyze_stats	n_distinct on a clustered column is within 10% of the truth	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_stats	analyze_stats	n_distinct on nullable matches heap	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_stats	analyze_stats	n_distinct on status matches heap	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_stats	analyze_stats	n_distinct on v matches heap	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_stats	analyze_stats	no row is offered to the sampler twice	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_stats	analyze_stats	null_frac matches heap within 0.02	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler offers every NULL as a value
 analyze_stats	analyze_stats	premise: VACUUM recorded all-visible pages to price with (#507)	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	premise: both estimates were taken (#507)	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	premise: the cap is exposed as a function, not written inline	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	premise: the selective range has its rows (#507)	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	reltuples is within 2% of the true row count	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	the all-visible fraction does not hand every query to the index (#507)	15;16;17;18;19	never	-
+analyze_stats	analyze_stats	reltuples is within 2% of the true row count	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_stats	analyze_stats	the all-visible fraction does not hand every query to the index (#507)	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_stats	analyze_stats	the all-visible pages buy the index-only scan a saving (#507)	15;16;17;18;19	2026-10-20	columnar_tableam.c: the all-visible fraction hardcoded to zero in relation_estimate_size, the #507 defect
 analyze_stats	analyze_stats	the bound does not disable the penalty for a full ordered read (#376)	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	the fetch penalty leaves a clustered ORDER BY on its index (#355 must not over-fire)	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	the fetch penalty leaves a selective point lookup on the index (#355 vs #171)	15;16;17;18;19	never	-
+analyze_stats	analyze_stats	the fetch penalty leaves a clustered ORDER BY on its index (#355 must not over-fire)	15;16;17;18;19	2026-10-20	columnar_tableam.c: the slot's heap copy drops the item pointer (tuple->t_self), so ANALYZE sorts an unordered sample
+analyze_stats	analyze_stats	the fetch penalty leaves a selective point lookup on the index (#355 vs #171)	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
 analyze_stats	analyze_stats	the fetch penalty makes an unclustered ORDER BY sort rather than fetch per row (#355)	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	the floor and the derived bound meet where they should	15;16;17;18;19	2026-09-24	the floor moved by one, so the boundary where floor and derived bound meet is off by one
 analyze_stats	analyze_stats	the join plans as a join rather than degenerating	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	the penalty is applied before the columnar path is offered, so it can still win (#362)	15;16;17;18;19	never	-
-analyze_stats	analyze_stats	the sampled tuples carry a valid item pointer	15;16;17;18;19	never	-
+analyze_stats	analyze_stats	the sampled tuples carry a valid item pointer	15;16;17;18;19	2026-10-20	columnar_tableam.c: the slot's heap copy drops the item pointer (tuple->t_self), so ANALYZE sorts an unordered sample
 analyze_stats	analyze_stats	the server survived ANALYZE	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	without the fetch penalty an unclustered ORDER BY takes the index (#355 premise)	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	without the penalty a selective scattered condition takes the index (#362 premise)	15;16;17;18;19	never	-
