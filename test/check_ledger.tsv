@@ -4547,6 +4547,40 @@ vacuum_lock_privilege	vacuum_lock_privilege	truncate refuses a non-owner before 
 vacuum_lock_privilege	vacuum_lock_privilege	truncate tells a non-owner nothing about the relation type (#1384)	15;16;17;18;19	2026-10-14	truncate checking ownership after its lock and its type check (main before #1384's fix)
 vacuum_lock_privilege	vacuum_lock_privilege	vacuum refuses a non-owner before taking the exclusive lock	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock;pgcolumnar.vacuum checks ownership after taking its AccessExclusiveLock
 vacuum_lock_privilege	vacuum_lock_privilege	vacuum_sorted refuses a non-owner before taking the exclusive lock	15;16;17;18;19	2026-10-14	every maintenance entry point checks ownership after taking its lock
+vacuum_sorted_gate	vacuum_sorted_gate	a PREFIX of the recorded key is a different key, so it rewrites	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	a delete earlier in the same transaction defeats the gate (space reclaimed)	15;16;17;18;19	2026-10-20	vacuum_sorted's gate ignores deleted rows, the ordering-only mirror of #415
+vacuum_sorted_gate	vacuum_sorted_gate	a second vacuum_sorted on the same key does NOT rewrite	15;16;17;18;19	2026-10-20	vacuum_sorted's #760 gate removed, so every call rewrites;vacuum_sorted's skip path raises instead of skipping (#760)
+vacuum_sorted_gate	vacuum_sorted_gate	a third identical call is also a no-op	15;16;17;18;19	2026-10-20	vacuum_sorted's #760 gate removed, so every call rewrites;vacuum_sorted's skip path raises instead of skipping (#760)
+vacuum_sorted_gate	vacuum_sorted_gate	an insert earlier in the same transaction defeats the gate (rows come out ordered)	15;16;17;18;19	2026-10-20	vacuum_sorted's gate ignores groups appended outside the run
+vacuum_sorted_gate	vacuum_sorted_gate	and every row is still there	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	and folds the tail back into the run	15;16;17;18;19	2026-10-20	vacuum_sorted's gate ignores groups appended outside the run
+vacuum_sorted_gate	vacuum_sorted_gate	and it reclaimed the space: deleted rows go to zero	15;16;17;18;19	2026-10-20	vacuum_sorted's gate ignores deleted rows, the ordering-only mirror of #415
+vacuum_sorted_gate	vacuum_sorted_gate	and records the new key	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	and the kind is now lexicographic	15;16;17;18;19	2026-10-20	vacuum_sorted's gate ignores the run's kind, so a zorder run reads as sorted
+vacuum_sorted_gate	vacuum_sorted_gate	and the relation is still physically in (k,j) order after the skips	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	and the result really is in (k,j) order	15;16;17;18;19	2026-10-20	vacuum_sorted's gate ignores the run's kind, so a zorder run reads as sorted
+vacuum_sorted_gate	vacuum_sorted_gate	and the rewrite really happened: the live rows are all that is stored	15;16;17;18;19	2026-10-20	vacuum_sorted's gate ignores deleted rows, the ordering-only mirror of #415
+vacuum_sorted_gate	vacuum_sorted_gate	premise: a plain vacuum() leaves no lexicographic mark	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: and the Z-ordered table is NOT in k order (else this arm proves nothing)	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: cluster() recorded a ZORDER run over the same columns	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: it recorded a LEXICOGRAPHIC run (not zorder)	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: nothing is deleted before the transaction	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: nothing is deleted yet	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: over exactly the requested key	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: so an ORDERING-only gate would see 'already sorted, nothing appended'	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: the delete left dead rows INSIDE the run, appending nothing	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: the first vacuum_sorted does real work (layout and storage both move)	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: the insert appended groups outside the run	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: the run covers the whole relation (0 appended groups)	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	premise: the tail is smaller than the chunk group limit	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	so vacuum_sorted after a plain vacuum rewrites	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	the call after the reclaim is a no-op again	15;16;17;18;19	2026-10-20	vacuum_sorted's #760 gate removed, so every call rewrites;vacuum_sorted's skip path raises instead of skipping (#760)
+vacuum_sorted_gate	vacuum_sorted_gate	the gated calls preserved the exact row set (columnar == heap mirror)	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	vacuum_sorted after an append DOES rewrite	15;16;17;18;19	2026-10-20	vacuum_sorted's gate ignores groups appended outside the run
+vacuum_sorted_gate	vacuum_sorted_gate	vacuum_sorted by a DIFFERENT key (same columns, other order) rewrites	15;16;17;18;19	never	-
+vacuum_sorted_gate	vacuum_sorted_gate	vacuum_sorted over a ZORDER run of the same columns DOES rewrite	15;16;17;18;19	2026-10-20	vacuum_sorted's gate ignores the run's kind, so a zorder run reads as sorted
+vacuum_sorted_gate	vacuum_sorted_gate	vacuum_sorted with dead rows DOES rewrite, gate or no gate	15;16;17;18;19	2026-10-20	vacuum_sorted's gate ignores deleted rows, the ordering-only mirror of #415
+vacuum_sorted_gate	vacuum_sorted_gate	without losing a live row	15;16;17;18;19	never	-
 vacuum_stripe_count	vacuum_stripe_count	a non-default stripe_count is refused rather than ignored	15;16;17;18;19	2026-10-20	pgcolumnar.vacuum accepts and ignores a non-default stripe_count again (#560)
 vacuum_stripe_count	vacuum_stripe_count	and 0 also did the work	15;16;17;18;19	never	-
 vacuum_stripe_count	vacuum_stripe_count	and it combined the groups	15;16;17;18;19	never	-

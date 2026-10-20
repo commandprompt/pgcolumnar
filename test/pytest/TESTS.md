@@ -249,6 +249,7 @@ behaviour, the source of that number is named.
 - [201. test_analyze_stats.py: ANALYZE collects statistics that agree with heap, and the planner prices what they feed](#201-test_analyze_statspy-analyze-collects-statistics-that-agree-with-heap-and-the-planner-prices-what-they-feed)
 - [202. test_vacuum_stripe_count.py: pgcolumnar.vacuum refuses a stripe_count bound rather than ignoring it](#202-test_vacuum_stripe_countpy-pgcolumnarvacuum-refuses-a-stripe_count-bound-rather-than-ignoring-it)
 - [203. test_bloom_sizing.py: a bloom filter is sized by its distinct count, and still skips](#203-test_bloom_sizingpy-a-bloom-filter-is-sized-by-its-distinct-count-and-still-skips)
+- [204. test_vacuum_sorted_gate.py: pgcolumnar.vacuum_sorted skips its rewrite only when there is nothing to do](#204-test_vacuum_sorted_gatepy-pgcolumnarvacuum_sorted-skips-its-rewrite-only-when-there-is-nothing-to-do)
 
 ## 1. How to read a test in here
 
@@ -8588,3 +8589,48 @@ A module fixture on a private database builds the three tables in the shell's or
 | `test_the_values_above_the_threshold_really_are_distinct` | premise: those values really are distinct |
 | `test_a_column_above_the_distinct_cap_is_refused_a_filter` | a column above the distinct cap is refused a filter, not given a bad one -- read as refused/kept against a five-value column in the same row group (a build that writes no filter no longer passes) |
 | `test_the_large_load_itself_succeeded` | and the load itself succeeded, rather than erroring on the way |
+
+## 204. test_vacuum_sorted_gate.py: pgcolumnar.vacuum_sorted skips its rewrite only when there is nothing to do
+
+The pytest twin of `test/vacuum_sorted_gate.sh` (ported for #1341), every check by the shell's name. vacuum_sorted both orders the live rows and reclaims deleted rows' space, so its gate (#760) may skip only when the relation is already one lexicographic run over exactly this key, with nothing appended and nothing deleted. The check this suite exists for is that deleted rows defeat the gate. On a private database.
+
+### Every test
+
+Each check is its own test over a module fixture that runs the shell's steps in order. A rewrite is read from the storage id, which moves on a rewrite and not on a skip; the no-op checks also require the row-group layout to be unchanged. A call that fails, or a reading that is missing, reads as itself, never as "no-op". The heap mirror for the last check is built from the generator, not copied from the table under test.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_first_vacuum_sorted_does_real_work` | premise: the first `vacuum_sorted('vg_t','k','j')` rewrites |
+| `test_it_recorded_a_lexicographic_run` | premise: the mark is `lexicographic` |
+| `test_over_exactly_the_requested_key` | premise: over `{k,j}` |
+| `test_the_run_covers_the_whole_relation` | premise: 0 appended groups |
+| `test_nothing_is_deleted_yet` | premise: 0 deleted rows |
+| `test_a_second_call_on_the_same_key_does_not_rewrite` | the second call succeeds and moves neither storage nor layout |
+| `test_a_third_identical_call_is_also_a_no_op` | and so does the third |
+| `test_the_relation_is_still_in_order_after_the_skips` | the rows are still in (k,j) order |
+| `test_the_delete_left_dead_rows_inside_the_run` | premise: deleting the even ids leaves dead rows and appends nothing |
+| `test_an_ordering_only_gate_would_see_nothing_to_do` | premise: the mark still reads `lexicographic/{k,j}` |
+| `test_dead_rows_force_a_rewrite` | with dead rows, the call rewrites |
+| `test_it_reclaimed_the_space` | and 0 deleted rows remain |
+| `test_without_losing_a_live_row` | and the live row count is unchanged |
+| `test_the_call_after_the_reclaim_is_a_no_op_again` | the next call is a no-op again |
+| `test_the_insert_appended_groups_outside_the_run` | premise: inserting 5,000 rows appends groups |
+| `test_an_append_forces_a_rewrite` | after an append, the call rewrites |
+| `test_the_tail_is_folded_back_into_the_run` | and 0 appended groups remain |
+| `test_a_different_key_rewrites` | `vacuum_sorted` by (j,k) rewrites |
+| `test_the_new_key_is_recorded` | and records `{j,k}` |
+| `test_a_prefix_of_the_key_rewrites` | `vacuum_sorted` by (k) alone rewrites |
+| `test_cluster_recorded_a_zorder_run` | premise: `cluster('vg_z','k','j')` records `zorder/{k,j}` |
+| `test_the_zordered_table_is_not_in_k_order` | premise: and the rows are not in k order |
+| `test_a_zorder_run_forces_a_rewrite` | `vacuum_sorted` over that run rewrites |
+| `test_the_result_is_in_kj_order` | and the rows come out in (k,j) order |
+| `test_the_kind_is_now_lexicographic` | and the mark is `lexicographic` |
+| `test_a_plain_vacuum_leaves_no_mark` | premise: a plain `vacuum()` clears the mark |
+| `test_vacuum_sorted_after_a_plain_vacuum_rewrites` | so the next `vacuum_sorted` rewrites |
+| `test_the_tail_is_smaller_than_the_chunk_group_limit` | premise: the 500-row tail is below the 1,000-row group limit |
+| `test_an_insert_in_the_same_transaction_defeats_the_gate` | an insert then `vacuum_sorted` in one transaction leaves the rows in order |
+| `test_every_row_is_still_there` | and 20,500 rows remain |
+| `test_nothing_is_deleted_before_the_transaction` | premise: 0 deleted rows |
+| `test_a_delete_in_the_same_transaction_defeats_the_gate` | a delete then `vacuum_sorted` in one transaction leaves 0 deleted rows |
+| `test_the_rewrite_really_happened` | and 10,000 rows are stored |
+| `test_the_gated_calls_preserved_the_exact_row_set` | `vg_t` holds exactly the rows the generator says it should |

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 163
+suites_not_covered 162
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4169,4 +4169,22 @@ suites_not_covered 163
 #     never         3251 + 14 = 3265
 #     dated         1556 +  5 = 1561
 #     3265 + 1561 == 4826
-checks_never_observed_red 3265
+#
+# #1341, vacuum_sorted_gate seeded, with its twin (jdatcmd): 3265 -> 3286, and
+# suites_not_covered 163 -> 162. The suite had no rows. It enters with 34 checks from
+# five-major runs (34/34 on each of 15-19, shell and twin alike), after two fixes.
+# The three no-op checks read "nothing moved", and a vacuum_sorted call that fails moves
+# nothing either: with the skip path raising instead of skipping, all three passed. The
+# readers now report a failed call or a missing reading as itself. And the row-set check
+# compared vg_t with a heap copied from vg_t, so it could not fail; the mirror is now
+# built from the generator. 13 are dated by five mutations, each reddening the same
+# names in both twins: the skip path raising, the gate removed (the no-op checks each),
+# and the gate ignoring deleted rows, appended groups, or the run's kind. 21 arrive
+# never, among them the premises and the row-set check, which a planted corrupt row
+# reddens in both twins but no product mutation isolates.
+#
+#     ledger rows   4826 + 34 = 4860
+#     never         3265 + 21 = 3286
+#     dated         1561 + 13 = 1574
+#     3286 + 1574 == 4860
+checks_never_observed_red 3286

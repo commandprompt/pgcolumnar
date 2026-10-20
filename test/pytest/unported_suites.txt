@@ -144,4 +144,3 @@ sort_status_privilege
 sorted_mark_rename
 tablesample
 ungrouped_vector_agg
-vacuum_sorted_gate
