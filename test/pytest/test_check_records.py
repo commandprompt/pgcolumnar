@@ -33,7 +33,7 @@ def test_each_counted_assertion_appends_exactly_one_record(expect):
     """Three assertions, three records. The premise is that a fresh recorder has
     none, or the arm would pass on a recorder that ignored every call."""
     e = pgc_vacuity.Expect("records::one-each")
-    expect.num(len(e.records), 0, "premise: a fresh recorder holds no records")
+    expect.num(len(e.records), 0, "a fresh recorder holds no records")
     e.num(1, 1, "first")
     e.num(2, 2, "second")
     e.num(3, 3, "third")
@@ -161,7 +161,7 @@ def test_a_failed_assertion_records_fail_even_when_the_test_catches_it(expect):
         e.num(1, 2, "this comparison must fail")
     except AssertionError:
         pass
-    expect.num(len(e.records), 1, "premise: the failed assertion was still counted")
+    expect.num(len(e.records), 1, "the failed assertion was still counted")
     expect.text(e.records[0].verdict, "FAIL",
                 "and it is recorded as FAIL, not as a pass the catcher hid")
 
@@ -217,7 +217,7 @@ def test_a_delegated_assertion_records_fail_too(expect):
         e.outcomes(_FakeResult(), "a delegated comparison", passed=1)
     except AssertionError:
         pass
-    expect.num(len(e.records), 1, "premise: the delegated assertion was counted")
+    expect.num(len(e.records), 1, "the delegated assertion was counted")
     expect.text(e.records[0].verdict, "FAIL",
                 "and a failure raised by pytest's own code is still recorded")
 
@@ -238,6 +238,25 @@ def test_a_refusal_still_leaves_no_record(expect):
         expect.num(len(e.records), 0, "a refused assertion still records nothing")
     else:
         raise AssertionError("num() accepted a string, so this arm tested nothing")
+
+    # EVERY KIND OF REFUSAL, not num's alone (#1339): a method that took its record
+    # before refusing passed the arm above while num stayed correct. A failed query
+    # and an empty expectation are refused by text(), and a failed query by rows().
+    failed = pgc_vacuity.query_error("planted")
+    refused = []
+    for label, call in (("text over a failed query", lambda r: r.text(failed, "x", "n")),
+                        ("text against an empty expectation", lambda r: r.text("x", "", "n")),
+                        ("rows over a failed query", lambda r: r.rows([(failed,)], [("x",)], "n"))):
+        r = pgc_vacuity.Expect(f"verdict::refusal::{label}")
+        try:
+            call(r)
+        except pgc_vacuity.VacuityError:
+            refused.append(f"{label}: {len(r.records)} records")
+        else:
+            refused.append(f"{label}: not refused")
+    expect.rows(refused, [(f"{l}: 0 records") for l in ("text over a failed query",
+                "text against an empty expectation", "rows over a failed query")],
+                "and so do the other refusals, each leaving no record")
 
 
 def test_every_refusal_precedes_its_record(expect):
@@ -294,6 +313,21 @@ def test_every_refusal_precedes_its_record(expect):
                 refusing.add(nm)
                 growing = True
 
+    # AND MODULE-LEVEL HELPERS (#1339): a refusal raised through a free function, not
+    # a method, was invisible to both scans above; called after the record it would
+    # land in the wrapped region just the same.
+    helpers = {fn.name: fn for fn in tree.body if isinstance(fn, ast.FunctionDef)}
+    refusing_free = {nm for nm, fn in helpers.items() if _raises_here(fn)}
+    growing = True
+    while growing:
+        growing = False
+        for nm, fn in helpers.items():
+            if nm not in refusing_free and any(
+                    isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in refusing_free
+                    for n in ast.walk(fn)):
+                refusing_free.add(nm)
+                growing = True
+
     scanned = []
     offenders = []
     for nm, fn in methods.items():
@@ -312,10 +346,14 @@ def test_every_refusal_precedes_its_record(expect):
         for attr, lineno in _self_calls(fn):
             if attr in refusing and lineno > first:
                 offenders.append(f"{nm}:{lineno} calls self.{attr}() after the record")
+        for n in ast.walk(fn):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id in refusing_free and n.lineno > first):
+                offenders.append(f"{nm}:{n.lineno} calls {n.func.id}() after the record")
     # THE PREMISE IS THE POPULATION, and it is the difference between "no method
     # offends" and "the scan matched no methods". An empty offender list is the
     # answer to both, and only one of them is good news.
-    expect.at_least(len(scanned), 15, "premise: the scan found the recording methods")
+    expect.at_least(len(scanned), 15, "the scan found the recording methods")
     expect.rows(offenders, [], "no refusal is raised after its record is taken",
                 allow_empty="an empty offender list is the pass, and the at_least above "
                             "is the population premise that makes it mean something")
@@ -348,7 +386,7 @@ def test_every_recording_method_resolves_its_verdict(expect):
                 recording.append(fn.name)
 
     expect.at_least(len(recording), 15,
-                    "premise: the scan found the recording methods")
+                    "the scan found the recording methods")
     unwrapped = sorted(
         nm for nm in recording
         if not getattr(getattr(pgc_vacuity.Expect, nm), "_pgc_resolves_verdict", False)
@@ -548,7 +586,7 @@ def test_the_total_separates_records_from_passes_and_from_tests(pytester, expect
         """
     )
     result = pytester.runpytest("-p", "pgc_vacuity")
-    expect.outcomes(result, "premise: two tests, both passing", passed=2, failed=0)
+    expect.outcomes(result, "two tests, both passing", passed=2, failed=0)
     result.stdout.fnmatch_lines(["*checks run: 5*"])
     result.stdout.fnmatch_lines(["*accounting: 4 pass + 1 fail + 0 unrun = 5*"])
 
