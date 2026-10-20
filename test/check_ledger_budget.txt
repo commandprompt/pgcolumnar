@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 161
+suites_not_covered 160
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4208,4 +4208,19 @@ suites_not_covered 161
 #     never         3286 + 39 = 3325
 #     dated         1574 + 21 = 1595
 #     3325 + 1595 == 4920
-checks_never_observed_red 3325
+#
+# #1341, tablesample seeded, with its twin (jdatcmd): 3325 -> 3328, and
+# suites_not_covered 161 -> 160. The suite had no rows. It enters with 8 checks from
+# five-major runs (8/8 on each of 15-19, shell and twin alike), after one fix. The
+# SQLSTATE reader printed 00000 whenever psql printed no ERROR line, a failed connection
+# included, so with the server unreachable both controls passed. It now reads "no
+# reading" when psql exits non-zero without a SQLSTATE. 5 are dated by two
+# mutations, each reddening the same names in both twins: the custom scan's
+# tablesample check removed, and the vectorized aggregate's two removed. 3 arrive
+# never: the row premise and the two controls.
+#
+#     ledger rows   4920 + 8 = 4928
+#     never         3325 + 3 = 3328
+#     dated         1595 + 5 = 1600
+#     3328 + 1600 == 4928
+checks_never_observed_red 3328

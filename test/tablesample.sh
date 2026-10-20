@@ -27,14 +27,20 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
+# sqlstate SQL -> the SQLSTATE the statement raised, 00000 when psql ran it and
+# exited 0, or "no reading" when psql failed without one. That last case used to
+# read 00000: with the server unreachable, both controls below passed.
 sqlstate() {
-	local out code
+	local out code rc
 	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -Atq -v VERBOSITY=verbose \
 		-c "\\set VERBOSITY verbose" \
 		-c "$1" 2>&1)"
+	rc=$?
 	code="$(printf '%s\n' "$out" | sed -n 's/.*ERROR:[[:space:]]*\([0-9A-Z]\{5\}\):.*/\1/p' | head -1)"
-	if [ -n "$code" ]; then printf '%s\n' "$code"; else printf '00000\n'; fi
+	if [ -n "$code" ]; then printf '%s\n' "$code"
+	elif [ "$rc" -eq 0 ]; then printf '00000\n'
+	else printf 'no reading (psql rc %s: %s)\n' "$rc" "$(printf '%s' "$out" | head -1)"; fi
 }
 
 psql_run "CREATE TABLE n (id int, v text) USING pgcolumnar;"

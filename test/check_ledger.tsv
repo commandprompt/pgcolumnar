@@ -4173,6 +4173,14 @@ storage_row_repair	storage_row_repair	no row names a missing relation before the
 storage_row_repair	storage_row_repair	premise: the damaged table still reads every row	15;16;17;18;19	never	-
 storage_row_repair	storage_row_repair	premise: the release notes give the query that finds wrong rows	15;16;17;18;19	never	-
 storage_row_repair	storage_row_repair	the notes' query finds both rows alpha4 left wrong	15;16;17;18;19	2026-10-12	the release notes' query is edited from NOT EXISTS to EXISTS
+tablesample	tablesample	SYSTEM TABLESAMPLE raises 0A000 as well	15;16;17;18;19	2026-10-20	the custom scan replaces a sampled scan again (columnar_customscan.c);the vectorized aggregate paths take a sampled scan again (columnar_vector.c, both hooks)
+tablesample	tablesample	a projected TABLESAMPLE scan raises 0A000 rather than returning every id	15;16;17;18;19	2026-10-20	the custom scan replaces a sampled scan again (columnar_customscan.c)
+tablesample	tablesample	control: an unsampled count reports success, so the probe is not stuck on 0A000	15;16;17;18;19	never	-
+tablesample	tablesample	control: the same TABLESAMPLE on a heap table raises nothing	15;16;17;18;19	never	-
+tablesample	tablesample	count(*) TABLESAMPLE raises 0A000 rather than answering every row	15;16;17;18;19	2026-10-20	the vectorized aggregate paths take a sampled scan again (columnar_vector.c, both hooks)
+tablesample	tablesample	grouped TABLESAMPLE raises 0A000 rather than grouping every row	15;16;17;18;19	2026-10-20	the custom scan replaces a sampled scan again (columnar_customscan.c);the vectorized aggregate paths take a sampled scan again (columnar_vector.c, both hooks)
+tablesample	tablesample	premise: the table holds 10000 rows	15;16;17;18;19	never	-
+tablesample	tablesample	sum() TABLESAMPLE raises 0A000 rather than folding the whole table	15;16;17;18;19	2026-10-20	the custom scan replaces a sampled scan again (columnar_customscan.c);the vectorized aggregate paths take a sampled scan again (columnar_vector.c, both hooks)
 tid_range_scan	tid_range_scan	a SCROLL cursor over a ctid range fetches backward as the filter's plan does	15;16;17;18;19	2026-10-12	no planner hook: a cursor over a TID range scan gets no Material
 tid_range_scan	tid_range_scan	a SCROLL cursor whose query has a subplan fetches backward as the filter's plan does	15;16;17;18;19	2026-10-12	the Material's node id from the main tree's largest, not above the subplans'
 tid_range_scan	tid_range_scan	a TID range scan rescanned with new bounds returns what the filter returns	15;16;17;18;19	2026-10-12	getnextslot_tidrange without the boundary-row filter;scan_set_tidrange keeping the reader of the previous range

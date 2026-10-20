@@ -142,4 +142,3 @@ smoke
 sort_status
 sort_status_privilege
 sorted_mark_rename
-tablesample
