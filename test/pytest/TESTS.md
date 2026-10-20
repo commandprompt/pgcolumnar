@@ -237,6 +237,7 @@ behaviour, the source of that number is named.
 - [189. test_write_minmax_fastpath.py: zone min/max through the direct comparison path are the true bounds](#189-test_write_minmax_fastpathpy-zone-minmax-through-the-direct-comparison-path-are-the-true-bounds)
 - [190. test_catalog_natts.py: every Natts_ constant equals the width of the catalog it sizes](#190-test_catalog_nattspy-every-natts_-constant-equals-the-width-of-the-catalog-it-sizes)
 - [191. test_write_fsst_compressed.py: FSST is kept only where it wins after the block compressor](#191-test_write_fsst_compressedpy-fsst-is-kept-only-where-it-wins-after-the-block-compressor)
+- [192. test_zonemap_estimate_sample.py: the planner's zone-map sample is one-based, complete and per-column](#192-test_zonemap_estimate_samplepy-the-planners-zone-map-sample-is-one-based-complete-and-per-column)
 
 ## 1. How to read a test in here
 
@@ -8234,3 +8235,38 @@ Each check is its own test over a module fixture that runs every step in the she
 | `test_fsst_is_still_chosen_where_it_genuinely_wins` | every vector of the e-mail shape under zstd is FSST: the control a fix that removed FSST, or a wrongly reused verdict, would fail |
 | `test_with_compression_off_fsst_is_still_chosen` | parametrized by the shell's two names: with no codec, the short and md5 shapes keep FSST |
 | `test_values_round_trip_with_compression_off` | the short shape uncompressed matches its heap mirror: `0/300000` |
+
+## 192. test_zonemap_estimate_sample.py: the planner's zone-map sample is one-based, complete and per-column
+
+The pytest twin of `test/zonemap_estimate_sample.sh` (ported for #1341), every check by the shell's name. The zone-map survival estimator prices a restricted columnar scan by sampling row groups and asking the reader's own skip predicates how many survive. Its stride ran over groups 0 to ngroups-1, but group numbers start at 1, so the first probe hit a group that cannot exist and the newest group was never probed, and the same predicate was priced by where its groups sat. Each probe also fetched every column's zone-map rows to read one column's. And the estimate followed the planning session's `stripe_row_limit` rather than the limit the table was written at (#817). The instrument is `idx_tup_fetch` on `pgcolumnar.zone_map`, split into planning (EXPLAIN) and execution, and the estimator's own DEBUG1 report. On a private database, because `pg_stat_reset()` resets the whole database's counters.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order, each reading on a connection of its own. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_w_loaded_20000_rows`, `test_n_loaded_20000_rows` | premise: each table holds its 20000 rows |
+| `test_w_carries_the_per_table_stripe_row_limit` | premise: `w` carries the 2000-row option, not the session GUC |
+| `test_w_has_10_row_groups_numbered_1_to_10` | premise: the zone map has groups 1 to 10, so there is no group 0 |
+| `test_the_whole_chunk_row_sorts_first` | premise: the whole-chunk row (vector -1) is the first a per-column probe meets |
+| `test_planning_probes_the_zone_map_at_all` | EXPLAIN fetches zone-map tuples; a failed statement is a failed reading, never a count of 0 |
+| `test_census_planning_reads_one_column_across_all_10_groups_w`, `test_census_planning_reads_one_column_across_all_10_groups_n` | planning fetches exactly 10 tuples on each table: one column, every group |
+| `test_width_the_planners_reads_do_not_scale_with_table_width` | the 30-column and 2-column tables cost planning the same fetches |
+| `test_the_executors_reads_stay_width_independent_too` | so do the executor's |
+| `test_the_estimator_reports_a_session_of_its_own` | the estimator's DEBUG1 report appears |
+| `test_it_probes_once_per_group_across_all_10_groups` | it reports 10 probes |
+| `test_it_opens_zone_map_once_for_the_whole_sample` | and one open of `zone_map` |
+| `test_a_predicate_matches_its_rows` | parametrized by the shell's four names: each predicate returns its rows |
+| `test_a_cost_was_extracted` | premise: all four scan costs were read |
+| `test_the_mirror_pair_shares_a_row_estimate`, `test_the_narrow_pair_shares_a_row_estimate` | premise: each pair has one row estimate, so only survival differs |
+| `test_mirror_the_six_newest_groups_cost_what_the_six_oldest_cost` | the newest and oldest six groups cost the same |
+| `test_narrow_the_two_newest_groups_cost_what_the_two_oldest_cost` | so do the newest and oldest two |
+| `test_a_predicate_matching_nothing_is_floored` | a predicate matching no group costs at least 1 |
+| `test_matching_only_the_last_group_costs_the_one_group_share` | the last group alone costs the same floor |
+| `test_a_pruning_predicate_still_returns_the_right_rows`, `test_a_predicate_matching_nothing_still_returns_no_rows` | the pruned scans return 1000 and 0 rows |
+| `test_gsess_carries_no_per_table_option`, `test_gsess_was_written_at_2000` | premise: `gsess` has no option and 10 groups, written under the session GUC |
+| `test_a_cost_was_extracted_from_both_arms` | premise: both GUC readings gave a cost |
+| `test_the_estimate_does_not_move_with_the_planning_sessions_guc` | planned at the default 150000 and at the written 2000, the cost is the same |
+| `test_the_discount_is_real` | two of ten groups are priced below a full scan |
+| `test_gsess_reads_back_correctly` | `gsess` returns its 4000 rows |

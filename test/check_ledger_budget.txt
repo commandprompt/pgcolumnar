@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 174
+suites_not_covered 173
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3910,4 +3910,25 @@ suites_not_covered 174
 #     never         3135 + 3 = 3138
 #     dated         1435 + 6 = 1441
 #     3138 + 1441 == 4579
-checks_never_observed_red 3138
+#
+# #1341, zonemap_estimate_sample seeded, with its twin (jdatcmd): 3138 -> 3160, and
+# suites_not_covered 174 -> 173. The suite had no rows. It enters with 32 checks from
+# five-major runs (32/32 on each of 15-19, shell and twin alike), after one fix: the
+# shell's zone-map reading swallowed a failed statement and read it as 0 fetches, so
+# WIDTH and "the executor's reads stay width-independent too" passed on 0 = 0 with
+# every statement failing (found by OffgridwithJD reviewing #1543, who also found
+# the twin's executor reading carrying the full count when planning failed). 10 are
+# dated by five mutations of the zone-map survival estimator, each reddening the same
+# names in both twins: the stride zero-based again (both CENSUS checks, MIRROR,
+# NARROW); the whole group's zone-map rows fetched per sampled group (both CENSUS
+# checks, WIDTH); the planning session's stripe_row_limit read (#817 and "the discount
+# is real"); the sample size ignoring ngroups (both CENSUS checks, MIRROR, NARROW and
+# "it probes once per group"); and the one-group floor dropped (the two floor
+# checks). 22 arrive never: the premises, the row counts, the executor's width check,
+# the estimator's single open, and the two correctness counts.
+#
+#     ledger rows   4579 + 32 = 4611
+#     never         3138 + 22 = 3160
+#     dated         1441 + 10 = 1451
+#     3160 + 1451 == 4611
+checks_never_observed_red 3160

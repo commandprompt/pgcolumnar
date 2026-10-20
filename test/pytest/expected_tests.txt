@@ -874,4 +874,6 @@ guard_tests 442
 # 18 tests, one per check (13 constants parametrized), by collection over the cluster files.
 # cluster_tests 1099 -> 1108 for #1341's test_write_fsst_compressed.py, the twin of write_fsst_compressed.sh:
 # 9 checks in 9 tests, by collection over the cluster files.
-cluster_tests 1108
+# cluster_tests 1108 -> 1140 for #1341's test_zonemap_estimate_sample.py, the twin of zonemap_estimate_sample.sh:
+# 32 tests, one per check, by collection over the cluster files.
+cluster_tests 1140

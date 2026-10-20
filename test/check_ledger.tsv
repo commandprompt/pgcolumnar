@@ -4577,3 +4577,35 @@ zonemap_cost	zonemap_cost	premise: the scattered key really is not	15;16;17;18;1
 zonemap_cost	zonemap_cost	the correlated arm actually removes chunk groups (#477)	15;16;17;18;19	2026-10-19	the reader skips a cross-type scan key again (#477)
 zonemap_cost	zonemap_cost	the correlated query returns the right count	15;16;17;18;19	never	-
 zonemap_cost	zonemap_cost	the correlated query returns the same rows either way	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	CENSUS: planning reads one column across all 10 groups (n)	15;16;17;18;19	2026-10-19	the estimator fetches the whole group's zone-map rows per sampled group;the estimator's sample size ignores ngroups (nsample = sampleTarget);the estimator's sample stride is zero-based again (g = i*ngroups/nsample)
+zonemap_estimate_sample	zonemap_estimate_sample	CENSUS: planning reads one column across all 10 groups (w)	15;16;17;18;19	2026-10-19	the estimator fetches the whole group's zone-map rows per sampled group;the estimator's sample size ignores ngroups (nsample = sampleTarget);the estimator's sample stride is zero-based again (g = i*ngroups/nsample)
+zonemap_estimate_sample	zonemap_estimate_sample	MIRROR: the six newest groups cost what the six oldest cost	15;16;17;18;19	2026-10-19	the estimator's sample size ignores ngroups (nsample = sampleTarget);the estimator's sample stride is zero-based again (g = i*ngroups/nsample)
+zonemap_estimate_sample	zonemap_estimate_sample	NARROW: the two newest groups cost what the two oldest cost	15;16;17;18;19	2026-10-19	the estimator's sample size ignores ngroups (nsample = sampleTarget);the estimator's sample stride is zero-based again (g = i*ngroups/nsample)
+zonemap_estimate_sample	zonemap_estimate_sample	PREMISE: and it really was written at 2000, so it holds 10 groups	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	PREMISE: gsess carries NO per-table option, so the GUC is the only other input	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	WIDTH: the planner's zone-map reads do not scale with table width	15;16;17;18;19	2026-10-19	the estimator fetches the whole group's zone-map rows per sampled group
+zonemap_estimate_sample	zonemap_estimate_sample	a cost was extracted from both arms	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	a cost was extracted, so the checks below are not comparing two blanks	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	a predicate matching nothing is floored, not priced at zero	15;16;17;18;19	2026-10-19	the zone-map survival's one-group floor dropped
+zonemap_estimate_sample	zonemap_estimate_sample	a predicate matching nothing still returns no rows	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	a pruning predicate still returns the right rows	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	and opens zone_map once for the whole sample, not once per probe	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	and the discount is real, not just stable (2 of 10 groups priced below a full scan)	15;16;17;18;19	2026-10-19	the estimator reads the planning session's stripe_row_limit (#817)
+zonemap_estimate_sample	zonemap_estimate_sample	c1 <= 12000 matches 12000 rows	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	c1 <= 4000 matches 4000 rows	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	c1 > 17000 matches 3000 rows	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	c1 > 8000 matches 12000 rows	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	gsess reads back correctly	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	it probes once per group across all 10 groups	15;16;17;18;19	2026-10-19	the estimator's sample size ignores ngroups (nsample = sampleTarget)
+zonemap_estimate_sample	zonemap_estimate_sample	matching only the last group costs the same one-group share	15;16;17;18;19	2026-10-19	the zone-map survival's one-group floor dropped
+zonemap_estimate_sample	zonemap_estimate_sample	n loaded 20000 rows	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	planning probes the zone map at all	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	the estimate does not move with the planning session's GUC (#817)	15;16;17;18;19	2026-10-19	the estimator reads the planning session's stripe_row_limit (#817)
+zonemap_estimate_sample	zonemap_estimate_sample	the estimator reports a session of its own, distinct from a scan's	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	the executor's reads stay width-independent too	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	the mirror pair shares a row estimate, so only survival differs	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	the narrow pair shares a row estimate, so only survival differs	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	the whole-chunk row sorts first, so one fetch ends a per-column probe	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	w carries the per-table stripe_row_limit, not the session GUC	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	w has 10 row groups numbered 1..10, so there is no group 0	15;16;17;18;19	never	-
+zonemap_estimate_sample	zonemap_estimate_sample	w loaded 20000 rows	15;16;17;18;19	never	-
