@@ -169,9 +169,6 @@ sort_status	the replacement counts as appended
 sort_status	the run lost the retired groups
 truncate_cleanup	PREMISE the projection has its own storage, distinct from the base
 vacuum_sorted_gate	premise: the tail is smaller than the chunk group limit
-vector_agg_rescan_memory	an IN-list does not add per-rescan query memory
-vector_agg_rescan_memory	the plain columnar scan does not grow query memory per rescan (#734)
-vector_agg_rescan_memory	the vectorized aggregate does not grow query memory per rescan (#727)
 zonemap_cost	a demonstrably pruning restriction is discounted whatever its correlation (#461)
 zonemap_cost	and it is priced below the index scan it used to lose to (#434)
 zonemap_cost	and priced close to the correlated arm it matches physically (#461)

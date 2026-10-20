@@ -151,14 +151,34 @@ with_large="$(peak_executor_state "$LARGE")"
 without_small="$(peak_executor_state "$SMALL" nokeys)"
 without_large="$(peak_executor_state "$LARGE" nokeys)"
 
-for v in with_small with_large without_small without_large; do
-	check_num "premise: the $v arm produced a reading" \
-		"$([ -n "${!v}" ] && [ "${!v}" -gt 0 ] && echo 1 || echo 0)" 1
-done
+# One check per arm, each named literally: a name built from the loop variable is a
+# template to compare_to_bash, so a port could omit three of the four and still grade.
+reading() { [ -n "$1" ] && [ "$1" -gt 0 ] 2>/dev/null && echo 1 || echo 0; }
+check_num "premise: the with_small arm produced a reading" "$(reading "$with_small")" 1
+check_num "premise: the with_large arm produced a reading" "$(reading "$with_large")" 1
+check_num "premise: the without_small arm produced a reading" "$(reading "$without_small")" 1
+check_num "premise: the without_large arm produced a reading" "$(reading "$without_large")" 1
 
 # Bytes of query memory per rescan, as a SLOPE across two rescan counts, so the
 # fixed setup cost cancels instead of dominating the small arm.
-slope() { awk -v a="$1" -v b="$2" -v n="$(( LARGE - SMALL ))" 'BEGIN { printf "%d", (a - b) / n }'; }
+# Empty when either peak is: awk reads an empty peak as 0, so two missing peaks made a
+# slope of 0, and every claim below passed with no reading taken.
+slope() {
+	[ -n "$1" ] && [ -n "$2" ] || { echo ""; return; }
+	awk -v a="$1" -v b="$2" -v n="$(( LARGE - SMALL ))" 'BEGIN { printf "%d", (a - b) / n }'
+}
+
+# under LIMIT A B -> "yes" when A and B are both measured and A exceeds B by less than
+# LIMIT bytes per rescan, else what was wrong. A missing slope is "no reading", never 0:
+# with both memory readers made to return nothing, all three claims below passed
+# (measured), because the excess of two missing slopes was computed as 0.
+under() {
+	if [[ "$2" =~ ^-?[0-9]+$ ]] && [[ "$3" =~ ^-?[0-9]+$ ]]; then
+		[ $(( $2 - $3 )) -lt "$1" ] && echo yes || echo "no: excess $(( $2 - $3 )) B per rescan"
+	else
+		echo "no reading: [$2] against [$3]"
+	fi
+}
 with_slope="$(slope "$with_large" "$with_small")"
 without_slope="$(slope "$without_large" "$without_small")"
 echo "      per-rescan growth: with a ${NELEM}-element IN-list = ${with_slope} B, without one = ${without_slope} B"
@@ -194,8 +214,8 @@ echo "      excess attributable to the IN-list: ${excess} bytes per rescan"
 # there is exactly one mechanism behind this property again. Removing it reddens
 # this arm on its own, at 180,843 bytes per rescan. The label can mean what it
 # says.
-check_num "an IN-list does not add per-rescan query memory" \
-	"$([ "$excess" -lt 20000 ] && echo 1 || echo 0)" 1
+check "an IN-list does not add per-rescan query memory" \
+	"$(under 20000 "$with_slope" "$without_slope")" "yes"
 
 # ---- the node's own per-rescan footprint, against core's floor (#727) -------
 # #717 above is about the scan KEYS. This is the rest of what the node allocated
@@ -289,8 +309,8 @@ check_num "premise: both rescan slopes were measured" \
 # above the few bytes that remain.
 rescan_excess="$(awk -v a="$vec_slope" -v b="$heap_slope" 'BEGIN { d = a - b; print (d < 0 ? 0 : d) }')"
 echo "      excess over the heap floor: ${rescan_excess} B per rescan"
-check_num "the vectorized aggregate does not grow query memory per rescan (#727)" \
-	"$([ "$rescan_excess" -lt 100 ] && echo 1 || echo 0)" 1
+check "the vectorized aggregate does not grow query memory per rescan (#727)" \
+	"$(under 100 "$vec_slope" "$heap_slope")" "yes"
 # And the answers are unchanged, so the arm above measures the saving and is not
 # standing in for correctness.
 check_num "the rescanned aggregate still returns the heap's answer" \
@@ -327,8 +347,8 @@ check_num "premise: both plain-scan slopes were measured" \
 	"$([ -n "$plain_slope" ] && [ -n "$plain_heap" ] && echo 1 || echo 0)" 1
 plain_excess="$(awk -v a="$plain_slope" -v b="$plain_heap" 'BEGIN { d = a - b; print (d < 0 ? 0 : d) }')"
 echo "      excess over the heap floor: ${plain_excess} B per rescan"
-check_num "the plain columnar scan does not grow query memory per rescan (#734)" \
-	"$([ "$plain_excess" -lt 100 ] && echo 1 || echo 0)" 1
+check "the plain columnar scan does not grow query memory per rescan (#734)" \
+	"$(under 100 "$plain_slope" "$plain_heap")" "yes"
 check_num "the rescanned plain scan still returns the heap's answer" \
 	"$(q1 "$GUC_OFF SELECT sum(s.c) FROM (SELECT i FROM vam_drv LIMIT 200) d, LATERAL (SELECT count(*) c FROM vam_rs WHERE v > d.i) s;")" \
 	"$(q1 "SELECT sum(s.c) FROM (SELECT i FROM vam_drv LIMIT 200) d, LATERAL (SELECT count(*) c FROM vam_heap WHERE v > d.i) s;")"

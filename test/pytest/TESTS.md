@@ -245,6 +245,7 @@ behaviour, the source of that number is named.
 - [197. test_arrow_export.py: every exported value equals the heap oracle, and only the documented refusals](#197-test_arrow_exportpy-every-exported-value-equals-the-heap-oracle-and-only-the-documented-refusals)
 - [198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates](#198-test_vector_agg_tlist_shapepy-the-vectorized-aggregate-accepts-a-target-list-that-contains-aggregates)
 - [199. test_alter_column_type.py: ALTER COLUMN TYPE converts every value, and the column really changes type](#199-test_alter_column_typepy-alter-column-type-converts-every-value-and-the-column-really-changes-type)
+- [200. test_vector_agg_rescan_memory.py: rescanning a columnar aggregate does not grow query memory](#200-test_vector_agg_rescan_memorypy-rescanning-a-columnar-aggregate-does-not-grow-query-memory)
 
 ## 1. How to read a test in here
 
@@ -8437,3 +8438,34 @@ A module fixture on a private database runs every conversion in the shell's orde
 | `test_the_nullable_column_really_is_bigint_now` | the nullable column is `bigint` after its ALTER |
 | `test_nulls_stay_on_the_same_rows_through_a_conversion` | no row differs from heap, and the columnar table still holds all 20000 rows |
 | `test_text_to_int_the_crash` | the varlena-to-fixed conversion that dereferenced an integer as a pointer, run last |
+
+## 200. test_vector_agg_rescan_memory.py: rescanning a columnar aggregate does not grow query memory
+
+The pytest twin of `test/vector_agg_rescan_memory.sh` (ported for #1341), every check by the shell's name. A LATERAL sub-scan re-executes its node once per outer row, and whatever the node leaves in query memory stays there until ExecutorEnd. Three such growths were fixed: an IN-list's scan keys rebuilt per rescan (#717), the vectorized aggregate's own per-rescan arrays (#727), and the plain scan's row-group list (#734). Each claim compares a growth per rescan, a slope across two rescan counts, with a control: the same query without the IN-list, or over a heap table. On a private database.
+
+### Every test
+
+For #717 the twin samples `pg_log_backend_memory_contexts()` from a second connection while the query runs, and takes the largest `ExecutorState` total from the server log. For #727 and #734 it reads the backend's peak RSS (`VmHWM`) before and after each run. A claim reads `no reading` unless both of its slopes were measured, so readers that measured nothing cannot pass as "no growth".
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_loaded` | premise: `vam` holds 50,000 rows |
+| `test_the_in_list_becomes_pushdown_scan_keys` | premise: EXPLAIN ANALYZE shows pushed-down filters for the IN-list |
+| `test_each_arm_produced_a_reading` | parametrized by the shell's four names: each #717 arm logged an ExecutorState peak |
+| `test_an_in_list_does_not_add_per_rescan_query_memory` | the IN-list adds less than 20,000 bytes per rescan over the control (#717) |
+| `test_the_driver_has_enough_rows` | premise: the driver holds 40,000 rows |
+| `test_the_two_rescan_counts_differ` | premise: the two driver limits really give 40,000 and 5,000 rescans |
+| `test_the_heap_mirror_has_the_same_rows` | premise: `vam_heap` and `vam_rs` hold the same count |
+| `test_the_columnar_rescan_arm_is_the_vectorized_aggregate` | premise: the #727 arm plans the vectorized aggregate |
+| `test_both_rescan_slopes_were_measured` | premise: both #727 slopes were read |
+| `test_the_vectorized_aggregate_does_not_grow_query_memory_per_rescan` | the vectorized aggregate grows less than 100 bytes per rescan above the heap floor (#727) |
+| `test_the_rescanned_aggregate_still_returns_the_heaps_answer` | and answers as the heap does |
+| `test_with_the_aggregate_off_the_arm_is_the_plain_columnar_scan` | premise: with the aggregate off, the arm is the plain columnar scan |
+| `test_and_it_is_not_the_vectorized_aggregate_node` | premise: and not the vectorized aggregate |
+| `test_both_plain_scan_slopes_were_measured` | premise: both #734 slopes were read |
+| `test_the_plain_columnar_scan_does_not_grow_query_memory_per_rescan` | the plain scan grows less than 100 bytes per rescan above the heap floor (#734) |
+| `test_the_rescanned_plain_scan_still_returns_the_heaps_answer` | and answers as the heap does |
+| `test_the_pruning_arm_is_on_the_row_path` | premise: the pruning query is on the row path, not the fold |
+| `test_and_it_is_the_vectorized_aggregate_node` | premise: and is the vectorized aggregate |
+| `test_the_row_paths_scan_keys_still_prune` | the row path's scan keys remove at least one chunk group, as work done |
+| `test_the_pruned_query_still_answers_correctly` | and the answer is 10,000 |

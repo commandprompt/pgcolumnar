@@ -4552,6 +4552,29 @@ validity_elision	validity_elision	the nulls column preserves its null count	15;1
 validity_elision	validity_elision	the nulls column reads back exactly what the heap holds	15;16;17;18;19	2026-10-13	reader: PgColumnarEncdescOmitsValidity returns false, so every reader expects a bitmap the writer did not write;the reader returning row 5 of every row group as NULL;the validity-elision predicate forced true, so every column reads as if its bitmap were elided
 validity_elision	validity_elision	the second fixture holds nulls, so its bitmap is load-bearing	15;16;17;18;19	2026-09-23	the validity-elision predicate forced true, so every column reads as if its bitmap were elided
 validity_elision	validity_elision	while a column with nulls still stores one, sized one bit per row	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	an IN-list does not add per-rescan query memory	15;16;17;18;19	2026-10-20	the vectorized aggregate's scan runs with no scratch context, allocating in the caller's (#717, #727)
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: and it is NOT the vectorized aggregate node	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: and it is the vectorized aggregate node	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: and the two rescan counts really differ	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: both plain-scan slopes were measured	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: both rescan slopes were measured	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: the IN-list really becomes pushdown scan keys	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: the columnar rescan arm is the vectorized aggregate	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: the driver has enough rows for the larger rescan count	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: the fixture loaded	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: the heap mirror has the same rows	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: the pruning arm is on the ROW path, not the fold	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: the with_large arm produced a reading	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: the with_small arm produced a reading	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: the without_large arm produced a reading	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: the without_small arm produced a reading	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	premise: with the aggregate off the arm is the plain columnar scan	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	row path: the pruned query still answers correctly	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	the plain columnar scan does not grow query memory per rescan (#734)	15;16;17;18;19	2026-10-20	PgColumnarRescanRead no longer resets the row-group list's context (#734)
+vector_agg_rescan_memory	vector_agg_rescan_memory	the rescanned aggregate still returns the heap's answer	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	the rescanned plain scan still returns the heap's answer	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	the row path's scan keys still prune (work done, #717)	15;16;17;18;19	never	-
+vector_agg_rescan_memory	vector_agg_rescan_memory	the vectorized aggregate does not grow query memory per rescan (#727)	15;16;17;18;19	2026-10-20	the vectorized aggregate's scan runs with no scratch context, allocating in the caller's (#717, #727);the vectorized aggregate's scratch context is never deleted (#727)
 vector_agg_tlist_shape	vector_agg_tlist_shape	REFUSE: DISTINCT on a wrapped aggregate	15;16;17;18;19	2026-10-20	classify_aggref accepts aggdistinct (DISTINCT no longer refused)
 vector_agg_tlist_shape	vector_agg_tlist_shape	REFUSE: FILTER inside an expression over aggregates	15;16;17;18;19	2026-10-20	classify_aggref accepts aggfilter (FILTER no longer refused)
 vector_agg_tlist_shape	vector_agg_tlist_shape	REFUSE: FILTER on a wrapped aggregate	15;16;17;18;19	2026-10-20	classify_aggref accepts aggfilter (FILTER no longer refused)
