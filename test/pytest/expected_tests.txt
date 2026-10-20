@@ -882,4 +882,6 @@ guard_tests 462
 # 6 checks in 6 tests, by collection over the cluster files.
 # cluster_tests 1146 -> 1152 for #1341's test_arrow_nested.py, the twin of arrow_nested.sh:
 # 6 checks in 6 tests, by collection over the cluster files.
-cluster_tests 1152
+# cluster_tests 1152 -> 1169 for #1341's test_vm_clear_on_renumber.py, the twin of vm_clear_on_renumber.sh:
+# 17 tests, one per check, by collection over the cluster files.
+cluster_tests 1169

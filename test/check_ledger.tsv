@@ -4520,6 +4520,23 @@ validity_elision	validity_elision	the nulls column preserves its null count	15;1
 validity_elision	validity_elision	the nulls column reads back exactly what the heap holds	15;16;17;18;19	2026-10-13	reader: PgColumnarEncdescOmitsValidity returns false, so every reader expects a bitmap the writer did not write;the reader returning row 5 of every row group as NULL;the validity-elision predicate forced true, so every column reads as if its bitmap were elided
 validity_elision	validity_elision	the second fixture holds nulls, so its bitmap is load-bearing	15;16;17;18;19	2026-09-23	the validity-elision predicate forced true, so every column reads as if its bitmap were elided
 validity_elision	validity_elision	while a column with nulls still stores one, sized one bit per row	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	compact_rewrite rewrote exactly the one qualifying group	15;16;17;18;19	2026-10-20	compact_rewrite reports one more group than it rewrote
+vm_clear_on_renumber	vm_clear_on_renumber	control: a group the rewrite did not touch keeps its all-visible bit	15;16;17;18;19	2026-10-20	rewrite_one_group clears rows 1..100000000 of the relation
+vm_clear_on_renumber	vm_clear_on_renumber	control: a relation that was not reclustered keeps its all-visible bits	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	control: and its late block too	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: VACUUM set all-visible early in rc	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: VACUUM set all-visible on group 3's late block	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: and late in rc	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: and left the control block all-visible	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: and on the control relation	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: and on the untouched control group's block	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: but left group 3's late block all-visible	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: group 3 is gone from the catalog, so its rows were renumbered	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	recluster reported reclustering groups	15;16;17;18;19	2026-10-20	recluster reports 0 groups after reclustering
+vm_clear_on_renumber	vm_clear_on_renumber	recluster_online cleared the old numbers' early block (#877)	15;16;17;18;19	2026-10-20	recluster_online's VM clear removed
+vm_clear_on_renumber	vm_clear_on_renumber	recluster_online cleared the old numbers' late block (#877)	15;16;17;18;19	2026-10-20	recluster_online's VM clear removed
+vm_clear_on_renumber	vm_clear_on_renumber	rewrite_one_group cleared the retired group's late block (#877)	15;16;17;18;19	2026-10-20	rewrite_one_group's VM clear removed
+vm_clear_on_renumber	vm_clear_on_renumber	the delete cleared the block holding the deleted rows	15;16;17;18;19	2026-10-20	a DELETE leaves its block's all-visible bit (columnar_delete_vector.c's VM clear removed)
 vm_privilege	vm_privilege	a role with only schema USAGE is stopped by the REVOKE	15;16;17;18;19	never	-
 vm_privilege	vm_privilege	an unprivileged role is refused by vm_is_visible	15;16;17;18;19	never	-
 vm_privilege	vm_privilege	an unprivileged role is refused by vm_selftest	15;16;17;18;19	2026-10-14	vm_selftest without its owner check
