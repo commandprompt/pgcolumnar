@@ -4099,4 +4099,34 @@ suites_not_covered 165
 #     never         3235 + 20 = 3255
 #     dated         1525 + 3 = 1528
 #     3255 + 1528 == 4783
-checks_never_observed_red 3255
+#
+# #1341, analyze_stats gains its twin (OffgridwithJD): 3255 -> 3235, and
+# suites_not_covered stays 165. The suite was already covered, with 41 rows all
+# never but the eight that pin the ANALYZE cap function. It now holds 42 checks from
+# five-major runs (42/42 on each of 15-19, shell and twin alike), after six fixes and
+# one new check, each measured on PG17 at main. With a backend SIGKILLed in the middle
+# of ANALYZE, "the server survived ANALYZE" passed (a fresh connection answers after
+# crash recovery), and so did null_frac and all three n_distinct checks, because two
+# missing statistics agree; survival now also reads the server log's count of killed
+# backends, and those four require a number on each side. A late column's plan of a
+# missing table passed the negative #363 check, which now requires a plan of o363. A
+# missing grown estimate read as 1 and passed the #507 growth check. A wide-table
+# ANALYZE that failed fast passed its time cap. A failed EXPLAIN ANALYZE read as 0 rows
+# discarded with the index, which passed the point-lookup work check (found by jdatcmd
+# reviewing #1559). And with the all-visible fraction
+# hardcoded to zero every #507 check passed (the gap reads 0.00 against 3244.00), so a
+# new check reads the saving itself. The n_distinct loop is unrolled to literal names.
+# 21 are dated by six mutations, each reddening the same names in both twins: the
+# sampler mapping no block to a slice (18; it also reddens the VACUUM premise, which
+# as a premise stays undated), the heap copy dropping the item pointer
+# (4, among them correlation and the source check), every NULL offered as a value, the
+# fraction hardcoded to zero, the fraction divided by the catalog relpages, and the
+# decode sized from the last referenced column alone. 21 stay as they were: the eight
+# dated cap checks and thirteen never, among them survival, the join, the premises,
+# the #376 bound and the wide-table cap.
+#
+#     ledger rows   4783 +  1 = 4784
+#     never         3255 - 20 = 3235
+#     dated         1528 + 21 = 1549
+#     3235 + 1549 == 4784
+checks_never_observed_red 3235

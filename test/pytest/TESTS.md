@@ -246,6 +246,7 @@ behaviour, the source of that number is named.
 - [198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates](#198-test_vector_agg_tlist_shapepy-the-vectorized-aggregate-accepts-a-target-list-that-contains-aggregates)
 - [199. test_alter_column_type.py: ALTER COLUMN TYPE converts every value, and the column really changes type](#199-test_alter_column_typepy-alter-column-type-converts-every-value-and-the-column-really-changes-type)
 - [200. test_vector_agg_rescan_memory.py: rescanning a columnar aggregate does not grow query memory](#200-test_vector_agg_rescan_memorypy-rescanning-a-columnar-aggregate-does-not-grow-query-memory)
+- [201. test_analyze_stats.py: ANALYZE collects statistics that agree with heap, and the planner prices what they feed](#201-test_analyze_statspy-analyze-collects-statistics-that-agree-with-heap-and-the-planner-prices-what-they-feed)
 
 ## 1. How to read a test in here
 
@@ -8469,3 +8470,56 @@ For #717 the twin samples `pg_log_backend_memory_contexts()` from a second conne
 | `test_and_it_is_the_vectorized_aggregate_node` | premise: and is the vectorized aggregate |
 | `test_the_row_paths_scan_keys_still_prune` | the row path's scan keys remove at least one chunk group, as work done |
 | `test_the_pruned_query_still_answers_correctly` | and the answer is 10,000 |
+
+## 201. test_analyze_stats.py: ANALYZE collects statistics that agree with heap, and the planner prices what they feed
+
+The pytest twin of `test/analyze_stats.sh` (ported for #1341), every check by the shell's name. The sampler maps each block core chooses to the slice of its row group that the block stands for, and offers that slice's live rows (#154). The statistics are compared with a heap table on identical data; reltuples discriminates against cluster sampling; correlation needs the sampled tuples' item pointers. The fetch-penalty (#355, #362, #376), decode-prefix (#363) and all-visible (#507) checks read plans and costs built from those statistics, and the ANALYZE time cap is checked as a function and on a wide table.
+
+### Every test
+
+A module fixture on a private database builds every table in the shell's order, each statement on a connection of its own; each test asserts one reading. A missing reading never agrees with another: survival also reads the server log's count of killed backends, a statistic ANALYZE did not record is a failed query, and each negative plan check first requires a plan of the table it names.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_server_survived_analyze` | the server survived ANALYZE -- and the server log's count of killed backends is unchanged, an unreadable log failing it (a backend SIGKILLed mid-ANALYZE no longer passes) |
+| `test_analyze_now_collects_statistics_at_all` | ANALYZE now collects statistics at all |
+| `test_null_frac_matches_heap` | null_frac matches heap within 0.02 -- both are numbers (two missing statistics no longer agree) |
+| `test_n_distinct_on_status_matches_heap` | n_distinct on status matches heap -- a missing statistic is a failed query, so two of them no longer agree |
+| `test_n_distinct_on_v_matches_heap` | n_distinct on v matches heap -- a missing statistic is a failed query, so two of them no longer agree |
+| `test_n_distinct_on_nullable_matches_heap` | n_distinct on nullable matches heap -- a missing statistic is a failed query, so two of them no longer agree |
+| `test_most_common_vals_holds_the_same_set_as_heap` | most_common_vals holds the same set as heap |
+| `test_correlation_on_an_ascending_column_is_near_1` | correlation on an ascending column is near 1 |
+| `test_the_sampled_tuples_carry_a_valid_item_pointer` | the sampled tuples carry a valid item pointer |
+| `test_no_row_is_offered_to_the_sampler_twice` | no row is offered to the sampler twice |
+| `test_reltuples_is_within_2_percent_of_the_true_row_count` | reltuples is within 2% of the true row count |
+| `test_n_distinct_on_a_clustered_column_is_within_10_percent` | n_distinct on a clustered column is within 10% of the truth |
+| `test_the_join_plans_as_a_join_rather_than_degenerating` | the join plans as a join rather than degenerating |
+| `test_a_selective_equality_is_estimated_from_the_data` | a selective equality is estimated from the data, not the 0.5% default |
+| `test_a_point_lookup_still_uses_the_index_after_analyze` | a point lookup on an indexed column still uses the index after ANALYZE |
+| `test_having_an_index_available_saves_the_point_lookup_real_work` | having an index available saves the point lookup real work -- both counts were read from a plan (a failed EXPLAIN ANALYZE, which read as 0 rows discarded with the index, no longer passes; found by jdatcmd) |
+| `test_the_cap_is_exposed_as_a_function` | premise: the cap is exposed as a function, not written inline |
+| `test_a_fast_machine_still_gets_the_floor` | a fast machine still gets the floor, not a bound that shrinks with it |
+| `test_a_slow_machine_gets_a_budget_proportional_to_its_insert` | and a slow one gets a budget proportional to its own insert |
+| `test_the_floor_and_the_derived_bound_meet` | the floor and the derived bound meet where they should |
+| `test_one_millisecond_past_the_floor_the_derived_bound_takes_over` | and one millisecond past it the derived bound takes over |
+| `test_a_zero_insert_time_still_yields_the_floor` | a missing or zero insert time still yields the floor, not zero |
+| `test_a_malformed_insert_time_yields_the_floor` | a malformed insert time yields the floor rather than an arithmetic error |
+| `test_an_insert_time_past_int64_yields_the_floor` | and an insert time past int64 yields the floor rather than a cap that cannot fail |
+| `test_analyze_on_a_wide_table_completes_inside_its_cap` | ANALYZE on a wide table completes well inside its derived cap -- and ANALYZE succeeded (a failing one, fast, no longer passes) |
+| `test_without_the_penalty_an_unclustered_order_by_takes_the_index` | without the fetch penalty an unclustered ORDER BY takes the index (#355 premise) |
+| `test_the_penalty_makes_an_unclustered_order_by_sort` | the fetch penalty makes an unclustered ORDER BY sort rather than fetch per row (#355) |
+| `test_the_penalty_leaves_a_clustered_order_by_on_its_index` | the fetch penalty leaves a clustered ORDER BY on its index (#355 must not over-fire) |
+| `test_the_penalty_leaves_a_selective_point_lookup_on_the_index` | the fetch penalty leaves a selective point lookup on the index (#355 vs #171) |
+| `test_without_the_penalty_a_scattered_condition_takes_the_index` | without the penalty a selective scattered condition takes the index (#362 premise) |
+| `test_the_penalty_is_applied_before_the_columnar_path_is_offered` | the penalty is applied before the columnar path is offered, so it can still win (#362) |
+| `test_an_early_columns_short_decode_prefix_stays_on_the_index` | an early column's short decode prefix leaves it on the index (#363) |
+| `test_a_late_columns_wide_decode_prefix_costs_it_off_the_index` | a late column's wide decode prefix costs it off the index (#363) -- in a plan that scans o363 (a failed EXPLAIN no longer passes) |
+| `test_a_small_limit_still_reaches_the_index` | a small LIMIT still reaches the index through the fetch penalty (#376) |
+| `test_the_bound_does_not_disable_the_penalty_for_a_full_read` | the bound does not disable the penalty for a full ordered read (#376) |
+| `test_vacuum_recorded_all_visible_pages` | premise: VACUUM recorded all-visible pages to price with (#507) |
+| `test_the_selective_range_has_its_rows` | premise: the selective range has its rows (#507) |
+| `test_a_vacuumed_columnar_table_can_reach_an_index_only_scan` | a vacuumed columnar table can reach an index-only scan (#507) |
+| `test_the_all_visible_fraction_does_not_hand_every_query_to_the_index` | the all-visible fraction does not hand every query to the index (#507) |
+| `test_both_all_visible_estimates_were_taken` | premise: both estimates were taken (#507) |
+| `test_the_all_visible_pages_buy_the_index_only_scan_a_saving` | the all-visible pages buy the index-only scan a saving (#507) -- the index scan's cost minus the index-only scan's is positive after VACUUM (a fraction hardcoded to zero, which still gets the index-only plan here, no longer passes) |
+| `test_growth_without_vacuum_does_not_inflate_the_saving` | growth without vacuum does not inflate the all-visible saving (#507) -- both estimates were taken (a missing grown estimate no longer passes) |
