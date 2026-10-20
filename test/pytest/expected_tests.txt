@@ -920,4 +920,6 @@ guard_tests 463
 # 49 tests, one per check, by collection over the cluster files.
 # cluster_tests 1613 -> 1622 for #1341's test_smoke.py, the twin of smoke.sh:
 # 9 tests, one per check, by collection over the cluster files.
-cluster_tests 1622
+# cluster_tests 1622 -> 1681 for #1341's test_server_file_privilege.py, the twin of server_file_privilege.sh:
+# 59 tests, one per check, by collection over the cluster files.
+cluster_tests 1681
