@@ -76,27 +76,39 @@ echo "-- zone_map rows per group: whole group w=$(q "SELECT count(*) FROM pgcolu
 
 # ---- the sample: complete, and one column wide ------------------------------
 
-# zone_map index tuples fetched by ONE statement.
+# zone_map index tuples fetched by ONE statement, or why there is no reading. q
+# swallows a failure, and a failed statement fetches nothing, so it used to read as 0
+# and pass WIDTH and the executor check on 0 = 0. The marker runs only if the
+# statement before it succeeded.
 zm() {
+	local _zm_out
 	q "SELECT pg_stat_reset();" >/dev/null
-	q "$1" >/dev/null
+	_zm_out="$(q "$1; SELECT 'zm-ok';")"
+	case "${_zm_out##*$'\n'}" in
+		zm-ok) ;;
+		*) echo "no reading (failed: $1)"; return ;;
+	esac
 	q "SELECT pg_stat_force_next_flush();" >/dev/null
 	q "SELECT coalesce(idx_tup_fetch,0) FROM pg_stat_all_tables WHERE relname='zone_map' AND schemaname='pgcolumnar';"
+}
+# full minus planning, when both are readings
+zm_exec() {
+	if [[ "$1" =~ ^[0-9]+$ && "$2" =~ ^[0-9]+$ ]]; then echo $(($1 - $2)); else echo "no reading ($1 | $2)"; fi
 }
 
 WP="$(zm "EXPLAIN SELECT count(*) FROM w WHERE c1 >= 0;")"
 WF="$(zm "SELECT count(*) FROM w WHERE c1 >= 0;")"
 NP="$(zm "EXPLAIN SELECT count(*) FROM n WHERE c1 >= 0;")"
 NF="$(zm "SELECT count(*) FROM n WHERE c1 >= 0;")"
-echo "-- zone_map idx_tup_fetch, w (30 col): planning=$WP full=$WF execution=$((WF - WP))"
-echo "-- zone_map idx_tup_fetch, n ( 2 col): planning=$NP full=$NF execution=$((NF - NP))"
+echo "-- zone_map idx_tup_fetch, w (30 col): planning=$WP full=$WF execution=$(zm_exec "$WF" "$WP")"
+echo "-- zone_map idx_tup_fetch, n ( 2 col): planning=$NP full=$NF execution=$(zm_exec "$NF" "$NP")"
 
 check "planning probes the zone map at all" \
-	"$([ "$WP" -gt 0 ] && echo yes || echo no)" "yes"
+	"$([[ "$WP" =~ ^[0-9]+$ ]] && [ "$WP" -gt 0 ] && echo yes || echo "no ($WP)")" "yes"
 check "CENSUS: planning reads one column across all 10 groups (w)" "$WP" "10"
 check "CENSUS: planning reads one column across all 10 groups (n)" "$NP" "10"
 check "WIDTH: the planner's zone-map reads do not scale with table width" "$WP" "$NP"
-check "the executor's reads stay width-independent too" "$((WF - WP))" "$((NF - NP))"
+check "the executor's reads stay width-independent too" "$(zm_exec "$WF" "$WP")" "$(zm_exec "$NF" "$NP")"
 
 # ---- the estimator's own session -------------------------------------------
 
