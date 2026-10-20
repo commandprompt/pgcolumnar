@@ -503,9 +503,14 @@ echo "-- stor_proj owns $rows_for storage rows carrying $limits distinct row_gro
 # WITHOUT TWO ROWS THERE IS NO AMBIGUITY, and without two DIFFERENT limits the
 # ambiguity cannot be seen. Both are premises, and both are read from the
 # catalog rather than assumed from the fixture's DDL.
-check_num "premise: a covering projection gave the table a second storage row" \
+# Not premises (#1339): the projection's own storage row, the limit it was written
+# with and the planner's use of that limit are pgcolumnar's, so a change to it
+# reddens each -- a projection row written with the base's limit, or the planner
+# ignoring the written limit. The three about the no-op update below read where
+# PostgreSQL's heap puts an updated catalog row, and stay premises.
+check_num "a covering projection gave the table a second storage row" \
 	"$rows_for" "2"
-check_num "premise: the two storage rows disagree about row_group_limit" \
+check_num "the two storage rows disagree about row_group_limit" \
 	"$limits" "2"
 
 # THE PREMISE THAT STOPS THIS ARM GOING QUIET, and it is the one a future
@@ -523,7 +528,7 @@ cost_lo="$(proj_cost)"
 q "UPDATE pgcolumnar.storage SET row_group_limit = 150000 WHERE storage_id = $base_sid;" >/dev/null
 echo "-- the shape is group-sensitive: limit 150000 -> $cost_hi, limit 3000 -> $cost_lo"
 
-check_num "premise: this query shape is priced differently under the two limits" \
+check_num "this query shape is priced differently under the two limits" \
 	"$(if [ "$cost_hi" = "$cost_lo" ]; then echo 0; else echo 1; fi)" "1"
 
 # PUT THE BASE ROW FIRST, by writing the OTHER row so it moves to the end. Which

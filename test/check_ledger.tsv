@@ -587,13 +587,13 @@ catalog_natts	catalog_natts	premise: heap_modify_tuple is still called here (the
 catalog_natts	catalog_natts	premise: the metadata source is where we think it is	15;16;17;18;19	never	-
 catalog_natts	catalog_natts	premise: the source defines Natts_* constants at all	15;16;17;18;19	never	-
 catalog_natts	catalog_natts	premise: those constants SIZE arrays, so a wrong one is a real overflow	15;16;17;18;19	never	-
+catalog_plan_index	catalog_plan_index	a covering projection gave the table a second storage row	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	a no-qual count did not sequentially scan pgcolumnar.storage	15;16;17;18;19	2026-09-23	both storage_id scans reverted to InvalidOid, so the catalog is swept sequentially on its own primary key
 catalog_plan_index	catalog_plan_index	a reading takes in none of another session's reads of pgcolumnar.storage (#1298)	15;16;17;18;19	2026-10-14	stor_blocks read pg_statio_all_tables after a reset, as main's storage_blks did
 catalog_plan_index	catalog_plan_index	and touches the empty catalogs not at all	15;16;17;18;19	2026-09-24	only the five options_pkey sites reverted, the two projection ones kept;pgcolumnar_scan_index_oid stops asking the relation its size;the seven planner sites back to the unconditional pgcolumnar_index_oid
 catalog_plan_index	catalog_plan_index	planning a join probed pgcolumnar.storage through storage_pkey	15;16;17;18;19	2026-09-23	both storage_id scans reverted to InvalidOid, so the catalog is swept sequentially on its own primary key
 catalog_plan_index	catalog_plan_index	planning costs less than probing both catalogs would	15;16;17;18;19	2026-09-24	pgcolumnar_scan_index_oid stops asking the relation its size;the seven planner sites back to the unconditional pgcolumnar_index_oid
 catalog_plan_index	catalog_plan_index	planning over the newest columnar table did not sequentially scan pgcolumnar.storage	15;16;17;18;19	2026-10-12	pgcolumnar_written_stripe_row_limit looks its storage row up by relation_oid again (the #1210 change reverted)
-catalog_plan_index	catalog_plan_index	premise: a covering projection gave the table a second storage row	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: a no-qual count over a columnar table touched storage at all	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: forcing the probe costs something, so the instrument measured	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: planning the newest table reached pgcolumnar.storage	15;16;17;18;19	never	-
@@ -609,12 +609,12 @@ catalog_plan_index	catalog_plan_index	premise: the newest relation's storage row
 catalog_plan_index	catalog_plan_index	premise: the no-op update moved the base storage row	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: the second session's reads of pgcolumnar.storage reach the shared statistics	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: the two relations are far enough apart in the catalog	15;16;17;18;19	never	-
-catalog_plan_index	catalog_plan_index	premise: the two storage rows disagree about row_group_limit	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: the update put the projection row in front	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	premise: this fixture is the default configuration, both catalogs empty	15;16;17;18;19	never	-
-catalog_plan_index	catalog_plan_index	premise: this query shape is priced differently under the two limits	15;16;17;18;19	never	-
 catalog_plan_index	catalog_plan_index	the newest columnar table costs no more catalog work than the oldest	15;16;17;18;19	2026-10-12	pgcolumnar_written_stripe_row_limit looks its storage row up by relation_oid again (the #1210 change reverted)
 catalog_plan_index	catalog_plan_index	the planned cost does not depend on which storage row the heap returns first	15;16;17;18;19	2026-10-12	pgcolumnar_written_stripe_row_limit looks its storage row up by relation_oid again (the #1210 change reverted)
+catalog_plan_index	catalog_plan_index	the two storage rows disagree about row_group_limit	15;16;17;18;19	2026-10-20	columnar_write_state.c: a projection's storage row is written with a fixed limit, not its own
+catalog_plan_index	catalog_plan_index	this query shape is priced differently under the two limits	15;16;17;18;19	2026-10-20	columnar_metadata.c: the planner ignores the storage row's written row_group_limit (#806)
 catalog_plan_index	catalog_plan_index	with the catalog populated, planning costs less than reading it whole	15;16;17;18;19	2026-09-24	pgcolumnar_scan_index_oid stops asking the relation its size;the seven planner sites back to the unconditional pgcolumnar_index_oid
 catalog_scan_index	catalog_scan_index	a one-row delete does not read pgcolumnar.row_group whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
 catalog_scan_index	catalog_scan_index	a parallel bulk load does not read pgcolumnar.storage whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole

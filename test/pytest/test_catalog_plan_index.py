@@ -558,8 +558,11 @@ def test_the_written_limit_does_not_depend_on_heap_order(pgc_own_db, expect):
         n_rows, n_limits = (int(x) for x in cur.fetchone())
 
     print(f"-- p_proj owns {n_rows} storage rows carrying {n_limits} distinct limits")
-    expect.num(n_rows, 2, "premise: a covering projection gave the table a second storage row")
-    expect.num(n_limits, 2, "premise: the two storage rows disagree about row_group_limit")
+    # Not premises (#1339): the projection's storage row, its limit and the planner's
+    # use of it are pgcolumnar's, so a change to it reddens each. The no-op update's
+    # three below read where PostgreSQL's heap puts the row, and stay premises.
+    expect.num(n_rows, 2, "a covering projection gave the table a second storage row")
+    expect.num(n_limits, 2, "the two storage rows disagree about row_group_limit")
 
     # THE PREMISE THAT STOPS THIS TEST GOING QUIET. The claim below is that two
     # costs are EQUAL, so it also passes if this shape stops reaching a
@@ -577,7 +580,7 @@ def test_the_written_limit_does_not_depend_on_heap_order(pgc_own_db, expect):
     expect.num(
         0 if cost_hi == cost_lo else 1,
         1,
-        "premise: this query shape is priced differently under the two limits",
+        "this query shape is priced differently under the two limits",
     )
 
     # PUT THE BASE ROW FIRST by writing the OTHER one, rather than assuming what
