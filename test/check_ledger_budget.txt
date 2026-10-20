@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 156
+suites_not_covered 155
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4325,4 +4325,25 @@ suites_not_covered 156
 #     never         3378 + 8 = 3386
 #     dated         1636 + 5 = 1641
 #     3386 + 1641 == 5027
-checks_never_observed_red 3386
+# #1341, bloom_lazy seeded, with its twin (OffgridwithJD): 3386 -> 3402, and
+# suites_not_covered 156 -> 155. The suite had no rows. It enters with 20 checks from
+# five-major runs (20/20 on each of 15-19, shell and twin alike), after three fixes.
+# "bloom reads do not follow the skipped groups" was bounded at large <= small * 2 +
+# 20, set when a group's filters filled several blocks; at one block per group it
+# passed with the bloom fetched before the zone map for every skipped group, #310
+# itself (7 blocks against 31, inside 34). The bound is now on the growth, fewer than
+# 12 blocks for the 24 groups the large table adds, and the kept group must have read
+# one: bloom_blocks read two missing counts as 0, and with no bloom read at all 0
+# against 0 passed; the check now names both counts and leaves lossy_arms.tsv. And
+# eight heap and control comparisons that read two q readings
+# with check now refuse an empty side. bloom_sizing's "a five-value column does not get
+# a unique column's filter (#467)" also carries its two sizes now and leaves
+# lossy_arms.tsv (found by jdatcmd on #1561). 4 are dated by two mutations, each
+# reddening the same names in both twins: the bloom fetched before the zone map, and
+# never fetched. 16 arrive never.
+#
+#     ledger rows   5027 + 20 = 5047
+#     never         3386 + 16 = 3402
+#     dated         1641 + 4 = 1645
+#     3402 + 1645 == 5047
+checks_never_observed_red 3402

@@ -435,6 +435,26 @@ batch_fold_explain	batch_fold_explain	premise: control table returns the right s
 batch_fold_explain	batch_fold_explain	premise: fallback table returns the right sum	15;16;17;18;19	never	-
 batch_fold_explain	batch_fold_explain	premise: fixture loaded every row	15;16;17;18;19	never	-
 batch_fold_explain	batch_fold_explain	premise: with parallelism free, the planner gives the parallel partial fold	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	a range predicate still agrees with the heap	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	a scan that keeps every group reads more	15;16;17;18;19	2026-10-20	columnar_reader.c: the bloom filter is never fetched
+bloom_lazy	bloom_lazy	an absent value agrees with bloom filters disabled	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	bloom reads do not follow the skipped groups	15;16;17;18;19	2026-10-20	columnar_reader.c: the bloom filter is fetched before the zone map is consulted, so skipped groups read it too (#310)
+bloom_lazy	bloom_lazy	bloom reads follow the columns a query filters on	15;16;17;18;19	2026-10-20	columnar_reader.c: the bloom filter is never fetched
+bloom_lazy	bloom_lazy	equality on a scattered column agrees with the heap	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	equality on the segment key agrees with the heap	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	equality that no group holds agrees with the heap	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	full set parity	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	no group is excluded, so every predicate is reached	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	one predicate costs well less than six	15;16;17;18;19	2026-10-20	columnar_reader.c: the bloom filter is never fetched
+bloom_lazy	bloom_lazy	results agree with bloom filters disabled	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	six predicates give the same answer as one here	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	the control query really does keep every group	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	the filtered answers agree with a heap mirror	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	the large scan keeps one group	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	the large table has the groups it should	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	the small scan keeps one group	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	the small table has the groups it should	15;16;17;18;19	never	-
+bloom_lazy	bloom_lazy	two equality predicates agree with the heap	15;16;17;18;19	never	-
 bloom_setting	bloom_setting	a full scan of the unfiltered table is complete	15;16;17;18;19	never	-
 bloom_setting	bloom_setting	a projection still gets filters when the setting is on	15;16;17;18;19	2026-10-20	columnar_write_state.c: a projection's write state drops its bloom filters, the fix's first version
 bloom_setting	bloom_setting	filters are written when the setting is on	15;16;17;18;19	never	-
