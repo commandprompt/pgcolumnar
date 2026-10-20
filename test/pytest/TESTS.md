@@ -257,6 +257,7 @@ behaviour, the source of that number is named.
 - [209. test_sort_status_privilege.py: sort_status answers whoever may SELECT the table, and only them](#209-test_sort_status_privilegepy-sort_status-answers-whoever-may-select-the-table-and-only-them)
 - [210. test_bloom_lazy.py: a scan reads the bloom filters of the groups and columns it examines](#210-test_bloom_lazypy-a-scan-reads-the-bloom-filters-of-the-groups-and-columns-it-examines)
 - [211. test_sort_status.py: sort_status reports how much of an ordered table is still in its run](#211-test_sort_statuspy-sort_status-reports-how-much-of-an-ordered-table-is-still-in-its-run)
+- [212. test_smoke.py: a columnar table stores rows and gives them back](#212-test_smokepy-a-columnar-table-stores-rows-and-gives-them-back)
 
 ## 1. How to read a test in here
 
@@ -8882,3 +8883,23 @@ Each value is the first column as text, or a failed query, so two failed reads n
 | `test_the_mark_covers_the_runs_last_group` | the mark covers the run's last group |
 | `test_the_storage_the_sort_abandoned_is_gone` | the storage the sort abandoned is gone |
 | `test_dropping_the_table_removes_the_storage_row` | dropping the table removes the storage row |
+
+## 212. test_smoke.py: a columnar table stores rows and gives them back
+
+The pytest twin of `test/smoke.sh` (ported for #1341), every check by the shell's name. The shell starts a throwaway cluster with pgcolumnar preloaded; the twin uses the harness cluster, which preloads it too, on a private database, so the orphan count reads only this module's tables.
+
+### Every test
+
+A failed step stops the fixture, as `set -e` stops the shell, and every reading is a value or a failed query.
+
+| test | what it holds |
+| --- | --- |
+| `test_count_star` | count(*) |
+| `test_count_where_a_lt_50` | count where a<50 |
+| `test_order_by_a_limit_3` | order by a limit 3 |
+| `test_no_nulls_in_t_b` | no nulls in t.b |
+| `test_null_table_rows` | null table rows |
+| `test_null_table_nulls` | null table nulls |
+| `test_null_table_value` | null table value |
+| `test_orphan_stripes` | orphan stripes |
+| `test_native_catalog_tables` | native catalog tables |
