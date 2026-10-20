@@ -228,9 +228,10 @@ def test_analyze_function(pgc_conn, expect):
           f"k7 = {core_nullfrac7} (truth {true_nullfrac7})")
 
     # --- null_frac is exact, from reading the column -------------------------
-    fail = _analyze(pgc_conn, "af_c", ["k"], warnings)
-    expect.text(fail or "no error", "no error",
-                "pgcolumnar.analyze() ran without raising, so the statistics below are its own")
+    # Not asserted here, as in the shell: the name below belongs to the skew call,
+    # whose histogram is the statistic it vouches for (#1339). A failed call here
+    # leaves core's numbers, and the exact-fraction check on k7 cannot match those.
+    _analyze(pgc_conn, "af_c", ["k"], warnings)
     expect.num(_stat(pgc_conn, "af_c", "k", "null_frac"), 0.1,
                "pgcolumnar.analyze() reports null_frac exactly, from reading the column")
 
@@ -261,6 +262,14 @@ def test_analyze_function(pgc_conn, expect):
     expect.num(_stat(pgc_conn, "af_c", "k", "n_distinct"), float(true_ndistinct),
                "pgcolumnar.analyze() reports n_distinct exactly, from one column")
 
+    # The other side of core's 10% rule, which the check above cannot reach: its
+    # fixture is pinned to the absolute-count side, so writing the absolute count
+    # everywhere passed (#1339). k7 is analysed by the function above and is
+    # six-sevenths distinct; the expected value is computed as core stores it, a real.
+    expect.text(str(_stat(pgc_conn, "af_c", "k7", "n_distinct::text")),
+                str(_one(pgc_conn, "SELECT (-(count(DISTINCT k7)::float8 / count(*)))::real::text FROM af_c")),
+                "and on the fraction side of core's 10% rule it reports the negated fraction")
+
     # --- it must not destroy the statistics it does not compute --------------
     #
     # pg_restore_attribute_stats is a RESTORE api: kinds not named in the call could
@@ -269,8 +278,11 @@ def test_analyze_function(pgc_conn, expect):
     # check assert nothing.
     ours_correlation = _stat(pgc_conn, "af_c", "k", "correlation")
     print(f"-- correlation before={core_correlation} after={ours_correlation}")
+    # In place means the SAME value, not merely a number: a restore that rewrote
+    # correlation with any other number passed the earlier form (#1339).
     expect.text(
         "yes" if isinstance(ours_correlation, float) and isinstance(core_correlation, float)
+        and ours_correlation == core_correlation
         else f"no (correlation was [{core_correlation}], is now [{ours_correlation}])",
         "yes", "pgcolumnar.analyze() leaves the statistics it does not compute in place")
 
@@ -301,7 +313,9 @@ def test_analyze_function(pgc_conn, expect):
           if isinstance(core_hist_max, int) and core_hist_max < 200000
           else "-- core happened to sample the outlier this run; exactness is asserted regardless")
 
-    _analyze(pgc_conn, "af_c", ["skew"], warnings)
+    fail = _analyze(pgc_conn, "af_c", ["skew"], warnings)
+    expect.text(fail or "no error", "no error",
+                "pgcolumnar.analyze() ran without raising, so the statistics below are its own")
     ours_hist = _one(
         pgc_conn, "SELECT histogram_bounds::text::int[] FROM pg_stats "
                   "WHERE schemaname = current_schema() AND tablename = 'af_c' "
@@ -480,7 +494,9 @@ def test_analyze_function(pgc_conn, expect):
                   "WHERE schemaname = current_schema() AND tablename = 'af_c' "
                   "AND attname = 'skew'")
     mcv_len = len(skew_mcv) if skew_mcv else 0
-    expect.text("yes" if mcv_len <= 10 else f"no (length [{mcv_len}])", "yes",
+    # EXACTLY ten: every skew value repeats, so the cap binds, and "at most ten" also
+    # held for an empty list (#1339).
+    expect.text("yes" if mcv_len == 10 else f"no (length [{mcv_len}])", "yes",
                 "and so does the most-common list, which is capped by the same target")
 
     # Zero is not "a small target", it is "do not collect". A column set to zero that

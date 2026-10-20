@@ -256,6 +256,18 @@ ours_ndistinct="$(q "SELECT n_distinct FROM pg_stats WHERE tablename = 'af_c' AN
 check_num "pgcolumnar.analyze() reports n_distinct exactly, from one column" \
 	"$ours_ndistinct" "$true_ndistinct"
 
+# The other side of core's 10% rule, which the check above cannot reach: its fixture
+# is pinned to the absolute-count side, so the sign convention -- negated fraction of
+# the rows once the distinct count passes 10% -- went unasserted, and writing the
+# absolute count everywhere passed this suite (#1339). k7 is analysed by the function
+# above and is six-sevenths distinct, so it is far over the threshold. The expected
+# value is computed here the way core stores it, as a real. check_text, because q
+# reads a failed query as empty and two empty readings agreed (found by jdatcmd
+# reviewing #1566); the values are text renderings of a real, so not check_num.
+check_text "and on the fraction side of core's 10% rule it reports the negated fraction" \
+	"$(q "SELECT n_distinct::text FROM pg_stats WHERE tablename = 'af_c' AND attname = 'k7'")" \
+	"$(q "SELECT (-(count(DISTINCT k7)::float8 / count(*)))::real::text FROM af_c")"
+
 # --- check 3: it must not destroy the statistics it does not compute -----------
 #
 # pg_restore_attribute_stats is a RESTORE api: it reinstates a whole attribute's
@@ -271,8 +283,11 @@ check_num "pgcolumnar.analyze() reports n_distinct exactly, from one column" \
 ours_correlation="$(q "SELECT correlation FROM pg_stats WHERE tablename = 'af_c' AND attname = 'k'")"
 echo "-- correlation before=${core_correlation_before:-<none>} after=${ours_correlation:-<none>}"
 
+# In place means the SAME value, not merely a number: a restore that rewrote
+# correlation with any other number passed the earlier form of this check (#1339).
 check "pgcolumnar.analyze() leaves the statistics it does not compute in place" \
-	"$(if pgc_is_number "$ours_correlation" && pgc_is_number "$core_correlation_before"; then
+	"$(if pgc_is_number "$ours_correlation" && pgc_is_number "$core_correlation_before" \
+			&& [ "$ours_correlation" = "$core_correlation_before" ]; then
 			echo yes
 		else
 			echo "no (correlation was [${core_correlation_before:-<null>}], is now [${ours_correlation:-<null>}])"
@@ -618,10 +633,13 @@ check_num "the histogram honours the column's statistics target, not the global 
 		WHERE tablename = 'af_c' AND attname = 'skew'")" "11"
 
 # The most-common list is sized by the same target, and by the same rule
-# (analyze.c:2552 tracks at most attstattarget entries).
+# (analyze.c:2552 tracks at most attstattarget entries). EXACTLY ten: every skew value
+# repeats, so the cap binds, and "at most ten" also held for an empty list -- with
+# the MCV rule changed so that skew's values no longer qualify, the list was empty
+# and this passed (#1339).
 check "and so does the most-common list, which is capped by the same target" \
 	"$(if [ "$(q "SELECT array_length(most_common_vals::text::int[], 1) FROM pg_stats
-			WHERE tablename = 'af_c' AND attname = 'skew'")" -le 10 ] 2>/dev/null; then echo yes
+			WHERE tablename = 'af_c' AND attname = 'skew'")" -eq 10 ] 2>/dev/null; then echo yes
 		else echo "no (length [$(q "SELECT array_length(most_common_vals::text::int[], 1) FROM pg_stats WHERE tablename = 'af_c' AND attname = 'skew'")])"; fi)" \
 	"yes"
 

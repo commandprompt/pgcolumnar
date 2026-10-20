@@ -4238,4 +4238,21 @@ suites_not_covered 160
 #     never         3328 + 0 = 3328
 #     dated         1600 + 1 = 1601
 #     3328 + 1601 == 4929
-checks_never_observed_red 3328
+# #1339, test_analyze_function.py :233, :262, :275 and :484, in both twins
+# (OffgridwithJD): 3328 -> 3324, one row added and dated. With n_distinct written as the
+# absolute count on both sides of core's 10% rule, main passed every check (71/71, 6/6):
+# the fixture is pinned to the absolute side, so a new check reads k7, six-sevenths
+# distinct, against the negated fraction. "leaves the statistics it does not compute in
+# place" asked only that correlation was still a number, and now wants core's value; the
+# twin's most-common cap read "at most ten", which an empty list meets, and now wants ten
+# (the shell's -le already refused an empty length); and the twin had put "ran without
+# raising, so the statistics below are its own" on the k call, where the shell has it on
+# the skew call that the histogram checks rest on. 4 existing rows are dated by
+# the mutations that redden them: the restore rewriting correlation (two), the
+# most-common cap at the global default, and a five-repeat floor for most-common values.
+#
+#     ledger rows   4929 + 1 = 4930
+#     never         3328 - 4 = 3324
+#     dated         1601 + 5 = 1606
+#     3324 + 1606 == 4930
+checks_never_observed_red 3324

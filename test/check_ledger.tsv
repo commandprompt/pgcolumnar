@@ -148,13 +148,14 @@ analyze_function	analyze_function	and 42's	18;19	never	-
 analyze_function	analyze_function	and 7's frequency exactly, over total rows rather than non-null rows	18;19	never	-
 analyze_function	analyze_function	and 99's	18;19	never	-
 analyze_function	analyze_function	and core's own number for it is not the truth, as the arithmetic requires	18;19	never	-
-analyze_function	analyze_function	and correlation is absent, as the doc says	18;19	never	-
+analyze_function	analyze_function	and correlation is absent, as the doc says	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze()'s restore also rewrites correlation, which it does not compute
 analyze_function	analyze_function	and exactly for a fraction core's sample cannot express	18;19	never	-
 analyze_function	analyze_function	and it is an ordered ladder rather than two extremes	18;19	never	-
 analyze_function	analyze_function	and it is sorted ascending, which a histogram must be to be usable	18;19	never	-
 analyze_function	analyze_function	and no most-common value is inside skew's histogram either	18;19	never	-
-analyze_function	analyze_function	and so does the most-common list, which is capped by the same target	18;19	never	-
-analyze_function	analyze_function	and the smallest non-most-common value at the bottom	18;19	never	-
+analyze_function	analyze_function	and on the fraction side of core's 10% rule it reports the negated fraction	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() writes the absolute distinct count on both sides of core's 10% rule
+analyze_function	analyze_function	and so does the most-common list, which is capped by the same target	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() caps the most-common list at the global default, not the column's target
+analyze_function	analyze_function	and the smallest non-most-common value at the bottom	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() admits a most-common value only above five repeats
 analyze_function	analyze_function	and without a WARNING, which is how a mistyped argument is dropped	18;19	never	-
 analyze_function	analyze_function	and writes no statistics, not even for the real column named beside it	18;19	2026-10-14	analyze() without its unknown-column check
 analyze_function	analyze_function	control: the same call naming only the real column writes its statistics	18;19	never	-
@@ -166,7 +167,7 @@ analyze_function	analyze_function	null_frac and the most-common frequencies agre
 analyze_function	analyze_function	null_frac counts live rows, not rows a DELETE left behind	18;19	never	-
 analyze_function	analyze_function	pgcolumnar.analyze()	15;16;17	never	-
 analyze_function	analyze_function	pgcolumnar.analyze() covers every column whichever storage row the heap returns first	18;19	never	-
-analyze_function	analyze_function	pgcolumnar.analyze() leaves the statistics it does not compute in place	18;19	never	-
+analyze_function	analyze_function	pgcolumnar.analyze() leaves the statistics it does not compute in place	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze()'s restore also rewrites correlation, which it does not compute
 analyze_function	analyze_function	pgcolumnar.analyze() puts the true maximum at the top of histogram_bounds	18;19	never	-
 analyze_function	analyze_function	pgcolumnar.analyze() ran for the zero-target column without raising	18;19	never	-
 analyze_function	analyze_function	pgcolumnar.analyze() ran without raising for the MCV column	18;19	never	-
