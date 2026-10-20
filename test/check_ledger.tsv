@@ -408,6 +408,17 @@ batch_fold_explain	batch_fold_explain	premise: control table returns the right s
 batch_fold_explain	batch_fold_explain	premise: fallback table returns the right sum	15;16;17;18;19	never	-
 batch_fold_explain	batch_fold_explain	premise: fixture loaded every row	15;16;17;18;19	never	-
 batch_fold_explain	batch_fold_explain	premise: with parallelism free, the planner gives the parallel partial fold	15;16;17;18;19	never	-
+bloom_setting	bloom_setting	a full scan of the unfiltered table is complete	15;16;17;18;19	never	-
+bloom_setting	bloom_setting	a projection still gets filters when the setting is on	15;16;17;18;19	2026-10-20	columnar_write_state.c: a projection's write state drops its bloom filters, the fix's first version
+bloom_setting	bloom_setting	filters are written when the setting is on	15;16;17;18;19	never	-
+bloom_setting	bloom_setting	no filters are written when the setting is off	15;16;17;18;19	2026-10-20	columnar_write_state.c: filters built whatever pgcolumnar.enable_bloom_filter says, the original defect
+bloom_setting	bloom_setting	the projected table reads correctly	15;16;17;18;19	never	-
+bloom_setting	bloom_setting	the two tables hold identical data	15;16;17;18;19	never	-
+bloom_setting	bloom_setting	written off, read with the setting off: absent value not found	15;16;17;18;19	never	-
+bloom_setting	bloom_setting	written off, read with the setting off: present value found	15;16;17;18;19	never	-
+bloom_setting	bloom_setting	written off, read with the setting on: absent value not found	15;16;17;18;19	never	-
+bloom_setting	bloom_setting	written off, read with the setting on: present value found	15;16;17;18;19	2026-10-20	columnar_reader.c: a chunk with no filter is treated as holding no match
+bloom_setting	bloom_setting	written on, read with the setting off: present value found	15;16;17;18;19	never	-
 bloom_sizing	bloom_sizing	a column above the distinct cap is refused a filter, not given a bad one	15;16;17;18;19	2026-10-20	columnar_bloom.c: the distinct cap removed, so a saturated filter is written
 bloom_sizing	bloom_sizing	a five-value column does not get a unique column's filter (#467)	15;16;17;18;19	2026-10-20	columnar_bloom.c: the filter sized by the value count, not the distinct count, the #467 defect
 bloom_sizing	bloom_sizing	a value that is absent is still reported absent	15;16;17;18;19	never	-
