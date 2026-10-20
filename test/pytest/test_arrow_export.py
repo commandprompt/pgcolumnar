@@ -12,8 +12,9 @@ representation each maps to.
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading, so one red cannot stop the next (#1339). The heap oracle is read
 over the driver with the shell's own SQL expressions, not through the file. Each file
-reading requires the file's row count to equal the oracle's: rows are compared by id,
-so without it a row written twice would collapse into one. The shell skips whole
+reading requires the oracle to hold the fixture's rows, so two empty sides cannot agree,
+and the file's row count to equal the oracle's: rows are compared by id, so without it
+a row written twice would collapse into one. The shell skips whole
 without pyarrow, so every test declines by the shell's skip name first. The files live
 in `server_dir`, because the backend writes them.
 """
@@ -177,6 +178,8 @@ def _values(pa, path, oracle):
     ar = {ad["id"][i]: tuple(ad[c][i] for c in COLS) for i in range(tbl.num_rows)}
     pg = {r[0]: (r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7],
                  None if r[8] is None else bytes.fromhex(r[8])) for r in oracle}
+    if len(pg) != 20003:  # with the load failed, both sides were empty and agreed
+        return f"ORACLE {len(pg)} rows, not 20003"
     if tbl.num_rows != len(pg):
         return f"ROWS {tbl.num_rows} in the file, {len(pg)} in the oracle"
     ok = set(ar) == set(pg) and all(all(_feq(a, b) for a, b in zip(ar[k], pg[k])) for k in pg)
@@ -213,6 +216,8 @@ def _ext_values(pa, path, oracle):
     ar = {ids[k]: (ids[k], dt[k], tm[k], ts[k], tz[k], u[k], num[k], nun[k], j[k], jb[k])
           for k in range(t.num_rows)}
     pg = {r[0]: tuple(r) for r in oracle}
+    if len(pg) != 4:
+        return f"ORACLE {len(pg)} rows, not 4"
     if t.num_rows != len(pg):
         return f"ROWS {t.num_rows} in the file, {len(pg)} in the oracle"
     return "MATCH" if ar == pg else f"MISMATCH {ar!r} {pg!r}"

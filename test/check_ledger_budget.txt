@@ -4015,7 +4015,10 @@ suites_not_covered 168
 # five-major runs (10/10 on each of 15-19, shell and twin alike), after two fixes. Both
 # value checks keyed the file's rows by id, so a row written twice collapsed into one:
 # with every full record batch written twice (36387 rows in the file for 20003), all
-# ten checks passed. Each now requires the file's row count to equal the oracle's. And
+# ten checks passed. Each now requires the file's row count to equal the oracle's,
+# and the oracle to hold the fixture's rows (20003, and 4 for the extended pair): with
+# both loads failed, both sides were empty and agreed over nothing (found by jdatcmd
+# reviewing #1555). And
 # both refusals passed on any error: with the heap refusal removed, the export read
 # the heap's pages as columnar metadata ("unsupported columnar format version") and
 # that error passed as the refusal. Each now requires its own message. 4 are dated by

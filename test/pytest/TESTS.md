@@ -8364,17 +8364,17 @@ The pytest twin of `test/arrow_export.sh` (ported for #1341), every check by the
 
 ### Every test
 
-A module fixture on a private database runs the SQL in the shell's order and reads the heap oracle over the driver with the shell's own expressions; each test asserts one reading. Each file reading requires the file's row count to equal the oracle's, because rows are compared by id and a row written twice would otherwise collapse into one. The shell skips whole without pyarrow, so every test declines by the shell's skip name first.
+A module fixture on a private database runs the SQL in the shell's order and reads the heap oracle over the driver with the shell's own expressions; each test asserts one reading. Each file reading requires the oracle to hold the fixture's rows, so two empty sides cannot agree, and the file's row count to equal the oracle's, because rows are compared by id and a row written twice would otherwise collapse into one. The shell skips whole without pyarrow, so every test declines by the shell's skip name first.
 
 | test | what it holds |
 | --- | --- |
 | `test_export_arrow_reports_every_row` | the export reports 20003 rows |
-| `test_arrow_values_match_the_heap_oracle` | the file holds as many rows as the heap, and each equals the heap's (NaN equal to NaN) |
+| `test_arrow_values_match_the_heap_oracle` | the heap holds its 20003 rows, the file as many, and each equals the heap's (NaN equal to NaN) |
 | `test_the_arrow_schema_has_the_expected_types` | int32, int16, int32, int64, float, double, bool, string, binary |
 | `test_an_empty_table_reports_no_rows` | the empty table's export reports 0 rows |
 | `test_an_empty_table_writes_a_readable_stream` | its file reads back with 0 rows and both fields |
 | `test_a_heap_table_is_refused` | a heap table fails with `is not a columnar table` (another error no longer passes) |
 | `test_an_unsupported_column_type_is_refused` | a `point` column fails with its own message |
 | `test_the_extended_export_reports_every_row` | the extended table's export reports 4 rows |
-| `test_extended_values_match_the_heap_oracle` | each extended value equals its canonical form; non-finite dates and timestamps and NaN numerics are null |
+| `test_extended_values_match_the_heap_oracle` | the heap holds its 4 rows, the file as many, and each extended value equals its canonical form; non-finite dates and timestamps and NaN numerics are null |
 | `test_the_extended_schema_has_the_expected_types` | date32, time64, timestamp with and without UTC, fixed_size_binary(16), decimal128(20, 4), and strings |

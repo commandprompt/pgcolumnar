@@ -86,6 +86,11 @@ def feq(x,y):
         if math.isnan(x) and math.isnan(y): return True
         return x==y
     return x==y
+# the oracle must hold the fixture's rows: with the load failed, both sides were
+# empty and agreed over nothing
+if len(pg) != 20003:
+    print("ORACLE %d rows, not 20003" % len(pg))
+    sys.exit(0)
 # the file's own row count too: ar is keyed by id, so a row written twice collapsed
 # into one and an export that repeated a whole batch read MATCH
 if tbl.num_rows != len(pg):
@@ -196,6 +201,9 @@ pg = {}
 for r in csv.reader(open(sys.argv[2],newline='')):
     pg[int(r[0])] = (int(r[0]), I(r[1]), I(r[2]), I(r[3]), I(r[4]),
                      N(r[5]), N(r[6]), N(r[7]), N(r[8]), N(r[9]))
+if len(pg) != 4:
+    print("ORACLE %d rows, not 4" % len(pg))
+    sys.exit(0)
 if t.num_rows != len(pg):
     print("ROWS %d in the file, %d in the oracle" % (t.num_rows, len(pg)))
     sys.exit(0)
