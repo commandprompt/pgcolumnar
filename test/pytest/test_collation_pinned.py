@@ -33,7 +33,10 @@ SUITES = REPO / "test"
 # reads `| LC_ALL=C sort` or `<(LC_ALL=C sort`, which puts text between the two and so
 # does not match -- that is what makes a MIXED line fail without further work, since an
 # unpinned sort on the same line still matches.
-_UNPINNED_SORT = re.compile(r"(\|\s*sort(\s|$)|<\(\s*sort(\s|$))")
+# AND AT THE START OF A COMMAND (#1339): `sort a > a.s; sort b > b.s; comm a.s b.s` sorts
+# into files that comm then reads, and that form has no pipe or substitution before its
+# sort, so the pattern above alone never saw it.
+_UNPINNED_SORT = re.compile(r"(\|\s*sort(\s|$)|<\(\s*sort(\s|$)|(^|;|&&|\|\||\$\()\s*sort(\s|$))")
 _COMM = re.compile(r"(^|[^_\w])comm\s")
 _PINNED_COMM = re.compile(r"LC_ALL=C\s+comm\s")
 
@@ -120,6 +123,14 @@ def test_the_detector_still_catches_the_piped_form(expect):
     """The case #552 already covered. Widening must not trade one for the other."""
     expect.num(len(_unpinned_sorts("\tcat a | sort > b\n")), 1,
                "an unpinned piped sort is caught")
+
+
+def test_a_sort_into_a_file_that_comm_reads_is_caught(expect):
+    """The form with no pipe: sorted into files first, then compared (#1339)."""
+    expect.num(len(_unpinned_sorts('\tsort a > a.s; sort b > b.s; LC_ALL=C comm -23 a.s b.s\n')), 1,
+               "an unpinned sort at the start of a command is caught")
+    expect.num(len(_unpinned_sorts('\tLC_ALL=C sort a > a.s; LC_ALL=C sort b > b.s\n')), 0,
+               "control: the same sorts pinned are not caught")
 
 
 def test_a_line_with_one_of_two_sorts_pinned_is_caught(expect):

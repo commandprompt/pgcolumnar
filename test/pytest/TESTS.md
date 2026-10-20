@@ -4866,6 +4866,7 @@ implementation, own planted probes, and neither file names the other.
 | `test_every_comm_pins_its_own_comparison` | and the `comm` itself is pinned, which is a separate claim |
 | `test_the_detector_catches_the_process_substituted_form` | the hole #1112 names: not a pipeline, so a pipe pattern cannot see it |
 | `test_the_detector_still_catches_the_piped_form` | widening did not trade #552's case away |
+| `test_a_sort_into_a_file_that_comm_reads_is_caught` | an unpinned `sort` at the start of a command, sorting into a file that `comm` then reads, is caught, and the same sorts pinned are not (#1339) |
 | `test_a_line_with_one_of_two_sorts_pinned_is_caught` | the half-pinned form, which is what a partial fix produces |
 | `test_pinning_only_the_comm_does_not_pin_its_substitutions` | a pinned `comm` over unpinned sorts is still a breach, while its comm half is satisfied |
 | `test_a_fully_pinned_line_is_not_flagged` | without which the detector could be "flag everything" and every arm above still passes |
