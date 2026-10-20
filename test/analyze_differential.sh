@@ -164,9 +164,12 @@ psql_run "DROP TABLE IF EXISTS ad_shape;
 # STATISTIC_KIND_MCV is 1 and STATISTIC_KIND_HISTOGRAM is 2 (pg_statistic.h).
 # Asserted rather than assumed: if core produced neither for these columns, every
 # comparison below would compare an empty set with an empty set and pass.
-check_num "premise: core produced a most-common list for every column" \
+# Not premises (#1339): core reads a columnar table through pgcolumnar's own ANALYZE
+# sampler, so a repository change can redden these -- with the sampler mapping no
+# block to a slice, core collects nothing and both go red.
+check_num "core ANALYZE, through the columnar sampler, produced a most-common list for every column" \
 	"$(q "SELECT count(DISTINCT attname) FROM ad_shape WHERE source = 'core' AND kind = 1")" "5"
-check_num "premise: and a histogram for the four with a tail, but not for boolean" \
+check_num "and a histogram for the four with a tail, but not for boolean" \
 	"$(q "SELECT count(DISTINCT attname) FROM ad_shape WHERE source = 'core' AND kind = 2")" "4"
 
 # --- clear, so what follows is unambiguously ours ------------------------------
@@ -275,28 +278,37 @@ check_num "every statistic we wrote agrees with core on operator and collation" 
 # ~7 significant digits) while the true frequency is exact numeric, so demanding
 # equality would fail on representation rather than on correctness.
 
-for spec in "i int" "t text" "n numeric" "d date" "b boolean"; do
-	col="${spec%% *}"
-	typ="${spec#* }"
-
-	# Asserted before the comparison: an empty MCV list makes "no value disagrees"
-	# true of nothing, which is the vacuous pass this whole suite is about.
-	nmcv="$(q "SELECT coalesce(array_length(most_common_vals::text::${typ}[], 1), 0)
-		FROM pg_stats WHERE tablename = 'ad_c' AND attname = '$col'")"
-	check "premise: $col has a most-common list to check" \
-		"$(if pgc_is_number "$nmcv" && [ "$nmcv" -ge 1 ]; then echo yes; else echo "no (length [$nmcv])"; fi)" \
-		"yes"
-
-	check_num "every most-common value of $col exists with exactly its stored frequency" \
-		"$(q "WITH m AS (
-				SELECT unnest(most_common_vals::text::${typ}[]) AS v,
-					   unnest(most_common_freqs) AS f
-				  FROM pg_stats WHERE tablename = 'ad_c' AND attname = '$col')
-			SELECT count(*) FROM m
-			 WHERE abs((SELECT count(*) FROM ad_c WHERE ad_c.$col IS NOT DISTINCT FROM m.v)::numeric
-					   / $ROWS - m.f::numeric) > 0.000001")" \
-		"0"
-done
+# Not premises (#1339): these read the most-common list pgcolumnar.analyze() wrote,
+# so a repository change reddens them -- with the list passed as NULL, all five went
+# red. One literal name per column, so the grader sees each.
+mcv_listed() {	# $1 column, $2 type -> "yes" when the column has a most-common list
+	local n
+	n="$(q "SELECT coalesce(array_length(most_common_vals::text::$2[], 1), 0)
+		FROM pg_stats WHERE tablename = 'ad_c' AND attname = '$1'")"
+	if pgc_is_number "$n" && [ "$n" -ge 1 ]; then echo yes; else echo "no (length [$n])"; fi
+}
+# The oracle is an independent count over the table, never a re-reading of what the
+# function wrote. An empty list has no wrong value, which is why mcv_listed comes
+# first: an empty MCV list makes "no value disagrees" true of nothing.
+mcv_wrong() {	# $1 column, $2 type -> most-common values whose stored frequency is wrong
+	q "WITH m AS (
+			SELECT unnest(most_common_vals::text::$2[]) AS v,
+				   unnest(most_common_freqs) AS f
+			  FROM pg_stats WHERE tablename = 'ad_c' AND attname = '$1')
+		SELECT count(*) FROM m
+		 WHERE abs((SELECT count(*) FROM ad_c WHERE ad_c.$1 IS NOT DISTINCT FROM m.v)::numeric
+				   / $ROWS - m.f::numeric) > 0.000001"
+}
+check "i has a most-common list to check" "$(mcv_listed i int)" "yes"
+check_num "every most-common value of i exists with exactly its stored frequency" "$(mcv_wrong i int)" "0"
+check "t has a most-common list to check" "$(mcv_listed t text)" "yes"
+check_num "every most-common value of t exists with exactly its stored frequency" "$(mcv_wrong t text)" "0"
+check "n has a most-common list to check" "$(mcv_listed n numeric)" "yes"
+check_num "every most-common value of n exists with exactly its stored frequency" "$(mcv_wrong n numeric)" "0"
+check "d has a most-common list to check" "$(mcv_listed d date)" "yes"
+check_num "every most-common value of d exists with exactly its stored frequency" "$(mcv_wrong d date)" "0"
+check "b has a most-common list to check" "$(mcv_listed b boolean)" "yes"
+check_num "every most-common value of b exists with exactly its stored frequency" "$(mcv_wrong b boolean)" "0"
 
 # --- the values themselves survived the round trip ----------------------------
 #
