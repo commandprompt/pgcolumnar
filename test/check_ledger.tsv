@@ -435,6 +435,22 @@ autovacuum_yield	autovacuum_yield	the daemon logged cancelling its maintenance o
 autovacuum_yield	autovacuum_yield	the launcher is running	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the maintenance launcher is never registered
 autovacuum_yield	autovacuum_yield	yield: and it was granted FAST (<= 8s, far under the 30s hold)	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the worker is never marked autovacuum, so a lock waiter cannot cancel it
 autovacuum_yield	autovacuum_yield	yield: the AccessExclusive lock was granted (no timeout -> daemon yielded)	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the worker is never marked autovacuum, so a lock waiter cannot cancel it
+avro_manifest	avro_manifest	a deflate zip-bomb is refused by the cumulative cap (54000)	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	a non-Avro file is rejected (bad magic), backend survives	15;16;17;18;19	2026-10-20	columnar_avro.c: the Avro magic is not checked
+avro_manifest	avro_manifest	all entries are ADDED data files (status=1, content=0)	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	an explicit entry sequence_number is decoded (42)	15;16;17;18;19	2026-10-20	columnar_avro.c: an explicit entry sequence_number is decoded as absent
+avro_manifest	avro_manifest	an unprivileged role is refused (42501)	15;16;17;18;19	2026-10-20	columnar_avro.c: the pg_read_server_files gate is skipped
+avro_manifest	avro_manifest	backend still up after the bad file	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	backend still up after the zip-bomb	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	decoded entries == oracle (record_count|file_size|region)	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	decoded entry count == oracle	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	every entry's file_path ends in .parquet	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	file_format decodes to the Iceberg enum name	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	manifest-list entry == oracle (all scalar fields)	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	manifest-list entry count == oracle (1)	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	manifest-list manifest_path basename == oracle	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	partition renders the schema's field name	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	the committed entries have a NULL (inherited) sequence_number	15;16;17;18;19	never	-
 base_scan_io	base_scan_io	a base scan is not priced from sibling projection pages	15;16;17;18;19	2026-09-21	projPages = 0 (keep whole-file pages)
 base_scan_io	base_scan_io	premise: a covering projection exists	15;16;17;18;19	never	-
 base_scan_io	base_scan_io	premise: adding the projection enlarged the relation file	15;16;17;18;19	never	-

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 150
+suites_not_covered 149
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4438,4 +4438,24 @@ suites_not_covered 150
 #     never         3424 + 68 = 3492
 #     dated         1699 + 16 = 1715
 #     3492 + 1715 == 5207
-checks_never_observed_red 3492
+# #1341, avro_manifest seeded, with its twin (OffgridwithJD): 3492 -> 3505, and
+# suites_not_covered 150 -> 149. The suite had no rows. It enters with 16 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after four fixes.
+# The two "backend still up" checks read SELECT 1, which answers again after crash
+# recovery: with a backend SIGKILLed before them, main passed both. They now also read
+# the server log's count of killed backends. "an unprivileged role is refused" got its
+# 42501 from the schema, before the function's pg_read_server_files gate, so with the
+# gate removed it still passed; the role now has USAGE and the check reads the gate's
+# message. "a non-Avro file is rejected (bad magic)" read only XX001, which a later
+# parse also raises: with the magic check removed it passed; it now reads "bad magic".
+# And the inherited-sequence check and three oracle comparisons agreed on two failed
+# reads; they now refuse an empty side or want the oracle's own count. 3 are dated by
+# three mutations, each reddening the same name in both twins: an explicit sequence
+# number decoded as absent, the read gate skipped, and the magic unchecked. 13 arrive
+# never.
+#
+#     ledger rows   5207 + 16 = 5223
+#     never         3492 + 13 = 3505
+#     dated         1715 + 3 = 1718
+#     3505 + 1718 == 5223
+checks_never_observed_red 3505
