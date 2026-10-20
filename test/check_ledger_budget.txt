@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 173
+suites_not_covered 172
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3931,4 +3931,24 @@ suites_not_covered 173
 #     never         3138 + 22 = 3160
 #     dated         1441 + 10 = 1451
 #     3160 + 1451 == 4611
+#
+# #1341, wal_envelope seeded, with its twin (jdatcmd): 3160 -> 3160, and
+# suites_not_covered 173 -> 172. The suite had no rows. It enters with 20 checks from
+# five-major runs (20/20 on each of 15-19, shell and twin alike), after two fixes.
+# Four checks counted matches and wanted 0, so on a src/ holding no .c file they
+# passed: each count now reads "no .c files under ..." when there was nothing to scan,
+# and the fork-mask count reads "not found" when the function is missing. And the seven
+# step checks were named through a loop variable, which compare_to_bash cannot read;
+# each is named literally now. All 20 are dated by eleven source mutations, each
+# reddening the same names in both twins: a custom rmgr registered, the record under
+# RM_XLOG_ID, a GenericXLogFinish emitter, a second XLogInsert, the function renamed
+# (every envelope check), the delay set inside the critical section, the critical
+# section entered after the record, the flush after the truncate, the delay cleared
+# before the truncate, the critical section left before the delay is cleared, and
+# SMGR_TRUNCATE_ALL (both fork checks). No check arrives never observed red.
+#
+#     ledger rows   4611 + 20 = 4631
+#     never         3160 + 0 = 3160
+#     dated         1451 + 20 = 1471
+#     3160 + 1471 == 4631
 checks_never_observed_red 3160

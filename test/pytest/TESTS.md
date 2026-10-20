@@ -238,6 +238,7 @@ behaviour, the source of that number is named.
 - [190. test_catalog_natts.py: every Natts_ constant equals the width of the catalog it sizes](#190-test_catalog_nattspy-every-natts_-constant-equals-the-width-of-the-catalog-it-sizes)
 - [191. test_write_fsst_compressed.py: FSST is kept only where it wins after the block compressor](#191-test_write_fsst_compressedpy-fsst-is-kept-only-where-it-wins-after-the-block-compressor)
 - [192. test_zonemap_estimate_sample.py: the planner's zone-map sample is one-based, complete and per-column](#192-test_zonemap_estimate_samplepy-the-planners-zone-map-sample-is-one-based-complete-and-per-column)
+- [193. test_wal_envelope.py: pgColumnar emits only core's WAL, inside RelationTruncate's envelope](#193-test_wal_envelopepy-pgcolumnar-emits-only-cores-wal-inside-relationtruncates-envelope)
 
 ## 1. How to read a test in here
 
@@ -8270,3 +8271,23 @@ Each check is its own test over a module fixture that runs every step in the she
 | `test_the_estimate_does_not_move_with_the_planning_sessions_guc` | planned at the default 150000 and at the written 2000, the cost is the same |
 | `test_the_discount_is_real` | two of ten groups are priced below a full scan |
 | `test_gsess_reads_back_correctly` | `gsess` returns its 4000 rows |
+
+## 193. test_wal_envelope.py: pgColumnar emits only core's WAL, inside RelationTruncate's envelope
+
+The pytest twin of `test/wal_envelope.sh` (ported for #1341), every check by the shell's name. An extension that registers a resource manager or record type of its own ties the WAL stream to its build, so a standby or recovery without that build cannot replay it. Both halves read the source and run no server: the shell with grep and awk, the twin with Python's `re`. The one direct record, `XLOG_SMGR_TRUNCATE` in `PgColumnarTruncateMainFork`, must keep core's crash-safety order.
+
+### Every test
+
+Each check is its own test. Every "none found" count reads `no .c files under ...` when there was no source to scan, and every reading inside the function reads `PgColumnarTruncateMainFork not found` when the function is missing, so an empty or misplaced `src/` cannot pass as "no custom WAL".
+
+| test | what it holds |
+| --- | --- |
+| `test_no_custom_resource_manager_is_registered` | no file under `src/` calls `RegisterCustomRmgr` or defines an `RmgrData` |
+| `test_no_rmgr_id_other_than_the_smgr_truncate_is_used` | every `XLogInsert(RM_...` names `RM_SMGR_ID` |
+| `test_exactly_one_direct_xloginsert_in_the_tree` | one line of `src/*.c` calls `XLogInsert(` |
+| `test_every_other_wal_emitter_is_a_core_full_page_image_helper` | no `GenericXLogFinish` or `XLogRegisterBuffer` in `src/*.c` |
+| `test_pgcolumnartruncatemainfork_was_found` | the function the envelope checks read is there |
+| `test_envelope_step_present` | parametrized by the shell's seven names: each step of the envelope is in the function |
+| `test_envelope_steps_are_ordered` | parametrized by the shell's six names: delay set, critical section entered, record, flush, truncate, delay cleared, critical section left, in that order |
+| `test_the_truncate_record_covers_the_main_fork_only` | the record's flags are `SMGR_TRUNCATE_HEAP`, once |
+| `test_no_fork_mask_other_than_the_heap_fork_is_used_here` | no `SMGR_TRUNCATE_VM`, `_FSM` or `_ALL` in the function |

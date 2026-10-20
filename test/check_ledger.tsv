@@ -4538,6 +4538,26 @@ vm_privilege	vm_privilege	vm entry point is covered by this boundary test: vm_se
 vm_privilege	vm_privilege	vm_is_visible refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
 vm_privilege	vm_privilege	vm_selftest did not report success to the unprivileged role	15;16;17;18;19	2026-10-14	vm_selftest without its owner check
 vm_privilege	vm_privilege	vm_selftest refuses a heap relation even for its owner (#748)	15;16;17;18;19	never	-
+wal_envelope	wal_envelope	PgColumnarTruncateMainFork was found	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed
+wal_envelope	wal_envelope	checkpoint delay is set before the critical section	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed;the checkpoint delay set inside the critical section
+wal_envelope	wal_envelope	envelope step present: crit_in	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed
+wal_envelope	wal_envelope	envelope step present: crit_out	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed
+wal_envelope	wal_envelope	envelope step present: delay_clear	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed
+wal_envelope	wal_envelope	envelope step present: delay_set	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed
+wal_envelope	wal_envelope	envelope step present: flush	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed
+wal_envelope	wal_envelope	envelope step present: insert	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed;the truncate record written under RM_XLOG_ID
+wal_envelope	wal_envelope	envelope step present: trunc	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed
+wal_envelope	wal_envelope	every other WAL emitter is a core full-page-image helper	15;16;17;18;19	2026-10-20	a GenericXLogFinish emitter added
+wal_envelope	wal_envelope	exactly one direct XLogInsert in the tree	15;16;17;18;19	2026-10-20	a second direct XLogInsert after the flush
+wal_envelope	wal_envelope	no custom resource manager is registered	15;16;17;18;19	2026-10-20	a custom resource manager registered (RegisterCustomRmgr added)
+wal_envelope	wal_envelope	no fork mask other than the heap fork is used here	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed;the truncate record's flags set to SMGR_TRUNCATE_ALL
+wal_envelope	wal_envelope	no rmgr id other than the smgr truncate is used	15;16;17;18;19	2026-10-20	the truncate record written under RM_XLOG_ID
+wal_envelope	wal_envelope	the WAL is flushed before the physical truncate	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed;the WAL flushed after the physical truncate
+wal_envelope	wal_envelope	the WAL record precedes the flush	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed;the truncate record written under RM_XLOG_ID
+wal_envelope	wal_envelope	the critical section ends last	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed;the critical section left before the delay is cleared
+wal_envelope	wal_envelope	the delay is cleared after the truncate	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed;the checkpoint delay cleared before the truncate
+wal_envelope	wal_envelope	the record is written inside the critical section	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed;the critical section entered after the record;the truncate record written under RM_XLOG_ID
+wal_envelope	wal_envelope	the truncate record covers the main fork only	15;16;17;18;19	2026-10-20	PgColumnarTruncateMainFork renamed;the truncate record's flags set to SMGR_TRUNCATE_ALL
 write_fsst_compressed	write_fsst_compressed	FSST is not chosen for text the codec compresses better alone	15;16;17;18;19	2026-10-19	FSST kept however the codec scores it, and the post-codec encoding choice (#1132) off by default
 write_fsst_compressed	write_fsst_compressed	FSST is not chosen where it cost 5.8x the write time for a larger file	15;16;17;18;19	2026-10-19	FSST kept however the codec scores it, and the post-codec encoding choice (#1132) off by default
 write_fsst_compressed	write_fsst_compressed	FSST is still chosen where it genuinely wins after compression	15;16;17;18;19	2026-10-19	FSST always dropped (if (true) on the keep/drop decision);a reused HELPS verdict read as HURTS
