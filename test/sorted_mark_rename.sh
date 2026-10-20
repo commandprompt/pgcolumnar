@@ -36,13 +36,26 @@ markof()   { q "SELECT COALESCE(s.sorted_by::text,'-')||'/'||COALESCE(s.sorted_k
 layout()   { q "SELECT md5(string_agg(stripeid::text||':'||fileoffset::text, ',' ORDER BY stripeid)) FROM pgcolumnar.stats('$1');"; }
 storid()   { q "SELECT pgcolumnar.get_storage_id('$1');"; }
 
+# vsort ARGS -- vacuum_sorted(ARGS), keeping its error in VS_ERR. moved TABLE S0 reads
+# the call by its storage id: noop, rewrote, "call failed", or "no reading". A failed
+# call moves nothing, so it used to read as a fired gate, and a missing storage id
+# after the call read as a rewrite.
+VS_ERR=""
+vsort() { VS_ERR="$(psql_run "SELECT pgcolumnar.vacuum_sorted($1);" 2>&1 >/dev/null)"; }
+moved() {
+	local s1
+	s1="$(storid "$1")"
+	if [ -n "$VS_ERR" ]; then echo "call failed: $VS_ERR"
+	elif [ -z "$2" ] || [ -z "$s1" ]; then echo "no reading: storage [$2] -> [$s1]"
+	elif [ "$2" = "$s1" ]; then echo noop
+	else echo rewrote; fi
+}
+
 mk() {
 	psql_run "DROP TABLE IF EXISTS $1;"
 	psql_run "CREATE TABLE $1 (a int, b int) USING pgcolumnar;"
 	psql_run "INSERT INTO $1 SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000
 	          FROM generate_series(1,20000) g;"
-	check_num "premise: $1 loaded every row (an overflowed INSERT would make an empty table look like a fired gate)" \
-		"$(q "SELECT count(*) FROM $1;")" "20000"
 }
 
 swap() {   # a <-> b, three ordinary statements
@@ -54,18 +67,22 @@ swap() {   # a <-> b, three ordinary statements
 # ============================ vacuum_sorted ==================================
 # ---- positive control: the gate fires on an untouched table ------------------
 mk vr_ctl
+check_num "premise: vr_ctl loaded every row (an overflowed INSERT would make an empty table look like a fired gate)" \
+	"$(q "SELECT count(*) FROM vr_ctl;")" "20000"
 check "premise: before sorting, a is not in order" \
 	"$([ "$(descents vr_ctl a)" -gt 0 ] && echo unordered || echo ordered)" "unordered"
-psql_run "SELECT pgcolumnar.vacuum_sorted('vr_ctl','a');"
+vsort "'vr_ctl','a'"
 check_num "premise: vacuum_sorted really ordered it by a" "$(descents vr_ctl a)" "0"
 S="$(storid vr_ctl)"
-psql_run "SELECT pgcolumnar.vacuum_sorted('vr_ctl','a');"
+vsort "'vr_ctl','a'"
 check "CONTROL: a second identical call is a no-op, so the gate does fire" \
-	"$([ "$S" = "$(storid vr_ctl)" ] && echo noop || echo rewrote)" "noop"
+	"$(moved vr_ctl "$S")" "noop"
 
 # ---- the defect: the same gate after a NAME SWAP ----------------------------
 mk vr_t
-psql_run "SELECT pgcolumnar.vacuum_sorted('vr_t','a');"
+check_num "premise: vr_t loaded every row (an overflowed INSERT would make an empty table look like a fired gate)" \
+	"$(q "SELECT count(*) FROM vr_t;")" "20000"
+vsort "'vr_t','a'"
 check "premise: vr_t is ordered by a" "$([ "$(descents vr_t a)" -eq 0 ] && echo ordered || echo unordered)" "ordered"
 check "premise: and NOT by b" "$([ "$(descents vr_t b)" -gt 0 ] && echo unordered || echo ordered)" "unordered"
 check "premise: the mark records key {a}" "$(markof vr_t)" "{a}/lexicographic"
@@ -79,21 +96,23 @@ check "the mark FOLLOWS the rename, so it still names the ordered column" \
 	"$(markof vr_t)" "{b}/lexicographic"
 
 S="$(storid vr_t)"
-psql_run "SELECT pgcolumnar.vacuum_sorted('vr_t','a');"
+vsort "'vr_t','a'"
 check "THE POINT: vacuum_sorted('a') after the swap does the work" \
-	"$([ "$S" = "$(storid vr_t)" ] && echo "SKIPPED (gate fired wrongly)" || echo rewrote)" "rewrote"
+	"$(moved vr_t "$S")" "rewrote"
 check_num "and the table really is ordered by a afterwards" "$(descents vr_t a)" "0"
 
 # and the gate is still armed for the column that IS now recorded
 S="$(storid vr_t)"
-psql_run "SELECT pgcolumnar.vacuum_sorted('vr_t','a');"
+vsort "'vr_t','a'"
 check "the gate still fires for the right key after all that" \
-	"$([ "$S" = "$(storid vr_t)" ] && echo noop || echo rewrote)" "noop"
+	"$(moved vr_t "$S")" "noop"
 
 # ---- a rename that touches no sort-key column leaves the mark alone ---------
 mk vr_o
+check_num "premise: vr_o loaded every row (an overflowed INSERT would make an empty table look like a fired gate)" \
+	"$(q "SELECT count(*) FROM vr_o;")" "20000"
 psql_run "ALTER TABLE vr_o ADD COLUMN spare int;"
-psql_run "SELECT pgcolumnar.vacuum_sorted('vr_o','a');"
+vsort "'vr_o','a'"
 M="$(markof vr_o)"
 # The mark's CONTENT is unchanged either way, because rewriting it with the same
 # names produces the same names. So content alone cannot see whether the write
@@ -101,19 +120,20 @@ M="$(markof vr_o)"
 # other arm in the file stays green.
 XMIN="$(q "SELECT xmin::text FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('vr_o');")"
 psql_run "ALTER TABLE vr_o RENAME COLUMN spare TO spare2;"
-check "renaming an unrelated column does not disturb the mark" "$(markof vr_o)" "$M"
-check "and does not rewrite the storage row at all (xmin unchanged)" \
+check_text "renaming an unrelated column does not disturb the mark" "$(markof vr_o)" "$M"
+check_text "and does not rewrite the storage row at all (xmin unchanged)" \
 	"$(q "SELECT xmin::text FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('vr_o');")" \
 	"$XMIN"
 check "premise: xmin CAN move, so the arm above is not comparing two constants" \
 	"$(psql_run "ALTER TABLE vr_o RENAME COLUMN a TO a2;" >/dev/null 2>&1;
 	   NEW="$(q "SELECT xmin::text FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('vr_o');")";
 	   psql_run "ALTER TABLE vr_o RENAME COLUMN a2 TO a;" >/dev/null 2>&1;
-	   [ "$NEW" != "$XMIN" ] && echo moved || echo stuck)" "moved"
+	   if [ -z "$NEW" ] || [ -z "$XMIN" ]; then echo "no reading: xmin [$XMIN] -> [$NEW]"
+	   elif [ "$NEW" != "$XMIN" ]; then echo moved; else echo stuck; fi)" "moved"
 S="$(storid vr_o)"
-psql_run "SELECT pgcolumnar.vacuum_sorted('vr_o','a');"
+vsort "'vr_o','a'"
 check "and the gate still fires" \
-	"$([ "$S" = "$(storid vr_o)" ] && echo noop || echo rewrote)" "noop"
+	"$(moved vr_o "$S")" "noop"
 
 # ==================== inheritance and partitions =============================
 # A column rename CASCADES to children, which are separate relations with their
@@ -132,7 +152,7 @@ psql_run "CREATE TABLE prt1 PARTITION OF prt FOR VALUES FROM (0) TO (100000) USI
 psql_run "INSERT INTO prt SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000
           FROM generate_series(1,20000) g;"
 check_num "premise: the partition holds every row" "$(q "SELECT count(*) FROM prt1;")" "20000"
-psql_run "SELECT pgcolumnar.vacuum_sorted('prt1','k');"
+vsort "'prt1','k'"
 check "premise: the partition is ordered by k and its mark says so" \
 	"$([ "$(descents prt1 k)" -eq 0 ] && echo ordered || echo unordered)/$(markof prt1)" \
 	"ordered/{k}/lexicographic"
@@ -149,9 +169,9 @@ check "premise: and the column now named k is NOT ordered" \
 	"$([ "$(descents prt1 k)" -gt 0 ] && echo unordered || echo ordered)" "unordered"
 check "the PARTITION's mark follows a rename issued on the parent" "$(markof prt1)" "{j}/lexicographic"
 S="$(storid prt1)"
-psql_run "SELECT pgcolumnar.vacuum_sorted('prt1','k');"
+vsort "'prt1','k'"
 check "so vacuum_sorted on the partition does the work" \
-	"$([ "$S" = "$(storid prt1)" ] && echo "SKIPPED (gate fired wrongly)" || echo rewrote)" "rewrote"
+	"$(moved prt1 "$S")" "rewrote"
 check_num "and the partition really is ordered by k afterwards" "$(descents prt1 k)" "0"
 
 # ---- INHERITS child --------------------------------------------------------
@@ -159,17 +179,18 @@ psql_run "CREATE TABLE inp (k int, j int);"
 psql_run "CREATE TABLE inc (LIKE inp) INHERITS (inp) USING pgcolumnar;"
 psql_run "INSERT INTO inc SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000
           FROM generate_series(1,20000) g;"
-psql_run "SELECT pgcolumnar.vacuum_sorted('inc','k');"
+vsort "'inc','k'"
+# an empty child is ordered too, so the reading carries its row count
 check "premise: the inheritance child is ordered by k" \
-	"$([ "$(descents inc k)" -eq 0 ] && echo ordered || echo unordered)" "ordered"
+	"$([ "$(descents inc k)" -eq 0 ] && echo ordered || echo unordered)/$(q "SELECT count(*) FROM inc;")" "ordered/20000"
 psql_run "ALTER TABLE inp RENAME COLUMN k TO tmp_swap;"
 psql_run "ALTER TABLE inp RENAME COLUMN j TO k;"
 psql_run "ALTER TABLE inp RENAME COLUMN tmp_swap TO j;"
 check "the CHILD's mark follows a rename issued on the parent" "$(markof inc)" "{j}/lexicographic"
 S="$(storid inc)"
-psql_run "SELECT pgcolumnar.vacuum_sorted('inc','k');"
+vsort "'inc','k'"
 check "so vacuum_sorted on the child does the work" \
-	"$([ "$S" = "$(storid inc)" ] && echo "SKIPPED (gate fired wrongly)" || echo rewrote)" "rewrote"
+	"$(moved inc "$S")" "rewrote"
 
 # ---- the WRONG-ANSWER shape: ORDER BY with no Sort over unordered rows ------
 # This is why the cascade is not a cosmetic gap. #751 reads the same mark to
@@ -180,23 +201,26 @@ sorts() {
 	local _plan
 	_plan="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
 		-c "EXPLAIN (COSTS OFF) $1" 2>/dev/null)"
-	[ "$(grep -cE '^ *(->)? *(Incremental )?Sort' <<<"$_plan" || true)" -ne 0 ] \
-		&& echo yes || echo no
+	# a failed EXPLAIN has no Sort in it either
+	if ! grep -q 'Scan' <<<"$_plan"; then echo "no plan"
+	elif [ "$(grep -cE '^ *(->)? *(Incremental )?Sort' <<<"$_plan" || true)" -ne 0 ]; then echo yes
+	else echo no; fi
 }
 psql_run "CREATE TABLE wp (k int, j int) PARTITION BY RANGE (k);"
 psql_run "CREATE TABLE wp1 PARTITION OF wp FOR VALUES FROM (0) TO (100000) USING pgcolumnar;"
 psql_run "INSERT INTO wp SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000
           FROM generate_series(1,20000) g;"
-psql_run "SELECT pgcolumnar.vacuum_sorted('wp1','k');"
+vsort "'wp1','k'"
 check "premise: with the mark true, ORDER BY k needs no Sort" "$(sorts 'SELECT k FROM wp1 ORDER BY k')" "no"
 psql_run "ALTER TABLE wp RENAME COLUMN k TO tmp_swap;"
 psql_run "ALTER TABLE wp RENAME COLUMN j TO k;"
 psql_run "ALTER TABLE wp RENAME COLUMN tmp_swap TO j;"
 check "after the swap, ORDER BY on the now-unordered column plans a Sort" \
 	"$(sorts 'SELECT k FROM wp1 ORDER BY k')" "yes"
-check_num "THE WRONG-ANSWER ARM: and the rows really do come back ordered" \
-	"$(q "SELECT count(*) FROM (SELECT k < lag(k) OVER () AS d FROM (SELECT k FROM wp1 ORDER BY k) x) z WHERE d;")" \
-	"0"
+# no descents over an empty partition either, so the reading carries its row count
+check "THE WRONG-ANSWER ARM: and the rows really do come back ordered" \
+	"$(q "SELECT count(*) FILTER (WHERE d) || ' descents/' || count(*) || ' rows' FROM (SELECT k < lag(k) OVER () AS d FROM (SELECT k FROM wp1 ORDER BY k) x) z;")" \
+	"0 descents/20000 rows"
 check "and ORDER BY on the column that IS ordered still needs no Sort" \
 	"$(sorts 'SELECT j FROM wp1 ORDER BY j')" "no"
 
@@ -206,21 +230,22 @@ check "and ORDER BY on the column that IS ordered still needs no Sort" \
 # columns, so the same call with the same declared intent would silently rewrite
 # on a different physical key than it did yesterday.
 mk sb
+check_num "premise: sb loaded every row (an overflowed INSERT would make an empty table look like a fired gate)" \
+	"$(q "SELECT count(*) FROM sb;")" "20000"
 psql_run "SELECT pgcolumnar.set_options('sb', sort_by => ARRAY['a']);"
-psql_run "SELECT pgcolumnar.vacuum_sorted('sb');"
+vsort "'sb'"
 check "premise: a bare vacuum_sorted() used the declared key" \
 	"$([ "$(descents sb a)" -eq 0 ] && echo ordered || echo unordered)" "ordered"
 swap sb
 check "the DECLARED key follows the rename too" \
 	"$(q "SELECT sort_by::text FROM pgcolumnar.options WHERE regclass = 'sb'::regclass;")" "{b}"
-check "so the two catalogs still agree after the rename" \
-	"$([ "$(q "SELECT sort_by::text FROM pgcolumnar.options WHERE regclass='sb'::regclass;")" \
-	    = "$(q "SELECT sorted_by::text FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('sb');")" ] \
-	  && echo agree || echo DISAGREE)" "agree"
+check_text "so the two catalogs still agree after the rename" \
+	"$(q "SELECT sort_by::text FROM pgcolumnar.options WHERE regclass='sb'::regclass;")" \
+	"$(q "SELECT sorted_by::text FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('sb');")"
 S="$(storid sb)"
-psql_run "SELECT pgcolumnar.vacuum_sorted('sb');"
+vsort "'sb'"
 check "and a bare vacuum_sorted() is a no-op, not a rewrite on a different key" \
-	"$([ "$S" = "$(storid sb)" ] && echo noop || echo rewrote)" "noop"
+	"$(moved sb "$S")" "noop"
 
 # ============================ recluster (#415) ===============================
 # The same comparison, character for character, in the online recluster gate.
@@ -230,9 +255,9 @@ mkz() {
 	psql_run "SELECT pgcolumnar.set_options('$1', chunk_group_row_limit => 1000);"
 	psql_run "INSERT INTO $1 SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000, g
 	          FROM generate_series(1,20000) g;"
-	check_num "premise: $1 loaded every row" "$(q "SELECT count(*) FROM $1;")" "20000"
 }
 mkz rr_ctl
+check_num "premise: rr_ctl loaded every row" "$(q "SELECT count(*) FROM rr_ctl;")" "20000"
 FIRST="$(q "SELECT pgcolumnar.recluster('rr_ctl','a','b');")"
 check "premise: the first recluster does real work" \
 	"$([ "${FIRST:-0}" -gt 0 ] && echo yes || echo no)" "yes"
@@ -240,6 +265,7 @@ check_num "CONTROL: a repeat recluster on the same key is a no-op, so the gate f
 	"$(q "SELECT pgcolumnar.recluster('rr_ctl','a','b');")" "0"
 
 mkz rr_t
+check_num "premise: rr_t loaded every row" "$(q "SELECT count(*) FROM rr_t;")" "20000"
 psql_run "SELECT pgcolumnar.recluster('rr_t','a','b');"
 check "premise: the mark records {a,b} as zorder" "$(markof rr_t)" "{a,b}/zorder"
 # move an UNRELATED column onto the name 'b', so {a,b} would resolve to (a,c)
