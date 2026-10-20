@@ -4223,4 +4223,19 @@ suites_not_covered 160
 #     never         3325 + 3 = 3328
 #     dated         1595 + 5 = 1600
 #     3328 + 1600 == 4928
+#
+# #1339, advisory_lock_class's test_advisory_lock_class.py :139 and :232 (OffgridwithJD):
+# 3328 stays 3328, one row added and dated. With the unique-key lock never taken
+# (PgColumnarLockUniqueKeys returning first), all 17 shell checks and all 6 tests
+# passed on main: the insert still takes the storage-row lock, so the premise saw a
+# lock and the class check read "unreachable", and the duplicate check passed because
+# the btree's uniqueness check waits on the winner and rejects a duplicate without the
+# lock -- measured, even a concurrent one gets 23505. A new check reads the classes an
+# insert takes with enable_unique_insert_lock on against off, from its own session; the
+# duplicate check's comment now says what it proves.
+#
+#     ledger rows   4928 + 1 = 4929
+#     never         3328 + 0 = 3328
+#     dated         1600 + 1 = 1601
+#     3328 + 1601 == 4929
 checks_never_observed_red 3328

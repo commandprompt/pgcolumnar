@@ -3,6 +3,7 @@ advisory_lock_class	advisory_lock_class	a duplicate key is still rejected	15;16;
 advisory_lock_class	advisory_lock_class	a user advisory lock on that tag does not block a columnar insert	15;16;17;18;19	2026-10-15	PGCOLUMNAR_LOCKCLASS_UNIQUE_KEY 103 changed to 2, the #430 defect (src/columnar.h)
 advisory_lock_class	advisory_lock_class	a user advisory lock on those tags does not block a columnar UPDATE	15;16;17;18;19	2026-10-15	PGCOLUMNAR_LOCKCLASS_ROW_IDENTITY 104 changed to 2, the class SQL's two-int4 form produces (src/columnar.h)
 advisory_lock_class	advisory_lock_class	an UPDATE holds a row-identity lock (class 104) while enable_row_update_lock is on	15;16;17;18;19	2026-10-15	PGCOLUMNAR_LOCKCLASS_ROW_IDENTITY 104 changed to 2, the class SQL's two-int4 form produces (src/columnar.h)
+advisory_lock_class	advisory_lock_class	an insert takes the unique-key lock, and only while enable_unique_insert_lock is on	15;16;17;18;19	2026-10-20	columnar_unique.c: PgColumnarLockUniqueKeys returns before taking the unique-key lock, whatever the setting
 advisory_lock_class	advisory_lock_class	and holds none with enable_row_update_lock off	15;16;17;18;19	never	-
 advisory_lock_class	advisory_lock_class	and the UPDATE committed every row	15;16;17;18;19	2026-10-15	columnar_row_lock.c: the row-identity bucket taken as the key mod 4294967291, not mod row_lock_buckets (one lock per row)
 advisory_lock_class	advisory_lock_class	premise: the discovering session is gone and holds nothing	15;16;17;18;19	never	-

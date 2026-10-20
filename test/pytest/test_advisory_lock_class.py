@@ -156,6 +156,44 @@ def test_the_lock_an_insert_takes_is_not_in_a_sql_reachable_class(
                "premise: the discovering session is gone and holds nothing")
 
 
+def _lock_classes(cluster, schema, setting):
+    """-> the advisory classes one insert into u takes, read from its own session."""
+    conn = psycopg.connect(cluster.dsn(), autocommit=False)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f'SET search_path TO "{schema}", public')
+            cur.execute(f"SET pgcolumnar.enable_unique_insert_lock = {setting}")
+            cur.execute("INSERT INTO u VALUES (900003, 'classes')")
+            cur.execute("SELECT DISTINCT objsubid FROM pg_locks "
+                        "WHERE locktype = 'advisory' AND pid = pg_backend_pid()")
+            return {r[0] for r in cur.fetchall()}
+    except psycopg.Error as exc:
+        return query_error(str(exc).splitlines()[0])
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def test_an_insert_takes_the_unique_key_lock_only_while_it_is_enabled(
+        pgc_cluster, pgc_conn, expect):
+    """The lock under test is TAKEN at all. Every other arm reads whatever locks an
+    insert takes, and an insert also takes the storage-row lock (102), so with the
+    unique-key lock never taken the premise still saw a lock, the class arm still read
+    "unreachable", and the duplicate arm still passed (#1339). The setting is the
+    control rather than the class number, so a renumbered class still counts."""
+    schema = _fixture(pgc_conn)
+    on = _lock_classes(pgc_cluster, schema, "on")
+    off = _lock_classes(pgc_cluster, schema, "off")
+    # Both readings must hold a lock, since the storage-row lock is taken either
+    # way: an empty control would make every class "extra" (found by jdatcmd on #1565).
+    if not isinstance(on, set) or not isinstance(off, set) or not on or not off:
+        got = query_error(f"no reading: on {on}, off {off}")
+    else:
+        got = "taken" if on - off else f"not taken (on {sorted(on)}, off {sorted(off)})"
+    expect.text(got, "taken",
+                "an insert takes the unique-key lock, and only while enable_unique_insert_lock is on")
+
+
 def test_a_user_advisory_lock_on_that_tag_does_not_block_an_insert(
         pgc_cluster, pgc_conn, expect):
     schema = _fixture(pgc_conn)
@@ -227,8 +265,11 @@ def test_a_user_advisory_lock_on_that_tag_does_not_block_an_insert(
 
 
 def test_a_duplicate_key_is_still_rejected(pgc_conn, expect):
-    """Removing the collision by removing the lock satisfies everything above and
-    silently gives back issue #5, so the lock's own job is asserted separately."""
+    """A duplicate is rejected. This is NOT the lock's own job asserted: with the lock
+    never taken a duplicate is still rejected, and measured on PG17 even a concurrent
+    one waits on the first insert and gets 23505, because the btree's uniqueness check
+    waits on the winner (#1339). The lock's presence is the arm above that compares
+    the setting on and off."""
     _fixture(pgc_conn)
     with pgc_conn.cursor() as cur:
         cur.execute(f"INSERT INTO u VALUES ({PROBE_KEY}, 'first')")
