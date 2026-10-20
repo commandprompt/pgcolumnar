@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 169
+suites_not_covered 168
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4009,4 +4009,24 @@ suites_not_covered 169
 #     never         3165 + 10 = 3175
 #     dated         1478 + 7 = 1485
 #     3175 + 1485 == 4660
-checks_never_observed_red 3175
+#
+# #1341, arrow_export seeded, with its twin (OffgridwithJD): 3175 -> 3181, and
+# suites_not_covered 169 -> 168. The suite had no rows. It enters with 10 checks from
+# five-major runs (10/10 on each of 15-19, shell and twin alike), after two fixes. Both
+# value checks keyed the file's rows by id, so a row written twice collapsed into one:
+# with every full record batch written twice (36387 rows in the file for 20003), all
+# ten checks passed. Each now requires the file's row count to equal the oracle's. And
+# both refusals passed on any error: with the heap refusal removed, the export read
+# the heap's pages as columnar metadata ("unsupported columnar format version") and
+# that error passed as the refusal. Each now requires its own message. 4 are dated by
+# seven mutations of the export, each reddening the same name in both twins: a full
+# batch written twice, a bool inverted and an int8 truncated through int32 (the
+# values); a date in PostgreSQL's epoch and a non-finite timestamp not folded to null
+# (the extended values); and each refusal removed (its own check). 6 arrive never: the
+# three row counts, the two schemas and the empty stream's readability.
+#
+#     ledger rows   4660 + 10 = 4670
+#     never         3175 +  6 = 3181
+#     dated         1485 +  4 = 1489
+#     3181 + 1489 == 4670
+checks_never_observed_red 3181
