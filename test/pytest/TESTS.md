@@ -244,6 +244,7 @@ behaviour, the source of that number is named.
 - [196. test_vm_clear_on_renumber.py: the visibility map is cleared wherever live rows are renumbered](#196-test_vm_clear_on_renumberpy-the-visibility-map-is-cleared-wherever-live-rows-are-renumbered)
 - [197. test_arrow_export.py: every exported value equals the heap oracle, and only the documented refusals](#197-test_arrow_exportpy-every-exported-value-equals-the-heap-oracle-and-only-the-documented-refusals)
 - [198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates](#198-test_vector_agg_tlist_shapepy-the-vectorized-aggregate-accepts-a-target-list-that-contains-aggregates)
+- [199. test_alter_column_type.py: ALTER COLUMN TYPE converts every value, and the column really changes type](#199-test_alter_column_typepy-alter-column-type-converts-every-value-and-the-column-really-changes-type)
 
 ## 1. How to read a test in here
 
@@ -8403,3 +8404,36 @@ A plan reads `vectorized`, `not vectorized`, or the failed EXPLAIN as a `query_e
 | `test_a_bare_aggregate_on_the_scan_fold_path_goes_parallel` | premise: the plan has a Gather, a planned worker and the vectorized node |
 | `test_parallel_accepts_a_wrapped_target_list` | parametrized by the shell's three names: wrapped target lists go parallel too |
 | `test_the_parallel_answer_matches_heap` | parametrized by the shell's three names: and their parallel answers equal the heap's |
+
+## 199. test_alter_column_type.py: ALTER COLUMN TYPE converts every value, and the column really changes type
+
+The pytest twin of `test/alter_column_type.sh` (ported for #1341), every check by the shell's name. Phase 2 of ATRewriteTable updates `pg_attribute` before phase 3 scans the old relation, so the scan must decode against the slot core builds from `tab->oldDesc`, not the relation's new descriptor (#178). Each conversion runs on a columnar table and on a heap table of the same shape, and the heap is the oracle.
+
+### Every test
+
+A module fixture on a private database runs every conversion in the shell's order, each statement on a connection of its own; each test asserts one reading. A conversion's reading is `mismatches/rows/type`, so an ALTER that failed and rolled back no longer passes; a corrupt chunk or a lost backend reads `failed: …`. The conversion that crashed the backend runs last, as in the shell.
+
+| test | what it holds |
+| --- | --- |
+| `test_int_to_bigint` | int to bigint: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_bigint_to_int` | bigint to int: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_smallint_to_int` | smallint to int: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_int_to_smallint` | int to smallint: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_float4_to_float8` | float4 to float8: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_float8_to_float4` | float8 to float4: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_date_to_timestamp` | date to timestamp: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_int_to_numeric` | int to numeric: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_int_to_text` | int to text: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_bool_to_int` | bool to int: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_numeric_to_text` | numeric to text: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_text_to_varchar_64` | text to varchar(64): every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_text_to_bytea` | text to bytea: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_text_rewritten_by_using` | text rewritten by `USING`: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_the_column_really_is_bigint_now` | the indexed table's column is `bigint` after its ALTER |
+| `test_an_index_scan_still_finds_a_row_after_the_rewrite` | a scan through `at_ix_i` finds row 10000 with its converted value (a plan with no index scan no longer passes) |
+| `test_an_index_scan_finds_every_row_after_the_rewrite` | a scan through `at_ix_i` over the whole id range finds all 20000 rows (an index missing rows, or no index at all, no longer passes) |
+| `test_the_aggregate_over_the_converted_column_is_right` | `sum(v)` equals the generator's, both numbers |
+| `test_every_row_survived_the_rewrite` | the indexed table still holds 20000 rows |
+| `test_the_nullable_column_really_is_bigint_now` | the nullable column is `bigint` after its ALTER |
+| `test_nulls_stay_on_the_same_rows_through_a_conversion` | no row differs from heap, and the columnar table still holds all 20000 rows |
+| `test_text_to_int_the_crash` | the varlena-to-fixed conversion that dereferenced an integer as a pointer, run last |

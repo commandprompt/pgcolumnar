@@ -63,11 +63,17 @@ conv() {  # label, column type, value expression, alter clause
 	# every row must match heap, and the row count must be right: a conversion
 	# that silently dropped rows would otherwise pass a value comparison over
 	# whatever survived
-	local mismatch count
+	local mismatch count ctype want
 	mismatch="$(q "SELECT count(*) FROM $c a JOIN $h b USING (id)
 		WHERE a.v IS DISTINCT FROM b.v;" | tail -1)"
 	count="$(q "SELECT count(*) FROM $c;" | tail -1)"
-	check "$1" "${mismatch:-x}/${count:-x}" "0/$ROWS"
+	# and the column must have the new type: an ALTER that failed with any other
+	# error rolled back, and a widening such as int -> bigint compares equal to
+	# heap's converted values unconverted, so nine of these passed with no ALTER
+	ctype="$(q "SELECT atttypid::regtype::text FROM pg_attribute
+		WHERE attrelid = '$c'::regclass AND attname = 'v';" | tail -1)"
+	want="$(q "SELECT '${4%% USING*}'::regtype::text;" | tail -1)"
+	check "$1" "${mismatch:-x}/${count:-x}/${ctype:-x}" "0/$ROWS/${want:-the target type}"
 }
 
 # --- fixed width to fixed width, the width-boundary cases --------------------
@@ -117,12 +123,30 @@ check "the column really is bigint now" \
 		WHERE attrelid = 'at_ix'::regclass AND attname = 'v';" | tail -1)" \
 	"bigint"
 
-check "an index scan still finds a row after the rewrite" \
-	"$(q "SET enable_seqscan = off; SET pgcolumnar.enable_custom_scan = off;
-		SELECT v FROM at_ix WHERE id = $((ROWS / 2));" | tail -1)" \
-	"$((ROWS))"
+# via_index SQL -> "<answer> via at_ix_i", or "<answer> via no index". enable_seqscan
+# = off only prices a seq scan up: with no index at all the planner still takes one,
+# and both checks below read the table's own rows as "found through the index".
+via_index() {
+	local set="SET enable_seqscan = off; SET pgcolumnar.enable_custom_scan = off;" plan
+	plan="$(q "$set EXPLAIN (COSTS OFF) $1")"
+	case "$plan" in
+	*"Index Scan using at_ix_i"*|*"Index Only Scan using at_ix_i"*|*"Bitmap Index Scan on at_ix_i"*)
+		echo "$(q "$set $1" | tail -1) via at_ix_i" ;;
+	*) echo "$(q "$set $1" | tail -1) via no index" ;;
+	esac
+}
 
-check "the aggregate over the converted column is right" \
+check "an index scan still finds a row after the rewrite" \
+	"$(via_index "SELECT v FROM at_ix WHERE id = $((ROWS / 2));")" \
+	"$((ROWS)) via at_ix_i"
+
+# every row through the index, not one: an index rebuilt with every other row left
+# out still found row ROWS/2, which is one it kept
+check "an index scan finds every row after the rewrite" \
+	"$(via_index "SELECT count(*) FROM at_ix WHERE id BETWEEN 1 AND $ROWS;")" \
+	"$ROWS via at_ix_i"
+
+check_num "the aggregate over the converted column is right" \
 	"$(q "SELECT sum(v) FROM at_ix;" | tail -1)" \
 	"$(q "SELECT sum(g * 2)::bigint FROM generate_series(1, $ROWS) g;" | tail -1)"
 
@@ -146,9 +170,11 @@ check "the nullable column really is bigint now" \
 		WHERE attrelid = 'at_n'::regclass AND attname = 'v';" | tail -1)" \
 	"bigint"
 
+# the mismatches over the join, and at_n's own rows: rows lost by the rewrite join
+# nothing, so with every null row gone the mismatch count alone still read 0
 check "nulls stay on the same rows through a conversion" \
 	"$(q "SELECT count(*) FROM at_n a JOIN at_nh b USING (id)
-		WHERE a.v IS DISTINCT FROM b.v;" | tail -1)" "0"
+		WHERE a.v IS DISTINCT FROM b.v;" | tail -1)/$(q "SELECT count(*) FROM at_n;" | tail -1)" "0/$ROWS"
 
 # --- the crash, deliberately last ---------------------------------------------
 #

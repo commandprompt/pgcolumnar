@@ -62,6 +62,28 @@ alter_am_cleanup	alter_am_cleanup	premise: those rows are really there before th
 alter_am_cleanup	alter_am_cleanup	premise: with a columnar table carrying both relid-keyed catalog rows	15;16;17;18;19	never	-
 alter_am_cleanup	alter_am_cleanup	the pre-extension table's options row is gone	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook clears relid-keyed rows only for a table still on the columnar AM (the #304 shape);columnar_tableam.c: the drop hook does not delete the options row
 alter_am_cleanup	alter_am_cleanup	the table is heap after the conversion	15;16;17;18;19	never	-
+alter_column_type	alter_column_type	an index scan finds every row after the rewrite	15;16;17;18;19	2026-10-20	index build: every other row left out of the index
+alter_column_type	alter_column_type	an index scan still finds a row after the rewrite	15;16;17;18;19	never	-
+alter_column_type	alter_column_type	bigint to int	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	bool to int	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	date to timestamp	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	every row survived the rewrite	15;16;17;18;19	never	-
+alter_column_type	alter_column_type	float4 to float8	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	float8 to float4	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	int to bigint	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	int to numeric	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	int to smallint	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	int to text	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	nulls stay on the same rows through a conversion	15;16;17;18;19	never	-
+alter_column_type	alter_column_type	numeric to text	15;16;17;18;19	never	-
+alter_column_type	alter_column_type	smallint to int	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	text rewritten by USING	15;16;17;18;19	never	-
+alter_column_type	alter_column_type	text to bytea	15;16;17;18;19	never	-
+alter_column_type	alter_column_type	text to int (the crash)	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	text to varchar(64)	15;16;17;18;19	never	-
+alter_column_type	alter_column_type	the aggregate over the converted column is right	15;16;17;18;19	never	-
+alter_column_type	alter_column_type	the column really is bigint now	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
+alter_column_type	alter_column_type	the nullable column really is bigint now	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)
 alter_table_scans	alter_table_scans	ADD COLUMN with a volatile default rewrites the table, as on heap	15;16;17;18;19	2026-10-15	every scan returns deleted rows, the reader's delete filter disabled (src/columnar_reader.c)
 alter_table_scans	alter_table_scans	ADD PRIMARY KEY is refused over a duplicate (23505), as on heap	15;16;17;18;19	never	-
 alter_table_scans	alter_table_scans	ADD PRIMARY KEY succeeds once the duplicate is deleted, as on heap	15;16;17;18;19	2026-10-15	the index build marks every row alive, deleted ones included (src/columnar_tableam.c)
