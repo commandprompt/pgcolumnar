@@ -150,4 +150,3 @@ ungrouped_vector_agg
 vacuum_sorted_gate
 vacuum_stripe_count
 vector_agg_rescan_memory
-vector_agg_tlist_shape

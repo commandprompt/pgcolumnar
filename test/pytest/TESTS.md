@@ -243,6 +243,7 @@ behaviour, the source of that number is named.
 - [195. test_arrow_nested.py: arrays and composites export as Arrow List and Struct](#195-test_arrow_nestedpy-arrays-and-composites-export-as-arrow-list-and-struct)
 - [196. test_vm_clear_on_renumber.py: the visibility map is cleared wherever live rows are renumbered](#196-test_vm_clear_on_renumberpy-the-visibility-map-is-cleared-wherever-live-rows-are-renumbered)
 - [197. test_arrow_export.py: every exported value equals the heap oracle, and only the documented refusals](#197-test_arrow_exportpy-every-exported-value-equals-the-heap-oracle-and-only-the-documented-refusals)
+- [198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates](#198-test_vector_agg_tlist_shapepy-the-vectorized-aggregate-accepts-a-target-list-that-contains-aggregates)
 
 ## 1. How to read a test in here
 
@@ -8378,3 +8379,27 @@ A module fixture on a private database runs the SQL in the shell's order and rea
 | `test_the_extended_export_reports_every_row` | the extended table's export reports 4 rows |
 | `test_extended_values_match_the_heap_oracle` | the heap holds its 4 rows, the file as many, and each extended value equals its canonical form; non-finite dates and timestamps and NaN numerics are null |
 | `test_the_extended_schema_has_the_expected_types` | date32, time64, timestamp with and without UTC, fixed_size_binary(16), decimal128(20, 4), and strings |
+
+## 198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates
+
+The pytest twin of `test/vector_agg_tlist_shape.sh` (ported for #1341), every check by the shell's name. Since #755 the ungrouped vectorized path accepts `count(*)::text`, `avg(a)+avg(b)`, `round(avg(a), 2)` and other expressions over aggregates: the node emits bare aggregates and a projection above it computes the expressions. The risk is a wrong answer, so every shape is asserted twice, once for the plan and once for the answer against a heap table holding the same 20,000 rows. On a private database.
+
+### Every test
+
+A plan reads `vectorized`, `not vectorized`, or the failed EXPLAIN as a `query_error()`, so an EXPLAIN that errors cannot read as a decline. An answer is the repr of the row list, which is order-sensitive. The grouped vectorized path is pinned off for the plan readings, because it prints the same marker.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_ordered_oracle_is_order_sensitive` | the three oracle checks: an ordered digest tells two orders apart and agrees with itself, and the set digest does not |
+| `test_both_tables_hold_the_same_rows` | premise: the columnar and heap tables hold the same count |
+| `test_the_sort_column_has_nulls` | premise: column `a` has NULLs for the aggregates to skip |
+| `test_the_shape_takes_the_fast_path` | parametrized by the shell's 17 `...: vectorized` names: each shape plans the vectorized node |
+| `test_the_answer_matches_heap` | parametrized by the shell's 25 answer names: each shape, and each refused shape, answers as the heap does |
+| `test_the_scan_fold_guc_is_off_by_default` | premise: a filtered aggregate declines with the scan-fold GUC at its default |
+| `test_a_bare_aggregate_takes_the_scan_fold_path_with_the_guc_on` | premise: and takes it once the GUC is on |
+| `test_a_wrapped_aggregate_takes_the_scan_fold_path_too` | a wrapped filtered aggregate takes it too |
+| `test_the_shape_still_declines` | parametrized by the shell's 7 `REFUSE:` names: a bare column, an unsupported aggregate, FILTER, DISTINCT, ORDER BY inside an aggregate, and an aggregate over an expression decline |
+| `test_empty_then_all_null_relations_answer_as_heap_does` | an empty pair, then the same pair filled with 500 all-NULL rows, answer the wrapped shape as the heap does, with a premise for each state |
+| `test_a_bare_aggregate_on_the_scan_fold_path_goes_parallel` | premise: the plan has a Gather, a planned worker and the vectorized node |
+| `test_parallel_accepts_a_wrapped_target_list` | parametrized by the shell's three names: wrapped target lists go parallel too |
+| `test_the_parallel_answer_matches_heap` | parametrized by the shell's three names: and their parallel answers equal the heap's |
