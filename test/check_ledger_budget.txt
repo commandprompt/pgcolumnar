@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 167
+suites_not_covered 166
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4054,4 +4054,29 @@ suites_not_covered 167
 #     never         3181 + 46 = 3227
 #     dated         1489 + 22 = 1511
 #     3227 + 1511 == 4738
-checks_never_observed_red 3227
+#
+# #1341, alter_column_type seeded, with its twin (OffgridwithJD): 3227 -> 3235, and
+# suites_not_covered 167 -> 166. The suite had no rows. It enters with 22 checks from
+# five-major runs (22/22 on each of 15-19, shell and twin alike), after three fixes and
+# one new check. Each conversion read only the values and the row count, so a columnar
+# ALTER that failed with an error other than the three it greps for rolled back, and
+# nine conversions passed with no ALTER at all (a widening such as int -> bigint compares
+# equal unconverted); each now also reads the column's new type. "nulls stay on the
+# same rows" counted mismatches over a join, so with every null row lost it still read
+# 0; it now reads at_n's own rows too. The aggregate compared two q readings with
+# check, and is now check_num. And "an index scan still finds a row" probes one row,
+# which an index rebuilt with every other row left out still holds, so a new check
+# counts every row through the index. Both index checks read the access path too:
+# enable_seqscan = off only prices a seq scan up, so with no index at all both read
+# the table's own rows and passed (found by jdatcmd reviewing #1557). 14 are dated by two mutations, each reddening
+# the same names in both twins: the scan decoding against the relation's descriptor
+# instead of the slot's, the #178 bug itself (eleven conversions and both type
+# checks), and the index build leaving every other row out (the new check). 8 arrive
+# never: the varlena-to-varlena conversions and numeric to text, which #178 never
+# broke, the single-row probe, the aggregate, the row count and the nulls check.
+#
+#     ledger rows   4738 + 22 = 4760
+#     never         3227 +  8 = 3235
+#     dated         1511 + 14 = 1525
+#     3235 + 1525 == 4760
+checks_never_observed_red 3235

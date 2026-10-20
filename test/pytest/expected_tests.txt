@@ -888,4 +888,6 @@ guard_tests 462
 # 10 checks in 10 tests, by collection over the cluster files.
 # cluster_tests 1179 -> 1242 for #1341's test_vector_agg_tlist_shape.py, the twin of vector_agg_tlist_shape.sh:
 # 63 tests: one per check, except that the oracle's three run in one test and the empty and all-NULL four in another, by collection over the cluster files.
-cluster_tests 1242
+# cluster_tests 1242 -> 1264 for #1341's test_alter_column_type.py, the twin of alter_column_type.sh:
+# 22 checks in 22 tests, by collection over the cluster files.
+cluster_tests 1264
