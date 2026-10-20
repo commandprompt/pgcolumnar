@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 162
+suites_not_covered 161
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4187,4 +4187,25 @@ suites_not_covered 162
 #     never         3265 + 21 = 3286
 #     dated         1561 + 13 = 1574
 #     3286 + 1574 == 4860
-checks_never_observed_red 3286
+#
+# #1341, ungrouped_vector_agg seeded, with its twin (jdatcmd): 3286 -> 3325, and
+# suites_not_covered 162 -> 161. The suite had no rows: its on/off names carried the
+# measured value, so no two runs agreed on a name. It enters with 60 checks from
+# five-major runs (60/60 on each of 15-19, shell and twin alike), after three fixes.
+# The on/off comparisons read two empty or two identical failed results as agreement,
+# and over an empty fixture every aggregate agrees with itself: with t's INSERT loading
+# nothing the suite passed 56 of 56. Each fixture is now held to its row count, and an
+# error or empty side reads "no reading". The "core Agg when off" premise and the three
+# numeric-refusal checks read a failed EXPLAIN as no vectorized node, which is the
+# refusal they want: with the refusal raising an error, all three passed. They now need
+# a plan. And the names are literal: the value moved into the failure text, and the two
+# loops are unrolled. 21 are dated by six mutations, each reddening the same names in
+# both twins: numeric accepted again or raising, the #715 exact-key gate removed, the
+# #423 guard back to a width test, no scan keys for pruning, and sum(float) dropping its
+# first value. 39 arrive never, among them the premises.
+#
+#     ledger rows   4860 + 60 = 4920
+#     never         3286 + 39 = 3325
+#     dated         1574 + 21 = 1595
+#     3325 + 1595 == 4920
+checks_never_observed_red 3325
