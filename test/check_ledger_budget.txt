@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 164
+suites_not_covered 163
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4150,4 +4150,23 @@ suites_not_covered 164
 #     never         3235 + 16 = 3251
 #     dated         1549 + 7 = 1556
 #     3251 + 1556 == 4807
-checks_never_observed_red 3251
+#
+# #1341, bloom_sizing seeded, with its twin (OffgridwithJD): 3251 -> 3265, and
+# suites_not_covered 164 -> 163. The suite had no rows. It enters with 19 checks from
+# five-major runs (19/19 on each of 15-19, shell and twin alike), after one fix. "a
+# column above the distinct cap is refused a filter" counted only that column's filter
+# rows and wanted 0, so with the build refusing every filter it passed on main; it now
+# reads "refused/kept" against a five-value column in the same row group, which must
+# keep its filter. That also catches the #467 defect from the refusal side: sized by
+# value count, the five-value column of a 300,000-row group is refused too. 5 are
+# dated by four mutations, each reddening the same names in both twins: the distinct
+# cap removed, the filter sized by the value count (#467), the probe skipping nothing,
+# and the build setting one of k bits. 14 arrive never: the premises (twelve; a build
+# that writes no filter reddens two of them, and premises stay undated), and the absent
+# value and the large load, which no mutation here breaks.
+#
+#     ledger rows   4807 + 19 = 4826
+#     never         3251 + 14 = 3265
+#     dated         1556 +  5 = 1561
+#     3265 + 1561 == 4826
+checks_never_observed_red 3265

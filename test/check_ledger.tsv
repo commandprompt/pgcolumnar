@@ -406,6 +406,25 @@ batch_fold_explain	batch_fold_explain	premise: control table returns the right s
 batch_fold_explain	batch_fold_explain	premise: fallback table returns the right sum	15;16;17;18;19	never	-
 batch_fold_explain	batch_fold_explain	premise: fixture loaded every row	15;16;17;18;19	never	-
 batch_fold_explain	batch_fold_explain	premise: with parallelism free, the planner gives the parallel partial fold	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	a column above the distinct cap is refused a filter, not given a bad one	15;16;17;18;19	2026-10-20	columnar_bloom.c: the distinct cap removed, so a saturated filter is written
+bloom_sizing	bloom_sizing	a five-value column does not get a unique column's filter (#467)	15;16;17;18;19	2026-10-20	columnar_bloom.c: the filter sized by the value count, not the distinct count, the #467 defect
+bloom_sizing	bloom_sizing	a value that is absent is still reported absent	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	and a value that is present is still found	15;16;17;18;19	2026-10-20	columnar_bloom.c: the build sets only the first of k bits, so a present value probes absent
+bloom_sizing	bloom_sizing	and the load itself succeeded, rather than erroring on the way	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: every row loaded	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: one row group holds more than the refusal threshold	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: the high-cardinality column really is high	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: the high-cardinality filter size is a measurement	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: the low-cardinality column really is low	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: the low-cardinality filter size is a measurement	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: the skip counter is reported with the probe off	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: the skip counter is reported with the probe on	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: the skip fixture has many row groups to skip	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: the whole table is one row group	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: those values really are distinct	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	premise: zone maps alone skip nothing on this fixture	15;16;17;18;19	never	-
+bloom_sizing	bloom_sizing	results are identical with the filter and without it	15;16;17;18;19	2026-10-20	columnar_bloom.c: the build sets only the first of k bits, so a present value probes absent
+bloom_sizing	bloom_sizing	the filter still skips groups it can prove empty (#467)	15;16;17;18;19	2026-10-20	columnar_bloom.c: the probe answers may-be-present for every value, so nothing is skipped
 capability_sweep	capability_sweep	and no member of the population is this very file	15;16;17;18;19	2026-09-23	the self-exclusion removed from pgc_cap_population, so the sweep enters its own population
 capability_sweep	capability_sweep	and pyarrow.parquet with it	15;16;17;18;19	2026-09-23	the shim's pyarrow.py emptied, so both runs are the present run
 capability_sweep	capability_sweep	no suite loses a check without recording a skip or a refusal	15;16;17;18;19	2026-10-12	a check_skip block removed from a suite so its arms vanish with no skip and no fail;the pyarrow decline reason stops naming the capability, so no skip counts as declined

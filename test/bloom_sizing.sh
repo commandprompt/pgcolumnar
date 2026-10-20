@@ -159,9 +159,9 @@ check_num "the filter still skips groups it can prove empty (#467)" \
 # suite was 20,000. The branch whose semantics changed had zero coverage, which
 # is how an allocation regression above the same threshold shipped green.
 psql_run "DROP TABLE IF EXISTS bsx;
-	CREATE TABLE bsx (u bigint, pad text) USING pgcolumnar;
+	CREATE TABLE bsx (u bigint, pad text, lo int) USING pgcolumnar;
 	SELECT pgcolumnar.set_options('bsx', stripe_row_limit => 300000);
-	INSERT INTO bsx SELECT g, md5(g::text) FROM generate_series(1, 300000) g;
+	INSERT INTO bsx SELECT g, md5(g::text), g % 5 FROM generate_series(1, 300000) g;
 	ANALYZE bsx;" >/dev/null 2>&1
 
 check_num "premise: one row group holds more than the refusal threshold" \
@@ -169,9 +169,14 @@ check_num "premise: one row group holds more than the refusal threshold" \
 	      WHERE storage_id = pgcolumnar.get_storage_id('bsx')")" "300000"
 check_num "premise: those values really are distinct" \
 	"$(q 'SELECT count(DISTINCT u) FROM bsx')" "300000"
-check_num "a column above the distinct cap is refused a filter, not given a bad one" \
-	"$(q "SELECT count(*) FROM pgcolumnar.bloom
-	      WHERE storage_id = pgcolumnar.get_storage_id('bsx') AND column_index = 0")" "0"
+# Read as "refused/kept": u's filters against those of lo, a five-value column in the
+# same row group, which is far under the cap and must keep its filter. A count of
+# zero alone also reads 0 when no filter is written at all, and with the build
+# refusing every filter this check passed on main.
+check_text "a column above the distinct cap is refused a filter, not given a bad one" \
+	"$(q "SELECT count(*) FILTER (WHERE column_index = 0) || '/' ||
+	             count(*) FILTER (WHERE column_index = 2)
+	      FROM pgcolumnar.bloom WHERE storage_id = pgcolumnar.get_storage_id('bsx')")" "0/1"
 check_num "and the load itself succeeded, rather than erroring on the way" \
 	"$(q 'SELECT count(*) FROM bsx')" "300000"
 
