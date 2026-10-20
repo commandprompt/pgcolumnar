@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 170
+suites_not_covered 169
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3990,4 +3990,23 @@ suites_not_covered 170
 #     never         3162 + 3 = 3165
 #     dated         1475 + 3 = 1478
 #     3165 + 1478 == 4643
-checks_never_observed_red 3165
+#
+# #1341, vm_clear_on_renumber seeded, with its twin (jdatcmd): 3165 -> 3175, and
+# suites_not_covered 170 -> 169. The suite had no rows. It enters with 17 checks from
+# five-major runs (17/17 on each of 15-19, shell and twin alike), after one fix. The
+# four "cleared" checks read only the after state and wanted f, so with VACUUM made to
+# mark nothing all-visible they passed as cleared with no bit ever set, and only the
+# premises failed. Each now reads the transition before->after and wants t->f (that
+# mutation is not merged here: it reddens premises, which cannot be dated). 7 are
+# dated by six mutations, each reddening the same names in both twins: the DELETE's
+# clear removed (the delete arm), rewrite_one_group's clear removed (its arm), that
+# clear widened to rows 1..100000000 (the in-table control), recluster_online's clear
+# removed (both its arms), compact_rewrite reporting one more group than it rewrote,
+# and recluster reporting 0. 10 arrive never: the eight premises, and the two
+# cross-relation controls, which only a clear that escapes its relation would redden.
+#
+#     ledger rows   4643 + 17 = 4660
+#     never         3165 + 10 = 3175
+#     dated         1478 + 7 = 1485
+#     3175 + 1485 == 4660
+checks_never_observed_red 3175

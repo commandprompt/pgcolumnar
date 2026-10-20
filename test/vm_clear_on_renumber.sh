@@ -103,6 +103,11 @@ if [ "$CW_TARGET_BLK" -le "$(blk_of "$CW_FRONT_END")" ]; then
 	exit 1
 fi
 
+# EVERY "CLEARED" ARM READS THE TRANSITION, before->after, and wants t->f. Reading only
+# the after state, a VACUUM that marked nothing all-visible left every block `f`, and
+# each arm passed as "cleared" with no bit ever set (measured: VMSetVisibleForRelation
+# made to return 0, and all four "cleared" checks passed while only the premises failed).
+CW_FRONT_V0="$(vis cw "$CW_FRONT_BLK")"
 check "premise: VACUUM set all-visible on group 3's late block" \
 	"$(vis cw "$CW_TARGET_BLK")" "t"
 check "premise: and on the untouched control group's block" \
@@ -114,9 +119,10 @@ psql_run "DELETE FROM cw WHERE id BETWEEN $CW_G3_FIRST AND $CW_FRONT_END;"
 # touches; if it also cleared the target block there would be nothing left for
 # the rewrite to do and the arm could not fail.
 check "the delete cleared the block holding the deleted rows" \
-	"$(vis cw "$CW_FRONT_BLK")" "f"
+	"$CW_FRONT_V0->$(vis cw "$CW_FRONT_BLK")" "t->f"
+CW_TARGET_V1="$(vis cw "$CW_TARGET_BLK")"
 check "premise: but left group 3's late block all-visible" \
-	"$(vis cw "$CW_TARGET_BLK")" "t"
+	"$CW_TARGET_V1" "t"
 check "premise: and left the control block all-visible" \
 	"$(vis cw "$CW_CTRL_BLK")" "t"
 
@@ -132,7 +138,7 @@ check "premise: group 3 is gone from the catalog, so its rows were renumbered" \
 # THE ARM. Revert src/columnar_vacuum.c:346 and this goes green-to-red: the block
 # stays all-visible over row numbers whose group no longer exists.
 check "rewrite_one_group cleared the retired group's late block (#877)" \
-	"$(vis cw "$CW_TARGET_BLK")" "f"
+	"$CW_TARGET_V1->$(vis cw "$CW_TARGET_BLK")" "t->f"
 
 # THE CONTROL, and it is load-bearing: replace this site's range with the whole
 # relation and this arm goes red while the arm above stays green.
@@ -182,8 +188,9 @@ if [ "$RC_EARLY_BLK" -ge "$RC_LATE_BLK" ] || \
 	exit 1
 fi
 
-check "premise: VACUUM set all-visible early in rc"        "$(vis rc "$RC_EARLY_BLK")"    "t"
-check "premise: and late in rc"                            "$(vis rc "$RC_LATE_BLK")"     "t"
+RC_EARLY_V0="$(vis rc "$RC_EARLY_BLK")"; RC_LATE_V0="$(vis rc "$RC_LATE_BLK")"
+check "premise: VACUUM set all-visible early in rc"        "$RC_EARLY_V0"                 "t"
+check "premise: and late in rc"                            "$RC_LATE_V0"                  "t"
 check "premise: and on the control relation"               "$(vis rcctl "$RC_EARLY_BLK")" "t"
 
 RC_GROUPS="$(q "SELECT pgcolumnar.recluster('rc','x','y');")"
@@ -193,9 +200,9 @@ check "recluster reported reclustering groups" \
 # THE ARMS. Revert src/columnar_vacuum.c:765 and both go red: recluster gives
 # every live row a new number, so every old block must lose its bit.
 check "recluster_online cleared the old numbers' early block (#877)" \
-	"$(vis rc "$RC_EARLY_BLK")" "f"
+	"$RC_EARLY_V0->$(vis rc "$RC_EARLY_BLK")" "t->f"
 check "recluster_online cleared the old numbers' late block (#877)" \
-	"$(vis rc "$RC_LATE_BLK")" "f"
+	"$RC_LATE_V0->$(vis rc "$RC_LATE_BLK")" "t->f"
 
 # THE CONTROL for this half: a clear that escaped its relation. See the note
 # above for what it does not cover.

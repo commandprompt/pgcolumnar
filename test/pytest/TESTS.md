@@ -241,6 +241,7 @@ behaviour, the source of that number is named.
 - [193. test_wal_envelope.py: pgColumnar emits only core's WAL, inside RelationTruncate's envelope](#193-test_wal_envelopepy-pgcolumnar-emits-only-cores-wal-inside-relationtruncates-envelope)
 - [194. test_arrow_nested_import.py: arrays and composites round-trip through Arrow](#194-test_arrow_nested_importpy-arrays-and-composites-round-trip-through-arrow)
 - [195. test_arrow_nested.py: arrays and composites export as Arrow List and Struct](#195-test_arrow_nestedpy-arrays-and-composites-export-as-arrow-list-and-struct)
+- [196. test_vm_clear_on_renumber.py: the visibility map is cleared wherever live rows are renumbered](#196-test_vm_clear_on_renumberpy-the-visibility-map-is-cleared-wherever-live-rows-are-renumbered)
 
 ## 1. How to read a test in here
 
@@ -8327,3 +8328,31 @@ A module fixture on a private database runs the SQL in the shell's order; each t
 | `test_the_empty_table_writes_no_rows` | the empty table's export reports 0 rows |
 | `test_the_empty_table_writes_a_readable_schema` | its file reads back with 0 rows, a List and a Struct |
 | `test_a_multidimensional_array_is_refused` | the export of a 2-D array fails with the multi-dimensional message (another error no longer passes) |
+
+## 196. test_vm_clear_on_renumber.py: the visibility map is cleared wherever live rows are renumbered
+
+The pytest twin of `test/vm_clear_on_renumber.sh` (ported for #1341), every check by the shell's name. `compact_rewrite` and `recluster` give live rows new row numbers, so each must clear the all-visible bits over the old numbers; otherwise an index-only scan answers from the index for a TID whose group no longer exists. Both halves read the bits with `pgcolumnar.vm_is_visible`, which makes the same call the index-only-scan executor makes. On a private database.
+
+### Every test
+
+Each check is its own test over a module fixture that runs the shell's steps in order. Every "cleared" reading is the transition `before->after` and wants `t->f`, so a VACUUM that set no bit cannot pass as a clear. The shell's geometry premises, which exit rather than record, refuse the fixture, so every test errors rather than passes.
+
+| test | what it holds |
+| --- | --- |
+| `test_vacuum_set_all_visible_on_group_3s_late_block` | premise: VACUUM set group 3's late block all-visible |
+| `test_and_on_the_untouched_control_groups_block` | premise: and group 5's block |
+| `test_the_delete_cleared_the_block_holding_the_deleted_rows` | deleting the front of group 3 takes its first block `t->f` |
+| `test_but_left_group_3s_late_block_all_visible` | premise: the delete left the late block set |
+| `test_and_left_the_control_block_all_visible` | premise: and the control block |
+| `test_compact_rewrite_rewrote_exactly_the_one_qualifying_group` | `compact_rewrite('cw', 0.2)` reports 1 |
+| `test_group_3_is_gone_from_the_catalog` | premise: group 3 has no `row_group` row |
+| `test_rewrite_one_group_cleared_the_retired_groups_late_block` | the late block goes `t->f` through the rewrite alone |
+| `test_a_group_the_rewrite_did_not_touch_keeps_its_all_visible_bit` | control: group 5's block stays `t`, which fails a clear widened to the relation |
+| `test_vacuum_set_all_visible_early_in_rc` | premise: an interior early block of `rc` is set |
+| `test_and_late_in_rc` | premise: and an interior late block |
+| `test_and_on_the_control_relation` | premise: and the control relation's block |
+| `test_recluster_reported_reclustering_groups` | `recluster('rc', 'x', 'y')` reports at least one group |
+| `test_recluster_online_cleared_the_old_numbers_early_block` | the early block goes `t->f` |
+| `test_recluster_online_cleared_the_old_numbers_late_block` | the late block goes `t->f` |
+| `test_a_relation_that_was_not_reclustered_keeps_its_all_visible_bits` | control: `rcctl`'s early block stays `t`, which fails a clear that escapes its relation |
+| `test_and_its_late_block_too` | control: and its late block |
