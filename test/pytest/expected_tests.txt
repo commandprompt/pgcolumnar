@@ -894,4 +894,6 @@ guard_tests 462
 # 23 tests, one per check, by collection over the cluster files.
 # cluster_tests 1287 -> 1329 for #1341's test_analyze_stats.py, the twin of analyze_stats.sh:
 # 42 checks in 42 tests, by collection over the cluster files.
-cluster_tests 1329
+# cluster_tests 1329 -> 1352 for #1341's test_vacuum_stripe_count.py, the twin of vacuum_stripe_count.sh:
+# 23 tests, one per check, by collection over the cluster files.
+cluster_tests 1352
