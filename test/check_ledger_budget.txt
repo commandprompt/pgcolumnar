@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 149
+suites_not_covered 148
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4472,4 +4472,25 @@ suites_not_covered 149
 #     never         3505 - 2 = 3503
 #     dated         1718 + 2 = 1720
 #     3503 + 1720 == 5223
-checks_never_observed_red 3503
+# #1341, column_projection seeded, with its twin (OffgridwithJD): 3503 -> 3536, and
+# suites_not_covered 149 -> 148. The suite had no rows: one premise's name
+# carried its measured buffers, so no two runs agreed on it. It enters with 38 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after these
+# fixes. The heap mirror was copied from the columnar table, so every columnar==heap
+# check compared the reader with itself: with a row of t corrupted before the copy, all
+# twelve agreed (found by jdatcmd reviewing #1581); the heap is now built from the
+# generator and t from the heap. The 28 on/off and columnar/heap comparisons compared psql's output, errors
+# included, so two runs failing the same way agreed: with one pair pointed at a missing
+# table, main passed it. Each now reads "same" only over two values, and each name is
+# written at its call site. The premise's name lost its value, the heap and parallel
+# comparisons refuse an empty side, and "the narrow projection really does read far
+# fewer buffers" loses its premise prefix (#1339): with every column read whatever the
+# projection says, it went red. 5 are dated by two mutations, each reddening the same
+# names in both twins: a qual-only column left out of the projection, and every column
+# read. 33 arrive never.
+#
+#     ledger rows   5223 + 38 = 5261
+#     never         3503 + 33 = 3536
+#     dated         1720 + 5 = 1725
+#     3536 + 1725 == 5261
+checks_never_observed_red 3536

@@ -930,4 +930,6 @@ guard_tests 464
 # 84 tests, one per check, by collection over the cluster files.
 # cluster_tests 1782 -> 1800 for #1341's test_avro_manifest.py, the twin of avro_manifest.sh:
 # 16 checks in 16 tests, and one per skip name the shell carries, by collection over the cluster files.
-cluster_tests 1800
+# cluster_tests 1800 -> 1838 for #1341's test_column_projection.py, the twin of column_projection.sh:
+# 38 checks in 38 tests, by collection over the cluster files.
+cluster_tests 1838

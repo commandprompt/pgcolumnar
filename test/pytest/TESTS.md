@@ -263,6 +263,7 @@ behaviour, the source of that number is named.
 - [215. test_autovacuum_yield.py: the maintenance daemon yields its lock to a waiting session](#215-test_autovacuum_yieldpy-the-maintenance-daemon-yields-its-lock-to-a-waiting-session)
 - [216. test_projection_rewrite.py: a declared projection survives a rewrite](#216-test_projection_rewritepy-a-declared-projection-survives-a-rewrite)
 - [217. test_avro_manifest.py: Iceberg Avro manifests and manifest lists decode, and refuse what they must](#217-test_avro_manifestpy-iceberg-avro-manifests-and-manifest-lists-decode-and-refuse-what-they-must)
+- [218. test_column_projection.py: column projection reads only the columns a query references](#218-test_column_projectionpy-column-projection-reads-only-the-columns-a-query-references)
 
 ## 1. How to read a test in here
 
@@ -8999,3 +9000,51 @@ A module fixture on a private database runs the shell's sequence; each test asse
 | `test_the_backend_is_still_up_after_the_zip_bomb` | backend still up after the zip-bomb -- and no backend died since |
 | `test_the_manifest_fixtures_are_present` | the committed fixture is present; without it the test declines under the shell's skip name, iceberg manifest fixtures are missing |
 | `test_python_can_read_the_oracle` | the oracle lists manifest entries; without json the test declines under the shell's skip name, python3 is needed to read the oracle |
+## 218. test_column_projection.py: column projection reads only the columns a query references
+
+The pytest twin of `test/column_projection.sh` (ported for #1341), every check by the shell's name. A fourteen-column columnar table and its heap copy: one column must cost a fraction of reading them all, SELECT * must read what projection-off reads, every query must answer the same with `pgcolumnar.enable_column_projection` on and off and the same as the heap -- through an added column, deletes, updates and a parallel scan -- and the cost model must price a narrow projection below a wide one.
+
+### Every test
+
+A module fixture on a private database replays the shell's steps in order, with no parallel workers outside the parallel checks; each test asserts one reading. A comparison reads "same" only over two values, so two identical errors or two empty results cannot agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_columnar_and_heap_hold_the_same_rows` | premise: columnar and heap hold the same rows |
+| `test_the_unprojected_read_is_large_enough_to_measure` | premise: the unprojected read is large enough to measure |
+| `test_one_column_costs_less_than_a_third_of_all` | one column costs less than a third of reading all of them |
+| `test_a_qual_only_column_still_produces_the_right_count` | qual-only column still produces the right count |
+| `test_select_star_reads_as_much_as_projection_off` | SELECT * reads as much as projection-off does |
+| `test_single_column_agg_on_off` | single column agg :: on==off |
+| `test_two_columns_on_off` | two columns :: on==off |
+| `test_qual_column_not_selected_on_off` | qual column not selected :: on==off |
+| `test_qual_and_target_disjoint_on_off` | qual and target disjoint :: on==off |
+| `test_varlena_projected_alone_on_off` | varlena projected alone :: on==off |
+| `test_all_null_column_on_off` | all-NULL column :: on==off |
+| `test_count_on_off` | count(*) :: on==off |
+| `test_select_star_hash_on_off` | select star hash :: on==off |
+| `test_whole_row_var_on_off` | whole-row var :: on==off |
+| `test_ctid_system_column_on_off` | ctid system column :: on==off |
+| `test_order_by_unselected_col_on_off` | order by unselected col :: on==off |
+| `test_min_max_mixed_types_on_off` | min/max mixed types :: on==off |
+| `test_join_on_projected_column_on_off` | join on projected column :: on==off |
+| `test_single_column_agg_columnar_heap` | single column agg :: columnar==heap |
+| `test_qual_and_target_disjoint_columnar_heap` | qual and target disjoint :: columnar==heap |
+| `test_varlena_alone_columnar_heap` | varlena alone :: columnar==heap |
+| `test_select_star_hash_columnar_heap` | select star hash :: columnar==heap |
+| `test_all_null_column_columnar_heap` | all-NULL column :: columnar==heap |
+| `test_min_max_mixed_types_columnar_heap` | min/max mixed types :: columnar==heap |
+| `test_added_column_alone_on_off` | added column alone :: on==off |
+| `test_added_column_alone_columnar_heap` | added column alone :: columnar==heap |
+| `test_added_column_with_others_columnar_heap` | added column with others :: columnar==heap |
+| `test_added_column_across_the_boundary_columnar_heap` | added column across the boundary :: columnar==heap |
+| `test_added_column_across_the_boundary_on_off` | added column across the boundary :: on==off |
+| `test_after_deletes_projected_column_columnar_heap` | after deletes, projected column :: columnar==heap |
+| `test_after_deletes_projected_column_on_off` | after deletes, projected column :: on==off |
+| `test_after_updates_projected_column_columnar_heap` | after updates, projected column :: columnar==heap |
+| `test_after_updates_select_star_hash_columnar_heap` | after updates, select star hash :: columnar==heap |
+| `test_a_parallel_scan_of_a_projected_column_matches_the_heap` | parallel scan, projected column |
+| `test_a_parallel_scan_with_a_qual_on_an_unselected_column_matches_the_heap` | parallel scan, qual on unselected column |
+| `test_the_narrow_projection_reads_far_fewer_buffers` | the narrow projection really does read far fewer buffers -- not a premise: it measures the projection itself |
+| `test_both_scan_costs_are_measurements` | premise: both scan costs are measurements |
+| `test_the_cost_model_prices_a_narrow_projection_below_a_wide_one` | the cost model prices a narrow projection below a wide one |

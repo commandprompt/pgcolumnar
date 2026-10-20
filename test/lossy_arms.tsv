@@ -86,7 +86,6 @@ bloom_lazy	bloom reads follow the columns a query filters on
 bloom_lazy	one predicate costs well less than six
 cancel_decode	the many-group table has many groups
 cancel_decode	the scan outlasts the timeout, so a cancel is possible
-column_projection	premise: the unprojected read is large enough to measure (off: $B_OFF)
 column_projection	the cost model prices a narrow projection below a wide one
 # THE SHELL if/then/else SPELLING CAME INTO SCOPE (#1255), and per the rule
 # above these two rows are a claim that the SWEEP changed, checkable off the
