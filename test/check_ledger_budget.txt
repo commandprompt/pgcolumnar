@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 157
+suites_not_covered 156
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4311,4 +4311,18 @@ suites_not_covered 157
 #     never         3347 + 31 = 3378
 #     dated         1621 + 15 = 1636
 #     3378 + 1636 == 5014
-checks_never_observed_red 3378
+#
+# #1341, sort_status_privilege seeded, with its twin (jdatcmd): 3378 -> 3386, and
+# suites_not_covered 157 -> 156. The suite had no rows. It enters with 13 checks from
+# five-major runs (13/13 on each of 15-19, shell and twin alike), unchanged: each
+# refusal check pairs "permission denied for table" with the table's own name, and
+# every reading is a value. 5 are dated by three mutations of sort_status in the
+# extension script, each reddening the same names in both twins: the privilege gate
+# removed, invoker rights restored (#608), and the sorted run reported empty. 8
+# arrive never: the premises and the superuser read.
+#
+#     ledger rows   5014 + 13 = 5027
+#     never         3378 + 8 = 3386
+#     dated         1636 + 5 = 1641
+#     3386 + 1641 == 5027
+checks_never_observed_red 3386

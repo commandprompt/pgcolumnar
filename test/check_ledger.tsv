@@ -4166,6 +4166,19 @@ settings_reference	settings_reference	each documented default is the server's	15
 settings_reference	settings_reference	every documented setting exists on the server	15;16;17;18;19	2026-10-15	the compression_level row renamed compression_levl in docs/configuration.md
 settings_reference	settings_reference	every setting the server defines is documented, the developer hooks aside	15;16;17;18;19	2026-10-15	the backticks around every setting name removed from docs/configuration.md;the compression_level row deleted from docs/configuration.md;the compression_level row renamed compression_levl in docs/configuration.md
 settings_reference	settings_reference	the reference documents at least thirty settings, so the comparisons below read something	15;16;17;18;19	2026-10-15	the backticks around every setting name removed from docs/configuration.md
+sort_status_privilege	sort_status_privilege	a role merely GRANTed select can read it too	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608)
+sort_status_privilege	sort_status_privilege	a role with no privilege on the table is refused	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608);sort_status no longer checks the caller's SELECT privilege (require_caller_select removed)
+sort_status_privilege	sort_status_privilege	a superuser still reads sort status	15;16;17;18;19	never	-
+sort_status_privilege	sort_status_privilege	and the refusal names the TABLE, not a catalog table it never asked about	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608);sort_status no longer checks the caller's SELECT privilege (require_caller_select removed)
+sort_status_privilege	sort_status_privilege	premise: none of these roles is a superuser	15;16;17;18;19	never	-
+sort_status_privilege	sort_status_privilege	premise: t_ssowner really owns the table	15;16;17;18;19	never	-
+sort_status_privilege	sort_status_privilege	premise: the catalog tables are NOT readable by these roles, so a GRANT is not the fix	15;16;17;18;19	never	-
+sort_status_privilege	sort_status_privilege	premise: the no-privilege role can open a session	15;16;17;18;19	never	-
+sort_status_privilege	sort_status_privilege	premise: the no-privilege role cannot read it by ordinary SQL	15;16;17;18;19	never	-
+sort_status_privilege	sort_status_privilege	premise: the owner can open a session	15;16;17;18;19	never	-
+sort_status_privilege	sort_status_privilege	premise: the owner can read its own table by ordinary SQL	15;16;17;18;19	never	-
+sort_status_privilege	sort_status_privilege	the OWNER of the table can read its sort status	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608)
+sort_status_privilege	sort_status_privilege	the owner sees its sorted run, not a false empty	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608);sort_status reports no group in the sorted run
 sorted_mark_rename	sorted_mark_rename	CONTROL: a repeat recluster on the same key is a no-op, so the gate fires	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	CONTROL: a second identical call is a no-op, so the gate does fire	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
 sorted_mark_rename	sorted_mark_rename	THE POINT: vacuum_sorted('a') after the swap does the work	15;16;17;18;19	never	-
