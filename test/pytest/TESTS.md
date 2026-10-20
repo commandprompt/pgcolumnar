@@ -254,6 +254,7 @@ behaviour, the source of that number is named.
 - [206. test_tablesample.py: TABLESAMPLE on a columnar table raises 0A000](#206-test_tablesamplepy-tablesample-on-a-columnar-table-raises-0a000)
 - [207. test_bloom_setting.py: enable_bloom_filter governs the write side too](#207-test_bloom_settingpy-enable_bloom_filter-governs-the-write-side-too)
 - [208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename](#208-test_sorted_mark_renamepy-a-tables-ordering-mark-follows-a-column-rename)
+- [209. test_sort_status_privilege.py: sort_status answers whoever may SELECT the table, and only them](#209-test_sort_status_privilegepy-sort_status-answers-whoever-may-select-the-table-and-only-them)
 
 ## 1. How to read a test in here
 
@@ -8765,3 +8766,27 @@ A module fixture runs the shell's steps in order. A vacuum_sorted call is read b
 | `test_the_mark_records_a_zorder_run` | premise: the mark records {a,b} as zorder |
 | `test_the_mark_follows_both_renames` | the mark follows both renames |
 | `test_recluster_on_the_new_key_is_not_skipped` | recluster on the NEW (a,b) is not skipped as already done |
+
+## 209. test_sort_status_privilege.py: sort_status answers whoever may SELECT the table, and only them
+
+The pytest twin of `test/sort_status_privilege.sh` (ported for #1341), every check by the shell's name. sort_status reads catalogs that carry no GRANT, so it runs with definer rights and gates the real caller itself (#608). Run as three non-superuser roles created for the module: the owner, a role granted SELECT, and a role with nothing. On a private database.
+
+### Every test
+
+A call made as a role reads the first column of its first row, or its failure as `SQLSTATE <code>: <message>`, so a refusal is matched on its message as in the shell.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_owner_can_open_a_session` | premise: the owner can open a session |
+| `test_the_no_privilege_role_can_open_a_session` | premise: the no-privilege role can open a session |
+| `test_the_owner_really_owns_the_table` | premise: t_ssowner really owns the table |
+| `test_none_of_the_roles_is_a_superuser` | premise: none of these roles is a superuser |
+| `test_the_owner_can_read_its_table` | premise: the owner can read its own table by ordinary SQL |
+| `test_the_no_privilege_role_cannot_read_the_table` | premise: the no-privilege role cannot read it by ordinary SQL |
+| `test_the_catalogs_are_not_readable` | premise: the catalog tables are NOT readable by these roles, so a GRANT is not the fix |
+| `test_the_owner_can_read_its_sort_status` | the OWNER of the table can read its sort status |
+| `test_a_grantee_can_read_the_sort_status` | a role merely GRANTed select can read it too |
+| `test_the_owner_sees_its_sorted_run` | the owner sees its sorted run, not a false empty |
+| `test_a_role_with_no_privilege_is_refused_its_sort_status` | a role with no privilege on the table is refused |
+| `test_the_refusal_names_the_table` | and the refusal names the TABLE, not a catalog table it never asked about |
+| `test_a_superuser_still_reads_the_sort_status` | a superuser still reads sort status |

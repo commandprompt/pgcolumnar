@@ -912,4 +912,6 @@ guard_tests 463
 # 11 checks in 11 tests, by collection over the cluster files.
 # cluster_tests 1485 -> 1531 for #1341's test_sorted_mark_rename.py, the twin of sorted_mark_rename.sh:
 # 46 tests, one per check, by collection over the cluster files.
-cluster_tests 1531
+# cluster_tests 1531 -> 1544 for #1341's test_sort_status_privilege.py, the twin of sort_status_privilege.sh:
+# 13 tests, one per check, by collection over the cluster files.
+cluster_tests 1544
