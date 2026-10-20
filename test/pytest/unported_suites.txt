@@ -13,7 +13,6 @@ avro_manifest
 bench_guards
 bloom_lazy
 bloom_setting
-bloom_sizing
 cancel_decode
 column_projection
 concurrency

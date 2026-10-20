@@ -896,4 +896,6 @@ guard_tests 462
 # 42 checks in 42 tests, by collection over the cluster files.
 # cluster_tests 1329 -> 1352 for #1341's test_vacuum_stripe_count.py, the twin of vacuum_stripe_count.sh:
 # 23 tests, one per check, by collection over the cluster files.
-cluster_tests 1352
+# cluster_tests 1352 -> 1371 for #1341's test_bloom_sizing.py, the twin of bloom_sizing.sh:
+# 19 checks in 19 tests, by collection over the cluster files.
+cluster_tests 1371

@@ -248,6 +248,7 @@ behaviour, the source of that number is named.
 - [200. test_vector_agg_rescan_memory.py: rescanning a columnar aggregate does not grow query memory](#200-test_vector_agg_rescan_memorypy-rescanning-a-columnar-aggregate-does-not-grow-query-memory)
 - [201. test_analyze_stats.py: ANALYZE collects statistics that agree with heap, and the planner prices what they feed](#201-test_analyze_statspy-analyze-collects-statistics-that-agree-with-heap-and-the-planner-prices-what-they-feed)
 - [202. test_vacuum_stripe_count.py: pgcolumnar.vacuum refuses a stripe_count bound rather than ignoring it](#202-test_vacuum_stripe_countpy-pgcolumnarvacuum-refuses-a-stripe_count-bound-rather-than-ignoring-it)
+- [203. test_bloom_sizing.py: a bloom filter is sized by its distinct count, and still skips](#203-test_bloom_sizingpy-a-bloom-filter-is-sized-by-its-distinct-count-and-still-skips)
 
 ## 1. How to read a test in here
 
@@ -8558,3 +8559,32 @@ Each check is its own test over a module fixture that runs the shell's steps in 
 | `test_vacuum_full_combined_the_groups` | and leaves one group |
 | `test_compact_rewrites_bounded_form_is_accepted` | premise: `compact_rewrite('vsc', 0.1, 2)` succeeds |
 | `test_the_named_alternative_rewrote_exactly_its_bound` | it rewrote 2 of 6 groups, and 4 still hold deleted rows |
+## 203. test_bloom_sizing.py: a bloom filter is sized by its distinct count, and still skips
+
+The pytest twin of `test/bloom_sizing.sh` (ported for #1341), every check by the shell's name. Two columns of one row group differ only in cardinality, so a difference in their stored filter sizes can only be cardinality (#467). A smaller filter must still skip: a scattered fixture where zone maps exclude nothing must report groups removed by the probe, and the answer must not change with the filter off. Above the distinct cap a column is refused a filter, while a five-value column of the same row group keeps its own.
+
+### Every test
+
+A module fixture on a private database builds the three tables in the shell's order; each test asserts one reading. A reading is a value or a failed query, never a default: a missing filter row is not a size.
+
+| test | what it holds |
+| --- | --- |
+| `test_every_row_of_the_sizing_table_loaded` | premise: every row loaded |
+| `test_the_sizing_table_is_one_row_group` | premise: the whole table is one row group |
+| `test_the_low_cardinality_column_really_is_low` | premise: the low-cardinality column really is low |
+| `test_the_high_cardinality_column_really_is_high` | premise: the high-cardinality column really is high |
+| `test_the_low_cardinality_filter_size_is_a_measurement` | premise: the low-cardinality filter size is a measurement |
+| `test_the_high_cardinality_filter_size_is_a_measurement` | premise: the high-cardinality filter size is a measurement |
+| `test_a_five_value_column_does_not_get_a_unique_columns_filter` | a five-value column does not get a unique column's filter (#467) |
+| `test_a_value_that_is_absent_is_still_reported_absent` | a value that is absent is still reported absent |
+| `test_a_value_that_is_present_is_still_found` | and a value that is present is still found |
+| `test_results_are_identical_with_the_bloom_filter_and_without_it` | results are identical with the filter and without it |
+| `test_the_skip_fixture_has_many_row_groups` | premise: the skip fixture has many row groups to skip |
+| `test_the_skip_counter_is_reported_with_the_probe_on` | premise: the skip counter is reported with the probe on |
+| `test_the_skip_counter_is_reported_with_the_probe_off` | premise: the skip counter is reported with the probe off |
+| `test_zone_maps_alone_skip_nothing_on_the_bloom_fixture` | premise: zone maps alone skip nothing on this fixture |
+| `test_the_bloom_filter_still_skips_groups_it_can_prove_empty` | the filter still skips groups it can prove empty (#467) |
+| `test_one_row_group_holds_more_than_the_refusal_threshold` | premise: one row group holds more than the refusal threshold |
+| `test_the_values_above_the_threshold_really_are_distinct` | premise: those values really are distinct |
+| `test_a_column_above_the_distinct_cap_is_refused_a_filter` | a column above the distinct cap is refused a filter, not given a bad one -- read as refused/kept against a five-value column in the same row group (a build that writes no filter no longer passes) |
+| `test_the_large_load_itself_succeeded` | and the load itself succeeded, rather than erroring on the way |
