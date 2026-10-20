@@ -256,6 +256,7 @@ behaviour, the source of that number is named.
 - [208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename](#208-test_sorted_mark_renamepy-a-tables-ordering-mark-follows-a-column-rename)
 - [209. test_sort_status_privilege.py: sort_status answers whoever may SELECT the table, and only them](#209-test_sort_status_privilegepy-sort_status-answers-whoever-may-select-the-table-and-only-them)
 - [210. test_bloom_lazy.py: a scan reads the bloom filters of the groups and columns it examines](#210-test_bloom_lazypy-a-scan-reads-the-bloom-filters-of-the-groups-and-columns-it-examines)
+- [211. test_sort_status.py: sort_status reports how much of an ordered table is still in its run](#211-test_sort_statuspy-sort_status-reports-how-much-of-an-ordered-table-is-still-in-its-run)
 
 ## 1. How to read a test in here
 
@@ -8821,3 +8822,63 @@ A module fixture on a private database builds the tables in the shell's order, w
 | `test_one_predicate_costs_well_less_than_six` | one predicate costs well less than six |
 | `test_the_filtered_answers_agree_with_a_heap_mirror` | the filtered answers agree with a heap mirror |
 | `test_six_predicates_give_the_same_answer_as_one_here` | six predicates give the same answer as one here |
+
+## 211. test_sort_status.py: sort_status reports how much of an ordered table is still in its run
+
+The pytest twin of `test/sort_status.sh` (ported for #1341), every check by the shell's name. sort_status splits a table's row groups into the sorted run, recorded by the last vacuum_sorted, cluster or recluster, and the groups appended since (#301). Followed through one table's life: unsorted, sorted, with a tail, re-sorted, rewritten unsorted, clustered, reclustered, with groups retired by compact_rewrite, and after a delete. On a private database.
+
+### Every test
+
+Each value is the first column as text, or a failed query, so two failed reads never agree. A check comparing two sort_status readings is numeric.
+
+| test | what it holds |
+| --- | --- |
+| `test_groups_written` | groups written |
+| `test_an_unsorted_table_reports_no_sorted_groups` | unsorted table reports no sorted groups |
+| `test_an_unsorted_table_reports_every_group_appended` | unsorted table reports every group appended |
+| `test_an_unsorted_table_reports_no_sorted_rows` | unsorted table reports no sorted rows |
+| `test_an_unsorted_table_reports_every_row_appended` | unsorted table reports every row appended |
+| `test_no_declared_sort_key_yet` | no declared sort key yet |
+| `test_the_sort_rewrote_into_a_new_storage` | the sort rewrote into a new storage |
+| `test_rows_survived_the_sort` | rows survived the sort |
+| `test_the_table_is_physically_ordered_on_k` | the table is physically ordered on k |
+| `test_a_fresh_sort_reports_every_group_sorted` | a fresh sort reports every group sorted |
+| `test_a_fresh_sort_reports_no_decay` | a fresh sort reports no decay |
+| `test_a_fresh_sort_reports_every_row_sorted` | a fresh sort reports every row sorted |
+| `test_a_fresh_sort_reports_no_appended_rows` | a fresh sort reports no appended rows |
+| `test_the_sorted_extent_did_not_move` | the sorted extent did not move |
+| `test_appended_groups_appeared` | appended groups appeared |
+| `test_appended_rows_are_counted` | appended rows are counted |
+| `test_sorted_rows_are_unchanged` | sorted rows are unchanged |
+| `test_the_totals_add_up` | the totals add up |
+| `test_the_table_is_no_longer_fully_ordered` | the table is no longer fully ordered |
+| `test_re_sorting_clears_the_appended_tail` | re-sorting clears the appended tail |
+| `test_re_sorting_counts_every_row_as_sorted` | re-sorting counts every row as sorted |
+| `test_re_sorting_reports_no_appended_rows` | re-sorting reports no appended rows |
+| `test_an_unsorted_rewrite_reports_no_sorted_groups` | an unsorted rewrite reports no sorted groups |
+| `test_an_unsorted_rewrite_reports_no_sorted_rows` | an unsorted rewrite reports no sorted rows |
+| `test_an_unsorted_rewrite_reports_every_row_appended` | an unsorted rewrite reports every row appended |
+| `test_cluster_reports_no_decay` | cluster reports no decay |
+| `test_cluster_counts_every_row_as_sorted` | cluster counts every row as sorted |
+| `test_the_unsorted_rewrite_cleared_the_mark_again` | the unsorted rewrite cleared the mark again |
+| `test_recluster_records_its_extent` | recluster records its extent |
+| `test_recluster_reports_no_decay` | recluster reports no decay |
+| `test_recluster_counts_every_row_as_sorted` | recluster counts every row as sorted |
+| `test_recluster_reports_no_appended_rows` | recluster reports no appended rows |
+| `test_rows_inserted_after_recluster_are_appended` | rows inserted after recluster are appended |
+| `test_the_reclustered_rows_are_still_counted_as_sorted` | the reclustered rows are still counted as sorted |
+| `test_a_group_was_rewritten_out_of_the_run` | a group was rewritten out of the run |
+| `test_the_run_lost_the_retired_groups` | the run lost the retired groups |
+| `test_the_replacement_counts_as_appended` | the replacement counts as appended |
+| `test_the_totals_still_add_up` | the totals still add up |
+| `test_the_declared_sort_key_is_reported` | the declared sort key is reported |
+| `test_an_empty_table_reports_no_groups` | an empty table reports no groups |
+| `test_an_empty_table_reports_no_sorted_groups` | an empty table reports no sorted groups |
+| `test_an_empty_table_reports_no_appended_rows` | an empty table reports no appended rows |
+| `test_the_delete_removed_rows` | the delete removed rows |
+| `test_a_delete_leaves_the_sorted_extent_alone` | a delete leaves the sorted extent alone |
+| `test_a_delete_leaves_no_appended_tail` | a delete leaves no appended tail |
+| `test_live_rows_dropped_by_the_deleted_count` | live rows dropped by the deleted count |
+| `test_the_mark_covers_the_runs_last_group` | the mark covers the run's last group |
+| `test_the_storage_the_sort_abandoned_is_gone` | the storage the sort abandoned is gone |
+| `test_dropping_the_table_removes_the_storage_row` | dropping the table removes the storage row |

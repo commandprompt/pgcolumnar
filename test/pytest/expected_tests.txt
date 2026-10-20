@@ -916,4 +916,6 @@ guard_tests 463
 # 13 tests, one per check, by collection over the cluster files.
 # cluster_tests 1544 -> 1564 for #1341's test_bloom_lazy.py, the twin of bloom_lazy.sh:
 # 20 checks in 20 tests, by collection over the cluster files.
-cluster_tests 1564
+# cluster_tests 1564 -> 1613 for #1341's test_sort_status.py, the twin of sort_status.sh:
+# 49 tests, one per check, by collection over the cluster files.
+cluster_tests 1613

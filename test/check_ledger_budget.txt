@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 155
+suites_not_covered 154
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4346,4 +4346,20 @@ suites_not_covered 155
 #     never         3386 + 16 = 3402
 #     dated         1641 + 4 = 1645
 #     3402 + 1645 == 5047
-checks_never_observed_red 3402
+#
+# #1341, sort_status seeded, with its twin (jdatcmd): 3402 -> 3417, and
+# suites_not_covered 155 -> 154. The suite had no rows. It enters with 49 checks from
+# five-major runs (49/49 on each of 15-19, shell and twin alike), after three fixes.
+# Three checks compared one sort_status reading with another, and with sort_status
+# raising on a sorted table both read "" and agreed; they are now check_num. "the sort
+# rewrote into a new storage" read a missing id after the sort as a new one. And the two
+# retired-group checks now carry their counts, leaving lossy_arms.tsv. 34 are dated
+# by four mutations of sort_status, each reddening the same names in both twins:
+# raising on a sorted table, counting every group as sorted with no mark, dropping the
+# run's upper bound, and counting groups as rows. 15 arrive never.
+#
+#     ledger rows   5047 + 49 = 5096
+#     never         3402 + 15 = 3417
+#     dated         1645 + 34 = 1679
+#     3417 + 1679 == 5096
+checks_never_observed_red 3417

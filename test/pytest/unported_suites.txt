@@ -137,4 +137,3 @@ row_triggers
 scan_direction
 server_file_privilege
 smoke
-sort_status
