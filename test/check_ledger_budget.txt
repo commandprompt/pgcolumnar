@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 175
+suites_not_covered 174
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3885,4 +3885,29 @@ suites_not_covered 175
 #     never         3118 + 17 = 3135
 #     dated         1434 +  1 = 1435
 #     3135 + 1435 == 4570
-checks_never_observed_red 3135
+#
+# #1341, write_fsst_compressed seeded, with its twin (jdatcmd): 3135 -> 3138, and
+# suites_not_covered 175 -> 174. The suite had no rows. It enters with 9 checks from
+# five-major runs (9/9 on each of 15-19, shell and twin alike), after three fixes.
+# Every fixture is built with its errors discarded, and with every load empty six
+# checks passed: the round-trips now report mismatches/rows, a vector count says "no
+# vectors" for a column with none, and "chosen" tests for a number rather than through
+# awk, which compares "no vectors" > 0 as strings. Each heap mirror was a copy of the
+# columnar table, so a consistently wrong decoder round-tripped as 0 mismatches
+# (57230 of 300000 e-mail values wrong, both suites green; found by OffgridwithJD
+# reviewing #1548); every mirror is now built from its generator. And the e-mail
+# control asked for some FSST vectors, so a wrongly reused verdict that dropped FSST
+# in one stripe of two passed; it now asks for every vector. 6 are dated by four
+# mutations, each reddening the same names in both twins: the decoder turning a
+# leading '.' into '!' (the e-mail round-trip), a reused HELPS verdict read as HURTS
+# (the control), FSST always dropped (the control and both compression-off checks),
+# and both post-codec defences removed (the two "not chosen" checks). Ignoring the
+# keep/drop verdict ALONE reddens nothing: #1132's post-codec choice also drops FSST
+# where it loses. 3 arrive never: the dropped-shape and compression-off round-trips
+# and the null and empty values.
+#
+#     ledger rows   4570 + 9 = 4579
+#     never         3135 + 3 = 3138
+#     dated         1435 + 6 = 1441
+#     3138 + 1441 == 4579
+checks_never_observed_red 3138

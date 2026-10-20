@@ -872,4 +872,6 @@ guard_tests 442
 # 11 checks in 11 tests, by collection over the cluster files.
 # cluster_tests 1081 -> 1099 for #1341's test_catalog_natts.py, the twin of catalog_natts.sh:
 # 18 tests, one per check (13 constants parametrized), by collection over the cluster files.
-cluster_tests 1099
+# cluster_tests 1099 -> 1108 for #1341's test_write_fsst_compressed.py, the twin of write_fsst_compressed.sh:
+# 9 checks in 9 tests, by collection over the cluster files.
+cluster_tests 1108
