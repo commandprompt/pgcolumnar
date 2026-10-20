@@ -4121,13 +4121,13 @@ serializable	serializable	the same with the two doctors in two row groups	15;16;
 serializable	serializable	two doctors in one row group each taken off call: SSI refuses one of the two with 40001, and one stays on call, as on heap	15;16;17;18;19	2026-10-15	PgColumnarCatalogSnapshot returns a SNAPSHOT_SELF copy, so a serializable read takes no SIRead lock on columnar's catalog
 serializable	serializable	two sessions that each see an empty ward by a scan of the whole table and each put someone on call: SSI refuses one of the two with 40001, as on heap	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	coverage check found the file functions (not an empty scan)	15;16;17;18;19	never	-
-server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: file_split_offsets	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: file_split_offsets	15;16;17;18;19	2026-10-20	file_split_offsets without its pg_read_server_files gate
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_current_snapshot	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_data_files	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_fdw_scan	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_namespaces	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_scan	15;16;17;18;19	never	-
-server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_table_location	15;16;17;18;19	2026-10-15	iceberg_rest_table_location without its pg_read_server_files gate
+server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_table_location	15;16;17;18;19	2026-10-20	iceberg_rest_table_location without its pg_read_server_files gate
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_tables	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_scan	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: import_arrow	15;16;17;18;19	never	-
@@ -4135,13 +4135,13 @@ server_file_privilege	server_file_privilege	no role is refused by the pg_read_se
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: parallel_copy	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: parquet_fdw_scan	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: parquet_schema	15;16;17;18;19	never	-
-server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: read_avro_manifest	15;16;17;18;19	never	-
-server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: read_manifest_list	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: read_avro_manifest	15;16;17;18;19	2026-10-20	the Avro manifest readers without their pg_read_server_files gate
+server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: read_manifest_list	15;16;17;18;19	2026-10-20	the Avro manifest readers without their pg_read_server_files gate
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: read_parquet	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_write_server_files gate: export_arrow	15;16;17;18;19	never	-
-server_file_privilege	server_file_privilege	no role is refused by the pg_write_server_files gate: export_parquet	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	no role is refused by the pg_write_server_files gate: export_parquet	15;16;17;18;19	2026-10-20	the parquet writer without its pg_write_server_files gate
 server_file_privilege	server_file_privilege	no role is refused by the pg_write_server_files gate: parallel_export_parquet	15;16;17;18;19	never	-
-server_file_privilege	server_file_privilege	no role is refused by the pg_write_server_files gate: tier_partition	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	no role is refused by the pg_write_server_files gate: tier_partition	15;16;17;18;19	2026-10-20	the parquet writer without its pg_write_server_files gate
 server_file_privilege	server_file_privilege	server-file function is covered by the boundary test: export_arrow	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	server-file function is covered by the boundary test: export_parquet	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	server-file function is covered by the boundary test: file_split_offsets	15;16;17;18;19	never	-
@@ -4157,6 +4157,7 @@ server_file_privilege	server_file_privilege	server-file function is covered by t
 server_file_privilege	server_file_privilege	server-file function is covered by the boundary test: read_manifest_list	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	server-file function is covered by the boundary test: read_parquet	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	server-file function is covered by the boundary test: tier_partition	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	the install script defines no file function this suite does not name	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: file_split_offsets	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_current_snapshot	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_data_files	15;16;17;18;19	never	-

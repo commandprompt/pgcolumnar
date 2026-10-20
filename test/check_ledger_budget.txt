@@ -4388,4 +4388,20 @@ suites_not_covered 153
 #     never         3414 + 7 = 3421
 #     dated         1682 + 2 = 1684
 #     3421 + 1684 == 5105
-checks_never_observed_red 3421
+#
+# #1341, server_file_privilege gains its twin (jdatcmd): never 3421 -> 3417, dated
+# 1684 -> 1689; suites_not_covered stays 153, since the suite already had rows. It
+# now holds 59 checks, one more than before: a check that the install script defines
+# no file function the suite does not name, since the coverage checks are now written
+# out by name. The 21 "gets past the gate" checks read any reply that did not name the
+# gate as passing, and with SET ROLE failing for the privileged role all 21 passed and
+# the suite exited 0. The call now proves the role took first. The loop-built names
+# are literal, unchanged. 6 are now dated: the one row dated on 2026-10-15, and five
+# more from four mutations that each drop one gate and redden the same names in both
+# twins (one of them reddens the 2026-10-15 row again). 53 remain never.
+#
+#     ledger rows   5105 + 1 = 5106
+#     never         3421 -> 3417
+#     dated         1684 -> 1689
+#     3417 + 1689 == 5106
+checks_never_observed_red 3417

@@ -258,6 +258,7 @@ behaviour, the source of that number is named.
 - [210. test_bloom_lazy.py: a scan reads the bloom filters of the groups and columns it examines](#210-test_bloom_lazypy-a-scan-reads-the-bloom-filters-of-the-groups-and-columns-it-examines)
 - [211. test_sort_status.py: sort_status reports how much of an ordered table is still in its run](#211-test_sort_statuspy-sort_status-reports-how-much-of-an-ordered-table-is-still-in-its-run)
 - [212. test_smoke.py: a columnar table stores rows and gives them back](#212-test_smokepy-a-columnar-table-stores-rows-and-gives-them-back)
+- [213. test_server_file_privilege.py: every server-file function is gated like COPY](#213-test_server_file_privilegepy-every-server-file-function-is-gated-like-copy)
 
 ## 1. How to read a test in here
 
@@ -8903,3 +8904,19 @@ A failed step stops the fixture, as `set -e` stops the shell, and every reading 
 | `test_null_table_value` | null table value |
 | `test_orphan_stripes` | orphan stripes |
 | `test_native_catalog_tables` | native catalog tables |
+
+## 213. test_server_file_privilege.py: every server-file function is gated like COPY
+
+The pytest twin of `test/server_file_privilege.sh` (ported for #1341), every check by the shell's name. Each of 21 entry points is called as a role with neither server-file role, which must be refused by the gate its direction needs, and as a role with both, which must get past it. Then every function in the install script that takes a path or filename must be one of them. On a private database.
+
+### Every test
+
+A call reads `refused` when the reply names the gate role, `passed` when it does not, and `no reading` when `SET ROLE` never took effect.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_role_with_nothing_is_refused_by_the_gate` | one test per row of `REFUSED` (21 rows), each by the shell's name |
+| `test_the_privileged_role_gets_past_the_gate` | one test per row of `PASSED` (21 rows), each by the shell's name |
+| `test_a_file_function_is_covered_by_the_boundary_test` | one test per row of `COVERED` (15 rows), each by the shell's name |
+| `test_the_install_script_defines_no_unnamed_file_function` | the install script defines no file function this suite does not name |
+| `test_the_coverage_check_found_the_file_functions` | coverage check found the file functions (not an empty scan) |
