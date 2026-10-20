@@ -44,14 +44,19 @@ SID_BEFORE="$(sid)"
 psql_run "SELECT pgcolumnar.vacuum_sorted('t', 'k');"
 SID_AFTER="$(sid)"
 
+# A missing storage id after the sort used to differ from the one before, and read
+# as a rewrite.
 check "the sort rewrote into a new storage" \
-	"$( [ "$SID_BEFORE" != "$SID_AFTER" ] && echo yes || echo no )" "yes"
+	"$(if [ -z "$SID_BEFORE" ] || [ -z "$SID_AFTER" ]; then echo "no reading: storage [$SID_BEFORE] -> [$SID_AFTER]"
+	   elif [ "$SID_BEFORE" != "$SID_AFTER" ]; then echo yes; else echo no; fi)" "yes"
 check "rows survived the sort" "$(q 'SELECT count(*) FROM t;')" "5000"
 check "the table is physically ordered on k" \
 	"$(q "SELECT count(*) FROM (SELECT k, lag(k) OVER () AS p FROM t) s WHERE p > k;")" "0"
 
 TOTAL_SORTED="$(ss total_groups)"
-check "a fresh sort reports every group sorted" "$(ss sorted_groups)" "$TOTAL_SORTED"
+# check_num: sort_status raising read "" here and in TOTAL_SORTED, and two empty
+# readings agreed. The same holds for the two extent checks below.
+check_num "a fresh sort reports every group sorted" "$(ss sorted_groups)" "$TOTAL_SORTED"
 check "a fresh sort reports no decay" "$(ss appended_groups)" "0"
 check "a fresh sort reports every row sorted" "$(ss sorted_rows)" "5000"
 check "a fresh sort reports no appended rows" "$(ss appended_rows)" "0"
@@ -62,7 +67,7 @@ check "a fresh sort reports no appended rows" "$(ss appended_rows)" "0"
 # partial. They are appended in insert order behind the sorted run.
 psql_run "INSERT INTO t SELECT g, (g * 7919) % 5000, 'v' || g FROM generate_series(5001, 7500) g;"
 
-check "the sorted extent did not move" "$(ss sorted_groups)" "$TOTAL_SORTED"
+check_num "the sorted extent did not move" "$(ss sorted_groups)" "$TOTAL_SORTED"
 check "appended groups appeared" "$(ss appended_groups)" "3"
 check "appended rows are counted" "$(ss appended_rows)" "2500"
 check "sorted rows are unchanged" "$(ss sorted_rows)" "5000"
@@ -135,10 +140,12 @@ psql_run "DELETE FROM t WHERE k < 400;"
 REWRITTEN="$(q "SELECT pgcolumnar.compact_rewrite('t', 0.1, 0);")"
 check "a group was rewritten out of the run" \
 	"$( [ "$REWRITTEN" -gt 0 ] && echo yes || echo no )" "yes"
+RUN_AFTER="$(ss sorted_groups)"
 check "the run lost the retired groups" \
-	"$( [ "$(ss sorted_groups)" -lt "$RUN_GROUPS" ] && echo yes || echo no )" "yes"
+	"$( [ "$RUN_AFTER" -lt "$RUN_GROUPS" ] 2>/dev/null && echo yes || echo "no ($RUN_AFTER sorted groups, from $RUN_GROUPS)")" "yes"
+APPENDED_AFTER="$(ss appended_groups)"
 check "the replacement counts as appended" \
-	"$( [ "$(ss appended_groups)" -ge "$REWRITTEN" ] && echo yes || echo no )" "yes"
+	"$( [ "$APPENDED_AFTER" -ge "$REWRITTEN" ] 2>/dev/null && echo yes || echo "no ($APPENDED_AFTER appended, $REWRITTEN rewritten)")" "yes"
 check "the totals still add up" \
 	"$(q "SELECT (sorted_groups + appended_groups = total_groups)::text FROM pgcolumnar.sort_status('t');")" \
 	"true"
@@ -172,7 +179,7 @@ DOOMED="$(q 'SELECT count(*) FROM t WHERE id % 10 = 0;')"
 psql_run "DELETE FROM t WHERE id % 10 = 0;"
 check "the delete removed rows" \
 	"$( [ "$DOOMED" -gt 0 ] && echo yes || echo no )" "yes"
-check "a delete leaves the sorted extent alone" "$(ss sorted_groups)" "$BEFORE_DEL"
+check_num "a delete leaves the sorted extent alone" "$(ss sorted_groups)" "$BEFORE_DEL"
 check "a delete leaves no appended tail" "$(ss appended_groups)" "0"
 check "live rows dropped by the deleted count" "$(q 'SELECT count(*) FROM t;')" \
 	"$((BEFORE_ROWS - DOOMED))"

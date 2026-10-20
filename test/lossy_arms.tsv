@@ -163,8 +163,6 @@ recluster_extent	the run does not claim rows written during the rewrite
 scan_decode_cost	a wide projection costs materially more than a narrow one (decode is priced)
 scan_decode_cost	four wide text columns cost more than eight narrow int ones (#768)
 server_file_privilege	coverage check found the file functions (not an empty scan)
-sort_status	the replacement counts as appended
-sort_status	the run lost the retired groups
 truncate_cleanup	PREMISE the projection has its own storage, distinct from the base
 zonemap_cost	a demonstrably pruning restriction is discounted whatever its correlation (#461)
 zonemap_cost	and it is priced below the index scan it used to lose to (#434)
