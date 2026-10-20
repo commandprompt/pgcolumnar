@@ -321,6 +321,12 @@ arrow_import	arrow_import	the failed second import left the row count alone	15;1
 arrow_import	arrow_import	the index-scan check really uses the index	15;16;17;18;19	never	-
 arrow_import	arrow_import	the narrowed values are floored to the microsecond	15;16;17;18;19	never	-
 arrow_import	arrow_import	the narrowing reports the number of VALUES that lost digits, not rows	15;16;17;18;19	never	-
+arrow_nested	arrow_nested	empty nested readable	15;16;17;18;19	never	-
+arrow_nested	arrow_nested	empty nested rows	15;16;17;18;19	never	-
+arrow_nested	arrow_nested	nested export rows written	15;16;17;18;19	never	-
+arrow_nested	arrow_nested	nested field types	15;16;17;18;19	2026-10-20	export: a struct's fields lose their names
+arrow_nested	arrow_nested	nested values match expectation	15;16;17;18;19	2026-10-20	export: a NULL array element written as a value;export: a NULL composite written as a valid struct;export: a struct's fields lose their names;export: the final partial record batch never written
+arrow_nested	arrow_nested	reject multi-dim array	15;16;17;18;19	2026-10-20	export: a multi-dimensional array flattened, not refused
 arrow_nested_import	arrow_nested_import	export rows	15;16;17;18;19	never	-
 arrow_nested_import	arrow_nested_import	import count matches	15;16;17;18;19	2026-10-20	export: the final partial record batch never written
 arrow_nested_import	arrow_nested_import	import rows	15;16;17;18;19	2026-10-20	export: the final partial record batch never written
