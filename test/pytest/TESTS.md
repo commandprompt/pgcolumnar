@@ -261,6 +261,7 @@ behaviour, the source of that number is named.
 - [213. test_server_file_privilege.py: every server-file function is gated like COPY](#213-test_server_file_privilegepy-every-server-file-function-is-gated-like-copy)
 - [214. test_autovacuum.py: the maintenance daemon compacts and reclusters only while it is on](#214-test_autovacuumpy-the-maintenance-daemon-compacts-and-reclusters-only-while-it-is-on)
 - [215. test_autovacuum_yield.py: the maintenance daemon yields its lock to a waiting session](#215-test_autovacuum_yieldpy-the-maintenance-daemon-yields-its-lock-to-a-waiting-session)
+- [216. test_projection_rewrite.py: a declared projection survives a rewrite](#216-test_projection_rewritepy-a-declared-projection-survives-a-rewrite)
 
 ## 1. How to read a test in here
 
@@ -8957,3 +8958,15 @@ The pytest twin of `test/autovacuum_yield.sh` (ported for #1341), every check by
 | `test_yield_the_access_exclusive_lock_was_granted` | yield: the AccessExclusive lock was granted (no timeout -> daemon yielded) -- the statement returning, not the absence of an error (a session that never connected no longer passes) |
 | `test_yield_and_it_was_granted_fast` | yield: and it was granted FAST (<= 8s, far under the 30s hold) |
 | `test_the_daemon_logged_cancelling_its_maintenance_op` | the daemon logged cancelling its maintenance op |
+
+## 216. test_projection_rewrite.py: a declared projection survives a rewrite
+
+The pytest twin of `test/projection_rewrite.sh` (ported for #1341), every check by the shell's name. After any rewrite, read_projection must answer with exactly the base table's rows (P1), no projection row may name a retired storage (P2), and the declaration must survive (P3) (#876, #887). The rewrites: TRUNCATE in four shapes, including through a foreign-key CASCADE and a trigger that re-enters the utility hook; ALTER COLUMN TYPE on a covered and an uncovered column; ADD COLUMN with a volatile default; a type change on a partitioned parent; REFRESH MATERIALIZED VIEW; and the extension's own vacuum, vacuum_sorted and cluster. Also: the repair adds nothing when nothing was rewritten, a stale declaration warns instead of aborting the statement, and rebuild_projections rebuilds an absent projection. Each arm first asserts what the operation did, because a failed or no-op operation leaves the projection answering. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_projection_rewrite_premise_holds` | one test per row of `PREMISES` (17 rows), each by the shell's name |
+| `test_a_rewrite_keeps_the_projection` | one test per row of `REWRITES` (53 rows), each by the shell's name |
+| `test_the_projection_repair_guards_hold` | one test per row of `GUARDS` (14 rows), each by the shell's name |

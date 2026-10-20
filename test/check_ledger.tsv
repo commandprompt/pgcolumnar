@@ -3694,6 +3694,90 @@ projection_privilege	projection_privilege	the owner reads the projection, and ge
 projection_privilege	projection_privilege	the owner reconstructs, and gets rows	15;16;17;18;19	2026-10-14	reconstruct_via_projection stores no rows: its tuplestore_putvalues call removed, so every caller gets zero rows
 projection_privilege	projection_privilege	the policy is in force for ordinary SQL	15;16;17;18;19	2026-10-14	the columnar custom scan drops its restriction quals (plan qual set to NIL), so the row-level-security policy qual is not applied
 projection_privilege	projection_privilege	while the EXECUTE role reaches the projection lookup on the same call	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE and the declaration survived, so a rebuild is possible	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE base holds its rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE no retired projection rows to begin with	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE projection agrees with base before any rewrite	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE projection answers before any rewrite	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the cascade fixture reads before the truncate	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the control statement completed, so its output is not empty	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the control statement rewrote fresh2, so a warning was possible	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the declaration names a column the table lacks	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the matview projection reads before the refresh	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the nested utility statement really ran	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the projection is now genuinely absent	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the projection is present before the metadata-only statements	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the projection reads before it is removed	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the projection reads before the truncate	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE the trigger is installed on the cascaded child	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	PREMISE two catalog rows under the current storage	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	a second call rebuilds nothing, so it is safe to run at any time	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	and it leaves no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	and the rebuilt projection matches the base table	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	cas_child P1 the cascaded child keeps its projection	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	cas_child P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	cas_child P3 declaration survives	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	cas_child: the CASCADE rewrote the child	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	mv1 P1 the refreshed matview keeps its projection	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	mv1 P2 no projection row names a storage the matview no longer has	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	mv1 P3 the declaration survives the refresh	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	mv1: REFRESH rewrote the matview	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	noop: and the projection still agrees with the base table	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	noop: and the repair added no projection row	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	noop: the metadata-only statements rewrote nothing	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	ptr1 P1 child projection agrees with base	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876);the repair reaches only the statement's own relation, not its partitions
+projection_rewrite	projection_rewrite	ptr1: parent-level ALTER rewrote the child	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_cluster P1 projection agrees with base	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_cluster P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_cluster P3 declaration survives	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_cluster: operation REWROTE	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_vacsorted P1 projection agrees with base	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_vacsorted P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_vacsorted P3 declaration survives	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_vacsorted: operation REWROTE	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_vacuum P1 projection agrees with base	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_vacuum P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_vacuum P3 declaration survives	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	r_vacuum: operation REWROTE	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	rebuild_projections reports rebuilding exactly one projection	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	reent_child P1 the projection survives a nested utility	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	reent_child P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	reent_child: the CASCADE rewrote the child	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	renamed: and the projection survives a later rewrite	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	renamed: the declaration followed the rename	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	stale: an intact declaration produces NO warning	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	stale: and it names a recovery the extension actually offers	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876);a stale declaration is skipped with no WARNING (DEBUG1 instead)
+projection_rewrite	projection_rewrite	stale: and the warning names the projection it skipped	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876);a stale declaration is skipped with no WARNING (DEBUG1 instead)
+projection_rewrite	projection_rewrite	stale: the base table keeps its rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	stale: the skip warns with SQLSTATE 42703	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876);a stale declaration is skipped with no WARNING (DEBUG1 instead)
+projection_rewrite	projection_rewrite	stale: the statement survives a stale declaration	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	stale: the unrelated type change took effect	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_addcol_vol P1 projection agrees with base	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	t_addcol_vol P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_addcol_vol P3 declaration survives	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_addcol_vol base projection covers the added column	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	t_addcol_vol: operation REWROTE	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_altertype P1 projection agrees with base	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	t_altertype P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_altertype P3 declaration survives	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_altertype: operation REWROTE	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_altertype_unc P1 projection agrees with base	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	t_altertype_unc P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_altertype_unc P3 declaration survives	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_altertype_unc: operation REWROTE	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_trunc_empty P1 projection agrees with base	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	t_trunc_empty P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_trunc_empty P3 declaration survives	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_trunc_empty: operation REWROTE	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_trunc_multi P1 projection agrees with base	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	t_trunc_multi P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_trunc_multi P3 declaration survives	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_trunc_multi: operation REWROTE	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_trunc_multi: the SECOND table in the statement also survives	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	t_trunc_reinsert P1 projection agrees with base	15;16;17;18;19	2026-10-20	a rewrite no longer re-records the table's projections (#876)
+projection_rewrite	projection_rewrite	t_trunc_reinsert P2 no retired projection rows	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_trunc_reinsert P3 declaration survives	15;16;17;18;19	never	-
+projection_rewrite	projection_rewrite	t_trunc_reinsert: operation REWROTE	15;16;17;18;19	never	-
 projection_scan_cost	projection_scan_cost	a clause that mentions the sort key but cannot prune on it does not cheapen a covering projection	15;16;17;18;19	2026-10-12	a covering projection is discounted for any clause that mentions the sort key, as before #1126
 projection_scan_cost	projection_scan_cost	a non-sort-key restriction does not cheapen a covering projection	15;16;17;18;19	2026-09-18	-
 projection_scan_cost	projection_scan_cost	a tight covering projection is cheaper relative to the base than a loose one	15;16;17;18;19	2026-10-12	no restriction ever earns the sort-key discount
