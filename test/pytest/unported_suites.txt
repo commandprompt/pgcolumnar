@@ -7,8 +7,6 @@
 #
 # The parity goal (#432) is this file empty.
 audit
-autovacuum
-autovacuum_yield
 avro_manifest
 bench_guards
 cancel_decode

@@ -922,4 +922,6 @@ guard_tests 463
 # 9 tests, one per check, by collection over the cluster files.
 # cluster_tests 1622 -> 1681 for #1341's test_server_file_privilege.py, the twin of server_file_privilege.sh:
 # 59 tests, one per check, by collection over the cluster files.
-cluster_tests 1681
+# cluster_tests 1681 -> 1698 for #1341's test_autovacuum.py and test_autovacuum_yield.py, the twins of
+# autovacuum.sh and autovacuum_yield.sh: 11 and 6 checks, one test each, by collection over the cluster files.
+cluster_tests 1698

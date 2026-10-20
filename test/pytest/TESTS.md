@@ -259,6 +259,8 @@ behaviour, the source of that number is named.
 - [211. test_sort_status.py: sort_status reports how much of an ordered table is still in its run](#211-test_sort_statuspy-sort_status-reports-how-much-of-an-ordered-table-is-still-in-its-run)
 - [212. test_smoke.py: a columnar table stores rows and gives them back](#212-test_smokepy-a-columnar-table-stores-rows-and-gives-them-back)
 - [213. test_server_file_privilege.py: every server-file function is gated like COPY](#213-test_server_file_privilegepy-every-server-file-function-is-gated-like-copy)
+- [214. test_autovacuum.py: the maintenance daemon compacts and reclusters only while it is on](#214-test_autovacuumpy-the-maintenance-daemon-compacts-and-reclusters-only-while-it-is-on)
+- [215. test_autovacuum_yield.py: the maintenance daemon yields its lock to a waiting session](#215-test_autovacuum_yieldpy-the-maintenance-daemon-yields-its-lock-to-a-waiting-session)
 
 ## 1. How to read a test in here
 
@@ -8920,3 +8922,37 @@ A call reads `refused` when the reply names the gate role, `passed` when it does
 | `test_a_file_function_is_covered_by_the_boundary_test` | one test per row of `COVERED` (15 rows), each by the shell's name |
 | `test_the_install_script_defines_no_unnamed_file_function` | the install script defines no file function this suite does not name |
 | `test_the_coverage_check_found_the_file_functions` | coverage check found the file functions (not an empty scan) |
+## 214. test_autovacuum.py: the maintenance daemon compacts and reclusters only while it is on
+
+The pytest twin of `test/autovacuum.sh` (ported for #1341), every check by the shell's name. With `pgcolumnar.autovacuum` off a deleted-heavy table is left alone; turned on, the daemon compacts it without changing its survivors and folds a reclustered table's appended groups back into its run; turned off again, a new deleted table is left alone. The settings arrive by ALTER SYSTEM and a reload and are reset at teardown, and "off by default" is the setting's boot value.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_maintenance_launcher_is_running_for_the_daemon` | the maintenance launcher is running |
+| `test_the_daemon_is_off_by_default` | the daemon is OFF by default |
+| `test_av_off_starts_with_dead_rows_above_the_threshold` | premise: av_off starts with dead rows above the threshold |
+| `test_off_the_daemon_did_not_touch_the_table` | OFF: the daemon did not touch the table (dead rows unchanged) -- over dead rows that stayed (a table with none to leave, or a failed read, no longer passes) |
+| `test_av_on_starts_with_dead_rows_above_the_threshold` | premise: av_on starts with dead rows above the threshold |
+| `test_the_daemon_is_now_on` | the daemon is now ON |
+| `test_on_the_daemon_compacted_the_deleted_heavy_table` | ON: the daemon compacted the deleted-heavy table (dead rows now 0) |
+| `test_on_the_surviving_rows_are_unchanged` | ON: the surviving rows are unchanged |
+| `test_av_rc_has_a_recorded_key_and_appended_decay` | premise: av_rc has a recorded key and appended decay |
+| `test_on_the_daemon_reclustered_the_decayed_table` | ON: the daemon reclustered the decayed table (appended groups folded to 0) |
+| `test_off_again_a_new_deleted_table_is_left_alone` | OFF-again: a new deleted table is left alone after disabling -- over dead rows that stayed |
+
+## 215. test_autovacuum_yield.py: the maintenance daemon yields its lock to a waiting session
+
+The pytest twin of `test/autovacuum_yield.sh` (ported for #1341), every check by the shell's name. With the daemon holding ShareUpdateExclusiveLock for a 30s maintenance hold, an ACCESS EXCLUSIVE request is granted within seconds, because the worker marks itself autovacuum and core cancels it, and the daemon logs the cancellation.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_launcher_is_running_for_the_yield` | the launcher is running |
+| `test_the_daemon_is_on_with_a_30s_maintenance_hold` | premise: the daemon is on with a 30s maintenance hold |
+| `test_the_daemon_is_holding_its_lock_on_the_table` | the daemon is holding SUEL on the table (the hold window is open) |
+| `test_yield_the_access_exclusive_lock_was_granted` | yield: the AccessExclusive lock was granted (no timeout -> daemon yielded) -- the statement returning, not the absence of an error (a session that never connected no longer passes) |
+| `test_yield_and_it_was_granted_fast` | yield: and it was granted FAST (<= 8s, far under the 30s hold) |
+| `test_the_daemon_logged_cancelling_its_maintenance_op` | the daemon logged cancelling its maintenance op |

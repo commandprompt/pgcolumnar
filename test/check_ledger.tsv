@@ -395,6 +395,17 @@ arrow_nested_import	arrow_nested_import	import rows	15;16;17;18;19	2026-10-20	ex
 arrow_nested_import	arrow_nested_import	nested import round-trips (arrays + composite)	15;16;17;18;19	2026-10-20	export: the final partial record batch never written;import: a NULL List element read as a value;import: a NULL Struct's validity bit ignored;import: an empty List read as a NULL array
 arrow_nested_import	arrow_nested_import	premise: the delete left 3999 live rows in the source	15;16;17;18;19	never	-
 arrow_nested_import	arrow_nested_import	round-trips after delete	15;16;17;18;19	2026-10-20	export: deleted rows exported too;export: the final partial record batch never written;import: a NULL List element read as a value;import: a NULL Struct's validity bit ignored;import: an empty List read as a NULL array
+autovacuum	autovacuum	OFF-again: a new deleted table is left alone after disabling	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the launcher runs its passes with pgcolumnar.autovacuum off
+autovacuum	autovacuum	OFF: the daemon did not touch the table (dead rows unchanged)	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the launcher runs its passes with pgcolumnar.autovacuum off
+autovacuum	autovacuum	ON: the daemon compacted the deleted-heavy table (dead rows now 0)	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the maintenance launcher is never registered
+autovacuum	autovacuum	ON: the daemon reclustered the decayed table (appended groups folded to 0)	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the maintenance launcher is never registered
+autovacuum	autovacuum	ON: the surviving rows are unchanged	15;16;17;18;19	never	-
+autovacuum	autovacuum	premise: av_off starts with dead rows above the threshold	15;16;17;18;19	never	-
+autovacuum	autovacuum	premise: av_on starts with dead rows above the threshold	15;16;17;18;19	never	-
+autovacuum	autovacuum	premise: av_rc has a recorded key and appended decay	15;16;17;18;19	never	-
+autovacuum	autovacuum	the daemon is OFF by default	15;16;17;18;19	never	-
+autovacuum	autovacuum	the daemon is now ON	15;16;17;18;19	never	-
+autovacuum	autovacuum	the maintenance launcher is running	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the maintenance launcher is never registered
 autovacuum_expire	autovacuum_expire	OFF: with autovacuum_expire off the daemon retired nothing	15;16;17;18;19	2026-10-12	pgcolumnar.autovacuum_expire defaults to on, in both its C initializer and its GUC boot value;the daemon's loop runs expire for a retention table whether or not pgcolumnar.autovacuum_expire is on
 autovacuum_expire	autovacuum_expire	ON: a table with no retention is never named in a skipped line	15;16;17;18;19	2026-10-12	the daemon's loop runs expire on every columnar table when autovacuum_expire is on, the has_ttl filter removed
 autovacuum_expire	autovacuum_expire	ON: a table with no retention keeps every row	15;16;17;18;19	2026-10-12	the daemon runs expire on every table and PgColumnarReadTtl invents a 1 day retention on ts where none is declared
@@ -418,6 +429,12 @@ autovacuum_expire	autovacuum_expire	the maintenance launcher is running	15;16;17
 autovacuum_expire	autovacuum_expire	yield: and it was granted fast (<= 8s, far under the 30s hold)	15;16;17;18;19	2026-10-12	the daemon worker no longer sets PROC_IS_AUTOVACUUM, so core never cancels it for a stronger lock
 autovacuum_expire	autovacuum_expire	yield: the AccessExclusive lock on a table in expire was granted	15;16;17;18;19	2026-10-12	the daemon worker no longer sets PROC_IS_AUTOVACUUM, so core never cancels it for a stronger lock
 autovacuum_expire	autovacuum_expire	yield: the daemon logged cancelling expire	15;16;17;18;19	2026-10-12	pgcolumnar_maintenance_hold removed from expire, so the daemon holds no lock inside expire long enough to yield;the daemon never runs expire, its call guarded by false;the daemon runs expire on every table and PgColumnarReadTtl invents a 1 day retention on ts where none is declared;the daemon worker no longer sets PROC_IS_AUTOVACUUM, so core never cancels it for a stronger lock;the daemon's 'skipped expire on <t>' LOG line removed
+autovacuum_yield	autovacuum_yield	premise: the daemon is on with a 30s maintenance hold	15;16;17;18;19	never	-
+autovacuum_yield	autovacuum_yield	the daemon is holding SUEL on the table (the hold window is open)	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the maintenance launcher is never registered
+autovacuum_yield	autovacuum_yield	the daemon logged cancelling its maintenance op	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the worker is never marked autovacuum, so a lock waiter cannot cancel it
+autovacuum_yield	autovacuum_yield	the launcher is running	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the maintenance launcher is never registered
+autovacuum_yield	autovacuum_yield	yield: and it was granted FAST (<= 8s, far under the 30s hold)	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the worker is never marked autovacuum, so a lock waiter cannot cancel it
+autovacuum_yield	autovacuum_yield	yield: the AccessExclusive lock was granted (no timeout -> daemon yielded)	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the worker is never marked autovacuum, so a lock waiter cannot cancel it
 base_scan_io	base_scan_io	a base scan is not priced from sibling projection pages	15;16;17;18;19	2026-09-21	projPages = 0 (keep whole-file pages)
 base_scan_io	base_scan_io	premise: a covering projection exists	15;16;17;18;19	never	-
 base_scan_io	base_scan_io	premise: adding the projection enlarged the relation file	15;16;17;18;19	never	-
