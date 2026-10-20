@@ -147,6 +147,9 @@ NO_CLUSTER = [
     # This branch's file. It reads three published pages, the control file and the
     # upgrade-script filenames -- no connection, no cluster, no driver.
     "test_docs_upgrade_chain.py",
+    # #1341's twin of wal_envelope.sh. It reads src/*.c as text with its own Python
+    # reader -- no connection, no cluster, no driver -- and the classifier agrees.
+    "test_wal_envelope.py",
 ]
 
 
