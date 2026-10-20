@@ -233,7 +233,10 @@ def run(ax, pgc_cluster):
 
 
 def test_the_switch_exists_and_is_off_by_default(run, expect):
-    expect.num(run["launcher"], 1, "premise: the maintenance launcher is running")
+    # Not a premise (#1339): the launcher is pgcolumnar's own, so a repository change
+    # reddens this -- with it never registered. The same holds below for the daemon's
+    # compaction pass and expire's refusal on a missing TTL column.
+    expect.num(run["launcher"], 1, "the maintenance launcher is running")
     expect.text(run["switches"], "on/off",
                 "the daemon's expire switch exists and is OFF by default")
     expect.num(run["manual"], 2,
@@ -242,7 +245,7 @@ def test_the_switch_exists_and_is_off_by_default(run, expect):
 
 def test_with_the_switch_off_the_daemon_expires_nothing(run, expect):
     expect.num(run["busy_dead"], 0,
-               "premise: the daemon compacted a deleted-heavy table, so it was running passes")
+               "the daemon compacted a deleted-heavy table, so it was running passes")
     expect.num(run["off_aged"], 2 * GROUP,
                "OFF: with autovacuum_expire off the daemon retired nothing")
 
@@ -260,7 +263,7 @@ def test_with_the_switch_on_the_daemon_expires_only_what_aged(run, expect):
 
 def test_a_failing_expire_does_not_undo_the_compaction(run, expect):
     expect.text(run["bad_state"], "42703",
-                "premise: expire on a table whose TTL column is gone fails with undefined_column")
+                "expire on a table whose TTL column is gone fails with undefined_column")
     expect.num(run["bad_dead"], 0,
                "isolate: a failing expire does not roll back the compaction due on the same table")
 

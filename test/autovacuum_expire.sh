@@ -59,7 +59,11 @@ poll() {
 	printf '%s' "$got"
 }
 
-check "premise: the maintenance launcher is running" \
+# Not premises (#1339): the launcher, its compaction pass and expire's refusal are
+# pgcolumnar's own, so a repository change reddens each -- with the launcher never
+# registered, or expire raising the wrong SQLSTATE. The zone-date premise below reads
+# only the fixture's arithmetic, and stays one.
+check "the maintenance launcher is running" \
 	"$(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'pgcolumnar autovacuum launcher';")" "1"
 check "the daemon's expire switch exists and is OFF by default" \
 	"$(q "SELECT current_setting('pgcolumnar.autovacuum') || '/' || current_setting('pgcolumnar.autovacuum_expire');")" "on/off"
@@ -75,7 +79,7 @@ psql_run "CREATE TABLE ex_busy (id int, v int) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('ex_busy', chunk_group_row_limit => $CG);"
 psql_run "INSERT INTO ex_busy SELECT g, g FROM generate_series(1, 20000) g;"
 psql_run "DELETE FROM ex_busy WHERE (id * 2654435761)::bigint % 100 < 40;"
-check "premise: the daemon compacted a deleted-heavy table, so it was running passes" \
+check "the daemon compacted a deleted-heavy table, so it was running passes" \
 	"$(poll 40 'deleted_rows ex_busy' 0)" "0"
 sleep 4   # two more passes over ex_off
 check_num "OFF: with autovacuum_expire off the daemon retired nothing" "$(aged ex_off)" "$((2*CG))"
@@ -116,7 +120,7 @@ sqlstate_of() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
 		-qtA -v VERBOSITY=sqlstate -c "$1" 2>&1 | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
 }
-check "premise: expire on a table whose TTL column is gone fails with undefined_column" \
+check "expire on a table whose TTL column is gone fails with undefined_column" \
 	"$(sqlstate_of "SELECT pgcolumnar.expire('ex_bad');")" "42703"
 psql_run "ALTER SYSTEM SET pgcolumnar.autovacuum_expire = on;"
 psql_run "SELECT pg_reload_conf();"

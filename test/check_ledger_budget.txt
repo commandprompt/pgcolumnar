@@ -4362,4 +4362,17 @@ suites_not_covered 154
 #     never         3402 + 15 = 3417
 #     dated         1645 + 34 = 1679
 #     3417 + 1679 == 5096
-checks_never_observed_red 3417
+# #1339, test_autovacuum_expire.py :239 (OffgridwithJD): 3417 -> 3414, no row added.
+# Three checks carried "premise:" for pgcolumnar's own behaviour, so a repository
+# change reddens each and none could have been dated: the maintenance launcher running
+# and its compaction pass (with the launcher never registered, twelve checks went red,
+# both of these among them), and expire's undefined_column refusal on a dropped TTL
+# column (with the wrong SQLSTATE raised, it alone went red). All three lose the prefix
+# in both twins; the zone-date premise reads only the fixture's arithmetic and stays.
+# 3 rows are dated by the two mutations, the three relabelled among them.
+#
+#     ledger rows   5096 + 0 = 5096
+#     never         3417 - 3 = 3414
+#     dated         1679 + 3 = 1682
+#     3414 + 1682 == 5096
+checks_never_observed_red 3414
