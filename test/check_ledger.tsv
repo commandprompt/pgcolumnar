@@ -4464,6 +4464,66 @@ type_matrix	type_matrix	premise: both tables hold 12000 rows, the columnar one i
 type_matrix	type_matrix	premise: the server supports xml (built with libxml)	15;16;17;18;19	never	-
 type_matrix	type_matrix	the aggregates over numeric NaN and Infinity and timestamp and date infinity are heap's	15;16;17;18;19	never	-
 type_matrix	type_matrix	the composite's fields and the enum's order read back as heap's	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	a fixed-width BY-REFERENCE column also falls back (uuid)	15;16;17;18;19	2026-10-20	the gather guard tests fixed width instead of by-value (#423's first form)
+ungrouped_vector_agg	ungrouped_vector_agg	a fixed-width filter still uses the batch fold	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	a varlena filter falls back, and EXPLAIN says so	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	a varlena shape agrees with heap: count(*) FROM vfold WHERE i > 100 AND s LIKE '%9%'	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	a varlena shape agrees with heap: count(*) FROM vfold WHERE length(s) > 4	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	a varlena shape agrees with heap: count(*) FROM vfold WHERE s = 'abc7'	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	a varlena shape agrees with heap: count(*) FROM vfold WHERE s LIKE '%9%'	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	a varlena shape agrees with heap: count(nm) FROM vfold WHERE i > 100	15;16;17;18;19	2026-10-20	the gather guard tests fixed width instead of by-value (#423's first form)
+ungrouped_vector_agg	ungrouped_vector_agg	a varlena shape agrees with heap: count(uid) FROM vfold WHERE i > 100	15;16;17;18;19	2026-10-20	the gather guard tests fixed width instead of by-value (#423's first form)
+ungrouped_vector_agg	ungrouped_vector_agg	a varlena shape agrees with heap: sum(i) FROM vfold WHERE s LIKE '%9%'	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	all rows filtered out :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	all-null float avg on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	all-null float sum on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	and a MIXED query is refused whole, because classification is all or nothing	15;16;17;18;19	2026-10-20	sum/avg over numeric take the scan-fold node again (#785);the numeric refusal raises an error instead of declining
+ungrouped_vector_agg	ungrouped_vector_agg	and name, which is 64 bytes by reference	15;16;17;18;19	2026-10-20	the gather guard tests fixed width instead of by-value (#423's first form)
+ungrouped_vector_agg	ungrouped_vector_agg	avg over a null-heavy col :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	avg(numeric) too	15;16;17;18;19	2026-10-20	sum/avg over numeric take the scan-fold node again (#785);the numeric refusal raises an error instead of declining
+ungrouped_vector_agg	ungrouped_vector_agg	clustered filtered agg :: on==off	15;16;17;18;19	2026-10-20	sum(float) on the fold drops the first non-null value
+ungrouped_vector_agg	ungrouped_vector_agg	control: i > 100 (exact key) still folds and agrees with heap	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	count(*) filter after deletes :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	count(*) no filter (metadata) :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	filtered avg after deletes :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	filtered count(*) :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	filtered float avg :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	filtered float sum :: on==off	15;16;17;18;19	2026-10-20	sum(float) on the fold drops the first non-null value
+ungrouped_vector_agg	ungrouped_vector_agg	filtered int sum/avg/cnt :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	filtered int8 avg :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	filtered int8 sum :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	filtered min/max float :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	filtered numeric avg :: on==off	15;16;17;18;19	2026-10-20	the numeric refusal raises an error instead of declining
+ungrouped_vector_agg	ungrouped_vector_agg	filtered numeric sum :: on==off	15;16;17;18;19	2026-10-20	the numeric refusal raises an error instead of declining
+ungrouped_vector_agg	ungrouped_vector_agg	fold prunes groups on a clustered filter (removed>0)	15;16;17;18;19	2026-10-20	the fold opens its reader with no scan keys (#349 item 2)
+ungrouped_vector_agg	ungrouped_vector_agg	fold prunes the same groups the row path does	15;16;17;18;19	2026-10-20	the fold opens its reader with no scan keys (#349 item 2)
+ungrouped_vector_agg	ungrouped_vector_agg	issue #715: count(*) WHERE i <> 100 agrees with heap	15;16;17;18;19	2026-10-20	a clause with no exact scan key reaches the fold (#715)
+ungrouped_vector_agg	ungrouped_vector_agg	issue #715: sum(i) WHERE i <> 100 agrees with heap	15;16;17;18;19	2026-10-20	a clause with no exact scan key reaches the fold (#715)
+ungrouped_vector_agg	ungrouped_vector_agg	issue #715: the no-scan-key op (<>) falls back off the fold	15;16;17;18;19	2026-10-20	a clause with no exact scan key reaches the fold (#715)
+ungrouped_vector_agg	ungrouped_vector_agg	min/max no filter (metadata) :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: core Agg (no vectorized node) when GUC off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: eligible shape uses the batch fold	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: min/max falls back off the batch fold	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: the all-null fixture holds its 5000 rows	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: the filter is pushed into the scan (EXPLAIN shows it)	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: the fixture holds its 60000 rows	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: the node DOES run for float8, so a 0 below means refusal and not absence	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: the numeric fixture holds its 20000 rows, in both tables	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: the varlena fixture holds its 200000 rows, in both tables	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: the varlena fixture really is columnar	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: uuid is fixed width but NOT by value, which is the whole point	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	premise: vectorized agg node used when GUC on	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	q6-like count+avg filter :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	refused numeric still matches the heap oracle [avg(c)]	15;16;17;18;19	2026-10-20	the numeric refusal raises an error instead of declining
+ungrouped_vector_agg	ungrouped_vector_agg	refused numeric still matches the heap oracle [sum(c)::text||'/'||sum(d)::text]	15;16;17;18;19	2026-10-20	the numeric refusal raises an error instead of declining
+ungrouped_vector_agg	ungrouped_vector_agg	refused numeric still matches the heap oracle [sum(c)]	15;16;17;18;19	2026-10-20	the numeric refusal raises an error instead of declining
+ungrouped_vector_agg	ungrouped_vector_agg	server still up	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	sum(int4) no filter (metadata) :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	sum(numeric) is refused from the scan-fold path	15;16;17;18;19	2026-10-20	sum/avg over numeric take the scan-fold node again (#785);the numeric refusal raises an error instead of declining
+ungrouped_vector_agg	ungrouped_vector_agg	unfiltered float avg :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	unfiltered float sum :: on==off	15;16;17;18;19	2026-10-20	sum(float) on the fold drops the first non-null value
+ungrouped_vector_agg	ungrouped_vector_agg	unfiltered int8 sum :: on==off	15;16;17;18;19	never	-
+ungrouped_vector_agg	ungrouped_vector_agg	unfiltered numeric avg :: on==off	15;16;17;18;19	2026-10-20	the numeric refusal raises an error instead of declining
 unique_conc	unique_conc	1a pre-fix: lock disabled lets both same-key inserts commit (bug)	15;16;17;18;19	2026-10-15	pgcolumnar.enable_unique_insert_lock ignored, so the lock is taken when it is off
 unique_conc	unique_conc	1b post-fix: blocked inserter got a unique_violation	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
 unique_conc	unique_conc	1b post-fix: exactly one row with key 1	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken

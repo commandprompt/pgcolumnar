@@ -900,4 +900,6 @@ guard_tests 462
 # 19 checks in 19 tests, by collection over the cluster files.
 # cluster_tests 1371 -> 1405 for #1341's test_vacuum_sorted_gate.py, the twin of vacuum_sorted_gate.sh:
 # 34 tests, one per check, by collection over the cluster files.
-cluster_tests 1405
+# cluster_tests 1405 -> 1465 for #1341's test_ungrouped_vector_agg.py, the twin of ungrouped_vector_agg.sh:
+# 60 tests, one per check, by collection over the cluster files.
+cluster_tests 1465

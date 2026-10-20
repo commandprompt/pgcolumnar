@@ -250,6 +250,7 @@ behaviour, the source of that number is named.
 - [202. test_vacuum_stripe_count.py: pgcolumnar.vacuum refuses a stripe_count bound rather than ignoring it](#202-test_vacuum_stripe_countpy-pgcolumnarvacuum-refuses-a-stripe_count-bound-rather-than-ignoring-it)
 - [203. test_bloom_sizing.py: a bloom filter is sized by its distinct count, and still skips](#203-test_bloom_sizingpy-a-bloom-filter-is-sized-by-its-distinct-count-and-still-skips)
 - [204. test_vacuum_sorted_gate.py: pgcolumnar.vacuum_sorted skips its rewrite only when there is nothing to do](#204-test_vacuum_sorted_gatepy-pgcolumnarvacuum_sorted-skips-its-rewrite-only-when-there-is-nothing-to-do)
+- [205. test_ungrouped_vector_agg.py: the ungrouped vectorized aggregate returns what core Agg returns](#205-test_ungrouped_vector_aggpy-the-ungrouped-vectorized-aggregate-returns-what-core-agg-returns)
 
 ## 1. How to read a test in here
 
@@ -8634,3 +8635,36 @@ Each check is its own test over a module fixture that runs the shell's steps in 
 | `test_a_delete_in_the_same_transaction_defeats_the_gate` | a delete then `vacuum_sorted` in one transaction leaves 0 deleted rows |
 | `test_the_rewrite_really_happened` | and 10,000 rows are stored |
 | `test_the_gated_calls_preserved_the_exact_row_set` | `vg_t` holds exactly the rows the generator says it should |
+
+## 205. test_ungrouped_vector_agg.py: the ungrouped vectorized aggregate returns what core Agg returns
+
+The pytest twin of `test/ungrouped_vector_agg.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.enable_ungrouped_vector_agg` routes an ungrouped aggregate that a zone map cannot answer to a single-pass scan-fold node (#289). On a private database, with serial execution pinned in both arms.
+
+### Every test
+
+A module fixture runs the shell's steps in order. An on/off pair reads `same (VALUE)` only when both sides returned a value; an error or empty side reads `no reading`. Every fixture is held to its row count first, since over an empty table every aggregate agrees with itself. A plan counts as "no vectorized node" only when it has an Aggregate at all.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_holds_its_rows` | premise: `t` has 60,000 rows |
+| `test_the_node_is_used_with_the_setting_on` | premise: the plan has the vectorized node with the setting on |
+| `test_core_agg_runs_with_the_setting_off` | premise: with it off, the plan is a core Agg |
+| `test_the_filter_is_pushed_into_the_scan` | premise: EXPLAIN shows the pushed-down filter |
+| `test_an_eligible_shape_uses_the_batch_fold` | premise: `Batch Fold: yes` for float sum/avg/count |
+| `test_min_max_falls_back_off_the_batch_fold` | premise: `Batch Fold: no` for min/max |
+| `test_the_fold_matches_core_agg` | 19 on/off pairs over `t`: filtered and unfiltered sum/avg over int, int8, float and numeric, count, min/max, all rows filtered out, a NULL-heavy column, and the metadata path |
+| `test_the_all_null_fixture_holds_its_rows` | premise: `t_allnull` has 5,000 rows |
+| `test_an_all_null_column_matches_core_agg` | sum and avg over an all-NULL column read `same (NULL)` |
+| `test_the_fold_matches_core_agg_after_deletes` | avg and count still match after three deletes |
+| `test_the_fold_prunes_groups_on_a_clustered_filter` | EXPLAIN ANALYZE shows groups removed by the fold (#349) |
+| `test_the_fold_prunes_the_same_groups_as_the_row_path` | the same number as the row path |
+| `test_the_clustered_fold_matches_core_agg` | and the same answer |
+| `test_the_server_is_still_up` | `SELECT 1` answers |
+| `test_uuid_is_fixed_width_but_not_by_value` | premise: uuid is `16/false` |
+| `test_the_varlena_fixture_holds_its_rows` | premise: `vfold` and its heap mirror have 200,000 rows each |
+| `test_the_varlena_fixture_is_columnar` | premise: `vfold` uses pgcolumnar |
+| `test_a_shape_agrees_with_heap` | 10 shapes over text, uuid and name columns, and the `<>` clause (#715), each equal to the heap mirror |
+| `test_the_batch_fold_decision` | a fixed-width filter folds; text, uuid, name and `<>` fall back, and EXPLAIN says so (#423, #715) |
+| `test_the_numeric_fixture_holds_its_rows` | premise: `vnum` and `vnumc` have 20,000 rows each |
+| `test_the_vectorized_node_count` | premise: float8 takes the node; sum(numeric), avg(numeric) and a mixed query do not (#785) |
+| `test_a_refused_numeric_aggregate_matches_heap` | the refused queries still equal the heap mirror |

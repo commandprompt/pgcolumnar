@@ -143,4 +143,3 @@ sort_status
 sort_status_privilege
 sorted_mark_rename
 tablesample
-ungrouped_vector_agg
