@@ -142,6 +142,33 @@ am_contracts	am_contracts	premise: the racing sessions contended for keys	15;16;
 am_contracts	am_contracts	premise: the truncate table holds 5000 rows	15;16;17;18;19	never	-
 am_contracts	am_contracts	rows the parent buffered before a savepoint survive a TRUNCATE rolled back to it	15;16;17;18;19	2026-10-14	ExecutorEnd flushes no pending writes;TRUNCATE empties the old storage in place (RelationTruncate before the swap)
 am_contracts	am_contracts	sessions racing DO NOTHING on the same keys leave each key once, with no error	15;16;17;18;19	2026-10-14	a speculative row that lost the race is never withdrawn;speculative insert refused as unsupported, as before #1341
+analyze_differential	analyze_differential	and a histogram for exactly the four core gave one	18;19	never	-
+analyze_differential	analyze_differential	and a histogram for the four with a tail, but not for boolean	18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_differential	analyze_differential	and the one containing a quote	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() passes the most-common list and its frequencies as NULL, so none is written
+analyze_differential	analyze_differential	and they are the same four columns, not just the same count	18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_differential	analyze_differential	and without a WARNING, which is how pg_restore_attribute_stats drops an argument	18;19	never	-
+analyze_differential	analyze_differential	b has a most-common list to check	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() passes the most-common list and its frequencies as NULL, so none is written
+analyze_differential	analyze_differential	boolean gets no histogram, because the most-common list already describes it	18;19	never	-
+analyze_differential	analyze_differential	core ANALYZE, through the columnar sampler, produced a most-common list for every column	18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_differential	analyze_differential	d has a most-common list to check	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() passes the most-common list and its frequencies as NULL, so none is written
+analyze_differential	analyze_differential	every most-common value of b exists with exactly its stored frequency	18;19	never	-
+analyze_differential	analyze_differential	every most-common value of d exists with exactly its stored frequency	18;19	never	-
+analyze_differential	analyze_differential	every most-common value of i exists with exactly its stored frequency	18;19	never	-
+analyze_differential	analyze_differential	every most-common value of n exists with exactly its stored frequency	18;19	never	-
+analyze_differential	analyze_differential	every most-common value of t exists with exactly its stored frequency	18;19	never	-
+analyze_differential	analyze_differential	every statistic we wrote agrees with core on operator and collation	18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice of its row group, so nothing is offered
+analyze_differential	analyze_differential	i has a most-common list to check	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() passes the most-common list and its frequencies as NULL, so none is written
+analyze_differential	analyze_differential	n has a most-common list to check	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() passes the most-common list and its frequencies as NULL, so none is written
+analyze_differential	analyze_differential	pgcolumnar.analyze() ran over every column without raising	18;19	never	-
+analyze_differential	analyze_differential	premise: a most-common text value contains a comma	18;19	never	-
+analyze_differential	analyze_differential	premise: and another contains a quote	18;19	never	-
+analyze_differential	analyze_differential	premise: every statistic is gone before we write, so nothing below is core's	18;19	never	-
+analyze_differential	analyze_differential	premise: the columns are nullable in fact, so the two denominators differ	18;19	never	-
+analyze_differential	analyze_differential	premise: the fixture loaded, so the shapes below describe real data	18;19	never	-
+analyze_differential	analyze_differential	t has a most-common list to check	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() passes the most-common list and its frequencies as NULL, so none is written
+analyze_differential	analyze_differential	the differential analyze path	15;16;17	never	-
+analyze_differential	analyze_differential	the most-common text value containing a comma round-tripped intact	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() passes the most-common list and its frequencies as NULL, so none is written
+analyze_differential	analyze_differential	we wrote a most-common list for every column, as core did	18;19	2026-10-20	pgcolumnar--1.0-alpha5.sql: analyze() passes the most-common list and its frequencies as NULL, so none is written
 analyze_function	analyze_function	a column at SET STATISTICS 0 is left alone, because that is what zero means	18;19	never	-
 analyze_function	analyze_function	analyze() refuses a named column the table does not have, and names it	18;19	2026-10-14	analyze() without its unknown-column check
 analyze_function	analyze_function	and 42's	18;19	never	-

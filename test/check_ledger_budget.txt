@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 159
+suites_not_covered 158
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4274,4 +4274,23 @@ suites_not_covered 159
 #     never         3324 +  8 = 3332
 #     dated         1606 +  3 = 1609
 #     3332 + 1609 == 4941
-checks_never_observed_red 3332
+#
+# #1339, test_analyze_differential.py :211, and analyze_differential seeded
+# (OffgridwithJD): 3332 -> 3347, and suites_not_covered 159 -> 158. The suite had a
+# twin but no rows. Seven checks carried "premise:" for something a repository change
+# reddens, so none of them could have been dated. Two read core ANALYZE over a columnar
+# table, which goes through pgcolumnar's own sampler: with the sampler mapping no block
+# to a slice both went red. Five, "premise: $col has a most-common list to check", read
+# the list pgcolumnar.analyze() wrote: with that list passed as NULL all five went red
+# (found by jdatcmd reviewing #1568). All seven lose the prefix in both twins, and the
+# five, with the frequency check beside each, are written out per column so each name
+# is literal. It enters with 26 checks from runs on 18 and 19 (26/26 each; 15-17
+# decline, as pgcolumnar.analyze() needs pg_restore_attribute_stats, and their skip
+# record is a row on 15;16;17). 12 are dated by those two mutations, all seven
+# relabelled checks among them; 15 arrive never, the skip record among them.
+#
+#     ledger rows   4941 + 27 = 4968
+#     never         3332 + 15 = 3347
+#     dated         1609 + 12 = 1621
+#     3347 + 1621 == 4968
+checks_never_observed_red 3347
