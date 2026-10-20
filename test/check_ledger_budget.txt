@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 158
+suites_not_covered 157
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4293,4 +4293,22 @@ suites_not_covered 158
 #     never         3332 + 15 = 3347
 #     dated         1609 + 12 = 1621
 #     3347 + 1621 == 4968
-checks_never_observed_red 3347
+#
+# #1341, sorted_mark_rename seeded, with its twin (jdatcmd): 3347 -> 3378, and
+# suites_not_covered 158 -> 157. The suite had no rows. It enters with 46 checks from
+# five-major runs (46/46 on each of 15-19, shell and twin alike), after four fixes.
+# The four "the gate fires" checks read a call by its storage id, and a failed call
+# moves nothing: with vacuum_sorted's skip raising, the suite passed 46 of 46. Calls now
+# keep their error, and a missing storage id is "no reading" rather than a rewrite. The
+# mark, xmin and two-catalog comparisons agreed on two empty readings. A failed EXPLAIN
+# read as "no Sort". And the inheritance and planner fixtures had no row count. 15
+# are dated by four mutations, each reddening the same names in both twins: the
+# declared key not following, the walk stopping at the named relation, an unrelated
+# rename rewriting the row, and the skip raising. The mark not following at all is
+# left out: it also reddens "premise: xmin CAN move". 31 arrive never.
+#
+#     ledger rows   4968 + 46 = 5014
+#     never         3347 + 31 = 3378
+#     dated         1621 + 15 = 1636
+#     3378 + 1636 == 5014
+checks_never_observed_red 3378

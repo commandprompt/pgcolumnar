@@ -253,6 +253,7 @@ behaviour, the source of that number is named.
 - [205. test_ungrouped_vector_agg.py: the ungrouped vectorized aggregate returns what core Agg returns](#205-test_ungrouped_vector_aggpy-the-ungrouped-vectorized-aggregate-returns-what-core-agg-returns)
 - [206. test_tablesample.py: TABLESAMPLE on a columnar table raises 0A000](#206-test_tablesamplepy-tablesample-on-a-columnar-table-raises-0a000)
 - [207. test_bloom_setting.py: enable_bloom_filter governs the write side too](#207-test_bloom_settingpy-enable_bloom_filter-governs-the-write-side-too)
+- [208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename](#208-test_sorted_mark_renamepy-a-tables-ordering-mark-follows-a-column-rename)
 
 ## 1. How to read a test in here
 
@@ -8706,3 +8707,60 @@ A module fixture on a private database builds the tables in the shell's order; e
 | `test_the_filtered_and_unfiltered_tables_hold_identical_data` | the two tables hold identical data -- read as mismatches of rows compared (two empty tables no longer pass) |
 | `test_a_projection_still_gets_filters_when_the_setting_is_on` | a projection still gets filters when the setting is on -- counted on the projection's own storage (a projection written without filters no longer passes) |
 | `test_the_projected_table_reads_correctly` | the projected table reads correctly |
+
+## 208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename
+
+The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). On a private database, with serial planning as the shell's cluster runs.
+
+### Every test
+
+A module fixture runs the shell's steps in order. A vacuum_sorted call is read by the storage id: `noop`, `rewrote`, `call failed`, or `no reading`. A plan with no scan in it is `no plan`. Every fixture is held to its row count.
+
+| test | what it holds |
+| --- | --- |
+| `test_vr_ctl_loaded_every_row` | premise: vr_ctl loaded every row (an overflowed INSERT would make an empty table look like a fired gate) |
+| `test_before_sorting_a_is_not_in_order` | premise: before sorting, a is not in order |
+| `test_vacuum_sorted_really_ordered_it` | premise: vacuum_sorted really ordered it by a |
+| `test_a_second_identical_call_is_a_no_op` | CONTROL: a second identical call is a no-op, so the gate does fire |
+| `test_vr_t_loaded_every_row` | premise: vr_t loaded every row (an overflowed INSERT would make an empty table look like a fired gate) |
+| `test_vr_t_is_ordered_by_a` | premise: vr_t is ordered by a |
+| `test_vr_t_is_not_ordered_by_b` | premise: and NOT by b |
+| `test_the_mark_records_a` | premise: the mark records key {a} |
+| `test_after_the_swap_b_is_ordered` | premise: after the swap the ordered column is the one now named b |
+| `test_after_the_swap_a_is_not_ordered` | premise: and the column now named a is NOT ordered |
+| `test_the_mark_follows_the_rename` | the mark FOLLOWS the rename, so it still names the ordered column |
+| `test_vacuum_sorted_after_the_swap_does_the_work` | THE POINT: vacuum_sorted('a') after the swap does the work |
+| `test_the_table_is_ordered_by_a_afterwards` | and the table really is ordered by a afterwards |
+| `test_the_gate_still_fires_for_the_right_key` | the gate still fires for the right key after all that |
+| `test_vr_o_loaded_every_row` | premise: vr_o loaded every row (an overflowed INSERT would make an empty table look like a fired gate) |
+| `test_an_unrelated_rename_leaves_the_mark` | renaming an unrelated column does not disturb the mark |
+| `test_an_unrelated_rename_does_not_rewrite_the_storage_row` | and does not rewrite the storage row at all (xmin unchanged) |
+| `test_xmin_can_move` | premise: xmin CAN move, so the arm above is not comparing two constants |
+| `test_the_gate_still_fires_after_an_unrelated_rename` | and the gate still fires |
+| `test_the_partition_holds_every_row` | premise: the partition holds every row |
+| `test_the_partition_is_ordered_and_marked` | premise: the partition is ordered by k and its mark says so |
+| `test_the_parent_is_not_columnar` | premise: the parent is NOT itself columnar, so gating on it would skip the child |
+| `test_after_the_swap_the_partitions_ordered_column_is_j` | premise: after the swap the partition's ordered column is named j |
+| `test_after_the_swap_the_partitions_k_is_not_ordered` | premise: and the column now named k is NOT ordered |
+| `test_the_partitions_mark_follows_a_rename_on_the_parent` | the PARTITION's mark follows a rename issued on the parent |
+| `test_vacuum_sorted_on_the_partition_does_the_work` | so vacuum_sorted on the partition does the work |
+| `test_the_partition_is_ordered_by_k_afterwards` | and the partition really is ordered by k afterwards |
+| `test_the_inheritance_child_is_ordered` | premise: the inheritance child is ordered by k |
+| `test_the_childs_mark_follows_a_rename_on_the_parent` | the CHILD's mark follows a rename issued on the parent |
+| `test_vacuum_sorted_on_the_child_does_the_work` | so vacuum_sorted on the child does the work |
+| `test_with_the_mark_true_order_by_needs_no_sort` | premise: with the mark true, ORDER BY k needs no Sort |
+| `test_after_the_swap_order_by_plans_a_sort` | after the swap, ORDER BY on the now-unordered column plans a Sort |
+| `test_the_rows_come_back_ordered` | THE WRONG-ANSWER ARM: and the rows really do come back ordered |
+| `test_order_by_on_the_ordered_column_needs_no_sort` | and ORDER BY on the column that IS ordered still needs no Sort |
+| `test_sb_loaded_every_row` | premise: sb loaded every row (an overflowed INSERT would make an empty table look like a fired gate) |
+| `test_a_bare_vacuum_sorted_used_the_declared_key` | premise: a bare vacuum_sorted() used the declared key |
+| `test_the_declared_key_follows_the_rename` | the DECLARED key follows the rename too |
+| `test_the_two_catalogs_still_agree` | so the two catalogs still agree after the rename |
+| `test_a_bare_vacuum_sorted_is_a_no_op` | and a bare vacuum_sorted() is a no-op, not a rewrite on a different key |
+| `test_rr_ctl_loaded_every_row` | premise: rr_ctl loaded every row |
+| `test_the_first_recluster_does_real_work` | premise: the first recluster does real work |
+| `test_a_repeat_recluster_is_a_no_op` | CONTROL: a repeat recluster on the same key is a no-op, so the gate fires |
+| `test_rr_t_loaded_every_row` | premise: rr_t loaded every row |
+| `test_the_mark_records_a_zorder_run` | premise: the mark records {a,b} as zorder |
+| `test_the_mark_follows_both_renames` | the mark follows both renames |
+| `test_recluster_on_the_new_key_is_not_skipped` | recluster on the NEW (a,b) is not skipped as already done |

@@ -4166,6 +4166,52 @@ settings_reference	settings_reference	each documented default is the server's	15
 settings_reference	settings_reference	every documented setting exists on the server	15;16;17;18;19	2026-10-15	the compression_level row renamed compression_levl in docs/configuration.md
 settings_reference	settings_reference	every setting the server defines is documented, the developer hooks aside	15;16;17;18;19	2026-10-15	the backticks around every setting name removed from docs/configuration.md;the compression_level row deleted from docs/configuration.md;the compression_level row renamed compression_levl in docs/configuration.md
 settings_reference	settings_reference	the reference documents at least thirty settings, so the comparisons below read something	15;16;17;18;19	2026-10-15	the backticks around every setting name removed from docs/configuration.md
+sorted_mark_rename	sorted_mark_rename	CONTROL: a repeat recluster on the same key is a no-op, so the gate fires	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	CONTROL: a second identical call is a no-op, so the gate does fire	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	THE POINT: vacuum_sorted('a') after the swap does the work	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	THE WRONG-ANSWER ARM: and the rows really do come back ordered	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	after the swap, ORDER BY on the now-unordered column plans a Sort	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	and ORDER BY on the column that IS ordered still needs no Sort	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	and a bare vacuum_sorted() is a no-op, not a rewrite on a different key	15;16;17;18;19	2026-10-20	the declared sort_by no longer follows a column rename (#778);vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	and does not rewrite the storage row at all (xmin unchanged)	15;16;17;18;19	2026-10-20	a rename that touches no sort-key column still rewrites the storage row
+sorted_mark_rename	sorted_mark_rename	and the gate still fires	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	and the partition really is ordered by k afterwards	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	and the table really is ordered by a afterwards	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: a bare vacuum_sorted() used the declared key	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: after the swap the ordered column is the one now named b	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: after the swap the partition's ordered column is named j	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: and NOT by b	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: and the column now named a is NOT ordered	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: and the column now named k is NOT ordered	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: before sorting, a is not in order	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: rr_ctl loaded every row	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: rr_t loaded every row	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: sb loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the first recluster does real work	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the inheritance child is ordered by k	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the mark records key {a}	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the mark records {a,b} as zorder	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the parent is NOT itself columnar, so gating on it would skip the child	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the partition holds every row	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the partition is ordered by k and its mark says so	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vacuum_sorted really ordered it by a	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vr_ctl loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vr_o loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vr_t is ordered by a	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vr_t loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: with the mark true, ORDER BY k needs no Sort	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: xmin CAN move, so the arm above is not comparing two constants	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	recluster on the NEW (a,b) is not skipped as already done	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	renaming an unrelated column does not disturb the mark	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	so the two catalogs still agree after the rename	15;16;17;18;19	2026-10-20	the declared sort_by no longer follows a column rename (#778)
+sorted_mark_rename	sorted_mark_rename	so vacuum_sorted on the child does the work	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	so vacuum_sorted on the partition does the work	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	the CHILD's mark follows a rename issued on the parent	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	the DECLARED key follows the rename too	15;16;17;18;19	2026-10-20	the declared sort_by no longer follows a column rename (#778)
+sorted_mark_rename	sorted_mark_rename	the PARTITION's mark follows a rename issued on the parent	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	the gate still fires for the right key after all that	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	the mark FOLLOWS the rename, so it still names the ordered column	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	the mark follows both renames	15;16;17;18;19	never	-
 sorted_projection	sorted_projection	control: the set oracle is order-blind by design	15;16;17;18;19	never	-
 sorted_projection	sorted_projection	count matches heap	15;16;17;18;19	never	-
 sorted_projection	sorted_projection	idempotent sorted rewrite	15;16;17;18;19	never	-
