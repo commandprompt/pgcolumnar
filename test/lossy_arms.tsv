@@ -168,7 +168,6 @@ server_file_privilege	coverage check found the file functions (not an empty scan
 sort_status	the replacement counts as appended
 sort_status	the run lost the retired groups
 truncate_cleanup	PREMISE the projection has its own storage, distinct from the base
-vacuum_sorted_gate	premise: the tail is smaller than the chunk group limit
 zonemap_cost	a demonstrably pruning restriction is discounted whatever its correlation (#461)
 zonemap_cost	and it is priced below the index scan it used to lose to (#434)
 zonemap_cost	and priced close to the correlated arm it matches physically (#461)
