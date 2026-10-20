@@ -902,4 +902,6 @@ guard_tests 462
 # 34 tests, one per check, by collection over the cluster files.
 # cluster_tests 1405 -> 1465 for #1341's test_ungrouped_vector_agg.py, the twin of ungrouped_vector_agg.sh:
 # 60 tests, one per check, by collection over the cluster files.
-cluster_tests 1465
+# cluster_tests 1465 -> 1473 for #1341's test_tablesample.py, the twin of tablesample.sh:
+# 8 tests, one per check, by collection over the cluster files.
+cluster_tests 1473

@@ -251,6 +251,7 @@ behaviour, the source of that number is named.
 - [203. test_bloom_sizing.py: a bloom filter is sized by its distinct count, and still skips](#203-test_bloom_sizingpy-a-bloom-filter-is-sized-by-its-distinct-count-and-still-skips)
 - [204. test_vacuum_sorted_gate.py: pgcolumnar.vacuum_sorted skips its rewrite only when there is nothing to do](#204-test_vacuum_sorted_gatepy-pgcolumnarvacuum_sorted-skips-its-rewrite-only-when-there-is-nothing-to-do)
 - [205. test_ungrouped_vector_agg.py: the ungrouped vectorized aggregate returns what core Agg returns](#205-test_ungrouped_vector_aggpy-the-ungrouped-vectorized-aggregate-returns-what-core-agg-returns)
+- [206. test_tablesample.py: TABLESAMPLE on a columnar table raises 0A000](#206-test_tablesamplepy-tablesample-on-a-columnar-table-raises-0a000)
 
 ## 1. How to read a test in here
 
@@ -8668,3 +8669,17 @@ A module fixture runs the shell's steps in order. An on/off pair reads `same (VA
 | `test_the_numeric_fixture_holds_its_rows` | premise: `vnum` and `vnumc` have 20,000 rows each |
 | `test_the_vectorized_node_count` | premise: float8 takes the node; sum(numeric), avg(numeric) and a mixed query do not (#785) |
 | `test_a_refused_numeric_aggregate_matches_heap` | the refused queries still equal the heap mirror |
+
+## 206. test_tablesample.py: TABLESAMPLE on a columnar table raises 0A000
+
+The pytest twin of `test/tablesample.sh` (ported for #1341), every check by the shell's name. The planner hooks used to replace Sample Scan with the custom scan or a vectorized aggregate, which answered every row; the contract is the error. On a private database, with serial planning pinned as the shell's cluster pins it.
+
+### Every test
+
+A statement reads as the SQLSTATE it raised, `00000` when it ran, or `no reading` when the server could not be reached.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_table_holds_its_rows` | premise: `n` has 10,000 rows |
+| `test_a_sampled_shape_raises_0a000` | count, sum, SYSTEM, a projection and a grouped query over `TABLESAMPLE` each raise 0A000 |
+| `test_a_control_raises_nothing` | an unsampled count, and the same sample on a heap table, raise nothing |
