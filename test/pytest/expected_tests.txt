@@ -880,4 +880,6 @@ guard_tests 462
 # 32 tests, one per check, by collection over the cluster files.
 # cluster_tests 1140 -> 1146 for #1341's test_arrow_nested_import.py, the twin of arrow_nested_import.sh:
 # 6 checks in 6 tests, by collection over the cluster files.
-cluster_tests 1146
+# cluster_tests 1146 -> 1152 for #1341's test_arrow_nested.py, the twin of arrow_nested.sh:
+# 6 checks in 6 tests, by collection over the cluster files.
+cluster_tests 1152

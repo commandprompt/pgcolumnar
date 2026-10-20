@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 171
+suites_not_covered 170
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -3971,4 +3971,23 @@ suites_not_covered 171
 #     never         3160 + 2 = 3162
 #     dated         1471 + 4 = 1475
 #     3162 + 1475 == 4637
-checks_never_observed_red 3162
+#
+# #1341, arrow_nested seeded, with its twin (OffgridwithJD): 3162 -> 3165, and
+# suites_not_covered 171 -> 170. The suite had no rows. It enters with 6 checks from
+# five-major runs (6/6 on each of 15-19, shell and twin alike), after two fixes. "nested
+# values match expectation" walked only the rows the file held, so an export that
+# wrote no record batch, while still reporting 5000 rows, passed all six checks; it now
+# requires every id 1..5000 once. And "reject multi-dim array" passed on any error,
+# so a missing table read as the refusal; it now requires the multi-dimensional
+# message. 3 are dated by five mutations of the export, each reddening the same names
+# in both twins: the final partial batch never written, a NULL element written as a
+# value, and a NULL composite written as a valid struct (the values check); the
+# struct's fields losing their names (the types and the values); and a
+# multi-dimensional array flattened (the refusal). 3 arrive never: the export's row
+# count and the two empty-table checks.
+#
+#     ledger rows   4637 + 6 = 4643
+#     never         3162 + 3 = 3165
+#     dated         1475 + 3 = 1478
+#     3165 + 1478 == 4643
+checks_never_observed_red 3165

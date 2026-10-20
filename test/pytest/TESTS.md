@@ -240,6 +240,7 @@ behaviour, the source of that number is named.
 - [192. test_zonemap_estimate_sample.py: the planner's zone-map sample is one-based, complete and per-column](#192-test_zonemap_estimate_samplepy-the-planners-zone-map-sample-is-one-based-complete-and-per-column)
 - [193. test_wal_envelope.py: pgColumnar emits only core's WAL, inside RelationTruncate's envelope](#193-test_wal_envelopepy-pgcolumnar-emits-only-cores-wal-inside-relationtruncates-envelope)
 - [194. test_arrow_nested_import.py: arrays and composites round-trip through Arrow](#194-test_arrow_nested_importpy-arrays-and-composites-round-trip-through-arrow)
+- [195. test_arrow_nested.py: arrays and composites export as Arrow List and Struct](#195-test_arrow_nestedpy-arrays-and-composites-export-as-arrow-list-and-struct)
 
 ## 1. How to read a test in here
 
@@ -8309,3 +8310,20 @@ A module fixture on a private database takes every reading in the shell's order;
 | `test_the_import_count_matches` | both row counts are numbers and equal, with the source at 5000 (two failed counts, or two empty tables, no longer pass) |
 | `test_the_delete_left_the_live_rows` | premise: the DELETE left 3999 live rows in the source, so the next check has deleted rows to leave out |
 | `test_a_fresh_round_trip_after_a_delete` | a fresh export and import after the DELETE equals the live source, read only while it holds its 3999 rows |
+
+## 195. test_arrow_nested.py: arrays and composites export as Arrow List and Struct
+
+The pytest twin of `test/arrow_nested.sh` (ported for #1341), every check by the shell's name. A columnar table with `int[]`, `text[]` and composite columns, with NULL arrays, empty arrays, NULL elements and NULL composites among them, is exported with `pgcolumnar.export_arrow`. pyarrow reads the file back: the fields must be List, List and Struct, and every one of the 5000 rows must equal the value recomputed from the generator. A table with nested columns and no rows still writes a readable schema-only stream, and a multi-dimensional array is refused rather than flattened.
+
+### Every test
+
+A module fixture on a private database runs the SQL in the shell's order; each test reads the file it needs and asserts one reading. The shell skips whole without pyarrow, so every test declines by the shell's skip name first. The files live in `server_dir`, since the backend writes them, and a file that cannot be read is a failed reading.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_nested_export_writes_every_row` | the export reports 5000 rows |
+| `test_the_fields_are_list_list_struct` | `ia` and `ta` are Lists of int32 and string; `c` is a Struct of `x int32, y string` |
+| `test_every_value_matches_the_generator` | the file holds every id 1..5000 once, and each row equals the generator's (a file short of rows no longer passes) |
+| `test_the_empty_table_writes_no_rows` | the empty table's export reports 0 rows |
+| `test_the_empty_table_writes_a_readable_schema` | its file reads back with 0 rows, a List and a Struct |
+| `test_a_multidimensional_array_is_refused` | the export of a 2-D array fails with the multi-dimensional message (another error no longer passes) |
