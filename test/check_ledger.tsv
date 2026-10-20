@@ -4186,6 +4186,15 @@ settings_reference	settings_reference	each documented default is the server's	15
 settings_reference	settings_reference	every documented setting exists on the server	15;16;17;18;19	2026-10-15	the compression_level row renamed compression_levl in docs/configuration.md
 settings_reference	settings_reference	every setting the server defines is documented, the developer hooks aside	15;16;17;18;19	2026-10-15	the backticks around every setting name removed from docs/configuration.md;the compression_level row deleted from docs/configuration.md;the compression_level row renamed compression_levl in docs/configuration.md
 settings_reference	settings_reference	the reference documents at least thirty settings, so the comparisons below read something	15;16;17;18;19	2026-10-15	the backticks around every setting name removed from docs/configuration.md
+smoke	smoke	count where a<50	15;16;17;18;19	never	-
+smoke	smoke	count(*)	15;16;17;18;19	never	-
+smoke	smoke	native catalog tables	15;16;17;18;19	never	-
+smoke	smoke	no nulls in t.b	15;16;17;18;19	never	-
+smoke	smoke	null table nulls	15;16;17;18;19	2026-10-20	the row reader returns a NULL as a non-null empty value
+smoke	smoke	null table rows	15;16;17;18;19	never	-
+smoke	smoke	null table value	15;16;17;18;19	never	-
+smoke	smoke	order by a limit 3	15;16;17;18;19	never	-
+smoke	smoke	orphan stripes	15;16;17;18;19	2026-10-20	DROP TABLE leaves the storage tree's metadata behind (the OAT_DROP hook's delete removed)
 sort_status	sort_status	a delete leaves no appended tail	15;16;17;18;19	2026-10-20	sort_status raises on any table that has a sorted run
 sort_status	sort_status	a delete leaves the sorted extent alone	15;16;17;18;19	2026-10-20	sort_status raises on any table that has a sorted run
 sort_status	sort_status	a fresh sort reports every group sorted	15;16;17;18;19	2026-10-20	sort_status raises on any table that has a sorted run

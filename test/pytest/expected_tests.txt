@@ -918,4 +918,6 @@ guard_tests 463
 # 20 checks in 20 tests, by collection over the cluster files.
 # cluster_tests 1564 -> 1613 for #1341's test_sort_status.py, the twin of sort_status.sh:
 # 49 tests, one per check, by collection over the cluster files.
-cluster_tests 1613
+# cluster_tests 1613 -> 1622 for #1341's test_smoke.py, the twin of smoke.sh:
+# 9 tests, one per check, by collection over the cluster files.
+cluster_tests 1622

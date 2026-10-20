@@ -136,4 +136,3 @@ rewrite_group_scan
 row_triggers
 scan_direction
 server_file_privilege
-smoke
