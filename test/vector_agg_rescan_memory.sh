@@ -137,6 +137,12 @@ peak_executor_state() {	# -> bytes, or empty when the path assertion refuses
 		n=$((n+1)); sleep 0.1
 	done
 	exec 9>&-; wait 2>/dev/null
+	# A query that ERRORS still leaves samples behind, small ones, which read as
+	# no growth. So a failed run is no reading, not a low one.
+	if grep -q 'ERROR:' "$out"; then
+		rm -f "$fifo" "$out"; q "DROP TABLE IF EXISTS $marker;" >/dev/null
+		echo ""; return 1
+	fi
 	rm -f "$fifo" "$out"
 	q "DROP TABLE IF EXISTS $marker;" >/dev/null
 
@@ -282,7 +288,11 @@ rescan_peak() {	# rescan_peak TABLE NROWS [GUC] -> kB above idle, or empty
 		n=$((n+1)); sleep 0.1
 	done
 	pk=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null)
-	exec 9>&-; wait 2>/dev/null; rm -f "$fifo" "$fifo.out"
+	exec 9>&-; wait 2>/dev/null
+	# A rescan that ERRORS goes idle at once with VmHWM barely moved, which reads
+	# as no growth (found by @OffgridwithJD on #1558). A failed run is no reading.
+	if grep -q 'ERROR:' "$fifo.out"; then rm -f "$fifo" "$fifo.out"; echo ""; return 1; fi
+	rm -f "$fifo" "$fifo.out"
 	[ -n "$base" ] && [ -n "$pk" ] && echo $(( pk - base )) || echo ""
 }
 rescan_slope() {	# rescan_slope TABLE [GUC] -> bytes per rescan
