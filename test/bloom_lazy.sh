@@ -55,6 +55,9 @@ bloom_blocks() {
 	q "$sql" >/dev/null
 	psql_run "SELECT pg_stat_force_next_flush();" >/dev/null
 	after="$(q "SELECT pg_stat_get_blocks_fetched('pgcolumnar.bloom'::regclass);")"
+	# nothing when either reading is missing: $((after - before)) reads two empty
+	# readings as 0, and 0 is the passing answer for the lazy-read check below
+	pgc_is_number "$before" && pgc_is_number "$after" || return 0
 	echo "$((after - before))"
 }
 
@@ -87,10 +90,20 @@ echo "      bloom blocks fetched: 6 groups -> $SMALL_BLK, 30 groups -> $LARGE_BL
 
 # The property. Both scans keep exactly one group, so both should read about one
 # group's bloom filters. Five times as many skipped groups must not cost five
-# times as many bloom blocks. The bound is deliberately loose: the claim is that
-# the cost does not follow the skipped groups, not that it is any exact number.
+# times as many bloom blocks. The bound is on the GROWTH: the 24 groups the large
+# table adds may read fewer than 12 bloom blocks between them, half a block each.
+# The first bound was large <= small * 2 + 20, set when a group's filters filled
+# several blocks; at one block per group it passed with the bloom fetched before
+# the zone map, for every skipped group, which is #310 itself (measured: 7 blocks
+# against 31, inside 34; the fix reads 1 against 1). And the kept group must have
+# read at least one block, or nothing was measured: with no bloom read at all,
+# 0 against 0 passed.
 check "bloom reads do not follow the skipped groups" \
-	"$( [ "$LARGE_BLK" -le $((SMALL_BLK * 2 + 20)) ] && echo yes || echo no )" "yes"
+	"$(if ! pgc_is_number "$SMALL_BLK" || ! pgc_is_number "$LARGE_BLK"; then
+		echo "no reading ([$SMALL_BLK] and [$LARGE_BLK])"
+	elif [ "$SMALL_BLK" -lt 1 ]; then echo "no reading (the kept group read no bloom block)"
+	elif [ $((LARGE_BLK - SMALL_BLK)) -lt 12 ]; then echo yes
+	else echo "no ($SMALL_BLK blocks for 6 groups, $LARGE_BLK for 30)"; fi)" "yes"
 
 # A scan that keeps every group still reads bloom filters, so the lazy path is
 # deferring the read and not suppressing it. Without this, a change that simply
@@ -102,7 +115,7 @@ check "bloom reads do not follow the skipped groups" \
 # across the table, so its zone map excluded every group but one and it was
 # measuring the column count instead of the group count.
 ALL="SELECT count(*) FROM large WHERE k = 7"
-check "the control query really does keep every group" \
+check_num "the control query really does keep every group" \
 	"$(groups_read "$ALL")" "$(groups_total "$ALL")"
 check "a scan that keeps every group reads more" \
 	"$( [ "$(bloom_blocks "$ALL")" -gt "$LARGE_BLK" ] && echo yes || echo no )" "yes"
@@ -110,22 +123,22 @@ check "a scan that keeps every group reads more" \
 # Correctness is the point of the filter, so the answers must not move.
 psql_run "CREATE TABLE h_mirror (seg int, $COLS);"
 psql_run "INSERT INTO h_mirror SELECT g/20000, $VALS FROM generate_series(0, 599999) g;"
-check "equality on the segment key agrees with the heap" \
+check_num "equality on the segment key agrees with the heap" \
 	"$(q 'SELECT count(*) FROM large WHERE seg = 3;')" \
 	"$(q 'SELECT count(*) FROM h_mirror WHERE seg = 3;')"
-check "equality that no group holds agrees with the heap" \
+check_num "equality that no group holds agrees with the heap" \
 	"$(q 'SELECT count(*) FROM large WHERE k = -999;')" \
 	"$(q 'SELECT count(*) FROM h_mirror WHERE k = -999;')"
-check "equality on a scattered column agrees with the heap" \
+check_num "equality on a scattered column agrees with the heap" \
 	"$(q 'SELECT count(*) FROM large WHERE a = 123456;')" \
 	"$(q 'SELECT count(*) FROM h_mirror WHERE a = 123456;')"
-check "two equality predicates agree with the heap" \
+check_num "two equality predicates agree with the heap" \
 	"$(q 'SELECT count(*) FROM large WHERE seg = 3 AND k = 60001;')" \
 	"$(q 'SELECT count(*) FROM h_mirror WHERE seg = 3 AND k = 60001;')"
-check "a range predicate still agrees with the heap" \
+check_num "a range predicate still agrees with the heap" \
 	"$(q 'SELECT count(*) FROM large WHERE seg BETWEEN 4 AND 9;')" \
 	"$(q 'SELECT count(*) FROM h_mirror WHERE seg BETWEEN 4 AND 9;')"
-check "full set parity" \
+check_text "full set parity" \
 	"$(pgc_set_hash 'SELECT seg, a, k FROM large')" \
 	"$(pgc_set_hash 'SELECT seg, a, k FROM h_mirror')"
 
@@ -133,10 +146,10 @@ check "full set parity" \
 # filter is a pruning step and never the source of an answer.
 # A compound statement returns the SET acknowledgement first, so take the value.
 nobloom() { q "SET pgcolumnar.enable_bloom_filter = off; $1" | tail -1; }
-check "results agree with bloom filters disabled" \
+check_num "results agree with bloom filters disabled" \
 	"$(nobloom 'SELECT count(*) FROM large WHERE a = 123456;')" \
 	"$(q 'SELECT count(*) FROM h_mirror WHERE a = 123456;')"
-check "an absent value agrees with bloom filters disabled" \
+check_num "an absent value agrees with bloom filters disabled" \
 	"$(nobloom 'SELECT count(*) FROM large WHERE k = -999;')" \
 	"$(q 'SELECT count(*) FROM h_mirror WHERE k = -999;')"
 
@@ -157,7 +170,7 @@ psql_run "ANALYZE wide;"
 ONE_PRED="SELECT count(*) FROM wide WHERE p0 = 1"
 SIX_PRED="SELECT count(*) FROM wide WHERE p0 = 1 AND p1 = 1 AND p2 = 1 AND p3 = 1 AND p4 = 1 AND p5 = 1"
 
-check "no group is excluded, so every predicate is reached" \
+check_num "no group is excluded, so every predicate is reached" \
 	"$(groups_read "$ONE_PRED")" "$(groups_total "$ONE_PRED")"
 
 ONE_BLK="$(bloom_blocks "$ONE_PRED")"

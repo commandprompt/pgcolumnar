@@ -255,6 +255,7 @@ behaviour, the source of that number is named.
 - [207. test_bloom_setting.py: enable_bloom_filter governs the write side too](#207-test_bloom_settingpy-enable_bloom_filter-governs-the-write-side-too)
 - [208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename](#208-test_sorted_mark_renamepy-a-tables-ordering-mark-follows-a-column-rename)
 - [209. test_sort_status_privilege.py: sort_status answers whoever may SELECT the table, and only them](#209-test_sort_status_privilegepy-sort_status-answers-whoever-may-select-the-table-and-only-them)
+- [210. test_bloom_lazy.py: a scan reads the bloom filters of the groups and columns it examines](#210-test_bloom_lazypy-a-scan-reads-the-bloom-filters-of-the-groups-and-columns-it-examines)
 
 ## 1. How to read a test in here
 
@@ -8790,3 +8791,33 @@ A call made as a role reads the first column of its first row, or its failure as
 | `test_a_role_with_no_privilege_is_refused_its_sort_status` | a role with no privilege on the table is refused |
 | `test_the_refusal_names_the_table` | and the refusal names the TABLE, not a catalog table it never asked about |
 | `test_a_superuser_still_reads_the_sort_status` | a superuser still reads sort status |
+## 210. test_bloom_lazy.py: a scan reads the bloom filters of the groups and columns it examines
+
+The pytest twin of `test/bloom_lazy.sh` (ported for #1341), every check by the shell's name. Two tables differ only in how many groups a one-group equality scan skips (6 and 30), so the bloom blocks they fetch, read from `pg_stat_get_blocks_fetched` on `pgcolumnar.bloom`, must not grow with the skipped groups (#310); on a wide table where no group is excluded, six equality predicates must fetch more than one (#314). The answers are compared with a heap mirror, with and without bloom filters.
+
+### Every test
+
+A module fixture on a private database builds the tables in the shell's order, with no parallel workers as the shell's cluster has; each test asserts one reading. A missing block count is a failed query rather than 0, and the kept group must have read a block, so "nothing was read" cannot pass as "nothing extra was read".
+
+| test | what it holds |
+| --- | --- |
+| `test_the_small_table_has_the_groups_it_should` | the small table has the groups it should |
+| `test_the_large_table_has_the_groups_it_should` | the large table has the groups it should |
+| `test_the_small_scan_keeps_one_group` | the small scan keeps one group |
+| `test_the_large_scan_keeps_one_group` | the large scan keeps one group |
+| `test_bloom_reads_do_not_follow_the_skipped_groups` | bloom reads do not follow the skipped groups -- the 24 groups the large table adds read fewer than 12 bloom blocks, and the kept group read at least one (the bloom fetched for every skipped group, or never, no longer passes) |
+| `test_the_control_query_really_does_keep_every_group` | the control query really does keep every group |
+| `test_a_scan_that_keeps_every_group_reads_more` | a scan that keeps every group reads more |
+| `test_equality_on_the_segment_key_agrees_with_the_heap` | equality on the segment key agrees with the heap |
+| `test_equality_that_no_group_holds_agrees_with_the_heap` | equality that no group holds agrees with the heap |
+| `test_equality_on_a_scattered_column_agrees_with_the_heap` | equality on a scattered column agrees with the heap |
+| `test_two_equality_predicates_agree_with_the_heap` | two equality predicates agree with the heap |
+| `test_a_range_predicate_still_agrees_with_the_heap` | a range predicate still agrees with the heap |
+| `test_full_set_parity_with_the_heap_mirror` | full set parity |
+| `test_results_agree_with_bloom_filters_disabled` | results agree with bloom filters disabled |
+| `test_an_absent_value_agrees_with_bloom_filters_disabled` | an absent value agrees with bloom filters disabled |
+| `test_no_wide_group_is_excluded` | no group is excluded, so every predicate is reached |
+| `test_bloom_reads_follow_the_columns_a_query_filters_on` | bloom reads follow the columns a query filters on |
+| `test_one_predicate_costs_well_less_than_six` | one predicate costs well less than six |
+| `test_the_filtered_answers_agree_with_a_heap_mirror` | the filtered answers agree with a heap mirror |
+| `test_six_predicates_give_the_same_answer_as_one_here` | six predicates give the same answer as one here |

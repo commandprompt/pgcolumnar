@@ -82,10 +82,8 @@ analyze_function	premise: the fixture stays on the absolute-count side of core's
 autovacuum	premise: av_off starts with dead rows above the threshold
 autovacuum	premise: av_on starts with dead rows above the threshold
 bloom_lazy	a scan that keeps every group reads more
-bloom_lazy	bloom reads do not follow the skipped groups
 bloom_lazy	bloom reads follow the columns a query filters on
 bloom_lazy	one predicate costs well less than six
-bloom_sizing	a five-value column does not get a unique column's filter (#467)
 cancel_decode	the many-group table has many groups
 cancel_decode	the scan outlasts the timeout, so a cancel is possible
 column_projection	premise: the unprojected read is large enough to measure (off: $B_OFF)

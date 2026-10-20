@@ -81,8 +81,12 @@ check_num "premise: the high-cardinality filter size is a measurement" "${HI:-x}
 # next_pow2(20000 * 10) = 262,144. Sized by value count they are identical, which
 # is the defect. A bound of 8x is far inside the real ratio and far outside any
 # rounding effect.
-check_num "a five-value column does not get a unique column's filter (#467)" \
-	"$(awk "BEGIN{print ($LO * 8 <= $HI) ? 1 : 0}")" "1"
+# The reading carries both sizes rather than collapsing to 1/0 (found by jdatcmd
+# on #1561), and refuses a missing one: awk reads an empty size as 0, and 0 * 8 <= 0.
+check "a five-value column does not get a unique column's filter (#467)" \
+	"$(if ! pgc_is_number "$LO" || ! pgc_is_number "$HI"; then echo "no reading ([$LO] and [$HI])"
+	   else awk -v l="$LO" -v h="$HI" 'BEGIN { print (l * 8 <= h) ? "yes" : "no (" l " bytes against " h ")" }'; fi)" \
+	"yes"
 
 # ---- the arm that stops this being satisfied by a useless filter ------------
 #
