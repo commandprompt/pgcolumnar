@@ -33,7 +33,9 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 CG=1000
 
-check "premise: the launcher is running" \
+# Not premises (#1339): the launcher, and the worker holding its lock, are
+# pgcolumnar's own, so a repository change reddens them.
+check "the launcher is running" \
 	"$(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'pgcolumnar autovacuum launcher';")" "1"
 check "premise: the daemon is on with a 30s maintenance hold" \
 	"$(q "SELECT current_setting('pgcolumnar.autovacuum') || '/' || current_setting('pgcolumnar.maintenance_hold_ms');")" "on/30s"
@@ -56,25 +58,34 @@ for _ in $(seq 1 40); do
 	[ "$(holds)" -ge 1 ] 2>/dev/null && { held=yes; break; }
 	sleep 0.5
 done
-check "premise: the daemon is holding SUEL on the table (the hold window is open)" "$held" "yes"
+check "the daemon is holding SUEL on the table (the hold window is open)" "$held" "yes"
 
 # now request AccessExclusive; time it. statement_timeout 15s < the 30s hold, so
 # a daemon that did NOT yield would make this time out (57014); a yielding daemon
 # releases within ~deadlock_timeout and this returns fast and clean.
 t0=$(date +%s)
-STATE="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-	-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
+# The grant is READ, not assumed: STATE was "${STATE:-granted}" over the SQLSTATE
+# alone, so a psql that never connected printed none and read as granted, and its
+# instant failure as fast (measured: with psql pointed at a dead port, both yield
+# checks passed). 'granted' is printed only after the COMMIT, and an error's
+# SQLSTATE takes precedence over it.
+OUT="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
 \\set VERBOSITY sqlstate
 SET statement_timeout = '15s';
 BEGIN; LOCK TABLE yt IN ACCESS EXCLUSIVE MODE; COMMIT;
+SELECT 'granted';
 SQLEOF
 )"
+STATE="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' <<<"$OUT" | head -1)"
+[ -n "$STATE" ] || STATE="$(grep -x granted <<<"$OUT" || echo "no reading: $(head -1 <<<"$OUT")")"
 elapsed=$(( $(date +%s) - t0 ))
 
 check "yield: the AccessExclusive lock was granted (no timeout -> daemon yielded)" \
-	"${STATE:-granted}" "granted"
+	"$STATE" "granted"
 check "yield: and it was granted FAST (<= 8s, far under the 30s hold)" \
-	"$([ "$elapsed" -le 8 ] 2>/dev/null && echo fast || echo "slow(${elapsed}s)")" "fast"
+	"$(if [ "$STATE" != granted ]; then echo "not granted ($STATE)"
+	   elif [ "$elapsed" -le 8 ] 2>/dev/null; then echo fast; else echo "slow(${elapsed}s)"; fi)" "fast"
 
 # the daemon logged the cancel of its own maintenance op
 sleep 1

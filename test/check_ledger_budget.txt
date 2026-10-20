@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 153
+suites_not_covered 151
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4404,4 +4404,24 @@ suites_not_covered 153
 #     never         3421 -> 3417
 #     dated         1684 -> 1689
 #     3417 + 1689 == 5106
-checks_never_observed_red 3417
+# #1341, autovacuum and autovacuum_yield seeded, with their twins (OffgridwithJD):
+# 3417 -> 3424, and suites_not_covered 153 -> 151. Neither suite had rows. They
+# enter with 11 and 6 checks from five-major runs (all green on each of 15-19, shell
+# and twin alike), after these fixes. In autovacuum_yield, "${STATE:-granted}" read a
+# psql that never connected as granted and its instant failure as fast: with psql
+# pointed at a dead port, both yield checks passed. The grant is now printed after the
+# COMMIT, and an error's SQLSTATE takes precedence. In autovacuum, the OFF and
+# OFF-again checks compared two readings that agreed when both were missing, and
+# OFF-again never required dead rows to leave alone: with the fixture's DELETE
+# removed, both passed. Each now reads "unchanged" only over dead rows that stayed. And
+# the launcher, its off-by-default setting and the worker holding its lock were
+# labelled premises for pgcolumnar's own behaviour (#1339); they lose the prefix. 10
+# are dated by three mutations, each reddening the same names in both twins: the
+# launcher running its passes with the switch off, the worker never marked
+# autovacuum so it cannot yield, and the launcher never registered. 7 arrive never.
+#
+#     ledger rows   5106 + 17 = 5123
+#     never         3417 + 7 = 3424
+#     dated         1689 + 10 = 1699
+#     3424 + 1699 == 5123
+checks_never_observed_red 3424
