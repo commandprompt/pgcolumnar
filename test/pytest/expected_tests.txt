@@ -297,7 +297,9 @@
 # by collection over NO_CLUSTER.
 # guard_tests 442 -> 462 for #1341's test_wal_envelope.py, the twin of wal_envelope.sh:
 # 20 tests, one per check, cluster-free, by collection over NO_CLUSTER.
-guard_tests 462
+# guard_tests 462 -> 463 for #1339's test_build_refusal.py :163: the new
+# test_build_once_serialises_concurrent_callers, by collection over NO_CLUSTER.
+guard_tests 463
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

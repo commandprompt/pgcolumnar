@@ -202,6 +202,38 @@ def test_build_once_builds_once_and_then_skips(tmp_path, expect):
     expect.num(len(calls), 1, "and the build ran exactly once")
 
 
+def test_build_once_serialises_concurrent_callers(tmp_path, expect):
+    """The docstring above is about workers that call AT ONCE, and two calls in a row
+    say nothing about that: with the lock removed they still build once, because the
+    first has written its marker before the second starts (#1339). Two threads call
+    together here, with a runner slow enough that the second arrives mid-build; the
+    lock makes it wait and then find the marker."""
+    import threading
+    import time
+
+    tree = _tree_with_source(tmp_path, "ok4", "int a = 1;\n")
+    pgc, libdir = _answerable(tmp_path, "concurrent")
+    lock = str(tmp_path / "lock4")
+    calls = []
+    quick = _installs_into(libdir, calls)
+
+    def slow(argv):
+        time.sleep(1.0)
+        return quick(argv)
+
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(
+        build_once(tree, str(pgc), "18", lock_path=lock, runner=slow))) for _ in range(2)]
+    for t in threads:
+        t.start()
+        time.sleep(0.2)
+    for t in threads:
+        t.join()
+    expect.text(",".join(sorted(results)), "already-built,built",
+                "two callers at once: one builds and the other waits for its marker")
+    expect.num(len(calls), 1, "and the concurrent build ran exactly once")
+
+
 def test_build_once_rebuilds_for_a_different_prefix(tmp_path, expect):
     """Keying the marker on 'did anyone build' would reintroduce the defect for
     anyone who runs the corpus against two majors in turn.
@@ -510,8 +542,10 @@ def test_the_fingerprint_covers_a_separately_built_module(tmp_path, expect):
     """
     tree = _tree_with_objstore(tmp_path, "fp")
     before = source_fingerprint(tree)
+    # Not a premise (#1339): source_fingerprint is the code under test, so a change to
+    # it can redden this.
     expect.text(repr(before is None), "False",
-                "premise: the tree fingerprints at all")
+                "the tree fingerprints at all")
 
     (tree / "objstore" / "module.c").write_text("int b = 2;\n")
     after = source_fingerprint(tree)
@@ -533,7 +567,8 @@ def test_an_objstore_edit_forces_a_second_build(tmp_path, expect):
 
     build_once(tree, str(pgc), "18", lock_path=lock, runner=counting)
     build_once(tree, str(pgc), "18", lock_path=lock, runner=counting)
-    expect.num(len(calls), 1, "premise: an unchanged tree builds once")
+    # Not a premise (#1339): build_once's skip is the behaviour under test.
+    expect.num(len(calls), 1, "an unchanged tree builds once")
 
     (tree / "objstore" / "module.c").write_text("int b = 2;\n")
     build_once(tree, str(pgc), "18", lock_path=lock, runner=counting)
@@ -555,8 +590,15 @@ def test_make_cluster_leaves_nothing_behind_when_setup_fails(tmp_path, expect):
     handled `is_ours()` path leaked too: it stopped the cluster and left the
     directory.
     """
-    import glob
-    before = set(glob.glob("/tmp/pgc-pytest-*"))
+    # THE DIRECTORY make_cluster CREATED, recorded rather than globbed for (#1339).
+    # A glob of /tmp/pgc-pytest-* missed every tree when TMPDIR points elsewhere,
+    # which is where mkdtemp puts them, so a leak there passed as "none".
+    made = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def recording(*a, **k):
+        made.append(real_mkdtemp(*a, **k))
+        return made[-1]
 
     # NARROW, and named rather than caught broadly. The broad-except guard that
     # arrives with the vacuity inventory refuses `except Exception` here and is
@@ -566,13 +608,17 @@ def test_make_cluster_leaves_nothing_behind_when_setup_fails(tmp_path, expect):
     # else escapes and fails the test loudly, which is what should happen to an
     # error this arm did not predict.
     raised = "no"
+    tempfile.mkdtemp = recording
     try:
         make_cluster("/nonexistent/bin/pg_config", "gw77")
     except (FileNotFoundError, RuntimeError, OSError):
         raised = "yes"
+    finally:
+        tempfile.mkdtemp = real_mkdtemp
 
     expect.text(raised, "yes", "premise: setup really failed, so the arm is not vacuous")
-    leaked = sorted(set(glob.glob("/tmp/pgc-pytest-*")) - before)
+    expect.num(len(made), 1, "premise: make_cluster created its tree before it failed")
+    leaked = [d for d in made if pathlib.Path(d).exists()]
     expect.text(", ".join(leaked) or "none", "none",
                 "a failed make_cluster leaves no directory behind")
 
@@ -630,9 +676,15 @@ def test_this_module_keeps_no_private_fingerprint(expect):
     import pgc_cluster
     src = pathlib.Path(inspect.getsourcefile(pgc_cluster)).read_text(encoding="utf-8")
     expect.at_least(len(src), 200, "premise: the module's own source was read")
+    # Every digest and every source walk, not one spelling of each: a private copy
+    # hashed with sha256, or walking with os.walk, passed when only "hashlib.md5" and
+    # one glob were refused (#1339). pgc_cluster calls no hashlib function at all,
+    # and its one rglob is the chown walk over a datadir, not a source walk.
     for fragment, name in (
-        ("hashlib.md5", "no private md5 digest"),
+        ("hashlib.", "no private digest of any kind"),
         ('glob("*/Makefile")', "and no private build-directory walk"),
+        ("os.walk(", "and no private directory walk by os.walk"),
+        ('rglob("*.c")', "and no private walk over source files"),
     ):
         expect.num(src.count(fragment), 0, name)
 
