@@ -244,6 +244,16 @@ approx_aggregates	approx_aggregates	tdigest over a columnar table gives exactly 
 approx_aggregates	approx_aggregates	the columnar table returns the 200,000 rows written, over 50,000 devices	15;16;17;18;19	2026-10-13	the custom scan off by default, and the access-method scan skips every row whose row number ends in 999
 approx_aggregates	approx_aggregates	the hll aggregate reads through the columnar scan	15;16;17;18;19	2026-10-13	pgcolumnar.enable_custom_scan defaults to off, in both its C initializer and its GUC boot value;the custom scan off by default, and the access-method scan skips every row whose row number ends in 999
 approx_aggregates	approx_aggregates	the tdigest aggregate reads through the columnar scan	15;16;17;18;19	2026-10-13	pgcolumnar.enable_custom_scan defaults to off, in both its C initializer and its GUC boot value;the custom scan off by default, and the access-method scan skips every row whose row number ends in 999
+arrow_export	arrow_export	arrow schema	15;16;17;18;19	never	-
+arrow_export	arrow_export	arrow values match heap oracle	15;16;17;18;19	2026-10-20	export: a bool written inverted;export: an int8 truncated through int32;export: every full record batch written twice
+arrow_export	arrow_export	empty arrow readable	15;16;17;18;19	never	-
+arrow_export	arrow_export	empty export rows written	15;16;17;18;19	never	-
+arrow_export	arrow_export	export_arrow rows written	15;16;17;18;19	never	-
+arrow_export	arrow_export	extended arrow schema	15;16;17;18;19	never	-
+arrow_export	arrow_export	extended export rows written	15;16;17;18;19	never	-
+arrow_export	arrow_export	extended values match heap oracle	15;16;17;18;19	2026-10-20	export: a date written in PostgreSQL's epoch;export: a non-finite timestamp not folded to null
+arrow_export	arrow_export	reject non-columnar table	15;16;17;18;19	2026-10-20	export: a heap table not refused
+arrow_export	arrow_export	reject unsupported type	15;16;17;18;19	2026-10-20	export: an unsupported column type not refused
 arrow_import	arrow_import	a date32 before PostgreSQL's first date is refused	15;16;17;18;19	2026-10-14	the Arrow date decode without its range check
 arrow_import	arrow_import	a date32 file is refused for a bigint column, not read past its buffer	15;16;17;18;19	never	-
 arrow_import	arrow_import	a date32 file is refused for a numeric(20,4) column, not read past its buffer	15;16;17;18;19	never	-

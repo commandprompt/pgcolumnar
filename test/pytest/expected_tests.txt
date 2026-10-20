@@ -884,4 +884,6 @@ guard_tests 462
 # 6 checks in 6 tests, by collection over the cluster files.
 # cluster_tests 1152 -> 1169 for #1341's test_vm_clear_on_renumber.py, the twin of vm_clear_on_renumber.sh:
 # 17 tests, one per check, by collection over the cluster files.
-cluster_tests 1169
+# cluster_tests 1169 -> 1179 for #1341's test_arrow_export.py, the twin of arrow_export.sh:
+# 10 checks in 10 tests, by collection over the cluster files.
+cluster_tests 1179

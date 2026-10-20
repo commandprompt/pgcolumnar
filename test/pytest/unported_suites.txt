@@ -8,7 +8,6 @@
 # The parity goal (#432) is this file empty.
 alter_column_type
 analyze_stats
-arrow_export
 audit
 autovacuum
 autovacuum_yield

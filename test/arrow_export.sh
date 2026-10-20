@@ -25,13 +25,20 @@ if ! python3 -c 'import pyarrow' 2>/dev/null; then
 	pgc_skip pyarrow "pyarrow not available; skipping Arrow export verification"
 fi
 
-expect_error() {
-	local label="$1" sql="$2"
-	if psql_run "$sql" >/dev/null 2>&1; then
-		check "$label (expected error)" "succeeded" "error"
+# refusal LABEL SQL MESSAGE: the SQL must fail with MESSAGE. Any error used to pass,
+# so a missing table, or a refusal removed and a later error raised in its place,
+# read as the refusal.
+refusal() {
+	local label="$1" sql="$2" msg="$3" out got
+	if out="$(psql_run "$sql" 2>&1)"; then
+		got="succeeded"
 	else
-		check "$label" "error" "error"
+		case "$out" in
+		*"$msg"*) got="refused" ;;
+		*) got="other error: $(printf '%s' "$out" | head -n 1)" ;;
+		esac
 	fi
+	check "$label" "$got" "refused"
 }
 
 ARROW="$PGC_WORKDIR/t.arrows"
@@ -79,6 +86,16 @@ def feq(x,y):
         if math.isnan(x) and math.isnan(y): return True
         return x==y
     return x==y
+# the oracle must hold the fixture's rows: with the load failed, both sides were
+# empty and agreed over nothing
+if len(pg) != 20003:
+    print("ORACLE %d rows, not 20003" % len(pg))
+    sys.exit(0)
+# the file's own row count too: ar is keyed by id, so a row written twice collapsed
+# into one and an export that repeated a whole batch read MATCH
+if tbl.num_rows != len(pg):
+    print("ROWS %d in the file, %d in the oracle" % (tbl.num_rows, len(pg)))
+    sys.exit(0)
 ok = set(ar)==set(pg) and all(all(feq(a,b) for a,b in zip(ar[k],pg[k])) for k in pg)
 print("MATCH" if ok else "MISMATCH")
 PY
@@ -109,10 +126,12 @@ check "empty arrow readable" "$emptyrows" "0 a,b"
 
 # Errors.
 echo "-- argument validation"
-expect_error "reject non-columnar table" "SELECT pgcolumnar.export_arrow('t_heap', '$PGC_WORKDIR/x.arrows');"
+refusal "reject non-columnar table" "SELECT pgcolumnar.export_arrow('t_heap', '$PGC_WORKDIR/x.arrows');" \
+	'is not a columnar table'
 psql_run "CREATE TABLE t_un (a int, p point) USING pgcolumnar;"
 psql_run "INSERT INTO t_un VALUES (1, '(1,2)');"
-expect_error "reject unsupported type" "SELECT pgcolumnar.export_arrow('t_un', '$PGC_WORKDIR/x.arrows');"
+refusal "reject unsupported type" "SELECT pgcolumnar.export_arrow('t_un', '$PGC_WORKDIR/x.arrows');" \
+	'which columnar.export_arrow does not support'
 
 # ---------------------------------------------------------------------------
 # Extended type coverage: date, time, timestamp(+tz), uuid, numeric(p,s) as
@@ -182,6 +201,12 @@ pg = {}
 for r in csv.reader(open(sys.argv[2],newline='')):
     pg[int(r[0])] = (int(r[0]), I(r[1]), I(r[2]), I(r[3]), I(r[4]),
                      N(r[5]), N(r[6]), N(r[7]), N(r[8]), N(r[9]))
+if len(pg) != 4:
+    print("ORACLE %d rows, not 4" % len(pg))
+    sys.exit(0)
+if t.num_rows != len(pg):
+    print("ROWS %d in the file, %d in the oracle" % (t.num_rows, len(pg)))
+    sys.exit(0)
 print("MATCH" if ar==pg else "MISMATCH %r %r"%(ar,pg))
 PY
 )"

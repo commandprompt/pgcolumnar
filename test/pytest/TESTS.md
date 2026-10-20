@@ -242,6 +242,7 @@ behaviour, the source of that number is named.
 - [194. test_arrow_nested_import.py: arrays and composites round-trip through Arrow](#194-test_arrow_nested_importpy-arrays-and-composites-round-trip-through-arrow)
 - [195. test_arrow_nested.py: arrays and composites export as Arrow List and Struct](#195-test_arrow_nestedpy-arrays-and-composites-export-as-arrow-list-and-struct)
 - [196. test_vm_clear_on_renumber.py: the visibility map is cleared wherever live rows are renumbered](#196-test_vm_clear_on_renumberpy-the-visibility-map-is-cleared-wherever-live-rows-are-renumbered)
+- [197. test_arrow_export.py: every exported value equals the heap oracle, and only the documented refusals](#197-test_arrow_exportpy-every-exported-value-equals-the-heap-oracle-and-only-the-documented-refusals)
 
 ## 1. How to read a test in here
 
@@ -8356,3 +8357,24 @@ Each check is its own test over a module fixture that runs the shell's steps in 
 | `test_recluster_online_cleared_the_old_numbers_late_block` | the late block goes `t->f` |
 | `test_a_relation_that_was_not_reclustered_keeps_its_all_visible_bits` | control: `rcctl`'s early block stays `t`, which fails a clear that escapes its relation |
 | `test_and_its_late_block_too` | control: and its late block |
+
+## 197. test_arrow_export.py: every exported value equals the heap oracle, and only the documented refusals
+
+The pytest twin of `test/arrow_export.sh` (ported for #1341), every check by the shell's name. A mixed-type columnar table copied from a heap table (NULLs, integer boundaries, NaN and infinities, empty and unicode text, bytea) is exported across more than one record batch, and pyarrow must read every value equal to the heap's. An empty table writes a readable schema-only stream. A heap table and an unsupported column type are refused, each by its own message. Date, time, timestamps, uuid, numeric and json export to the representation each maps to.
+
+### Every test
+
+A module fixture on a private database runs the SQL in the shell's order and reads the heap oracle over the driver with the shell's own expressions; each test asserts one reading. Each file reading requires the oracle to hold the fixture's rows, so two empty sides cannot agree, and the file's row count to equal the oracle's, because rows are compared by id and a row written twice would otherwise collapse into one. The shell skips whole without pyarrow, so every test declines by the shell's skip name first.
+
+| test | what it holds |
+| --- | --- |
+| `test_export_arrow_reports_every_row` | the export reports 20003 rows |
+| `test_arrow_values_match_the_heap_oracle` | the heap holds its 20003 rows, the file as many, and each equals the heap's (NaN equal to NaN) |
+| `test_the_arrow_schema_has_the_expected_types` | int32, int16, int32, int64, float, double, bool, string, binary |
+| `test_an_empty_table_reports_no_rows` | the empty table's export reports 0 rows |
+| `test_an_empty_table_writes_a_readable_stream` | its file reads back with 0 rows and both fields |
+| `test_a_heap_table_is_refused` | a heap table fails with `is not a columnar table` (another error no longer passes) |
+| `test_an_unsupported_column_type_is_refused` | a `point` column fails with its own message |
+| `test_the_extended_export_reports_every_row` | the extended table's export reports 4 rows |
+| `test_extended_values_match_the_heap_oracle` | the heap holds its 4 rows, the file as many, and each extended value equals its canonical form; non-finite dates and timestamps and NaN numerics are null |
+| `test_the_extended_schema_has_the_expected_types` | date32, time64, timestamp with and without UTC, fixed_size_binary(16), decimal128(20, 4), and strings |
