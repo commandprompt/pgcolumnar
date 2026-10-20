@@ -10,7 +10,6 @@ alter_column_type
 analyze_stats
 arrow_export
 arrow_nested
-arrow_nested_import
 audit
 autovacuum
 autovacuum_yield

@@ -878,4 +878,6 @@ guard_tests 462
 # 9 checks in 9 tests, by collection over the cluster files.
 # cluster_tests 1108 -> 1140 for #1341's test_zonemap_estimate_sample.py, the twin of zonemap_estimate_sample.sh:
 # 32 tests, one per check, by collection over the cluster files.
-cluster_tests 1140
+# cluster_tests 1140 -> 1146 for #1341's test_arrow_nested_import.py, the twin of arrow_nested_import.sh:
+# 6 checks in 6 tests, by collection over the cluster files.
+cluster_tests 1146

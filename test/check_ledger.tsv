@@ -321,6 +321,12 @@ arrow_import	arrow_import	the failed second import left the row count alone	15;1
 arrow_import	arrow_import	the index-scan check really uses the index	15;16;17;18;19	never	-
 arrow_import	arrow_import	the narrowed values are floored to the microsecond	15;16;17;18;19	never	-
 arrow_import	arrow_import	the narrowing reports the number of VALUES that lost digits, not rows	15;16;17;18;19	never	-
+arrow_nested_import	arrow_nested_import	export rows	15;16;17;18;19	never	-
+arrow_nested_import	arrow_nested_import	import count matches	15;16;17;18;19	2026-10-20	export: the final partial record batch never written
+arrow_nested_import	arrow_nested_import	import rows	15;16;17;18;19	2026-10-20	export: the final partial record batch never written
+arrow_nested_import	arrow_nested_import	nested import round-trips (arrays + composite)	15;16;17;18;19	2026-10-20	export: the final partial record batch never written;import: a NULL List element read as a value;import: a NULL Struct's validity bit ignored;import: an empty List read as a NULL array
+arrow_nested_import	arrow_nested_import	premise: the delete left 3999 live rows in the source	15;16;17;18;19	never	-
+arrow_nested_import	arrow_nested_import	round-trips after delete	15;16;17;18;19	2026-10-20	export: deleted rows exported too;export: the final partial record batch never written;import: a NULL List element read as a value;import: a NULL Struct's validity bit ignored;import: an empty List read as a NULL array
 autovacuum_expire	autovacuum_expire	OFF: with autovacuum_expire off the daemon retired nothing	15;16;17;18;19	2026-10-12	pgcolumnar.autovacuum_expire defaults to on, in both its C initializer and its GUC boot value;the daemon's loop runs expire for a retention table whether or not pgcolumnar.autovacuum_expire is on
 autovacuum_expire	autovacuum_expire	ON: a table with no retention is never named in a skipped line	15;16;17;18;19	2026-10-12	the daemon's loop runs expire on every columnar table when autovacuum_expire is on, the has_ttl filter removed
 autovacuum_expire	autovacuum_expire	ON: a table with no retention keeps every row	15;16;17;18;19	2026-10-12	the daemon runs expire on every table and PgColumnarReadTtl invents a 1 day retention on ts where none is declared
