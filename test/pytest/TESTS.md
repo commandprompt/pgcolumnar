@@ -776,7 +776,8 @@ is where a wrong quote would hide.
 | `test_the_shell_path_really_refuses` | the shell's own `FATAL` reaches the Python caller, through real bash |
 | `test_the_shell_path_accepts_a_good_build` | **control** for the arm above, through the same plumbing |
 | `test_a_missing_lib_sh_is_a_refusal_not_a_pass` | an unsourceable `lib.sh` means no guard at all, so it must refuse rather than proceed ungated |
-| `test_build_once_builds_once_and_then_skips` | the workers share one prefix, so the install is serialised rather than skipped |
+| `test_build_once_builds_once_and_then_skips` | the first call builds, the second finds the marker, and the build ran once |
+| `test_build_once_serialises_concurrent_callers` | two callers at once, with a build slow enough to overlap: one builds and the other waits on the lock and finds its marker (without the lock both build; #1339) |
 | `test_build_once_rebuilds_for_a_different_prefix` | running against two majors in turn rebuilds for each |
 | `test_editing_the_source_rebuilds` | the marker is keyed on the source fingerprint, not just the prefix |
 | `test_the_fingerprint_reads_content_not_mtime` | `touch` does not move the fingerprint; an edit does |
