@@ -169,8 +169,11 @@ def test_every_unguarded_import_spelling_is_refused(pytester, monkeypatch, expec
     result = pytester.runpytest("-p", "pgc_vacuity")
     out = result.stdout.str()
     seen = [f for f in SPELLINGS if f"{f[:-3]}.py imports pyarrow outside require_module" in out]
+    # Not a premise (#1339): the scan is the layer under test, so a change to it
+    # reddens this -- with importlib.import_module dropped from the spellings it
+    # recognises, five of six were found.
     expect.num(len(seen), len(SPELLINGS),
-               "premise: the scan finds each of the six import spellings (hole 4)")
+               "the scan finds each of the six import spellings (hole 4)")
     expect.num(1 if result.ret != 0 else 0, 1, "and a run carrying them is refused")
     expect.num(out.count("test_guarded.py imports pyarrow"), 0,
                "while a file that goes through require_module is not named")
@@ -195,7 +198,7 @@ def test_an_unguarded_import_is_refused_under_xdist_too(pytester, monkeypatch, e
     serial = pytester.runpytest_subprocess("-p", "pgc_vacuity", "-p", "no:cacheprovider")
     xdist = pytester.runpytest_subprocess("-p", "pgc_vacuity", "-p", "no:cacheprovider", "-n", "2")
     expect.num(1 if serial.ret != 0 and "REFUSED  test_bad.py" in serial.stdout.str() else 0, 1,
-               "premise: the serial run refuses the unguarded import")
+               "the serial run refuses the unguarded import")
     out = xdist.stdout.str()
     expect.num(out.count("REFUSED  test_bad.py imports pyarrow outside require_module"), 1,
                "under -n 2 the controller names the unguarded import, once")
