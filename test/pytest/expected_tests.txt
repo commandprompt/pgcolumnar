@@ -962,4 +962,6 @@ guard_tests 464
 # 12 tests, one per check, by collection over the cluster files.
 # cluster_tests 2065 -> 2072 for #1341's test_iceberg_name_mapping_memory.py, the twin of iceberg_name_mapping_memory.sh:
 # 7 tests, one per check, by collection over the cluster files.
-cluster_tests 2072
+# cluster_tests 2072 -> 2083 for #1341's test_iceberg_fdw_estimate.py and test_iceberg_fdw_projection.py,
+# the twins of iceberg_fdw_estimate.sh and iceberg_fdw_projection.sh, by collection over the cluster files.
+cluster_tests 2083

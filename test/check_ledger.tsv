@@ -2448,6 +2448,17 @@ iceberg_catalog	iceberg_catalog	malformed JSON is rejected (22P02), backend surv
 iceberg_catalog	iceberg_catalog	resolves the named current snapshot, not snapshots[0]	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the decoy snapshot is not returned	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the first snapshot has no parent (NULL)	15;16;17;18;19	never	-
+iceberg_fdw_estimate	iceberg_fdw_estimate	a filtered scan estimates fewer rows than the whole table (selectivity applied)	15;16;17;18;19	2026-10-21	the Iceberg FDW sets rows directly, so the scan's selectivity never applies
+iceberg_fdw_estimate	iceberg_fdw_estimate	backend alive	15;16;17;18;19	never	-
+iceberg_fdw_estimate	iceberg_fdw_estimate	the FDW estimates a positive row count from the manifests	15;16;17;18;19	never	-
+iceberg_fdw_estimate	iceberg_fdw_estimate	the estimate is the real record count, not the old constant 1000	15;16;17;18;19	2026-10-21	the Iceberg FDW estimates the old flat 1000 rows for every table
+iceberg_fdw_projection	iceberg_fdw_projection	backend alive	15;16;17;18;19	never	-
+iceberg_fdw_projection	iceberg_fdw_projection	count only (no column referenced) : FDW projection matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw_projection	iceberg_fdw_projection	filter references an unselected column : FDW projection matches iceberg_scan	15;16;17;18;19	2026-10-21	the Iceberg FDW's projection mask ignores columns only the scan clauses reference
+iceberg_fdw_projection	iceberg_fdw_projection	one column : FDW projection matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw_projection	iceberg_fdw_projection	select one, filter another : FDW projection matches iceberg_scan	15;16;17;18;19	2026-10-21	the Iceberg FDW's projection mask ignores columns only the scan clauses reference
+iceberg_fdw_projection	iceberg_fdw_projection	three columns : FDW projection matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw_projection	iceberg_fdw_projection	whole row : FDW projection matches iceberg_scan	15;16;17;18;19	never	-
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	and the mapped values are still correct	15;16;17;18;19	2026-10-21	the name-mapping parse binds every name but region, so region reads NULL on every row;the name-mapping parse ignores every entry's names, so nothing binds
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	core's own parse is the larger part of the scan's peak	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	the large arm produced three readings	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
