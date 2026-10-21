@@ -230,6 +230,7 @@ SUITES=(
 	native_zonemap
 	native_zonemap_narrow
 	native_zonemap_session
+	nologin_workers
 	objstore_addressing
 	objstore_allowlist
 	objstore_credentials

@@ -5028,4 +5028,22 @@ suites_not_covered 122
 #     never         3658 + 8 = 3666
 #     dated         1953 + 18 = 1971
 #     3666 + 1971 == 5637
-checks_never_observed_red 3666
+#
+# #1585, nologin_workers seeded, with its twin (jdatcmd): 3666 -> 3672. A new suite, so
+# suites_not_covered does not move: it is registered and covered in the same change. It
+# enters with 15 checks from five-major runs (all green on each of 15-19, shell and twin
+# alike). 9 are dated by five mutations, each reddening the same names in both twins:
+# the workers connecting as the calling role, as before #1585 (on PG16, reddening the
+# export, the copy, the copy's writer, the flush's split and the refused-login count); a
+# worker that never takes the caller's user id (its copy rows read postgres); one that
+# connects as the authenticated user and never makes the caller its session user (a
+# copy trigger's RESET ROLE then writes as another user); one that drops the caller's
+# security context (a SECURITY DEFINER copy's trigger escapes its restriction); and a
+# loader that prepares whatever role a trigger left it as (a role-switching trigger is
+# not refused, and its transaction is left prepared). 6 arrive never.
+#
+#     ledger rows   5637 + 15 = 5652
+#     never         3666 + 6 = 3672
+#     dated         1971 + 9 = 1980
+#     3672 + 1980 == 5652
+checks_never_observed_red 3672

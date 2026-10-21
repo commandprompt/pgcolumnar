@@ -101,7 +101,10 @@ typedef struct PflushWorkerSlot
 typedef struct PflushHeader
 {
 	Oid			dbid;
-	Oid			roleid;
+	Oid			roleid;			/* the caller's user id, with secContext */
+	int			secContext;
+	Oid			authid;			/* the authenticated user, which workers connect as below 17 (#1585) */
+	bool		roleIsSuperuser;	/* roleid's superuser flag, for the worker's session user */
 	Oid			relid;
 	uint64		storageId;
 	uint64		groupNumber;
@@ -2440,7 +2443,6 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	pg_atomic_uint32 *claim;
 	PflushWorkerSlot *me;
 	int			widx;
-	uint32		conn_flags = BGWORKER_BYPASS_ALLOWCONN;
 
 	memcpy(&widx, MyBgworkerEntry->bgw_extra, sizeof(int));
 
@@ -2465,10 +2467,8 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	claim = (pg_atomic_uint32 *) shm_toc_lookup(toc, PFLUSH_KEY_CLAIM, false);
 	me = &slots[widx];
 
-#if PG_VERSION_NUM >= 170000
-	conn_flags |= BGWORKER_BYPASS_ROLELOGINCHECK;
-#endif
-	BackgroundWorkerInitializeConnectionByOid(hdr->dbid, hdr->roleid, conn_flags);
+	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
+							   hdr->roleIsSuperuser);
 
 	/*
 	 * A fresh snapshot for catalog/tupdesc reads only. A plain
@@ -2770,7 +2770,9 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 	pg_atomic_init_u32(claim, 0);
 
 	hdr->dbid = MyDatabaseId;
-	hdr->roleid = GetUserId();
+	GetUserIdAndSecContext(&hdr->roleid, &hdr->secContext);
+	hdr->authid = GetAuthenticatedUserId();
+	hdr->roleIsSuperuser = superuser_arg(hdr->roleid);
 	hdr->relid = writeState->relid;
 	hdr->storageId = writeState->storageId;
 	hdr->groupNumber = groupNumber;

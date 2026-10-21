@@ -3789,6 +3789,21 @@ native_writer	native_writer	native row groups (5000 rows / 1000 limit)	15;16;17;
 native_writer	native_writer	native row-group row total	15;16;17;18;19	never	-
 native_writer	native_writer	native storage row written	15;16;17;18;19	never	-
 native_writer	native_writer	native vector length recorded	15;16;17;18;19	2026-10-16	columnar.h: COLUMNAR_NATIVE_VECTOR_LENGTH 2048
+nologin_workers	nologin_workers	a NOLOGIN role's parallel flush encodes every column in a worker	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
+nologin_workers	nologin_workers	a NOLOGIN role's parallel_copy loads every row	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
+nologin_workers	nologin_workers	a NOLOGIN role's parallel_export_parquet exports every row	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
+nologin_workers	nologin_workers	a copy run by a SECURITY DEFINER function keeps the definer's restriction in its workers	15;16;17;18;19	2026-10-21	columnar.h: the worker takes the caller's user id without its security context
+nologin_workers	nologin_workers	a copy trigger that resets the role still writes every row as the NOLOGIN role	15;16;17;18;19	2026-10-21	columnar.h: the worker connects as the authenticated user and never makes the caller its session user
+nologin_workers	nologin_workers	a copy trigger that switches to another role is refused before the worker prepares	15;16;17;18;19	2026-10-21	columnar_parallel_copy.c: the loader prepares whatever role a trigger left it as
+nologin_workers	nologin_workers	and that copy leaves no prepared transaction behind	15;16;17;18;19	never	-
+nologin_workers	nologin_workers	and the refused copy leaves no prepared transaction behind	15;16;17;18;19	2026-10-21	columnar_parallel_copy.c: the loader prepares whatever role a trigger left it as
+nologin_workers	nologin_workers	and the table holds every row it flushed	15;16;17;18;19	never	-
+nologin_workers	nologin_workers	no worker was refused a login as the NOLOGIN role	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
+nologin_workers	nologin_workers	parallel_copy's workers wrote every row as the NOLOGIN role	15;16;17;18;19	2026-10-21	columnar.h: the worker connects as the authenticated user and never takes the caller's user id;the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
+nologin_workers	nologin_workers	premise: SET ROLE to the NOLOGIN role takes	15;16;17;18;19	never	-
+nologin_workers	nologin_workers	premise: the NOLOGIN role cannot open a session	15;16;17;18;19	never	-
+nologin_workers	nologin_workers	premise: the server log records the NOLOGIN role's refused login	15;16;17;18;19	never	-
+nologin_workers	nologin_workers	the flush is dispatched to workers	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	a multi-entry list matches any entry	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	a non-superuser cannot widen the list (42501)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
 objstore_allowlist	objstore_allowlist	a superuser session SET works (admin override)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it

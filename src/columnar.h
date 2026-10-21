@@ -1273,4 +1273,58 @@ PgColumnarVarSizeAnyUnalignedBounded(const char *p, const char *end)
 	return len;
 }
 
+/*
+ * Connect a background worker that does a caller's work, and act as that caller
+ * (#1585, #1612). The leader records the caller as userid, with its superuser flag
+ * and security context (GetUserIdAndSecContext), and GetAuthenticatedUserId() as
+ * authid.
+ *
+ * THE WORKER'S SESSION USER IS THE CALLER on every major, so a RESET ROLE inside the
+ * worker (a copy trigger can run one) lands on the caller and not on some other user.
+ * On 17 and later the worker connects as the caller, with the login check bypassed,
+ * as it always did. Before 17 there is no such bypass and a NOLOGIN caller cannot be
+ * connected as, so the worker connects as the authenticated user, which logged in, and
+ * then makes the caller its session user. Connecting as the authenticated user and
+ * stopping there made it the session user: a trigger's RESET ROLE then became that
+ * user, the copy PREPAREd as it, and the leader could not finish the transaction
+ * (#1612 review).
+ *
+ * THE SECURITY CONTEXT TRAVELS TOO, as core's ParallelWorkerMain carries it, so a call
+ * made inside a SECURITY DEFINER function or a security-restricted operation keeps its
+ * restrictions in the worker: without it, a trigger there could switch to the session
+ * user (#1612 review). It is taken inside the transaction; see
+ * columnar_worker_take_context below.
+ */
+#include "miscadmin.h"
+#include "postmaster/bgworker.h"
+
+static inline void
+columnar_worker_connect_as(Oid dbid, Oid authid, Oid userid, bool userIsSuperuser)
+{
+#if PG_VERSION_NUM >= 170000
+	(void) authid;
+	(void) userIsSuperuser;
+	BackgroundWorkerInitializeConnectionByOid(dbid, userid,
+											  BGWORKER_BYPASS_ALLOWCONN |
+											  BGWORKER_BYPASS_ROLELOGINCHECK);
+#else
+	BackgroundWorkerInitializeConnectionByOid(dbid, authid, BGWORKER_BYPASS_ALLOWCONN);
+	SetSessionAuthorization(userid, userIsSuperuser);	/* the current user too */
+#endif
+}
+
+/*
+ * Take the caller's security context, INSIDE the worker's transaction. A top-level
+ * transaction must start with none -- StartTransaction asserts it, which is why core's
+ * ParallelWorkerMain sets it after its transaction begins -- and commit or abort
+ * restores the transaction's starting state. Set before the first transaction, an
+ * assert-enabled build aborted the coordinator (#1612 review). Called by the workers
+ * that run user code: the copy loader (triggers) and the export worker.
+ */
+static inline void
+columnar_worker_take_context(Oid userid, int sec_context)
+{
+	SetUserIdAndSecContext(userid, sec_context);
+}
+
 #endif							/* PGCOLUMNAR_H */
