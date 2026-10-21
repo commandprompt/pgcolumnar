@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 131
+suites_not_covered 130
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4824,4 +4824,24 @@ suites_not_covered 131
 #     never         3618 + 7 = 3625
 #     dated         1875 + 4 = 1879
 #     3625 + 1879 == 5504
-checks_never_observed_red 3625
+#
+# #1341, generated_columns seeded, with its twin (OffgridwithJD): 3625 -> 3629,
+# and suites_not_covered 131 -> 130. The suite had no rows. It enters with 11
+# checks from PG18 and 19 and a recorded skip on 15-17 (all green, shell and twin
+# alike), one row more than its checks. Before PG18 the virtual arm was printed
+# as skipped and left out of the accounting; it is now a SKIP by the name "virtual
+# generated columns", and the major is read before the gate. Measured on PG18 at
+# origin/main: with gv_col's INSERT removed, "recomputed correctly" and "no chunk
+# stored for the virtual columns" both passed on an empty table (each now carries
+# the total, and a NULL is a mismatch via IS DISTINCT FROM); with both aggregate
+# readings failed, "aggregate matches" passed as "" == "" (check_text, and the heap
+# oracle must hold the fixture's answer). The four hash checks carry the columnar
+# row count against the constant. 8 are dated by four mutations of the virtual-
+# column skip in the writer, each reddening the same names in both twins; 3 arrive
+# never, and the skip row is never too.
+#
+#     ledger rows   5504 + 12 = 5516
+#     never         3625 + 4 = 3629
+#     dated         1879 + 8 = 1887
+#     3629 + 1887 == 5516
+checks_never_observed_red 3629

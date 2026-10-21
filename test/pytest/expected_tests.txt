@@ -971,4 +971,6 @@ guard_tests 467
 # the twins of iceberg_fdw_estimate.sh and iceberg_fdw_projection.sh, by collection over the cluster files.
 # cluster_tests 2083 -> 2094 for #1341's test_estimate_deleted.py, the twin of estimate_deleted.sh:
 # 11 tests, one per check, by collection over the cluster files.
-cluster_tests 2094
+# cluster_tests 2094 -> 2105 for #1341's test_generated_columns.py, the twin of generated_columns.sh:
+# 11 tests, one per check, by collection over the cluster files.
+cluster_tests 2105
