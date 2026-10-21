@@ -46,7 +46,6 @@ import_deferred
 import_exclusion
 index_delete_liveness
 index_only
-int8_agg_int128
 isolation
 logical_decoding_cdc_recipe
 logical_decoding_source

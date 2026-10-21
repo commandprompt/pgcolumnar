@@ -2519,6 +2519,40 @@ inheritance	inheritance	premise: while its leaf is an ordinary relation	15;16;17
 inheritance	inheritance	row identities match the heap	15;16;17;18;19	never	-
 inheritance	inheritance	the child is visible through the parent	15;16;17;18;19	never	-
 inheritance	inheritance	ungrouped vector aggregation also sees the child rows	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	a large NEGATIVE sum agrees	15;16;17;18;19	2026-10-21	the int128 to numeric rebuild drops the low half past int64
+int8_agg_int128	int8_agg_int128	a sum past int64 agrees with the scalar path and with heap	15;16;17;18;19	2026-10-21	the int128 to numeric rebuild drops the low half past int64
+int8_agg_int128	int8_agg_int128	and its avg agrees	15;16;17;18;19	2026-10-21	the int128 to numeric rebuild drops the low half past int64
+int8_agg_int128	int8_agg_int128	avg over an all-NULL column is NULL	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	avg over an empty table is NULL too	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	avg over the same agrees	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	avg(bigint) across a rescan matches the heap	15;16;17;18;19	2026-10-21	the reset never clears the int128 accumulator, so a rescan adds to the last total (#786)
+int8_agg_int128	int8_agg_int128	avg(bigint) agrees too	15;16;17;18;19	2026-10-21	FOR decode returns each 8-byte vector's minimum one too high
+int8_agg_int128	int8_agg_int128	avg(numeric) too	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	control: count(*) across the same rescan matches the heap	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	mixed signs summing back into int64 range agree	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: and for avg(v)	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: and the vectorized node really runs, so the ratio compares two paths	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: its values are NOT low-cardinality, so the fold is not answered from runs	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: the filtered fixture loaded every row	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: the fixture really holds NULLs and negatives	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: the node really is re-executed, so a stale accumulator can show	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: the rescan query returns a row per driver row, not an error	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: the rescan shape still takes the vectorized node	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: the sum really exceeds what int64 can hold	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: the timing fixture loaded every row	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: the vectorized node really runs for sum(v)	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: the vectorized node runs on the FILTERED query too	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: the vectorized node runs on this table too	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	premise: this sum is past int64 in the negative direction	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	sum over a column with NULLs and negatives agrees	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	sum over an all-NULL column is NULL	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	sum over an empty table is NULL, as on heap	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	sum(bigint) across a rescan matches the heap	15;16;17;18;19	2026-10-21	the reset never clears the int128 accumulator, so a rescan adds to the last total (#786)
+int8_agg_int128	int8_agg_int128	sum(bigint) across a rescan on the >int64 fixture matches the heap	15;16;17;18;19	2026-10-21	the reset never clears the int128 accumulator, so a rescan adds to the last total (#786)
+int8_agg_int128	int8_agg_int128	sum(bigint) agrees with the scalar path and with heap	15;16;17;18;19	2026-10-21	FOR decode returns each 8-byte vector's minimum one too high
+int8_agg_int128	int8_agg_int128	sum(numeric) keeps its scale and still agrees	15;16;17;18;19	never	-
+int8_agg_int128	int8_agg_int128	the FILTERED vectorized path is not slower than the scalar one	15;16;17;18;19	2026-10-21	the vectorized path takes the platform fallback (#undef HAVE_INT128)
+int8_agg_int128	int8_agg_int128	the vectorized path is not slower than the scalar one	15;16;17;18;19	2026-10-21	the vectorized path takes the platform fallback (#undef HAVE_INT128)
 large_values	large_values	a chunk over 1 GB is refused with 54000, commits nothing, and the server stays up	15;16;17;18;19	never	-
 large_values	large_values	an UPDATE that takes a TOASTed heap value stores it exactly in the columnar row	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 large_values	large_values	and the other rows are unchanged	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
