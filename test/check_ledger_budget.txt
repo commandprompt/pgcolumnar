@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 140
+suites_not_covered 139
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4667,4 +4667,20 @@ suites_not_covered 140
 #     never         3579 + 6 = 3585
 #     dated         1821 + 8 = 1829
 #     3585 + 1829 == 5414
-checks_never_observed_red 3585
+#
+# #1341, index_only seeded, with its twin (OffgridwithJD): 3585 -> 3600, and
+# suites_not_covered 140 -> 139. The suite had no rows. It enters with 27 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike). One hole,
+# measured on PG17 at origin/main: "GUC off: no index-only scan" counted Index Only
+# Scans in a plan that need not have been read, and with the EXPLAIN pointed at a
+# missing table it passed; it now requires a plan over ios first. The VM-bit loop is
+# unrolled so the grader reads its four names, and the twin records the shell's two
+# session-timeout names where its session A fails. 12 are dated by four mutations of
+# the VM writer, clear-on-write, the visibility horizon and the GUC gate, each
+# reddening the same names in both twins; 15 arrive never.
+#
+#     ledger rows   5414 + 27 = 5441
+#     never         3585 + 15 = 3600
+#     dated         1829 + 12 = 1841
+#     3600 + 1841 == 5441
+checks_never_observed_red 3600

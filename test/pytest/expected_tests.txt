@@ -950,4 +950,6 @@ guard_tests 464
 # 9 tests, one per check, by collection over the cluster files.
 # cluster_tests 1989 -> 2003 for #1341's test_import_deferred.py, the twin of import_deferred.sh:
 # 14 tests, one per check, by collection over the cluster files.
-cluster_tests 2003
+# cluster_tests 2003 -> 2030 for #1341's test_index_only.py, the twin of index_only.sh:
+# 27 tests, one per check, by collection over the cluster files.
+cluster_tests 2030

@@ -273,6 +273,7 @@ behaviour, the source of that number is named.
 - [225. test_fsst_verdict_cache.py: the FSST keep/drop verdict is cached with an age bound](#225-test_fsst_verdict_cachepy-the-fsst-keepdrop-verdict-is-cached-with-an-age-bound)
 - [226. test_import_exclusion.py: import_arrow enforces an exclusion constraint, and a rewrite does not](#226-test_import_exclusionpy-import_arrow-enforces-an-exclusion-constraint-and-a-rewrite-does-not)
 - [227. test_import_deferred.py: imports honour a DEFERRABLE constraint, and the check is deferred, not gone](#227-test_import_deferredpy-imports-honour-a-deferrable-constraint-and-the-check-is-deferred-not-gone)
+- [228. test_index_only.py: index-only scans on a columnar table, served from the visibility map](#228-test_index_onlypy-index-only-scans-on-a-columnar-table-served-from-the-visibility-map)
 
 ## 1. How to read a test in here
 
@@ -9321,3 +9322,41 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_rows_outside_the_partial_index_are_all_present` | rows outside the partial index are all present |
 | `test_a_rewrite_of_a_uniquely_indexed_table_still_succeeds` | a rewrite of a uniquely-indexed table still succeeds |
 | `test_and_the_surviving_rows_are_intact` | and the surviving rows are intact |
+
+## 228. test_index_only.py: index-only scans on a columnar table, served from the visibility map
+
+The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open.
+
+| test | what it holds |
+| --- | --- |
+| `test_rows_loaded` | rows loaded |
+| `test_vm_bit_round_trips_block_0` | vm bit round-trips on columnar rel (block 0) |
+| `test_vm_bit_round_trips_block_3` | vm bit round-trips on columnar rel (block 3) |
+| `test_vm_bit_round_trips_block_50` | vm bit round-trips on columnar rel (block 50) |
+| `test_vm_bit_round_trips_block_171` | vm bit round-trips on columnar rel (block 171) |
+| `test_first_set_on_fresh_block_succeeds` | first set on fresh block succeeds |
+| `test_second_set_on_same_block_sees_prior_bit` | second set on same block sees prior bit |
+| `test_iv_row_count` | iv row count |
+| `test_before_vacuum_block_50_not_all_visible` | before vacuum: block 50 not all-visible |
+| `test_after_vacuum_block_10_all_visible` | after vacuum: block 10 all-visible |
+| `test_after_vacuum_block_50_all_visible` | after vacuum: block 50 all-visible |
+| `test_after_vacuum_block_120_all_visible` | after vacuum: block 120 all-visible |
+| `test_after_delete_block_50_cleared_by_write` | after delete: block 50 cleared by write |
+| `test_after_delete_vacuum_deleted_block_50_not_all_visible` | after delete+vacuum: deleted block 50 not all-visible |
+| `test_after_delete_vacuum_clean_block_10_still_all_visible` | after delete+vacuum: clean block 10 still all-visible |
+| `test_after_delete_vacuum_clean_block_120_still_all_visible` | after delete+vacuum: clean block 120 still all-visible |
+| `test_iv_contents_match_heap_oracle_after_vacuum_delete` | iv contents match heap oracle after vacuum/delete |
+| `test_guc_off_no_index_only_scan` | GUC off: no index-only scan |
+| `test_guc_on_index_only_scan_chosen` | GUC on: index-only scan chosen |
+| `test_all_visible_interior_zero_heap_fetches` | all-visible interior: zero heap fetches |
+| `test_index_only_results_match_heap_oracle_all_visible` | index-only results match heap oracle (all-visible) |
+| `test_index_only_results_match_heap_oracle_after_delete` | index-only results match heap oracle after delete (fallback) |
+| `test_after_delete_some_heap_fetches_occur` | after delete: some heap fetches occur |
+| `test_session_a_baseline_sees_batch_1_only` | session A baseline sees batch 1 only |
+| `test_old_snapshot_ios_does_not_see_post_snapshot_rows` | old snapshot IOS does not see post-snapshot rows |
+| `test_session_a_used_an_index_only_scan` | session A used an index-only scan |
+| `test_new_snapshot_sees_both_batches` | new snapshot sees both batches |
