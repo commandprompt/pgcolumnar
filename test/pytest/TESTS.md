@@ -4829,13 +4829,15 @@ and neither file names the other.
 | --- | --- |
 | `test_the_residual_names_the_suites_that_ran_and_did_not_account` | the debt is a set of names, and the reader exits clean |
 | `test_a_skipped_suite_that_accounted_does_not_become_a_debt` | on the live shape the residual is empty while the same reader still finds a real debt, and the skipped-but-accounted suites are their own named category |
-| `test_the_old_subtraction_goes_negative_on_that_same_input` | the control: three ran minus five accounted is the `-2` the runner printed |
+| `test_the_old_subtraction_goes_negative_on_that_same_input` | the control: three ran minus five accounted is the `-2` the runner printed, counted from the same fixture files the live-shape arm reads |
 | `test_the_readers_sort_their_own_inputs` | `comm` on unsorted input yields a wrong set silently, so the sort lives inside the reader |
 | `test_the_two_buckets_partition_the_suites_that_ran` | `inputs == sum(buckets)`, and neither bucket is the other's leftover |
 | `test_the_summary_block_was_extracted_rather_than_an_empty_range` | an empty extraction runs nothing and reports clean, so the block is asserted before it is used |
 | `test_the_printed_breakdown_takes_a_count_a_count_can_take` | the line a reader sees carries no negative, and names the skipped-but-accounted category |
 | `test_the_same_block_counts_and_names_a_real_debt` | the same block still counts and names a genuine debt, so it is not printing `0 did not` unconditionally |
 | `test_a_ran_count_the_names_do_not_support_fails_the_major` | told 4 ran while the names say 3, the block reports that the breakdown does not add up and fails the major; a block deriving the debt by subtraction would make it add up by construction (#1339) |
+| `test_the_tally_function_records_every_suite_that_ran_or_skipped` | `pgc_tally_suite` writes every ran name to `$_acc_ranfile` (three sites) and every skipped name to `$_acc_skipfile`, read inside the function |
+| `test_every_comm_in_the_runner_pins_its_collation` | every `comm` on a code line carries `LC_ALL=C`, and no `<(sort ` feeds one on the caller's locale |
 | `test_no_code_path_subtracts_the_wide_population_from_the_ran_count` | the defect's shape is refused at the source, over CODE lines only -- the comment explaining it quotes it verbatim |
 
 The load-bearing assertion is that the printed breakdown takes a count a count
