@@ -270,6 +270,7 @@ behaviour, the source of that number is named.
 - [222. test_maintenance_due.py: pgcolumnar.maintenance_due reports which online verb is worth running](#222-test_maintenance_duepy-pgcolumnarmaintenance_due-reports-which-online-verb-is-worth-running)
 - [223. test_eager_ordering_record.py: eager rewrites record the ordering they applied](#223-test_eager_ordering_recordpy-eager-rewrites-record-the-ordering-they-applied)
 - [224. test_int8_agg_int128.py: sum and avg over bigint accumulate in 128 bits](#224-test_int8_agg_int128py-sum-and-avg-over-bigint-accumulate-in-128-bits)
+- [225. test_fsst_verdict_cache.py: the FSST keep/drop verdict is cached with an age bound](#225-test_fsst_verdict_cachepy-the-fsst-keepdrop-verdict-is-cached-with-an-age-bound)
 
 ## 1. How to read a test in here
 
@@ -9246,3 +9247,30 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_avg_bigint_across_a_rescan_matches_the_heap` | avg(bigint) across a rescan matches the heap |
 | `test_sum_bigint_across_a_rescan_on_the_big_fixture_matches_the_heap` | sum(bigint) across a rescan on the >int64 fixture matches the heap |
 | `test_count_across_the_same_rescan_matches_the_heap` | control: count(*) across the same rescan matches the heap |
+
+## 225. test_fsst_verdict_cache.py: the FSST keep/drop verdict is cached with an age bound
+
+The twin of `test/fsst_verdict_cache.sh` (#472). Cached HELPS and HURTS verdicts store byte-identical chunks, a bound of one row group re-decides every time, a bounded cache tracks a column that changes character more closely than an unbounded one, values match a heap loaded from the same generator, and caching makes an md5 load at least 10% faster.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. A decline and a value comparison carry their row counts, and a timed load must have loaded.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_prose_fixture_loaded` | premise: the prose fixture loaded |
+| `test_it_spans_several_row_groups` | premise: and it spans several row groups, so caching has something to reuse |
+| `test_the_md5_fixture_loaded` | premise: the md5 fixture loaded |
+| `test_the_prose_corpus_keeps_fsst` | premise: the prose corpus KEEPS fsst, so the HELPS branch is exercised |
+| `test_the_md5_corpus_drops_it` | premise: and the md5 corpus DROPS it, so the two arms are different branches |
+| `test_a_reused_helps_verdict_stores_byte_identical_chunks` | a reused HELPS verdict stores byte-identical chunks |
+| `test_and_it_still_keeps_fsst` | and it still keeps fsst, rather than silently dropping it |
+| `test_a_reused_hurts_verdict_stores_byte_identical_chunks` | a reused HURTS verdict stores byte-identical chunks |
+| `test_and_it_still_declines_fsst` | and it still declines fsst |
+| `test_the_cached_load_returns_the_same_values_as_heap` | the cached load returns the same values as heap |
+| `test_a_reuse_bound_of_one_row_group_is_byte_identical_to_no_caching` | a reuse bound of one row group is byte-identical to no caching |
+| `test_the_three_changing_column_loads_all_produced_bytes` | premise: the three changing-column loads all produced bytes to compare |
+| `test_an_unbounded_cache_really_does_diverge` | an unbounded cache really does diverge on this fixture |
+| `test_a_bounded_cache_tracks_the_change_more_closely` | a bounded cache tracks the change more closely than an unbounded one |
+| `test_the_changing_column_still_returns_its_values` | and the changing column still returns its values |
+| `test_caching_the_verdict_makes_the_load_measurably_faster` | caching the verdict makes the load measurably faster |

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 143
+suites_not_covered 142
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4611,4 +4611,24 @@ suites_not_covered 143
 #     never         3543 + 24 = 3567
 #     dated         1798 + 10 = 1808
 #     3567 + 1808 == 5375
-checks_never_observed_red 3567
+#
+# #1341, fsst_verdict_cache seeded, with its twin (OffgridwithJD): 3424 -> 3433,
+# and suites_not_covered 151 -> 150. The suite had no rows. It enters with 16
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: with the cached loads failed, "caching the verdict
+# makes the load measurably faster" passed, a load that errors at once being fast, and
+# "and it still declines fsst" read 0 FSST vectors from an empty table; both now
+# require the loads to have loaded. "and the changing column still returns its values"
+# read only the row count, and an FSST decoder writing the wrong symbol passed it; it
+# now compares a counted hash with a heap loaded from the same generator. "an
+# unbounded cache really does diverge" is reddened by a cache that never reuses, and
+# loses the premise prefix (#1339). A cached HURTS that still builds the table is
+# equivalent here: it skips the expensive whole-corpus question either way, and the
+# load stays well inside the 10% bound. 7 are dated by four mutations of the cache
+# and the FSST decoder, each reddening the same names in both twins; 9 arrive never.
+#
+#     ledger rows   5375 + 16 = 5391
+#     never         3567 + 9 = 3576
+#     dated         1808 + 7 = 1815
+#     3576 + 1815 == 5391
+checks_never_observed_red 3576
