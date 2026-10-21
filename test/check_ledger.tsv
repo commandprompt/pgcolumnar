@@ -2560,6 +2560,37 @@ iceberg_fdw_projection	iceberg_fdw_projection	one column : FDW projection matche
 iceberg_fdw_projection	iceberg_fdw_projection	select one, filter another : FDW projection matches iceberg_scan	15;16;17;18;19	2026-10-21	the Iceberg FDW's projection mask ignores columns only the scan clauses reference
 iceberg_fdw_projection	iceberg_fdw_projection	three columns : FDW projection matches iceberg_scan	15;16;17;18;19	never	-
 iceberg_fdw_projection	iceberg_fdw_projection	whole row : FDW projection matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	a NULL data-file path is refused in iceberg_data_files (XX001, not a crash)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a manifest entry with a NULL file_path is not refused
+iceberg_malformed	iceberg_malformed	a NULL data-file path is refused in iceberg_scan (XX001, not a crash)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a manifest entry with a NULL file_path is not refused
+iceberg_malformed	iceberg_malformed	a NULL manifest_path is refused, not a crash (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_open_path does not refuse a NULL recorded path
+iceberg_malformed	iceberg_malformed	a dangling current-schema-id is refused (XX001), not silently stale-read	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a dangling current-schema-id resolves to the legacy top-level schema
+iceberg_malformed	iceberg_malformed	a manifest-list that is a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
+iceberg_malformed	iceberg_malformed	a null manifest-list min_sequence_number decodes as NULL, not 0 (#686)	15;16;17;18;19	2026-10-21	columnar_avro.c: read_manifest_list decodes a null min_sequence_number as 0
+iceberg_malformed	iceberg_malformed	a null manifest-list sequence_number decodes as NULL, not 0	15;16;17;18;19	2026-10-21	columnar_avro.c: read_manifest_list decodes a null sequence_number as 0
+iceberg_malformed	iceberg_malformed	an array-valued schema fields element is refused, not crashed (XX001)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	backend still up after the FIFO refusals	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	backend still up after the dangling-schema refusal	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	backend still up after the lister refusal	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	backend still up after the malformed-schema refusal	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	backend still up after the manifest-list FIFO refusal	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	backend still up after the null-manifest_path refusal	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_open_path does not refuse a NULL recorded path
+iceberg_malformed	iceberg_malformed	backend still up after the null-sequence refusal	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	backend still up after the scan refusal	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a manifest entry with a NULL file_path is not refused
+iceberg_malformed	iceberg_malformed	control: a concrete manifest seq scans all 5 rows (seq-3 delete is older than seq-5 data)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: a legacy-only-schema table still reads (5 rows)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: a present file_path lists one data file	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: a present manifest-list sequence_number decodes to its value	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: a present min_sequence_number decodes to its value (#686)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: a resolvable current-schema-id reads the correct amount column	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: a well-formed field object still decodes (0 entries)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: the legacy table binds amount correctly (10..50)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	iceberg_current_snapshot on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
+iceberg_malformed	iceberg_malformed	iceberg_data_files on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
+iceberg_malformed	iceberg_malformed	iceberg_scan on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
+iceberg_malformed	iceberg_malformed	iceberg_scan refuses a null manifest seq an ADDED entry must inherit (XX001, not a silent wrong row)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an added entry inherits a null manifest sequence number as 0
+iceberg_malformed	iceberg_malformed	read_avro_manifest on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
+iceberg_malformed	iceberg_malformed	read_manifest_list on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
+iceberg_malformed	iceberg_malformed	read_parquet on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	and the mapped values are still correct	15;16;17;18;19	2026-10-21	the name-mapping parse binds every name but region, so region reads NULL on every row;the name-mapping parse ignores every entry's names, so nothing binds
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	core's own parse is the larger part of the scan's peak	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	the large arm produced three readings	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
