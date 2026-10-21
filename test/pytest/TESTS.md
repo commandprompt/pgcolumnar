@@ -288,6 +288,7 @@ behaviour, the source of that number is named.
 - [240. test_fsst_margin.py: the FSST keep/drop margin decides, and never changes content](#240-test_fsst_marginpy-the-fsst-keepdrop-margin-decides-and-never-changes-content)
 - [241. test_index_delete_liveness.py: nbtree's deletion passes never destroy an entry for a live row](#241-test_index_delete_livenesspy-nbtrees-deletion-passes-never-destroy-an-entry-for-a-live-row)
 - [242. test_rewrite_group_scan.py: a rewrite reads each row group once, not once per row](#242-test_rewrite_group_scanpy-a-rewrite-reads-each-row-group-once-not-once-per-row)
+- [243. test_recluster_gate.py: recluster skips its rewrite when the table is already this key's run](#243-test_recluster_gatepy-recluster-skips-its-rewrite-when-the-table-is-already-this-keys-run)
 
 ## 1. How to read a test in here
 
@@ -9675,3 +9676,27 @@ A rewrite reads `finished` only when compact_rewrite returned a positive count. 
 | `test_a_group_under_the_cap_still_rewrites_correctly` | a group under the cap still rewrites correctly |
 | `test_the_index_lookup_reads_the_index` | the index lookup's plan reads rgs_id |
 | `test_an_index_lookup_finds_a_rewritten_row` | an index lookup finds a rewritten row |
+
+## 243. test_recluster_gate.py: recluster skips its rewrite when the table is already this key's run
+
+The pytest twin of `test/recluster_gate.sh` (ported for #1341), every check by the shell's name. recluster returns the number of row groups it rewrote, and its self-gate (#415) makes a repeat on an unchanged table rewrite nothing; an append or a new key makes it work again. On a private database.
+
+### Every test
+
+The row-set check reads a heap mirror built from the generator, not copied from the table under test. A layout comparison needs both readings.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_first_gate_recluster_does_real_work` | the first recluster does real work (>0 groups) |
+| `test_sort_status_reports_the_clustering_key` | sort_status now reports the clustering key (was NULL before #415) |
+| `test_the_recluster_run_covers_the_whole_relation` | the run covers the whole relation (0 appended groups) |
+| `test_a_repeat_on_an_unchanged_table_reclusters_nothing` | recluster by the same key on an unchanged table reclusters 0 groups |
+| `test_the_layout_is_byte_identical` | and it leaves the physical layout byte-identical (group offsets unmoved) |
+| `test_a_third_identical_recluster_is_a_no_op` | a third identical recluster is also a no-op |
+| `test_the_insert_appended_unsorted_groups` | premise: the insert appended unsorted groups |
+| `test_a_recluster_after_appends_does_work` | recluster after appends does real work again (>0) |
+| `test_recluster_folds_the_tail_back_into_the_run` | and it folds the new data back into the run (0 appended after) |
+| `test_a_recluster_by_a_new_key_does_work` | recluster by a NEW key is NOT a no-op -- it re-clusters (>0) |
+| `test_sort_status_reports_the_new_key` | and sort_status now reports the new key |
+| `test_a_repeat_by_the_new_key_is_a_no_op` | a repeat recluster by the new key is a no-op |
+| `test_the_no_op_reclusters_preserved_the_row_set` | no-op recluster preserved the exact row set (columnar == heap mirror) |
