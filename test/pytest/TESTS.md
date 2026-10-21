@@ -305,6 +305,7 @@ behaviour, the source of that number is named.
 - [257. test_parquet_level_width.py: the Parquet level-width helper is single-sourced, unsigned and bounded](#257-test_parquet_level_widthpy-the-parquet-level-width-helper-is-single-sourced-unsigned-and-bounded)
 - [258. test_parquet_nested.py: Parquet nested export writes lists and groups that read back as the generator's values](#258-test_parquet_nestedpy-parquet-nested-export-writes-lists-and-groups-that-read-back-as-the-generators-values)
 - [259. test_parquet_nested_import.py: nested Parquet import round-trips arrays and composites](#259-test_parquet_nested_importpy-nested-parquet-import-round-trips-arrays-and-composites)
+- [260. test_parquet_count_bounds.py: file-declared Parquet counts are bounded before use](#260-test_parquet_count_boundspy-file-declared-parquet-counts-are-bounded-before-use)
 
 ## 1. How to read a test in here
 
@@ -10110,3 +10111,29 @@ The pytest twin of `test/parquet_nested_import.sh` (ported for #1341), every che
 | `test_a_fresh_round_trip_after_a_delete_matches` | round-trips after delete |
 | `test_a_pyarrow_nested_file_imports_every_row` | pyarrow import rows; declines by this name without pyarrow |
 | `test_a_pyarrow_nested_file_matches_the_oracle` | pyarrow nested file matches oracle; declines by this name without pyarrow |
+
+## 260. test_parquet_count_bounds.py: file-declared Parquet counts are bounded before use
+
+The pytest twin of `test/parquet_count_bounds.sh` (ported for #1341), every check by the shell's name. With the shell's crafter, which patches the footer counts of an honest pyarrow file, a column chunk's num_values of 2^62 and a row group's num_rows past its values (scalar and LIST) must each be rejected as a malformed row group whose detail names the count, without phantom rows; the honest files import. A survival check passes only when the server answers AND the log's count of killed backends has not moved since setup, since a fresh connection answers again after crash recovery. Every test declines by the shell's skip name without pyarrow. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_crafter_produced_the_files` | premise: the crafter produced the seven files |
+| `test_the_server_is_up_before_any_malformed_file` | premise: the server is up before any malformed file is read |
+| `test_an_honest_file_imports_its_rows` | an honest file imports its rows |
+| `test_the_server_is_up_after_the_honest_import` | the server is still up after the honest import |
+| `test_a_wrapping_num_values_is_rejected` | num_values 2^62 is rejected, not imported |
+| `test_the_backend_survives_the_wrapping_num_values` | and the backend is still up (it did not wrap-allocate and crash) |
+| `test_num_rows_past_the_values_is_rejected` | num_rows past the chunk's values is rejected, not emitted as phantom rows |
+| `test_num_rows_past_the_values_returns_no_phantom_rows` | and it did not silently return more rows than the file holds -- any count above 8 |
+| `test_a_huge_num_rows_is_rejected` | a huge num_rows is rejected rather than walking off the allocation |
+| `test_the_backend_survives_the_huge_num_rows` | and the backend survived it |
+| `test_the_num_values_rejection_names_num_values` | the num_values rejection names num_values in its detail |
+| `test_the_num_rows_rejection_names_num_rows` | the num_rows rejection names num_rows in its detail |
+| `test_an_honest_list_imports_one_row` | an honest one-record list imports one row |
+| `test_a_valid_three_record_list_imports_three_rows` | a valid three-record list imports three rows (not over-rejected) |
+| `test_num_rows_past_a_lists_records_is_rejected` | num_rows past a list's record count is rejected, not emitted as phantom rows |
+| `test_num_rows_past_a_lists_records_returns_no_phantom_rows` | and it did not silently return more rows than the file's records -- any count above 1 |
+| `test_the_backend_survives_the_list_over_read` | and the backend survived the list over-read |
