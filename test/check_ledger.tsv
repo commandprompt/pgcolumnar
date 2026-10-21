@@ -1026,6 +1026,37 @@ doc_parallel_premise	doc_parallel_premise	the fixture holds several row groups, 
 doc_parallel_premise	doc_parallel_premise	the group counters were read, not blank	15;16;17;18;19	2026-10-21	EXPLAIN stops printing Columnar Chunk Groups Read;pgcolumnar.enable_custom_scan boots false (columnar_tableam.c)
 doc_parallel_premise	doc_parallel_premise	the page still names a narrow query	15;16;17;18;19	2026-10-21	docs/limitations.md stops naming a narrow query
 doc_parallel_premise	doc_parallel_premise	the sel plan is exactly one columnar scan node	15;16;17;18;19	2026-10-21	pgcolumnar.enable_custom_scan boots false (columnar_tableam.c)
+eager_ordering_record	eager_ordering_record	an unsorted rewrite claims no ordering	15;16;17;18;19	2026-10-21	an unsorted rewrite still records a lexicographic run
+eager_ordering_record	eager_ordering_record	and it rewrote no group: the physical layout is unchanged	15;16;17;18;19	2026-10-21	the recluster self-gate never fires
+eager_ordering_record	eager_ordering_record	and records it as a lexicographic run	15;16;17;18;19	2026-10-21	eager vacuum_sorted records no key and no kind (#758)
+eager_ordering_record	eager_ordering_record	and records no key	15;16;17;18;19	never	-
+eager_ordering_record	eager_ordering_record	and sort_status reports THAT kind, not the lexicographic one (#761)	15;16;17;18;19	2026-10-21	eager cluster records no key and no kind (#758)
+eager_ordering_record	eager_ordering_record	and sort_status reports no kind either, rather than a stale one (#761)	15;16;17;18;19	2026-10-21	an unsorted rewrite still records a lexicographic run
+eager_ordering_record	eager_ordering_record	and sort_status reports that kind to the table's owner (#761)	15;16;17;18;19	2026-10-21	eager vacuum_sorted records no key and no kind (#758)
+eager_ordering_record	eager_ordering_record	control: and it moved the lexgate layout	15;16;17;18;19	2026-10-21	the recluster self-gate skips whatever the key and kind
+eager_ordering_record	eager_ordering_record	control: and it moved the tailgate layout	15;16;17;18;19	2026-10-21	the recluster self-gate ignores rows appended past the run
+eager_ordering_record	eager_ordering_record	control: and that rewrite really moved the layout	15;16;17;18;19	2026-10-21	the recluster self-gate skips whatever the key and kind
+eager_ordering_record	eager_ordering_record	control: recluster does not skip a LEXICOGRAPHIC run of the same lead column	15;16;17;18;19	2026-10-21	the recluster self-gate skips whatever the key and kind
+eager_ordering_record	eager_ordering_record	control: recluster on a DIFFERENT key still rewrites every group	15;16;17;18;19	2026-10-21	the recluster self-gate skips whatever the key and kind
+eager_ordering_record	eager_ordering_record	control: recluster with an appended tail does not skip	15;16;17;18;19	2026-10-21	the recluster self-gate ignores rows appended past the run
+eager_ordering_record	eager_ordering_record	eager cluster records the key it applied	15;16;17;18;19	2026-10-21	eager cluster records no key and no kind (#758)
+eager_ordering_record	eager_ordering_record	eager cluster records the kind it applied	15;16;17;18;19	2026-10-21	eager cluster records no key and no kind (#758)
+eager_ordering_record	eager_ordering_record	eager vacuum_sorted records the key it applied	15;16;17;18;19	2026-10-21	eager vacuum_sorted records no key and no kind (#758)
+eager_ordering_record	eager_ordering_record	eager vacuum_sorted records the kind it applied	15;16;17;18;19	2026-10-21	eager vacuum_sorted records no key and no kind (#758)
+eager_ordering_record	eager_ordering_record	it left no unsorted tail	15;16;17;18;19	2026-10-21	sort_status reports one appended group too many
+eager_ordering_record	eager_ordering_record	it too reports a full run with no tail	15;16;17;18;19	2026-10-21	sort_status reports one appended group too many
+eager_ordering_record	eager_ordering_record	premise: and live rows in them	15;16;17;18;19	never	-
+eager_ordering_record	eager_ordering_record	recluster on the key the eager cluster already applied does nothing	15;16;17;18;19	2026-10-21	the recluster self-gate never fires
+eager_ordering_record	eager_ordering_record	sort_status reports the APPLIED key on the Z-ordered table, not the declared {k}	15;16;17;18;19	2026-10-21	sort_status reports only the declared sort_by
+eager_ordering_record	eager_ordering_record	sort_status still reports {k} on the lexicographically sorted table	15;16;17;18;19	never	-
+eager_ordering_record	eager_ordering_record	the Z-ordered table is NOT ordered on k	15;16;17;18;19	2026-10-21	the Z-order key keys on the lead column only so cluster writes a plain sort on k
+eager_ordering_record	eager_ordering_record	the gate fixture has more than one group	15;16;17;18;19	2026-10-21	sort_status reports a single group
+eager_ordering_record	eager_ordering_record	the insert appended past the recorded run	15;16;17;18;19	2026-10-21	sort_status reports no appended group ever
+eager_ordering_record	eager_ordering_record	the lexicographic rewrite really ordered the rows on k	15;16;17;18;19	2026-10-21	vacuum_sorted sorts descending (the commutator of <) and still records a lexicographic run on k
+eager_ordering_record	eager_ordering_record	the mark is set before the unsorted rewrite	15;16;17;18;19	2026-10-21	eager vacuum_sorted records no key and no kind (#758)
+eager_ordering_record	eager_ordering_record	the two eager layouts are now distinguishable in the catalog	15;16;17;18;19	2026-10-21	eager cluster labels its run lexicographic
+eager_ordering_record	eager_ordering_record	the two layouts are distinguishable through sort_status alone (#761)	15;16;17;18;19	2026-10-21	eager cluster labels its run lexicographic
+eager_ordering_record	eager_ordering_record	vacuum_sorted with no columns records the DECLARED key it applied	15;16;17;18;19	2026-10-21	eager vacuum_sorted records no key and no kind (#758)
 encode_effort	encode_effort	a table with no option set matches full	15;16;17;18;19	2026-10-21	the writer's default effort is fast
 encode_effort	encode_effort	a valid encode_effort is stored	15;16;17;18;19	2026-10-21	set_options does not store encode_effort on a new row
 encode_effort	encode_effort	an unknown compression name is refused	15;16;17;18;19	2026-10-14	set_options without its compression-name check

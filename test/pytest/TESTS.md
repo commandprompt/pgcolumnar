@@ -268,6 +268,7 @@ behaviour, the source of that number is named.
 - [220. test_encode_effort.py: the per-table encode_effort option](#220-test_encode_effortpy-the-per-table-encode_effort-option)
 - [221. test_doc_parallel_premise.py: the parallel-scan page's narrow query reads every chunk group](#221-test_doc_parallel_premisepy-the-parallel-scan-pages-narrow-query-reads-every-chunk-group)
 - [222. test_maintenance_due.py: pgcolumnar.maintenance_due reports which online verb is worth running](#222-test_maintenance_duepy-pgcolumnarmaintenance_due-reports-which-online-verb-is-worth-running)
+- [223. test_eager_ordering_record.py: eager rewrites record the ordering they applied](#223-test_eager_ordering_recordpy-eager-rewrites-record-the-ordering-they-applied)
 
 ## 1. How to read a test in here
 
@@ -9157,3 +9158,45 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_both_recommendation_names_both_verbs` | both: recommendation names both verbs |
 | `test_positive_a_select_holder_gets_a_verdict` | positive: a SELECT-holder gets a verdict, not a false deny |
 | `test_deny_a_role_without_select_is_refused` | deny: a role without SELECT on the relation is refused (42501) |
+
+## 223. test_eager_ordering_record.py: eager rewrites record the ordering they applied
+
+The twin of `test/eager_ordering_record.sh` (#758, #761). vacuum_sorted records a lexicographic run, cluster a Z-order run over its two columns, and the two are told apart in the catalog and through sort_status; the recluster self-gate skips exactly an eagerly clustered table on the same key; an unsorted rewrite claims no ordering; and vacuum_sorted with no columns records the declared key.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order, reading each layout at the same point the shell does. Distinguishable and moved are read only over two readings that were both taken.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_lexicographic_rewrite_ordered_the_rows_on_k` | the lexicographic rewrite really ordered the rows on k |
+| `test_it_left_no_unsorted_tail` | it left no unsorted tail |
+| `test_eager_vacuum_sorted_records_the_kind_it_applied` | eager vacuum_sorted records the kind it applied |
+| `test_sort_status_reports_that_kind_to_the_owner` | and sort_status reports that kind to the table's owner (#761) |
+| `test_eager_vacuum_sorted_records_the_key_it_applied` | eager vacuum_sorted records the key it applied |
+| `test_the_z_ordered_table_is_not_ordered_on_k` | the Z-ordered table is NOT ordered on k |
+| `test_it_too_reports_a_full_run_with_no_tail` | it too reports a full run with no tail |
+| `test_eager_cluster_records_the_kind_it_applied` | eager cluster records the kind it applied |
+| `test_sort_status_reports_that_kind_not_the_lexicographic_one` | and sort_status reports THAT kind, not the lexicographic one (#761) |
+| `test_eager_cluster_records_the_key_it_applied` | eager cluster records the key it applied |
+| `test_the_two_eager_layouts_are_distinguishable_in_the_catalog` | the two eager layouts are now distinguishable in the catalog |
+| `test_sort_status_reports_the_applied_key_on_the_z_ordered_table` | sort_status reports the APPLIED key on the Z-ordered table, not the declared {k} |
+| `test_sort_status_still_reports_k_on_the_sorted_table` | sort_status still reports {k} on the lexicographically sorted table |
+| `test_the_two_layouts_are_distinguishable_through_sort_status_alone` | the two layouts are distinguishable through sort_status alone (#761) |
+| `test_the_gate_fixture_has_more_than_one_group` | the gate fixture has more than one group |
+| `test_and_live_rows_in_them` | premise: and live rows in them |
+| `test_recluster_on_the_applied_key_does_nothing` | recluster on the key the eager cluster already applied does nothing |
+| `test_it_rewrote_no_group` | and it rewrote no group: the physical layout is unchanged |
+| `test_recluster_on_a_different_key_still_rewrites_every_group` | control: recluster on a DIFFERENT key still rewrites every group |
+| `test_that_rewrite_really_moved_the_layout` | control: and that rewrite really moved the layout |
+| `test_the_insert_appended_past_the_recorded_run` | the insert appended past the recorded run |
+| `test_recluster_with_an_appended_tail_does_not_skip` | control: recluster with an appended tail does not skip |
+| `test_it_moved_the_tailgate_layout` | control: and it moved the tailgate layout |
+| `test_recluster_does_not_skip_a_lexicographic_run` | control: recluster does not skip a LEXICOGRAPHIC run of the same lead column |
+| `test_it_moved_the_lexgate_layout` | control: and it moved the lexgate layout |
+| `test_the_mark_is_set_before_the_unsorted_rewrite` | the mark is set before the unsorted rewrite |
+| `test_an_unsorted_rewrite_claims_no_ordering` | an unsorted rewrite claims no ordering |
+| `test_sort_status_reports_no_kind_either` | and sort_status reports no kind either, rather than a stale one (#761) |
+| `test_and_records_no_key` | and records no key |
+| `test_vacuum_sorted_with_no_columns_records_the_declared_key` | vacuum_sorted with no columns records the DECLARED key it applied |
+| `test_and_records_it_as_a_lexicographic_run` | and records it as a lexicographic run |

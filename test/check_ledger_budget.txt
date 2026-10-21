@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 145
+suites_not_covered 144
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4568,4 +4568,27 @@ suites_not_covered 145
 #     never         3533 + 7 = 3540
 #     dated         1750 + 20 = 1770
 #     3540 + 1770 == 5310
-checks_never_observed_red 3540
+#
+# #1341, eager_ordering_record seeded, with its twin (OffgridwithJD): 3424 -> 3427,
+# and suites_not_covered 151 -> 150. The suite had no rows. It enters with 31
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: "the two eager layouts are now distinguishable"
+# and "control: and that rewrite really moved the layout" passed with one side's
+# reading failed, an empty string differing from anything; the two distinguishable and
+# three moved checks now require both readings. And "control: and it moved the tailgate
+# layout" read its before-layout ahead of the INSERT, whose own new group moved it, so
+# a self-gate blind to the tail passed it; the layout is now read just before the
+# recluster. "the mark is set before the unsorted rewrite" is reddened by an eager sort
+# that records nothing, and loses the premise prefix (#1339). So do six more that
+# a product change reddens alone: the lexicographic inversion count (vacuum_sorted
+# sorting descending under the same record), the Z-order one (a key on the lead
+# column only), and the sort_status tail and group counts (no tail, one tail too
+# many, a single group). 28 are dated by thirteen mutations of the record, the
+# rewrites, the self-gate and sort_status, each reddening the same names in both
+# twins; 3 arrive never.
+#
+#     ledger rows   5310 + 31 = 5341
+#     never         3540 + 3 = 3543
+#     dated         1770 + 28 = 1798
+#     3543 + 1798 == 5341
+checks_never_observed_red 3543
