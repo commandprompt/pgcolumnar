@@ -293,6 +293,7 @@ behaviour, the source of that number is named.
 - [245. test_reader_buffer_reuse.py: the reader reuses one group buffer, and the reuse never shows in an answer](#245-test_reader_buffer_reusepy-the-reader-reuses-one-group-buffer-and-the-reuse-never-shows-in-an-answer)
 - [246. test_nologin_workers.py: a NOLOGIN role's background workers connect and act as that role](#246-test_nologin_workerspy-a-nologin-roles-background-workers-connect-and-act-as-that-role)
 - [247. test_scan_direction.py: a scrollable cursor over a columnar table never invents a backward answer](#247-test_scan_directionpy-a-scrollable-cursor-over-a-columnar-table-never-invents-a-backward-answer)
+- [248. test_qual_order_selectivity.py: skip predicates are probed most-selective-first](#248-test_qual_order_selectivitypy-skip-predicates-are-probed-most-selective-first)
 
 ## 1. How to read a test in here
 
@@ -9808,3 +9809,25 @@ A cursor's rows are compared with heap's only when both returned rows. A stateme
 | `test_fetch_last_through_the_am_raises_0a000` | FETCH LAST through the AM raises 0A000 rather than returning nothing |
 | `test_the_same_cursor_on_heap_raises_nothing` | control: the same cursor on a heap table raises nothing |
 | `test_a_forward_only_fetch_reports_success` | control: a forward-only fetch reports success, so the probe is not stuck on 0A000 |
+
+## 248. test_qual_order_selectivity.py: skip predicates are probed most-selective-first
+
+The pytest twin of `test/qual_order_selectivity.sh` (ported for #1341), every check by the shell's name. With an unselective predicate written before a selective one, the reader moves the excluding predicate to the front, so a pruned group costs one zone-map probe rather than two (#403 item 4). On a private database, with serial planning.
+
+### Every test
+
+A probe count is a number or `no reading`. The heap mirror is built from the generator.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_columnar_scan_ran` | premise: the columnar scan ran, so these are its counters |
+| `test_both_predicates_are_usable` | both predicates were pushed down and are usable |
+| `test_the_fixture_has_its_groups` | premise: the fixture has the groups this suite is sized for |
+| `test_the_selective_predicate_still_prunes` | the selective predicate still prunes what it always did |
+| `test_the_probe_counter_is_reported` | the probe counter is reported at all |
+| `test_a_pruned_group_is_not_probed_through_every_column` | a pruned group is not probed through every predicate's column (#403 item 4) |
+| `test_the_order_the_predicates_are_written_in_does_not_matter` | and it does not depend on the order the predicates are written in |
+| `test_the_answer_matches_the_heap_oracle` | the answer matches the heap oracle |
+| `test_a_range_selective_predicate_matches` | and so does a query where the selective predicate is a range |
+| `test_nothing_selective_still_answers_correctly` | and one where NOTHING is selective, which must still answer correctly |
+| `test_no_selective_predicate_prunes_nothing` | a query with no selective predicate prunes nothing, as before |

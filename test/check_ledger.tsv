@@ -4272,6 +4272,17 @@ projections	projections	the rebuild does not abort on it	15;16;17;18;19	never	-
 projections	projections	two declared projections to start	15;16;17;18;19	never	-
 projections	projections	two rows after first add (base + p1)	15;16;17;18;19	never	-
 projections	projections	unknown column rejected	15;16;17;18;19	never	-
+qual_order_selectivity	qual_order_selectivity	a pruned group is not probed through every predicate's column (#403 item 4)	15;16;17;18;19	2026-10-21	an excluding skip predicate is never moved ahead of a non-excluding one (#403 item 4);columnar_customscan.c: the EXPLAIN property is named Columnar Zone Map Probe Count, not Columnar Zone Map Probes;columnar_reader.c: pgcolumnar_native_group_can_match always returns true, so the skip loop excludes no group;the zone-map probe counter reports 0
+qual_order_selectivity	qual_order_selectivity	a query with no selective predicate prunes nothing, as before	15;16;17;18;19	never	-
+qual_order_selectivity	qual_order_selectivity	and it does not depend on the order the predicates are written in	15;16;17;18;19	2026-10-21	an excluding skip predicate is never moved ahead of a non-excluding one (#403 item 4);columnar_customscan.c: the EXPLAIN property is named Columnar Zone Map Probe Count, not Columnar Zone Map Probes;columnar_reader.c: pgcolumnar_native_group_can_match always returns true, so the skip loop excludes no group;the zone-map probe counter reports 0
+qual_order_selectivity	qual_order_selectivity	and one where NOTHING is selective, which must still answer correctly	15;16;17;18;19	never	-
+qual_order_selectivity	qual_order_selectivity	and so does a query where the selective predicate is a range	15;16;17;18;19	never	-
+qual_order_selectivity	qual_order_selectivity	both predicates were pushed down and are usable	15;16;17;18;19	2026-10-21	columnar_customscan.c: EXPLAIN prints Columnar Usable Skip Predicates as 0
+qual_order_selectivity	qual_order_selectivity	premise: the columnar scan ran, so these are its counters	15;16;17;18;19	never	-
+qual_order_selectivity	qual_order_selectivity	premise: the fixture has the groups this suite is sized for	15;16;17;18;19	never	-
+qual_order_selectivity	qual_order_selectivity	the answer matches the heap oracle	15;16;17;18;19	never	-
+qual_order_selectivity	qual_order_selectivity	the probe counter is reported at all	15;16;17;18;19	2026-10-21	columnar_customscan.c: the EXPLAIN property is named Columnar Zone Map Probe Count, not Columnar Zone Map Probes
+qual_order_selectivity	qual_order_selectivity	the selective predicate still prunes what it always did	15;16;17;18;19	2026-10-21	columnar_reader.c: pgcolumnar_native_group_can_match always returns true, so the skip loop excludes no group
 range_pruning	range_pruning	a clustered overlap near the end skips the four vectors only their upper bounds rule out	15;16;17;18;19	2026-10-13	native_range_excludes never using max_upper (haveUpper forced false)
 range_pruning	range_pruning	a clustered overlap skips vectors instead of decoding them	15;16;17;18;19	never	-
 range_pruning	range_pruning	a scattered column skips nothing, which is what the documentation says	15;16;17;18;19	never	-

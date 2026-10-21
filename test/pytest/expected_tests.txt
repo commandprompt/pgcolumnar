@@ -993,4 +993,6 @@ guard_tests 467
 # 15 tests, one per check, by collection over the cluster files.
 # cluster_tests 2241 -> 2249 for #1341's test_scan_direction.py, the twin of scan_direction.sh:
 # 8 tests, one per check, by collection over the cluster files.
-cluster_tests 2249
+# cluster_tests 2249 -> 2260 for #1341's test_qual_order_selectivity.py, the twin of qual_order_selectivity.sh:
+# 11 tests, one per check, by collection over the cluster files.
+cluster_tests 2260

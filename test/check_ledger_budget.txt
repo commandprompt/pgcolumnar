@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 121
+suites_not_covered 120
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5064,4 +5064,25 @@ suites_not_covered 121
 #     never         3672 + 4 = 3676
 #     dated         1980 + 4 = 1984
 #     3676 + 1984 == 5660
-checks_never_observed_red 3676
+#
+# #1341, qual_order_selectivity seeded, with its twin (jdatcmd): 3503 -> 3509, and
+# suites_not_covered 149 -> 148. The suite had no rows. It enters with 11 checks from
+# five-major runs (11/11 on each of 15-19, shell and twin alike), after three fixes.
+# The reversed-order check read a missing probe count as 0, inside its bound: with the
+# counter reporting nothing it passed. It now needs a positive count. The heap
+# mirror was copied from the table under test, so with a row corrupted before the copy
+# the oracle checks passed; it is built from the generator. And the shell's three
+# answer arms read a failed query as its error text, so with the server stopped two
+# identical errors agreed and all three passed; a failed read now names its side.
+# 5 are dated by five mutations, each reddening the same names in both twins: no
+# transposition of an excluding predicate, a probe counter reading 0, no group
+# excluded, the usable-predicate count printed as 0, and the probe counter renamed.
+# The last three redden checks that were premises; each pins pgcolumnar's own
+# behaviour, so it is not a premise (#1339) and lost its "premise:" prefix.
+# 6 arrive never.
+#
+#     ledger rows   5660 + 11 = 5671
+#     never         3676 + 6 = 3682
+#     dated         1984 + 5 = 1989
+#     3682 + 1989 == 5671
+checks_never_observed_red 3682

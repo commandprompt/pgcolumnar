@@ -52,16 +52,26 @@ psql_run "ANALYZE qos;"
 
 # the heap oracle, for the answer arms
 psql_run "CREATE TABLE qos_heap (LIKE qos);"
-psql_run "INSERT INTO qos_heap SELECT * FROM qos;"
+# From the generator, not copied from qos: a copy agrees with whatever qos returned.
+psql_run "INSERT INTO qos_heap SELECT i % 10, i, i FROM generate_series(1,$NROWS) i;"
 
 plan_of() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
 		-c "SET max_parallel_workers_per_gather=0;
 		    EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $1" 2>&1
 }
+# q1 SIDE SQL -> the answer's last line, or "SIDE_ERROR (first line of output)" when
+# psql fails or prints nothing. The side is in the error, so a failed read on each
+# side is two different values: the error text alone made two failures agree, and
+# with the server stopped all three answer arms passed.
 q1() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
-		-c "$1" 2>&1 | tail -1
+	local out
+	if out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-v ON_ERROR_STOP=1 -c "$2" 2>&1)" && [ -n "$out" ]; then
+		printf '%s\n' "$out" | tail -1
+	else
+		printf '%s_ERROR (%s)\n' "$1" "$(printf '%s' "$out" | head -1)"
+	fi
 }
 field() {
 	sed -n "s/.*$2: \([0-9]*\).*/\1/p" <<<"$1" | head -1
@@ -78,16 +88,16 @@ USABLE="$(field "$PLAN" 'Columnar Usable Skip Predicates')"
 check "premise: the columnar scan ran, so these are its counters" \
 	"$(grep -q 'Custom Scan (PgColumnarScan)' <<<"$PLAN" && echo yes || echo no)" "yes"
 
-check "premise: both predicates were pushed down and are usable" "$USABLE" "2"
+check "both predicates were pushed down and are usable" "$USABLE" "2"
 
 check "premise: the fixture has the groups this suite is sized for" "$TOTAL" "$NGROUPS"
 
 # If the selective predicate stopped pruning, probes would fall for a reason that
 # has nothing to do with ordering. This is the arm that catches that.
-check "premise: the selective predicate still prunes what it always did" \
+check "the selective predicate still prunes what it always did" \
 	"$REMOVED" "$(( NGROUPS - 1 ))"
 
-check "premise: the probe counter is reported at all" \
+check "the probe counter is reported at all" \
 	"$(grep -qE 'Columnar Zone Map Probes: [0-9]+' <<<"$PLAN" && echo yes || echo no)" "yes"
 
 # ---- the check ------------------------------------------------------------
@@ -105,21 +115,24 @@ check "a pruned group is not probed through every predicate's column (#403 item 
 # ---- the order the query is written in must not matter ---------------------
 REV="$(plan_of "SELECT count(*) FROM qos WHERE b = 42 AND a >= 0")"
 REVPROBES="$(field "$REV" 'Columnar Zone Map Probes')"
+# A missing count read as 0, inside the bound: with the probe counter reporting
+# nothing, this passed. The reversed query must probe at all, and no more.
 check "and it does not depend on the order the predicates are written in" \
-	"$([ "${REVPROBES:-0}" -le "$BOUND" ] && echo "ordered" || echo "UNORDERED ($REVPROBES)")" "ordered"
+	"$(if ! [[ "$REVPROBES" =~ ^[0-9]+$ ]] || [ "$REVPROBES" -eq 0 ]; then echo "no reading ($REVPROBES probes)"
+	   elif [ "$REVPROBES" -le "$BOUND" ]; then echo "ordered"; else echo "UNORDERED ($REVPROBES)"; fi)" "ordered"
 
 # ---- answers --------------------------------------------------------------
 check "the answer matches the heap oracle" \
-	"$(q1 "SELECT count(*) FROM qos WHERE a >= 0 AND b = 42")" \
-	"$(q1 "SELECT count(*) FROM qos_heap WHERE a >= 0 AND b = 42")"
+	"$(q1 COL "SELECT count(*) FROM qos WHERE a >= 0 AND b = 42")" \
+	"$(q1 HEAP "SELECT count(*) FROM qos_heap WHERE a >= 0 AND b = 42")"
 
 check "and so does a query where the selective predicate is a range" \
-	"$(q1 "SELECT count(*), sum(b) FROM qos WHERE a >= 0 AND b BETWEEN 5000 AND 5100")" \
-	"$(q1 "SELECT count(*), sum(b) FROM qos_heap WHERE a >= 0 AND b BETWEEN 5000 AND 5100")"
+	"$(q1 COL "SELECT count(*), sum(b) FROM qos WHERE a >= 0 AND b BETWEEN 5000 AND 5100")" \
+	"$(q1 HEAP "SELECT count(*), sum(b) FROM qos_heap WHERE a >= 0 AND b BETWEEN 5000 AND 5100")"
 
 check "and one where NOTHING is selective, which must still answer correctly" \
-	"$(q1 "SELECT count(*) FROM qos WHERE a >= 0 AND b >= 0")" \
-	"$(q1 "SELECT count(*) FROM qos_heap WHERE a >= 0 AND b >= 0")"
+	"$(q1 COL "SELECT count(*) FROM qos WHERE a >= 0 AND b >= 0")" \
+	"$(q1 HEAP "SELECT count(*) FROM qos_heap WHERE a >= 0 AND b >= 0")"
 
 # A query with no selective predicate must not pay for the mechanism: nothing
 # excludes, so nothing is promoted, and every group is examined by both.
