@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 128
+suites_not_covered 127
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4901,4 +4901,27 @@ suites_not_covered 128
 #     never         3630 + 6 = 3636
 #     dated         1902 + 9 = 1911
 #     3636 + 1911 == 5547
-checks_never_observed_red 3636
+#
+# #1341, fsst_margin seeded, with its twin (OffgridwithJD): 3424 -> 3429, and
+# suites_not_covered 151 -> 150. The suite had no rows. It enters with 17 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike). Measured on
+# PG17 at origin/main: section 3's invariant -- the content tables read back what the
+# heap holds -- never read FSST-encoded data, because at one row in 13 being NULL,
+# empty or short no content vector chose FSST at any margin (0 FSST vectors in all
+# three tables), so decoders that wrote the wrong symbol or flipped an escaped byte
+# passed all 16. The content corpus is now one in 97, whose margin-0 copy stores FSST
+# and margin-90 copy does not, and a seventeenth check asserts the margin-0 copy is
+# FSST. The drop checks read 0 for an empty table and now carry the row count; the
+# content and NULL/empty comparisons are check_text; and the two loops are unrolled so
+# the grader can read their names; "so the margin is what changed the decision" now
+# names both counts and leaves lossy_arms.tsv. "the paired arm dropped FSST at this
+# margin with a codec" reads the same keep decision as the margin-90 arm and is
+# reddened by the same never-applied margin, so it is an arm, not a premise. 12 are
+# dated by six mutations of the keep test, its default and the FSST decoder, each
+# reddening the same names in both twins; 5 arrive never.
+#
+#     ledger rows   5547 + 17 = 5564
+#     never         3636 + 5 = 3641
+#     dated         1911 + 12 = 1923
+#     3641 + 1923 == 5564
+checks_never_observed_red 3641

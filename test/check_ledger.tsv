@@ -1192,6 +1192,23 @@ fk_referencing	fk_referencing	the conversion helper is refused identically	15;16
 fk_referencing	fk_referencing	the parent is still a row store	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
 fk_referencing	fk_referencing	the primary key is still enforced	15;16;17;18;19	never	-
 fk_referencing	fk_referencing	the refused table was not left behind	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fsst_margin	fsst_margin	and 0 still keeps it, so the default is a decision and not a rewrite	15;16;17;18;19	2026-10-21	FSST never helps
+fsst_margin	fsst_margin	and at the maximum margin too, because the test returns before reading it	15;16;17;18;19	2026-10-21	with no codec the FSST keep test consults the corpus like any other
+fsst_margin	fsst_margin	at margin 0 this corpus keeps FSST	15;16;17;18;19	2026-10-21	FSST never helps
+fsst_margin	fsst_margin	at margin 90 the same corpus drops FSST	15;16;17;18;19	2026-10-21	the FSST margin is never applied: any compressed win keeps it
+fsst_margin	fsst_margin	fm_c0 preserves NULLs	15;16;17;18;19	2026-10-21	FSST decode writes symbol 1's bytes for symbol 0
+fsst_margin	fsst_margin	fm_c0 preserves empty strings	15;16;17;18;19	2026-10-21	FSST decode writes symbol 1's bytes for symbol 0
+fsst_margin	fsst_margin	fm_c0 reads back exactly what the heap holds	15;16;17;18;19	2026-10-21	FSST decode writes symbol 1's bytes for symbol 0
+fsst_margin	fsst_margin	fm_c90 preserves NULLs	15;16;17;18;19	never	-
+fsst_margin	fsst_margin	fm_c90 preserves empty strings	15;16;17;18;19	never	-
+fsst_margin	fsst_margin	fm_c90 reads back exactly what the heap holds	15;16;17;18;19	never	-
+fsst_margin	fsst_margin	fm_cd reads back exactly what the heap holds	15;16;17;18;19	never	-
+fsst_margin	fsst_margin	so the margin is what changed the decision, not the corpus	15;16;17;18;19	2026-10-21	the FSST margin is never applied: any compressed win keeps it
+fsst_margin	fsst_margin	the heap mirror has content to compare against	15;16;17;18;19	never	-
+fsst_margin	fsst_margin	the margin-0 content copy really is stored as FSST, so the invariant reads FSST	15;16;17;18;19	2026-10-21	FSST never helps
+fsst_margin	fsst_margin	the paired arm dropped FSST at this margin with a codec	15;16;17;18;19	2026-10-21	the FSST margin is never applied: any compressed win keeps it
+fsst_margin	fsst_margin	the shipped default drops FSST on a marginal corpus	15;16;17;18;19	2026-10-21	the FSST margin is never applied: any compressed win keeps it;the shipped fsst_min_gain_percent is 0
+fsst_margin	fsst_margin	with no codec the same corpus keeps FSST at the same margin	15;16;17;18;19	2026-10-21	with no codec the FSST keep test consults the corpus like any other
 fsst_verdict_cache	fsst_verdict_cache	a bounded cache tracks the change more closely than an unbounded one	15;16;17;18;19	2026-10-21	the FSST verdict cache ignores its age bound
 fsst_verdict_cache	fsst_verdict_cache	a reuse bound of one row group is byte-identical to no caching	15;16;17;18;19	2026-10-21	a reused FSST verdict is inverted
 fsst_verdict_cache	fsst_verdict_cache	a reused HELPS verdict stores byte-identical chunks	15;16;17;18;19	2026-10-21	a reused FSST verdict is inverted
