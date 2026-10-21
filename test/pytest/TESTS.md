@@ -272,6 +272,7 @@ behaviour, the source of that number is named.
 - [224. test_int8_agg_int128.py: sum and avg over bigint accumulate in 128 bits](#224-test_int8_agg_int128py-sum-and-avg-over-bigint-accumulate-in-128-bits)
 - [225. test_fsst_verdict_cache.py: the FSST keep/drop verdict is cached with an age bound](#225-test_fsst_verdict_cachepy-the-fsst-keepdrop-verdict-is-cached-with-an-age-bound)
 - [226. test_import_exclusion.py: import_arrow enforces an exclusion constraint, and a rewrite does not](#226-test_import_exclusionpy-import_arrow-enforces-an-exclusion-constraint-and-a-rewrite-does-not)
+- [227. test_import_deferred.py: imports honour a DEFERRABLE constraint, and the check is deferred, not gone](#227-test_import_deferredpy-imports-honour-a-deferrable-constraint-and-the-check-is-deferred-not-gone)
 
 ## 1. How to read a test in here
 
@@ -9295,3 +9296,28 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_an_ordinary_insert_of_the_same_violation_also_raises` | an ordinary INSERT of the same violation also raises |
 | `test_a_rewrite_of_the_same_table_still_succeeds` | a rewrite of the same table still succeeds |
 | `test_and_the_rows_survived_it` | and the rows survived it |
+
+## 227. test_import_deferred.py: imports honour a DEFERRABLE constraint, and the check is deferred, not gone
+
+The twin of `test/import_deferred.sh` (#168). A transient collision commits under a deferred unique constraint through import_arrow and import_parquet as on heap; a duplicate that survives to commit, an IMMEDIATE constraint, SET CONSTRAINTS IMMEDIATE mid-transaction and an exclusion constraint each still fail with their own SQLSTATE; a partial unique index is maintained for exactly the rows it covers; and compact_rewrite over a uniquely indexed table enforces nothing.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order; heap is the oracle where the shell uses it. The export files live in `server_dir`.
+
+| test | what it holds |
+| --- | --- |
+| `test_heap_allows_a_transient_collision` | premise: heap allows a transient collision under a deferred constraint |
+| `test_an_ordinary_columnar_insert_still_allows_it` | an ordinary columnar INSERT still allows it |
+| `test_import_arrow_allows_it` | import_arrow allows it |
+| `test_import_parquet_allows_it` | import_parquet allows it |
+| `test_heap_rejects_a_duplicate_still_there_at_commit` | premise: heap rejects a duplicate that is still there at commit |
+| `test_import_arrow_rejects_a_duplicate_that_survives_to_commit` | import_arrow rejects a duplicate that survives to commit |
+| `test_the_import_rolled_back` | and the import rolled back rather than leaving the row |
+| `test_an_immediate_constraint_still_rejects_at_insert_time` | an IMMEDIATE constraint still rejects at insert time |
+| `test_set_constraints_immediate_is_honoured_mid_transaction` | SET CONSTRAINTS IMMEDIATE is honoured mid-transaction |
+| `test_an_exclusion_constraint_is_still_enforced_on_import` | an exclusion constraint is still enforced on import |
+| `test_a_partial_unique_index_accepts_rows_it_does_not_cover` | a partial unique index accepts rows it does not cover |
+| `test_rows_outside_the_partial_index_are_all_present` | rows outside the partial index are all present |
+| `test_a_rewrite_of_a_uniquely_indexed_table_still_succeeds` | a rewrite of a uniquely-indexed table still succeeds |
+| `test_and_the_surviving_rows_are_intact` | and the surviving rows are intact |

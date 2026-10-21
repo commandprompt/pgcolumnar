@@ -41,7 +41,6 @@ iceberg_rest_scan
 iceberg_rest_server
 iceberg_rest_vended
 iceberg_scan
-import_deferred
 index_delete_liveness
 index_only
 isolation

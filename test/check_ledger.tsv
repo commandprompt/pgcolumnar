@@ -2458,6 +2458,20 @@ iceberg_rest_server	iceberg_rest_server	the client secret never appears in the f
 iceberg_rest_server	iceberg_rest_server	the mapping token never appears in the PG server log	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the request carried an Authorization header	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the warehouse was sent on GET /v1/config (?warehouse=wh1)	15;16;17;18;19	never	-
+import_deferred	import_deferred	SET CONSTRAINTS IMMEDIATE is honoured mid-transaction	15;16;17;18;19	2026-10-21	the deferred-constraint recheck is never queued
+import_deferred	import_deferred	a partial unique index accepts rows it does not cover	15;16;17;18;19	2026-10-21	both importers take the rewrite path, which enforces no constraint
+import_deferred	import_deferred	a rewrite of a uniquely-indexed table still succeeds	15;16;17;18;19	2026-10-21	the rewrites route through the enforcing index path
+import_deferred	import_deferred	an IMMEDIATE constraint still rejects at insert time	15;16;17;18;19	2026-10-21	both importers take the rewrite path, which enforces no constraint
+import_deferred	import_deferred	an exclusion constraint is still enforced on import	15;16;17;18;19	2026-10-21	both importers take the rewrite path, which enforces no constraint
+import_deferred	import_deferred	an ordinary columnar INSERT still allows it	15;16;17;18;19	never	-
+import_deferred	import_deferred	and the import rolled back rather than leaving the row	15;16;17;18;19	2026-10-21	the deferred-constraint recheck is never queued
+import_deferred	import_deferred	and the surviving rows are intact	15;16;17;18;19	never	-
+import_deferred	import_deferred	import_arrow allows it	15;16;17;18;19	never	-
+import_deferred	import_deferred	import_arrow rejects a duplicate that survives to commit	15;16;17;18;19	2026-10-21	the deferred-constraint recheck is never queued
+import_deferred	import_deferred	import_parquet allows it	15;16;17;18;19	never	-
+import_deferred	import_deferred	premise: heap allows a transient collision under a deferred constraint	15;16;17;18;19	never	-
+import_deferred	import_deferred	premise: heap rejects a duplicate that is still there at commit	15;16;17;18;19	never	-
+import_deferred	import_deferred	rows outside the partial index are all present	15;16;17;18;19	2026-10-21	both importers take the rewrite path, which enforces no constraint
 import_exclusion	import_exclusion	a rewrite of the same table still succeeds	15;16;17;18;19	2026-10-21	the rewrites enforce constraints, finding each moved row against itself
 import_exclusion	import_exclusion	an index scan finds an imported row	15;16;17;18;19	2026-10-21	import_arrow maintains no index
 import_exclusion	import_exclusion	an ordinary INSERT of the same violation also raises	15;16;17;18;19	2026-10-21	import_arrow maintains no index
