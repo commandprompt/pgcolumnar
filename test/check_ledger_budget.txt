@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 125
+suites_not_covered 124
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4963,4 +4963,25 @@ suites_not_covered 125
 #     never         3648 + 2 = 3650
 #     dated         1925 + 5 = 1930
 #     3650 + 1930 == 5580
-checks_never_observed_red 3650
+#
+# #1341, recluster_gate seeded, with its twin (jdatcmd): 3505 -> 3506, and
+# suites_not_covered 149 -> 148. The suite had no rows. It enters with 13 checks from
+# five-major runs (13/13 on each of 15-19, shell and twin alike), after two fixes.
+# The row-set check compared rg_t with a heap copied from rg_t, so it agreed with
+# whatever the reclusters did: with a row corrupted before the copy, it passed. The
+# mirror is now built from the generator. And the layout comparison agreed on two
+# failed reads; it now needs both. Three checks lost their premise: prefix under
+# #1339 (OffgridwithJD's review): the first recluster's return, sort_status's
+# recorded key (#415) and the recorded extent (#311) are recluster's own behaviour,
+# and a one-line change reddens each. 12 are dated by six mutations, each reddening
+# the same names in both twins: the gate removed, appended groups ignored, the key
+# ignored, no extent or key recorded, the gate over-applied so every call does
+# nothing, and the first sorted row dropped on write-back. 1 arrives never: the
+# premise that the insert appended unsorted groups, green under the gate removed, no
+# record, the gate over-applied and the dropped row.
+#
+#     ledger rows   5580 + 13 = 5593
+#     never         3650 + 1 = 3651
+#     dated         1930 + 12 = 1942
+#     3651 + 1942 == 5593
+checks_never_observed_red 3651

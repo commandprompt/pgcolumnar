@@ -103,6 +103,5 @@ qual_order_selectivity
 read_stream
 reader_buffer_reuse
 recluster_extent
-recluster_gate
 row_triggers
 scan_direction

@@ -983,4 +983,6 @@ guard_tests 467
 # 9 tests, one per check, by collection over the cluster files.
 # cluster_tests 2162 -> 2169 for #1341's test_rewrite_group_scan.py, the twin of rewrite_group_scan.sh:
 # 7 tests, one per check, by collection over the cluster files.
-cluster_tests 2169
+# cluster_tests 2169 -> 2182 for #1341's test_recluster_gate.py, the twin of recluster_gate.sh:
+# 13 tests, one per check, by collection over the cluster files.
+cluster_tests 2182
