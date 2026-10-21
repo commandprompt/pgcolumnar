@@ -274,6 +274,7 @@ behaviour, the source of that number is named.
 - [226. test_import_exclusion.py: import_arrow enforces an exclusion constraint, and a rewrite does not](#226-test_import_exclusionpy-import_arrow-enforces-an-exclusion-constraint-and-a-rewrite-does-not)
 - [227. test_import_deferred.py: imports honour a DEFERRABLE constraint, and the check is deferred, not gone](#227-test_import_deferredpy-imports-honour-a-deferrable-constraint-and-the-check-is-deferred-not-gone)
 - [228. test_index_only.py: index-only scans on a columnar table, served from the visibility map](#228-test_index_onlypy-index-only-scans-on-a-columnar-table-served-from-the-visibility-map)
+- [229. test_isolation.py: deterministic isolation specs for the compaction and truncation races](#229-test_isolationpy-deterministic-isolation-specs-for-the-compaction-and-truncation-races)
 
 ## 1. How to read a test in here
 
@@ -9360,3 +9361,21 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_old_snapshot_ios_does_not_see_post_snapshot_rows` | old snapshot IOS does not see post-snapshot rows |
 | `test_session_a_used_an_index_only_scan` | session A used an index-only scan |
 | `test_new_snapshot_sees_both_batches` | new snapshot sees both batches |
+
+## 229. test_isolation.py: deterministic isolation specs for the compaction and truncation races
+
+The twin of `test/isolation.sh` (Phase F3). pg_isolation_regress runs seven exact interleavings -- delete against compact_rewrite, an old snapshot against a delete and compaction, a reader against compaction, recluster against delete, and end-truncation against a reader, a writer and another truncation -- and each spec is its own check.
+
+### Every test
+
+The fixture runs pg_isolation_regress once over all seven specs in a private database, with --use-existing as the shell runs it, and reads each spec's verdict from its line; a spec with no line is "not run". Without the binary every test declines unnamed.
+
+| test | what it holds |
+| --- | --- |
+| `test_isolation_spec_delete_vs_rewrite` | isolation spec delete_vs_rewrite |
+| `test_isolation_spec_old_snapshot_compact` | isolation spec old_snapshot_compact |
+| `test_isolation_spec_compact_vs_reader` | isolation spec compact_vs_reader |
+| `test_isolation_spec_recluster_vs_delete` | isolation spec recluster_vs_delete |
+| `test_isolation_spec_truncate_vs_reader` | isolation spec truncate_vs_reader |
+| `test_isolation_spec_truncate_vs_writer` | isolation spec truncate_vs_writer |
+| `test_isolation_spec_truncate_vs_truncate` | isolation spec truncate_vs_truncate |

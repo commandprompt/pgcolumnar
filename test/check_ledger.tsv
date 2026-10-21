@@ -2619,6 +2619,13 @@ int8_agg_int128	int8_agg_int128	sum(bigint) agrees with the scalar path and with
 int8_agg_int128	int8_agg_int128	sum(numeric) keeps its scale and still agrees	15;16;17;18;19	never	-
 int8_agg_int128	int8_agg_int128	the FILTERED vectorized path is not slower than the scalar one	15;16;17;18;19	2026-10-21	the vectorized path takes the platform fallback (#undef HAVE_INT128)
 int8_agg_int128	int8_agg_int128	the vectorized path is not slower than the scalar one	15;16;17;18;19	2026-10-21	the vectorized path takes the platform fallback (#undef HAVE_INT128)
+isolation	isolation	isolation spec compact_vs_reader	15;16;17;18;19	never	-
+isolation	isolation	isolation spec delete_vs_rewrite	15;16;17;18;19	2026-10-21	a DELETE racing a committed compaction of its group no longer fails with a serialization failure
+isolation	isolation	isolation spec old_snapshot_compact	15;16;17;18;19	never	-
+isolation	isolation	isolation spec recluster_vs_delete	15;16;17;18;19	2026-10-21	a DELETE racing a committed compaction of its group no longer fails with a serialization failure
+isolation	isolation	isolation spec truncate_vs_reader	15;16;17;18;19	2026-10-21	end-truncation waits for its AccessExclusiveLock instead of skipping when the table is held
+isolation	isolation	isolation spec truncate_vs_truncate	15;16;17;18;19	never	-
+isolation	isolation	isolation spec truncate_vs_writer	15;16;17;18;19	2026-10-21	end-truncation waits for its AccessExclusiveLock instead of skipping when the table is held
 large_values	large_values	a chunk over 1 GB is refused with 54000, commits nothing, and the server stays up	15;16;17;18;19	never	-
 large_values	large_values	an UPDATE that takes a TOASTed heap value stores it exactly in the columnar row	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 large_values	large_values	and the other rows are unchanged	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)

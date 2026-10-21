@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 139
+suites_not_covered 138
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4683,4 +4683,23 @@ suites_not_covered 139
 #     never         3585 + 15 = 3600
 #     dated         1829 + 12 = 1841
 #     3600 + 1841 == 5441
-checks_never_observed_red 3600
+#
+# #1341, isolation seeded, with its twin (OffgridwithJD): 3600 -> 3603, and
+# suites_not_covered 139 -> 138. The suite had no rows. It was ONE check over
+# all seven pg_isolation_regress specs, so a fault in one race window read like a fault
+# in all of them and no row could say which a mutation broke; it is now 7, one per
+# spec, each read from the runner's own line for it (both the PG15 and the PG16+
+# formats), a spec with no line being "not run". Green on each of 15-19, shell and twin
+# alike. 4 are dated by two mutations: the H1 serialization failure removed reddens
+# delete_vs_rewrite and recluster_vs_delete, and a truncation that waits for its lock
+# reddens truncate_vs_reader and truncate_vs_writer. A truncation without its
+# oldest-xmin test passes all seven, because a reader that has read the table already
+# holds the lock the conditional AccessExclusiveLock needs; covering the horizon needs a
+# spec whose reader holds only a snapshot, which is filed rather than written here. 3
+# arrive never.
+#
+#     ledger rows   5441 + 7 = 5448
+#     never         3600 + 3 = 3603
+#     dated         1841 + 4 = 1845
+#     3603 + 1845 == 5448
+checks_never_observed_red 3603
