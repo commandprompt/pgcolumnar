@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 132
+suites_not_covered 131
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4808,4 +4808,20 @@ suites_not_covered 132
 #     never         3613 + 5 = 3618
 #     dated         1873 + 2 = 1875
 #     3618 + 1875 == 5493
-checks_never_observed_red 3618
+#
+# #1341, estimate_deleted seeded, with its twin (OffgridwithJD): 3424 -> 3431, and
+# suites_not_covered 151 -> 150. The suite had no rows. It enters with 11 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike). Its readings
+# already fail closed -- awk reads a missing estimate as 0, which every bound refuses --
+# so the one change is labelling (#1339): "the estimate before delete is the full
+# table", "ANALYZE recorded the live count in reltuples" and "reltuples is 100000
+# before the delete" read pgcolumnar's own estimator and sampler, and lose the premise
+# prefix. 4 are dated by two mutations, each reddening the same names in both twins:
+# the estimate ignoring deleted rows, and the sampler offering nothing (which reddens
+# the two reltuples checks). 7 arrive never.
+#
+#     ledger rows   5493 + 11 = 5504
+#     never         3618 + 7 = 3625
+#     dated         1875 + 4 = 1879
+#     3625 + 1879 == 5504
+checks_never_observed_red 3625
