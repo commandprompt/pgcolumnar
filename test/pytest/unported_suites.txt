@@ -13,7 +13,6 @@ concurrency
 cost_written_geometry
 decode_interrupts
 decode_skip_interrupts
-doc_parallel_premise
 docs_style
 eager_ordering_record
 encode_invariants

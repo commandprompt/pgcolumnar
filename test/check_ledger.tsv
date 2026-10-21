@@ -1015,6 +1015,17 @@ differential	differential	wide point	15;16;17;18;19	never	-
 differential	differential	wide range	15;16;17;18;19	never	-
 differential	differential	wide row proj	15;16;17;18;19	never	-
 differential	differential	wide row scan	15;16;17;18;19	never	-
+doc_parallel_premise	doc_parallel_premise	and filtering the ordered column instead prunes some away	15;16;17;18;19	2026-10-21	EXPLAIN stops printing Columnar Chunk Groups Read;pgcolumnar.enable_custom_scan boots false (columnar_tableam.c)
+doc_parallel_premise	doc_parallel_premise	and that query has an extractable filter column	15;16;17;18;19	2026-10-21	docs/limitations.md stops naming a narrow query
+doc_parallel_premise	doc_parallel_premise	and the documented column is costed above the ordered one	15;16;17;18;19	2026-10-21	pgcolumnar.enable_custom_scan boots false (columnar_tableam.c);the zone-map survival estimate sizes groups from the session's stripe_row_limit (#817)
+doc_parallel_premise	doc_parallel_premise	both costs were extracted, not blank	15;16;17;18;19	2026-10-21	pgcolumnar.enable_custom_scan boots false (columnar_tableam.c)
+doc_parallel_premise	doc_parallel_premise	the documented column is not the one stored in order	15;16;17;18;19	2026-10-21	docs/limitations.md's narrow query filters the ordered column
+doc_parallel_premise	doc_parallel_premise	the documented column's plan is exactly one columnar scan node	15;16;17;18;19	2026-10-21	pgcolumnar.enable_custom_scan boots false (columnar_tableam.c)
+doc_parallel_premise	doc_parallel_premise	the documented narrow query reads every chunk group	15;16;17;18;19	2026-10-21	pgcolumnar.enable_custom_scan boots false (columnar_tableam.c);the reader never counts a chunk group it read
+doc_parallel_premise	doc_parallel_premise	the fixture holds several row groups, so pruning can be seen	15;16;17;18;19	2026-10-21	the writer ignores the session's stripe_row_limit (writeState->stripeRowLimit = 150000 in columnar_write_state.c)
+doc_parallel_premise	doc_parallel_premise	the group counters were read, not blank	15;16;17;18;19	2026-10-21	EXPLAIN stops printing Columnar Chunk Groups Read;pgcolumnar.enable_custom_scan boots false (columnar_tableam.c)
+doc_parallel_premise	doc_parallel_premise	the page still names a narrow query	15;16;17;18;19	2026-10-21	docs/limitations.md stops naming a narrow query
+doc_parallel_premise	doc_parallel_premise	the sel plan is exactly one columnar scan node	15;16;17;18;19	2026-10-21	pgcolumnar.enable_custom_scan boots false (columnar_tableam.c)
 encode_effort	encode_effort	a table with no option set matches full	15;16;17;18;19	2026-10-21	the writer's default effort is fast
 encode_effort	encode_effort	a valid encode_effort is stored	15;16;17;18;19	2026-10-21	set_options does not store encode_effort on a new row
 encode_effort	encode_effort	an unknown compression name is refused	15;16;17;18;19	2026-10-14	set_options without its compression-name check

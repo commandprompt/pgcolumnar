@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 147
+suites_not_covered 146
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4525,4 +4525,27 @@ suites_not_covered 147
 #     never         3539 + -6 = 3533
 #     dated         1733 + 6 = 1739
 #     3533 + 1739 == 5272
+#
+# #1341, doc_parallel_premise seeded, with its twin (OffgridwithJD): 3424 stays 3424,
+# and suites_not_covered 151 -> 150. The suite had no rows. It enters with 11
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: a reader that never counts a group it read passed
+# all 11 -- the documented query read "0 of 0", and 0 == 0 -- so that check now
+# compares Read/Total with the catalog's group count. "prunes" read a missing counter
+# as 0, and the cost comparison could string-compare a cost with a blank; both now
+# require numbers. The scan-node loop is unrolled with the documented column named by
+# its role, since its name came from the page and the grader could not read it.
+# "the page still names a narrow query", "and that query has an extractable filter
+# column" and "the group counters were read, not blank" are reddened by a page edit
+# and an EXPLAIN change, and lose the premise prefix (#1339). So do the row-group,
+# both scan-node and both-costs checks: the writer ignoring the session's
+# stripe_row_limit reddens the first (its only red), and enable_custom_scan booting
+# off reddens the other three. All 11 are dated by eight mutations of the writer, the
+# reader, EXPLAIN, the planner, the custom-scan setting and the page, each reddening
+# the same names in both twins; none arrive never.
+#
+#     ledger rows   5272 + 11 = 5283
+#     never         3533 + 0 = 3533
+#     dated         1739 + 11 = 1750
+#     3533 + 1750 == 5283
 checks_never_observed_red 3533
