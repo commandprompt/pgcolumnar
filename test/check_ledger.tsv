@@ -617,39 +617,37 @@ catalog_plan_index	catalog_plan_index	the two storage rows disagree about row_gr
 catalog_plan_index	catalog_plan_index	this query shape is priced differently under the two limits	15;16;17;18;19	2026-10-20	columnar_metadata.c: the planner ignores the storage row's written row_group_limit (#806)
 catalog_plan_index	catalog_plan_index	with the catalog populated, planning costs less than reading it whole	15;16;17;18;19	2026-09-24	pgcolumnar_scan_index_oid stops asking the relation its size;the seven planner sites back to the unconditional pgcolumnar_index_oid
 catalog_scan_index	catalog_scan_index	a one-row delete does not read pgcolumnar.row_group whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
+catalog_scan_index	catalog_scan_index	a one-row delete reached pgcolumnar.row_group	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	a one-row delete took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	a parallel bulk load does not read pgcolumnar.storage whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
+catalog_scan_index	catalog_scan_index	a parallel bulk load reached pgcolumnar.storage	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	a parallel bulk load took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	a sorted rewrite does not read pgcolumnar.storage whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
+catalog_scan_index	catalog_scan_index	a sorted rewrite reached pgcolumnar.storage	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	a sorted rewrite took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	an end truncation does not read pgcolumnar.free_space whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
+catalog_scan_index	catalog_scan_index	an end truncation reached pgcolumnar.free_space	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	an end truncation took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	an insert into a table created in the same transaction does not read pgcolumnar.storage whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
+catalog_scan_index	catalog_scan_index	an insert into a table created in the same transaction reached pgcolumnar.storage	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	an insert into a table created in the same transaction took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	an insert into an existing table does not read pgcolumnar.storage whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
+catalog_scan_index	catalog_scan_index	an insert into an existing table reached pgcolumnar.storage	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	an insert into an existing table took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	an online rewrite does not read pgcolumnar.free_space whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
+catalog_scan_index	catalog_scan_index	an online rewrite reached pgcolumnar.free_space	15;16;17;18;19	2026-10-20	columnar_vacuum.c: compact_rewrite rewrites nothing and reports 0
+catalog_scan_index	catalog_scan_index	an online rewrite took effect	15;16;17;18;19	2026-10-20	columnar_vacuum.c: compact_rewrite rewrites nothing and reports 0
 catalog_scan_index	catalog_scan_index	dropping a projected table does not read pgcolumnar.projection_declaration whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
+catalog_scan_index	catalog_scan_index	dropping a projected table reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	dropping a projected table took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	dropping a projection does not read pgcolumnar.projection_declaration whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
-catalog_scan_index	catalog_scan_index	premise: a one-row delete reached pgcolumnar.row_group	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: a one-row delete took effect	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: a parallel bulk load reached pgcolumnar.storage	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: a parallel bulk load took effect	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: a sorted rewrite reached pgcolumnar.storage	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: a sorted rewrite took effect	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: an end truncation reached pgcolumnar.free_space	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: an end truncation took effect	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: an insert into a table created in the same transaction reached pgcolumnar.storage	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: an insert into a table created in the same transaction took effect	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: an insert into an existing table reached pgcolumnar.storage	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: an insert into an existing table took effect	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: an online rewrite reached pgcolumnar.free_space	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: an online rewrite took effect	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: dropping a projected table reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: dropping a projected table took effect	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: dropping a projection reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: dropping a projection took effect	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	dropping a projection reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	dropping a projection took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: eleven operations are measured	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: pgcolumnar.free_space is at least index_min_blocks pages	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: pgcolumnar.projection_declaration is at least index_min_blocks pages	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: pgcolumnar.row_group is at least index_min_blocks pages	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: pgcolumnar.storage is at least index_min_blocks pages	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: renaming a projected column reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: renaming a projected column took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: the a one-row delete target holds two free ranges, one of them trailing	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: the a parallel bulk load target holds two free ranges, one of them trailing	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: the a sorted rewrite target holds two free ranges, one of them trailing	15;16;17;18;19	never	-
@@ -661,10 +659,12 @@ catalog_scan_index	catalog_scan_index	premise: the dropping a projected table ta
 catalog_scan_index	catalog_scan_index	premise: the dropping a projection target holds two free ranges, one of them trailing	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: the renaming a projected column target holds two free ranges, one of them trailing	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: the truncating a projected table target holds two free ranges, one of them trailing	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: truncating a projected table reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	premise: truncating a projected table took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	renaming a projected column does not read pgcolumnar.projection_declaration whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
+catalog_scan_index	catalog_scan_index	renaming a projected column reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	renaming a projected column took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	truncating a projected table does not read pgcolumnar.projection_declaration whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
+catalog_scan_index	catalog_scan_index	truncating a projected table reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	truncating a projected table took effect	15;16;17;18;19	never	-
 collation_change	collation_change	a collation change made through a partitioned parent reaches the columnar partition	15;16;17;18;19	2026-10-13	nothing forgotten after a collation change (main's behaviour);only the named relation, not its inheritors
 collation_change	collation_change	a projection sorted on the column answers a range as heap does	15;16;17;18;19	2026-10-13	nothing forgotten after a collation change (main's behaviour);the projection column forgotten at its list position, without the rownumber column's offset;the projection storages' bounds not forgotten
 collation_change	collation_change	a projection sorted on the int column answers a range as heap does after int4 to oid	15;16;17;18;19	2026-10-15	the tree before #1341 item 19: the ALTER hook compares collations only, so int4 to oid keeps int4's zone maps, extent and sorted claim

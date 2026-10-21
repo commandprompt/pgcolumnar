@@ -145,6 +145,7 @@ work() {
 # that could not retire, a truncate() that refused a transaction block), and
 # this premise and the next are what caught each.
 N_ARM=0
+N_MEASURED=0	# arms whose catalog statistics came back as numbers
 arm() {
 	local name="$1" cat="$2" tmpl="$3" effect="$4" want="$5"
 	N_ARM=$((N_ARM + 1))
@@ -152,9 +153,13 @@ arm() {
 	make_target "$t" "$name"
 	r="$(work "$cat" "$min_blocks" "${tmpl//@T/$t}")"
 	read -r bufs seq idx <<<"$r"
+	pgc_is_number "$seq" && pgc_is_number "$idx" && N_MEASURED=$((N_MEASURED + 1))
 	echo "-- $name: pgcolumnar.$cat buffers=$bufs seq_scan=$seq idx_scan=$idx"
-	check_text "premise: $name took effect" "$(q "${effect//@T/$t}")" "$want"
-	check_num "premise: $name reached pgcolumnar.$cat" \
+	# Not premises (#1339): each operation, and the catalog access it makes, is
+	# pgcolumnar's own, so a change to it reddens these -- with compact_rewrite a no-op,
+	# "an online rewrite took effect" went red.
+	check_text "$name took effect" "$(q "${effect//@T/$t}")" "$want"
+	check_num "$name reached pgcolumnar.$cat" \
 		"$(at_least "$((${seq:-0} + ${idx:-0}))" 1)" "1"
 	check_num "$name does not read pgcolumnar.$cat whole" "${seq:-x}" "0"
 }
@@ -248,6 +253,8 @@ arm "dropping a projected table" projection_declaration \
 
 # The arms are eleven calls of one function; a refactor that dropped one would
 # leave every remaining arm green.
-check_num "premise: eleven operations are measured" "$N_ARM" "11"
+# Arms MEASURED, not arms called (#1339): N_ARM counted calls, so an arm whose
+# statistics never came back still made eleven.
+check_num "premise: eleven operations are measured" "$N_MEASURED" "11"
 
 pgc_summary

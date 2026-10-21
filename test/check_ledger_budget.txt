@@ -4844,4 +4844,20 @@ suites_not_covered 130
 #     never         3625 + 4 = 3629
 #     dated         1879 + 8 = 1887
 #     3629 + 1887 == 5516
-checks_never_observed_red 3629
+#
+# #1339, test_catalog_scan_index.py :180 and :187 (OffgridwithJD): 3629 -> 3627, no row
+# added. The 22 "premise: <operation> took effect" and "premise: <operation> reached
+# pgcolumnar.<catalog>" checks read pgcolumnar's own operations and their catalog
+# access, so a repository change reddens them -- with compact_rewrite a no-op, both of
+# the online rewrite's went red -- and they lose the prefix in both twins. And "premise:
+# eleven operations are measured" counted arm() calls (in the twin, the list's length),
+# so with no statistics coming back for any arm it still read eleven; it now counts
+# arms whose readings came back as numbers. The twin's reader also returned zeros for a
+# missing statistics row, which passed "does not read it whole"; it now returns nothing.
+# 2 rows are dated by that mutation.
+#
+#     ledger rows   5516 + 0 = 5516
+#     never         3629 + -2 = 3627
+#     dated         1887 + 2 = 1889
+#     3627 + 1889 == 5516
+checks_never_observed_red 3627
