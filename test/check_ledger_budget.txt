@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 93
+suites_not_covered 92
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5622,4 +5622,23 @@ suites_not_covered 93
 #     never         3933 + 16 = 3949
 #     dated         2413 + 168 = 2581
 #     3949 + 2581 == 6530
-checks_never_observed_red 3949
+#
+# #1341, bench_guards seeded, with its twin (OffgridwithJD): 3949 -> 3991, and
+# suites_not_covered 93 -> 92. The suite had no rows: it kept its own tally
+# and emitted no RESULT records. It now goes through lib.sh's check, with no cluster, and
+# enters with 91 checks from five-major runs (all green on each of 15-19, shell and twin
+# alike). Its per-runner checks grepped each bench runner for words, and the header comment
+# and the cannot-tell block's exit 1 satisfied them: with the assert refusal warning past
+# it, with the empty-capture refusal removed, with every build refused, or with the
+# override ignored, main's suite passed. Each runner's own guard is now run against a
+# stand-in pg_config, and a sixth check per runner wants a plain build let through. The
+# verdict-call check counted a comment that kept the call's shape, and now reads code only.
+# The ratio premise matched rr1= as r1=, and now matches a whole name. Two premises that a
+# one-line change to bench/cb_guards.sh reddens lost the prefix. 49 are dated by
+# twenty-two mutations, each reddening the same names in both twins. 42 arrive never.
+#
+#     ledger rows   6530 + 91 = 6621
+#     never         3949 + 42 = 3991
+#     dated         2581 + 49 = 2630
+#     3991 + 2630 == 6621
+checks_never_observed_red 3991

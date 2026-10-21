@@ -468,6 +468,97 @@ batch_fold_explain	batch_fold_explain	premise: control table returns the right s
 batch_fold_explain	batch_fold_explain	premise: fallback table returns the right sum	15;16;17;18;19	never	-
 batch_fold_explain	batch_fold_explain	premise: fixture loaded every row	15;16;17;18;19	never	-
 batch_fold_explain	batch_fold_explain	premise: with parallelism free, the planner gives the parallel partial fold	15;16;17;18;19	never	-
+bench_guards	bench_guards	N + 1 is still refused: the coordinator needs a slot too	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: an N-worker arm is said to need N + 1 worker slots
+bench_guards	bench_guards	N + 2 is accepted, the measured minimum	15;16;17;18;19	never	-
+bench_guards	bench_guards	[run_bench.sh] and does not decide from an unbuffered pipe into grep -c	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner decides from pg_config --configure piped straight into grep -c
+bench_guards	bench_guards	[run_bench.sh] and exits non-zero rather than warning past it	15;16;17;18;19	2026-10-21	bench/run_bench.sh: the assert-build refusal warns past it (its exit 1 became true)
+bench_guards	bench_guards	[run_bench.sh] and lets a non-assert build through	15;16;17;18;19	2026-10-21	bench/run_bench.sh: every build is refused as an assert build (over-applied)
+bench_guards	bench_guards	[run_bench.sh] and offers a named override rather than only refusing	15;16;17;18;19	2026-10-21	bench/run_bench.sh: BENCH_ALLOW_CASSERT is ignored, so the override never runs
+bench_guards	bench_guards	[run_bench.sh] refuses an assert build rather than documenting the requirement	15;16;17;18;19	2026-10-21	bench/run_bench.sh: the assert-build test removed outright, the header comment still naming it
+bench_guards	bench_guards	[run_bench.sh] refuses when it CANNOT TELL, rather than treating that as a pass	15;16;17;18;19	2026-10-21	bench/run_bench.sh: an empty --configure capture is no longer refused (its exit 1 became true)
+bench_guards	bench_guards	[run_bench_fsst.sh] and does not decide from an unbuffered pipe into grep -c	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner decides from pg_config --configure piped straight into grep -c
+bench_guards	bench_guards	[run_bench_fsst.sh] and exits non-zero rather than warning past it	15;16;17;18;19	2026-10-21	bench/run_*.sh: in every runner, the assert-build refusal warns past it (its exit 1 became true)
+bench_guards	bench_guards	[run_bench_fsst.sh] and lets a non-assert build through	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner refuses every build as an assert build (over-applied)
+bench_guards	bench_guards	[run_bench_fsst.sh] and offers a named override rather than only refusing	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner ignores its ALLOW_CASSERT override
+bench_guards	bench_guards	[run_bench_fsst.sh] refuses an assert build rather than documenting the requirement	15;16;17;18;19	never	-
+bench_guards	bench_guards	[run_bench_fsst.sh] refuses when it CANNOT TELL, rather than treating that as a pass	15;16;17;18;19	2026-10-21	bench/run_*.sh: in every runner, an empty --configure capture is no longer refused
+bench_guards	bench_guards	[run_bench_join.sh] and does not decide from an unbuffered pipe into grep -c	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner decides from pg_config --configure piped straight into grep -c
+bench_guards	bench_guards	[run_bench_join.sh] and exits non-zero rather than warning past it	15;16;17;18;19	2026-10-21	bench/run_*.sh: in every runner, the assert-build refusal warns past it (its exit 1 became true)
+bench_guards	bench_guards	[run_bench_join.sh] and lets a non-assert build through	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner refuses every build as an assert build (over-applied)
+bench_guards	bench_guards	[run_bench_join.sh] and offers a named override rather than only refusing	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner ignores its ALLOW_CASSERT override
+bench_guards	bench_guards	[run_bench_join.sh] refuses an assert build rather than documenting the requirement	15;16;17;18;19	never	-
+bench_guards	bench_guards	[run_bench_join.sh] refuses when it CANNOT TELL, rather than treating that as a pass	15;16;17;18;19	2026-10-21	bench/run_*.sh: in every runner, an empty --configure capture is no longer refused
+bench_guards	bench_guards	[run_bench_readstream.sh] and does not decide from an unbuffered pipe into grep -c	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner decides from pg_config --configure piped straight into grep -c
+bench_guards	bench_guards	[run_bench_readstream.sh] and exits non-zero rather than warning past it	15;16;17;18;19	2026-10-21	bench/run_*.sh: in every runner, the assert-build refusal warns past it (its exit 1 became true)
+bench_guards	bench_guards	[run_bench_readstream.sh] and lets a non-assert build through	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner refuses every build as an assert build (over-applied)
+bench_guards	bench_guards	[run_bench_readstream.sh] and offers a named override rather than only refusing	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner ignores its ALLOW_CASSERT override
+bench_guards	bench_guards	[run_bench_readstream.sh] refuses an assert build rather than documenting the requirement	15;16;17;18;19	never	-
+bench_guards	bench_guards	[run_bench_readstream.sh] refuses when it CANNOT TELL, rather than treating that as a pass	15;16;17;18;19	2026-10-21	bench/run_*.sh: in every runner, an empty --configure capture is no longer refused
+bench_guards	bench_guards	[run_clickbench.sh] and does not decide from an unbuffered pipe into grep -c	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner decides from pg_config --configure piped straight into grep -c
+bench_guards	bench_guards	[run_clickbench.sh] and exits non-zero rather than warning past it	15;16;17;18;19	2026-10-21	bench/run_*.sh: in every runner, the assert-build refusal warns past it (its exit 1 became true)
+bench_guards	bench_guards	[run_clickbench.sh] and lets a non-assert build through	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner refuses every build as an assert build (over-applied)
+bench_guards	bench_guards	[run_clickbench.sh] and offers a named override rather than only refusing	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner ignores its ALLOW_CASSERT override
+bench_guards	bench_guards	[run_clickbench.sh] refuses an assert build rather than documenting the requirement	15;16;17;18;19	never	-
+bench_guards	bench_guards	[run_clickbench.sh] refuses when it CANNOT TELL, rather than treating that as a pass	15;16;17;18;19	2026-10-21	bench/run_*.sh: in every runner, an empty --configure capture is no longer refused
+bench_guards	bench_guards	[run_profile.sh] and does not decide from an unbuffered pipe into grep -c	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner decides from pg_config --configure piped straight into grep -c
+bench_guards	bench_guards	[run_profile.sh] and exits non-zero rather than warning past it	15;16;17;18;19	2026-10-21	bench/run_*.sh: in every runner, the assert-build refusal warns past it (its exit 1 became true)
+bench_guards	bench_guards	[run_profile.sh] and lets a non-assert build through	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner refuses every build as an assert build (over-applied)
+bench_guards	bench_guards	[run_profile.sh] and offers a named override rather than only refusing	15;16;17;18;19	2026-10-21	bench/run_*.sh: every runner ignores its ALLOW_CASSERT override
+bench_guards	bench_guards	[run_profile.sh] refuses an assert build rather than documenting the requirement	15;16;17;18;19	never	-
+bench_guards	bench_guards	[run_profile.sh] refuses when it CANNOT TELL, rather than treating that as a pass	15;16;17;18;19	2026-10-21	bench/run_*.sh: in every runner, an empty --configure capture is no longer refused
+bench_guards	bench_guards	a clear loss is a loss	15;16;17;18;19	never	-
+bench_guards	bench_guards	a clear win is a win	15;16;17;18;19	never	-
+bench_guards	bench_guards	a gap just outside the band is still called	15;16;17;18;19	never	-
+bench_guards	bench_guards	a host that could not drop the page cache is not called a cold run	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_cold_tag claims a cold run whatever happened
+bench_guards	bench_guards	a missing count is refused rather than compared with the expectation	15;16;17;18;19	never	-
+bench_guards	bench_guards	a missing current value is refused, not compared	15;16;17;18;19	never	-
+bench_guards	bench_guards	a serial arm needs no prepared transactions	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_prepared_xacts_ok wants more than the worker count (-gt for -ge)
+bench_guards	bench_guards	a serial arm needs no worker slots	15;16;17;18;19	never	-
+bench_guards	bench_guards	a short load is refused	15;16;17;18;19	never	-
+bench_guards	bench_guards	a single warm try has no measurable scatter	15;16;17;18;19	never	-
+bench_guards	bench_guards	a zero best is refused rather than divided by	15;16;17;18;19	never	-
+bench_guards	bench_guards	an empty load is refused, which is what an errored parallel arm produces	15;16;17;18;19	never	-
+bench_guards	bench_guards	an errored arm has no verdict	15;16;17;18;19	never	-
+bench_guards	bench_guards	an exact load is accepted	15;16;17;18;19	never	-
+bench_guards	bench_guards	an exact match is accepted	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_prepared_xacts_ok wants more than the worker count (-gt for -ge)
+bench_guards	bench_guards	an unknown band suppresses the verdict, it does not strict-compare	15;16;17;18;19	never	-
+bench_guards	bench_guards	and a loss just outside it likewise	15;16;17;18;19	never	-
+bench_guards	bench_guards	and a missing expectation is refused too	15;16;17;18;19	never	-
+bench_guards	bench_guards	and is unknown if either arm is unknown	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_band is gone
+bench_guards	bench_guards	and neither does a zero baseline	15;16;17;18;19	never	-
+bench_guards	bench_guards	and one below it does not	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: an N-worker arm is said to need N + 1 worker slots
+bench_guards	bench_guards	and says it needs a restart	15;16;17;18;19	never	-
+bench_guards	bench_guards	and says it needs a restart, which is why this runs first	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: the prepared-transaction message no longer says a restart is needed
+bench_guards	bench_guards	and the number it must reach	15;16;17;18;19	never	-
+bench_guards	bench_guards	and the tag says plainly that the run was warm	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_cold_tag claims a cold run whatever happened
+bench_guards	bench_guards	and the value it must reach, not merely the worker count	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: an N-worker arm is said to need N + 1 worker slots
+bench_guards	bench_guards	and the verdict is asked of cb_verdict rather than recomputed inline	15;16;17;18;19	2026-10-21	bench/run_clickbench.sh: the verdict decided inline, a comment still carrying the cb_verdict call
+bench_guards	bench_guards	and under a band wider than the gap it is a tie, not a win either	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_verdict ignores the band
+bench_guards	bench_guards	columnar ahead by 0.33 percent is not a LOSS, which is the #531 defect	15;16;17;18;19	never	-
+bench_guards	bench_guards	more than enough is accepted	15;16;17;18;19	never	-
+bench_guards	bench_guards	more than enough worker slots are accepted	15;16;17;18;19	never	-
+bench_guards	bench_guards	no query is called run-to-run variation unless its figures are a measured tie	15;16;17;18;19	never	-
+bench_guards	bench_guards	no usable try yields no spread, not zero	15;16;17;18;19	never	-
+bench_guards	bench_guards	one short is refused, which is the off-by-one that would run 7 workers	15;16;17;18;19	never	-
+bench_guards	bench_guards	order does not matter, and ERR tries are dropped	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_warm_spread divides by the worst try, not the best
+bench_guards	bench_guards	premise: bench/cb_guards.sh is present to be judged	15;16;17;18;19	never	-
+bench_guards	bench_guards	premise: every bench runner was read, not a hand-kept subset	15;16;17;18;19	never	-
+bench_guards	bench_guards	premise: the benchmark page is present to be judged	15;16;17;18;19	never	-
+bench_guards	bench_guards	premise: the benchmark script is present to be judged	15;16;17;18;19	never	-
+bench_guards	bench_guards	premise: the report still captures ratio() into a display variable	15;16;17;18;19	never	-
+bench_guards	bench_guards	ratio()'s output reaches printf and nothing else	15;16;17;18;19	never	-
+bench_guards	bench_guards	spread is the fractional range over the best	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_warm_spread divides by the worst try, not the best
+bench_guards	bench_guards	the band is the wider of the two arms	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_band is gone
+bench_guards	bench_guards	the guard exists and emitted a tag to judge	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_cold_tag prints nothing
+bench_guards	bench_guards	the message names the setting to change	15;16;17;18;19	never	-
+bench_guards	bench_guards	the rule holds at another worker count (4 needs 6)	15;16;17;18;19	never	-
+bench_guards	bench_guards	the stock 0 is refused for an 8-worker parallel arm	15;16;17;18;19	never	-
+bench_guards	bench_guards	the stock 8 is refused for an 8-worker arm, which is the case that bit us	15;16;17;18;19	never	-
+bench_guards	bench_guards	the tuned-arm section names all four settings and the group-cap value	15;16;17;18;19	never	-
+bench_guards	bench_guards	the variation-claim extractor reads ids wrapped across two lines	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_doc_variation_qids reads line by line, missing a wrapped claim
+bench_guards	bench_guards	the verdict helpers are present to be judged	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_band is gone
+bench_guards	bench_guards	the worker-slot message names the setting	15;16;17;18;19	never	-
+bench_guards	bench_guards	two missing measurements are refused, not called equal	15;16;17;18;19	2026-10-21	bench/cb_guards.sh: cb_rows_ok compares without requiring numbers
 bloom_lazy	bloom_lazy	a range predicate still agrees with the heap	15;16;17;18;19	never	-
 bloom_lazy	bloom_lazy	a scan that keeps every group reads more	15;16;17;18;19	2026-10-20	columnar_reader.c: the bloom filter is never fetched
 bloom_lazy	bloom_lazy	an absent value agrees with bloom filters disabled	15;16;17;18;19	never	-
@@ -1612,7 +1703,7 @@ harness_selftest	320-a-check-that-could-not-run	premise: the fixtures carry the 
 harness_selftest	320-a-check-that-could-not-run	premise: the harness library is where this part thinks it is	15;16;17;18;19	never	-
 harness_selftest	320-a-check-that-could-not-run	premise: the major-verdict mapping evalled out of the runner is callable	15;16;17;18;19	never	-
 harness_selftest	320-a-check-that-could-not-run	premise: the runner defines the classifier this part is about to eval	15;16;17;18;19	never	-
-harness_selftest	320-a-check-that-could-not-run	premise: the sweep read the corpus and found sites to classify	15;16;17;18;19	never	-
+harness_selftest	320-a-check-that-could-not-run	premise: the sweep read the corpus	15;16;17;18;19	never	-
 harness_selftest	320-a-check-that-could-not-run	the original rule flags a bump that records no outcome	15;16;17;18;19	never	-
 harness_selftest	320-a-check-that-could-not-run	the runner calls a clean exit a pass	15;16;17;18;19	never	-
 harness_selftest	320-a-check-that-could-not-run	the runner's INCOMPLETE branch calls the mapping rather than a local flag	15;16;17;18;19	never	-

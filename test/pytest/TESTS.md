@@ -323,6 +323,7 @@ behaviour, the source of that number is named.
 - [275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does](#275-test_iceberg_rest_vendedpy-an-iceberg-rest-catalogs-vended-credentials-sign-the-reads-and-nothing-else-does)
 - [276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else](#276-test_iceberg_rest_serverpy-an-iceberg-rest-catalog-foreign-server-authenticates-by-its-user-mapping-and-by-nothing-else)
 - [277. test_hilbert_curve.py: the Hilbert clustering curve, pinned by its properties and by frozen bytes](#277-test_hilbert_curvepy-the-hilbert-clustering-curve-pinned-by-its-properties-and-by-frozen-bytes)
+- [278. test_bench_guards.py: the benchmark's own guards refuse what they must, and the report asks them](#278-test_bench_guardspy-the-benchmarks-own-guards-refuse-what-they-must-and-the-report-asks-them)
 
 ## 1. How to read a test in here
 
@@ -10760,3 +10761,75 @@ Every test reads one value from a module fixture that runs the whole battery onc
 | `test_hilbert_one_column_is_big_endian_over_random_values` | C6 ncols == 1 is the big-endian ordinal over 200,000 random values |
 | `test_hilbert_one_column_agrees_with_zorder` | C6 ncols == 1 agrees with Z-order over 200,000 random values |
 | `test_hilbert_zorder_pack_unchanged` | C7 the Z-order pack is byte-for-byte what it was: ncols={n} {v} (one test per member) |
+
+## 278. test_bench_guards.py: the benchmark's own guards refuse what they must, and the report asks them
+
+The twin of `test/bench_guards.sh`, with no cluster (it is in NO_CLUSTER). Each bench runner's own assert guard is found by this file's reader and run against a stand-in pg_config that reports an assert build, a plain one, or nothing. `bench/cb_guards.sh`'s preflights, row check, cold-run tag and verdict are called through bash, as the benchmark calls them, and the report and `docs/benchmarks.md` are read as text.
+
+### Every test
+
+Every test makes one check under the shell's name; the six runner checks are parametrized over `bench/run_*.sh`, so their names are templates the grader matches against the shell's `[$_bs]` names. A guard that cannot be found whole is run as nothing, which every refusal check refuses, and nothing past the guard is ever run.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_runner_refuses_an_assert_build` | [{runner}] refuses an assert build rather than documenting the requirement |
+| `test_the_runner_offers_a_named_override` | [{runner}] and offers a named override rather than only refusing |
+| `test_the_runner_exits_non_zero_on_an_assert_build` | [{runner}] and exits non-zero rather than warning past it |
+| `test_the_runner_lets_a_plain_build_through` | [{runner}] and lets a non-assert build through |
+| `test_the_runner_refuses_when_it_cannot_tell` | [{runner}] refuses when it CANNOT TELL, rather than treating that as a pass |
+| `test_the_runner_does_not_pipe_configure_into_grep` | [{runner}] and does not decide from an unbuffered pipe into grep -c |
+| `test_every_bench_runner_was_read` | premise: every bench runner was read, not a hand-kept subset |
+| `test_the_guards_file_is_present` | premise: bench/cb_guards.sh is present to be judged |
+| `test_the_stock_zero_is_refused` | the stock 0 is refused for an 8-worker parallel arm |
+| `test_an_exact_prepared_match_is_accepted` | an exact match is accepted |
+| `test_more_than_enough_prepared_is_accepted` | more than enough is accepted |
+| `test_one_prepared_short_is_refused` | one short is refused, which is the off-by-one that would run 7 workers |
+| `test_a_serial_arm_needs_no_prepared_transactions` | a serial arm needs no prepared transactions |
+| `test_the_stock_eight_slots_are_refused` | the stock 8 is refused for an 8-worker arm, which is the case that bit us |
+| `test_n_plus_one_slots_are_refused` | N + 1 is still refused: the coordinator needs a slot too |
+| `test_n_plus_two_slots_are_accepted` | N + 2 is accepted, the measured minimum |
+| `test_more_than_enough_worker_slots_are_accepted` | more than enough worker slots are accepted |
+| `test_four_workers_need_six_slots` | the rule holds at another worker count (4 needs 6) |
+| `test_five_slots_for_four_workers_are_refused` | and one below it does not |
+| `test_a_serial_arm_needs_no_worker_slots` | a serial arm needs no worker slots |
+| `test_a_missing_slot_count_is_refused` | a missing current value is refused, not compared |
+| `test_the_slot_message_names_the_setting` | the worker-slot message names the setting |
+| `test_the_slot_message_names_the_value` | and the value it must reach, not merely the worker count |
+| `test_the_slot_message_says_restart` | and says it needs a restart |
+| `test_the_prepared_message_names_the_setting` | the message names the setting to change |
+| `test_the_prepared_message_names_the_number` | and the number it must reach |
+| `test_the_prepared_message_says_restart` | and says it needs a restart, which is why this runs first |
+| `test_a_short_load_is_refused` | a short load is refused |
+| `test_an_empty_load_is_refused` | an empty load is refused, which is what an errored parallel arm produces |
+| `test_an_exact_load_is_accepted` | an exact load is accepted |
+| `test_two_missing_row_counts_are_refused` | two missing measurements are refused, not called equal |
+| `test_a_missing_row_count_is_refused` | a missing count is refused rather than compared with the expectation |
+| `test_a_missing_row_expectation_is_refused` | and a missing expectation is refused too |
+| `test_the_cold_tag_guard_emits_a_tag` | the guard exists and emitted a tag to judge |
+| `test_a_warm_host_is_not_called_cold` | a host that could not drop the page cache is not called a cold run |
+| `test_the_warm_tag_says_warm` | and the tag says plainly that the run was warm |
+| `test_the_verdict_helpers_are_present` | the verdict helpers are present to be judged |
+| `test_a_clear_win` | a clear win is a win |
+| `test_a_clear_loss` | a clear loss is a loss |
+| `test_a_rounding_win_is_not_a_loss` | columnar ahead by 0.33 percent is not a LOSS, which is the #531 defect |
+| `test_a_gap_inside_the_band_is_a_tie` | and under a band wider than the gap it is a tie, not a win either |
+| `test_a_win_just_outside_the_band` | a gap just outside the band is still called |
+| `test_a_loss_just_outside_the_band` | and a loss just outside it likewise |
+| `test_spread_is_over_the_best` | spread is the fractional range over the best |
+| `test_spread_ignores_order_and_err` | order does not matter, and ERR tries are dropped |
+| `test_one_try_has_no_spread` | a single warm try has no measurable scatter |
+| `test_no_usable_try_has_no_spread` | no usable try yields no spread, not zero |
+| `test_a_zero_best_is_refused` | a zero best is refused rather than divided by |
+| `test_the_band_is_the_wider_arm` | the band is the wider of the two arms |
+| `test_an_unknown_arm_makes_the_band_unknown` | and is unknown if either arm is unknown |
+| `test_an_unknown_band_suppresses_the_verdict` | an unknown band suppresses the verdict, it does not strict-compare |
+| `test_an_errored_arm_has_no_verdict` | an errored arm has no verdict |
+| `test_a_zero_baseline_has_no_verdict` | and neither does a zero baseline |
+| `test_the_benchmark_script_is_present` | premise: the benchmark script is present to be judged |
+| `test_the_report_captures_ratio` | premise: the report still captures ratio() into a display variable |
+| `test_ratio_reaches_only_printf` | ratio()'s output reaches printf and nothing else |
+| `test_the_verdict_is_asked_of_cb_verdict` | and the verdict is asked of cb_verdict rather than recomputed inline |
+| `test_the_benchmark_page_is_present` | premise: the benchmark page is present to be judged |
+| `test_the_extractor_reads_wrapped_ids` | the variation-claim extractor reads ids wrapped across two lines |
+| `test_no_query_is_called_variation_without_a_tie` | no query is called run-to-run variation unless its figures are a measured tie |
+| `test_the_tuned_arm_names_its_settings` | the tuned-arm section names all four settings and the group-cap value |

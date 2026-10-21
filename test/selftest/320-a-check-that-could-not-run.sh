@@ -208,8 +208,15 @@ done < <(grep -rn 'PGC_CHECKS=\$((PGC_CHECKS' "$_cnt_dir"/*.sh "$_cnt_dir"/selft
 #
 # It now asserts the sweep read something, and the classifier is proven on a
 # FIXTURE below rather than on whatever the corpus happens to contain.
-check "premise: the sweep read the corpus and found sites to classify" \
-	"$([ "${#_cnt_sites[@]}" -ge 1 ] && echo yes || echo "no (${#_cnt_sites[@]})")" "yes"
+#
+# "Read something" is the FILES scanned, not the sites found (#1341). The same
+# mistake one level down: requiring one site went red when bench_guards.sh, the
+# last suite keeping its own tally, moved onto lib.sh's accounting -- zero sites
+# is the state the rules below exist to reach. A sweep pointed at the wrong
+# directory reads no files, which this still refuses.
+_cnt_files="$(ls "$_cnt_dir"/*.sh "$_cnt_dir"/selftest/*.sh 2>/dev/null | grep -c .)"
+check "premise: the sweep read the corpus" \
+	"$([ "${_cnt_files:-0}" -ge 100 ] && echo yes || echo "no (${_cnt_files:-0} files)")" "yes"
 
 # A file that keeps its OWN counters and never calls pgc_summary is not bound by
 # this invariant, because nothing reconciles it. Asserted rather than assumed:
