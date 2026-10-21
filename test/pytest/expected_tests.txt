@@ -954,4 +954,6 @@ guard_tests 464
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
-cluster_tests 2037
+# cluster_tests 2037 -> 2045 for #1341's test_concurrency.py, the twin of concurrency.sh:
+# 8 tests, one per check, by collection over the cluster files.
+cluster_tests 2045

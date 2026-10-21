@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 138
+suites_not_covered 137
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4702,4 +4702,24 @@ suites_not_covered 138
 #     never         3600 + 3 = 3603
 #     dated         1841 + 4 = 1845
 #     3603 + 1845 == 5448
+#
+# #1341, concurrency seeded, with its twin (OffgridwithJD): 3603 -> 3603, and
+# suites_not_covered 138 -> 137. The suite had no rows. It enters with 7 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike); the twin has
+# one test more, which records the shell's failure-only wait_timeout names where a
+# wait timed out and declines on a green run. Measured on PG17 at origin/main: with
+# the chunk-group lock removed, "A same-group second deleter blocks" still passed, the
+# second deleter waiting on the delete_vector tuple's transaction instead, so A and B
+# now require the advisory (chunk-group) lock wait; and with the lock keyed on the
+# whole storage, "C different-group deleter does not block" passed, because the
+# blocked DELETE had hit lock_timeout and errored and so waited on nothing -- it now
+# requires the deleter idle in a live transaction. Its two wrappers now record
+# through lib.sh's pgc_pass and pgc_fail rather than pgc_record itself, which a
+# twinned suite may not call. 7 are dated by two mutations of
+# the delete-vector lock, each reddening the same names in both twins; 0 arrive never.
+#
+#     ledger rows   5448 + 7 = 5455
+#     never         3603 + 0 = 3603
+#     dated         1845 + 7 = 1852
+#     3603 + 1852 == 5455
 checks_never_observed_red 3603

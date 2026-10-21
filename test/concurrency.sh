@@ -67,7 +67,7 @@
 # NO GREEN RUN EXECUTES THIS. It records only on the timeout path, so a passing
 # suite emits nothing here and the record stream is unchanged.
 wait_timeout() {	# wait_timeout FIXED-NAME DETAIL
-	pgc_record FAIL "$1" "FAIL  $1 (timed out waiting for $2)" "$2"
+	pgc_fail "$1" "timed out waiting for $2"
 	fail=1
 }
 
@@ -223,12 +223,17 @@ fail=0
 # because it emits no accounting line. The line is still correct and wanted --
 # it is the total the records reconcile against -- so the remaining step is a gate
 # flip rather than new work (@jdatcmd, #969 review).
+#
+# Through lib.sh's pgc_pass and pgc_fail, not pgc_record directly: the grader's
+# extractor reads the recorders lib.sh defines, and a twinned suite calling the
+# seed itself is what test_compare_to_bash.py refuses (#1341). A PASS line no
+# longer carries ": $got"; a FAIL still names both sides.
 check() {
 	local name="$1" got="$2" want="$3"
 	if [ "$got" = "$want" ]; then
-		pgc_record PASS "$name" "PASS  $name: $got"
+		pgc_pass "$name"
 	else
-		pgc_record FAIL "$name" "FAIL  $name: got [$got] want [$want]"
+		pgc_fail "$name" "got [$got] want [$want]"
 		fail=1
 	fi
 }
@@ -346,8 +351,12 @@ send s2 "BEGIN;"
 send s2 "DELETE FROM t WHERE id = 2;"
 send s2 "\\echo <<a_del2>>"
 wait_blocked cc_s2 || true
+# On the CHUNK-GROUP lock, an advisory lock, and not merely on some lock: with
+# the chunk-group lock removed the second deleter still waits, on the
+# delete_vector tuple's transaction, and a count of any Lock wait passed it
+# (measured) while both A arms below went red.
 check "A same-group second deleter blocks" \
-	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" \
+	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock' AND wait_event='advisory';")" \
 	"1"
 
 # Release S1; S2 must now merge (not overwrite) and commit cleanly.
@@ -377,7 +386,7 @@ send s2 "DELETE FROM t2 WHERE id = 2;"
 send s2 "\\echo <<b_del2>>"
 wait_blocked cc_s2 || true
 check "B first-delete second deleter blocks" \
-	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" \
+	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock' AND wait_event='advisory';")" \
 	"1"
 
 send_wait s1 b_commit "COMMIT;"
@@ -405,9 +414,13 @@ send_wait s1 c_del "DELETE FROM t3 WHERE id = 1;"    # chunk group in stripe 1
 send_wait s2 c_begin "BEGIN;"
 send_wait s2 c_del "DELETE FROM t3 WHERE id = 5;"    # chunk group in stripe 2
 wait_idle_intx cc_s2
+# Not blocked, AND its DELETE finished in a live transaction. A deleter that did
+# block hits lock_timeout, errors, and then waits on nothing: with deletes to
+# different groups made to serialize, "0 lock waits" passed on the aborted
+# transaction (measured).
 check "C different-group deleter does not block" \
-	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" \
-	"0"
+	"$(ctl_q "SELECT coalesce(state, '<none>') || '/' || (wait_event_type IS NOT DISTINCT FROM 'Lock') FROM pg_stat_activity WHERE application_name='cc_s2';")" \
+	"idle in transaction/false"
 
 send_wait s1 c_commit "COMMIT;"
 send_wait s2 c_commit "COMMIT;"
