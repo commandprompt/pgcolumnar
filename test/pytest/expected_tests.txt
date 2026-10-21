@@ -946,4 +946,6 @@ guard_tests 464
 # 34 tests, one per check, by collection over the cluster files.
 # cluster_tests 1964 -> 1980 for #1341's test_fsst_verdict_cache.py, the twin of fsst_verdict_cache.sh:
 # 16 tests, one per check, by collection over the cluster files.
-cluster_tests 1980
+# cluster_tests 1980 -> 1989 for #1341's test_import_exclusion.py, the twin of import_exclusion.sh:
+# 9 tests, one per check, by collection over the cluster files.
+cluster_tests 1989
