@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 101
+suites_not_covered 100
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5457,4 +5457,24 @@ suites_not_covered 101
 #     never         3884 + 1 = 3885
 #     dated         2286 + 25 = 2311
 #     3885 + 2311 == 6196
-checks_never_observed_red 3885
+#
+# #1341, logical_decoding_source seeded, with its twin (OffgridwithJD): 3885 -> 3897,
+# and suites_not_covered 101 -> 100. The suite had no rows. It enters with its 12
+# checks, all green on each of 15-19 in shell and twin alike. The missing-plugin name
+# pgc_skip records is now a literal both twins share, but it is a skip, not a check, so
+# it has no row: CI has test_decoding and never emits it. After one fix.
+# The second slot had no heap control: created after the 5000-row insert, it decoded
+# nothing, and "it too emits no decodable change" and "100x the rows does not give 100x
+# the internal records" (0 < anything) both passed, 11/11 on main. A heap table now writes
+# through that slot in the same window and must decode its 5000 inserts, and the ratio
+# check refuses a slot that carried no internal records. Under that harness mutation both
+# are red in both twins. No source mutation reddens a check: the claim is that pgcolumnar
+# writes nothing logical decoding can read, and a default chunk group of 100 rows still
+# keeps the internal records following groups (114 for 50 groups, under the 10x bound).
+# 0 are dated. 12 arrive never.
+#
+#     ledger rows   6196 + 12 = 6208
+#     never         3885 + 12 = 3897
+#     dated         2311 + 0 = 2311
+#     3897 + 2311 == 6208
+checks_never_observed_red 3897
