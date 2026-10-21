@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 151
+suites_not_covered 150
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4424,4 +4424,18 @@ suites_not_covered 151
 #     never         3417 + 7 = 3424
 #     dated         1689 + 10 = 1699
 #     3424 + 1699 == 5123
-checks_never_observed_red 3424
+#
+# #1341, projection_rewrite seeded, with its twin (jdatcmd): 3424 -> 3492, and
+# suites_not_covered 151 -> 150. The suite had no rows. It enters with 84 checks from
+# five-major runs (84/84 on each of 15-19, shell and twin alike). The arm helper
+# built its check names from the table name, which grading cannot read, so each arm's
+# checks are now written out at the call site by their existing names. 16 are dated by
+# three mutations, each reddening the same names in both twins: a rewrite that no longer
+# re-records projections, a repair that stops at the named relation, and a stale
+# declaration skipped without a WARNING. 68 arrive never.
+#
+#     ledger rows   5123 + 84 = 5207
+#     never         3424 + 68 = 3492
+#     dated         1699 + 16 = 1715
+#     3492 + 1715 == 5207
+checks_never_observed_red 3492
