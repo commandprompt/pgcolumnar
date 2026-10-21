@@ -99,6 +99,5 @@ planner_choice_quality
 preimage_rewrite
 projection_rename_restore
 pushdown_report
-qual_order_selectivity
 read_stream
 row_triggers
