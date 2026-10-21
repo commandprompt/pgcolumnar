@@ -1683,7 +1683,9 @@ design exists to avoid.
 ### `test_the_accounting_line_is_read_on_every_exit_path`
 
 Pass, failure, skip and incomplete all carry the line, which is what makes it the
-runtime twin of the declaration rather than a synonym for PASSED.
+runtime twin of the declaration rather than a synonym for PASSED. Typed logs show only
+that the reader accepts four shapes, so a real suite is also driven down each path and
+the reader is fed what `pgc_summary` printed (#1339).
 
 ### `test_the_reconciliation_names_both_directions`
 
@@ -1732,7 +1734,8 @@ the population and that both buckets are occupied.
 Two runtime-observable mechanisms exist: `pgc_summary`'s accounting line, used by 239
 suites, and a suite's own `checks run:` line, which `bench_guards` and `docs_style`
 print from private counters without ever sourcing `lib.sh`. A reader that knew only the
-first would call those two unaccounted, which is false.
+first would call those two unaccounted, which is false. Both alternatives are anchored,
+and an indented or extended line of either shape is refused (#1339).
 
 ### `test_a_registered_suite_accounted_by_nothing_fails_by_name`
 
@@ -1753,7 +1756,8 @@ Debt is recorded by name rather than as a count, which is what makes it a burn-d
 new unaccounted suite fails while the known ones are excused. Debt that is no longer
 debt — a suite that now accounts, or one no longer registered — is reported, so the
 burn-down cannot stall silently. Those two are reported rather than fatal: a gate that
-reddens the moment someone *fixes* something teaches people not to fix things.
+reddens the moment someone *fixes* something teaches people not to fix things. Each case
+reads the exit code as well as the names: 1 for the new suite, 0 for both reports (#1339).
 
 ### `test_the_population_partitions_and_prints_its_identity`
 
@@ -1767,8 +1771,9 @@ buckets that are not a partition at all.
 ### `test_the_debt_file_is_tracked_and_holds_only_registered_suites`
 
 `test/suites_without_accounting.txt` is tracked so that adding a name is a diff a
-reviewer sees — the whole reason it is a file and not a number in the environment. Every
-name in it must be a registered suite.
+reviewer sees — the whole reason it is a file and not a number in the environment. git
+must track it, not merely find it on disk (#1339). Every name in it must be a registered
+suite.
 
 ### `test_the_declaration_reader_survives_pipefail_on_a_long_suite`
 

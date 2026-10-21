@@ -20,6 +20,7 @@ would agree with itself; the house rule asks for two observers of one implementa
 """
 
 import pathlib
+import re
 import subprocess
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -142,6 +143,26 @@ def test_the_accounting_line_is_read_on_every_exit_path(tmp_path, expect):
     expect.text(_call("pgc_log_shows_accounting", indented)[0].strip(), "no",
                 "an accounting line that does not start its line is refused")
 
+    # THE PRODUCER, ON EVERY EXIT PATH (#1339). The logs above are typed, so they show
+    # the reader accepts four shapes, not that `pgc_summary` prints the line on four
+    # paths. With the line printed only when nothing failed, every arm above passed.
+    # So drive a real suite down each path and feed the reader what it printed.
+    bodies = {
+        "PASSED": 'check "x" a a',
+        "FAILED": 'check "x" a b',
+        "SKIPPED": ":",
+        "INCOMPLETE": 'check_unrunnable "x" UNSUPPORTED_MAJOR "probe"',
+    }
+    for verdict, body in bodies.items():
+        suite = tmp_path / f"real_{verdict}.sh"
+        suite.write_text(f'. "{REPO / "test" / "lib.sh"}"\n{body}\npgc_summary\n')
+        out = subprocess.run(["bash", str(suite)], capture_output=True, text=True).stdout
+        log = _write(tmp_path, f"real_{verdict}.log", out)
+        expect.num(len(re.findall(rf"^real_{verdict}\.sh: {verdict}", out, re.M)), 1,
+                   f"the real suite reached its {verdict} exit")
+        expect.text(_call("pgc_log_shows_accounting", log)[0].strip(), "yes",
+                    f"and the reader finds the accounting line it printed on the way")
+
 
 def test_the_reader_accepts_the_line_the_producer_actually_emits(tmp_path, expect):
     """Every log above is a literal typed into this file, and the shell half types the
@@ -163,7 +184,7 @@ def test_the_reader_accepts_the_line_the_producer_actually_emits(tmp_path, expec
     log.write_text(r.stdout)
 
     expect.num(r.stdout.count("\naccounting: "), 1,
-               "premise: the real suite produced exactly one accounting line")
+               "the real suite produced exactly one accounting line")
     expect.text(_call("pgc_log_shows_accounting", str(log))[0].strip(), "yes",
                 "the reader accepts the line the producer actually emits")
 
@@ -345,14 +366,16 @@ def test_the_declaration_reader_survives_pipefail_on_a_long_suite(tmp_path, expe
             " && echo yes || echo no\n")
     got = subprocess.run(["bash", "-c", twin, "_", str(big)],
                          capture_output=True, text=True).stdout.strip()
-    expect.text(got, "no", "the grep -q shape is the one that gets this wrong under pipefail")
+    # Premises: a restated shape run by bash and grep, which no change here can redden.
+    expect.text(got, "no",
+                "premise: the grep -q shape is the one that gets this wrong under pipefail")
 
     short = tmp_path / "short.sh"
     short.write_text(". lib.sh\npgc_summary\n")
     got_short = subprocess.run(["bash", "-c", twin, "_", str(short)],
                                capture_output=True, text=True).stdout.strip()
     expect.text(got_short, "yes",
-                "and it agrees on a SHORT file, which is why it survived review")
+                "premise: and it agrees on a SHORT file, which is why it survived review")
 
 
 # ---- the population, which the symmetry check cannot see --------------------
@@ -377,6 +400,17 @@ def test_the_accounted_reader_takes_either_runtime_mechanism(tmp_path, expect):
                 "and a log carrying only its own checks-run line is too")
     expect.text(_call("pgc_log_shows_any_accounting", neither)[0].strip(), "no",
                 "a log carrying neither is not accounted")
+    # THE ANCHORS (#1339). "neither" is prose, refused by the regex's shape, so
+    # dropping ^ and $ from either alternative left this test green. Each input below
+    # is a well-formed line that is not the line.
+    for label, text in (
+            ("an indented checks-run line", "  checks run: 9\n"),
+            ("a checks-run line with more after the count", "checks run: 9 of 12\n"),
+            ("an indented accounting line",
+             "  accounting: 1 passed + 0 failed + 0 unrunnable + 0 skipped = 1\n")):
+        log = _write(tmp_path, label.replace(" ", "_") + ".log", text)
+        expect.text(_call("pgc_log_shows_any_accounting", log)[0].strip(), "no",
+                    f"{label} is not accounted")
 
 
 def test_a_registered_suite_accounted_by_nothing_fails_by_name(tmp_path, expect):
@@ -421,18 +455,23 @@ def test_the_debt_file_excuses_only_what_it_names(tmp_path, expect):
                "a NEW unaccounted suite fails while the known debt is excused")
     expect.num(out.count("registered but accounted by nothing: alpha"), 0,
                "and the excused one is not named as a failure")
+    expect.num(rc, 1, "and the new one fails the reconciliation, not only prints")
 
     reg = _write(tmp_path, "reg", "alpha\n")
     acct = _write(tmp_path, "acct", "alpha\n")
     debt = _write(tmp_path, "debt", "alpha\n")
-    out, _ = _call("pgc_reconcile_population", reg, acct, nd, debt)
+    out, rc = _call("pgc_reconcile_population", reg, acct, nd, debt)
     expect.num(out.count("listed as debt but now accounts: alpha"), 1,
                "a suite that now accounts but is still listed as debt is reported")
+    # REPORTED, NOT FATAL: the runner says a burn-down that reddens the gate when
+    # someone fixes something teaches people not to (#1339).
+    expect.num(rc, 0, "and reporting it does not fail the reconciliation")
 
     debt = _write(tmp_path, "debt", "gone\n")
-    out, _ = _call("pgc_reconcile_population", reg, acct, nd, debt)
+    out, rc = _call("pgc_reconcile_population", reg, acct, nd, debt)
     expect.num(out.count("listed as debt but not registered: gone"), 1,
                "and debt naming a suite that is not registered is reported")
+    expect.num(rc, 0, "and that report does not fail it either")
 
 
 def test_the_population_partitions_and_prints_its_identity(tmp_path, expect):
@@ -469,6 +508,11 @@ def test_the_debt_file_is_tracked_and_holds_only_registered_suites(expect):
     which is the whole reason it is not a number in the environment."""
     debt = REPO / "test" / "suites_without_accounting.txt"
     expect.text("yes" if debt.exists() else "no", "yes", "the debt file is in the tree")
+    # TRACKED, which is what the docstring claims and what makes an added name a diff
+    # a reviewer sees. Existing on disk is not that: an untracked copy passed (#1339).
+    tracked = subprocess.run(["git", "-C", str(REPO), "ls-files", "--error-unmatch",
+                              str(debt.relative_to(REPO))], capture_output=True, text=True)
+    expect.num(tracked.returncode, 0, "and git tracks it")
     names = [l.strip() for l in debt.read_text().splitlines()
              if l.strip() and not l.startswith("#")]
     expect.at_least(len(names), 1, "premise: it names some debt to check")
