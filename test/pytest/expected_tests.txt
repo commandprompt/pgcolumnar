@@ -1009,4 +1009,6 @@ guard_tests 467
 # 10 tests, one per check, by collection over the cluster files.
 # cluster_tests 2441 -> 2454 for #1341's test_encode_invariants.py, the twin of encode_invariants.sh:
 # 13 tests, one per check, by collection over the cluster files.
-cluster_tests 2454
+# cluster_tests 2454 -> 2467 for #1341's test_read_stream.py, the twin of read_stream.sh:
+# 13 tests, one per check, by collection over the cluster files.
+cluster_tests 2467

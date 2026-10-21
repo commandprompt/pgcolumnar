@@ -301,6 +301,7 @@ behaviour, the source of that number is named.
 - [253. test_pg19_vacuum_options.py: PostgreSQL 19's parallel-autovacuum parameter is accepted on a columnar table and changes nothing](#253-test_pg19_vacuum_optionspy-postgresql-19s-parallel-autovacuum-parameter-is-accepted-on-a-columnar-table-and-changes-nothing)
 - [254. test_cost_written_geometry.py: the cost model describes the geometry a table was written with](#254-test_cost_written_geometrypy-the-cost-model-describes-the-geometry-a-table-was-written-with)
 - [255. test_encode_invariants.py: encoding invariants for the #155 bulk-load optimisations](#255-test_encode_invariantspy-encoding-invariants-for-the-155-bulk-load-optimisations)
+- [256. test_read_stream.py: reads through a read stream return what the synchronous path returns](#256-test_read_streampy-reads-through-a-read-stream-return-what-the-synchronous-path-returns)
 
 ## 1. How to read a test in here
 
@@ -10040,3 +10041,22 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_no_vector_selects_fsst_at_or_below_the_distinct_cap` | no vector selects FSST at or below the distinct cap, so skipping its build cannot change output |
 | `test_the_block_compression_default_is_zstd` | the block compression default is zstd, pinned to #890 phase 1 |
 | `test_its_level_is_3` | and its level is 3 |
+
+## 256. test_read_stream.py: reads through a read stream return what the synchronous path returns
+
+The pytest twin of `test/read_stream.sh` (ported for #1341), every check by the shell's name. Five query shapes over a multi-stripe table are compared with a heap twin, once with `pgcolumnar.enable_read_stream` on and once off. On a private database.
+
+### Every test
+
+Each mode first reads its setting back from a fresh session, since a setting that never took would run both modes down one path. If the setting cannot be applied, the error is the value those two checks compare, so they red by name and the comparisons still run. A comparison is a set hash of each side.
+
+**What the `[off]` arms vouch for.** The read-back checks prove that the setting reached the session. They do not prove which path a read took, and no check here observes the path. With the stream path taken whatever the setting says, all 13 checks pass; with that and the synchronous path copying one byte late, all 13 still pass. So the `[off]` arms vouch for the synchronous path only while the setting routes reads to it.
+
+**On PostgreSQL 15 and 16** the stream path is compiled out, so `[on]` and `[off]` run the same synchronous code. There the `[on]` arms repeat the `[off]` arms.
+
+| test | what it holds |
+| --- | --- |
+| `test_multiple_stripes_present` | multiple stripes present |
+| `test_a_fresh_session_reads_the_setting_on` | [on] a fresh session reads enable_read_stream as on |
+| `test_a_fresh_session_reads_the_setting_off` | [off] a fresh session reads enable_read_stream as off |
+| `test_a_shape_matches_its_heap_twin` | one test per row of `NAMES` (10 rows), each by the shell's name |
