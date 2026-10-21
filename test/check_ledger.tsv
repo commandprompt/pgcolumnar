@@ -727,6 +727,44 @@ column_extent	column_extent	the extent of ty.s is the data's min and max, in the
 column_extent	column_extent	the extent of ty.ts is the data's min and max, in the type's order	15;16;17;18;19	2026-10-14	a writer that finds no complete extent does not recompute one;no extent row is ever written (PgColumnarExtentPreCommit returns at once)
 column_extent	column_extent	while the column that was there from the start still has one	15;16;17;18;19	2026-10-14	a writer that finds no complete extent does not recompute one;no extent row is ever written (PgColumnarExtentPreCommit returns at once)
 column_extent	column_extent	without the extent rows the planner falls back to one zone_map scan	15;16;17;18;19	2026-10-13	the planner's zone-map fallback removed: with no complete extent it reads nothing and bounds nothing
+column_projection	column_projection	SELECT * reads as much as projection-off does	15;16;17;18;19	never	-
+column_projection	column_projection	added column across the boundary :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	added column across the boundary :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	added column alone :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	added column alone :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	added column with others :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	after deletes, projected column :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	after deletes, projected column :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	after updates, projected column :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	after updates, select star hash :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	all-NULL column :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	all-NULL column :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	count(*) :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	ctid system column :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	join on projected column :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	min/max mixed types :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	min/max mixed types :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	one column costs less than a third of reading all of them	15;16;17;18;19	2026-10-20	columnar_reader.c: every column is read whatever the projection says
+column_projection	column_projection	order by unselected col :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	parallel scan, projected column	15;16;17;18;19	never	-
+column_projection	column_projection	parallel scan, qual on unselected column	15;16;17;18;19	2026-10-20	columnar_customscan.c: a column referenced only by the qual is left out of the projection
+column_projection	column_projection	premise: both scan costs are measurements	15;16;17;18;19	never	-
+column_projection	column_projection	premise: columnar and heap hold the same rows	15;16;17;18;19	never	-
+column_projection	column_projection	premise: the unprojected read is large enough to measure	15;16;17;18;19	never	-
+column_projection	column_projection	qual and target disjoint :: columnar==heap	15;16;17;18;19	2026-10-20	columnar_customscan.c: a column referenced only by the qual is left out of the projection
+column_projection	column_projection	qual and target disjoint :: on==off	15;16;17;18;19	2026-10-20	columnar_customscan.c: a column referenced only by the qual is left out of the projection
+column_projection	column_projection	qual column not selected :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	qual-only column still produces the right count	15;16;17;18;19	never	-
+column_projection	column_projection	select star hash :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	select star hash :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	single column agg :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	single column agg :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	the cost model prices a narrow projection below a wide one	15;16;17;18;19	never	-
+column_projection	column_projection	the narrow projection really does read far fewer buffers	15;16;17;18;19	2026-10-20	columnar_reader.c: every column is read whatever the projection says
+column_projection	column_projection	two columns :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	varlena alone :: columnar==heap	15;16;17;18;19	never	-
+column_projection	column_projection	varlena projected alone :: on==off	15;16;17;18;19	never	-
+column_projection	column_projection	whole-row var :: on==off	15;16;17;18;19	never	-
 concurrent_diff	concurrent_diff	all workers succeeded	15;16;17;18;19	2026-10-19	every stripe reserves the same stripe id;row-number reservation loses an update (the metapage lock dropped between read and write)
 concurrent_diff	concurrent_diff	concurrent bloom eq	15;16;17;18;19	never	-
 concurrent_diff	concurrent_diff	concurrent count/sum	15;16;17;18;19	2026-10-19	row-number reservations overlap by one (rowCount - 1)
