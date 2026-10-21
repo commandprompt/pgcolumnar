@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 126
+suites_not_covered 125
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4943,4 +4943,24 @@ suites_not_covered 126
 #     never         3641 + 7 = 3648
 #     dated         1923 + 2 = 1925
 #     3648 + 1925 == 5573
-checks_never_observed_red 3648
+#
+# #1341, rewrite_group_scan seeded, with its twin (jdatcmd): 3505 -> 3507, and
+# suites_not_covered 149 -> 148. The suite had no rows. It enters with 7 checks from
+# five-major runs (7/7 on each of 15-19, shell and twin alike), after three fixes,
+# one added premise and one added check. Nothing asserted that the rewrite did any
+# work: the "finishes" check counted only a timeout message, so with compact_rewrite
+# returning 0 untouched every check passed. Both rewrites now read "finished" only for
+# a positive count. And the index was built after the rewrite, so the lookup read a
+# fresh index and a rewrite that inserted no index entries passed every check
+# (OffgridwithJD's review); it is now built before, and a new check holds the lookup to
+# a plan that reads it. 5 are dated by three mutations, each reddening the same names
+# in both twins: the rewrite doing nothing, dropping one row per group, and inserting
+# no index entries. 2 arrive never: the survivors premise and the plan check. The
+# #196 cliff itself (a per-row re-decode past the cache cap) is not among them: it is
+# a timing property, which the statement_timeout still bounds.
+#
+#     ledger rows   5573 + 7 = 5580
+#     never         3648 + 2 = 3650
+#     dated         1925 + 5 = 1930
+#     3650 + 1930 == 5580
+checks_never_observed_red 3650

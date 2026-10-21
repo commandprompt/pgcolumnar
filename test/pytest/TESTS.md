@@ -287,6 +287,7 @@ behaviour, the source of that number is named.
 - [239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded](#239-test_groupagg_table_sizingpy-the-vectorized-grouped-aggregate-sizes-its-table-from-the-estimate-bounded)
 - [240. test_fsst_margin.py: the FSST keep/drop margin decides, and never changes content](#240-test_fsst_marginpy-the-fsst-keepdrop-margin-decides-and-never-changes-content)
 - [241. test_index_delete_liveness.py: nbtree's deletion passes never destroy an entry for a live row](#241-test_index_delete_livenesspy-nbtrees-deletion-passes-never-destroy-an-entry-for-a-live-row)
+- [242. test_rewrite_group_scan.py: a rewrite reads each row group once, not once per row](#242-test_rewrite_group_scanpy-a-rewrite-reads-each-row-group-once-not-once-per-row)
 
 ## 1. How to read a test in here
 
@@ -9656,3 +9657,21 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_at_shipped_defaults_count_star_is_right` | at shipped defaults count(*) is right |
 | `test_at_shipped_defaults_count_star_and_count_b_agree` | at shipped defaults the table answers the same to count(*) and count(b) |
 | `test_oracle_the_heap_answers_count_star_correctly` | oracle: the heap answers count(*) correctly after the same churn |
+
+## 242. test_rewrite_group_scan.py: a rewrite reads each row group once, not once per row
+
+The pytest twin of `test/rewrite_group_scan.sh` (ported for #1341), every check by the shell's name. A group whose decoded form exceeds the fetch cache cap used to be re-decoded once per row during a rewrite (#196). The fixture crosses the cap, and the rewrite must finish within a generous statement_timeout, keep every surviving row, agree with a heap mirror, and keep the rows reachable through an index built before it. On a private database.
+
+### Every test
+
+A rewrite reads `finished` only when compact_rewrite returned a positive count. The fixture is held to its survivors first. The index `rgs_id` is built before the rewrite, so the rewrite has to insert the moved rows' index entries itself.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_holds_its_survivors` | premise: the fixture holds the rows that survive the delete |
+| `test_a_rewrite_over_the_cache_cap_finishes` | a rewrite of a group over the cache cap finishes |
+| `test_the_rewrite_preserved_every_surviving_row` | the rewrite preserved every surviving row |
+| `test_the_rewrite_agrees_with_a_heap_mirror` | and it agrees with a heap mirror |
+| `test_a_group_under_the_cap_still_rewrites_correctly` | a group under the cap still rewrites correctly |
+| `test_the_index_lookup_reads_the_index` | the index lookup's plan reads rgs_id |
+| `test_an_index_lookup_finds_a_rewritten_row` | an index lookup finds a rewritten row |
