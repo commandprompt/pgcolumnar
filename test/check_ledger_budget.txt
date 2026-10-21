@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 108
+suites_not_covered 107
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5295,4 +5295,23 @@ suites_not_covered 108
 #     never         3804 + 15 = 3819
 #     dated         2095 + 2 = 2097
 #     3819 + 2097 == 5916
-checks_never_observed_red 3819
+#
+# #1341, parallel_degree seeded, with its twin (jdatcmd): 3718 -> 3720, and
+# suites_not_covered 117 -> 116. The suite had no rows. It enters with 6 checks from
+# five-major runs (6/6 on each of 15-19, shell and twin alike), after one fix: with
+# the server gone after ANALYZE, three checks passed on readings nobody took. The
+# row counts compared "" with "", the cap read a missing worker count as 0, and the
+# degree compared "none" with "none". Each now needs numbers. Three checks lost
+# their premise: prefix under #1339: the columnar arm's rows, its partial path and
+# its degree under the cap are pgcolumnar's own work, and a one-line change reddens
+# each. 4 are dated by five mutations, each reddening the same names in both twins:
+# the #451 estimate never applied, the estimate over-asking (pages * 9), over-asking
+# into the cap (pages * 243), the partial path never added, and an insert that drops
+# one row. 2 arrive never: the premises that columnar is smaller on disk and that
+# the heap plan is parallel.
+#
+#     ledger rows   5916 + 6 = 5922
+#     never         3819 + 2 = 3821
+#     dated         2097 + 4 = 2101
+#     3821 + 2101 == 5922
+checks_never_observed_red 3821

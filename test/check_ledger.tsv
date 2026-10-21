@@ -3889,6 +3889,12 @@ parallel_am_scan	parallel_am_scan	premise: the serial plan is not a columnar cus
 parallel_am_scan	parallel_am_scan	premise: the table holds every inserted row	15;16;17;18;19	never	-
 parallel_am_scan	parallel_am_scan	premise: with the custom scan off the serial plan is a Seq Scan	15;16;17;18;19	never	-
 parallel_am_scan	parallel_am_scan	workers share the table-AM scan, it is not a single claimer	15;16;17;18;19	never	-
+parallel_degree	parallel_degree	both tables hold the same rows	15;16;17;18;19	2026-10-21	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_degree	parallel_degree	identical data is granted the same parallel degree	15;16;17;18;19	2026-10-21	columnar_customscan.c: the #451 estimate over-asks into the cap, pages * 243;columnar_customscan.c: the #451 estimate over-asks, pages * 9;columnar_customscan.c: the #451 uncompressed-page estimate never applied, so the scan is sized from compressed relpages;columnar_customscan.c: the parallel columnar partial path never added (if (false && workers > 0))
+parallel_degree	parallel_degree	premise: the columnar table really is smaller on disk	15;16;17;18;19	never	-
+parallel_degree	parallel_degree	premise: the heap plan is parallel	15;16;17;18;19	never	-
+parallel_degree	parallel_degree	the columnar plan is parallel	15;16;17;18;19	2026-10-21	columnar_customscan.c: the parallel columnar partial path never added (if (false && workers > 0))
+parallel_degree	parallel_degree	the worker cap is not what decides either arm	15;16;17;18;19	2026-10-21	columnar_customscan.c: the #451 estimate over-asks into the cap, pages * 243;columnar_customscan.c: the parallel columnar partial path never added (if (false && workers > 0))
 parallel_scan_cost	parallel_scan_cost	an I/O-dominated parallel scan is not priced at serial/workers	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	an I/O-dominated parallel scan is not priced at serial/workers with the leader participating	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	premise: both leader settings produced a row estimate to compare	15;16;17;18;19	never	-
