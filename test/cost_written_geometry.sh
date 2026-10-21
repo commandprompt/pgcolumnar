@@ -80,20 +80,22 @@ plan_line() {  # table, plan-time stripe_row_limit
 cost_at() { plan_line "$1" "$2" | grep -oE 'cost=[0-9.]+\.\.[0-9.]+' | sed 's/.*\.\.//'; }
 
 # --- premises: the fixture is the shape the checks assume -------------------
-check "premise: both tables hold the same number of rows" \
-	"$(q "SELECT count(*) FROM ga")" "$(q "SELECT count(*) FROM gb")"
-check "premise: gb was written at the default limit, in few groups" \
+# Against the constant: two failed counts read empty and would agree.
+check_text "premise: both tables hold the same number of rows" \
+	"$(q "SELECT count(*) FROM ga")|$(q "SELECT count(*) FROM gb")" "$ROWS|$ROWS"
+check "gb was written at the default limit, in few groups" \
 	"$([ "$(groups gb)" -le 5 ] && echo few || echo "$(groups gb)")" "few"
-check "premise: ga was written at 20000, in many more groups" \
+check "ga was written at 20000, in many more groups" \
 	"$([ "$(groups ga)" -ge 15 ] && echo many || echo "$(groups ga)")" "many"
-check "premise: and the catalog recorded both limits" \
-	"$(written_limit ga)|$(written_limit gb)" "20000|$(q "SHOW pgcolumnar.stripe_row_limit" | tr -d ' ')"
+check "and the catalog recorded both limits" \
+	"$(written_limit ga)|$(written_limit gb)" \
+	"20000|$(_d="$(q "SHOW pgcolumnar.stripe_row_limit" | tr -d ' ')"; pgc_is_number "$_d" && echo "$_d" || echo "unread [$_d]")"
 
 # The comparison is only meaningful against one plan shape.
-for _g in 150000 20000; do
-	check "premise: gb is costed as an index scan at plan-time limit $_g" \
-		"$(plan_line gb "$_g" | grep -c 'Index Scan')" "1"
-done
+check "premise: gb is costed as an index scan at plan-time limit 150000" \
+	"$(plan_line gb 150000 | grep -c 'Index Scan')" "1"
+check "premise: gb is costed as an index scan at plan-time limit 20000" \
+	"$(plan_line gb 20000 | grep -c 'Index Scan')" "1"
 
 # --- 1. the planning session must not reprice an existing table -------------
 # The table is not touched between these three readings. Only a session GUC
@@ -102,8 +104,9 @@ done
 c1="$(cost_at gb 150000)"
 c2="$(cost_at gb 20000)"
 echo "-- gb costed at plan-time limits 150000 / 20000: $c1 / $c2"
-check "the planning session's stripe_row_limit does not reprice a written table" \
-	"$c1|$c2" "$c1|$c1"
+# Both readings must be costs: two missing ones agree as "|" == "|".
+check_text "the planning session's stripe_row_limit does not reprice a written table" \
+	"$(pgc_is_number "$c1" && pgc_is_number "$c2" && echo "$c1|$c2" || echo "unread [$c1|$c2]")" "$c1|$c1"
 
 # --- 2. and the model can still see real geometry ---------------------------
 # The converse failure would be a model that ignores the session GUC by ignoring
@@ -112,8 +115,23 @@ check "the planning session's stripe_row_limit does not reprice a written table"
 ca="$(cost_at ga 150000)"
 cb="$(cost_at gb 150000)"
 echo "-- ga (many small groups) $ca vs gb (few large) $cb, same rows, same plan-time GUC"
+# By a margin: a model blind to geometry costs the two within the ANALYZE
+# sample's noise (771.10 against 771.06, 771.17 against 771.40, measured), and
+# a bare "<" turned that into a coin flip. One percent is ~25x the noise and
+# far below the real gaps (2.2x through the other terms alone, 6.8x in all).
 check "a table written in smaller groups is costed cheaper than one in larger" \
-	"$(awk -v a="$ca" -v b="$cb" 'BEGIN{print (a < b) ? "cheaper" : "not cheaper"}')" "cheaper"
+	"$(pgc_is_number "$ca" && pgc_is_number "$cb" \
+	   && awk -v a="$ca" -v b="$cb" 'BEGIN{print (a + 0 < 0.99 * b) ? "cheaper" : "not cheaper: ga " a " gb " b}' \
+	   || echo "unread [$ca|$cb]")" "cheaper"
+
+# Cheaper alone does not hold the index-fetch penalty to the written geometry:
+# with the penalty's limit pinned at 150000 for every table, ga still costs
+# less through the other geometry terms (350.72 against 771.02 on PG17), and
+# the check above passes. The penalty's own share is the difference: measured
+# 113.98 against 771.36, a 0.15x ratio, where the pinned penalty gives 0.45x.
+# A third separates the two with room on both sides.
+check_ratio "the index-fetch penalty sees the written geometry: ga costs under a third of gb" \
+	"$ca" "$cb" 0.33
 
 # --- 3. a table that was never written still plans ---------------------------
 # There is no storage row before the first write, so the reader falls back to the

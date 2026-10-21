@@ -1005,4 +1005,6 @@ guard_tests 467
 # 86 tests, one per check, by collection over the cluster files.
 # cluster_tests 2419 -> 2431 for #1341's test_pg19_vacuum_options.py, the twin of pg19_vacuum_options.sh:
 # 12 tests, one per check, by collection over the cluster files.
-cluster_tests 2431
+# cluster_tests 2431 -> 2441 for #1341's test_cost_written_geometry.py, the twin of cost_written_geometry.sh:
+# 10 tests, one per check, by collection over the cluster files.
+cluster_tests 2441

@@ -9,7 +9,6 @@
 audit
 bench_guards
 cancel_decode
-cost_written_geometry
 decode_interrupts
 decode_skip_interrupts
 docs_style

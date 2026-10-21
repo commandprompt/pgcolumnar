@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 115
+suites_not_covered 114
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5169,4 +5169,27 @@ suites_not_covered 115
 #     never         3777 + 10 = 3787
 #     dated         2053 + 3 = 2056
 #     3787 + 2056 == 5843
-checks_never_observed_red 3787
+#
+# #1341, cost_written_geometry seeded, with its twin (OffgridwithJD): 3787 -> 3790,
+# and suites_not_covered 115 -> 114. The suite had no rows. It enters with 10
+# checks from five-major runs (all green on each of 15-19, shell and twin alike). Four
+# fixes, each measured on PG17 at origin/main: the repricing check compared "$c1|$c2"
+# with "$c1|$c1", which agreed as "|" with no cost read; the cheaper check let awk
+# compare a missing cost as a string, and passed with ga's cost unread; the rows
+# premise compared two counts that agreed when both failed; and the cheaper check's
+# bare "<" decided a geometry-blind model's equal costs by ANALYZE noise, so it now
+# needs a 1% margin, and its verdict names both costs, so it leaves lossy_arms.tsv.
+# A tenth check holds the index-fetch penalty itself to the
+# written geometry -- a penalty pinned at one limit for every table passed all nine --
+# by bounding ga's cost at a third of gb's (0.15x measured on each major, 0.45x
+# pinned). "and the catalog recorded both limits", "ga was written at 20000, in many more
+# groups" and "gb was written at the default limit, in few groups" are reddened by
+# writer mutations and lose the premise prefix (#1339). 7 are dated by seven
+# mutations of the writer, the written-limit reader and the penalty, each reddening
+# the same names in both twins; 3 arrive never.
+#
+#     ledger rows   5843 + 10 = 5853
+#     never         3787 + 3 = 3790
+#     dated         2056 + 7 = 2063
+#     3790 + 2063 == 5853
+checks_never_observed_red 3790
