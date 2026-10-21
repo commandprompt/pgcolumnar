@@ -1015,4 +1015,6 @@ guard_tests 474
 # 13 tests, one per check, by collection over the cluster files.
 # cluster_tests 2467 -> 2473 for #1341's test_parquet_nested.py, the twin of parquet_nested.sh:
 # 6 tests, one per check, by collection over the cluster files.
-cluster_tests 2473
+# cluster_tests 2473 -> 2480 for #1341's test_parquet_nested_import.py, the twin of parquet_nested_import.sh:
+# 7 tests, one per check, by collection over the cluster files.
+cluster_tests 2480

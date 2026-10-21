@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 110
+suites_not_covered 109
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5264,4 +5264,17 @@ suites_not_covered 110
 #     never         3796 + 4 = 3800
 #     dated         2090 + 2 = 2092
 #     3800 + 2092 == 5892
-checks_never_observed_red 3800
+#
+# #1341, parquet_nested_import seeded, with its twin (jdatcmd): 3600 -> 3604, and
+# suites_not_covered 139 -> 138. The suite had no rows. It enters with 7 checks from
+# five-major runs (7/7 on each of 15-19, shell and twin alike), after one fix: "import
+# count matches" compared two counts with check, so with both tables missing two empty
+# readings agreed; it is check_num. 3 are dated by one mutation, reddening the same
+# names in both twins: the reader taking an empty Parquet list for a NULL array, which
+# every round-trip and the pyarrow oracle catch. 4 arrive never.
+#
+#     ledger rows   5892 + 7 = 5899
+#     never         3800 + 4 = 3804
+#     dated         2092 + 3 = 2095
+#     3804 + 2095 == 5899
+checks_never_observed_red 3804

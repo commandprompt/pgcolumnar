@@ -3915,6 +3915,13 @@ parquet_nested	parquet_nested	nested Parquet values match expectation	15;16;17;1
 parquet_nested	parquet_nested	np2 export rows	15;16;17;18;19	never	-
 parquet_nested	parquet_nested	np2 values match	15;16;17;18;19	never	-
 parquet_nested	parquet_nested	reject multi-dim array	15;16;17;18;19	2026-10-21	columnar_parquet.c: a multi-dimensional array is no longer refused
+parquet_nested_import	parquet_nested_import	export rows	15;16;17;18;19	never	-
+parquet_nested_import	parquet_nested_import	import count matches	15;16;17;18;19	never	-
+parquet_nested_import	parquet_nested_import	import rows	15;16;17;18;19	never	-
+parquet_nested_import	parquet_nested_import	nested import round-trips (arrays + composite)	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: an empty Parquet list is read back as a NULL array
+parquet_nested_import	parquet_nested_import	pyarrow import rows	15;16;17;18;19	never	-
+parquet_nested_import	parquet_nested_import	pyarrow nested file matches oracle	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: an empty Parquet list is read back as a NULL array
+parquet_nested_import	parquet_nested_import	round-trips after delete	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: an empty Parquet list is read back as a NULL array
 partition_lifecycle	partition_lifecycle	a NULL cutoff is refused, in both overloads	15;16;17;18;19	2026-10-13	partition_drop_plan without its NULL-cutoff check, in both overloads
 partition_lifecycle	partition_lifecycle	a call that would create more than 1000 partitions is refused before any DDL	15;16;17;18;19	2026-10-12	partition_create_ahead without the 1000-partition bound
 partition_lifecycle	partition_lifecycle	a cutoff before every partition plans nothing	15;16;17;18;19	2026-10-13	the cutoff filter removed: every partition planned
