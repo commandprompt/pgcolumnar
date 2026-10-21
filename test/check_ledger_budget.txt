@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 119
+suites_not_covered 118
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5107,4 +5107,19 @@ suites_not_covered 119
 #     never         3682 + 31 = 3713
 #     dated         1989 + 20 = 2009
 #     3713 + 2009 == 5722
-checks_never_observed_red 3713
+#
+# #1341, row_triggers seeded, with its twin (jdatcmd): 3505 -> 3506, and
+# suites_not_covered 149 -> 148. The suite had no rows. It enters with 14 checks from
+# five-major runs (14/14 on each of 15-19, shell and twin alike), after two fixes.
+# The seven columnar-against-heap trigger-log comparisons read "0/0/0" = "0/0/0" when
+# neither trigger existed: with every pair's triggers created against a missing
+# function, all of them passed. They now need the heap trigger to have fired. And the
+# two "succeeds" checks counted one message, so any other error read as success. 13
+# are dated by two mutations of tuple_fetch_row_version, each reddening the same names
+# in both twins: no write-buffer fallback (#179), and no on-disk read. 1 arrive never.
+#
+#     ledger rows   5722 + 14 = 5736
+#     never         3713 + 1 = 3714
+#     dated         2009 + 13 = 2022
+#     3714 + 2022 == 5736
+checks_never_observed_red 3714
