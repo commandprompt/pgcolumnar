@@ -317,6 +317,7 @@ behaviour, the source of that number is named.
 - [269. test_logical_decoding_source.py: a columnar table is not a logical decoding source](#269-test_logical_decoding_sourcepy-a-columnar-table-is-not-a-logical-decoding-source)
 - [270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must](#270-test_iceberg_deletespy-iceberg-position-and-equality-deletes-apply-scope-and-refuse-what-they-must)
 - [271. test_logical_subscriber.py: columnar as a logical replication apply target](#271-test_logical_subscriberpy-columnar-as-a-logical-replication-apply-target)
+- [272. test_logical_decoding_cdc_recipe.py: the documented CDC recipe captures, transacts and decodes](#272-test_logical_decoding_cdc_recipepy-the-documented-cdc-recipe-captures-transacts-and-decodes)
 
 ## 1. How to read a test in here
 
@@ -10552,3 +10553,51 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_select_for_share_is_not_told_about_replication` | an ordinary SELECT ... FOR SHARE is not told about replication |
 | `test_select_for_no_key_update_keeps_the_generic_message` | an ordinary SELECT ... FOR NO KEY UPDATE keeps the generic message |
 | `test_select_for_no_key_update_is_not_told_about_replication` | an ordinary SELECT ... FOR NO KEY UPDATE is not told about replication |
+
+## 272. test_logical_decoding_cdc_recipe.py: the documented CDC recipe captures, transacts and decodes
+
+The twin of `test/logical_decoding_cdc_recipe.sh` (#754). The CDC recipe is extracted from docs/user-guide.md at run time and executed on a private cluster at `wal_level=logical`: a row trigger on a columnar table fires once per row and sees the table's values; an UPDATE is captured as one UPDATE, never as the storage's delete and insert; a DELETE captures the OLD row; the capture is transactional (read inside the transaction before the rollback, so the rollback has something to undo); the capture table decodes through a test_decoding slot while the columnar table emits nothing; FOR ALL TABLES includes pgcolumnar's internal tables; and a bulk load writes one capture row per loaded row.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value (a failed query is a `query_error()` that fails its own check) from a module fixture on a private cluster. Without the test_decoding library both harnesses fail one check, the shell's `pgc_skip` name, and the twin's other tests decline MISSING_DEPENDENCY.
+
+| test | what it holds |
+| --- | --- |
+| `test_ldcr_test_decoding_is_installed` | test_decoding.so is not installed; build contrib/test_decoding |
+| `test_ldcr_server_runs_at_wal_level_logical` | premise: the server is running at wal_level=logical |
+| `test_ldcr_guide_is_where_expected` | premise: the guide is where this suite expects it |
+| `test_ldcr_extraction_is_not_empty` | premise: the extraction is not empty |
+| `test_ldcr_recipe_contains_events` | premise: the extracted recipe contains [CREATE TABLE events] |
+| `test_ldcr_recipe_contains_events_cdc` | premise: the extracted recipe contains [CREATE TABLE events_cdc] |
+| `test_ldcr_recipe_contains_capture_function` | premise: the extracted recipe contains [CREATE FUNCTION events_capture] |
+| `test_ldcr_recipe_contains_trigger` | premise: the extracted recipe contains [CREATE TRIGGER events_cdc_t] |
+| `test_ldcr_recipe_contains_using_pgcolumnar` | premise: the extracted recipe contains [USING pgcolumnar] |
+| `test_ldcr_recipe_contains_delete_branch` | premise: the extracted recipe contains [TG_OP = 'DELETE'] |
+| `test_ldcr_recipe_contains_old_id` | premise: the extracted recipe contains [OLD.id] |
+| `test_ldcr_recipe_is_the_whole_block` | premise: and it is the whole block, not a fragment |
+| `test_ldcr_events_is_columnar` | premise: events is a COLUMNAR table |
+| `test_ldcr_events_cdc_is_heap` | premise: events_cdc is a HEAP table |
+| `test_ldcr_slot_exists_and_is_logical` | premise: the slot exists and is logical |
+| `test_ldcr_trigger_fires_once_per_row` | a row trigger on a COLUMNAR table fires once per inserted row |
+| `test_ldcr_trigger_saw_the_table_values` | and it saw the same values the table holds |
+| `test_ldcr_update_captures_one_row` | an UPDATE captures exactly one row |
+| `test_ldcr_update_recorded_with_new_value` | and it is recorded as UPDATE with the NEW value |
+| `test_ldcr_update_leaks_no_delete` | the update did NOT leak the storage's internal DELETE |
+| `test_ldcr_update_leaks_no_insert` | nor the storage's internal INSERT |
+| `test_ldcr_delete_captures_old_values` | a DELETE captures the OLD values, which are gone from the table |
+| `test_ldcr_deleted_row_is_gone` | and the row really is gone from the columnar table |
+| `test_ldcr_inside_the_transaction_the_row_was_captured` | inside the transaction the row was captured and is in the columnar table, before the rollback |
+| `test_ldcr_rollback_captures_nothing` | a rolled-back transaction captures nothing |
+| `test_ldcr_rollback_leaves_no_row` | and leaves no row in the columnar table either |
+| `test_ldcr_committed_insert_captures` | premise: the identical insert COMMITTED does capture, so the arm above is real |
+| `test_ldcr_slot_decoded_something` | premise: the slot decoded something at all |
+| `test_ldcr_columnar_table_emits_nothing` | CONTROL: the columnar table itself still emits nothing |
+| `test_ldcr_capture_table_is_carried` | the capture table IS carried by the slot |
+| `test_ldcr_one_decoded_row_per_capture` | one decoded capture row per captured change |
+| `test_ldcr_rolled_back_row_not_in_stream` | and the rolled-back row is not in the stream |
+| `test_ldcr_stream_carries_update` | the decoded stream carries the UPDATE as an UPDATE |
+| `test_ldcr_stream_carries_delete` | and the DELETE as a DELETE |
+| `test_ldcr_matcher_finds_inserts` | premise: the same matcher finds the INSERTs, so a 1 above is a real match |
+| `test_ldcr_publication_includes_internal_tables` | premise: FOR ALL TABLES really does include pgcolumnar's internal tables |
+| `test_ldcr_bulk_load_one_capture_per_row` | a bulk load writes exactly one capture row per loaded row |

@@ -2951,6 +2951,42 @@ local_open_race_free	local_open_race_free	the partition coordinator never stats 
 local_open_race_free	local_open_race_free	the partition coordinator opens O_NONBLOCK (a FIFO cannot block its open)	15;16;17;18;19	2026-10-21	the partition coordinator opens without O_NONBLOCK
 local_open_race_free	local_open_race_free	the race-free opener exists	15;16;17;18;19	never	-
 local_open_race_free	local_open_race_free	the racy stat-before-open helper is gone	15;16;17;18;19	2026-10-21	the racy PgColumnarRejectNonRegularFile helper comes back
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	CONTROL: the columnar table itself still emits nothing	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	a DELETE captures the OLD values, which are gone from the table	15;16;17;18;19	2026-10-21	docs/user-guide.md: the recipe's trigger fires on INSERT OR UPDATE only, not DELETE
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	a bulk load writes exactly one capture row per loaded row	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	a rolled-back transaction captures nothing	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	a row trigger on a COLUMNAR table fires once per inserted row	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	an UPDATE captures exactly one row	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_update leaves the old row version live
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	and it is recorded as UPDATE with the NEW value	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_update writes its new row version with every column null
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	and it saw the same values the table holds	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	and leaves no row in the columnar table either	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	and the DELETE as a DELETE	15;16;17;18;19	2026-10-21	docs/user-guide.md: the recipe's trigger fires on INSERT OR UPDATE only, not DELETE
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	and the rolled-back row is not in the stream	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	and the row really is gone from the columnar table	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_delete marks nothing deleted
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	inside the transaction the row was captured and is in the columnar table, before the rollback	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	nor the storage's internal INSERT	15;16;17;18;19	2026-10-21	docs/user-guide.md: the recipe's capture records every non-DELETE change as an INSERT
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	one decoded capture row per captured change	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: FOR ALL TABLES really does include pgcolumnar's internal tables	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: and it is the whole block, not a fragment	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: events is a COLUMNAR table	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: events_cdc is a HEAP table	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the extracted recipe contains [CREATE FUNCTION events_capture]	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the extracted recipe contains [CREATE TABLE events]	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the extracted recipe contains [CREATE TABLE events_cdc]	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the extracted recipe contains [CREATE TRIGGER events_cdc_t]	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the extracted recipe contains [OLD.id]	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the extracted recipe contains [TG_OP = 'DELETE']	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the extracted recipe contains [USING pgcolumnar]	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the extraction is not empty	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the guide is where this suite expects it	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the identical insert COMMITTED does capture, so the arm above is real	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the same matcher finds the INSERTs, so a 1 above is a real match	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the server is running at wal_level=logical	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the slot decoded something at all	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	premise: the slot exists and is logical	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	the capture table IS carried by the slot	15;16;17;18;19	never	-
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	the decoded stream carries the UPDATE as an UPDATE	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_update leaves the old row version live
+logical_decoding_cdc_recipe	logical_decoding_cdc_recipe	the update did NOT leak the storage's internal DELETE	15;16;17;18;19	never	-
 logical_decoding_source	logical_decoding_source	100x the rows does not give 100x the internal records	15;16;17;18;19	never	-
 logical_decoding_source	logical_decoding_source	CONTROL: the heap table's 50 inserts ARE decoded	15;16;17;18;19	never	-
 logical_decoding_source	logical_decoding_source	CONTROL: the second slot decodes the heap table's 5000 inserts	15;16;17;18;19	never	-

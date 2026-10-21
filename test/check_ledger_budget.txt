@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 98
+suites_not_covered 97
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5518,4 +5518,22 @@ suites_not_covered 98
 #     never         3903 + 4 = 3907
 #     dated         2354 + 16 = 2370
 #     3907 + 2370 == 6277
-checks_never_observed_red 3907
+#
+# #1341, logical_decoding_cdc_recipe seeded, with its twin (OffgridwithJD): 3907 -> 3936,
+# and suites_not_covered 98 -> 97. The suite had no rows. It enters with its 36 checks from five-major
+# runs (all green on each of 15-19, shell and twin alike), after two fixes. The
+# missing-plugin name pgc_skip records is a skip, not a check, so it has no row: CI has
+# test_decoding and never emits it. The rollback arm read the capture count
+# and the row after ROLLBACK only, so a rolled-back INSERT that never ran passed both arms:
+# with it made a duplicate key, main passed 35/35. A reading inside the transaction, before
+# the rollback, now requires the row captured and present. And "it saw the same values the
+# table holds" compared two readings with check, so with the server gone "" = "" passed; it
+# is check_text. The recipe-contains premises are unrolled into literal names. Three
+# table-AM mutations and two mutations of the guide's own recipe date checks, each red by the
+# same names in both twins. 7 are dated. 29 arrive never.
+#
+#     ledger rows   6277 + 36 = 6313
+#     never         3907 + 29 = 3936
+#     dated         2370 + 7 = 2377
+#     3936 + 2377 == 6313
+checks_never_observed_red 3936

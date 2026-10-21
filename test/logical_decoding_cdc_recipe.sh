@@ -47,7 +47,8 @@ max_wal_senders=8"
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 if [ ! -f "$("$PGC_PG_CONFIG" --pkglibdir)/test_decoding.so" ]; then
-	pgc_skip "test_decoding" "test_decoding.so is not in $("$PGC_PG_CONFIG" --pkglibdir); build contrib/test_decoding"
+	# The message is the check's name, so it is a literal: the twin records the same one.
+	pgc_skip "test_decoding" "test_decoding.so is not installed; build contrib/test_decoding"
 fi
 
 check "premise: the server is running at wal_level=logical" \
@@ -81,12 +82,21 @@ printf '%s\n' "$RECIPE" > "$RECIPE_FILE"
 # produced nothing.
 check "premise: the extraction is not empty" \
 	"$([ -n "$RECIPE" ] && echo nonempty || echo EMPTY)" "nonempty"
-for want in "CREATE TABLE events" "CREATE TABLE events_cdc" \
-            "CREATE FUNCTION events_capture" "CREATE TRIGGER events_cdc_t" \
-            "USING pgcolumnar" "TG_OP = 'DELETE'" "OLD.id"; do
-	check "premise: the extracted recipe contains [$want]" \
-		"$(grep -cF "$want" "$RECIPE_FILE" | awk '{print ($1>0)?"yes":"no"}')" "yes"
-done
+# Unrolled so each name is a literal the twin's grader can read.
+check "premise: the extracted recipe contains [CREATE TABLE events]" \
+	"$(grep -qF "CREATE TABLE events" "$RECIPE_FILE" && echo yes || echo no)" "yes"
+check "premise: the extracted recipe contains [CREATE TABLE events_cdc]" \
+	"$(grep -qF "CREATE TABLE events_cdc" "$RECIPE_FILE" && echo yes || echo no)" "yes"
+check "premise: the extracted recipe contains [CREATE FUNCTION events_capture]" \
+	"$(grep -qF "CREATE FUNCTION events_capture" "$RECIPE_FILE" && echo yes || echo no)" "yes"
+check "premise: the extracted recipe contains [CREATE TRIGGER events_cdc_t]" \
+	"$(grep -qF "CREATE TRIGGER events_cdc_t" "$RECIPE_FILE" && echo yes || echo no)" "yes"
+check "premise: the extracted recipe contains [USING pgcolumnar]" \
+	"$(grep -qF "USING pgcolumnar" "$RECIPE_FILE" && echo yes || echo no)" "yes"
+check "premise: the extracted recipe contains [TG_OP = 'DELETE']" \
+	"$(grep -qF "TG_OP = 'DELETE'" "$RECIPE_FILE" && echo yes || echo no)" "yes"
+check "premise: the extracted recipe contains [OLD.id]" \
+	"$(grep -qF "OLD.id" "$RECIPE_FILE" && echo yes || echo no)" "yes"
 check "premise: and it is the whole block, not a fragment" \
 	"$([ "$(grep -c ';' "$RECIPE_FILE")" -ge 4 ] && echo yes || echo no)" "yes"
 
@@ -111,7 +121,9 @@ check "premise: the slot exists and is logical" \
 psql_run "INSERT INTO events VALUES (1,'sale',100), (2,'refund',50), (3,'sale',75);"
 check_num "a row trigger on a COLUMNAR table fires once per inserted row" \
 	"$(q "SELECT count(*) FROM events_cdc WHERE op = 'INSERT';")" "3"
-check "and it saw the same values the table holds" \
+# check_text, not check: with the server gone both readings are empty, and "" = ""
+# passed this arm (#418).
+check_text "and it saw the same values the table holds" \
 	"$(q "SELECT string_agg(id||':'||kind||':'||amount, ',' ORDER BY id) FROM events_cdc WHERE op='INSERT';")" \
 	"$(q "SELECT string_agg(id||':'||kind||':'||amount, ',' ORDER BY id) FROM events;")"
 
@@ -142,9 +154,19 @@ check_num "and the row really is gone from the columnar table" \
 
 # ---- 3. the capture is transactional -----------------------------------------
 CAP_BEFORE="$(q "SELECT count(*) FROM events_cdc;")"
-psql_run "BEGIN;
-          INSERT INTO events VALUES (99,'rolledback',1);
-          ROLLBACK;"
+# Read INSIDE the transaction before rolling it back, so the two arms below have
+# something to undo. Without this reading, a rolled-back INSERT that never ran
+# (it failed, or was never sent) left both arms green: nothing captured, no row.
+# Measured: with the INSERT made a duplicate key, so the block stopped at it, the
+# suite passed 35/35.
+INSIDE="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -qAt -v ON_ERROR_STOP=1 -c "BEGIN;" \
+	-c "INSERT INTO events VALUES (99,'rolledback',1);" \
+	-c "SELECT ((SELECT count(*) FROM events_cdc) - ${CAP_BEFORE:-0}) || ':' ||
+	           (SELECT count(*) FROM events WHERE id = 99);" \
+	-c "ROLLBACK;" 2>&1)"
+check "inside the transaction the row was captured and is in the columnar table, before the rollback" \
+	"$INSIDE" "1:1"
 check_num "a rolled-back transaction captures nothing" \
 	"$(q "SELECT count(*) FROM events_cdc;")" "$CAP_BEFORE"
 check_num "and leaves no row in the columnar table either" \
