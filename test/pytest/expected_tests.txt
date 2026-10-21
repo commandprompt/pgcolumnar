@@ -934,4 +934,6 @@ guard_tests 464
 # 38 checks in 38 tests, by collection over the cluster files.
 # cluster_tests 1838 -> 1849 for #1341's test_local_open_race_free.py, the twin of local_open_race_free.sh:
 # 11 tests, one per check, by collection over the cluster files.
-cluster_tests 1849
+# cluster_tests 1849 -> 1861 for #1341's test_encode_effort.py, the twin of encode_effort.sh:
+# 12 tests, one per check, by collection over the cluster files.
+cluster_tests 1861

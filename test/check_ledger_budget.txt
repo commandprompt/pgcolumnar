@@ -4514,4 +4514,15 @@ suites_not_covered 147
 #     never         3536 + 3 = 3539
 #     dated         1725 + 8 = 1733
 #     3539 + 1733 == 5272
-checks_never_observed_red 3539
+#
+# #1341, encode_effort seeded, with the compression-name arms (OffgridwithJD): 2516 ->
+# 2526, and suites_not_covered 225 -> 224. The suite had no rows. It enters with all
+# 12 checks from five-major runs (12/12 on each of 15-19). Two are dated by
+# set_options without its compression-name check: "brotli" was stored over the
+# zstd set before it. The other 10 arrive never.
+#
+#     ledger rows   5272 + 0 = 5272
+#     never         3539 + -6 = 3533
+#     dated         1733 + 6 = 1739
+#     3533 + 1739 == 5272
+checks_never_observed_red 3533
