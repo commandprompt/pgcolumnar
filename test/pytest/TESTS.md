@@ -291,6 +291,7 @@ behaviour, the source of that number is named.
 - [243. test_recluster_gate.py: recluster skips its rewrite when the table is already this key's run](#243-test_recluster_gatepy-recluster-skips-its-rewrite-when-the-table-is-already-this-keys-run)
 - [244. test_recluster_extent.py: an online recluster records only the extent it rewrote](#244-test_recluster_extentpy-an-online-recluster-records-only-the-extent-it-rewrote)
 - [245. test_reader_buffer_reuse.py: the reader reuses one group buffer, and the reuse never shows in an answer](#245-test_reader_buffer_reusepy-the-reader-reuses-one-group-buffer-and-the-reuse-never-shows-in-an-answer)
+- [246. test_nologin_workers.py: a NOLOGIN role's background workers connect and act as that role](#246-test_nologin_workerspy-a-nologin-roles-background-workers-connect-and-act-as-that-role)
 
 ## 1. How to read a test in here
 
@@ -9763,3 +9764,27 @@ A read that names its columns fills only their ranges of the reused buffer. A re
 | `test_an_all_null_column_beside_a_wide_one_matches` | an all-NULL column beside a wide one matches |
 | `test_reads_after_drop_column_match` | reads after DROP COLUMN match |
 | `test_a_rescan_returns_the_same_rows` | a rescan (nested loop) returns the same rows |
+
+## 246. test_nologin_workers.py: a NOLOGIN role's background workers connect and act as that role
+
+The pytest twin of `test/nologin_workers.sh` (#1585), every check by the shell's name. As a NOLOGIN role reached by SET ROLE and holding both server-file roles: `parallel_export_parquet` and `parallel_copy` return every row, a row trigger inside the copy worker records that role and not the authenticated user, the parallel flush encodes every column in a worker, and the server log holds no refused login for the role beyond the one the premise provokes. Before #1585 the workers connected as the calling role, which PostgreSQL 15 and 16 refuse for a role without LOGIN. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_nologin_role_cannot_open_a_session` | premise: the NOLOGIN role cannot open a session |
+| `test_the_server_log_records_the_refused_login` | premise: the server log records the NOLOGIN role's refused login -- the positive control for the log reading the last test relies on |
+| `test_set_role_to_the_nologin_role_takes` | premise: SET ROLE to the NOLOGIN role takes |
+| `test_a_nologin_roles_parallel_export_exports_every_row` | a NOLOGIN role's parallel_export_parquet exports every row |
+| `test_a_nologin_roles_parallel_copy_loads_every_row` | a NOLOGIN role's parallel_copy loads every row |
+| `test_parallel_copys_workers_wrote_as_the_nologin_role` | parallel_copy's workers wrote every row as the NOLOGIN role -- a worker that connected as the authenticated user and never took the caller's id writes `postgres` here |
+| `test_the_flush_is_dispatched_to_workers` | the flush is dispatched to workers |
+| `test_a_nologin_roles_parallel_flush_encodes_every_column_in_a_worker` | a NOLOGIN role's parallel flush encodes every column in a worker -- read from the flush's own DEBUG1 split, because a refused worker falls back to serial and stores the same rows |
+| `test_the_table_holds_every_row_it_flushed` | and the table holds every row it flushed |
+| `test_no_worker_was_refused_a_login` | no worker was refused a login as the NOLOGIN role |
+| `test_a_role_resetting_copy_trigger_writes_as_the_nologin_role` | a copy trigger that resets the role still writes every row as the NOLOGIN role -- the worker's session user is the caller on every major (#1612 review) |
+| `test_the_role_resetting_copy_leaves_nothing_prepared` | and that copy leaves no prepared transaction behind |
+| `test_a_role_switching_copy_trigger_is_refused_before_prepare` | a copy trigger that switches to another role is refused before the worker prepares: a transaction prepared as another user is one the caller cannot finish |
+| `test_the_refused_copy_leaves_nothing_prepared` | and the refused copy leaves no prepared transaction behind |
+| `test_a_definer_copy_keeps_its_restriction_in_the_workers` | a copy run by a SECURITY DEFINER function keeps the definer's restriction in its workers: the worker takes the caller's security context, inside its transaction |

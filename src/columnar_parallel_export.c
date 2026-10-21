@@ -94,7 +94,10 @@ typedef struct PexportWorkerSlot
 typedef struct PexportHeader
 {
 	Oid			dbid;
-	Oid			roleid;
+	Oid			roleid;			/* the caller's user id, with secContext */
+	int			secContext;
+	Oid			authid;			/* the authenticated user, which workers connect as below 17 (#1585) */
+	bool		roleIsSuperuser;	/* roleid's superuser flag, for the worker's session user */
 	Oid			relid;			/* single columnar table, or partitioned parent */
 	uint64		storageId;		/* single-table storage id (0 when partitioned) */
 	int			nworkers;
@@ -452,7 +455,6 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	Oid		   *leaves;
 	PexportWorkerSlot *me;
 	int			widx;
-	uint32		conn_flags = BGWORKER_BYPASS_ALLOWCONN;
 	Snapshot	snap;
 
 	memcpy(&widx, MyBgworkerEntry->bgw_extra, sizeof(int));
@@ -475,10 +477,8 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	leaves = (Oid *) shm_toc_lookup(toc, PEXPORT_KEY_LEAVES, false);
 	me = &slots[widx];
 
-#if PG_VERSION_NUM >= 170000
-	conn_flags |= BGWORKER_BYPASS_ROLELOGINCHECK;
-#endif
-	BackgroundWorkerInitializeConnectionByOid(hdr->dbid, hdr->roleid, conn_flags);
+	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
+							   hdr->roleIsSuperuser);
 
 	/*
 	 * Adopt the dispatcher's exact snapshot. ImportSnapshot requires a
@@ -486,6 +486,8 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	 * exactly as SET TRANSACTION SNAPSHOT does.
 	 */
 	StartTransactionCommand();
+	/* the caller's security context, now that a transaction is open (#1612) */
+	columnar_worker_take_context(hdr->roleid, hdr->secContext);
 	XactIsoLevel = XACT_REPEATABLE_READ;
 	ImportSnapshot(hdr->snapname);
 	snap = GetTransactionSnapshot();
@@ -759,7 +761,9 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	dsmh = dsm_segment_handle(seg);
 
 	hdr->dbid = MyDatabaseId;
-	hdr->roleid = GetUserId();
+	GetUserIdAndSecContext(&hdr->roleid, &hdr->secContext);
+	hdr->authid = GetAuthenticatedUserId();
+	hdr->roleIsSuperuser = superuser_arg(hdr->roleid);
 	hdr->relid = relid;
 	hdr->storageId = storageId;
 	hdr->nworkers = workers;

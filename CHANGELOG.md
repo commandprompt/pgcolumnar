@@ -400,6 +400,17 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+- **A NOLOGIN role can run `parallel_export_parquet`, `parallel_copy` and the
+  parallel flush on PostgreSQL 15 and 16.** After `SET ROLE` to a role without
+  LOGIN, the export failed `worker 0 failed: worker exited without reporting a
+  result`, `parallel_copy` failed `coordinator exited without reporting a result`,
+  and the parallel flush encoded every column serially. Each background worker
+  connected as the calling role, which these majors refuse for a role that cannot
+  log in. A worker now connects as the session's authenticated user and then takes
+  the caller's user id and security context, as PostgreSQL's own parallel workers
+  do, so triggers, privilege checks and `current_user` inside it still see the
+  caller. PostgreSQL 17 and later already worked (#1585).
+  `test/nologin_workers.sh` and `test_nologin_workers.py`.
 - **In the upgrade window, a refusal for a missing catalog table names `ALTER
   EXTENSION UPDATE`.** After the new library is installed and the server restarted,
   but before `ALTER EXTENSION pgcolumnar UPDATE`, `DROP TABLE`, `TRUNCATE` and
