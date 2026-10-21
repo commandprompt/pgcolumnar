@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 100
+suites_not_covered 99
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5477,4 +5477,25 @@ suites_not_covered 100
 #     never         3885 + 12 = 3897
 #     dated         2311 + 0 = 2311
 #     3897 + 2311 == 6208
-checks_never_observed_red 3897
+#
+# #1341, iceberg_deletes seeded, with its twin (OffgridwithJD): 3897 -> 3903, and
+# suites_not_covered 100 -> 99. The suite had no rows. It enters with 49 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after one fix.
+# The six "backend still up" checks read SELECT 1, which answers again after crash
+# recovery: with abort() in place of the null-pos refusal, or the partition spec's
+# fields guard removed (a segfault), main's shell passed the survival check once
+# recovery had finished. They now also read the server log's count of killed
+# backends, and every reading waits for the server first, so a crash reddens its own
+# arm and its section's survival check, not the two arms after it. Every refusal now
+# also reads its own guard's message (XX001 and 22023 are shared), and the oracle
+# comparisons refuse an empty side. 43 are dated by twenty-three mutations, each reddening
+# the same names in both twins. The equal-sequence equality check is dated only by
+# relaxing both of its layered guards: the per-file strict < alone passed, because the
+# pre-skip at the oldest data file's sequence number already drops that delete.
+# 6 arrive never.
+#
+#     ledger rows   6208 + 49 = 6257
+#     never         3897 + 6 = 3903
+#     dated         2311 + 43 = 2354
+#     3903 + 2354 == 6257
+checks_never_observed_red 3903
