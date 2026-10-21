@@ -278,6 +278,7 @@ behaviour, the source of that number is named.
 - [230. test_concurrency.py: concurrent deletes into one chunk group serialize and both survive](#230-test_concurrencypy-concurrent-deletes-into-one-chunk-group-serialize-and-both-survive)
 - [231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate](#231-test_iceberg_scanpy-iceberg_scan-reads-by-field-id-behind-the-server-file-gate)
 - [232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot](#232-test_iceberg_catalogpy-the-iceberg-catalog-reader-resolves-the-named-current-snapshot)
+- [233. test_iceberg_name_mapping_memory.py: the Iceberg name-mapping parse does not allocate per entry](#233-test_iceberg_name_mapping_memorypy-the-iceberg-name-mapping-parse-does-not-allocate-per-entry)
 
 ## 1. How to read a test in here
 
@@ -9443,3 +9444,21 @@ One module fixture writes every metadata file into `server_dir` and reads every 
 | `test_backend_still_up_after_the_bad_metadata` | backend still up after the bad file |
 | `test_an_unprivileged_role_is_refused_the_catalog` | an unprivileged role is refused (42501) |
 | `test_a_pg_read_server_files_member_may_read_the_catalog` | a pg_read_server_files member who is not superuser may read the catalog |
+
+## 233. test_iceberg_name_mapping_memory.py: the Iceberg name-mapping parse does not allocate per entry
+
+The twin of `test/iceberg_name_mapping_memory.sh` (#731). The peak memory of a scan over a padded name mapping, less core's own parse of the byte-identical mapping, as a slope across two sizes, stays under 30 bytes an entry, and the padded mapping still binds every row with the same values.
+
+### Every test
+
+Each peak is VmHWM from /proc for the backend of the connection that ran the one statement, before and after it; a statement that errored has no peak. The fixtures live in `server_dir`.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_small_arm_produced_three_readings` | the small arm produced three readings |
+| `test_the_large_arm_produced_three_readings` | the large arm produced three readings |
+| `test_cores_own_parse_is_the_larger_part` | core's own parse is the larger part of the scan's peak |
+| `test_the_two_sizes_give_different_peaks` | the two sizes give different peaks |
+| `test_the_name_mapping_parse_does_not_allocate_per_entry` | the name-mapping parse does not allocate per entry (#731) |
+| `test_the_padded_mapping_still_binds_every_row` | the padded mapping still binds every row |
+| `test_the_mapped_values_are_still_correct` | and the mapped values are still correct |

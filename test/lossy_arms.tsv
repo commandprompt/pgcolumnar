@@ -115,9 +115,6 @@ entry_point_privilege	premise: the install script declares MODULE_PATHNAME symbo
 fsst_margin	so the margin is what changed the decision, not the corpus
 hilbert_cluster	premise: the install script declares MODULE_PATHNAME symbols at all
 hilbert_locality	box $box: Hilbert reads fewer groups than Z-order
-iceberg_name_mapping_memory	premise: core's own parse is the larger part of the scan's peak
-iceberg_name_mapping_memory	premise: the two sizes give different peaks
-iceberg_name_mapping_memory	the name-mapping parse does not allocate per entry (#731)
 int8_agg_int128	premise: its values are NOT low-cardinality, so the fold is not answered from runs
 logical_decoding_cdc_recipe	premise: and it is the whole block, not a fragment
 logical_subscriber	it retries rather than giving up, so the subscription is wedged

@@ -79,8 +79,13 @@ peak() {	# peak QUERY -> kB above the idle baseline, or empty
 	done
 	pk=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null)
 	exec 9>&-; wait 2>/dev/null
+	# A statement that ERRORED has no peak worth the name: with the scan pointed
+	# at a missing file it still read ~2 MB, the overhead went negative, and the
+	# #731 claim passed on a scan that never ran (measured).
+	local errored
+	errored="$(grep -c '^ERROR' "$fifo.out" 2>/dev/null)"
 	rm -f "$fifo" "$fifo.out"
-	[ -n "$base" ] && [ -n "$pk" ] && echo $(( pk - base )) || echo ""
+	[ "${errored:-1}" = 0 ] && [ -n "$base" ] && [ -n "$pk" ] && echo $(( pk - base )) || echo ""
 }
 
 # build_fixture N -> a padded metadata file AND the identical mapping string
@@ -115,17 +120,22 @@ echo "      ${SMALL} entries: core_floor=$(awk '{print $1}' <<<"$small")kB scan=
 echo "      ${LARGE} entries: core_floor=$(awk '{print $1}' <<<"$large")kB scan=$(awk '{print $2}' <<<"$large")kB overhead=$(awk '{print $3}' <<<"$large")kB"
 
 # Every reading must be real before any of them is compared.
-for v in small large; do
-	check_num "premise: the $v arm produced three readings" \
-		"$([ "$(wc -w <<<"${!v}")" -eq 3 ] && echo 1 || echo 0)" 1
-done
+# Unrolled, so the grader reads both names.
+check_text "the small arm produced three readings" \
+	"$([ "$(wc -w <<<"$small")" -eq 3 ] && echo 1 || echo "0 (readings [$small])")" 1
+check_text "the large arm produced three readings" \
+	"$([ "$(wc -w <<<"$large")" -eq 3 ] && echo 1 || echo "0 (readings [$large])")" 1
 # And the core floor must actually dominate, or the subtraction is measuring
 # noise rather than a floor -- which is the whole basis for using a difference.
-check_num "premise: core's own parse is the larger part of the scan's peak" \
-	"$([ "$(awk '{print ($1 > $3) ? 1 : 0}' <<<"$large")" = 1 ] && echo 1 || echo 0)" 1
+cf="$(awk '{print $1}' <<<"$large")"; ov="$(awk '{print $3}' <<<"$large")"
+check_text "core's own parse is the larger part of the scan's peak" \
+	"$(pgc_is_number "$cf" && pgc_is_number "$ov" && [ "$cf" -gt "$ov" ] && echo 1 \
+	   || echo "0 (core floor [$cf] kB, overhead [$ov] kB)")" 1
 # The fixture has to be big enough that the two sizes differ measurably at all.
-check_num "premise: the two sizes give different peaks" \
-	"$([ "$(awk -v a="$(awk '{print $2}' <<<"$large")" -v b="$(awk '{print $2}' <<<"$small")" 'BEGIN{print (a > b * 2) ? 1 : 0}')" = 1 ] && echo 1 || echo 0)" 1
+sp="$(awk '{print $2}' <<<"$small")"; lp="$(awk '{print $2}' <<<"$large")"
+check_text "the two sizes give different peaks" \
+	"$(pgc_is_number "$sp" && pgc_is_number "$lp" && [ "$lp" -gt $(( sp * 2 )) ] && echo 1 \
+	   || echo "0 (scan peaks: small [$sp] kB, large [$lp] kB)")" 1
 
 # THE CLAIM. Bytes of pgcolumnar-attributable memory per mapping entry, as a
 # slope so the fixed cost of opening the file and reading the data cancels.
@@ -138,15 +148,28 @@ check_num "premise: the two sizes give different peaks" \
 per_entry="$(awk -v lo="$(awk '{print $3}' <<<"$small")" -v hi="$(awk '{print $3}' <<<"$large")" \
 	-v dn="$(( LARGE - SMALL ))" 'BEGIN { printf "%d", ((hi - lo) * 1024) / dn }')"
 echo "      pgcolumnar-attributable memory per mapping entry: ${per_entry} bytes"
-check_num "the name-mapping parse does not allocate per entry (#731)" \
-	"$([ "$per_entry" -lt 30 ] && echo 1 || echo 0)" 1
+# Only over two real readings: awk reads a missing overhead as 0, so with either
+# measurement failed the slope was 0 and this passed (measured).
+check_text "the name-mapping parse does not allocate per entry (#731)" \
+	"$([ "$(wc -w <<<"$small")" -eq 3 ] && [ "$(wc -w <<<"$large")" -eq 3 ] && [ "$per_entry" -lt 30 ] && echo 1 \
+	   || echo "0 ($per_entry bytes an entry, from readings [$small] [$large])")" 1
 
 # The answers must be unchanged throughout: a fix that reclaimed a name still in
 # use would show up here and not in the number above.
 check_num "the padded mapping still binds every row" \
 	"$(q1 "SELECT count(*) FROM pgcolumnar.iceberg_scan('$MDIR/pad.metadata.json') AS t(id bigint, region text, amount int);")" 5
+# Against the fixture's own rows (data.parquet, read with pyarrow), not a second
+# read through the same mapping code: with the mapping no longer binding region,
+# both scans read NULL for every region and their two md5s agreed (measured). A
+# scan that errored is a failed reading that names its file, and a NULL region
+# makes string_agg NULL, an empty side.
+values_of() {	# values_of METADATA -> the scan's rows as id:region, or why not
+	local out
+	out="$(q "SELECT string_agg(id || ':' || region, ',' ORDER BY id) FROM pgcolumnar.iceberg_scan('$MDIR/$1') AS t(id bigint, region text, amount int)")"
+	if [ "$(printf '%s\n' "$out" | grep -c '^ERROR')" -gt 0 ]; then echo "$1 did not scan: $(printf '%s' "$out" | head -1)"
+	else printf '%s' "$out"; fi
+}
 check_text "and the mapped values are still correct" \
-	"$(q "SELECT id || ':' || region FROM pgcolumnar.iceberg_scan('$MDIR/pad.metadata.json') AS t(id bigint, region text, amount int) ORDER BY id" | md5sum)" \
-	"$(q "SELECT id || ':' || region FROM pgcolumnar.iceberg_scan('$MDIR/nmapply.metadata.json') AS t(id bigint, region text, amount int) ORDER BY id" | md5sum)"
+	"$(values_of pad.metadata.json)" "1:eu,2:eu,3:us,4:us,5:us"
 
 pgc_summary

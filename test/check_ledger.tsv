@@ -2448,6 +2448,13 @@ iceberg_catalog	iceberg_catalog	malformed JSON is rejected (22P02), backend surv
 iceberg_catalog	iceberg_catalog	resolves the named current snapshot, not snapshots[0]	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the decoy snapshot is not returned	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the first snapshot has no parent (NULL)	15;16;17;18;19	never	-
+iceberg_name_mapping_memory	iceberg_name_mapping_memory	and the mapped values are still correct	15;16;17;18;19	2026-10-21	the name-mapping parse binds every name but region, so region reads NULL on every row;the name-mapping parse ignores every entry's names, so nothing binds
+iceberg_name_mapping_memory	iceberg_name_mapping_memory	core's own parse is the larger part of the scan's peak	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
+iceberg_name_mapping_memory	iceberg_name_mapping_memory	the large arm produced three readings	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
+iceberg_name_mapping_memory	iceberg_name_mapping_memory	the name-mapping parse does not allocate per entry (#731)	15;16;17;18;19	2026-10-21	#731 reverted: the name-mapping parse never reclaims its per-entry scratch
+iceberg_name_mapping_memory	iceberg_name_mapping_memory	the padded mapping still binds every row	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
+iceberg_name_mapping_memory	iceberg_name_mapping_memory	the small arm produced three readings	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
+iceberg_name_mapping_memory	iceberg_name_mapping_memory	the two sizes give different peaks	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
 iceberg_rest_server	iceberg_rest_server	a catalog_uri option on the USER MAPPING is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused before any request (28000)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a link-local oauth_token_uri is refused by the allow-list (42501)	15;16;17;18;19	never	-
