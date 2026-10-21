@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 123
+suites_not_covered 122
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5007,4 +5007,25 @@ suites_not_covered 123
 #     never         3651 + 7 = 3658
 #     dated         1942 + 11 = 1953
 #     3658 + 1953 == 5611
-checks_never_observed_red 3658
+#
+# #1341, reader_buffer_reuse seeded, with its twin (jdatcmd): 3503 -> 3511, and
+# suites_not_covered 149 -> 148. The suite had no rows. It enters with 26 checks from
+# five-major runs (26/26 on each of 15-19, shell and twin alike), after four fixes.
+# Both heap mirrors were copied from the tables under test, so every differential check
+# agreed with whatever the reader returned: with a row corrupted before the copy, the
+# suite passed 22 of 22. They are now built from the generators, and the three
+# full-scan comparisons refuse an empty side. Two checks leave lossy_arms.tsv, and the
+# projection loop's names are literal. Every read named its columns, so the
+# whole-group read into the reused buffer was never compared: with that read stopping
+# 64 bytes short on a reused buffer, the suite passed 22 of 22. Four checks are new, a
+# read with column projection off and a whole-row read, each before and after the
+# short group, against the mirror. 18 are dated on PG17, in both twins with the same
+# names: 1 by a fresh buffer per group, the 4 new ones by that short whole-group read,
+# and 13 by a projected read that does not refresh a reused buffer, which reddens no
+# premise. 8 arrive never, 6 of them premises.
+#
+#     ledger rows   5611 + 26 = 5637
+#     never         3658 + 8 = 3666
+#     dated         1953 + 18 = 1971
+#     3666 + 1971 == 5637
+checks_never_observed_red 3666

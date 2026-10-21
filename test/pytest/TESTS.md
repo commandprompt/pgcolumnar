@@ -290,6 +290,7 @@ behaviour, the source of that number is named.
 - [242. test_rewrite_group_scan.py: a rewrite reads each row group once, not once per row](#242-test_rewrite_group_scanpy-a-rewrite-reads-each-row-group-once-not-once-per-row)
 - [243. test_recluster_gate.py: recluster skips its rewrite when the table is already this key's run](#243-test_recluster_gatepy-recluster-skips-its-rewrite-when-the-table-is-already-this-keys-run)
 - [244. test_recluster_extent.py: an online recluster records only the extent it rewrote](#244-test_recluster_extentpy-an-online-recluster-records-only-the-extent-it-rewrote)
+- [245. test_reader_buffer_reuse.py: the reader reuses one group buffer, and the reuse never shows in an answer](#245-test_reader_buffer_reusepy-the-reader-reuses-one-group-buffer-and-the-reuse-never-shows-in-an-answer)
 
 ## 1. How to read a test in here
 
@@ -9730,3 +9731,35 @@ Whether the insert ran during the rewrite is asked of the server before the inse
 | `test_withproj_a_full_recluster_leaves_nothing_appended` | withproj: a full recluster leaves nothing appended |
 | `test_an_uncontended_rewrite_claims_the_whole_relation` | an uncontended rewrite claims the whole relation |
 | `test_an_uncontended_rewrite_counts_every_row_as_sorted` | an uncontended rewrite counts every row as sorted |
+
+## 245. test_reader_buffer_reuse.py: the reader reuses one group buffer, and the reuse never shows in an answer
+
+The pytest twin of `test/reader_buffer_reuse.sh` (ported for #1341), every check by the shell's name. Reading every group costs well under one group's worth of minor faults per extra group (log_executor_stats), and the full scan, projected scans, whole-group reads, a short group, added and dropped columns and a rescan all match heap mirrors. On a private database, with serial planning as the shell's cluster runs.
+
+### Every test
+
+The heap mirrors are built from the generators, not copied from the tables under test. A differential comparison refuses an empty side.
+
+A read that names its columns fills only their ranges of the reused buffer. A read with no projection reads the whole group into it in one call: a whole-row read, and every read with `pgcolumnar.enable_column_projection = off`. Four tests compare that read with the mirror, before and after the short group.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_reuse_fixture_has_several_row_groups` | premise: the fixture has several row groups, or reuse cannot matter |
+| `test_the_one_group_arm_reads_one_group` | premise: the one-group arm really reads exactly one row group |
+| `test_the_all_groups_arm_reads_every_group` | premise: the all-groups arm really reads every row group |
+| `test_the_instrument_reports_faults` | premise: the instrument reports a nonzero fault count at all |
+| `test_reading_every_group_reuses_the_buffer` | reading every group does not cost per-group faults (ratio well under the group count) |
+| `test_the_full_scan_matches_the_mirror` | the full scan matches a heap mirror exactly |
+| `test_a_projected_scan_matches_too` | a PROJECTED scan (one column of two) matches too |
+| `test_the_full_scan_with_projection_off_matches_the_mirror` | the full scan with column projection off (a whole-group read) matches a heap mirror |
+| `test_a_whole_row_read_matches_the_mirror` | a whole-row read (a whole-group read) matches a heap mirror |
+| `test_a_smaller_group_was_added` | premise: that really added a group smaller than the ones before it |
+| `test_a_short_group_after_a_full_one_reads_correctly` | a short group after a full one still reads correctly |
+| `test_a_short_group_reads_correctly_with_projection_off` | a short group after a full one reads correctly with column projection off |
+| `test_a_short_group_reads_correctly_in_a_whole_row_read` | a short group after a full one reads correctly in a whole-row read |
+| `test_the_differential_fixture_spans_several_groups` | premise: the differential fixture spans several row groups |
+| `test_a_projected_subset_matches_the_heap_twin` | one test per row of `PROJECTIONS` (8 rows), each by the shell's name |
+| `test_an_added_column_reads_back_null` | a column ADDED after the groups exist reads back NULL, as on heap |
+| `test_an_all_null_column_beside_a_wide_one_matches` | an all-NULL column beside a wide one matches |
+| `test_reads_after_drop_column_match` | reads after DROP COLUMN match |
+| `test_a_rescan_returns_the_same_rows` | a rescan (nested loop) returns the same rows |

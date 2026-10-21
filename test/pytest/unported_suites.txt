@@ -101,6 +101,5 @@ projection_rename_restore
 pushdown_report
 qual_order_selectivity
 read_stream
-reader_buffer_reuse
 row_triggers
 scan_direction
