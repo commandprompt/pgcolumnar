@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 137
+suites_not_covered 136
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4722,4 +4722,21 @@ suites_not_covered 137
 #     never         3603 + 0 = 3603
 #     dated         1845 + 7 = 1852
 #     3603 + 1852 == 5455
-checks_never_observed_red 3603
+#
+# #1341, iceberg_scan seeded, with its twin (OffgridwithJD): 3603 -> 3605, and
+# suites_not_covered 137 -> 136. The suite had no rows. It enters with 8 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike). Measured on
+# PG17 at origin/main: "an unprivileged role is refused (42501)" ran as a role with no
+# USAGE on the schema, refused by "permission denied for schema pgcolumnar" before the
+# file gate, so with the gate removed it still passed; the role now has USAGE. And the
+# deny arm had no positive control: a gate admitting only superusers, which would lock
+# out every pg_read_server_files member, passed all seven, so an eighth check has a
+# non-superuser member read every row. 6 are dated by four mutations of the gate,
+# the column refusal and field-id resolution, each reddening the same names in both
+# twins; 2 arrive never.
+#
+#     ledger rows   5455 + 8 = 5463
+#     never         3603 + 2 = 3605
+#     dated         1852 + 6 = 1858
+#     3605 + 1858 == 5463
+checks_never_observed_red 3605
