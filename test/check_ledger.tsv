@@ -2963,6 +2963,26 @@ logical_decoding_source	logical_decoding_source	premise: the server is running a
 logical_decoding_source	logical_decoding_source	premise: the slot decoded something at all	15;16;17;18;19	never	-
 logical_decoding_source	logical_decoding_source	premise: the slot exists and is logical	15;16;17;18;19	never	-
 logical_decoding_source	logical_decoding_source	the slot carries pgcolumnar's internal catalog instead	15;16;17;18;19	never	-
+logical_subscriber	logical_subscriber	an ordinary SELECT ... FOR NO KEY UPDATE is not told about replication	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_lock raises the replication error for every row lock, not only the apply worker's
+logical_subscriber	logical_subscriber	an ordinary SELECT ... FOR NO KEY UPDATE keeps the generic message	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_lock raises the replication error for every row lock, not only the apply worker's
+logical_subscriber	logical_subscriber	an ordinary SELECT ... FOR SHARE is not told about replication	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_lock raises the replication error for every row lock, not only the apply worker's
+logical_subscriber	logical_subscriber	an ordinary SELECT ... FOR SHARE keeps the generic message	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_lock raises the replication error for every row lock, not only the apply worker's
+logical_subscriber	logical_subscriber	an ordinary SELECT ... FOR UPDATE is not told about replication	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_lock raises the replication error for every row lock, not only the apply worker's
+logical_subscriber	logical_subscriber	an ordinary SELECT ... FOR UPDATE keeps the generic message	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_lock raises the replication error for every row lock, not only the apply worker's
+logical_subscriber	logical_subscriber	insert-only: initial sync copied every row	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_multi_insert raises in a logical worker, so initial sync's COPY fails
+logical_subscriber	logical_subscriber	insert-only: no apply errors	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_insert raises in a logical worker, so streamed INSERTs fail
+logical_subscriber	logical_subscriber	insert-only: streamed INSERTs applied	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_insert raises in a logical worker, so streamed INSERTs fail
+logical_subscriber	logical_subscriber	insert-only: the UPDATE is skipped by design, not applied	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_insert raises in a logical worker, so streamed INSERTs fail
+logical_subscriber	logical_subscriber	it retries rather than giving up, so the subscription is wedged	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_lock never takes the IsLogicalWorker() branch, so the apply worker gets the generic row-locking error
+logical_subscriber	logical_subscriber	premise: the lock fixture really is columnar	15;16;17;18;19	never	-
+logical_subscriber	logical_subscriber	premise: the publisher has logical decoding on	15;16;17;18;19	never	-
+logical_subscriber	logical_subscriber	premise: the subscriber cluster answers	15;16;17;18;19	never	-
+logical_subscriber	logical_subscriber	premise: the subscriber loaded pgcolumnar	15;16;17;18;19	never	-
+logical_subscriber	logical_subscriber	the error does NOT say only 'row locking is not supported'	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_lock never takes the IsLogicalWorker() branch, so the apply worker gets the generic row-locking error
+logical_subscriber	logical_subscriber	the error names logical replication, not row locking	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_tuple_lock never takes the IsLogicalWorker() branch, so the apply worker gets the generic row-locking error
+logical_subscriber	logical_subscriber	the hint names the insert-only publication	15;16;17;18;19	2026-10-21	columnar_tableam.c: the apply worker's hint stops naming CREATE PUBLICATION ... WITH (publish = 'insert')
+logical_subscriber	logical_subscriber	the second subscription synced before the UPDATE	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_multi_insert raises in a logical worker, so initial sync's COPY fails
+logical_subscriber	logical_subscriber	the wedge is real: the row is still unchanged on the subscriber	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar_multi_insert raises in a logical worker, so initial sync's COPY fails
 maintenance_crash	maintenance_crash	after a crash with compact committed, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with compact committed, the table is as compact left it, with the same rows	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	after a crash with compact uncommitted, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)

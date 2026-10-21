@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 99
+suites_not_covered 98
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5498,4 +5498,24 @@ suites_not_covered 99
 #     never         3897 + 6 = 3903
 #     dated         2311 + 43 = 2354
 #     3903 + 2354 == 6257
-checks_never_observed_red 3903
+#
+# #1341, logical_subscriber seeded, with its twin (OffgridwithJD): 3903 -> 3907,
+# and suites_not_covered 99 -> 98. The suite had no rows. It enters with 20 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes.
+# With the insert-only subscription disabled before its UPDATE, main's shell passed 20/20:
+# "skipped by design" and "no apply errors" read after a fixed sleep, and nothing applied
+# is nothing applied wrongly. An INSERT after the UPDATE must now arrive first. With no
+# UPDATE sent, "does NOT say only 'row locking'" and "the wedge is real" passed; the first
+# now needs the replication error in the log, the second reads publisher -> subscriber.
+# With the lock statements failing on a missing table, the three "is not told about
+# replication" checks passed; they now need the generic error first. And the second
+# subscription's sync check lost its premise prefix: COPY failing in a logical worker
+# reddens it. The lock loop is unrolled so the twin grader reads each name.
+# 16 are dated by five mutations, each reddening the same names in both twins. 4
+# arrive never.
+#
+#     ledger rows   6257 + 20 = 6277
+#     never         3903 + 4 = 3907
+#     dated         2354 + 16 = 2370
+#     3907 + 2370 == 6277
+checks_never_observed_red 3907
