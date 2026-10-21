@@ -14,7 +14,6 @@ cost_written_geometry
 decode_interrupts
 decode_skip_interrupts
 docs_style
-eager_ordering_record
 encode_invariants
 estimate_deleted
 export_sink

@@ -940,4 +940,6 @@ guard_tests 464
 # 11 tests, one per check, by collection over the cluster files.
 # cluster_tests 1872 -> 1899 for #1341's test_maintenance_due.py, the twin of maintenance_due.sh:
 # 27 tests, one per check, by collection over the cluster files.
-cluster_tests 1899
+# cluster_tests 1899 -> 1930 for #1341's test_eager_ordering_record.py, the twin of eager_ordering_record.sh:
+# 31 tests, one per check, by collection over the cluster files.
+cluster_tests 1930

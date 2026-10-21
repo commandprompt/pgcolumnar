@@ -18,8 +18,12 @@
 #
 # THE FIXTURE MUST USE A TWO-COLUMN KEY. Single-column Z-order IS lexicographic
 # order, so a one-column fixture cannot tell the two apart and every arm below
-# would pass by construction. The inversion counts asserted as premises are what
-# keeps that honest: they fail if the fixture ever stops discriminating.
+# would pass by construction. The inversion counts asserted below are what keeps
+# that honest: they fail if the fixture ever stops discriminating. They are arms,
+# not premises: they read the order pgcolumnar wrote, so a rewrite that sorts
+# descending, or a Z-order key on the lead column only, reddens them and nothing
+# else (measured). The same holds for the sort_status readings of tail and group
+# counts: each one is the only check a broken count reddens.
 #
 # Usage:  test/eager_ordering_record.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -46,14 +50,22 @@ skindst() { q "SELECT coalesce(sorted_kind::text,'<NULL>') FROM pgcolumnar.sort_
 # Inversions in the order the scan actually returns rows. This is the physical
 # fact every other arm is about, and it is taken from the data, never assumed.
 inv()   { q "SELECT count(*) FROM (SELECT k, lag(k) OVER () AS p FROM $1) s WHERE p > k;"; }
+# differs A B WORD -- WORD when A and B are both READ and differ. A failed reading
+# is empty, and an empty one differs from anything: with one side unread, the
+# distinguishable and moved checks below passed (measured).
+differs() {
+	if [ -z "$1" ] || [ -z "$2" ]; then echo "unread [$1|$2]"
+	elif [ "$1" != "$2" ]; then echo "$3"
+	else echo "same [$1]"; fi
+}
 
 # ------------------------------------------------- eager lexicographic rewrite
 
 mk lex
 psql_run "SELECT pgcolumnar.vacuum_sorted('lex', 'k');"
 
-check_num "premise: the lexicographic rewrite really ordered the rows on k" "$(inv lex)" "0"
-check "premise: it left no unsorted tail" \
+check_num "the lexicographic rewrite really ordered the rows on k" "$(inv lex)" "0"
+check "it left no unsorted tail" \
 	"$(q "SELECT appended_groups FROM pgcolumnar.sort_status('lex');")" "0"
 check_text "eager vacuum_sorted records the kind it applied" "$(skind lex)" "lexicographic"
 check_text "and sort_status reports that kind to the table's owner (#761)" \
@@ -65,13 +77,13 @@ check_text "eager vacuum_sorted records the key it applied" "$(sby lex)" "{k}"
 mk zo
 psql_run "SELECT pgcolumnar.cluster('zo', 'k', 'j');"
 
-# The premise the whole issue rests on: this table is NOT in k order, even
+# The fact the whole issue rests on: this table is NOT in k order, even
 # though {k} is its declared sort_by and the run covers every group. If this
 # ever reports 0 the fixture has stopped discriminating and every arm below is
 # vacuous -- see the two-column note at the top.
-check "premise: the Z-ordered table is NOT ordered on k" \
+check "the Z-ordered table is NOT ordered on k" \
 	"$([ "$(inv zo)" -gt 0 ] && echo yes || echo no)" "yes"
-check "premise: it too reports a full run with no tail" \
+check "it too reports a full run with no tail" \
 	"$(q "SELECT appended_groups FROM pgcolumnar.sort_status('zo');")" "0"
 check_text "eager cluster records the kind it applied" "$(skind zo)" "zorder"
 check_text "and sort_status reports THAT kind, not the lexicographic one (#761)" \
@@ -81,7 +93,7 @@ check_text "eager cluster records the key it applied" "$(sby zo)" "{k,j}"
 # The consequence, stated as the discrimination it buys: two tables that report
 # the same run extent and the same declared key must no longer look the same.
 check "the two eager layouts are now distinguishable in the catalog" \
-	"$([ "$(skind lex)" != "$(skind zo)" ] && echo yes || echo no)" "yes"
+	"$(differs "$(skind lex)" "$(skind zo)" yes)" "yes"
 check_text "sort_status reports the APPLIED key on the Z-ordered table, not the declared {k}" \
 	"$(skey zo)" "{k,j}"
 check_text "sort_status still reports {k} on the lexicographically sorted table" \
@@ -92,7 +104,7 @@ check_text "sort_status still reports {k} on the lexicographically sorted table"
 # same key as a sort, and the reader could still not tell them apart. Only the
 # kind can.
 check "the two layouts are distinguishable through sort_status alone (#761)" \
-	"$([ "$(skindst lex)" != "$(skindst zo)" ] && echo yes || echo no)" "yes"
+	"$(differs "$(skindst lex)" "$(skindst zo)" yes)" "yes"
 
 # ------------------------------------------- the self-gate the record unblocks
 #
@@ -112,9 +124,9 @@ layout() { q "SELECT coalesce(md5(string_agg(group_number || ':' || file_offset,
 
 mk gate
 psql_run "SELECT pgcolumnar.cluster('gate', 'k', 'j');"
-# Premise, so that "nothing changed" cannot be true because there was nothing
-# there: the fixture must have live rows in more than one group.
-check "premise: the gate fixture has more than one group" \
+# So that "nothing changed" cannot be true because there was nothing there: the
+# fixture must have live rows in more than one group.
+check "the gate fixture has more than one group" \
 	"$([ "$(q "SELECT total_groups FROM pgcolumnar.sort_status('gate');")" -gt 1 ] && echo yes || echo no)" "yes"
 check_num "premise: and live rows in them" "$(q 'SELECT count(*) FROM gate;')" "5000"
 
@@ -130,20 +142,23 @@ check_text "and it rewrote no group: the physical layout is unchanged" \
 check "control: recluster on a DIFFERENT key still rewrites every group" \
 	"$(q "SELECT pgcolumnar.recluster('gate', 'j', 'k');")" "5"
 check "control: and that rewrite really moved the layout" \
-	"$([ "$(layout gate)" != "$GATE_BEFORE" ] && echo moved || echo unchanged)" "moved"
+	"$(differs "$(layout gate)" "$GATE_BEFORE" moved)" "moved"
 
 # The other half of the gate condition: nothing appended past the run. One row
 # inserted after the cluster must defeat it, on the same key.
 mk tailgate
 psql_run "SELECT pgcolumnar.cluster('tailgate', 'k', 'j');"
-TAIL_BEFORE="$(layout tailgate)"
 psql_run "INSERT INTO tailgate VALUES (90001, 42, 1);"
-check "premise: the insert appended past the recorded run" \
+# Read AFTER the insert, just before the recluster: read before it, the insert's
+# own new group moved the layout, and "moved" passed with recluster skipping
+# (measured, with the gate blind to the tail).
+TAIL_BEFORE="$(layout tailgate)"
+check "the insert appended past the recorded run" \
 	"$([ "$(q "SELECT appended_groups FROM pgcolumnar.sort_status('tailgate');")" -gt 0 ] && echo yes || echo no)" "yes"
 check "control: recluster with an appended tail does not skip" \
 	"$([ "$(q "SELECT pgcolumnar.recluster('tailgate', 'k', 'j');")" -gt 0 ] && echo yes || echo no)" "yes"
 check "control: and it moved the tailgate layout" \
-	"$([ "$(layout tailgate)" != "$TAIL_BEFORE" ] && echo moved || echo unchanged)" "moved"
+	"$(differs "$(layout tailgate)" "$TAIL_BEFORE" moved)" "moved"
 
 # And the mirror: a lexicographic run is not a Z-order run, so recluster must
 # not skip it however the key matches.
@@ -153,13 +168,13 @@ LEXGATE_BEFORE="$(layout lexgate)"
 check "control: recluster does not skip a LEXICOGRAPHIC run of the same lead column" \
 	"$(q "SELECT pgcolumnar.recluster('lexgate', 'k');")" "5"
 check "control: and it moved the lexgate layout" \
-	"$([ "$(layout lexgate)" != "$LEXGATE_BEFORE" ] && echo moved || echo unchanged)" "moved"
+	"$(differs "$(layout lexgate)" "$LEXGATE_BEFORE" moved)" "moved"
 
 # ------------------------------------------------- an unsorted rewrite records nothing
 
 mk un
 psql_run "SELECT pgcolumnar.vacuum_sorted('un', 'k');"
-check_text "premise: the mark is set before the unsorted rewrite" "$(skind un)" "lexicographic"
+check_text "the mark is set before the unsorted rewrite" "$(skind un)" "lexicographic"
 psql_run "SELECT pgcolumnar.vacuum('un');"
 check_text "an unsorted rewrite claims no ordering" "$(skind un)" "<NULL>"
 check_text "and sort_status reports no kind either, rather than a stale one (#761)" \
