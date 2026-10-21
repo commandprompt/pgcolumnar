@@ -39,7 +39,12 @@ sqlstate_of() {
 $1;
 SQLEOF
 }
-no_debris() { find "$PGC_WORKDIR" -name '*.tmp.*' | wc -l | tr -d ' '; }
+# A find that cannot read the directory is a failed reading, never "no debris".
+no_debris() {
+	local found
+	found="$(find "$PGC_WORKDIR" -name '*.tmp.*' 2>&1)" || { echo "find failed: $found"; return; }
+	printf '%s' "$found" | grep -c .
+}
 
 # ---- census -----------------------------------------------------------------
 check_num "census: zero fwrite remain in columnar_parquet.c" \
@@ -63,15 +68,21 @@ check_num "no temp debris after successful exports" "$(no_debris)" "0"
 
 psql_run "CREATE TABLE es_back_pq (id int, v int8, t text) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.import_parquet('es_back_pq', '$PQF');"
-check "parquet round-trip hash-matches the source" \
-	"$(pgc_set_hash "SELECT * FROM es_back_pq")" "$(pgc_set_hash "SELECT * FROM es_src")"
+# Each side carries its row count, so two empty tables cannot hash-match.
+check_text "parquet round-trip hash-matches the source" \
+	"$(q "SELECT count(*) FROM es_back_pq"):$(pgc_set_hash "SELECT * FROM es_back_pq")" \
+	"$ROWS:$(pgc_set_hash "SELECT * FROM es_src")"
 psql_run "CREATE TABLE es_back_ar (id int, v int8, t text) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.import_arrow('es_back_ar', '$ARF');"
-check "arrow round-trip hash-matches the source" \
-	"$(pgc_set_hash "SELECT * FROM es_back_ar")" "$(pgc_set_hash "SELECT * FROM es_src")"
+check_text "arrow round-trip hash-matches the source" \
+	"$(q "SELECT count(*) FROM es_back_ar"):$(pgc_set_hash "SELECT * FROM es_back_ar")" \
+	"$ROWS:$(pgc_set_hash "SELECT * FROM es_src")"
 
 ARROW_SIZE="$(stat -c %s "$ARF" 2>/dev/null || echo 0)"
-check "premise: measured arrow size supports a mid-batch injection point" \
+# The good parquet file's bytes, read before a failed export over the same name.
+PQ_BEFORE="$(md5sum < "$PQF" 2>/dev/null | cut -d' ' -f1)"
+[ -n "$PQ_BEFORE" ] || PQ_BEFORE="unread before the failed export"
+check "measured arrow size supports a mid-batch injection point" \
 	"$([ "${ARROW_SIZE:-0}" -gt 4200 ] 2>/dev/null && echo yes)" "yes"
 
 # ---- injection: parquet, mid page body -------------------------------------
@@ -80,6 +91,13 @@ check "inject: parquet export fails as disk-full (53100)" \
 	"$(sqlstate_of "SET pgcolumnar.sink_fail_after = 8192; SELECT pgcolumnar.export_parquet('es_src', '$FAILP')")" "53100"
 check "inject: nothing exists at the parquet FINAL path" \
 	"$([ ! -e "$FAILP" ] && echo clean)" "clean"
+# A failed export over an existing good file must leave that file's bytes:
+# a sink that opened the final name would truncate it, and its abort would
+# then remove the only good copy. The sqlstate rides along, so a re-export
+# that never ran cannot pass.
+check_text "inject: a failed re-export leaves the previous parquet file intact" \
+	"$(sqlstate_of "SET pgcolumnar.sink_fail_after = 8192; SELECT pgcolumnar.export_parquet('es_src', '$PQF')"):$(md5sum < "$PQF" 2>/dev/null | cut -d' ' -f1)" \
+	"53100:$PQ_BEFORE"
 check_num "inject: no parquet temp debris" "$(no_debris)" "0"
 
 # ---- injection: arrow, inside write_record_batch ----------------------------

@@ -14,7 +14,6 @@ decode_interrupts
 decode_skip_interrupts
 docs_style
 encode_invariants
-export_sink
 fsst_margin
 fuzz
 fuzz_arrow

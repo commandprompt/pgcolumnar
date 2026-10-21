@@ -973,4 +973,6 @@ guard_tests 467
 # 11 tests, one per check, by collection over the cluster files.
 # cluster_tests 2094 -> 2105 for #1341's test_generated_columns.py, the twin of generated_columns.sh:
 # 11 tests, one per check, by collection over the cluster files.
-cluster_tests 2105
+# cluster_tests 2105 -> 2121 for #1341's test_export_sink.py, the twin of export_sink.sh:
+# 16 tests, one per check, by collection over the cluster files.
+cluster_tests 2121

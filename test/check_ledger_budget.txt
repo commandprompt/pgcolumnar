@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 130
+suites_not_covered 129
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4860,4 +4860,23 @@ suites_not_covered 130
 #     never         3629 + -2 = 3627
 #     dated         1887 + 2 = 1889
 #     3627 + 1889 == 5516
-checks_never_observed_red 3627
+#
+# #1341, export_sink seeded, with its twin (OffgridwithJD): 3424 -> 3427, and
+# suites_not_covered 151 -> 150. The suite had no rows. It enters with 16 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike). Three
+# fixes, each measured on PG17 at origin/main: the round-trips compared two
+# pgc_set_hash readings that agreed as EMPTY == EMPTY with the fixture's INSERT
+# removed, and now carry the row count against the constant; no_debris read a
+# directory find could not list as 0 debris, and is now a failed reading; and a
+# sink writing the final name directly, whose abort unlinks it, passed all 15 --
+# so a 16th check requires a failed re-export to leave the previous good file's
+# bytes. "measured arrow size supports a mid-batch injection point" is reddened
+# by a sink that never renames, and loses the premise prefix (#1339). 13 are dated
+# by seven mutations of the sink and the two export files, each reddening the same
+# names in both twins; 3 arrive never.
+#
+#     ledger rows   5516 + 16 = 5532
+#     never         3627 + 3 = 3630
+#     dated         1889 + 13 = 1902
+#     3630 + 1902 == 5532
+checks_never_observed_red 3630
