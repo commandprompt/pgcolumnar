@@ -1013,4 +1013,6 @@ guard_tests 474
 # 13 tests, one per check, by collection over the cluster files.
 # cluster_tests 2454 -> 2467 for #1341's test_read_stream.py, the twin of read_stream.sh:
 # 13 tests, one per check, by collection over the cluster files.
-cluster_tests 2467
+# cluster_tests 2467 -> 2473 for #1341's test_parquet_nested.py, the twin of parquet_nested.sh:
+# 6 tests, one per check, by collection over the cluster files.
+cluster_tests 2473
