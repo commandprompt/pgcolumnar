@@ -20,7 +20,6 @@ fuzz_arrow
 fuzz_avro
 fuzz_listing
 fuzz_parquet
-groupagg_table_sizing
 harness_selftest
 hilbert_curve
 iceberg_deletes

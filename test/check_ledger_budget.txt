@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 129
+suites_not_covered 128
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4879,4 +4879,26 @@ suites_not_covered 129
 #     never         3627 + 3 = 3630
 #     dated         1889 + 13 = 1902
 #     3630 + 1902 == 5532
-checks_never_observed_red 3630
+#
+# #1341, groupagg_table_sizing seeded, with its twin (OffgridwithJD): 3630 -> 3636,
+# and suites_not_covered 129 -> 128. The suite had no rows. It enters with 15
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: a grow that drops one group in 1024 passed all 15,
+# because both answer checks ran without the vectorized GUC and so read core's
+# HashAggregate, a node this suite does not size; they now run with it, and the
+# small-work_mem arm counts the sum, since with it unused the planner pruned it and
+# chose HashAggregate anyway. With gts's load removed "the aggregate itself is still
+# right" passed as two NULL sums, and with gts_expr's removed both key-answer checks
+# passed as 0 == 0; the oracle must now hold the fixture, and a real group count must
+# be positive. Both key-answer checks then still compared core's HashAggregate with
+# core's count(DISTINCT): a grow that drops one group in 16 lost 46 of 8334 minute
+# groups and passed. Each now reads its key through the node. The node-ran and
+# counter checks read pgcolumnar's own plan and EXPLAIN, so they lose the premise
+# prefix (#1339). 9 are dated by eight mutations of the planner, EXPLAIN, and the
+# sizing and grow paths, each reddening the same names in both twins; 6 arrive never.
+#
+#     ledger rows   5532 + 15 = 5547
+#     never         3630 + 6 = 3636
+#     dated         1902 + 9 = 1911
+#     3636 + 1911 == 5547
+checks_never_observed_red 3636

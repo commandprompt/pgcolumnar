@@ -975,4 +975,6 @@ guard_tests 467
 # 11 tests, one per check, by collection over the cluster files.
 # cluster_tests 2105 -> 2121 for #1341's test_export_sink.py, the twin of export_sink.sh:
 # 16 tests, one per check, by collection over the cluster files.
-cluster_tests 2121
+# cluster_tests 2121 -> 2136 for #1341's test_groupagg_table_sizing.py, the twin of groupagg_table_sizing.sh:
+# 15 tests, one per check, by collection over the cluster files.
+cluster_tests 2136
