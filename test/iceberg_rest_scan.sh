@@ -48,6 +48,23 @@ rest_teardown() {
 }
 trap rest_teardown EXIT INT TERM
 
+# Backends killed by a signal, from the server log: a number, or nothing when the log
+# can't be read. A fresh connection answers again after crash recovery, so "SELECT 1"
+# alone passed with the backend aborting on the unknown-table arm (probed 3s later);
+# survival also requires this count not to have moved.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
+
 pg_restart_env() {
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
 	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
@@ -66,6 +83,7 @@ check "premise: rest fixture server is up" \
 	"$(grep -c READY "$PGC_WORKDIR/rest_server.out" 2>/dev/null)" "1"
 
 CAT="http://127.0.0.1:$REST_PORT"
+CRASHES_BEFORE="$(crashes)"
 pg_restart_env "PGCOLUMNAR_ICEBERG_REST_TOKEN='$TOKEN'"
 q "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'" >/dev/null
 q "SELECT pg_reload_conf()" >/dev/null
@@ -103,17 +121,27 @@ check "iceberg_rest_tables lists a namespace's tables" \
 	"events"
 
 # ---- an unknown table surfaces the catalog 404 cleanly through the read ------
-sqlstate_of() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
+# refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
+# message, the bare SQLSTATE when the message lacks it, or what happened instead: the
+# not-found must be the catalog's 404, not any 42P01.
+refusal_of() {
+	local out state
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
 $1;
 SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif grep -qF "$2" <<<"$out"; then echo "$state$3"
+	else echo "$state"; fi
 }
 check "iceberg_rest_scan of an unknown table is a clean not-found (42P01)" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','nosuch') AS t(id bigint)")" \
-	"42P01"
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','nosuch') AS t(id bigint)" \
+	   "the REST catalog has no such table" " by the catalog's 404")" \
+	"42P01 by the catalog's 404"
 
-check "backend still up after the REST read" "$(q 'SELECT 1')" "1"
+check "backend still up after the REST read" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary
