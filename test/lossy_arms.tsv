@@ -152,8 +152,6 @@ pushdown_report	the executor filters far more rows with pushdown off
 reader_buffer_reuse	premise: the differential fixture spans several row groups
 reader_buffer_reuse	reading every group does not cost per-group faults (ratio well under the group count)
 read_stream	multiple stripes present
-recluster_extent	the insert committed while the rewrite was still running
-recluster_extent	the run does not claim rows written during the rewrite
 scan_decode_cost	a wide projection costs materially more than a narrow one (decode is priced)
 scan_decode_cost	four wide text columns cost more than eight narrow int ones (#768)
 truncate_cleanup	PREMISE the projection has its own storage, distinct from the base

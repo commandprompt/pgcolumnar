@@ -52,17 +52,19 @@ RECL_PID=$!
 # Give the rewrite time to take its group locks and begin, then insert. The
 # insert is small so it commits quickly and lands inside the rewrite's window.
 sleep 2
-INS_START=$(date +%s%N)
+# Asked of the server, and before the insert: is the rewrite still running? Its
+# end comes moments after the insert commits (measured: 3 and 4 ms), so two client
+# clocks, or a status read after the insert, cannot order them.
+RECL_ACTIVE="$(raw "SELECT count(*) FROM pg_stat_activity
+	WHERE state = 'active' AND query LIKE 'SELECT pgcolumnar.recluster(''t''%';")"
 raw "INSERT INTO t SELECT g, ((g::bigint * 7919) % 100000)::int, 'v' || g FROM generate_series($((BASE + 1)), $((BASE + 50000))) g;" >/dev/null
-INS_DONE=$(date +%s%N)
 
 wait $RECL_PID
-RECL_DONE=$(date +%s%N)
 
 # The premise. If the insert committed after the rewrite had already finished,
 # nothing concurrent happened and the rest of this suite proves nothing.
-check "the insert committed while the rewrite was still running" \
-	"$( [ "$INS_DONE" -lt "$RECL_DONE" ] && echo yes || echo no )" "yes"
+check "the insert ran while the rewrite was still running" \
+	"$(case "$RECL_ACTIVE" in 1) echo yes ;; 0) echo "no (the rewrite was not running when the insert began)" ;; *) echo "no reading ($RECL_ACTIVE)" ;; esac)" "yes"
 # The real premise, and the one the wall-clock comparison above cannot establish
 # (#342). recluster returns the number of groups it retired, which is exactly the
 # set it read. The base load is BASE rows at stripe_row_limit, so a rewrite that
@@ -87,8 +89,13 @@ echo "      base $BASE rows, 50000 inserted during the rewrite; sorted $SORTED, 
 # cannot have ordered the ones inserted while it ran, so the run must not claim
 # more rows than it began with. A mark taken from the highest live group number
 # would claim them.
+# A run that recorded nothing claims nothing too: 0 sorted rows used to pass here.
+# The rewrite reordered the base, so the run must claim some of it and no more.
 check "the run does not claim rows written during the rewrite" \
-	"$( [ "$SORTED" -le "$BASE" ] && echo yes || echo no )" "yes"
+	"$(if ! pgc_is_number "$SORTED"; then echo "no reading ($SORTED)"
+	   elif [ "$SORTED" -lt 1 ]; then echo "no (the run claims no rows at all)"
+	   elif [ "$SORTED" -le "$BASE" ]; then echo yes
+	   else echo "no ($SORTED sorted, more than the $BASE the rewrite read)"; fi)" "yes"
 
 # And the concurrent rows must be visible as decay rather than silently dropped
 # from both counts.
@@ -156,23 +163,43 @@ check "the id-drawn-below counts still cover every stored row" \
 #
 # Both arms are identical except for the projection, so the projection is
 # established as the cause rather than assumed.
-for arm in noproj withproj; do
-	raw "DROP TABLE IF EXISTS pr_$arm;" >/dev/null
-	raw "CREATE TABLE pr_$arm (id int, k int, v text) USING pgcolumnar;" >/dev/null
-	raw "SELECT pgcolumnar.set_options('pr_$arm', stripe_row_limit => 20000);" >/dev/null
-	raw "INSERT INTO pr_$arm SELECT g, ((g::bigint * 7919) % 100000)::int, 'v' || g
+# prj ARM [PROJECTION] -> "SORTED APPENDED PROJECTIONS" after a full recluster of a
+# 200000-row table, with a projection added first when asked. PROJECTIONS is how many
+# projections named p_ARM the catalog holds after add_projection, or "-" when none was
+# asked for. One literal set of names per arm.
+prj() {
+	local p
+	raw "DROP TABLE IF EXISTS pr_$1;" >/dev/null
+	raw "CREATE TABLE pr_$1 (id int, k int, v text) USING pgcolumnar;" >/dev/null
+	raw "SELECT pgcolumnar.set_options('pr_$1', stripe_row_limit => 20000);" >/dev/null
+	raw "INSERT INTO pr_$1 SELECT g, ((g::bigint * 7919) % 100000)::int, 'v' || g
 	     FROM generate_series(1, 200000) g;" >/dev/null
-	if [ "$arm" = withproj ]; then
-		E="$(raw "SELECT pgcolumnar.add_projection('pr_$arm', 'p_$arm', ARRAY['k','id'], ARRAY['k']);")"
-		case "$E" in *ERROR*) echo "      add_projection failed: $E";; esac
+	if [ -n "${2:-}" ]; then
+		local e
+		e="$(raw "SELECT pgcolumnar.add_projection('pr_$1', 'p_$1', ARRAY['k','id'], ARRAY['k']);")"
+		case "$e" in *ERROR*) echo "      add_projection failed: $e" >&2;; esac
+		# Read back from the catalog, whatever add_projection printed. One word, so a
+		# failed read cannot shift the fields read after it.
+		p="$(raw "SELECT count(*) FROM pgcolumnar.projection
+			WHERE name = 'p_$1' AND projection_id > 0;")"
+		p="${p//[[:space:]]/_}"
+	else
+		p=-
 	fi
-	raw "SELECT pgcolumnar.recluster('pr_$arm', 'id', 'k');" >/dev/null
-	S="$(raw "SELECT sorted_rows FROM pgcolumnar.sort_status('pr_$arm');")"
-	A="$(raw "SELECT appended_rows FROM pgcolumnar.sort_status('pr_$arm');")"
-	echo "      $arm: sorted $S, appended $A"
-	check "$arm: a full recluster claims every row" "$S" "200000"
-	check "$arm: a full recluster leaves nothing appended" "$A" "0"
-done
+	raw "SELECT pgcolumnar.recluster('pr_$1', 'id', 'k');" >/dev/null
+	echo "$(raw "SELECT sorted_rows FROM pgcolumnar.sort_status('pr_$1');") $(raw "SELECT appended_rows FROM pgcolumnar.sort_status('pr_$1');") ${p:-no_reading}"
+}
+read -r S A _ <<<"$(prj noproj)"
+echo "      noproj: sorted $S, appended $A"
+check "noproj: a full recluster claims every row" "$S" "200000"
+check "noproj: a full recluster leaves nothing appended" "$A" "0"
+read -r S A P <<<"$(prj withproj yes)"
+echo "      withproj: sorted $S, appended $A"
+# Without the projection, withproj is a second noproj arm, and its two checks pass
+# whatever #345's merge does. add_projection's error only reached stderr.
+check "withproj: add_projection created the projection" "$P" "1"
+check "withproj: a full recluster claims every row" "$S" "200000"
+check "withproj: a full recluster leaves nothing appended" "$A" "0"
 
 # ---------------------------------------------------- the uncontended case
 

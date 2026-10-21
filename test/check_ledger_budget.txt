@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 124
+suites_not_covered 123
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4984,4 +4984,27 @@ suites_not_covered 124
 #     never         3650 + 1 = 3651
 #     dated         1930 + 12 = 1942
 #     3651 + 1942 == 5593
-checks_never_observed_red 3651
+#
+# #1341, recluster_extent seeded, with its twin (jdatcmd): 3503 -> 3510, and
+# suites_not_covered 149 -> 148. The suite had no rows. It enters with 18 checks from
+# five-major runs (18/18 on each of 15-19, shell and twin alike), after three fixes
+# and one added check.
+# "the run does not claim rows written during the rewrite" read sorted_rows <= base,
+# which a run that recorded nothing meets: with no extent recorded it passed. It now
+# needs at least one sorted row. The race check compared two client clocks, but the
+# rewrite ends 3-4 ms after the insert commits, so the order flipped between twins; it
+# now asks the server whether the recluster is running when the insert begins, and is
+# renamed "the insert ran while the rewrite was still running". Both leave
+# lossy_arms.tsv, and the projection loop's names are literal. The #345 arm passed
+# when its projection was never created, because add_projection's error only reached
+# stderr (OffgridwithJD's review): with add_projection failing and #345's merge
+# skipped, all 17 passed. "withproj: add_projection created the projection" now reads
+# the projection back from the catalog. 11 are dated by five mutations, each reddening
+# the same names in both twins: four of the extent recorder, and add_projection
+# raising. 7 arrive never.
+#
+#     ledger rows   5593 + 18 = 5611
+#     never         3651 + 7 = 3658
+#     dated         1942 + 11 = 1953
+#     3658 + 1953 == 5611
+checks_never_observed_red 3658
