@@ -283,6 +283,7 @@ behaviour, the source of that number is named.
 - [235. test_iceberg_fdw_projection.py: the Iceberg FDW's projection pushdown never changes a result](#235-test_iceberg_fdw_projectionpy-the-iceberg-fdws-projection-pushdown-never-changes-a-result)
 - [236. test_estimate_deleted.py: the planner's row estimate follows deletes](#236-test_estimate_deletedpy-the-planners-row-estimate-follows-deletes)
 - [237. test_generated_columns.py: a columnar table with a generated column returns what heap does](#237-test_generated_columnspy-a-columnar-table-with-a-generated-column-returns-what-heap-does)
+- [238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name](#238-test_export_sinkpy-the-export-byte-sink-checks-every-write-and-never-leaves-a-partial-file-under-the-final-name)
 
 ## 1. How to read a test in here
 
@@ -9551,3 +9552,30 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_virtual_generated_recomputed_correctly` | virtual generated: recomputed correctly |
 | `test_virtual_generated_no_chunk_stored_for_the_virtual_columns` | virtual generated: no chunk stored for the virtual columns |
 | `test_virtual_generated_base_column_still_stored` | virtual generated: base column still stored |
+
+## 238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name
+
+The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. The files live in `server_dir`, because the backend writes them. Each round-trip reading carries its row count, a directory that cannot be listed is a failed reading, and the intact-file reading carries the re-export's SQLSTATE, so a re-export that never ran cannot pass.
+
+| test | what it holds |
+| --- | --- |
+| `test_census_zero_fwrite_remain_in_columnar_parquet_c` | census: zero fwrite remain in columnar_parquet.c |
+| `test_census_zero_fwrite_remain_in_columnar_arrow_c` | census: zero fwrite remain in columnar_arrow.c |
+| `test_parquet_export_succeeds_through_the_sink` | parquet export succeeds through the sink |
+| `test_arrow_export_succeeds_through_the_sink` | arrow export succeeds through the sink |
+| `test_no_temp_debris_after_successful_exports` | no temp debris after successful exports |
+| `test_parquet_round_trip_hash_matches_the_source` | parquet round-trip hash-matches the source |
+| `test_arrow_round_trip_hash_matches_the_source` | arrow round-trip hash-matches the source |
+| `test_the_arrow_size_supports_a_mid_batch_injection_point` | measured arrow size supports a mid-batch injection point |
+| `test_inject_parquet_export_fails_as_disk_full` | inject: parquet export fails as disk-full (53100) |
+| `test_inject_nothing_exists_at_the_parquet_final_path` | inject: nothing exists at the parquet FINAL path |
+| `test_inject_a_failed_re_export_leaves_the_previous_parquet_file_intact` | inject: a failed re-export leaves the previous parquet file intact |
+| `test_inject_no_parquet_temp_debris` | inject: no parquet temp debris |
+| `test_inject_arrow_export_fails_inside_write_record_batch` | inject: arrow export fails inside write_record_batch (53100) |
+| `test_inject_nothing_exists_at_the_arrow_final_path` | inject: nothing exists at the arrow FINAL path |
+| `test_inject_no_arrow_temp_debris` | inject: no arrow temp debris |
+| `test_after_reset_exports_work_again` | after RESET, exports work again |

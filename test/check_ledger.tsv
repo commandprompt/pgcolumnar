@@ -1140,6 +1140,22 @@ estimate_deleted	estimate_deleted	reltuples is 100000 before the delete	15;16;17
 estimate_deleted	estimate_deleted	the estimate before delete is the full table	15;16;17;18;19	never	-
 estimate_deleted	estimate_deleted	the estimate follows the deletes with a stale reltuples and several groups	15;16;17;18;19	2026-10-20	columnar_tableam.c: the row estimate ignores deleted rows and reports physical occupancy
 estimate_deleted	estimate_deleted	the planner estimate after delete is the live count, not the physical occupancy	15;16;17;18;19	2026-10-20	columnar_tableam.c: the row estimate ignores deleted rows and reports physical occupancy
+export_sink	export_sink	after RESET, exports work again	15;16;17;18;19	never	-
+export_sink	export_sink	arrow export succeeds through the sink	15;16;17;18;19	never	-
+export_sink	export_sink	arrow round-trip hash-matches the source	15;16;17;18;19	2026-10-21	the sink's finish never renames the temp file to the final name
+export_sink	export_sink	census: zero fwrite remain in columnar_arrow.c	15;16;17;18;19	2026-10-21	an unchecked fwrite returns to columnar_arrow.c
+export_sink	export_sink	census: zero fwrite remain in columnar_parquet.c	15;16;17;18;19	2026-10-21	an unchecked fwrite returns to columnar_parquet.c
+export_sink	export_sink	inject: a failed re-export leaves the previous parquet file intact	15;16;17;18;19	2026-10-21	pgcolumnar.sink_fail_after never injects a failing write
+export_sink	export_sink	inject: arrow export fails inside write_record_batch (53100)	15;16;17;18;19	2026-10-21	pgcolumnar.sink_fail_after never injects a failing write
+export_sink	export_sink	inject: no arrow temp debris	15;16;17;18;19	2026-10-21	the sink's abort leaves its temp file behind
+export_sink	export_sink	inject: no parquet temp debris	15;16;17;18;19	2026-10-21	the sink's abort leaves its temp file behind
+export_sink	export_sink	inject: nothing exists at the arrow FINAL path	15;16;17;18;19	2026-10-21	pgcolumnar.sink_fail_after never injects a failing write
+export_sink	export_sink	inject: nothing exists at the parquet FINAL path	15;16;17;18;19	2026-10-21	pgcolumnar.sink_fail_after never injects a failing write
+export_sink	export_sink	inject: parquet export fails as disk-full (53100)	15;16;17;18;19	2026-10-21	pgcolumnar.sink_fail_after never injects a failing write
+export_sink	export_sink	measured arrow size supports a mid-batch injection point	15;16;17;18;19	2026-10-21	the sink's finish never renames the temp file to the final name
+export_sink	export_sink	no temp debris after successful exports	15;16;17;18;19	2026-10-21	the sink's finish never renames the temp file to the final name
+export_sink	export_sink	parquet export succeeds through the sink	15;16;17;18;19	never	-
+export_sink	export_sink	parquet round-trip hash-matches the source	15;16;17;18;19	2026-10-21	the sink's finish never renames the temp file to the final name
 fdw_plan_privilege	fdw_plan_privilege	a privileged planner estimates the Iceberg table from its manifests	15;16;17;18;19	never	-
 fdw_plan_privilege	fdw_plan_privilege	a privileged planner estimates the Parquet table from the file's size	15;16;17;18;19	never	-
 fdw_plan_privilege	fdw_plan_privilege	an unprivileged planner gets the flat Parquet estimate	15;16;17;18;19	2026-10-14	the Parquet planner stats the file for any role (no pg_read_server_files gate)
