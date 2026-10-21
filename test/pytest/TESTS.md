@@ -265,6 +265,7 @@ behaviour, the source of that number is named.
 - [217. test_avro_manifest.py: Iceberg Avro manifests and manifest lists decode, and refuse what they must](#217-test_avro_manifestpy-iceberg-avro-manifests-and-manifest-lists-decode-and-refuse-what-they-must)
 - [218. test_column_projection.py: column projection reads only the columns a query references](#218-test_column_projectionpy-column-projection-reads-only-the-columns-a-query-references)
 - [219. test_local_open_race_free.py: local file opens are race-free: no stat-before-open](#219-test_local_open_race_freepy-local-file-opens-are-race-free-no-stat-before-open)
+- [220. test_encode_effort.py: the per-table encode_effort option](#220-test_encode_effortpy-the-per-table-encode_effort-option)
 
 ## 1. How to read a test in here
 
@@ -9071,3 +9072,26 @@ The shape readings come from the shell's own function-body extraction, in Python
 | `test_read_parquet_on_a_fifo_is_a_clean_error` | read_parquet on a FIFO is a clean error, not a hang |
 | `test_read_avro_manifest_on_a_fifo_is_a_clean_error` | read_avro_manifest on a FIFO is a clean error, not a hang |
 | `test_backend_still_up_after_the_fifo_refusals` | backend still up after the FIFO refusals |
+
+## 220. test_encode_effort.py: the per-table encode_effort option
+
+The twin of `test/encode_effort.sh` (#155). encode_effort and compression are validated and stored; on md5 text, where FSST wins, fast stores more bytes than full, and where FSST loses they store the same; rows, a filtered read and an index fetch agree either way; a table with no option stores what an explicit 'full' stores; reset_options clears the option.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order, with pgcolumnar.fsst_min_gain_percent held at 0 on that database. A size is a reading only when it is a positive number, and each content reading carries its row count against the fixture's.
+
+| test | what it holds |
+| --- | --- |
+| `test_an_unknown_encode_effort_is_refused` | an unknown encode_effort is refused |
+| `test_the_refused_value_was_not_stored` | and the refused value was not stored |
+| `test_a_valid_encode_effort_is_stored` | a valid encode_effort is stored |
+| `test_an_unknown_compression_name_is_refused` | an unknown compression name is refused |
+| `test_the_compression_set_before_it_is_still_the_one_stored` | and the compression set before it is still the one stored |
+| `test_fast_stores_more_than_full_where_fsst_wins` | fast stores more than full on a shape where FSST wins |
+| `test_and_is_identical_where_fsst_does_not_win` | and is identical where FSST does not win |
+| `test_the_rows_are_identical_either_way` | the rows are identical either way |
+| `test_a_filtered_read_agrees` | and a filtered read agrees |
+| `test_an_index_fetch_finds_a_fast_written_row` | and an index fetch finds a fast-written row |
+| `test_a_table_with_no_option_set_matches_full` | a table with no option set matches full |
+| `test_reset_options_clears_it` | reset_options clears it |

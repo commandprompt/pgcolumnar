@@ -54,6 +54,10 @@ stored() {	# byte-accurate stored size; pg_total_relation_size is page-granular
 	q "SELECT coalesce(sum(page_length), 0) FROM pgcolumnar.column_chunk
 		WHERE storage_id = pgcolumnar.get_storage_id('$1');" | tail -1
 }
+# A size is a reading only when it is a positive number: a failed query reads
+# empty, and an empty table sums to 0, and either would let two sizes agree.
+# The failure names its table, so two failed readings cannot agree either.
+size_or_why() { pgc_is_number "$1" && [ "$1" -gt 0 ] && echo "$1" || echo "no size of $2 read [$1]"; }
 
 # --- 1. the option is validated and stored ------------------------------------
 
@@ -92,7 +96,11 @@ check "and the compression set before it is still the one stored" \
 psql_run "DROP TABLE IF EXISTS ef_full; DROP TABLE IF EXISTS ef_fast;
 	CREATE TABLE ef_full (v text) USING pgcolumnar;
 	CREATE TABLE ef_fast (v text) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('ef_full', encode_effort => 'full');
 	SELECT pgcolumnar.set_options('ef_fast', encode_effort => 'fast');" >/dev/null
+# ef_full says 'full' explicitly. It used to be full only by default, so the
+# default check below compared the default with itself and a writer whose
+# default became fast passed it.
 
 psql_run "INSERT INTO ef_full SELECT md5(g::text) FROM generate_series(1, $ROWS) g;" >/dev/null
 psql_run "INSERT INTO ef_fast SELECT md5(g::text) FROM generate_series(1, $ROWS) g;" >/dev/null
@@ -104,7 +112,8 @@ fast_sz="$(stored ef_fast)"
 # reaching the writer or the shape stopped being one where FSST wins -- and the
 # next check tells you which.
 check "fast stores more than full on a shape where FSST wins" \
-	"$([ "${fast_sz:-0}" -gt "${full_sz:-0}" ] && echo yes || echo "no ($fast_sz vs $full_sz)")" \
+	"$(pgc_is_number "$fast_sz" && pgc_is_number "$full_sz" && [ "$full_sz" -gt 0 ] \
+	   && [ "$fast_sz" -gt "$full_sz" ] && echo yes || echo "no ($fast_sz vs $full_sz)")" \
 	"yes"
 
 # Guards the premise of the check above rather than the fix: on a shape where
@@ -115,18 +124,24 @@ psql_run "DROP TABLE IF EXISTS ef_flat; DROP TABLE IF EXISTS ef_flatf;
 	SELECT pgcolumnar.set_options('ef_flatf', encode_effort => 'fast');" >/dev/null
 psql_run "INSERT INTO ef_flat SELECT repeat('a', 8) FROM generate_series(1, $ROWS) g;" >/dev/null
 psql_run "INSERT INTO ef_flatf SELECT repeat('a', 8) FROM generate_series(1, $ROWS) g;" >/dev/null
-check "and is identical where FSST does not win" \
-	"$(stored ef_flat)" "$(stored ef_flatf)"
+check_text "and is identical where FSST does not win" \
+	"$(size_or_why "$(stored ef_flat)" ef_flat)" "$(size_or_why "$(stored ef_flatf)" ef_flatf)"
 
 # --- 3. it changes cost only, never content -----------------------------------
 
-check "the rows are identical either way" \
-	"$(q "SELECT md5(string_agg(v, ',' ORDER BY v)) FROM ef_fast;" | tail -1)" \
-	"$(q "SELECT md5(string_agg(v, ',' ORDER BY v)) FROM ef_full;" | tail -1)"
+# Each side carries its row count, and full must hold the fixture, so two empty
+# tables cannot agree (an empty string_agg is NULL, and two NULLs read "").
+_ef_rows_full="$(q "SELECT count(*) || ':' || md5(string_agg(v, ',' ORDER BY v)) FROM ef_full;" | tail -1)"
+[ "${_ef_rows_full%%:*}" = "$ROWS" ] || _ef_rows_full="ef_full does not hold the fixture: [$_ef_rows_full]"
+check_text "the rows are identical either way" \
+	"$(q "SELECT count(*) || ':' || md5(string_agg(v, ',' ORDER BY v)) FROM ef_fast;" | tail -1)" \
+	"$_ef_rows_full"
 
-check "and a filtered read agrees" \
-	"$(q "SELECT count(*) FROM ef_fast WHERE v LIKE 'a%';" | tail -1)" \
-	"$(q "SELECT count(*) FROM ef_full WHERE v LIKE 'a%';" | tail -1)"
+_ef_like_full="$(q "SELECT count(*) FILTER (WHERE v LIKE 'a%') || '/' || count(*) FROM ef_full;" | tail -1)"
+[ "${_ef_like_full##*/}" = "$ROWS" ] || _ef_like_full="ef_full does not hold the fixture: [$_ef_like_full]"
+check_text "and a filtered read agrees" \
+	"$(q "SELECT count(*) FILTER (WHERE v LIKE 'a%') || '/' || count(*) FROM ef_fast;" | tail -1)" \
+	"$_ef_like_full"
 
 # A fast-written chunk must be readable through the ordinary fetch path too,
 # since it carries no shared symbol table where a full-written one does.
@@ -142,7 +157,7 @@ check "and an index fetch finds a fast-written row" \
 # at compressing between releases is a bad trade even when it is faster.
 psql_run "DROP TABLE IF EXISTS ef_def; CREATE TABLE ef_def (v text) USING pgcolumnar;" >/dev/null
 psql_run "INSERT INTO ef_def SELECT md5(g::text) FROM generate_series(1, $ROWS) g;" >/dev/null
-check "a table with no option set matches full" "$(stored ef_def)" "$full_sz"
+check_text "a table with no option set matches full" "$(size_or_why "$(stored ef_def)" ef_def)" "$(size_or_why "$full_sz" ef_full)"
 
 psql_run "SELECT pgcolumnar.reset_options('ef_fast', encode_effort => true);" >/dev/null
 check "reset_options clears it" \
