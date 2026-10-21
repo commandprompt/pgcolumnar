@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 114
+suites_not_covered 113
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5192,4 +5192,23 @@ suites_not_covered 114
 #     never         3787 + 3 = 3790
 #     dated         2056 + 7 = 2063
 #     3790 + 2063 == 5853
-checks_never_observed_red 3790
+#
+# #1341, encode_invariants seeded, with its twin (OffgridwithJD): 3790 -> 3793,
+# and suites_not_covered 114 -> 113. The suite had no rows. It enters with 13
+# checks from five-major runs (all green on each of 15-19, shell and twin alike). Two
+# holes, each measured on PG17 at origin/main: with the self-test function never
+# created, "the encoding primitives match their reference implementations" passed,
+# since an empty result has no FAIL line (it now requires the run's case count); and
+# with every FSST-premise load empty, "no vector selects FSST at or below the distinct
+# cap" passed on tables that had no vector to choose (each must now hold its 20,000
+# rows). 10 are dated by eight mutations of the encoders and the compression
+# defaults, each reddening the same names in both twins; 3 arrive never. The FSST
+# premise stays never honestly: widening the skip to 16 distinct values, and even
+# refusing the dictionary with the table always built, left no vector at or below the
+# cap choosing FSST on these shapes, so output cannot change.
+#
+#     ledger rows   5853 + 13 = 5866
+#     never         3790 + 3 = 3793
+#     dated         2063 + 10 = 2073
+#     3793 + 2073 == 5866
+checks_never_observed_red 3793

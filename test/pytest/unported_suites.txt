@@ -12,7 +12,6 @@ cancel_decode
 decode_interrupts
 decode_skip_interrupts
 docs_style
-encode_invariants
 fuzz
 fuzz_arrow
 fuzz_avro
