@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 135
+suites_not_covered 134
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4757,4 +4757,28 @@ suites_not_covered 135
 #     never         3605 + 6 = 3611
 #     dated         1858 + 6 = 1864
 #     3611 + 1864 == 5475
+#
+# #1341, iceberg_name_mapping_memory seeded, with its twin (OffgridwithJD): 3424 ->
+# 3424, and suites_not_covered 151 -> 150. The suite had no rows. It enters with
+# 7 checks from five-major runs (all green on each of 15-19, shell and twin alike;
+# 3-4 bytes an entry against the 30-byte bound, 85 with #731 reverted). Measured on
+# PG17 at origin/main: with the scan pointed at a missing file, its statement still
+# reported a peak (~2 MB), the overhead went negative, the slope read -647 bytes, and
+# the #731 claim passed on a scan that never ran; a statement that errored now has no
+# peak. And with a mapping that binds nothing, both scans in the values check failed
+# with the same message and their md5s agreed; and with a mapping that no longer
+# binds region, both read NULL regions and agreed again. The check now reads the
+# fixture's own rows (1:eu,2:eu,3:us,4:us,5:us) and names a file that did not scan;
+# that mutation reds it in both twins. The premise loop is unrolled, and its two
+# arms and the other two premises,
+# all reddened when the scan errors, lose the prefix (#1339). The three arms that
+# printed a bare 1 or 0 now name their readings on failure, and leave
+# lossy_arms.tsv. 7 are dated by three mutations of the name-mapping parse, each
+# reddening the same names in both twins;
+# 0 arrive never.
+#
+#     ledger rows   5475 + 7 = 5482
+#     never         3611 + 0 = 3611
+#     dated         1864 + 7 = 1871
+#     3611 + 1871 == 5482
 checks_never_observed_red 3611
