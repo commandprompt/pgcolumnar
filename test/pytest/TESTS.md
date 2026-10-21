@@ -284,6 +284,7 @@ behaviour, the source of that number is named.
 - [236. test_estimate_deleted.py: the planner's row estimate follows deletes](#236-test_estimate_deletedpy-the-planners-row-estimate-follows-deletes)
 - [237. test_generated_columns.py: a columnar table with a generated column returns what heap does](#237-test_generated_columnspy-a-columnar-table-with-a-generated-column-returns-what-heap-does)
 - [238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name](#238-test_export_sinkpy-the-export-byte-sink-checks-every-write-and-never-leaves-a-partial-file-under-the-final-name)
+- [239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded](#239-test_groupagg_table_sizingpy-the-vectorized-grouped-aggregate-sizes-its-table-from-the-estimate-bounded)
 
 ## 1. How to read a test in here
 
@@ -9579,3 +9580,29 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_inject_nothing_exists_at_the_arrow_final_path` | inject: nothing exists at the arrow FINAL path |
 | `test_inject_no_arrow_temp_debris` | inject: no arrow temp debris |
 | `test_after_reset_exports_work_again` | after RESET, exports work again |
+
+## 239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded
+
+The twin of `test/groupagg_table_sizing.sh` (#403 item 6, #810 review). On 2,000,000 rows in 200,000 groups the node rehashes at most a quarter of the doubling ladder in at most four allocations and never allocates more than the real group count needs; an over-estimated expression key never inflates a table that does not grow, and a key that does grow never jumps past eight times its need. Every answer is read through the vectorized node.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. A counter that was not printed is a failed reading, and a real group count must be a positive number.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_vectorized_grouped_aggregate_is_the_node_that_ran` | the vectorized grouped aggregate is the node that ran |
+| `test_it_built_the_group_count_this_suite_is_sized_for` | premise: it built the group count this suite is sized for |
+| `test_the_work_done_counter_is_reported` | the work-done counter is reported at all |
+| `test_the_declared_n_distinct_reached_the_planner` | premise: the declared n_distinct reached the planner, so the estimate is not a sample |
+| `test_a_sized_table_removes_most_of_the_rehashing` | a sized table removes most of the rehashing (#403 item 6) |
+| `test_it_gets_there_in_a_few_allocations` | and it gets there in a few allocations, not a ladder (#403 item 6) |
+| `test_the_table_is_never_larger_than_the_real_group_count_needs` | the table is never larger than the real group count needs (#810 review) |
+| `test_the_planner_really_over_estimates_an_expression_key` | premise: the planner really over-estimates an expression key, or there is nothing to guard |
+| `test_a_wrong_estimate_cannot_inflate_a_table_that_never_needed_to_grow` | a wrong estimate cannot inflate a table that never needed to grow (#810 review) |
+| `test_the_expression_key_still_answers_correctly` | and the expression key still answers correctly |
+| `test_this_key_really_does_force_the_table_to_grow` | premise: this key really does force the table to grow, or the bound is untested |
+| `test_a_grow_cannot_jump_to_a_wrong_estimate` | a grow cannot jump to a wrong estimate, only toward it (#810 review) |
+| `test_the_minute_key_answers_correctly_too` | and the minute key answers correctly too |
+| `test_the_answer_is_the_same_under_a_small_work_mem` | and the answer is the same under a small work_mem |
+| `test_the_aggregate_itself_is_still_right` | the aggregate itself is still right |

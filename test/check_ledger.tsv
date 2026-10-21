@@ -1220,6 +1220,21 @@ generated_columns	generated_columns	virtual generated: no chunk stored for the v
 generated_columns	generated_columns	virtual generated: recomputed correctly	18;19	never	-
 generated_columns	generated_columns	virtual generated: row count	18;19	never	-
 generated_columns	generated_columns	virtual generated: values match	18;19	2026-10-21	the flush skips the base column beside the virtual ones
+groupagg_table_sizing	groupagg_table_sizing	a grow cannot jump to a wrong estimate, only toward it (#810 review)	15;16;17;18;19	2026-10-21	a grow jumps straight to the estimate, unbounded by the live count;the planner never offers the vectorized grouped aggregate (columnar_vector.c)
+groupagg_table_sizing	groupagg_table_sizing	a sized table removes most of the rehashing (#403 item 6)	15;16;17;18;19	2026-10-21	EXPLAIN stops printing Columnar Group Table Entries Rehashed;the estimate is never used, so the table walks the doubling ladder;the planner never offers the vectorized grouped aggregate (columnar_vector.c)
+groupagg_table_sizing	groupagg_table_sizing	a wrong estimate cannot inflate a table that never needed to grow (#810 review)	15;16;17;18;19	2026-10-21	the first grow allocates the estimate, the shape #810's review rejected;the planner never offers the vectorized grouped aggregate (columnar_vector.c)
+groupagg_table_sizing	groupagg_table_sizing	and it gets there in a few allocations, not a ladder (#403 item 6)	15;16;17;18;19	2026-10-21	the estimate is never used, so the table walks the doubling ladder;the planner never offers the vectorized grouped aggregate (columnar_vector.c)
+groupagg_table_sizing	groupagg_table_sizing	and the answer is the same under a small work_mem	15;16;17;18;19	never	-
+groupagg_table_sizing	groupagg_table_sizing	and the expression key still answers correctly	15;16;17;18;19	never	-
+groupagg_table_sizing	groupagg_table_sizing	and the minute key answers correctly too	15;16;17;18;19	2026-10-21	a grow drops about one group in 16 while reinserting (columnar_vector.c)
+groupagg_table_sizing	groupagg_table_sizing	premise: it built the group count this suite is sized for	15;16;17;18;19	never	-
+groupagg_table_sizing	groupagg_table_sizing	premise: the declared n_distinct reached the planner, so the estimate is not a sample	15;16;17;18;19	never	-
+groupagg_table_sizing	groupagg_table_sizing	premise: the planner really over-estimates an expression key, or there is nothing to guard	15;16;17;18;19	never	-
+groupagg_table_sizing	groupagg_table_sizing	premise: this key really does force the table to grow, or the bound is untested	15;16;17;18;19	never	-
+groupagg_table_sizing	groupagg_table_sizing	the aggregate itself is still right	15;16;17;18;19	2026-10-21	a grow drops about one group in 1024 while reinserting;a grow drops about one group in 16 while reinserting (columnar_vector.c)
+groupagg_table_sizing	groupagg_table_sizing	the table is never larger than the real group count needs (#810 review)	15;16;17;18;19	2026-10-21	the planner never offers the vectorized grouped aggregate (columnar_vector.c);the size hint asks for four times the estimate
+groupagg_table_sizing	groupagg_table_sizing	the vectorized grouped aggregate is the node that ran	15;16;17;18;19	2026-10-21	the planner never offers the vectorized grouped aggregate (columnar_vector.c)
+groupagg_table_sizing	groupagg_table_sizing	the work-done counter is reported at all	15;16;17;18;19	2026-10-21	EXPLAIN stops printing Columnar Group Table Entries Rehashed;the planner never offers the vectorized grouped aggregate (columnar_vector.c)
 hardening	hardening	backend alive after corrupt bloom	15;16;17;18;19	never	-
 hardening	hardening	backend alive after invalid descriptor	15;16;17;18;19	2026-10-17	columnar_reader.c: an unrecognized native encoding descriptor aborts the backend, with the value-stream bounds before it off
 hardening	hardening	corrupt bloom absent	15;16;17;18;19	never	-
