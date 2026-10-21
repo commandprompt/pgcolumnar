@@ -1259,15 +1259,20 @@ CREATE FUNCTION pgcolumnar.rollup_source_groups(source regclass)
 	LANGUAGE plpgsql STABLE SECURITY DEFINER
 	SET search_path = pg_catalog, pg_temp
 AS $rsg$
+DECLARE
+	-- once, not per catalog row: in a filter on a scan of the catalog the call
+	-- runs for every row, and each call reads the source's first page (#1614)
+	sid bigint;
 BEGIN
 	PERFORM pgcolumnar.require_caller_select(source);
+	sid := pgcolumnar.get_storage_id(source);
 	RETURN QUERY
 		SELECT g.group_number, g.first_row_number, g.row_count,
 			   coalesce(d.deleted_count, 0)::bigint
 		  FROM pgcolumnar.row_group g
 		  LEFT JOIN pgcolumnar.delete_vector d
 			ON d.storage_id = g.storage_id AND d.group_number = g.group_number
-		 WHERE g.storage_id = pgcolumnar.get_storage_id(source);
+		 WHERE g.storage_id = sid;
 END
 $rsg$;
 
@@ -1281,11 +1286,16 @@ CREATE FUNCTION pgcolumnar.rollup_source_retired(source regclass)
 	LANGUAGE plpgsql STABLE SECURITY DEFINER
 	SET search_path = pg_catalog, pg_temp
 AS $rsr$
+DECLARE
+	-- once, not per catalog row: in a filter on a scan of the catalog the call
+	-- runs for every row, and each call reads the source's first page (#1614)
+	sid bigint;
 BEGIN
 	PERFORM pgcolumnar.require_caller_select(source);
+	sid := pgcolumnar.get_storage_id(source);
 	RETURN QUERY
 		SELECT r.group_number, r.deleted_count FROM pgcolumnar.retired_group r
-		 WHERE r.storage_id = pgcolumnar.get_storage_id(source);
+		 WHERE r.storage_id = sid;
 END
 $rsr$;
 
