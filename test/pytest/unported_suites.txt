@@ -79,7 +79,6 @@ parallel
 parallel_copy
 parallel_copy_dedup
 parallel_export_parquet
-parallel_flush_optin
 parallel_vector_agg
 parquet_export
 parquet_export_stats

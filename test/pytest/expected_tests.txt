@@ -1021,4 +1021,6 @@ guard_tests 474
 # 17 tests, one per check, by collection over the cluster files.
 # cluster_tests 2497 -> 2503 for #1341's test_parallel_degree.py, the twin of parallel_degree.sh:
 # 6 tests, one per check, by collection over the cluster files.
-cluster_tests 2503
+# cluster_tests 2503 -> 2508 for #1341's test_parallel_flush_optin.py, the twin of parallel_flush_optin.sh:
+# 5 tests, one per check, by collection over the cluster files.
+cluster_tests 2508

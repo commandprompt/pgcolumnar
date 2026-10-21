@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 107
+suites_not_covered 106
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5314,4 +5314,24 @@ suites_not_covered 107
 #     never         3819 + 2 = 3821
 #     dated         2097 + 4 = 2101
 #     3821 + 2101 == 5922
+#
+# #1341, parallel_flush_optin seeded, with its twin (jdatcmd): 3718 -> 3718, and
+# suites_not_covered 117 -> 116. The suite had no rows. It enters with 5 checks from
+# five-major runs (5/5 on each of 15-19, shell and twin alike), after two fixes. The
+# ON check read only the dispatch line, which says parallel before any worker is
+# registered: with no worker ever registered, every column fell back to serial and
+# main's shell passed 5/5. It now also needs the split line to show worker columns.
+# And the eight wnum columns were eight copies of g, so a parallel assembly that
+# stored each column under the next index wrote the same bytes and main's shell
+# passed 5/5; the columns now have eight shapes and the fingerprint adds the rows
+# read back. The default-off check lost its premise: prefix under #1339: the boot
+# default is pgcolumnar's own, and setting it to true reddens it. All 5 are dated by
+# four mutations, each reddening the same names in both twins: the boot default set
+# to true, no worker ever registered, each worker column stored under the next
+# index, and a content term added to the dispatch metric.
+#
+#     ledger rows   5922 + 5 = 5927
+#     never         3821 + 0 = 3821
+#     dated         2101 + 5 = 2106
+#     3821 + 2106 == 5927
 checks_never_observed_red 3821
