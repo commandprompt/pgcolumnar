@@ -267,6 +267,7 @@ behaviour, the source of that number is named.
 - [219. test_local_open_race_free.py: local file opens are race-free: no stat-before-open](#219-test_local_open_race_freepy-local-file-opens-are-race-free-no-stat-before-open)
 - [220. test_encode_effort.py: the per-table encode_effort option](#220-test_encode_effortpy-the-per-table-encode_effort-option)
 - [221. test_doc_parallel_premise.py: the parallel-scan page's narrow query reads every chunk group](#221-test_doc_parallel_premisepy-the-parallel-scan-pages-narrow-query-reads-every-chunk-group)
+- [222. test_maintenance_due.py: pgcolumnar.maintenance_due reports which online verb is worth running](#222-test_maintenance_duepy-pgcolumnarmaintenance_due-reports-which-online-verb-is-worth-running)
 
 ## 1. How to read a test in here
 
@@ -9118,3 +9119,41 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_the_documented_column_is_not_the_ordered_one` | the documented column is not the one stored in order |
 | `test_both_costs_were_extracted` | both costs were extracted, not blank |
 | `test_the_documented_column_is_costed_above_the_ordered_one` | and the documented column is costed above the ordered one |
+
+## 222. test_maintenance_due.py: pgcolumnar.maintenance_due reports which online verb is worth running
+
+The twin of `test/maintenance_due.sh` (#415). Five fixtures -- clean and ordered, 40% deleted and never ordered, ordered then appended, never ordered in two batches (the sorted-run guard), and both decays at once -- each with its verdicts and recommendation, the thresholds shown to be live parameters; a SELECT-holder gets a verdict and a role without SELECT is refused with 42501.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. The two roles log in on their own, as the shell's do, and are dropped at teardown.
+
+| test | what it holds |
+| --- | --- |
+| `test_md_clean_has_no_deleted_rows` | md_clean has no deleted rows |
+| `test_md_clean_is_fully_in_its_sorted_run` | md_clean is fully in its sorted run (0 appended groups) |
+| `test_md_clean_has_a_sorted_run` | md_clean has a sorted run |
+| `test_clean_compact_rewrite_not_due` | clean: compact_rewrite not due |
+| `test_clean_recluster_not_due` | clean: recluster not due |
+| `test_clean_recommendation_is_null` | clean: recommendation is null |
+| `test_md_deleted_deleted_fraction_is_about_0_40` | premise: md_deleted deleted fraction ~0.40 |
+| `test_delete_maintenance_due_reports_the_same_deleted_fraction` | delete: maintenance_due reports the same deleted_fraction |
+| `test_delete_compact_rewrite_due` | delete: compact_rewrite due (0.40 >= 0.2 default) |
+| `test_delete_recluster_not_due` | delete: recluster NOT due (table was never ordered) |
+| `test_delete_recommendation_names_compact_rewrite_only` | delete: recommendation names compact_rewrite only |
+| `test_delete_raising_the_compact_threshold_makes_it_not_due` | delete: raising the compact threshold above 0.40 makes it not due |
+| `test_md_appended_has_appended_groups` | md_appended has appended groups |
+| `test_md_appended_still_has_a_sorted_run` | md_appended still has a sorted run |
+| `test_appended_recluster_due` | appended: recluster due |
+| `test_appended_compact_rewrite_not_due` | appended: compact_rewrite not due (no deletes) |
+| `test_appended_recommendation_names_recluster_only` | appended: recommendation names recluster only |
+| `test_appended_raising_the_recluster_threshold_makes_it_not_due` | appended: raising the recluster threshold above the fraction makes it not due |
+| `test_never_ordered_table_has_no_sorted_run` | never-ordered table has NO sorted run |
+| `test_yet_sort_status_still_counts_appended_groups` | yet sort_status still counts appended groups (> 0) |
+| `test_guard_recluster_not_due_on_a_never_ordered_table` | GUARD: recluster NOT due on a never-ordered table |
+| `test_guard_recommendation_is_null_on_a_never_ordered_table` | GUARD: recommendation is null on a never-ordered table |
+| `test_both_compact_rewrite_due` | both: compact_rewrite due |
+| `test_both_recluster_due` | both: recluster due |
+| `test_both_recommendation_names_both_verbs` | both: recommendation names both verbs |
+| `test_positive_a_select_holder_gets_a_verdict` | positive: a SELECT-holder gets a verdict, not a false deny |
+| `test_deny_a_role_without_select_is_refused` | deny: a role without SELECT on the relation is refused (42501) |
