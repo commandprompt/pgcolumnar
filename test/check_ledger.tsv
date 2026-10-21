@@ -765,6 +765,13 @@ column_projection	column_projection	two columns :: on==off	15;16;17;18;19	never	
 column_projection	column_projection	varlena alone :: columnar==heap	15;16;17;18;19	never	-
 column_projection	column_projection	varlena projected alone :: on==off	15;16;17;18;19	never	-
 column_projection	column_projection	whole-row var :: on==off	15;16;17;18;19	never	-
+concurrency	concurrency	A both concurrent deletes survived (ids 1,2,6 gone)	15;16;17;18;19	2026-10-21	the delete-vector chunk-group lock is never taken
+concurrency	concurrency	A row count after concurrent deletes	15;16;17;18;19	2026-10-21	the delete-vector chunk-group lock is never taken
+concurrency	concurrency	A same-group second deleter blocks	15;16;17;18;19	2026-10-21	the delete-vector chunk-group lock is never taken
+concurrency	concurrency	B both first deletes survived (ids 1,2 gone)	15;16;17;18;19	2026-10-21	the delete-vector chunk-group lock is never taken
+concurrency	concurrency	B first-delete second deleter blocks	15;16;17;18;19	2026-10-21	the delete-vector chunk-group lock is never taken
+concurrency	concurrency	C both different-group deletes survived (ids 1,5 gone)	15;16;17;18;19	2026-10-21	the delete-vector lock is keyed on the storage, so deletes to different chunk groups serialize
+concurrency	concurrency	C different-group deleter does not block	15;16;17;18;19	2026-10-21	the delete-vector lock is keyed on the storage, so deletes to different chunk groups serialize
 concurrent_diff	concurrent_diff	all workers succeeded	15;16;17;18;19	2026-10-19	every stripe reserves the same stripe id;row-number reservation loses an update (the metapage lock dropped between read and write)
 concurrent_diff	concurrent_diff	concurrent bloom eq	15;16;17;18;19	never	-
 concurrent_diff	concurrent_diff	concurrent count/sum	15;16;17;18;19	2026-10-19	row-number reservations overlap by one (rowCount - 1)

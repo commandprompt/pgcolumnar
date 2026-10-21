@@ -275,6 +275,7 @@ behaviour, the source of that number is named.
 - [227. test_import_deferred.py: imports honour a DEFERRABLE constraint, and the check is deferred, not gone](#227-test_import_deferredpy-imports-honour-a-deferrable-constraint-and-the-check-is-deferred-not-gone)
 - [228. test_index_only.py: index-only scans on a columnar table, served from the visibility map](#228-test_index_onlypy-index-only-scans-on-a-columnar-table-served-from-the-visibility-map)
 - [229. test_isolation.py: deterministic isolation specs for the compaction and truncation races](#229-test_isolationpy-deterministic-isolation-specs-for-the-compaction-and-truncation-races)
+- [230. test_concurrency.py: concurrent deletes into one chunk group serialize and both survive](#230-test_concurrencypy-concurrent-deletes-into-one-chunk-group-serialize-and-both-survive)
 
 ## 1. How to read a test in here
 
@@ -9379,3 +9380,22 @@ The fixture runs pg_isolation_regress once over all seven specs in a private dat
 | `test_isolation_spec_truncate_vs_reader` | isolation spec truncate_vs_reader |
 | `test_isolation_spec_truncate_vs_writer` | isolation spec truncate_vs_writer |
 | `test_isolation_spec_truncate_vs_truncate` | isolation spec truncate_vs_truncate |
+
+## 230. test_concurrency.py: concurrent deletes into one chunk group serialize and both survive
+
+The twin of `test/concurrency.sh` (#4). Two sessions deleting different rows of one chunk group serialize on the chunk-group lock, and both deletes survive -- with the group's delete_vector row present and absent; deletes into different chunk groups do not wait and finish in a live transaction.
+
+### Every test
+
+One module fixture runs the three scenarios in a private database; session 2's blocking DELETE runs in a thread while the controller polls pg_stat_activity as the shell does, every wait bounded at 60s.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_same_group_second_deleter_blocks` | A same-group second deleter blocks |
+| `test_a_both_concurrent_deletes_survived` | A both concurrent deletes survived (ids 1,2,6 gone) |
+| `test_a_row_count_after_concurrent_deletes` | A row count after concurrent deletes |
+| `test_b_first_delete_second_deleter_blocks` | B first-delete second deleter blocks |
+| `test_b_both_first_deletes_survived` | B both first deletes survived (ids 1,2 gone) |
+| `test_c_different_group_deleter_does_not_block` | C different-group deleter does not block |
+| `test_c_both_different_group_deletes_survived` | C both different-group deletes survived (ids 1,5 gone) |
+| `test_every_bounded_wait_completed` | a bounded wait for a session to reach idle-in-transaction completed -- the shell's four wait_timeout names, recorded only where a wait timed out; declines on a green run, where the shell records nothing |

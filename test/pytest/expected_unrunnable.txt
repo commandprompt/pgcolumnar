@@ -88,6 +88,15 @@
 18 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
 19 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
 
+# Every major: test_concurrency.py's timeout mirror records the shell's fixed
+# wait_timeout names only where a bounded wait timed out, as the shell records them
+# only on its timeout path. On a green run there is nothing to record, so it declines.
+15 test_concurrency.py::test_every_bounded_wait_completed
+16 test_concurrency.py::test_every_bounded_wait_completed
+17 test_concurrency.py::test_every_bounded_wait_completed
+18 test_concurrency.py::test_every_bounded_wait_completed
+19 test_concurrency.py::test_every_bounded_wait_completed
+
 # PostgreSQL 15 to 18: REPACK arrived in 19, so there is no REPACK to refuse.
 15 test_native_repack.py::test_repack_on_a_columnar_table
 16 test_native_repack.py::test_repack_on_a_columnar_table
