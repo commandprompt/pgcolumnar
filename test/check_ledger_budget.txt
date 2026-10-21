@@ -4458,4 +4458,18 @@ suites_not_covered 149
 #     never         3492 + 13 = 3505
 #     dated         1715 + 3 = 1718
 #     3505 + 1718 == 5223
-checks_never_observed_red 3505
+# #1339, test_catalog_plan_index.py :480 (OffgridwithJD): 3505 -> 3503, no row added.
+# Three checks carried "premise:" for pgcolumnar's own behaviour, so a repository
+# change reddens each and none could have been dated: "a covering projection gave the
+# table a second storage row", "the two storage rows disagree about row_group_limit"
+# (with a projection's row written with a fixed limit, it went red) and "this query
+# shape is priced differently under the two limits" (with the planner ignoring the
+# written limit, #806, it went red). They lose the prefix in both twins. The no-op
+# update's three read where PostgreSQL's heap puts an updated catalog row, and stay.
+# 2 rows are dated by the two mutations.
+#
+#     ledger rows   5223 + 0 = 5223
+#     never         3505 - 2 = 3503
+#     dated         1718 + 2 = 1720
+#     3503 + 1720 == 5223
+checks_never_observed_red 3503
