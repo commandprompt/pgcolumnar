@@ -63,6 +63,27 @@
 15 test_tier_partition.py::test_tier_partition_moves_a_virtual_generated_column
 16 test_tier_partition.py::test_tier_partition_moves_a_virtual_generated_column
 17 test_tier_partition.py::test_tier_partition_moves_a_virtual_generated_column
+
+# PostgreSQL 15 to 17: virtual generated columns arrived in PostgreSQL 18, so the
+# virtual arm of test_generated_columns.py declines, as the shell records its skip.
+15 test_generated_columns.py::test_virtual_generated_row_count
+15 test_generated_columns.py::test_virtual_generated_values_match
+15 test_generated_columns.py::test_virtual_generated_filtered_scan_matches
+15 test_generated_columns.py::test_virtual_generated_recomputed_correctly
+15 test_generated_columns.py::test_virtual_generated_no_chunk_stored_for_the_virtual_columns
+15 test_generated_columns.py::test_virtual_generated_base_column_still_stored
+16 test_generated_columns.py::test_virtual_generated_row_count
+16 test_generated_columns.py::test_virtual_generated_values_match
+16 test_generated_columns.py::test_virtual_generated_filtered_scan_matches
+16 test_generated_columns.py::test_virtual_generated_recomputed_correctly
+16 test_generated_columns.py::test_virtual_generated_no_chunk_stored_for_the_virtual_columns
+16 test_generated_columns.py::test_virtual_generated_base_column_still_stored
+17 test_generated_columns.py::test_virtual_generated_row_count
+17 test_generated_columns.py::test_virtual_generated_values_match
+17 test_generated_columns.py::test_virtual_generated_filtered_scan_matches
+17 test_generated_columns.py::test_virtual_generated_recomputed_correctly
+17 test_generated_columns.py::test_virtual_generated_no_chunk_stored_for_the_virtual_columns
+17 test_generated_columns.py::test_virtual_generated_base_column_still_stored
 # PostgreSQL 15 to 19: UPDATE ... FOR PORTION OF is not in the grammar. 19beta2 had
 # it and 19beta4 removed it (#1337); the test probes the grammar, not the major,
 # so a server that has the clause runs it, and this file would then refuse the row.

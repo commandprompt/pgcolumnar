@@ -1192,6 +1192,18 @@ fsst_verdict_cache	fsst_verdict_cache	premise: the prose corpus KEEPS fsst, so t
 fsst_verdict_cache	fsst_verdict_cache	premise: the prose fixture loaded	15;16;17;18;19	never	-
 fsst_verdict_cache	fsst_verdict_cache	premise: the three changing-column loads all produced bytes to compare	15;16;17;18;19	never	-
 fsst_verdict_cache	fsst_verdict_cache	the cached load returns the same values as heap	15;16;17;18;19	2026-10-21	FSST decode writes symbol 1's bytes for symbol 0
+generated_columns	generated_columns	stored generated: aggregate matches	15;16;17;18;19	2026-10-21	the flush skips STORED generated columns too, which are materialized
+generated_columns	generated_columns	stored generated: chunk present for attr 2	15;16;17;18;19	2026-10-21	the flush skips STORED generated columns too, which are materialized
+generated_columns	generated_columns	stored generated: filtered scan matches	15;16;17;18;19	2026-10-21	the flush skips STORED generated columns too, which are materialized
+generated_columns	generated_columns	stored generated: row count	15;16;17;18;19	never	-
+generated_columns	generated_columns	stored generated: values match	15;16;17;18;19	2026-10-21	the flush skips STORED generated columns too, which are materialized
+generated_columns	generated_columns	virtual generated columns	15;16;17	never	-
+generated_columns	generated_columns	virtual generated: base column still stored	18;19	2026-10-21	the flush skips the base column beside the virtual ones
+generated_columns	generated_columns	virtual generated: filtered scan matches	18;19	2026-10-21	the flush skips the base column beside the virtual ones
+generated_columns	generated_columns	virtual generated: no chunk stored for the virtual columns	18;19	2026-10-21	the flush writes a column chunk for a virtual generated column
+generated_columns	generated_columns	virtual generated: recomputed correctly	18;19	never	-
+generated_columns	generated_columns	virtual generated: row count	18;19	never	-
+generated_columns	generated_columns	virtual generated: values match	18;19	2026-10-21	the flush skips the base column beside the virtual ones
 hardening	hardening	backend alive after corrupt bloom	15;16;17;18;19	never	-
 hardening	hardening	backend alive after invalid descriptor	15;16;17;18;19	2026-10-17	columnar_reader.c: an unrecognized native encoding descriptor aborts the backend, with the value-stream bounds before it off
 hardening	hardening	corrupt bloom absent	15;16;17;18;19	never	-

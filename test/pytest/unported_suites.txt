@@ -21,7 +21,6 @@ fuzz_arrow
 fuzz_avro
 fuzz_listing
 fuzz_parquet
-generated_columns
 groupagg_table_sizing
 harness_selftest
 hilbert_curve

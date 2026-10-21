@@ -282,6 +282,7 @@ behaviour, the source of that number is named.
 - [234. test_iceberg_fdw_estimate.py: the Iceberg FDW estimates rows from the manifests](#234-test_iceberg_fdw_estimatepy-the-iceberg-fdw-estimates-rows-from-the-manifests)
 - [235. test_iceberg_fdw_projection.py: the Iceberg FDW's projection pushdown never changes a result](#235-test_iceberg_fdw_projectionpy-the-iceberg-fdws-projection-pushdown-never-changes-a-result)
 - [236. test_estimate_deleted.py: the planner's row estimate follows deletes](#236-test_estimate_deletedpy-the-planners-row-estimate-follows-deletes)
+- [237. test_generated_columns.py: a columnar table with a generated column returns what heap does](#237-test_generated_columnspy-a-columnar-table-with-a-generated-column-returns-what-heap-does)
 
 ## 1. How to read a test in here
 
@@ -9520,3 +9521,25 @@ A module fixture on a private database runs the shell's sequence; each test asse
 | `test_the_estimate_follows_the_deletes_with_a_stale_reltuples` | the estimate follows the deletes with a stale reltuples and several groups |
 | `test_the_live_count_really_is_60000` | control: and the live count really is 60000 |
 | `test_an_undeleted_table_estimates_its_full_size` | control: an undeleted table of the same shape estimates its full size |
+
+## 237. test_generated_columns.py: a columnar table with a generated column returns what heap does
+
+The twin of `test/generated_columns.sh`. STORED generated columns, on every major, read, filter and aggregate as the heap copy does and get a column chunk. VIRTUAL ones, on PostgreSQL 18+, read and filter as heap does, equal their expression on every row, and store no chunk while the base column still gets one.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. Every columnar reading carries its row count against the constant the fixture loads, and the heap oracle must hold the fixture's aggregate. Before 18 the virtual tests decline; only the row-count test names the shell's skip.
+
+| test | what it holds |
+| --- | --- |
+| `test_stored_generated_row_count` | stored generated: row count |
+| `test_stored_generated_values_match` | stored generated: values match |
+| `test_stored_generated_filtered_scan_matches` | stored generated: filtered scan matches |
+| `test_stored_generated_aggregate_matches` | stored generated: aggregate matches |
+| `test_stored_generated_chunk_present_for_attr_2` | stored generated: chunk present for attr 2 |
+| `test_virtual_generated_row_count` | virtual generated: row count -- before 18, declines as `virtual generated columns`, the shell's skip |
+| `test_virtual_generated_values_match` | virtual generated: values match |
+| `test_virtual_generated_filtered_scan_matches` | virtual generated: filtered scan matches |
+| `test_virtual_generated_recomputed_correctly` | virtual generated: recomputed correctly |
+| `test_virtual_generated_no_chunk_stored_for_the_virtual_columns` | virtual generated: no chunk stored for the virtual columns |
+| `test_virtual_generated_base_column_still_stored` | virtual generated: base column still stored |
