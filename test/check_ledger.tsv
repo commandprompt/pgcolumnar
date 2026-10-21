@@ -1086,6 +1086,19 @@ encode_effort	encode_effort	and the refused value was not stored	15;16;17;18;19	
 encode_effort	encode_effort	fast stores more than full on a shape where FSST wins	15;16;17;18;19	2026-10-21	set_options does not store encode_effort on a new row
 encode_effort	encode_effort	reset_options clears it	15;16;17;18;19	2026-10-21	reset_options leaves encode_effort set
 encode_effort	encode_effort	the rows are identical either way	15;16;17;18;19	never	-
+encode_invariants	encode_invariants	and at least one of them actually chose gorilla	15;16;17;18;19	2026-10-21	Gorilla declines every vector
+encode_invariants	encode_invariants	and its level is 3	15;16;17;18;19	2026-10-21	the zstd level default is 1
+encode_invariants	encode_invariants	and the low-cardinality fixture actually chose dictionary	15;16;17;18;19	2026-10-21	the dictionary encoder declines every vector
+encode_invariants	encode_invariants	and the self-test actually compared a meaningful number of cases	15;16;17;18;19	never	-
+encode_invariants	encode_invariants	and the width fixtures actually chose frame-of-reference packing	15;16;17;18;19	2026-10-21	frame-of-reference packing declines every vector
+encode_invariants	encode_invariants	control: a high-cardinality corpus does select FSST	15;16;17;18;19	2026-10-21	the zstd level default is 1
+encode_invariants	encode_invariants	dictionary round-trips at, below and above the distinct cap	15;16;17;18;19	2026-10-21	the word-at-a-time packer's mask drops the top bit of every value
+encode_invariants	encode_invariants	every reachable bit-pack width round-trips	15;16;17;18;19	2026-10-21	the word-at-a-time packer's mask drops the top bit of every value
+encode_invariants	encode_invariants	full-range 64-bit values round-trip whatever encoding is chosen	15;16;17;18;19	never	-
+encode_invariants	encode_invariants	gorilla float patterns round-trip, including all-zero XOR	15;16;17;18;19	2026-10-21	clz_in counts one leading zero too many
+encode_invariants	encode_invariants	no vector selects FSST at or below the distinct cap, so skipping its build cannot change output	15;16;17;18;19	never	-
+encode_invariants	encode_invariants	the block compression default is zstd, pinned to #890 phase 1	15;16;17;18;19	2026-10-21	the block compression default is lz4
+encode_invariants	encode_invariants	the encoding primitives match their reference implementations byte for byte	15;16;17;18;19	2026-10-21	the bit packer's full-width mask special case is gone
 encode_post_codec	encode_post_codec	a chunk is not stored larger than it would be with no encoding at all	15;16;17;18;19	never	-
 encode_post_codec	encode_post_codec	and that column stays far below the no-encoding size, so the win is real	15;16;17;18;19	never	-
 encode_post_codec	encode_post_codec	premise: both fixtures hold every row	15;16;17;18;19	never	-

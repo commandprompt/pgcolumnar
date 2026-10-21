@@ -1007,4 +1007,6 @@ guard_tests 467
 # 12 tests, one per check, by collection over the cluster files.
 # cluster_tests 2431 -> 2441 for #1341's test_cost_written_geometry.py, the twin of cost_written_geometry.sh:
 # 10 tests, one per check, by collection over the cluster files.
-cluster_tests 2441
+# cluster_tests 2441 -> 2454 for #1341's test_encode_invariants.py, the twin of encode_invariants.sh:
+# 13 tests, one per check, by collection over the cluster files.
+cluster_tests 2454

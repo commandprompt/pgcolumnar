@@ -300,6 +300,7 @@ behaviour, the source of that number is named.
 - [252. test_preimage_rewrite.py: a predicate on date_trunc of a column prunes like the range it stands for](#252-test_preimage_rewritepy-a-predicate-on-date_trunc-of-a-column-prunes-like-the-range-it-stands-for)
 - [253. test_pg19_vacuum_options.py: PostgreSQL 19's parallel-autovacuum parameter is accepted on a columnar table and changes nothing](#253-test_pg19_vacuum_optionspy-postgresql-19s-parallel-autovacuum-parameter-is-accepted-on-a-columnar-table-and-changes-nothing)
 - [254. test_cost_written_geometry.py: the cost model describes the geometry a table was written with](#254-test_cost_written_geometrypy-the-cost-model-describes-the-geometry-a-table-was-written-with)
+- [255. test_encode_invariants.py: encoding invariants for the #155 bulk-load optimisations](#255-test_encode_invariantspy-encoding-invariants-for-the-155-bulk-load-optimisations)
 
 ## 1. How to read a test in here
 
@@ -10015,3 +10016,27 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_a_table_written_in_smaller_groups_is_costed_cheaper` | a table written in smaller groups is costed cheaper than one in larger |
 | `test_the_index_fetch_penalty_sees_the_written_geometry` | the index-fetch penalty sees the written geometry: ga costs under a third of gb |
 | `test_a_never_written_table_still_produces_a_plan` | a never-written table still produces a plan |
+
+## 255. test_encode_invariants.py: encoding invariants for the #155 bulk-load optimisations
+
+The twin of `test/encode_invariants.sh` (#155). The C self-test matches each rewritten primitive against its reference implementation over a real case count; bit packing at every reachable width, full-range 64-bit values, Gorilla float patterns and dictionary text around the distinct cap round-trip against a heap mirror, each with a control that its encoder ran; a high-cardinality corpus selects FSST and nothing at or below the cap does; and the block compression default is zstd at level 3.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order, with enable_post_codec_encoding_choice off on that database. A round-trip agrees only over a non-empty columnar hash, and every FSST-premise table must hold its 20,000 rows.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_encoding_primitives_match_their_reference_implementations` | the encoding primitives match their reference implementations byte for byte |
+| `test_the_self_test_compared_a_meaningful_number_of_cases` | and the self-test actually compared a meaningful number of cases |
+| `test_every_reachable_bit_pack_width_round_trips` | every reachable bit-pack width round-trips |
+| `test_full_range_64_bit_values_round_trip` | full-range 64-bit values round-trip whatever encoding is chosen |
+| `test_the_width_fixtures_chose_frame_of_reference_packing` | and the width fixtures actually chose frame-of-reference packing |
+| `test_gorilla_float_patterns_round_trip` | gorilla float patterns round-trip, including all-zero XOR |
+| `test_at_least_one_pattern_chose_gorilla` | and at least one of them actually chose gorilla |
+| `test_dictionary_round_trips_around_the_distinct_cap` | dictionary round-trips at, below and above the distinct cap |
+| `test_the_low_cardinality_fixture_chose_dictionary` | and the low-cardinality fixture actually chose dictionary |
+| `test_a_high_cardinality_corpus_does_select_fsst` | control: a high-cardinality corpus does select FSST |
+| `test_no_vector_selects_fsst_at_or_below_the_distinct_cap` | no vector selects FSST at or below the distinct cap, so skipping its build cannot change output |
+| `test_the_block_compression_default_is_zstd` | the block compression default is zstd, pinned to #890 phase 1 |
+| `test_its_level_is_3` | and its level is 3 |
