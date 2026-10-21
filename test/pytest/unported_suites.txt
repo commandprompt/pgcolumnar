@@ -42,7 +42,6 @@ iceberg_rest_server
 iceberg_rest_vended
 iceberg_scan
 index_delete_liveness
-isolation
 logical_decoding_cdc_recipe
 logical_decoding_source
 logical_subscriber
