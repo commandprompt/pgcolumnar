@@ -318,6 +318,7 @@ behaviour, the source of that number is named.
 - [270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must](#270-test_iceberg_deletespy-iceberg-position-and-equality-deletes-apply-scope-and-refuse-what-they-must)
 - [271. test_logical_subscriber.py: columnar as a logical replication apply target](#271-test_logical_subscriberpy-columnar-as-a-logical-replication-apply-target)
 - [272. test_logical_decoding_cdc_recipe.py: the documented CDC recipe captures, transacts and decodes](#272-test_logical_decoding_cdc_recipepy-the-documented-cdc-recipe-captures-transacts-and-decodes)
+- [273. test_iceberg_rest.py: the Iceberg REST catalog resolves a table, keeps its token out of every log, and refuses what it must](#273-test_iceberg_restpy-the-iceberg-rest-catalog-resolves-a-table-keeps-its-token-out-of-every-log-and-refuses-what-it-must)
 
 ## 1. How to read a test in here
 
@@ -10601,3 +10602,28 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 | `test_ldcr_matcher_finds_inserts` | premise: the same matcher finds the INSERTs, so a 1 above is a real match |
 | `test_ldcr_publication_includes_internal_tables` | premise: FOR ALL TABLES really does include pgcolumnar's internal tables |
 | `test_ldcr_bulk_load_one_capture_per_row` | a bulk load writes exactly one capture row per loaded row |
+
+## 273. test_iceberg_rest.py: the Iceberg REST catalog resolves a table, keeps its token out of every log, and refuses what it must
+
+The twin of `test/iceberg_rest.sh`. A private cluster is restarted with the bearer token in its postmaster environment (and with a wrong one, and with none) against the shell's own REST fixture server, which verifies the Authorization header. The table resolves to its metadata location, the token reaches neither the server log nor the catalog's request log, and each refusal comes from its own guard.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal reads as its SQLSTATE plus its guard's label only when the message is that guard's own (the allow-list and the link-local refusal both raise 42501), and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer, so a crash reddens only its own arm and the survival check.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_rest_fixture_server_is_up` | premise: rest fixture server is up |
+| `test_loadtable_resolves_the_current_metadata_location` | loadTable resolves the current metadata-location |
+| `test_the_loadtable_request_carried_an_authorization_header` | the loadTable request carried an Authorization header |
+| `test_the_rest_pg_server_log_holds_lines_to_search` | premise: the PG server log holds lines to search |
+| `test_the_rest_token_never_appears_in_the_server_log` | the token never appears in the server (PG) log |
+| `test_the_rest_token_never_appears_in_the_catalog_request_log` | the token value never appears in the catalog request log |
+| `test_a_wrong_bearer_token_is_refused` | a wrong bearer token is refused (28000) |
+| `test_an_anonymous_request_to_a_token_protected_catalog_is_refused` | an anonymous request to a token-protected catalog is refused (28000) |
+| `test_a_catalog_endpoint_off_the_allow_list_is_refused` | a catalog endpoint off the allow-list is refused (42501) |
+| `test_a_link_local_catalog_host_is_refused_even_if_allow_listed` | a link-local catalog host is refused even if allow-listed (42501) |
+| `test_an_over_cap_catalog_response_is_refused` | an over-cap catalog response is refused (54000) |
+| `test_an_unknown_rest_table_surfaces_a_clean_not_found` | an unknown table surfaces a clean not-found (42P01) |
+| `test_a_non_object_catalog_config_is_refused` | a non-object catalog config is refused, not walked (XX001) |
+| `test_the_backend_is_still_up_after_the_rest_refusals` | backend still up after the REST refusals |
