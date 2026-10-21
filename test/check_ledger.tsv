@@ -4657,6 +4657,14 @@ savepoint_flush	savepoint_flush	the savepoint's UPDATE flushed new versions and 
 savepoint_flush	savepoint_flush	the scan reader is the custom scan with no vectorized aggregate	15;16;17;18;19	never	-
 savepoint_flush	savepoint_flush	the seq reader is a plain sequential scan, not the custom scan	15;16;17;18;19	never	-
 savepoint_flush	savepoint_flush	the vec reader is a vectorized aggregate	15;16;17;18;19	never	-
+scan_direction	scan_direction	FETCH LAST through the AM raises 0A000 rather than returning nothing	15;16;17;18;19	2026-10-21	a backward fetch through the access method ends the scan instead of raising 0A000;columnar_customscan.c: the pathlist hook ignores pgcolumnar.enable_custom_scan, so the custom scan is still planned with it off
+scan_direction	scan_direction	a backward fetch through the AM raises 0A000 rather than answering	15;16;17;18;19	2026-10-21	a backward fetch through the access method ends the scan instead of raising 0A000;columnar_customscan.c: the pathlist hook ignores pgcolumnar.enable_custom_scan, so the custom scan is still planned with it off
+scan_direction	scan_direction	at shipped defaults the cursor matches heap	15;16;17;18;19	2026-10-20	the custom scan claims backward support, so no Materialize is put under a SCROLL cursor
+scan_direction	scan_direction	control: a forward-only fetch reports success, so the probe is not stuck on 0A000	15;16;17;18;19	never	-
+scan_direction	scan_direction	control: the same cursor on a heap table raises nothing	15;16;17;18;19	never	-
+scan_direction	scan_direction	forward-only fetch still matches heap through the AM	15;16;17;18;19	never	-
+scan_direction	scan_direction	premise: the pair holds the same row count	15;16;17;18;19	never	-
+scan_direction	scan_direction	with the custom scan off the plan really is a Seq Scan on the AM	15;16;17;18;19	2026-10-21	columnar_customscan.c: the pathlist hook ignores pgcolumnar.enable_custom_scan, so the custom scan is still planned with it off
 serializable	serializable	a serializable read of a columnar table holds SIRead locks on columnar's row_group and delete_vector catalog	15;16;17;18;19	2026-10-15	PgColumnarCatalogSnapshot returns a SNAPSHOT_SELF copy, so a serializable read takes no SIRead lock on columnar's catalog
 serializable	serializable	at REPEATABLE READ both doctors' transactions commit and no one stays on call, in one row group and in two, as on heap	15;16;17;18;19	never	-
 serializable	serializable	at REPEATABLE READ both ward transactions commit and two are on call, by a scan and by an index, as on heap	15;16;17;18;19	never	-

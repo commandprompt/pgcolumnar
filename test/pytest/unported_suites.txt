@@ -102,4 +102,3 @@ pushdown_report
 qual_order_selectivity
 read_stream
 row_triggers
-scan_direction

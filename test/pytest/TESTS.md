@@ -292,6 +292,7 @@ behaviour, the source of that number is named.
 - [244. test_recluster_extent.py: an online recluster records only the extent it rewrote](#244-test_recluster_extentpy-an-online-recluster-records-only-the-extent-it-rewrote)
 - [245. test_reader_buffer_reuse.py: the reader reuses one group buffer, and the reuse never shows in an answer](#245-test_reader_buffer_reusepy-the-reader-reuses-one-group-buffer-and-the-reuse-never-shows-in-an-answer)
 - [246. test_nologin_workers.py: a NOLOGIN role's background workers connect and act as that role](#246-test_nologin_workerspy-a-nologin-roles-background-workers-connect-and-act-as-that-role)
+- [247. test_scan_direction.py: a scrollable cursor over a columnar table never invents a backward answer](#247-test_scan_directionpy-a-scrollable-cursor-over-a-columnar-table-never-invents-a-backward-answer)
 
 ## 1. How to read a test in here
 
@@ -9788,3 +9789,22 @@ The pytest twin of `test/nologin_workers.sh` (#1585), every check by the shell's
 | `test_a_role_switching_copy_trigger_is_refused_before_prepare` | a copy trigger that switches to another role is refused before the worker prepares: a transaction prepared as another user is one the caller cannot finish |
 | `test_the_refused_copy_leaves_nothing_prepared` | and the refused copy leaves no prepared transaction behind |
 | `test_a_definer_copy_keeps_its_restriction_in_the_workers` | a copy run by a SECURITY DEFINER function keeps the definer's restriction in its workers: the worker takes the caller's security context, inside its transaction |
+
+## 247. test_scan_direction.py: a scrollable cursor over a columnar table never invents a backward answer
+
+The pytest twin of `test/scan_direction.sh` (ported for #1341), every check by the shell's name. At shipped defaults the custom scan serves a cursor and PostgreSQL materializes under SCROLL, so a backward fetch matches heap; with the custom scan off, the access method must raise 0A000 for a backward fetch and for FETCH LAST. On a private database, with serial planning as the shell's cluster runs.
+
+### Every test
+
+A cursor's rows are compared with heap's only when both returned rows. A statement reads as its SQLSTATE, `00000` when it ran, or `no reading` when the server could not be reached.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_pair_holds_the_same_row_count` | premise: the pair holds the same row count |
+| `test_at_shipped_defaults_the_cursor_matches_heap` | at shipped defaults the cursor matches heap |
+| `test_with_the_custom_scan_off_the_plan_is_a_seq_scan` | with the custom scan off the plan really is a Seq Scan on the AM |
+| `test_a_forward_only_fetch_matches_heap_through_the_am` | forward-only fetch still matches heap through the AM |
+| `test_a_backward_fetch_through_the_am_raises_0a000` | a backward fetch through the AM raises 0A000 rather than answering |
+| `test_fetch_last_through_the_am_raises_0a000` | FETCH LAST through the AM raises 0A000 rather than returning nothing |
+| `test_the_same_cursor_on_heap_raises_nothing` | control: the same cursor on a heap table raises nothing |
+| `test_a_forward_only_fetch_reports_success` | control: a forward-only fetch reports success, so the probe is not stuck on 0A000 |

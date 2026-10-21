@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 122
+suites_not_covered 121
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5046,4 +5046,22 @@ suites_not_covered 122
 #     never         3666 + 6 = 3672
 #     dated         1971 + 9 = 1980
 #     3672 + 1980 == 5652
-checks_never_observed_red 3672
+#
+# #1341, scan_direction seeded, with its twin (jdatcmd): 3505 -> 3509, and
+# suites_not_covered 149 -> 148. The suite had no rows. It enters with 8 checks from
+# five-major runs (8/8 on each of 15-19, shell and twin alike), after two fixes.
+# The SQLSTATE reader printed 00000 whenever psql printed no ERROR line, a failed
+# connection included, and the two cursor comparisons read two identical outputs as
+# "matches", two identical connection errors included: with every probe pointed at a
+# dead port, four checks passed. Both now read "no reading". 4 are dated by three
+# mutations, each reddening the same names in both twins: the access method ending a
+# backward scan instead of raising, the custom scan claiming backward support, and
+# the pathlist hook ignoring pgcolumnar.enable_custom_scan. That last one reddens the
+# plan check, so it is not a premise (#1339) and lost its "premise:" prefix.
+# 4 arrive never.
+#
+#     ledger rows   5652 + 8 = 5660
+#     never         3672 + 4 = 3676
+#     dated         1980 + 4 = 1984
+#     3676 + 1984 == 5660
+checks_never_observed_red 3676
