@@ -4272,6 +4272,57 @@ projections	projections	the rebuild does not abort on it	15;16;17;18;19	never	-
 projections	projections	two declared projections to start	15;16;17;18;19	never	-
 projections	projections	two rows after first add (base + p1)	15;16;17;18;19	never	-
 projections	projections	unknown column rejected	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	and it is still one with pushdown off	15;16;17;18;19	2026-10-21	columnar_customscan.c: the scalar scan's EXPLAIN property is named Columnar Projected Column Count, not Columnar Projected Columns
+pushdown_report	pushdown_report	and it is the count that used to be mislabelled (#493)	15;16;17;18;19	2026-10-21	columnar_vector.c: the ungrouped vectorized aggregate's planner gate always returns, so the node is never planned;the Columnar Vector Predicates line is never printed (#493)
+pushdown_report	pushdown_report	and the unusable arm still returns the right answer	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	both arms report the filter as pushed down	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	exactly one emitter for Columnar Chunk Groups Read (#495)	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	exactly one emitter for Columnar Chunk Groups Removed by Filter (#495)	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	exactly one emitter for Columnar Chunk Groups Total (#495)	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	exactly one emitter for Columnar Pushed-Down Filters (#495)	15;16;17;18;19	2026-10-21	columnar.h: a second ExplainPropertyInteger("Columnar Pushed-Down Filters" emitter, in a macro
+pushdown_report	pushdown_report	exactly one emitter for Columnar Usable Skip Predicates (#495)	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	exactly one emitter for Columnar Vector Predicates (#495)	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	grouped: and the unusable arm builds no skip predicate	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	grouped: the unusable arm removes none	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	grouped: the usable arm removes chunk groups	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	grouped: the usable arm reports one of each, agreeing	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	plain EXPLAIN reports the ungrouped node's pushed-down filters (#726)	15;16;17;18;19	2026-10-20	plain EXPLAIN of the ungrouped vectorized aggregate reports no pushed-down filters (#726)
+pushdown_report	pushdown_report	plain EXPLAIN reports the ungrouped node's vector predicates (#726)	15;16;17;18;19	2026-10-21	columnar_vector.c: the ungrouped vectorized aggregate's planner gate always returns, so the node is never planned;the Columnar Vector Predicates line is never printed (#493)
+pushdown_report	pushdown_report	plain EXPLAIN: the grouped node agrees with the ungrouped one (#493, #726)	15;16;17;18;19	2026-10-21	columnar_vector.c: PgColumnarExplainAggScan prints Columnar Pushed-Down Filters as 0 (PgColumnarExplainPushedDown(0, es));plain EXPLAIN of the ungrouped vectorized aggregate reports no pushed-down filters (#726)
+pushdown_report	pushdown_report	premise: and core has no such pair of its own, which is why this is built	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	premise: integer_ops has no ordering proc for (bigint, oid)	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	pushdown off examines every row	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	pushdown off reports no usable skip predicates	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	pushdown off reports none	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	pushdown off skips none	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	pushdown on reports a pushed-down filter	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	pushdown on skips chunk groups	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	scalar and grouped agree on Pushed-Down Filters (#493)	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	scalar and ungrouped agree on Pushed-Down Filters (#493)	15;16;17;18;19	2026-10-21	columnar_vector.c: PgColumnarExplainAggScan prints Columnar Pushed-Down Filters as 0 (PgColumnarExplainPushedDown(0, es))
+pushdown_report	pushdown_report	the answer is unchanged with pushdown off	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	the answer is unchanged with pushdown on	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	the executor filters far more rows with pushdown off	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	the grouped node IS planned for the cross-node arm	15;16;17;18;19	2026-10-21	columnar_vector.c: the grouped vectorized aggregate's planner gate is always false, so the node is never planned
+pushdown_report	pushdown_report	the grouped vectorized aggregate node ran (unusable arm)	15;16;17;18;19	2026-10-21	columnar_vector.c: the grouped vectorized aggregate's planner gate is always false, so the node is never planned
+pushdown_report	pushdown_report	the grouped vectorized aggregate node ran (usable arm)	15;16;17;18;19	2026-10-21	columnar_vector.c: the grouped vectorized aggregate's planner gate is always false, so the node is never planned
+pushdown_report	pushdown_report	the plain EXPLAIN arm is the ungrouped vectorized aggregate	15;16;17;18;19	2026-10-21	columnar_vector.c: the ungrouped vectorized aggregate's planner gate always returns, so the node is never planned
+pushdown_report	pushdown_report	the plan under test is a columnar custom scan	15;16;17;18;19	2026-10-21	columnar_customscan.c: the scalar scan's EXPLAIN property is named Columnar Projected Column Count, not Columnar Projected Columns
+pushdown_report	pushdown_report	the same query under ANALYZE reports a non-zero count	15;16;17;18;19	2026-10-21	columnar_vector.c: PgColumnarExplainAggScan prints Columnar Pushed-Down Filters as 0 (PgColumnarExplainPushedDown(0, es))
+pushdown_report	pushdown_report	the scalar arm really is the scalar scan (#493)	15;16;17;18;19	2026-10-21	columnar_customscan.c: the scalar scan's EXPLAIN property is named Columnar Projected Column Count, not Columnar Projected Columns
+pushdown_report	pushdown_report	the ungrouped node reports its vector-predicate count separately (#493)	15;16;17;18;19	2026-10-21	columnar_vector.c: the ungrouped vectorized aggregate's planner gate always returns, so the node is never planned;the Columnar Vector Predicates line is never printed (#493)
+pushdown_report	pushdown_report	the ungrouped vectorized aggregate node ran (unusable arm)	15;16;17;18;19	2026-10-21	columnar_vector.c: the ungrouped vectorized aggregate's planner gate always returns, so the node is never planned
+pushdown_report	pushdown_report	the ungrouped vectorized aggregate node ran (usable arm)	15;16;17;18;19	2026-10-21	columnar_vector.c: the ungrouped vectorized aggregate's planner gate always returns, so the node is never planned
+pushdown_report	pushdown_report	the unusable arm is a columnar custom scan	15;16;17;18;19	2026-10-21	columnar_customscan.c: the scalar scan's EXPLAIN property is named Columnar Projected Column Count, not Columnar Projected Columns
+pushdown_report	pushdown_report	the unusable arm removes none	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	the unusable arm reports none	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	the usable arm is a columnar custom scan	15;16;17;18;19	2026-10-21	columnar_customscan.c: the scalar scan's EXPLAIN property is named Columnar Projected Column Count, not Columnar Projected Columns
+pushdown_report	pushdown_report	the usable arm removes chunk groups	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	the usable arm reports one usable skip predicate	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	two quals report two pushed-down filters	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	ungrouped: and the unusable arm builds no skip predicate	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	ungrouped: the unusable arm removes none	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	ungrouped: the usable arm removes chunk groups	15;16;17;18;19	never	-
+pushdown_report	pushdown_report	ungrouped: the usable arm reports one of each, agreeing	15;16;17;18;19	2026-10-21	columnar_vector.c: PgColumnarExplainAggScan prints Columnar Pushed-Down Filters as 0 (PgColumnarExplainPushedDown(0, es))
 qual_order_selectivity	qual_order_selectivity	a pruned group is not probed through every predicate's column (#403 item 4)	15;16;17;18;19	2026-10-21	an excluding skip predicate is never moved ahead of a non-excluding one (#403 item 4);columnar_customscan.c: the EXPLAIN property is named Columnar Zone Map Probe Count, not Columnar Zone Map Probes;columnar_reader.c: pgcolumnar_native_group_can_match always returns true, so the skip loop excludes no group;the zone-map probe counter reports 0
 qual_order_selectivity	qual_order_selectivity	a query with no selective predicate prunes nothing, as before	15;16;17;18;19	never	-
 qual_order_selectivity	qual_order_selectivity	and it does not depend on the order the predicates are written in	15;16;17;18;19	2026-10-21	an excluding skip predicate is never moved ahead of a non-excluding one (#403 item 4);columnar_customscan.c: the EXPLAIN property is named Columnar Zone Map Probe Count, not Columnar Zone Map Probes;columnar_reader.c: pgcolumnar_native_group_can_match always returns true, so the skip loop excludes no group;the zone-map probe counter reports 0

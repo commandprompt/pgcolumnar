@@ -995,4 +995,6 @@ guard_tests 467
 # 8 tests, one per check, by collection over the cluster files.
 # cluster_tests 2249 -> 2260 for #1341's test_qual_order_selectivity.py, the twin of qual_order_selectivity.sh:
 # 11 tests, one per check, by collection over the cluster files.
-cluster_tests 2260
+# cluster_tests 2260 -> 2311 for #1341's test_pushdown_report.py, the twin of pushdown_report.sh:
+# 51 tests, one per check, by collection over the cluster files.
+cluster_tests 2311

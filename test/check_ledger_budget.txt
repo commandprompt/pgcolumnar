@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 120
+suites_not_covered 119
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5085,4 +5085,26 @@ suites_not_covered 120
 #     never         3676 + 6 = 3682
 #     dated         1984 + 5 = 1989
 #     3682 + 1989 == 5671
-checks_never_observed_red 3682
+#
+# #1341, pushdown_report seeded, with its twin (jdatcmd): 3536 -> 3567, and
+# suites_not_covered 148 -> 147. The suite had no rows. It enters with 51 checks from
+# five-major runs (51/51 on each of 15-19, shell and twin alike), after four fixes.
+# Five checks compared one EXPLAIN field across two plans and agreed when it was missing
+# from both: with the vector-predicate line never printed, the #726 check passed. They
+# are check_num. The six "exactly one emitter" names were built in a loop and carried
+# escaped quotes; they are literal and plain. The executor-filter check carries its
+# counts and leaves lossy_arms.tsv, and reads a failed pushdown-on plan as no reading
+# rather than 0: with that plan failing it passed. 20 are dated by seven mutations,
+# each reddening the same names in both twins: the vector-predicate line never
+# printed; plain EXPLAIN of the ungrouped node reporting no pushed-down filters
+# (#726); the ungrouped node printing 0 pushed-down filters; the ungrouped and the
+# grouped node never planned; the scalar scan's marker line renamed; and a second
+# emitter in a header. Four of those checks were premises; each reads pgcolumnar's
+# own EXPLAIN or planner, so it is not a premise (#1339) and lost its "premise:"
+# prefix. 31 arrive never.
+#
+#     ledger rows   5671 + 51 = 5722
+#     never         3682 + 31 = 3713
+#     dated         1989 + 20 = 2009
+#     3713 + 2009 == 5722
+checks_never_observed_red 3713
