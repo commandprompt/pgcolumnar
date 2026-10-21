@@ -39,16 +39,63 @@ LAST_PORT=""
 vend_teardown() { for p in $PIDS; do kill "$p" 2>/dev/null; done; pgc_teardown; }
 trap vend_teardown EXIT INT TERM
 
-sqlstate_of() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
+# refusal SQL PHRASE -> the SQLSTATE when SQL is refused with PHRASE in its message;
+# "SQLSTATE (another refusal: MESSAGE)" when something else refused it; "no error"
+# when it ran; nothing when the server could not be asked. The wrong-secret arm read
+# the SQLSTATE alone, and 28000 is also "no credentials": with vended credentials
+# never built at all, the read was refused for having none and the arm passed.
+refusal() {
+	local out st msg
+	await_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
 $1;
 SQLEOF
+)"
+	st="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	msg="$(sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' <<<"$out" | head -1)"
+	if [ -n "$st" ]; then
+		case "$msg" in *"$2"*) echo "$st" ;; *) echo "$st (another refusal: $msg)" ;; esac
+	elif grep -q 'could not connect\|server closed the connection\|terminating connection' <<<"$out"; then
+		:
+	else
+		echo "no error"
+	fi
+}
+
+# await_up -> wait, at most 60 s, until the server answers, so an arm after a crash
+# reads the table rather than crash recovery.
+await_up() {
+	local i
+	for i in $(seq 1 120); do
+		[ "$(q 'SELECT 1')" = 1 ] && return 0
+		sleep 0.5
+	done
+}
+
+# Backends killed by a signal, from the server log: a number, or nothing when the
+# log can't be read. "SELECT 1" alone answers again after crash recovery: with the
+# 403 refusal replaced by abort(), the survival check passed.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	await_up
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
 }
 pg_restart_env() {
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
-	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
+	# Every AWS_* unset first: the vended arms prove something only while the postmaster
+	# holds no ambient credential, so none may arrive from the caller's environment or
+	# a login profile. An arm that wants ambient credentials passes them in "$@".
+	pgc_pg "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ENDPOINT_URL AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE; $* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
 	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done
 	echo "FATAL: cluster did not come back after env restart"; exit 1
 }
@@ -86,6 +133,7 @@ CAT="http://127.0.0.1:$LAST_PORT"
 pg_restart_env "PGCOLUMNAR_ICEBERG_REST_TOKEN='$RESTTOK'"
 q "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'" >/dev/null
 q "SELECT pg_reload_conf()" >/dev/null
+CRASHES_BEFORE="$(crashes)"
 
 # ---- CORE: vended creds sign the S3 reads (no ambient creds exist) -----------
 # apply.metadata.json drops ordinals 1,3 (id 2, id 4); survivors 1,3,5.
@@ -132,15 +180,19 @@ start_rest --token "$RESTTOK" \
 	--vend-key "$AKID" --vend-secret "wrong-vended-secret" --vend-region "$REGION" --vend-endpoint "$S3EP"
 BAD_PORT="$LAST_PORT"
 check "a wrong vended secret is refused by S3, not bypassed (28000)" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$BAD_PORT','db','t')
-	                AS t(id bigint, region text, amount int)")" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$BAD_PORT','db','t')
+	                AS t(id bigint, region text, amount int)" "was denied (HTTP 403")" \
 	"28000"
 
 # ---- storage-credentials: longest-prefix entry (correct) beats catch-all ----
+# The catalog's flat config vends WRONG credentials here too, so a reader that
+# ignored the storage-credentials array and used the flat config is refused. With
+# the array never read, this arm passed while the flat config was correct.
 start_rest --token "$RESTTOK" \
 	--vend-key "$AKID" --vend-secret "$SECRET" --vend-region "$REGION" --vend-endpoint "$S3EP" \
 	--storage-cred-prefix "s3://$BUCKET/db/t"
 SC_PORT="$LAST_PORT"
+await_up
 check "storage-credentials longest-prefix match selects the right creds" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$SC_PORT','db','t')
 	      AS t(id bigint, region text, amount int)")" \
@@ -153,9 +205,9 @@ start_rest --token "$RESTTOK" \
 	--vend-endpoint "http://127.0.0.2:$S3_PORT"
 LL_PORT="$LAST_PORT"
 check "vended creds for an off-allow-list endpoint are refused (42501)" \
-	"$(sqlstate_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
+	"$(refusal "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
 	                SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$LL_PORT','db','t')
-	                AS t(id bigint, region text, amount int)")" \
+	                AS t(id bigint, region text, amount int)" "is not in pgcolumnar.objstore_allowed_endpoints")" \
 	"42501"
 
 # ---- ambient still works when the catalog vends nothing ---------------------
@@ -166,11 +218,12 @@ pg_restart_env "PGCOLUMNAR_ICEBERG_REST_TOKEN='$RESTTOK'" \
 	"AWS_SECRET_ACCESS_KEY='$SECRET'" "AWS_REGION='$REGION'"
 q "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'" >/dev/null
 q "SELECT pg_reload_conf()" >/dev/null
+await_up
 check "a table vending no creds still reads with ambient (cfg NULL path)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$AMB_PORT','db','t')
 	      AS t(id bigint, region text, amount int)")" \
 	"3"
 
-check "backend still up after the vended-credential arms" "$(q 'SELECT 1')" "1"
+check "backend still up after the vended-credential arms" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

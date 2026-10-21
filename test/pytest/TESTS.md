@@ -320,6 +320,7 @@ behaviour, the source of that number is named.
 - [272. test_logical_decoding_cdc_recipe.py: the documented CDC recipe captures, transacts and decodes](#272-test_logical_decoding_cdc_recipepy-the-documented-cdc-recipe-captures-transacts-and-decodes)
 - [273. test_iceberg_rest.py: the Iceberg REST catalog resolves a table, keeps its token out of every log, and refuses what it must](#273-test_iceberg_restpy-the-iceberg-rest-catalog-resolves-a-table-keeps-its-token-out-of-every-log-and-refuses-what-it-must)
 - [274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table](#274-test_iceberg_rest_scanpy-the-iceberg-rest-catalog-reads-a-table-as-iceberg_scan-does-lists-and-refuses-an-unknown-table)
+- [275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does](#275-test_iceberg_rest_vendedpy-an-iceberg-rest-catalogs-vended-credentials-sign-the-reads-and-nothing-else-does)
 
 ## 1. How to read a test in here
 
@@ -10648,3 +10649,24 @@ Every test makes one check under the shell's name. The not-found reads as 42P01 
 | `test_iceberg_rest_tables_lists_a_namespaces_tables` | iceberg_rest_tables lists a namespace's tables |
 | `test_iceberg_rest_scan_of_an_unknown_table_is_a_clean_not_found` | iceberg_rest_scan of an unknown table is a clean not-found (42P01) |
 | `test_the_backend_is_still_up_after_the_rest_read` | backend still up after the REST read |
+
+## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
+
+The twin of `test/iceberg_rest_vended.sh`. A private cluster with no AWS_* in its environment reads a table through the shell's REST catalog, which vends the SigV4 S3 fixture's key; the vended secret never reaches either log, a wrong one is refused by S3's 403, the longest storage-credentials prefix wins over a wrong catch-all and a wrong flat config, an endpoint off the allow-list is refused by the allow-list, a catalog vending nothing falls back to ambient credentials, and no backend dies.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal reads as its SQLSTATE only when the message is that refusal's own (28000 is also "no credentials"), and a failed reading is a `query_error()`. The survival check also requires that the server log's count of backends killed by a signal has not moved, and every reading first waits for the server to answer.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_vended_suite_can_run_here` | premise: the SigV4 S3 fixture is up |
+| `test_a_rest_scan_reads_via_vended_credentials` | iceberg_rest_scan reads via vended credentials (no ambient creds set) |
+| `test_the_server_log_holds_lines_to_search` | premise: the PG server log holds lines to search |
+| `test_the_vended_secret_is_not_in_the_server_log` | the vended secret never appears in the PG server log |
+| `test_the_vended_secret_is_not_in_the_s3_request_log` | the vended secret never appears in the S3 request log |
+| `test_a_wrong_vended_secret_is_refused_by_s3` | a wrong vended secret is refused by S3, not bypassed (28000) |
+| `test_the_longest_storage_credentials_prefix_wins` | storage-credentials longest-prefix match selects the right creds |
+| `test_a_vended_endpoint_off_the_allow_list_is_refused` | vended creds for an off-allow-list endpoint are refused (42501) |
+| `test_a_catalog_vending_nothing_falls_back_to_ambient` | a table vending no creds still reads with ambient (cfg NULL path) |
+| `test_the_backend_survives_the_vended_arms` | backend still up after the vended-credential arms |

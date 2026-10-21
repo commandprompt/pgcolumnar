@@ -190,8 +190,13 @@ class Handler(BaseHTTPRequestHandler):
         # storage-credentials array form (newer spec), longest-prefix selected by
         # the client. When --storage-cred-prefix is given, offer TWO entries: a
         # deliberately wrong catch-all and the correct, more specific one, so a
-        # green read proves longest-prefix selection.
+        # green read proves longest-prefix selection, and the flat config is wrong
+        # as well, so it proves the array was read at all.
         if ARGS.storage_cred_prefix and ARGS.vend_key:
+            # The flat config is wrong too: a reader that ignored the array and
+            # used the flat config would otherwise read with the right creds.
+            resp["config"] = dict(config, **{"s3.access-key-id": "WRONGFLATKEY",
+                                             "s3.secret-access-key": "wrong-flat-secret"})
             resp["storage-credentials"] = [
                 {"prefix": "s3://", "config": {
                     "s3.access-key-id": "WRONGKEY",

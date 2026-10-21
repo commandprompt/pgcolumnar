@@ -2763,6 +2763,16 @@ iceberg_rest_server	iceberg_rest_server	the client secret never appears in the f
 iceberg_rest_server	iceberg_rest_server	the mapping token never appears in the PG server log	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the request carried an Authorization header	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the warehouse was sent on GET /v1/config (?warehouse=wh1)	15;16;17;18;19	never	-
+iceberg_rest_vended	iceberg_rest_vended	a table vending no creds still reads with ambient (cfg NULL path)	15;16;17;18;19	never	-
+iceberg_rest_vended	iceberg_rest_vended	a wrong vended secret is refused by S3, not bypassed (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: vended credentials are never built, so every read falls back to ambient
+iceberg_rest_vended	iceberg_rest_vended	backend still up after the vended-credential arms	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: abort() in place of the HTTP 403 refusal
+iceberg_rest_vended	iceberg_rest_vended	iceberg_rest_scan reads via vended credentials (no ambient creds set)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: vended credentials are never built, so every read falls back to ambient
+iceberg_rest_vended	iceberg_rest_vended	premise: the PG server log holds lines to search	15;16;17;18;19	never	-
+iceberg_rest_vended	iceberg_rest_vended	premise: the SigV4 S3 fixture is up	15;16;17;18;19	never	-
+iceberg_rest_vended	iceberg_rest_vended	storage-credentials longest-prefix match selects the right creds	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: rest_vended_cfg never reads the storage-credentials array and signs with the flat config
+iceberg_rest_vended	iceberg_rest_vended	the vended secret never appears in the PG server log	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the vended secret is written to the server log
+iceberg_rest_vended	iceberg_rest_vended	the vended secret never appears in the S3 request log	15;16;17;18;19	never	-
+iceberg_rest_vended	iceberg_rest_vended	vended creds for an off-allow-list endpoint are refused (42501)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: vended credentials are never built, so every read falls back to ambient
 iceberg_scan	iceberg_scan	a column renamed in the schema still reads by field id (amt2 = amount)	15;16;17;18;19	2026-10-21	iceberg_scan resolves output columns by position rather than field id
 iceberg_scan	iceberg_scan	a pg_read_server_files member who is not superuser may scan	15;16;17;18;19	2026-10-21	iceberg_scan admits only superusers, refusing every pg_read_server_files member
 iceberg_scan	iceberg_scan	an output column not in the schema is refused (42703)	15;16;17;18;19	2026-10-21	iceberg_scan does not refuse an output column the schema lacks

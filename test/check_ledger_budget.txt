@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 95
+suites_not_covered 94
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5568,4 +5568,20 @@ suites_not_covered 95
 #     never         3938 + 1 = 3939
 #     dated         2389 + 8 = 2397
 #     3939 + 2397 == 6336
-checks_never_observed_red 3939
+#
+# #1341, iceberg_rest_vended seeded, with its twin (OffgridwithJD): 3939 -> 3943, and
+# suites_not_covered 95 -> 94. The suite had no rows. It enters with 10 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The longest-prefix arm passed with the storage-credentials array never read: the
+# catalog's flat config carried the same right credentials, so the fixture's flat config
+# is now wrong too. The wrong-secret arm read 28000 alone, which "no credentials" also
+# raises: with vended credentials never built, it passed; it now needs the 403 message.
+# The survival check read SELECT 1: with abort() in place of the 403 refusal it passed;
+# it now also reads the server log's count of killed backends. 6 are dated by six
+# mutations, each reddening the same names in both twins. 4 arrive never.
+#
+#     ledger rows   6336 + 10 = 6346
+#     never         3939 + 4 = 3943
+#     dated         2397 + 6 = 2403
+#     3943 + 2403 == 6346
+checks_never_observed_red 3943

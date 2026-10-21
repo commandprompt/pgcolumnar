@@ -890,6 +890,8 @@ guard_tests 476
 # 18 tests, one per check (13 constants parametrized), by collection over the cluster files.
 # cluster_tests 1099 -> 1108 for #1341's test_write_fsst_compressed.py, the twin of write_fsst_compressed.sh:
 # 9 checks in 9 tests, by collection over the cluster files.
+# cluster_tests 2921 -> 2931 for #1341's test_iceberg_rest_vended.py, the twin of iceberg_rest_vended.sh:
+# 10 checks in 10 tests, by collection over the cluster files.
 # cluster_tests 1108 -> 1140 for #1341's test_zonemap_estimate_sample.py, the twin of zonemap_estimate_sample.sh:
 # 32 tests, one per check, by collection over the cluster files.
 # cluster_tests 1140 -> 1146 for #1341's test_arrow_nested_import.py, the twin of arrow_nested_import.sh:
@@ -1051,4 +1053,4 @@ guard_tests 476
 # cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
-cluster_tests 2921
+cluster_tests 2931

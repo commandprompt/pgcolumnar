@@ -20,7 +20,6 @@ fuzz_parquet
 harness_selftest
 hilbert_curve
 iceberg_rest_server
-iceberg_rest_vended
 native_agg_deletes
 native_cancel
 native_cluster
