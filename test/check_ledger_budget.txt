@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 102
+suites_not_covered 101
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5439,4 +5439,22 @@ suites_not_covered 102
 #     never         3883 + 1 = 3884
 #     dated         2282 + 4 = 2286
 #     3884 + 2286 == 6170
-checks_never_observed_red 3884
+# #1341, iceberg_dv seeded, with its twin (OffgridwithJD): 3884 -> 3885, and
+# suites_not_covered 102 -> 101. The suite had no rows. It enters with 26 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# "a manifest/footer offset mismatch is refused (XX001)" read the SQLSTATE alone, and
+# several guards here raise XX001: with the offset match removed a later XX001 refused
+# the same file, and main's shell passed 26/26. Every refusal now reads its own guard's
+# message. And the three "backend still up" checks read SELECT 1, which answers again
+# after crash recovery: with the referenced_data_file check removed a backend died on
+# the arm, and main passed the survival check. They now also read the server log's
+# count of killed backends, and each refusal waits for the server first, so a crash
+# reddens its own arm and its section's survival check and nothing else. 25 are dated by
+# seventeen mutations, each reddening the same names in both twins. 1 arrives never:
+# the survival check after the DV applications, which no mutation crashed.
+#
+#     ledger rows   6170 + 26 = 6196
+#     never         3884 + 1 = 3885
+#     dated         2286 + 25 = 2311
+#     3885 + 2311 == 6196
+checks_never_observed_red 3885

@@ -2549,6 +2549,32 @@ iceberg_catalog	iceberg_catalog	malformed JSON is rejected (22P02), backend surv
 iceberg_catalog	iceberg_catalog	resolves the named current snapshot, not snapshots[0]	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the decoy snapshot is not returned	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the first snapshot has no parent (NULL)	15;16;17;18;19	never	-
+iceberg_dv	iceberg_dv	...and the refusal names the compressed footer	15;16;17;18;19	2026-10-21	columnar_puffin.c: a compressed Puffin footer (flags bit 0) is not refused
+iceberg_dv	iceberg_dv	...and the refusal names the format version	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a deletion vector in a format-version 2 table is not refused
+iceberg_dv	iceberg_dv	a DV blob declaring a compression codec is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_puffin.c: a deletion-vector blob may declare a compression codec
+iceberg_dv	iceberg_dv	a DV entry without referenced_data_file is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV without referenced_data_file is not refused (a NULL path reaches strcmp and the backend dies)
+iceberg_dv	iceberg_dv	a DV whose offset+size overflows int64 is refused, not read (XX001)	15;16;17;18;19	2026-10-21	columnar_puffin.c: a DV's offset and size are not bounded by the blob region (a wild read kills the backend)
+iceberg_dv	iceberg_dv	a DV with run containers and a high-bucket position decodes	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies only when strictly newer than the data (> where the spec says >=)
+iceberg_dv	iceberg_dv	a Puffin path outside the table location is refused (22023)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_open_path does not hold a path under the table location
+iceberg_dv	iceberg_dv	a bitset-container DV decodes	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies only when strictly newer than the data (> where the spec says >=)
+iceberg_dv	iceberg_dv	a compressed Puffin footer is refused (0A000)	15;16;17;18;19	2026-10-21	columnar_puffin.c: a compressed Puffin footer (flags bit 0) is not refused
+iceberg_dv	iceberg_dv	a corrupted DV CRC is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_puffin.c: a deletion vector's CRC-32 is not checked
+iceberg_dv	iceberg_dv	a deletion vector at an equal sequence number applies (survivors == oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies only when strictly newer than the data (> where the spec says >=)
+iceberg_dv	iceberg_dv	a deletion vector in a format-version 2 table is refused (0A000)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a deletion vector in a format-version 2 table is not refused
+iceberg_dv	iceberg_dv	a deletion vector older than the data does not apply	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies whatever its sequence number (dv->seq >= d->seq always true)
+iceberg_dv	iceberg_dv	a manifest/footer offset mismatch is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_puffin.c: the Puffin footer's blob need not match the manifest's offset and length (the !found refusal skipped)
+iceberg_dv	iceberg_dv	a record_count that disagrees with the DV cardinality is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a manifest record_count that disagrees with the DV cardinality is not refused
+iceberg_dv	iceberg_dv	a run container overflowing its 16-bit range is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_puffin.c: a run container whose start+length passes 0x10000 is not refused
+iceberg_dv	iceberg_dv	a run-optimized DV (cookie 12347) decodes	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies only when strictly newer than the data (> where the spec says >=)
+iceberg_dv	iceberg_dv	a wrong DV blob magic is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_puffin.c: a deletion vector's magic sequence is not checked
+iceberg_dv	iceberg_dv	an aliased duplicate DV (scheme vs no scheme) is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: the one-DV-per-data-file check compares paths without stripping the file:// scheme
+iceberg_dv	iceberg_dv	an applicable DV supersedes position-delete files for its data file	15;16;17;18;19	2026-10-21	columnar_iceberg.c: position-delete files apply even when a DV applies (no supersede)
+iceberg_dv	iceberg_dv	backend still up after the DV applications	15;16;17;18;19	never	-
+iceberg_dv	iceberg_dv	backend still up after the DV refusals	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV without referenced_data_file is not refused (a NULL path reaches strcmp and the backend dies)
+iceberg_dv	iceberg_dv	backend still up after the audit arms	15;16;17;18;19	2026-10-21	columnar_puffin.c: a DV's offset and size are not bounded by the blob region (a wild read kills the backend)
+iceberg_dv	iceberg_dv	supersede is per data file, not global	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies to every data file, not only the one it references
+iceberg_dv	iceberg_dv	two DV blobs in one Puffin file each apply to their own data file	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies to every data file, not only the one it references
+iceberg_dv	iceberg_dv	two DV entries for one data file are refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: two DVs for one data file are not refused
 iceberg_fdw_estimate	iceberg_fdw_estimate	a filtered scan estimates fewer rows than the whole table (selectivity applied)	15;16;17;18;19	2026-10-21	the Iceberg FDW sets rows directly, so the scan's selectivity never applies
 iceberg_fdw_estimate	iceberg_fdw_estimate	backend alive	15;16;17;18;19	never	-
 iceberg_fdw_estimate	iceberg_fdw_estimate	the FDW estimates a positive row count from the manifests	15;16;17;18;19	never	-

@@ -313,6 +313,7 @@ behaviour, the source of that number is named.
 - [265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging](#265-test_iceberg_malformedpy-the-iceberg-reader-refuses-crafted-metadata-cleanly-never-crashing-or-hanging)
 - [266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping](#266-test_iceberg_name_mappingpy-an-iceberg-data-file-with-no-field-ids-binds-by-name-mapping)
 - [267. test_iceberg_objstore.py: Iceberg tables read over object storage](#267-test_iceberg_objstorepy-iceberg-tables-read-over-object-storage)
+- [268. test_iceberg_dv.py: Iceberg v3 deletion vectors apply, supersede, and refuse what they must](#268-test_iceberg_dvpy-iceberg-v3-deletion-vectors-apply-supersede-and-refuse-what-they-must)
 
 ## 1. How to read a test in here
 
@@ -10396,3 +10397,40 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_the_backend_is_still_up_after_the_s3_refusal` | backend still up after the s3 refusal |
 | `test_an_endpoint_not_on_the_allow_list_is_refused` | an endpoint not on objstore_allowed_endpoints is refused |
 | `test_the_backend_is_still_up_after_the_endpoint_refusal` | backend still up after the endpoint refusal |
+
+## 268. test_iceberg_dv.py: Iceberg v3 deletion vectors apply, supersede, and refuse what they must
+
+The twin of `test/iceberg_dv.sh`. Eight hand-crafted snapshots read the oracle's surviving ids, thirteen corrupt or unsupported ones are refused, each by its own guard, and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal reads as its SQLSTATE only when the message is that guard's own (several guards raise XX001), and a failed reading is a `query_error()`. Each survival check also requires that the server log's count of backends killed by a signal has not moved since its section began, and each refusal first waits for the server to answer, so a crash reddens only its own arm and its section's survival check.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_deletion_vector_at_an_equal_sequence_number_applies` | a deletion vector at an equal sequence number applies (survivors == oracle) |
+| `test_a_deletion_vector_older_than_the_data_does_not_apply` | a deletion vector older than the data does not apply |
+| `test_an_applicable_dv_supersedes_position_delete_files` | an applicable DV supersedes position-delete files for its data file |
+| `test_dv_supersede_is_per_data_file_not_global` | supersede is per data file, not global |
+| `test_a_dv_with_run_containers_and_a_high_bucket_decodes` | a DV with run containers and a high-bucket position decodes |
+| `test_a_run_optimized_dv_decodes` | a run-optimized DV (cookie 12347) decodes |
+| `test_a_bitset_container_dv_decodes` | a bitset-container DV decodes |
+| `test_two_dv_blobs_in_one_puffin_file_each_apply_to_their_own_file` | two DV blobs in one Puffin file each apply to their own data file |
+| `test_the_backend_survives_the_dv_applications` | backend still up after the DV applications |
+| `test_two_dv_entries_for_one_data_file_are_refused` | two DV entries for one data file are refused (XX001) |
+| `test_a_corrupted_dv_crc_is_refused` | a corrupted DV CRC is refused (XX001) |
+| `test_a_wrong_dv_blob_magic_is_refused` | a wrong DV blob magic is refused (XX001) |
+| `test_a_manifest_footer_offset_mismatch_is_refused` | a manifest/footer offset mismatch is refused (XX001) |
+| `test_a_dv_entry_without_referenced_data_file_is_refused` | a DV entry without referenced_data_file is refused (XX001) |
+| `test_a_record_count_disagreeing_with_the_dv_is_refused` | a record_count that disagrees with the DV cardinality is refused (XX001) |
+| `test_a_dv_blob_declaring_a_codec_is_refused` | a DV blob declaring a compression codec is refused (XX001) |
+| `test_a_compressed_puffin_footer_is_refused` | a compressed Puffin footer is refused (0A000) |
+| `test_the_footer_refusal_names_the_compressed_footer` | ...and the refusal names the compressed footer |
+| `test_a_dv_in_a_format_version_2_table_is_refused` | a deletion vector in a format-version 2 table is refused (0A000) |
+| `test_the_v2_refusal_names_the_format_version` | ...and the refusal names the format version |
+| `test_a_puffin_path_outside_the_table_is_refused` | a Puffin path outside the table location is refused (22023) |
+| `test_the_backend_survives_the_dv_refusals` | backend still up after the DV refusals |
+| `test_a_dv_whose_offset_plus_size_overflows_is_refused` | a DV whose offset+size overflows int64 is refused, not read (XX001) |
+| `test_a_run_container_overflowing_its_range_is_refused` | a run container overflowing its 16-bit range is refused (XX001) |
+| `test_an_aliased_duplicate_dv_is_refused` | an aliased duplicate DV (scheme vs no scheme) is refused (XX001) |
+| `test_the_backend_survives_the_audit_arms` | backend still up after the audit arms |
