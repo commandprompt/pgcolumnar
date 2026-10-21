@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 104
+suites_not_covered 103
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5392,4 +5392,21 @@ suites_not_covered 104
 #     never         3853 + 15 = 3868
 #     dated         2243 + 16 = 2259
 #     3868 + 2259 == 6127
-checks_never_observed_red 3868
+# #1341, iceberg_name_mapping seeded, with its twin (OffgridwithJD): 3868 -> 3878,
+# and suites_not_covered 104 -> 103. The suite had no rows. It enters with 22 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The value checks read one row (ORDER BY id LIMIT 1) or a count: with text columns read
+# as null past the first row group, main's shell passed 22/22; they now compare every row
+# with the fixture's own. The four "backend still up" checks read SELECT 1, which answers
+# again after crash recovery: with the duplicate-name refusal turned into an abort() and
+# the check run 3 s later, main passed it; they now also read the server log's count of
+# killed backends. The source check grepped the raw file, so a comment quoting the bounded
+# line passed with the bound dropped; it now reads the file with comments blanked out.
+# 12 are dated by seven mutations, each reddening the same names in both twins. 10
+# arrive never.
+#
+#     ledger rows   6127 + 22 = 6149
+#     never         3868 + 10 = 3878
+#     dated         2259 + 12 = 2271
+#     3878 + 2271 == 6149
+checks_never_observed_red 3878

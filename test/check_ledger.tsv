@@ -2591,6 +2591,28 @@ iceberg_malformed	iceberg_malformed	iceberg_scan refuses a null manifest seq an 
 iceberg_malformed	iceberg_malformed	read_avro_manifest on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_malformed	iceberg_malformed	read_manifest_list on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_malformed	iceberg_malformed	read_parquet on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
+iceberg_name_mapping	iceberg_name_mapping	...and its other columns still carry real data	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: pq_read_rows reads every by-reference column as null past the first row group
+iceberg_name_mapping	iceberg_name_mapping	...and the refusal names schema.name-mapping.default	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	...and the refusal names the cap	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_name_mapping keeps only the first name of each mapping entry
+iceberg_name_mapping	iceberg_name_mapping	a column added after the file was written reads null (schema evolution)	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: build_imp_targets_by_field_id refuses a projected field id the file lacks instead of reading it as null
+iceberg_name_mapping	iceberg_name_mapping	a duplicate name in the mapping is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_name_mapping skips the duplicate-name refusal
+iceberg_name_mapping	iceberg_name_mapping	a mapping field-id beyond int32 is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_name_mapping skips the field-id range refusal
+iceberg_name_mapping	iceberg_name_mapping	a mapping with exactly the cap in names is accepted	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	a projected column absent from the mapping reads null, not an error	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: build_imp_targets_by_field_id refuses a projected field id the file lacks instead of reading it as null
+iceberg_name_mapping	iceberg_name_mapping	a renamed schema column still reads via the mapping name	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	an alias name in the mapping resolves the file column	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_name_mapping keeps only the first name of each mapping entry
+iceberg_name_mapping	iceberg_name_mapping	an id-less data file reads by name mapping (all 5 rows)	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	an id-less file with no name mapping is refused (22023)	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	backend still up after the cap reads	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	backend still up after the name-mapping reads	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	backend still up after the name-mapping refusals	15;16;17;18;19	2026-10-21	columnar_iceberg.c: the duplicate-name refusal aborts the backend instead of raising
+iceberg_name_mapping	iceberg_name_mapping	backend still up after the null-fill reads	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	name mapping applies under column projection (id, amount)	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	one name over the cap is refused	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_name_mapping keeps only the first name of each mapping entry
+iceberg_name_mapping	iceberg_name_mapping	premise: the data file carries no field ids	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	the mapped values are correct	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: pq_read_rows reads every by-reference column as null past the first row group
+iceberg_name_mapping	iceberg_name_mapping	the opening capacity is bounded by the cap, not by the declared count	15;16;17;18;19	2026-10-21	columnar_iceberg.c: the name array opens at the declared count, the bounded line kept only in a comment
+iceberg_name_mapping	iceberg_name_mapping	the unmapped column is null and the mapped columns are real	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: pq_read_rows reads every by-reference column as null past the first row group
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	and the mapped values are still correct	15;16;17;18;19	2026-10-21	the name-mapping parse binds every name but region, so region reads NULL on every row;the name-mapping parse ignores every entry's names, so nothing binds
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	core's own parse is the larger part of the scan's peak	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	the large arm produced three readings	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
