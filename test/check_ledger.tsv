@@ -4372,6 +4372,13 @@ replication	replication	vacuum rewrote r into a new relfilenode on the primary	1
 replication	replication	with replay paused the standby does NOT see the new rows	15;16;17;18;19	never	-
 replication	replication	with the module back, the replayed table reads correctly	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
 replication	replication	with the same content the primary reads	15;16;17;18;19	never	-
+rewrite_group_scan	rewrite_group_scan	a group under the cap still rewrites correctly	15;16;17;18;19	2026-10-20	compact_rewrite does nothing and reports 0;the rewrite drops the first row of every group it moves
+rewrite_group_scan	rewrite_group_scan	a rewrite of a group over the cache cap finishes	15;16;17;18;19	2026-10-20	compact_rewrite does nothing and reports 0
+rewrite_group_scan	rewrite_group_scan	an index lookup finds a rewritten row	15;16;17;18;19	2026-10-21	columnar_vacuum.c: rewrite_one_group skips PgColumnarIndexInsertRow, so the moved rows get no index entries
+rewrite_group_scan	rewrite_group_scan	and it agrees with a heap mirror	15;16;17;18;19	2026-10-21	columnar_vacuum.c: rewrite_one_group skips PgColumnarIndexInsertRow, so the moved rows get no index entries;the rewrite drops the first row of every group it moves
+rewrite_group_scan	rewrite_group_scan	premise: the fixture holds the rows that survive the delete	15;16;17;18;19	never	-
+rewrite_group_scan	rewrite_group_scan	the index lookup's plan reads rgs_id	15;16;17;18;19	never	-
+rewrite_group_scan	rewrite_group_scan	the rewrite preserved every surviving row	15;16;17;18;19	2026-10-20	the rewrite drops the first row of every group it moves
 rewrite_storage_oid	rewrite_storage_oid	a matview created WITH DATA leaves its storage row pointing at itself	15;16;17;18;19	2026-10-12	the repair gate skips every relation, as if no inheritor were locked by the statement;the rewrite repair gate no longer covers CreateTableAsStmt, so a matview created WITH DATA keeps the transient's OID
 rewrite_storage_oid	rewrite_storage_oid	a table that was not rewritten still points at itself	15;16;17;18;19	2026-10-16	the storage repoint after a rewrite updated the first storage row, not the rewritten table's (mutation, #1339)
 rewrite_storage_oid	rewrite_storage_oid	a type rewrite leaves the storage row pointing at the live table	15;16;17;18;19	2026-10-12	the repair gate skips every relation, as if no inheritor were locked by the statement;the rewrite hook does not retarget storage.relation_oid

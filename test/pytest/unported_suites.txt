@@ -104,6 +104,5 @@ read_stream
 reader_buffer_reuse
 recluster_extent
 recluster_gate
-rewrite_group_scan
 row_triggers
 scan_direction

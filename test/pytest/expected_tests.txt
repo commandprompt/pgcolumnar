@@ -981,4 +981,6 @@ guard_tests 467
 # 17 tests, one per check, by collection over the cluster files.
 # cluster_tests 2153 -> 2162 for #1341's test_index_delete_liveness.py, the twin of index_delete_liveness.sh:
 # 9 tests, one per check, by collection over the cluster files.
-cluster_tests 2162
+# cluster_tests 2162 -> 2169 for #1341's test_rewrite_group_scan.py, the twin of rewrite_group_scan.sh:
+# 7 tests, one per check, by collection over the cluster files.
+cluster_tests 2169
