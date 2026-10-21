@@ -987,4 +987,6 @@ guard_tests 467
 # 13 tests, one per check, by collection over the cluster files.
 # cluster_tests 2182 -> 2200 for #1341's test_recluster_extent.py, the twin of recluster_extent.sh:
 # 18 tests, one per check, by collection over the cluster files.
-cluster_tests 2200
+# cluster_tests 2200 -> 2226 for #1341's test_reader_buffer_reuse.py, the twin of reader_buffer_reuse.sh:
+# 26 tests, one per check, by collection over the cluster files.
+cluster_tests 2226
