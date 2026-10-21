@@ -266,6 +266,7 @@ behaviour, the source of that number is named.
 - [218. test_column_projection.py: column projection reads only the columns a query references](#218-test_column_projectionpy-column-projection-reads-only-the-columns-a-query-references)
 - [219. test_local_open_race_free.py: local file opens are race-free: no stat-before-open](#219-test_local_open_race_freepy-local-file-opens-are-race-free-no-stat-before-open)
 - [220. test_encode_effort.py: the per-table encode_effort option](#220-test_encode_effortpy-the-per-table-encode_effort-option)
+- [221. test_doc_parallel_premise.py: the parallel-scan page's narrow query reads every chunk group](#221-test_doc_parallel_premisepy-the-parallel-scan-pages-narrow-query-reads-every-chunk-group)
 
 ## 1. How to read a test in here
 
@@ -9095,3 +9096,25 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_an_index_fetch_finds_a_fast_written_row` | and an index fetch finds a fast-written row |
 | `test_a_table_with_no_option_set_matches_full` | a table with no option set matches full |
 | `test_reset_options_clears_it` | reset_options clears it |
+
+## 221. test_doc_parallel_premise.py: the parallel-scan page's narrow query reads every chunk group
+
+The twin of `test/doc_parallel_premise.sh`. The narrow query's filter column is extracted from docs/limitations.md as the shell extracts it; on the page's fixture shape, that query must read every chunk group the catalog holds, filtering the ordered column must prune, the documented column must not be the ordered one, and it must cost more.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. Every plan is read with max_parallel_workers_per_gather = 0. Where the shell stops (no filter column on the page) or skips its cost block (the page names sel), those tests decline unnamed.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_page_still_names_a_narrow_query` | the page still names a narrow query |
+| `test_that_query_has_an_extractable_filter_column` | and that query has an extractable filter column |
+| `test_the_fixture_holds_several_row_groups` | the fixture holds several row groups, so pruning can be seen |
+| `test_the_documented_columns_plan_is_one_columnar_scan` | the documented column's plan is exactly one columnar scan node |
+| `test_the_sel_plan_is_one_columnar_scan` | the sel plan is exactly one columnar scan node |
+| `test_the_group_counters_were_read` | the group counters were read, not blank |
+| `test_the_documented_narrow_query_reads_every_chunk_group` | the documented narrow query reads every chunk group |
+| `test_filtering_the_ordered_column_prunes` | and filtering the ordered column instead prunes some away |
+| `test_the_documented_column_is_not_the_ordered_one` | the documented column is not the one stored in order |
+| `test_both_costs_were_extracted` | both costs were extracted, not blank |
+| `test_the_documented_column_is_costed_above_the_ordered_one` | and the documented column is costed above the ordered one |

@@ -936,4 +936,6 @@ guard_tests 464
 # 11 tests, one per check, by collection over the cluster files.
 # cluster_tests 1849 -> 1861 for #1341's test_encode_effort.py, the twin of encode_effort.sh:
 # 12 tests, one per check, by collection over the cluster files.
-cluster_tests 1861
+# cluster_tests 1861 -> 1872 for #1341's test_doc_parallel_premise.py, the twin of doc_parallel_premise.sh:
+# 11 tests, one per check, by collection over the cluster files.
+cluster_tests 1872
