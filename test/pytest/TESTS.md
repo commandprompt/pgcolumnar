@@ -285,6 +285,7 @@ behaviour, the source of that number is named.
 - [237. test_generated_columns.py: a columnar table with a generated column returns what heap does](#237-test_generated_columnspy-a-columnar-table-with-a-generated-column-returns-what-heap-does)
 - [238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name](#238-test_export_sinkpy-the-export-byte-sink-checks-every-write-and-never-leaves-a-partial-file-under-the-final-name)
 - [239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded](#239-test_groupagg_table_sizingpy-the-vectorized-grouped-aggregate-sizes-its-table-from-the-estimate-bounded)
+- [240. test_fsst_margin.py: the FSST keep/drop margin decides, and never changes content](#240-test_fsst_marginpy-the-fsst-keepdrop-margin-decides-and-never-changes-content)
 
 ## 1. How to read a test in here
 
@@ -9606,3 +9607,31 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_the_minute_key_answers_correctly_too` | and the minute key answers correctly too |
 | `test_the_answer_is_the_same_under_a_small_work_mem` | and the answer is the same under a small work_mem |
 | `test_the_aggregate_itself_is_still_right` | the aggregate itself is still right |
+
+## 240. test_fsst_margin.py: the FSST keep/drop margin decides, and never changes content
+
+The twin of `test/fsst_margin.sh` (#155, #271). Margin 0 keeps FSST on a marginal corpus and margin 90 drops it; the shipped default drops it; with no codec it is kept even at the maximum margin; and tables loaded at margin 0, at 90 and at the default read back what a heap mirror holds, NULLs and empty strings included, over a corpus whose margin-0 copy is FSST.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. Each drop carries its table's row count, and the content readings are compared only when both were taken.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_heap_mirror_has_content_to_compare_against` | the heap mirror has content to compare against |
+| `test_at_margin_0_this_corpus_keeps_fsst` | at margin 0 this corpus keeps FSST |
+| `test_at_margin_90_the_same_corpus_drops_fsst` | at margin 90 the same corpus drops FSST |
+| `test_the_margin_is_what_changed_the_decision` | so the margin is what changed the decision, not the corpus |
+| `test_the_shipped_default_drops_fsst_on_a_marginal_corpus` | the shipped default drops FSST on a marginal corpus |
+| `test_and_0_still_keeps_it` | and 0 still keeps it, so the default is a decision and not a rewrite |
+| `test_the_paired_arm_dropped_fsst_at_this_margin_with_a_codec` | the paired arm dropped FSST at this margin with a codec |
+| `test_with_no_codec_the_same_corpus_keeps_fsst_at_the_same_margin` | with no codec the same corpus keeps FSST at the same margin |
+| `test_and_at_the_maximum_margin_too` | and at the maximum margin too, because the test returns before reading it |
+| `test_the_margin_0_content_copy_really_is_stored_as_fsst` | the margin-0 content copy really is stored as FSST, so the invariant reads FSST |
+| `test_fm_c0_reads_back_exactly_what_the_heap_holds` | fm_c0 reads back exactly what the heap holds |
+| `test_fm_c90_reads_back_exactly_what_the_heap_holds` | fm_c90 reads back exactly what the heap holds |
+| `test_fm_cd_reads_back_exactly_what_the_heap_holds` | fm_cd reads back exactly what the heap holds |
+| `test_fm_c0_preserves_nulls` | fm_c0 preserves NULLs |
+| `test_fm_c0_preserves_empty_strings` | fm_c0 preserves empty strings |
+| `test_fm_c90_preserves_nulls` | fm_c90 preserves NULLs |
+| `test_fm_c90_preserves_empty_strings` | fm_c90 preserves empty strings |

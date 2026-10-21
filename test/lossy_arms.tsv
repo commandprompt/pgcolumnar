@@ -112,7 +112,6 @@ encode_post_codec	and that column stays far below the no-encoding size, so the w
 encode_post_codec	premise: the tail fixture's range is set by outliers, not by its typical value
 entry_point_privilege	premise: the extension is installed and C entry points were found
 entry_point_privilege	premise: the install script declares MODULE_PATHNAME symbols at all
-fsst_margin	so the margin is what changed the decision, not the corpus
 hilbert_cluster	premise: the install script declares MODULE_PATHNAME symbols at all
 hilbert_locality	box $box: Hilbert reads fewer groups than Z-order
 int8_agg_int128	premise: its values are NOT low-cardinality, so the fold is not answered from runs
