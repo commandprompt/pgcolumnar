@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 144
+suites_not_covered 143
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4591,4 +4591,24 @@ suites_not_covered 144
 #     never         3540 + 3 = 3543
 #     dated         1770 + 28 = 1798
 #     3543 + 1798 == 5341
-checks_never_observed_red 3543
+#
+# #1341, int8_agg_int128 seeded, with its twin (OffgridwithJD): 3424 -> 3448,
+# and suites_not_covered 151 -> 150. The suite had no rows. It enters with 34
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: a rebuild of the past-int64 sum that drops the low
+# half passed all 34, because both such fixtures summed to an exact multiple of 10^18
+# (now 9e18 + 7, a low half of 140000); every heap oracle was copied out of the
+# columnar table, so a FOR decode fault reached both sides and two of its arms agreed
+# on the wrong answer (each heap is now loaded from the generator, and that mutation
+# reds six rather than four); and the rescan readings ran their settings and query as
+# two psql -c's without ON_ERROR_STOP, so a setting that failed let the rescan run on
+# core's path and all four rescan checks passed. A NULL answer now reads <NULL>
+# rather than the empty string a failure also produced. 10 are dated by four
+# mutations of the accumulator, its finalize and the int8 decode, each reddening the
+# same names in both twins; 24 arrive never.
+#
+#     ledger rows   5341 + 34 = 5375
+#     never         3543 + 24 = 3567
+#     dated         1798 + 10 = 1808
+#     3567 + 1808 == 5375
+checks_never_observed_red 3567

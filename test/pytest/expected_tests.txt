@@ -942,4 +942,6 @@ guard_tests 464
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 1899 -> 1930 for #1341's test_eager_ordering_record.py, the twin of eager_ordering_record.sh:
 # 31 tests, one per check, by collection over the cluster files.
-cluster_tests 1930
+# cluster_tests 1930 -> 1964 for #1341's test_int8_agg_int128.py, the twin of int8_agg_int128.sh:
+# 34 tests, one per check, by collection over the cluster files.
+cluster_tests 1964

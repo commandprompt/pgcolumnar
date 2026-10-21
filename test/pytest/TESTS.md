@@ -269,6 +269,7 @@ behaviour, the source of that number is named.
 - [221. test_doc_parallel_premise.py: the parallel-scan page's narrow query reads every chunk group](#221-test_doc_parallel_premisepy-the-parallel-scan-pages-narrow-query-reads-every-chunk-group)
 - [222. test_maintenance_due.py: pgcolumnar.maintenance_due reports which online verb is worth running](#222-test_maintenance_duepy-pgcolumnarmaintenance_due-reports-which-online-verb-is-worth-running)
 - [223. test_eager_ordering_record.py: eager rewrites record the ordering they applied](#223-test_eager_ordering_recordpy-eager-rewrites-record-the-ordering-they-applied)
+- [224. test_int8_agg_int128.py: sum and avg over bigint accumulate in 128 bits](#224-test_int8_agg_int128py-sum-and-avg-over-bigint-accumulate-in-128-bits)
 
 ## 1. How to read a test in here
 
@@ -9200,3 +9201,48 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_and_records_no_key` | and records no key |
 | `test_vacuum_sorted_with_no_columns_records_the_declared_key` | vacuum_sorted with no columns records the DECLARED key it applied |
 | `test_and_records_it_as_a_lexicographic_run` | and records it as a lexicographic run |
+
+## 224. test_int8_agg_int128.py: sum and avg over bigint accumulate in 128 bits
+
+The twin of `test/int8_agg_int128.sh` (#785, #786). Every value arm runs vectorized, scalar and on heap and requires all three to agree, including sums past int64 in both directions, empty and all-NULL columns, and numeric; two timing arms bound the vectorized path at 1.10x the scalar one as a ratio of interleaved minima; and a LATERAL rescan must match the heap.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. The heap oracle is loaded from the same generator as the columnar table, never copied out of it. A NULL answer reads <NULL>, and a rescan reading must return its four rows.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_vectorized_node_really_runs_for_sum` | premise: the vectorized node really runs for sum(v) |
+| `test_and_for_avg` | premise: and for avg(v) |
+| `test_sum_bigint_agrees_with_the_scalar_path_and_with_heap` | sum(bigint) agrees with the scalar path and with heap |
+| `test_avg_bigint_agrees_too` | avg(bigint) agrees too |
+| `test_the_fixture_really_holds_nulls_and_negatives` | premise: the fixture really holds NULLs and negatives |
+| `test_sum_over_a_column_with_nulls_and_negatives_agrees` | sum over a column with NULLs and negatives agrees |
+| `test_avg_over_the_same_agrees` | avg over the same agrees |
+| `test_the_sum_really_exceeds_what_int64_can_hold` | premise: the sum really exceeds what int64 can hold |
+| `test_the_vectorized_node_runs_on_this_table_too` | premise: the vectorized node runs on this table too |
+| `test_a_sum_past_int64_agrees` | a sum past int64 agrees with the scalar path and with heap |
+| `test_and_its_avg_agrees` | and its avg agrees |
+| `test_this_sum_is_past_int64_in_the_negative_direction` | premise: this sum is past int64 in the negative direction |
+| `test_a_large_negative_sum_agrees` | a large NEGATIVE sum agrees |
+| `test_mixed_signs_summing_back_into_int64_range_agree` | mixed signs summing back into int64 range agree |
+| `test_sum_over_an_empty_table_is_null` | sum over an empty table is NULL, as on heap |
+| `test_avg_over_an_empty_table_is_null_too` | avg over an empty table is NULL too |
+| `test_sum_over_an_all_null_column_is_null` | sum over an all-NULL column is NULL |
+| `test_avg_over_an_all_null_column_is_null` | avg over an all-NULL column is NULL |
+| `test_sum_numeric_keeps_its_scale_and_still_agrees` | sum(numeric) keeps its scale and still agrees |
+| `test_avg_numeric_too` | avg(numeric) too |
+| `test_the_timing_fixture_loaded_every_row` | premise: the timing fixture loaded every row |
+| `test_the_vectorized_node_really_runs_so_the_ratio_compares_two_paths` | premise: and the vectorized node really runs, so the ratio compares two paths |
+| `test_the_vectorized_path_is_not_slower_than_the_scalar_one` | the vectorized path is not slower than the scalar one |
+| `test_the_filtered_fixture_loaded_every_row` | premise: the filtered fixture loaded every row |
+| `test_its_values_are_not_low_cardinality` | premise: its values are NOT low-cardinality, so the fold is not answered from runs |
+| `test_the_vectorized_node_runs_on_the_filtered_query_too` | premise: the vectorized node runs on the FILTERED query too |
+| `test_the_filtered_vectorized_path_is_not_slower` | the FILTERED vectorized path is not slower than the scalar one |
+| `test_the_rescan_shape_still_takes_the_vectorized_node` | premise: the rescan shape still takes the vectorized node |
+| `test_the_node_really_is_re_executed` | premise: the node really is re-executed, so a stale accumulator can show |
+| `test_the_rescan_query_returns_a_row_per_driver_row` | premise: the rescan query returns a row per driver row, not an error |
+| `test_sum_bigint_across_a_rescan_matches_the_heap` | sum(bigint) across a rescan matches the heap |
+| `test_avg_bigint_across_a_rescan_matches_the_heap` | avg(bigint) across a rescan matches the heap |
+| `test_sum_bigint_across_a_rescan_on_the_big_fixture_matches_the_heap` | sum(bigint) across a rescan on the >int64 fixture matches the heap |
+| `test_count_across_the_same_rescan_matches_the_heap` | control: count(*) across the same rescan matches the heap |

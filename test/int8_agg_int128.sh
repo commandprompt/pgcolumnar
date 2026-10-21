@@ -47,18 +47,26 @@ trio() {
 	local tbl="$1" q="$2"
 	local on off heap
 	# tail -1: the SET prints "SET" of its own, so the value is the last line.
-	on="$(q "$ON; SELECT ($q)::text FROM $tbl;" | tail -1)"
-	off="$(q "SET pgcolumnar.enable_ungrouped_vector_agg=off; SELECT ($q)::text FROM $tbl;" | tail -1)"
-	heap="$(q "SELECT ($q)::text FROM ${tbl}_h;" | tail -1)"
-	if [ "$on" = "$off" ] && [ "$off" = "$heap" ]; then echo "agree:$on"
+	# A NULL answer reads <NULL>, so it is not the empty string a failed query
+	# reads: three failures used to "agree:" exactly as three NULLs do, and the
+	# empty-table and all-NULL arms passed on them.
+	on="$(q "$ON; SELECT coalesce(($q)::text, '<NULL>') FROM $tbl;" | tail -1)"
+	off="$(q "SET pgcolumnar.enable_ungrouped_vector_agg=off; SELECT coalesce(($q)::text, '<NULL>') FROM $tbl;" | tail -1)"
+	heap="$(q "SELECT coalesce(($q)::text, '<NULL>') FROM ${tbl}_h;" | tail -1)"
+	if [ -z "$on" ] || [ -z "$off" ] || [ -z "$heap" ]; then echo "UNREAD on=[$on] off=[$off] heap=[$heap]"
+	elif [ "$on" = "$off" ] && [ "$off" = "$heap" ]; then echo "agree:$on"
 	else echo "DIFFER on=[$on] off=[$off] heap=[$heap]"; fi
 }
 vecplan() { q "$ON; EXPLAIN (COSTS OFF) SELECT $1 FROM $2;" | grep -c 'Columnar Vectorized Aggregates'; }
 
-mk() {  # $1 name, $2 value expression over g, $3 series end
-	psql_run "CREATE TABLE $1 (v bigint) USING pgcolumnar;"
+# The heap twin is loaded from the SAME GENERATOR, never copied out of the
+# columnar table: a copy reads through the columnar decoder, so a decode fault
+# lands in the oracle too and the trio agrees on the wrong answer.
+mk() {  # $1 name, $2 value expression over g, $3 series end, $4 type (bigint)
+	psql_run "CREATE TABLE $1 (v ${4:-bigint}) USING pgcolumnar;"
 	psql_run "INSERT INTO $1 SELECT $2 FROM generate_series(1,$3) g;"
-	psql_run "CREATE TABLE $1_h AS SELECT * FROM $1;"
+	psql_run "CREATE TABLE $1_h (v ${4:-bigint});"
+	psql_run "INSERT INTO $1_h SELECT $2 FROM generate_series(1,$3) g;"
 }
 
 # ---- ordinary values --------------------------------------------------------
@@ -70,12 +78,7 @@ check "avg(bigint) agrees too" "$(trio a8 'avg(v)')" "agree:499.5000000000000000
 
 # ---- negatives and nulls ----------------------------------------------------
 psql_run "DROP TABLE IF EXISTS n8; DROP TABLE IF EXISTS n8_h;"
-psql_run "CREATE TABLE n8 (v bigint) USING pgcolumnar;"
-psql_run "INSERT INTO n8 SELECT CASE WHEN g % 7 = 0 THEN NULL
-                                     WHEN g % 3 = 0 THEN -(g::bigint)
-                                     ELSE g::bigint END
-          FROM generate_series(1,100000) g;"
-psql_run "CREATE TABLE n8_h AS SELECT * FROM n8;"
+mk n8 "CASE WHEN g % 7 = 0 THEN NULL WHEN g % 3 = 0 THEN -(g::bigint) ELSE g::bigint END" 100000
 check "premise: the fixture really holds NULLs and negatives" \
 	"$(q "SELECT (count(*) FILTER (WHERE v IS NULL) > 0)::text||'/'||(count(*) FILTER (WHERE v < 0) > 0)::text FROM n8;")" \
 	"true/true"
@@ -88,53 +91,45 @@ check "avg over the same agrees" "$(trio n8 'avg(v)')" \
 # 20,000 rows of 9e18 sums to 1.8e23, far past int64's 9.22e18. Below that
 # boundary the finalize is one int8_numeric call and any implementation looks
 # correct; above it the value is rebuilt from two 64-bit halves.
+#
+# The value is 9e18 + 7, NOT 9e18. The rebuild splits on 10^18, and 20,000 rows
+# of exactly 9e18 sum to 180000 * 10^18 with a low half of 0, so a rebuild that
+# dropped the low half entirely passed every arm here (measured). + 7 gives a
+# low half of 140000.
 psql_run "DROP TABLE IF EXISTS big8; DROP TABLE IF EXISTS big8_h;"
-psql_run "CREATE TABLE big8 (v bigint) USING pgcolumnar;"
-psql_run "INSERT INTO big8 SELECT 9000000000000000000::bigint FROM generate_series(1,20000) g;"
-psql_run "CREATE TABLE big8_h AS SELECT * FROM big8;"
+mk big8 "9000000000000000007::bigint" 20000
 check "premise: the sum really exceeds what int64 can hold" \
 	"$(q "SELECT (sum(v) > 9223372036854775807::numeric)::text FROM big8_h;")" "true"
 check_num "premise: the vectorized node runs on this table too" "$(vecplan 'sum(v)' big8)" "1"
 check "a sum past int64 agrees with the scalar path and with heap" \
-	"$(trio big8 'sum(v)')" "agree:180000000000000000000000"
+	"$(trio big8 'sum(v)')" "agree:180000000000000000140000"
 check "and its avg agrees" "$(trio big8 'avg(v)')" \
 	"agree:$(q 'SELECT avg(v)::text FROM big8_h;')"
 
 # the negative side of the same boundary, since the split carries a sign
 psql_run "DROP TABLE IF EXISTS neg8; DROP TABLE IF EXISTS neg8_h;"
-psql_run "CREATE TABLE neg8 (v bigint) USING pgcolumnar;"
-psql_run "INSERT INTO neg8 SELECT -9000000000000000000::bigint FROM generate_series(1,20000) g;"
-psql_run "CREATE TABLE neg8_h AS SELECT * FROM neg8;"
+mk neg8 "-9000000000000000007::bigint" 20000
 check "premise: this sum is past int64 in the negative direction" \
 	"$(q "SELECT (sum(v) < -9223372036854775807::numeric)::text FROM neg8_h;")" "true"
-check "a large NEGATIVE sum agrees" "$(trio neg8 'sum(v)')" "agree:-180000000000000000000000"
+check "a large NEGATIVE sum agrees" "$(trio neg8 'sum(v)')" "agree:-180000000000000000140000"
 
 # a mixed sign fixture whose total lands back inside int64, so the split is
 # exercised on the way and the answer is small
 psql_run "DROP TABLE IF EXISTS mix8; DROP TABLE IF EXISTS mix8_h;"
-psql_run "CREATE TABLE mix8 (v bigint) USING pgcolumnar;"
-psql_run "INSERT INTO mix8 SELECT CASE WHEN g % 2 = 0 THEN 9000000000000000000::bigint
-                                       ELSE -8999999999999999999::bigint END
-          FROM generate_series(1,20000) g;"
-psql_run "CREATE TABLE mix8_h AS SELECT * FROM mix8;"
+mk mix8 "CASE WHEN g % 2 = 0 THEN 9000000000000000000::bigint ELSE -8999999999999999999::bigint END" 20000
 check "mixed signs summing back into int64 range agree" "$(trio mix8 'sum(v)')" \
 	"agree:$(q 'SELECT sum(v)::text FROM mix8_h;')"
 
 # ---- degenerate shapes ------------------------------------------------------
-psql_run "CREATE TABLE e8 (v bigint) USING pgcolumnar;"
-psql_run "CREATE TABLE e8_h AS SELECT * FROM e8;"
-check "sum over an empty table is NULL, as on heap" "$(trio e8 'sum(v)')" "agree:"
-check "avg over an empty table is NULL too" "$(trio e8 'avg(v)')" "agree:"
-psql_run "CREATE TABLE z8 (v bigint) USING pgcolumnar;"
-psql_run "INSERT INTO z8 SELECT NULL::bigint FROM generate_series(1,5000) g;"
-psql_run "CREATE TABLE z8_h AS SELECT * FROM z8;"
-check "sum over an all-NULL column is NULL" "$(trio z8 'sum(v)')" "agree:"
-check "avg over an all-NULL column is NULL" "$(trio z8 'avg(v)')" "agree:"
+mk e8 "g::bigint" 0
+check "sum over an empty table is NULL, as on heap" "$(trio e8 'sum(v)')" "agree:<NULL>"
+check "avg over an empty table is NULL too" "$(trio e8 'avg(v)')" "agree:<NULL>"
+mk z8 "NULL::bigint" 5000
+check "sum over an all-NULL column is NULL" "$(trio z8 'sum(v)')" "agree:<NULL>"
+check "avg over an all-NULL column is NULL" "$(trio z8 'avg(v)')" "agree:<NULL>"
 
 # ---- numeric is NOT changed by this, and must still agree -------------------
-psql_run "CREATE TABLE d8 (v numeric) USING pgcolumnar;"
-psql_run "INSERT INTO d8 SELECT (g::numeric / 7) FROM generate_series(1,50000) g;"
-psql_run "CREATE TABLE d8_h AS SELECT * FROM d8;"
+mk d8 "(g::numeric / 7)" 50000 numeric
 check "sum(numeric) keeps its scale and still agrees" "$(trio d8 'sum(v)')" \
 	"agree:$(q 'SELECT sum(v)::text FROM d8_h;')"
 check "avg(numeric) too" "$(trio d8 'avg(v)')" \
@@ -257,13 +252,25 @@ rs_run() {  # rs_run <table> <agg>
 	local a="$2"
 	local sql="${RSLAT//%T/$t}"
 	sql="${sql//%A/$a}"
+	# ON_ERROR_STOP: psql runs the next -c after a failed one, so a setting that
+	# did not take let the rescan run on core's path, where both sides agreed
+	# (measured, with enable_material set to an invalid value).
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -Atq -c "$RSGUC" -c "$sql" 2>&1
+		-d "$PGC_DB" -Atq -v ON_ERROR_STOP=1 -c "$RSGUC" -c "$sql" 2>&1
 }
 rs_plan() {
 	local sql="${RSLAT//%T/a8}"; sql="${sql//%A/sum(s2.v)}"
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -Atq -c "$RSGUC" -c "EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, COSTS OFF) $sql" 2>&1
+}
+
+# Each side must return its four rows; otherwise the reading names its table, so
+# two sides that both errored cannot agree on the same error text.
+rs_rows() {  # rs_rows <table> <agg>
+	local out
+	out="$(rs_run "$1" "$2")"
+	if [ "$(printf '%s\n' "$out" | grep -cE '^[0-9]+\|-?[0-9.]+$')" = 4 ]; then printf '%s\n' "$out"
+	else echo "not 4 rows from $1: $out"; fi
 }
 
 RSPLAN="$(rs_plan)"
@@ -280,14 +287,14 @@ RSOUT="$(rs_run a8 'sum(s2.v)')"
 check_num "premise: the rescan query returns a row per driver row, not an error" \
 	"$(printf '%s\n' "$RSOUT" | grep -c '^[0-9]')" "4"
 check "sum(bigint) across a rescan matches the heap" \
-	"$RSOUT" "$(rs_run a8_h 'sum(s2.v)')"
+	"$(rs_rows a8 'sum(s2.v)')" "$(rs_rows a8_h 'sum(s2.v)')"
 check "avg(bigint) across a rescan matches the heap" \
-	"$(rs_run a8 'avg(s2.v)')" "$(rs_run a8_h 'avg(s2.v)')"
+	"$(rs_rows a8 'avg(s2.v)')" "$(rs_rows a8_h 'avg(s2.v)')"
 check "sum(bigint) across a rescan on the >int64 fixture matches the heap" \
-	"$(rs_run big8 'sum(s2.v)')" "$(rs_run big8_h 'sum(s2.v)')"
+	"$(rs_rows big8 'sum(s2.v)')" "$(rs_rows big8_h 'sum(s2.v)')"
 # The control: a kind that does NOT use i128sum must be right either way, which
 # places any failure above on the int128 accumulator rather than on rescan.
 check "control: count(*) across the same rescan matches the heap" \
-	"$(rs_run a8 'count(*)')" "$(rs_run a8_h 'count(*)')"
+	"$(rs_rows a8 'count(*)')" "$(rs_rows a8_h 'count(*)')"
 
 pgc_summary
