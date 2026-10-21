@@ -979,4 +979,6 @@ guard_tests 467
 # 15 tests, one per check, by collection over the cluster files.
 # cluster_tests 2136 -> 2153 for #1341's test_fsst_margin.py, the twin of fsst_margin.sh:
 # 17 tests, one per check, by collection over the cluster files.
-cluster_tests 2153
+# cluster_tests 2153 -> 2162 for #1341's test_index_delete_liveness.py, the twin of index_delete_liveness.sh:
+# 9 tests, one per check, by collection over the cluster files.
+cluster_tests 2162

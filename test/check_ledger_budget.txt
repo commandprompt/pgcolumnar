@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 127
+suites_not_covered 126
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4924,4 +4924,23 @@ suites_not_covered 127
 #     never         3636 + 5 = 3641
 #     dated         1911 + 12 = 1923
 #     3641 + 1923 == 5564
-checks_never_observed_red 3641
+#
+# #1341, index_delete_liveness seeded, with its twin (OffgridwithJD): 3641 -> 3648,
+# and suites_not_covered 127 -> 126. The suite had no rows. It enters with 9
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: the churn threw away all its output, so with the
+# UPDATE naming a column that does not exist no row was churned, the index stayed
+# complete, and all nine checks passed. Each churn now reports the rows it updated
+# (4800), and every arm and the heap oracle carry that count in their readings. The
+# first premise's name was built from $N and is now literal, so the grader reads it.
+# The arms and controls compare text, so each side's reading is tagged when it is not
+# a number: with every row group past the churn unreadable, two identical errors had
+# agreed and arm D passed (#418); it now fails in both harnesses. A bottom-up pass that vouches every candidate dead reproduces the defect as
+# recorded -- arm A reaches 0 of 400 rows after a ROLLBACK, arm D 316 after a COMMIT
+# -- and dates the two arms; 7 arrive never, the controls among them by design.
+#
+#     ledger rows   5564 + 9 = 5573
+#     never         3641 + 7 = 3648
+#     dated         1923 + 2 = 1925
+#     3648 + 1925 == 5573
+checks_never_observed_red 3648

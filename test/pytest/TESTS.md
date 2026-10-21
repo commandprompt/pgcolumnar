@@ -286,6 +286,7 @@ behaviour, the source of that number is named.
 - [238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name](#238-test_export_sinkpy-the-export-byte-sink-checks-every-write-and-never-leaves-a-partial-file-under-the-final-name)
 - [239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded](#239-test_groupagg_table_sizingpy-the-vectorized-grouped-aggregate-sizes-its-table-from-the-estimate-bounded)
 - [240. test_fsst_margin.py: the FSST keep/drop margin decides, and never changes content](#240-test_fsst_marginpy-the-fsst-keepdrop-margin-decides-and-never-changes-content)
+- [241. test_index_delete_liveness.py: nbtree's deletion passes never destroy an entry for a live row](#241-test_index_delete_livenesspy-nbtrees-deletion-passes-never-destroy-an-entry-for-a-live-row)
 
 ## 1. How to read a test in here
 
@@ -9635,3 +9636,23 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_fm_c0_preserves_empty_strings` | fm_c0 preserves empty strings |
 | `test_fm_c90_preserves_nulls` | fm_c90 preserves NULLs |
 | `test_fm_c90_preserves_empty_strings` | fm_c90 preserves empty strings |
+
+## 241. test_index_delete_liveness.py: nbtree's deletion passes never destroy an entry for a live row
+
+The twin of `test/index_delete_liveness.sh`. After twelve rounds of churn on a non-indexed column over 400 live rows, rolled back or committed, an index scan must still reach all 400; churn on the indexed column and a heap table under the same hint are the controls, and at shipped defaults count(*) and count(b) must agree.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. Every churn reports the rows it updated, and each arm's reading carries that count.
+
+| test | what it holds |
+| --- | --- |
+| `test_arm_a_holds_n_rows_before_the_churn` | premise: arm A holds 400 rows before the churn |
+| `test_arm_a_really_plans_an_index_scan` | premise: arm A really plans an Index Scan, so the arm measures the index |
+| `test_arm_a_a_rollback_leaves_every_live_row_reachable` | arm A: a ROLLBACK leaves every live row reachable through the index |
+| `test_control_b_indexed_column_churn_loses_nothing` | control B: indexed-column churn triggers no bottom-up pass and loses nothing |
+| `test_control_c_the_heap_loses_nothing` | control C: the heap loses nothing under the same churn |
+| `test_arm_d_a_commit_leaves_every_live_row_reachable` | arm D: a COMMIT leaves every live row reachable through the index |
+| `test_at_shipped_defaults_count_star_is_right` | at shipped defaults count(*) is right |
+| `test_at_shipped_defaults_count_star_and_count_b_agree` | at shipped defaults the table answers the same to count(*) and count(b) |
+| `test_oracle_the_heap_answers_count_star_correctly` | oracle: the heap answers count(*) correctly after the same churn |
