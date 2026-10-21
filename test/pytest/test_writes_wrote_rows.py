@@ -30,6 +30,8 @@ cannot be proven here. It has its own arm in `test_connection.py`, for the reaso
 proofs, and the second one is the one that goes missing.
 """
 
+import re
+
 import pgc_vacuity
 
 
@@ -59,7 +61,12 @@ def test_update_and_delete_are_writes_too(expect, request):
     for tag, message in (("UPDATE", "UPDATE 0"), ("DELETE", "DELETE 0")):
         nodeid = request.node.nodeid + "::" + tag
         pgc_vacuity.note_write(nodeid, _Cur(message, 0))
-        expect.num(len(_writes(nodeid)), 1, f"a {tag} reporting 0 rows is recorded")
+        recorded = _writes(nodeid)
+        expect.num(len(recorded), 1, f"a {tag} reporting 0 rows is recorded")
+        # The count and the tag, as the INSERT arm reads them: the refusal acts on the
+        # count and names the tag, so a record carrying neither refuses nothing (#1339).
+        expect.num(recorded[0].count, 0, f"and the {tag}'s count is the zero")
+        expect.text(recorded[0].tag, tag, f"and its tag is {tag}")
         pgc_vacuity._WRITES.pop(nodeid, None)
 
 
@@ -90,8 +97,6 @@ def test_a_write_that_wrote_rows_needs_no_acknowledgement(expect, request):
     recorded = _writes(nodeid)
     expect.num(len(recorded), 1, "a write that wrote rows is still recorded")
     expect.num(recorded[0].count, 5, "with the count it reported")
-    expect.num(sum(1 for w in recorded if w.count == 0), 0,
-               "and nothing about it is a zero-row write")
     pgc_vacuity._WRITES.pop(nodeid, None)
 
 
@@ -131,6 +136,23 @@ def test_an_unacknowledged_zero_row_write_fails_the_test(expect, pytester):
     # "the guard did not fire". Single unbreakable tokens, one per call.
     expect.refusal(result, "and the refusal names the mode", r"insert-wrote-no-rows")
     expect.refusal(result, "and it names the command that moved nothing", r"INSERT")
+
+
+def test_a_write_that_wrote_rows_passes_unacknowledged(expect, pytester):
+    """The guard refuses a zero, not a write.
+
+    This was a record-level check, "nothing about it is a zero-row write", which
+    could not fail once the count read 5: one record carrying 5 is never a zero
+    (#1339). The property is the test's OUTCOME, so only a run can show it. A guard
+    that refused every unacknowledged write passed this whole file before this arm.
+    """
+    result = _inner(pytester, """
+    def test_fixture_built_five(expect, request):
+        pgc_vacuity.note_write(request.node.nodeid, _Cur("INSERT 0 5", 5))
+        expect.num(1, 1, "an assertion, so the no-assertion guard is not what fires")
+    """)
+    expect.outcomes(result, "a test whose write wrote rows passes without naming it",
+                    passed=1, failed=0)
 
 
 def test_expect_wrote_acknowledges_the_zero(expect, pytester):
@@ -196,8 +218,15 @@ def test_several_writes_and_only_the_empty_one_is_named(expect, pytester):
         expect.num(1, 1, "an assertion")
     """)
     expect.outcomes(result, "the empty write fails the test", passed=0, failed=1)
-    expect.refusal(result, "and the UPDATE is the one named, not the INSERTs",
-                   r"UPDATE")
+    expect.refusal(result, "and the UPDATE is the one named", r"UPDATE")
+    # "NOT THE INSERTs" NEEDS ITS OWN READING. The pattern above matches a refusal that
+    # names every write too, and one that did passed this file (#1339). Read over the
+    # joined output, because pytest may wrap "#1 INSERT" across two lines.
+    joined = " ".join(result.outlines)
+    expect.num(len(re.findall(r"#[13]\s+INSERT", joined)), 0,
+               "and neither INSERT is named")
+    expect.at_least(len(re.findall(r"#2\s+UPDATE", joined)), 1,
+                    "and the UPDATE is named by its position, #2")
     expect.refusal(result, "and the mode is named", r"insert-wrote-no-rows")
 
 # ---- two holes I found by attacking my own guard ------------------------------

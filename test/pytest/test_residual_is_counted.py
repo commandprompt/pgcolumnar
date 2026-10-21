@@ -86,6 +86,20 @@ def _write(tmp_path, name, *names):
     return str(p)
 
 
+def _live_shape(tmp_path):
+    """THE LIVE SHAPE, written once for every arm that reads it. Three suites ran;
+    five accounted, because two that SKIPPED also printed an accounting line. This is
+    243-vs-248 in miniature, the input that made the old expression print a negative.
+    -> (ran, skipped, acc), each a file of names."""
+    return (_write(tmp_path, "ran", "alpha", "beta", "gamma"),
+            _write(tmp_path, "skipped", "delta", "eps"),
+            _write(tmp_path, "acc", "alpha", "beta", "gamma", "delta", "eps"))
+
+
+def _lines(path):
+    return sum(1 for ln in pathlib.Path(path).read_text().splitlines() if ln)
+
+
 # ---- the readers ------------------------------------------------------------
 
 
@@ -112,9 +126,7 @@ def test_a_skipped_suite_that_accounted_does_not_become_a_debt(tmp_path, expect)
     well, so the accounted set is a strict superset of the ran set. This is the
     input on which the old expression printed a negative.
     """
-    ran = _write(tmp_path, "ran", "alpha", "beta", "gamma")
-    skipped = _write(tmp_path, "skipped", "delta", "eps")
-    acc = _write(tmp_path, "acc", "alpha", "beta", "gamma", "delta", "eps")
+    ran, skipped, acc = _live_shape(tmp_path)
 
     debt, _ = _call("pgc_ran_without_accounting", ran, acc)
     named, _ = _call("pgc_ran_without_accounting", ran, _write(tmp_path, "acc2", "alpha"))
@@ -130,14 +142,19 @@ def test_a_skipped_suite_that_accounted_does_not_become_a_debt(tmp_path, expect)
                 "and the skipped suites that accounted are their own named category")
 
 
-def test_the_old_subtraction_goes_negative_on_that_same_input(expect):
+def test_the_old_subtraction_goes_negative_on_that_same_input(tmp_path, expect):
     """The control that makes the arm above mean something.
 
     Without this, "the residual is empty" is satisfied by any input at all. The
     defect is that THREE minus FIVE is what the runner printed.
+
+    COMPUTED FROM THE INPUT, as the shell twin does (#1339). This read `3 - 5` as two
+    literals, which is -2 whatever the arm above was fed: with every fixture file
+    written empty, it still passed.
     """
-    expect.num(3 - 5, -2,
-               "three suites ran and five accounted, so the old term printed -2")
+    ran, _skipped, acc = _live_shape(tmp_path)
+    expect.num(_lines(ran) - _lines(acc), -2,
+               "premise: the subtraction the runner used goes negative on the live shape")
 
 
 def test_the_readers_sort_their_own_inputs(tmp_path, expect):
@@ -252,6 +269,45 @@ def test_a_ran_count_the_names_do_not_support_fails_the_major(tmp_path, expect):
                "a ran count the names do not support is reported, not absorbed")
     expect.num(out.count("verfail=1"), 1,
                "and it fails the major")
+
+
+# ---- the tally that feeds the readers (#1339) --------------------------------
+#
+# SCOPED TO THE FUNCTION, as selftest 510 scopes it: an occurrence count over the
+# whole runner is satisfied by a comment naming the variable. What matters is that
+# the tally function WRITES each name the readers later read.
+
+
+def test_the_tally_function_records_every_suite_that_ran_or_skipped(expect):
+    tally = _extract("pgc_tally_suite")
+    expect.num(tally.count("suites_ran="), 3, "premise: the tally function is findable")
+    expect.num(len(re.findall(r'>>"\$_acc_ranfile"', tally)), 3,
+               "the tally function records the name of every suite that ran")
+    expect.num(len(re.findall(r'>>"\$_acc_skipfile"', tally)), 1,
+               "and it records the name of every suite that skipped")
+
+
+# ---- collation (#1339) ---------------------------------------------------------
+#
+# `comm` needs both inputs sorted in ITS collation, and `sort` orders by locale: real
+# suite names reorder between C and en_US.UTF-8, and `comm` then yields a wrong set.
+# `LC_ALL=C comm <(sort ...)` pins only comm itself, because the substitutions inherit
+# the PARENT's locale, so both halves are asserted. Code lines only: comments in the
+# runner quote the unpinned form to explain it.
+
+
+def _code_lines():
+    return [ln for ln in RUNNER.read_text().splitlines() if not re.match(r"\s*#", ln)]
+
+
+def test_every_comm_in_the_runner_pins_its_collation(expect):
+    comms = [ln for ln in _code_lines() if re.search(r"(^|[^_\w])comm ", ln)]
+    expect.at_least(len(comms), 3,
+                    "premise: the runner really does use comm, so this arm has a subject")
+    expect.num(sum(1 for ln in comms if "LC_ALL=C comm " not in ln), 0,
+               "every comm in the runner pins its collation")
+    expect.num(sum(1 for ln in _code_lines() if "<(sort " in ln), 0,
+               "and no sort feeding one is left on the caller's locale")
 
 
 def test_no_code_path_subtracts_the_wide_population_from_the_ran_count(expect):

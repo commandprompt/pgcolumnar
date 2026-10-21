@@ -1702,7 +1702,9 @@ design exists to avoid.
 ### `test_the_accounting_line_is_read_on_every_exit_path`
 
 Pass, failure, skip and incomplete all carry the line, which is what makes it the
-runtime twin of the declaration rather than a synonym for PASSED.
+runtime twin of the declaration rather than a synonym for PASSED. Typed logs show only
+that the reader accepts four shapes, so a real suite is also driven down each path and
+the reader is fed what `pgc_summary` printed (#1339).
 
 ### `test_the_reconciliation_names_both_directions`
 
@@ -1751,7 +1753,8 @@ the population and that both buckets are occupied.
 Two runtime-observable mechanisms exist: `pgc_summary`'s accounting line, used by 239
 suites, and a suite's own `checks run:` line, which `bench_guards` and `docs_style`
 print from private counters without ever sourcing `lib.sh`. A reader that knew only the
-first would call those two unaccounted, which is false.
+first would call those two unaccounted, which is false. Both alternatives are anchored,
+and an indented or extended line of either shape is refused (#1339).
 
 ### `test_a_registered_suite_accounted_by_nothing_fails_by_name`
 
@@ -1772,7 +1775,8 @@ Debt is recorded by name rather than as a count, which is what makes it a burn-d
 new unaccounted suite fails while the known ones are excused. Debt that is no longer
 debt — a suite that now accounts, or one no longer registered — is reported, so the
 burn-down cannot stall silently. Those two are reported rather than fatal: a gate that
-reddens the moment someone *fixes* something teaches people not to fix things.
+reddens the moment someone *fixes* something teaches people not to fix things. Each case
+reads the exit code as well as the names: 1 for the new suite, 0 for both reports (#1339).
 
 ### `test_the_population_partitions_and_prints_its_identity`
 
@@ -1786,8 +1790,9 @@ buckets that are not a partition at all.
 ### `test_the_debt_file_is_tracked_and_holds_only_registered_suites`
 
 `test/suites_without_accounting.txt` is tracked so that adding a name is a diff a
-reviewer sees — the whole reason it is a file and not a number in the environment. Every
-name in it must be a registered suite.
+reviewer sees — the whole reason it is a file and not a number in the environment. git
+must track it, not merely find it on disk (#1339). Every name in it must be a registered
+suite.
 
 ### `test_the_declaration_reader_survives_pipefail_on_a_long_suite`
 
@@ -2394,15 +2399,16 @@ separately, so a reader sees a green test beside an error.
 | test | asserts |
 | --- | --- |
 | `test_a_write_that_wrote_nothing_is_recorded` | an `INSERT 0 0` is recorded, with its count and its tag |
-| `test_update_and_delete_are_writes_too` | `UPDATE 0` and `DELETE 0` are writes, not only INSERT |
+| `test_update_and_delete_are_writes_too` | `UPDATE 0` and `DELETE 0` are writes, not only INSERT, each recorded with its zero count and its own tag |
 | `test_a_select_matching_nothing_is_not_a_write` | `SELECT 0` is not a write; **the arm a count-only guard fails** |
 | `test_ddl_is_not_a_write` | `CREATE TABLE`, `SET`, `TRUNCATE TABLE`, `DROP SCHEMA` are not writes |
-| `test_a_write_that_wrote_rows_needs_no_acknowledgement` | a write that moved rows is recorded and needs no naming |
+| `test_a_write_that_wrote_rows_needs_no_acknowledgement` | a write that moved rows is recorded, with the count it reported |
+| `test_a_write_that_wrote_rows_passes_unacknowledged` | the inner run passes with a write that moved rows and was never named: **the guard refuses a zero, not a write** |
 | `test_an_unacknowledged_zero_row_write_fails_the_test` | the inner run fails, and the message names the mode and the command |
 | `test_expect_wrote_acknowledges_the_zero` | naming the zero lets a negative control pass |
 | `test_expect_wrote_refuses_a_count_that_is_not_a_count` | `rowcount == -1` is refused rather than compared |
 | `test_expect_wrote_still_compares` | acknowledging a count does not excuse a wrong one |
-| `test_several_writes_and_only_the_empty_one_is_named` | with three writes and one empty, the refusal names the empty one |
+| `test_several_writes_and_only_the_empty_one_is_named` | with three writes and one empty, the refusal names the empty one, `#2 UPDATE`, and neither INSERT |
 | `test_wrote_refuses_a_statement_that_is_not_a_write` | `expect.wrote` on a `SELECT 0` is refused, not compared |
 | `test_the_acknowledgement_names_one_write_and_not_its_twin` | naming one zero does not acknowledge a different identical zero |
 | `test_acknowledging_both_identical_zeros_passes` | the control for that arm: naming both is legitimate |
@@ -4847,13 +4853,15 @@ and neither file names the other.
 | --- | --- |
 | `test_the_residual_names_the_suites_that_ran_and_did_not_account` | the debt is a set of names, and the reader exits clean |
 | `test_a_skipped_suite_that_accounted_does_not_become_a_debt` | on the live shape the residual is empty while the same reader still finds a real debt, and the skipped-but-accounted suites are their own named category |
-| `test_the_old_subtraction_goes_negative_on_that_same_input` | the control: three ran minus five accounted is the `-2` the runner printed |
+| `test_the_old_subtraction_goes_negative_on_that_same_input` | the control: three ran minus five accounted is the `-2` the runner printed, counted from the same fixture files the live-shape arm reads |
 | `test_the_readers_sort_their_own_inputs` | `comm` on unsorted input yields a wrong set silently, so the sort lives inside the reader |
 | `test_the_two_buckets_partition_the_suites_that_ran` | `inputs == sum(buckets)`, and neither bucket is the other's leftover |
 | `test_the_summary_block_was_extracted_rather_than_an_empty_range` | an empty extraction runs nothing and reports clean, so the block is asserted before it is used |
 | `test_the_printed_breakdown_takes_a_count_a_count_can_take` | the line a reader sees carries no negative, and names the skipped-but-accounted category |
 | `test_the_same_block_counts_and_names_a_real_debt` | the same block still counts and names a genuine debt, so it is not printing `0 did not` unconditionally |
 | `test_a_ran_count_the_names_do_not_support_fails_the_major` | told 4 ran while the names say 3, the block reports that the breakdown does not add up and fails the major; a block deriving the debt by subtraction would make it add up by construction (#1339) |
+| `test_the_tally_function_records_every_suite_that_ran_or_skipped` | `pgc_tally_suite` writes every ran name to `$_acc_ranfile` (three sites) and every skipped name to `$_acc_skipfile`, read inside the function |
+| `test_every_comm_in_the_runner_pins_its_collation` | every `comm` on a code line carries `LC_ALL=C`, and no `<(sort ` feeds one on the caller's locale |
 | `test_no_code_path_subtracts_the_wide_population_from_the_ran_count` | the defect's shape is refused at the source, over CODE lines only -- the comment explaining it quotes it verbatim |
 
 The load-bearing assertion is that the printed breakdown takes a count a count
