@@ -103,7 +103,6 @@ column_projection	the cost model prices a narrow projection below a wide one
 # THE LIST IS 103 AGAIN AND THAT IS A COINCIDENCE. #1174 took it 77 -> 103, two
 # arms have been repaired since, and this widening adds two: 101 + 2. The same
 # total twice by unrelated routes is not evidence either count is right.
-cost_written_geometry	a table written in smaller groups is costed cheaper than one in larger
 differential	matrix chunk groups>=12
 differential	matrix stripes>=2
 docs_style	premise: the changelog sweep found dated release sections

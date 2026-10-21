@@ -299,6 +299,7 @@ behaviour, the source of that number is named.
 - [251. test_projection_rename_restore.py: a projection's declaration follows a column rename, so it rebuilds after restore](#251-test_projection_rename_restorepy-a-projections-declaration-follows-a-column-rename-so-it-rebuilds-after-restore)
 - [252. test_preimage_rewrite.py: a predicate on date_trunc of a column prunes like the range it stands for](#252-test_preimage_rewritepy-a-predicate-on-date_trunc-of-a-column-prunes-like-the-range-it-stands-for)
 - [253. test_pg19_vacuum_options.py: PostgreSQL 19's parallel-autovacuum parameter is accepted on a columnar table and changes nothing](#253-test_pg19_vacuum_optionspy-postgresql-19s-parallel-autovacuum-parameter-is-accepted-on-a-columnar-table-and-changes-nothing)
+- [254. test_cost_written_geometry.py: the cost model describes the geometry a table was written with](#254-test_cost_written_geometrypy-the-cost-model-describes-the-geometry-a-table-was-written-with)
 
 ## 1. How to read a test in here
 
@@ -9993,3 +9994,24 @@ The pytest twin of `test/pg19_vacuum_options.sh` (ported for #1341), every check
 | `test_the_content_is_unchanged` | and the content is unchanged |
 | `test_vacuum_verbose_reports_on_heap` | control: VACUUM VERBOSE reports on the heap table |
 | `test_vacuum_verbose_is_silent_on_columnar` | columnar VACUUM VERBOSE reports nothing, because the AM path is ours |
+
+## 254. test_cost_written_geometry.py: the cost model describes the geometry a table was written with
+
+The twin of `test/cost_written_geometry.sh` (#806). Two 400,000-row tables, gb written at the default stripe_row_limit and ga at 20,000: varying only the planning session's stripe_row_limit must not reprice gb's index fetch, ga must cost less than gb by a margin and under a third of it, and a never-written table must still plan.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. Every plan is read with max_parallel_workers_per_gather = 0 in the session that sets the plan-time GUC. A cost that cannot be read is a failed reading, so two missing costs cannot agree, and the row counts are compared against the constant.
+
+| test | what it holds |
+| --- | --- |
+| `test_both_tables_hold_the_same_number_of_rows` | premise: both tables hold the same number of rows |
+| `test_gb_was_written_at_the_default_limit_in_few_groups` | premise: gb was written at the default limit, in few groups |
+| `test_ga_was_written_at_20000_in_many_more_groups` | ga was written at 20000, in many more groups |
+| `test_the_catalog_recorded_both_limits` | and the catalog recorded both limits |
+| `test_gb_is_costed_as_an_index_scan_at_plan_time_limit_150000` | premise: gb is costed as an index scan at plan-time limit 150000 |
+| `test_gb_is_costed_as_an_index_scan_at_plan_time_limit_20000` | premise: gb is costed as an index scan at plan-time limit 20000 |
+| `test_the_planning_sessions_limit_does_not_reprice_a_written_table` | the planning session's stripe_row_limit does not reprice a written table |
+| `test_a_table_written_in_smaller_groups_is_costed_cheaper` | a table written in smaller groups is costed cheaper than one in larger |
+| `test_the_index_fetch_penalty_sees_the_written_geometry` | the index-fetch penalty sees the written geometry: ga costs under a third of gb |
+| `test_a_never_written_table_still_produces_a_plan` | a never-written table still produces a plan |

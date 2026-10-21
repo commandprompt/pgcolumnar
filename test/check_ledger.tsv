@@ -800,6 +800,16 @@ corruption	corruption	premise: the page_length corruption changed a catalog row	
 corruption	corruption	premise: the row_count corruption changed a catalog row	15;16;17;18;19	never	-
 corruption	corruption	premise: the value_count corruption changed a catalog row	15;16;17;18;19	never	-
 corruption	corruption	row_count corruption errors	15;16;17;18;19	2026-10-16	columnar_reader.c: the no-nulls row accounting and the value-stream bound both removed
+cost_written_geometry	cost_written_geometry	a never-written table still produces a plan	15;16;17;18;19	2026-10-21	a never-written table errors instead of falling back to the session's limit
+cost_written_geometry	cost_written_geometry	a table written in smaller groups is costed cheaper than one in larger	15;16;17;18;19	2026-10-21	the written-limit reader ignores pgcolumnar.storage and answers the session's value
+cost_written_geometry	cost_written_geometry	and the catalog recorded both limits	15;16;17;18;19	2026-10-21	the writer ignores the session's stripe_row_limit and writes every table at 150000
+cost_written_geometry	cost_written_geometry	ga was written at 20000, in many more groups	15;16;17;18;19	2026-10-21	the writer ignores the session's stripe_row_limit and writes every table at 150000
+cost_written_geometry	cost_written_geometry	gb was written at the default limit, in few groups	15;16;17;18;19	2026-10-21	the writer caps every row group at 20000 rows, whatever the limit
+cost_written_geometry	cost_written_geometry	premise: both tables hold the same number of rows	15;16;17;18;19	never	-
+cost_written_geometry	cost_written_geometry	premise: gb is costed as an index scan at plan-time limit 150000	15;16;17;18;19	never	-
+cost_written_geometry	cost_written_geometry	premise: gb is costed as an index scan at plan-time limit 20000	15;16;17;18;19	never	-
+cost_written_geometry	cost_written_geometry	the index-fetch penalty sees the written geometry: ga costs under a third of gb	15;16;17;18;19	2026-10-21	the index-fetch penalty uses one fixed limit for every table
+cost_written_geometry	cost_written_geometry	the planning session's stripe_row_limit does not reprice a written table	15;16;17;18;19	2026-10-21	the index-fetch penalty reads the planning session's stripe_row_limit (#806)
 debug_hook_privilege	debug_hook_privilege	and that refusal is the owner gate too	15;16;17;18;19	2026-10-14	the debug set-metapage-version hook without its owner check
 debug_hook_privilege	debug_hook_privilege	and the refusal is the owner gate, not an EXECUTE denial	15;16;17;18;19	2026-10-14	pgcolumnar_debug_advance_reserved_offset without its owner check
 debug_hook_privilege	debug_hook_privilege	backend alive	15;16;17;18;19	never	-
