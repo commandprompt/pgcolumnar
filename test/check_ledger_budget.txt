@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 134
+suites_not_covered 132
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4781,4 +4781,31 @@ suites_not_covered 134
 #     never         3611 + 0 = 3611
 #     dated         1864 + 7 = 1871
 #     3611 + 1871 == 5482
-checks_never_observed_red 3611
+#
+# #1341, iceberg_fdw_estimate seeded, with its twin (OffgridwithJD): 3424 -> 3426,
+# and suites_not_covered 151 -> 150. The suite had no rows. It enters with 4
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: with the metadata unreadable, "the estimate is the
+# real record count" compared two empty readings and passed; it is now check_num. 2
+# are dated by two mutations of the FDW's estimate, each reddening the same names in
+# both twins; 2 arrive never.
+#
+#     ledger rows   5482 + 4 = 5486
+#     never         3611 + 2 = 3613
+#     dated         1871 + 2 = 1873
+#     3613 + 1873 == 5486
+#
+# #1341, iceberg_fdw_projection seeded, with its twin (OffgridwithJD): 3426 -> 3431,
+# and suites_not_covered 150 -> 149. The suite had no rows. It enters with 7
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: with the metadata unreadable, both sides of every
+# projection shape failed, read empty, and all six passed; they are now check_text,
+# one literal check per shape, so the grader reads their names. 2
+# are dated by a projection mask that drops the columns only a filter references, each
+# reddening the same names in both twins; 5 arrive never.
+#
+#     ledger rows   5486 + 7 = 5493
+#     never         3613 + 5 = 3618
+#     dated         1873 + 2 = 1875
+#     3618 + 1875 == 5493
+checks_never_observed_red 3618

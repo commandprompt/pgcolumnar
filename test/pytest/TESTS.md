@@ -279,6 +279,8 @@ behaviour, the source of that number is named.
 - [231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate](#231-test_iceberg_scanpy-iceberg_scan-reads-by-field-id-behind-the-server-file-gate)
 - [232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot](#232-test_iceberg_catalogpy-the-iceberg-catalog-reader-resolves-the-named-current-snapshot)
 - [233. test_iceberg_name_mapping_memory.py: the Iceberg name-mapping parse does not allocate per entry](#233-test_iceberg_name_mapping_memorypy-the-iceberg-name-mapping-parse-does-not-allocate-per-entry)
+- [234. test_iceberg_fdw_estimate.py: the Iceberg FDW estimates rows from the manifests](#234-test_iceberg_fdw_estimatepy-the-iceberg-fdw-estimates-rows-from-the-manifests)
+- [235. test_iceberg_fdw_projection.py: the Iceberg FDW's projection pushdown never changes a result](#235-test_iceberg_fdw_projectionpy-the-iceberg-fdws-projection-pushdown-never-changes-a-result)
 
 ## 1. How to read a test in here
 
@@ -9462,3 +9464,36 @@ Each peak is VmHWM from /proc for the backend of the connection that ran the one
 | `test_the_name_mapping_parse_does_not_allocate_per_entry` | the name-mapping parse does not allocate per entry (#731) |
 | `test_the_padded_mapping_still_binds_every_row` | the padded mapping still binds every row |
 | `test_the_mapped_values_are_still_correct` | and the mapped values are still correct |
+
+## 234. test_iceberg_fdw_estimate.py: the Iceberg FDW estimates rows from the manifests
+
+The twin of `test/iceberg_fdw_estimate.sh`. The FDW's row estimate is positive, equals the live record count summed from the manifests rather than the old flat 1000, and still has the scan's selectivity applied.
+
+### Every test
+
+One module fixture copies the warehouse into `server_dir` and reads every value from a private database.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fdw_estimates_a_positive_row_count` | the FDW estimates a positive row count from the manifests |
+| `test_the_estimate_is_the_real_record_count` | the estimate is the real record count, not the old constant 1000 |
+| `test_a_filtered_scan_estimates_fewer_rows` | a filtered scan estimates fewer rows than the whole table (selectivity applied) |
+| `test_backend_alive_after_the_estimates` | backend alive |
+
+## 235. test_iceberg_fdw_projection.py: the Iceberg FDW's projection pushdown never changes a result
+
+The twin of `test/iceberg_fdw_projection.sh`. Over a 13-column fixture, every projection shape the FDW decodes -- one column, three, the whole row, none, a filter on an unselected column, one selected and another filtered -- answers what bare iceberg_scan answers.
+
+### Every test
+
+One module fixture copies the warehouse into `server_dir` and reads both sides of each shape from a private database; the two are compared only when both were taken.
+
+| test | what it holds |
+| --- | --- |
+| `test_one_column` | one column : FDW projection matches iceberg_scan |
+| `test_three_columns` | three columns : FDW projection matches iceberg_scan |
+| `test_whole_row` | whole row : FDW projection matches iceberg_scan |
+| `test_count_only` | count only (no column referenced) : FDW projection matches iceberg_scan |
+| `test_filter_references_an_unselected_column` | filter references an unselected column : FDW projection matches iceberg_scan |
+| `test_select_one_filter_another` | select one, filter another : FDW projection matches iceberg_scan |
+| `test_backend_alive_after_the_projections` | backend alive |
