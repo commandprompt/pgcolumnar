@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 141
+suites_not_covered 140
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4647,4 +4647,24 @@ suites_not_covered 141
 #     never         3576 + 3 = 3579
 #     dated         1815 + 6 = 1821
 #     3579 + 1821 == 5400
-checks_never_observed_red 3579
+#
+# #1341, import_deferred seeded, with its twin (OffgridwithJD): 3424 -> 3430,
+# and suites_not_covered 151 -> 150. The suite had no rows. It enters with 14
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: outcome() read any ERROR as the rejection under
+# test, so with every import reading a file that does not exist all five "rejects"
+# arms passed; it now reports the SQLSTATE, and the arms want 23505 (23P01 for the
+# exclusion constraint). And "a rewrite of a uniquely-indexed table still succeeds"
+# ran pgcolumnar.vacuum(), which rewrites the whole relation and reindexes it, never
+# reaching the per-row loop its comment says it guards: routing that loop through the
+# enforcing path passed. It now runs compact_rewrite over the deleted rows, and that
+# mutation reds it. 8 are dated by three mutations of import and rewrite index
+# maintenance, each reddening the same names in both twins; 6 arrive never, two of
+# them the heap oracle's "premise:" checks, which read core's deferred constraints
+# and no pgcolumnar code.
+#
+#     ledger rows   5400 + 14 = 5414
+#     never         3579 + 6 = 3585
+#     dated         1821 + 8 = 1829
+#     3585 + 1829 == 5414
+checks_never_observed_red 3585
