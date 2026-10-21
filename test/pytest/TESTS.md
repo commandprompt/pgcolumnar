@@ -294,6 +294,7 @@ behaviour, the source of that number is named.
 - [246. test_nologin_workers.py: a NOLOGIN role's background workers connect and act as that role](#246-test_nologin_workerspy-a-nologin-roles-background-workers-connect-and-act-as-that-role)
 - [247. test_scan_direction.py: a scrollable cursor over a columnar table never invents a backward answer](#247-test_scan_directionpy-a-scrollable-cursor-over-a-columnar-table-never-invents-a-backward-answer)
 - [248. test_qual_order_selectivity.py: skip predicates are probed most-selective-first](#248-test_qual_order_selectivitypy-skip-predicates-are-probed-most-selective-first)
+- [249. test_pushdown_report.py: EXPLAIN reports what qual pushdown did, the same way on every columnar node](#249-test_pushdown_reportpy-explain-reports-what-qual-pushdown-did-the-same-way-on-every-columnar-node)
 
 ## 1. How to read a test in here
 
@@ -9831,3 +9832,60 @@ A probe count is a number or `no reading`. The heap mirror is built from the gen
 | `test_a_range_selective_predicate_matches` | and so does a query where the selective predicate is a range |
 | `test_nothing_selective_still_answers_correctly` | and one where NOTHING is selective, which must still answer correctly |
 | `test_no_selective_predicate_prunes_nothing` | a query with no selective predicate prunes nothing, as before |
+
+## 249. test_pushdown_report.py: EXPLAIN reports what qual pushdown did, the same way on every columnar node
+
+The pytest twin of `test/pushdown_report.sh` (ported for #1341), every check by the shell's name. Pushed-down filters, usable skip predicates and the chunk groups they remove are reported with pushdown on and off, for a usable qual and one whose operator builds no skip predicate, on the scalar scan and both vectorized aggregates, under plain EXPLAIN and EXPLAIN ANALYZE (#191, #479, #493, #495, #726). On a private database, with serial planning.
+
+### Every test
+
+A comparison of two EXPLAIN fields is numeric, so a field missing from both plans is not agreement.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_plan_is_a_columnar_custom_scan` | the plan under test is a columnar custom scan |
+| `test_it_is_still_one_with_pushdown_off` | and it is still one with pushdown off |
+| `test_pushdown_on_reports_a_filter` | pushdown on reports a pushed-down filter |
+| `test_pushdown_off_reports_none` | pushdown off reports none |
+| `test_pushdown_on_skips_chunk_groups` | pushdown on skips chunk groups |
+| `test_pushdown_off_skips_none` | pushdown off skips none |
+| `test_the_executor_filters_more_with_pushdown_off` | the executor filters far more rows with pushdown off |
+| `test_pushdown_off_examines_every_row` | pushdown off examines every row |
+| `test_the_answer_is_unchanged_with_pushdown_on` | the answer is unchanged with pushdown on |
+| `test_the_answer_is_unchanged_with_pushdown_off` | the answer is unchanged with pushdown off |
+| `test_two_quals_report_two_filters` | two quals report two pushed-down filters |
+| `test_integer_ops_has_no_ordering_proc_for_the_pair` | premise: integer_ops has no ordering proc for (bigint, oid) |
+| `test_core_has_no_such_pair` | premise: and core has no such pair of its own, which is why this is built |
+| `test_the_usable_arm_is_a_custom_scan` | the usable arm is a columnar custom scan |
+| `test_the_unusable_arm_is_a_custom_scan` | the unusable arm is a columnar custom scan |
+| `test_the_usable_arm_removes_chunk_groups` | the usable arm removes chunk groups |
+| `test_the_unusable_arm_removes_none` | the unusable arm removes none |
+| `test_the_unusable_arm_returns_the_right_answer` | and the unusable arm still returns the right answer |
+| `test_both_arms_report_the_filter_pushed_down` | both arms report the filter as pushed down |
+| `test_the_usable_arm_reports_one_usable_predicate` | the usable arm reports one usable skip predicate |
+| `test_the_unusable_arm_reports_no_usable_predicate` | the unusable arm reports none |
+| `test_pushdown_off_reports_no_usable_predicates` | pushdown off reports no usable skip predicates |
+| `test_the_ungrouped_node_ran_usable` | the ungrouped vectorized aggregate node ran (usable arm) |
+| `test_the_ungrouped_node_ran_unusable` | the ungrouped vectorized aggregate node ran (unusable arm) |
+| `test_ungrouped_the_usable_arm_removes_groups` | ungrouped: the usable arm removes chunk groups |
+| `test_ungrouped_the_unusable_arm_removes_none` | ungrouped: the unusable arm removes none |
+| `test_the_plain_explain_arm_is_the_ungrouped_node` | the plain EXPLAIN arm is the ungrouped vectorized aggregate |
+| `test_the_analyze_arm_reports_a_nonzero_count` | the same query under ANALYZE reports a non-zero count |
+| `test_plain_explain_reports_the_ungrouped_filters` | plain EXPLAIN reports the ungrouped node's pushed-down filters (#726) |
+| `test_plain_explain_reports_the_ungrouped_vector_predicates` | plain EXPLAIN reports the ungrouped node's vector predicates (#726) |
+| `test_the_grouped_node_is_planned_for_the_cross_node_arm` | the grouped node IS planned for the cross-node arm |
+| `test_plain_explain_the_grouped_node_agrees` | plain EXPLAIN: the grouped node agrees with the ungrouped one (#493, #726) |
+| `test_ungrouped_the_usable_arm_reports_one_of_each` | ungrouped: the usable arm reports one of each, agreeing |
+| `test_ungrouped_the_unusable_arm_builds_no_predicate` | ungrouped: and the unusable arm builds no skip predicate |
+| `test_the_grouped_node_ran_usable` | the grouped vectorized aggregate node ran (usable arm) |
+| `test_the_grouped_node_ran_unusable` | the grouped vectorized aggregate node ran (unusable arm) |
+| `test_grouped_the_usable_arm_removes_groups` | grouped: the usable arm removes chunk groups |
+| `test_grouped_the_unusable_arm_removes_none` | grouped: the unusable arm removes none |
+| `test_grouped_the_usable_arm_reports_one_of_each` | grouped: the usable arm reports one of each, agreeing |
+| `test_grouped_the_unusable_arm_builds_no_predicate` | grouped: and the unusable arm builds no skip predicate |
+| `test_each_counter_has_one_emitter` | one test per row of `EMITTERS` (6 rows), each by the shell's name |
+| `test_the_scalar_arm_is_the_scalar_scan` | the scalar arm really is the scalar scan (#493) |
+| `test_scalar_and_ungrouped_agree` | scalar and ungrouped agree on Pushed-Down Filters (#493) |
+| `test_scalar_and_grouped_agree` | scalar and grouped agree on Pushed-Down Filters (#493) |
+| `test_the_ungrouped_node_reports_vector_predicates_separately` | the ungrouped node reports its vector-predicate count separately (#493) |
+| `test_it_is_the_count_that_used_to_be_mislabelled` | and it is the count that used to be mislabelled (#493) |
