@@ -2331,7 +2331,7 @@ harness_selftest	480-an-unrunnable-record-names-its-check	premise: and it compar
 harness_selftest	480-an-unrunnable-record-names-its-check	premise: that clean run had a refusal site to be silent ABOUT	15;16;17;18;19	never	-
 harness_selftest	480-an-unrunnable-record-names-its-check	premise: the sweep found unrunnable sites at all	15;16;17;18;19	never	-
 harness_selftest	480-an-unrunnable-record-names-its-check	premise: the sweep tool is present	15;16;17;18;19	never	-
-harness_selftest	480-an-unrunnable-record-names-its-check	the refusal emitters are the two the tree defines	15;16;17;18;19	never	-
+harness_selftest	480-an-unrunnable-record-names-its-check	the refusal emitters are the ones the tree defines	15;16;17;18;19	never	-
 harness_selftest	480-an-unrunnable-record-names-its-check	the sweep EXITS non-zero when it reports a mismatch	15;16;17;18;19	never	-
 harness_selftest	480-an-unrunnable-record-names-its-check	the sweep REPORTS a name the file records only in its refusal branch	15;16;17;18;19	never	-
 harness_selftest	490-a-one-line-body-ends-at-its-own-brace	a body that never closes is NAMED rather than silently swallowing the file	15;16;17;18;19	never	-
@@ -2537,6 +2537,190 @@ harness_selftest	640-every-suite-job-installs-the-extensions	the detector names 
 harness_selftest	640-every-suite-job-installs-the-extensions	the detector names a workflow in which it finds no suite job	15;16;17;18;19	2026-10-14	640's _ej_missing without its no-suite-job guard
 harness_selftest	640-every-suite-job-installs-the-extensions	the detector names a workflow it cannot read	15;16;17;18;19	2026-10-14	640's _ej_missing without its unreadable-file guard
 harness_selftest	640-every-suite-job-installs-the-extensions	the suite-running jobs are exactly the five this part knows	15;16;17;18;19	2026-10-14	640's job scan no longer counts a cluster job that runs pytest
+hilbert_curve	hilbert_curve	C0 premise: the battery encoded every case and every point	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	C0 premise: the encoder was called once per point	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	C1 the Hilbert index set is exactly the contiguous range	15;16;17;18;19	2026-10-21	columnar_curve.c: the transpose clears the top bit of X[0], so curve indices collide
+hilbert_curve	hilbert_curve	C2 consecutive points in memcmp key order are unit-adjacent	15;16;17;18;19	2026-10-21	columnar_curve.c: the transpose clears the top bit of X[0], so curve indices collide
+hilbert_curve	hilbert_curve	C3 every dyadic sub-cube occupies a contiguous run of indices	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave emits the bit rounds lowest first, a permutation whose dyadic sub-cubes are scattered
+hilbert_curve	hilbert_curve	C4a premise: the bridge covered every case and every point	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	C4a the full-width key prefix does not move when the low bits change	15;16;17;18;19	2026-10-21	columnar_curve.c: the lowest bit of the last transposed word is folded into the top bit of the first
+hilbert_curve	hilbert_curve	C4a the full-width key prefixes are exactly the index range	15;16;17;18;19	2026-10-21	columnar_curve.c: the transpose clears the top bit of X[0], so curve indices collide
+hilbert_curve	hilbert_curve	C4b consecutive keys decode to unit-adjacent points, re-encoded by the code under test	15;16;17;18;19	2026-10-21	columnar_curve.c: a correct transpose that flips bit 0 of X[0] when ncols == 8 and the low byte of X[3] is 0x5a
+hilbert_curve	hilbert_curve	C4b control: a mutated inverse breaks every round trip the clean one made	15;16;17;18;19	2026-10-21	columnar_curve.c: a correct transpose that flips bit 0 of X[0] when ncols == 8 and the low byte of X[3] is 0x5a
+hilbert_curve	hilbert_curve	C4b premise: 3,000 DISTINCT full-width keys per ncols were round-tripped	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	C4b premise: consecutive key pairs were formed	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	C4b the published inverse round-trips full-width keys	15;16;17;18;19	2026-10-21	columnar_curve.c: a correct transpose that flips bit 0 of X[0] when ncols == 8 and the low byte of X[3] is 0x5a
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=1 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=1 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=1 max	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=1 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=1 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=1 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=1 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=1 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=2 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=2 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=2 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=2 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=2 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=2 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=2 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=2 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=3 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=3 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=3 max	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=3 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=3 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=3 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=3 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=3 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=4 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=4 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=4 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=4 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=4 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=4 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=4 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=4 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=5 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=5 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=5 max	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=5 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=5 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=5 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=5 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=5 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=6 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=6 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=6 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=6 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=6 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=6 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=6 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=6 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=7 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=7 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=7 max	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=7 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=7 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=7 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=7 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=7 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=8 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=8 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=8 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=8 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=8 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=8 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=8 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 golden Hilbert keys: ncols=8 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C5 the pack bit order: pack(0, 2^63) starts 0x40	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 the pack bit order: pack(2^63, 0) starts 0x80	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C5 the pack establishes exactly 8*ncols bytes: ncols=1	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack establishes exactly 8*ncols bytes: ncols=2	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack establishes exactly 8*ncols bytes: ncols=3	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack establishes exactly 8*ncols bytes: ncols=4	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack establishes exactly 8*ncols bytes: ncols=5	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack establishes exactly 8*ncols bytes: ncols=6	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack establishes exactly 8*ncols bytes: ncols=7	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack establishes exactly 8*ncols bytes: ncols=8	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack sets every bit of the key for an all-ones vector: ncols=1	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack sets every bit of the key for an all-ones vector: ncols=2	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack sets every bit of the key for an all-ones vector: ncols=3	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack sets every bit of the key for an all-ones vector: ncols=4	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack sets every bit of the key for an all-ones vector: ncols=5	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack sets every bit of the key for an all-ones vector: ncols=6	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack sets every bit of the key for an all-ones vector: ncols=7	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack sets every bit of the key for an all-ones vector: ncols=8	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack wrote nothing past the key: ncols=1	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack wrote nothing past the key: ncols=2	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack wrote nothing past the key: ncols=3	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack wrote nothing past the key: ncols=4	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack wrote nothing past the key: ncols=5	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack wrote nothing past the key: ncols=6	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack wrote nothing past the key: ncols=7	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C5 the pack wrote nothing past the key: ncols=8	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave writes one byte past the 8*ncols-byte key
+hilbert_curve	hilbert_curve	C6 ncols == 1 agrees with Z-order over 200,000 random values	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C6 ncols == 1 is the big-endian ordinal over 200,000 random values	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C6 ncols == 1 is the big-endian ordinal: 0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C6 ncols == 1 is the big-endian ordinal: 1	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C6 ncols == 1 is the big-endian ordinal: 2^63	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C6 ncols == 1 is the big-endian ordinal: UINT64_MAX	15;16;17;18;19	2026-10-21	columnar_curve.c: the final mask t loses its lowest bit, so only bit 0 of each transposed word moves
+hilbert_curve	hilbert_curve	C6 premise: the comparison loop ran 200,000 times	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=1 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=1 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=1 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave stops after 32 of its 64 rounds
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=1 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave emits the bit rounds lowest first, a permutation whose dyadic sub-cubes are scattered
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=1 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=1 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=1 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=1 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=2 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=2 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=2 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave stops after 32 of its 64 rounds
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=2 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=2 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=2 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=2 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=2 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=3 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=3 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=3 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave stops after 32 of its 64 rounds
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=3 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=3 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=3 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=3 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=3 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=4 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=4 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=4 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave stops after 32 of its 64 rounds
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=4 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave emits the bit rounds lowest first, a permutation whose dyadic sub-cubes are scattered
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=4 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=4 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=4 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=4 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=5 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=5 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=5 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave stops after 32 of its 64 rounds
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=5 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave emits the bit rounds lowest first, a permutation whose dyadic sub-cubes are scattered
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=5 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=5 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=5 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=5 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=6 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=6 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=6 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave stops after 32 of its 64 rounds
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=6 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave emits the bit rounds lowest first, a permutation whose dyadic sub-cubes are scattered
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=6 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=6 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=6 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=6 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes one byte short of the key
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=7 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=7 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=7 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave stops after 32 of its 64 rounds
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=7 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=7 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=7 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=7 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=7 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=8 asym	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=8 lowbit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=8 max	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave stops after 32 of its 64 rounds
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=8 mixed	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=8 tie	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=8 topbit0	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=8 unit	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	C7 the Z-order pack is byte-for-byte what it was: ncols=8 zero	15;16;17;18;19	2026-10-21	columnar_curve.c: cluster_pack_interleave zeroes at most 48 bytes, so a 7- or 8-column key is not fully established
+hilbert_curve	hilbert_curve	INSTRUMENT C0 premise: the control battery encoded every case and every point	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	INSTRUMENT C0 premise: the control encoders were called once per point	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	INSTRUMENT C1 control: Z-order is a permutation of the index range	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	INSTRUMENT C1 control: a truncating encoder FAILS the permutation test in every case	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	INSTRUMENT C1 control: the serpentine is a permutation of the index range	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	INSTRUMENT C2 control: Z-order FAILS unit-step adjacency in every multi-column case	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	INSTRUMENT C2 control: the serpentine PASSES unit-step adjacency	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	INSTRUMENT C3 control: Z-order PASSES dyadic contiguity	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	INSTRUMENT C3 control: the serpentine FAILS dyadic contiguity in every nested case	15;16;17;18;19	never	-
+hilbert_curve	hilbert_curve	INSTRUMENT the control's own pack reproduces the frozen Z-order bytes	15;16;17;18;19	never	-
 iceberg_catalog	iceberg_catalog	a dangling current-snapshot-id is refused (data_corrupted XX001)	15;16;17;18;19	2026-10-21	a dangling current-snapshot-id reads as no current snapshot
 iceberg_catalog	iceberg_catalog	a non-Iceberg JSON object is refused (invalid_parameter_value 22023)	15;16;17;18;19	2026-10-21	any JSON object is read as Iceberg table metadata
 iceberg_catalog	iceberg_catalog	a pg_read_server_files member who is not superuser may read the catalog	15;16;17;18;19	2026-10-21	the Iceberg SRF gate admits only superusers, refusing every pg_read_server_files member

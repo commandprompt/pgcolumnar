@@ -18,7 +18,6 @@ fuzz_avro
 fuzz_listing
 fuzz_parquet
 harness_selftest
-hilbert_curve
 native_agg_deletes
 native_cancel
 native_cluster

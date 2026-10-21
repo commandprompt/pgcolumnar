@@ -150,6 +150,10 @@ NO_CLUSTER = [
     # #1341's twin of wal_envelope.sh. It reads src/*.c as text with its own Python
     # reader -- no connection, no cluster, no driver -- and the classifier agrees.
     "test_wal_envelope.py",
+    # #1341's twin of hilbert_curve.sh. It compiles src/columnar_curve.c with a small
+    # driver into a shared library and checks the curve in Python -- no connection, no
+    # cluster, no driver -- and the classifier agrees.
+    "test_hilbert_curve.py",
     "test_parquet_level_width.py",
 ]
 
