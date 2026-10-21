@@ -2547,6 +2547,33 @@ maintenance_crash	maintenance_crash	vacuum changed the row groups before the cra
 maintenance_crash	maintenance_crash	vacuum changed the row groups in its open transaction	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	vacuum committed, and the cluster came back after a crash before any checkpoint	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	vacuum ran in its open transaction, and the cluster came back after a crash	15;16;17;18;19	never	-
+maintenance_due	maintenance_due	GUARD: recluster NOT due on a never-ordered table	15;16;17;18;19	2026-10-21	the sorted-run guard is gone: a never-ordered table is told to recluster
+maintenance_due	maintenance_due	GUARD: recommendation is null on a never-ordered table	15;16;17;18;19	2026-10-21	the sorted-run guard is gone: a never-ordered table is told to recluster
+maintenance_due	maintenance_due	appended: compact_rewrite not due (no deletes)	15;16;17;18;19	never	-
+maintenance_due	maintenance_due	appended: raising the recluster threshold above the fraction makes it not due	15;16;17;18;19	2026-10-21	maintenance_due ignores its recluster threshold parameter
+maintenance_due	maintenance_due	appended: recluster due	15;16;17;18;19	2026-10-21	sort_status() puts every group in the sorted run, ordered or not;sort_status() puts no group in the sorted run
+maintenance_due	maintenance_due	appended: recommendation names recluster only	15;16;17;18;19	2026-10-21	sort_status() puts every group in the sorted run, ordered or not;sort_status() puts no group in the sorted run
+maintenance_due	maintenance_due	both: compact_rewrite due	15;16;17;18;19	never	-
+maintenance_due	maintenance_due	both: recluster due	15;16;17;18;19	2026-10-21	sort_status() puts every group in the sorted run, ordered or not;sort_status() puts no group in the sorted run
+maintenance_due	maintenance_due	both: recommendation names both verbs	15;16;17;18;19	2026-10-21	sort_status() puts every group in the sorted run, ordered or not;sort_status() puts no group in the sorted run;the recommendation names the verbs in the other order
+maintenance_due	maintenance_due	clean: compact_rewrite not due	15;16;17;18;19	never	-
+maintenance_due	maintenance_due	clean: recluster not due	15;16;17;18;19	never	-
+maintenance_due	maintenance_due	clean: recommendation is null	15;16;17;18;19	never	-
+maintenance_due	maintenance_due	delete: compact_rewrite due (0.40 >= 0.2 default)	15;16;17;18;19	never	-
+maintenance_due	maintenance_due	delete: maintenance_due reports the same deleted_fraction	15;16;17;18;19	2026-10-21	maintenance_due takes the deleted fraction over live plus deleted rows;stats() reports 10% more deleted rows than there are
+maintenance_due	maintenance_due	delete: raising the compact threshold above 0.40 makes it not due	15;16;17;18;19	2026-10-21	maintenance_due ignores its compact threshold parameter
+maintenance_due	maintenance_due	delete: recluster NOT due (table was never ordered)	15;16;17;18;19	2026-10-21	the sorted-run guard is gone: a never-ordered table is told to recluster
+maintenance_due	maintenance_due	delete: recommendation names compact_rewrite only	15;16;17;18;19	2026-10-21	the sorted-run guard is gone: a never-ordered table is told to recluster
+maintenance_due	maintenance_due	deny: a role without SELECT on the relation is refused (42501)	15;16;17;18;19	2026-10-21	neither stats() nor sort_status() checks the caller's SELECT
+maintenance_due	maintenance_due	md_appended has appended groups	15;16;17;18;19	2026-10-21	sort_status() puts every group in the sorted run, ordered or not
+maintenance_due	maintenance_due	md_appended still has a sorted run	15;16;17;18;19	2026-10-21	sort_status() puts no group in the sorted run
+maintenance_due	maintenance_due	md_clean has a sorted run	15;16;17;18;19	2026-10-21	sort_status() puts no group in the sorted run
+maintenance_due	maintenance_due	md_clean has no deleted rows	15;16;17;18;19	2026-10-21	stats() counts one deleted row in every group
+maintenance_due	maintenance_due	md_clean is fully in its sorted run (0 appended groups)	15;16;17;18;19	2026-10-21	sort_status() puts no group in the sorted run
+maintenance_due	maintenance_due	never-ordered table has NO sorted run	15;16;17;18;19	2026-10-21	sort_status() puts every group in the sorted run, ordered or not
+maintenance_due	maintenance_due	positive: a SELECT-holder gets a verdict, not a false deny	15;16;17;18;19	2026-10-21	maintenance_due and sort_status both run with invoker rights
+maintenance_due	maintenance_due	premise: md_deleted deleted fraction ~0.40	15;16;17;18;19	never	-
+maintenance_due	maintenance_due	yet sort_status still counts appended groups (> 0)	15;16;17;18;19	2026-10-21	sort_status() puts every group in the sorted run, ordered or not
 maintenance_rollback	maintenance_rollback	after a savepoint rolls back two rewrites, the rows written later in the transaction commit beside the old ones	15;16;17;18;19	2026-10-16	PgColumnarAllocateFreeSpace reuses space whatever its freeing xid, so a rolled-back maintenance function's freed bytes are overwritten;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
 maintenance_rollback	maintenance_rollback	after compact rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
 maintenance_rollback	maintenance_rollback	after compact_rewrite rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	2026-10-16	PgColumnarAllocateFreeSpace reuses space whatever its freeing xid, so a rolled-back maintenance function's freed bytes are overwritten;columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row

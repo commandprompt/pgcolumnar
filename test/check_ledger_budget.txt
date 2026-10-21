@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 146
+suites_not_covered 145
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4548,4 +4548,24 @@ suites_not_covered 146
 #     never         3533 + 0 = 3533
 #     dated         1739 + 11 = 1750
 #     3533 + 1750 == 5283
-checks_never_observed_red 3533
+#
+# #1341, maintenance_due seeded, with its twin (OffgridwithJD): 3424 -> 3431,
+# and suites_not_covered 151 -> 150. The suite had no rows. It enters with 27
+# checks from five-major runs (all green on each of 15-19, shell and twin alike). One
+# hole, measured on PG17 at origin/main: "delete: maintenance_due reports the same
+# deleted_fraction" compared two readings that agreed as "" == "" with both failed
+# (check_text). The privilege arms are layered: maintenance_due and sort_status are
+# each SECURITY DEFINER, and stats() and sort_status() each check the caller, so
+# removing either layer alone is equivalent and passes; each arm is dated by removing
+# both. The deleted-fraction arm's oracle was read from stats(), which maintenance_due
+# sums, so a stats() that over-counts deleted rows by 10% reddened only the premise;
+# the oracle is now core's reading of the DELETE's predicate over the generator. The
+# seven other premises read stats() or sort_status(), and each is reddened by a
+# mutation of one, so they lose the prefix (#1339). 20 are dated by eleven mutations
+# of the install script, each reddening the same names in both twins; 7 arrive never.
+#
+#     ledger rows   5283 + 27 = 5310
+#     never         3533 + 7 = 3540
+#     dated         1750 + 20 = 1770
+#     3540 + 1770 == 5310
+checks_never_observed_red 3540

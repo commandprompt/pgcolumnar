@@ -47,11 +47,11 @@ mdp() {  # mdp <table> <compact_frac> <recl_frac> <column>
 mk md_clean
 gen md_clean 20000
 psql_run "SELECT pgcolumnar.vacuum_sorted('md_clean', 'ts');"
-check_num "premise: md_clean has no deleted rows" \
+check_num "md_clean has no deleted rows" \
 	"$(q "SELECT COALESCE(sum(deletedrows),0) FROM pgcolumnar.stats('md_clean')")" "0"
-check_num "premise: md_clean is fully in its sorted run (0 appended groups)" \
+check_num "md_clean is fully in its sorted run (0 appended groups)" \
 	"$(q "SELECT appended_groups FROM pgcolumnar.sort_status('md_clean')")" "0"
-check "premise: md_clean has a sorted run" \
+check "md_clean has a sorted run" \
 	"$(q "SELECT sorted_groups > 0 FROM pgcolumnar.sort_status('md_clean')")" "t"
 check "clean: compact_rewrite not due" "$(md md_clean compact_rewrite_due)" "f"
 check "clean: recluster not due"        "$(md md_clean recluster_due)"       "f"
@@ -62,10 +62,15 @@ mk md_deleted
 gen md_deleted 20000
 psql_run "DELETE FROM md_deleted WHERE (ts * 2654435761)::bigint % 100 < 40;"
 psql_run "SELECT pgcolumnar.compact('md_deleted');"   # retire fully-dead (none: scattered)
-DF="$(q "SELECT round(sum(deletedrows)::numeric/sum(rowcount),2) FROM pgcolumnar.stats('md_deleted')")"
-check "premise: md_deleted deleted fraction ~0.40" "$DF" "0.40"
-check "delete: maintenance_due reports the same deleted_fraction" \
-	"$(q "SELECT round(deleted_fraction::numeric,2) FROM pgcolumnar.maintenance_due('md_deleted')")" "$DF"
+# The fraction the DELETE's predicate removes, read by core alone from the
+# generator: maintenance_due sums stats(), so an oracle taken from stats() moved
+# with it, and a stats() that over-counted deleted rows by 10% passed (#1597
+# review).
+CORE_DF="$(q "SELECT round(avg((((g * 2654435761)::bigint % 100) < 40)::int), 2) FROM generate_series(1, 20000) g")"
+check "premise: md_deleted deleted fraction ~0.40" "$CORE_DF" "0.40"
+# check_text: with both readings failing, two empty readings agreed as "" == "".
+check_text "delete: maintenance_due reports the same deleted_fraction" \
+	"$(q "SELECT round(deleted_fraction::numeric,2) FROM pgcolumnar.maintenance_due('md_deleted')")" "$CORE_DF"
 check "delete: compact_rewrite due (0.40 >= 0.2 default)" "$(md md_deleted compact_rewrite_due)" "t"
 check "delete: recluster NOT due (table was never ordered)" "$(md md_deleted recluster_due)" "f"
 check "delete: recommendation names compact_rewrite only" \
@@ -79,9 +84,9 @@ mk md_appended
 gen md_appended 20000
 psql_run "SELECT pgcolumnar.vacuum_sorted('md_appended', 'ts');"
 gen md_appended 5000     # appends outside the run
-check "premise: md_appended has appended groups" \
+check "md_appended has appended groups" \
 	"$(q "SELECT appended_groups > 0 FROM pgcolumnar.sort_status('md_appended')")" "t"
-check "premise: md_appended still has a sorted run" \
+check "md_appended still has a sorted run" \
 	"$(q "SELECT sorted_groups > 0 FROM pgcolumnar.sort_status('md_appended')")" "t"
 check "appended: recluster due" "$(md md_appended recluster_due)" "t"
 check "appended: compact_rewrite not due (no deletes)" "$(md md_appended compact_rewrite_due)" "f"
@@ -97,9 +102,9 @@ check "appended: raising the recluster threshold above the fraction makes it not
 mk md_neverord
 gen md_neverord 20000
 gen md_neverord 5000
-check "premise: never-ordered table has NO sorted run" \
+check "never-ordered table has NO sorted run" \
 	"$(q "SELECT sorted_groups = 0 FROM pgcolumnar.sort_status('md_neverord')")" "t"
-check "premise: yet sort_status still counts appended groups (> 0)" \
+check "yet sort_status still counts appended groups (> 0)" \
 	"$(q "SELECT appended_groups > 0 FROM pgcolumnar.sort_status('md_neverord')")" "t"
 check "GUARD: recluster NOT due on a never-ordered table" \
 	"$(md md_neverord recluster_due)" "f"

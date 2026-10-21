@@ -52,7 +52,6 @@ isolation
 logical_decoding_cdc_recipe
 logical_decoding_source
 logical_subscriber
-maintenance_due
 native_agg_deletes
 native_cancel
 native_cluster
