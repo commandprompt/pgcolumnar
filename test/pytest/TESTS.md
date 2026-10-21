@@ -2375,15 +2375,16 @@ separately, so a reader sees a green test beside an error.
 | test | asserts |
 | --- | --- |
 | `test_a_write_that_wrote_nothing_is_recorded` | an `INSERT 0 0` is recorded, with its count and its tag |
-| `test_update_and_delete_are_writes_too` | `UPDATE 0` and `DELETE 0` are writes, not only INSERT |
+| `test_update_and_delete_are_writes_too` | `UPDATE 0` and `DELETE 0` are writes, not only INSERT, each recorded with its zero count and its own tag |
 | `test_a_select_matching_nothing_is_not_a_write` | `SELECT 0` is not a write; **the arm a count-only guard fails** |
 | `test_ddl_is_not_a_write` | `CREATE TABLE`, `SET`, `TRUNCATE TABLE`, `DROP SCHEMA` are not writes |
-| `test_a_write_that_wrote_rows_needs_no_acknowledgement` | a write that moved rows is recorded and needs no naming |
+| `test_a_write_that_wrote_rows_needs_no_acknowledgement` | a write that moved rows is recorded, with the count it reported |
+| `test_a_write_that_wrote_rows_passes_unacknowledged` | the inner run passes with a write that moved rows and was never named: **the guard refuses a zero, not a write** |
 | `test_an_unacknowledged_zero_row_write_fails_the_test` | the inner run fails, and the message names the mode and the command |
 | `test_expect_wrote_acknowledges_the_zero` | naming the zero lets a negative control pass |
 | `test_expect_wrote_refuses_a_count_that_is_not_a_count` | `rowcount == -1` is refused rather than compared |
 | `test_expect_wrote_still_compares` | acknowledging a count does not excuse a wrong one |
-| `test_several_writes_and_only_the_empty_one_is_named` | with three writes and one empty, the refusal names the empty one |
+| `test_several_writes_and_only_the_empty_one_is_named` | with three writes and one empty, the refusal names the empty one, `#2 UPDATE`, and neither INSERT |
 | `test_wrote_refuses_a_statement_that_is_not_a_write` | `expect.wrote` on a `SELECT 0` is refused, not compared |
 | `test_the_acknowledgement_names_one_write_and_not_its_twin` | naming one zero does not acknowledge a different identical zero |
 | `test_acknowledging_both_identical_zeros_passes` | the control for that arm: naming both is legitimate |
