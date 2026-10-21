@@ -2492,6 +2492,17 @@ latest_reading	latest_reading	the GROUP BY form returns what DISTINCT ON returns
 latest_reading	latest_reading	the LATERAL form returns what DISTINCT ON returns	15;16;17;18;19	2026-10-12	the document's LATERAL recipe orders by ts ascending, so it returns each device's FIRST reading
 latest_reading	latest_reading	with the btree the LATERAL form reads under a tenth of the table	15;16;17;18;19	never	-
 latest_reading	latest_reading	without the btree the LATERAL form reads the table once per device	15;16;17;18;19	never	-
+local_open_race_free	local_open_race_free	backend still up after the FIFO refusals	15;16;17;18;19	never	-
+local_open_race_free	local_open_race_free	premise: the recursive sweep read source files under src/	15;16;17;18;19	never	-
+local_open_race_free	local_open_race_free	read_avro_manifest on a FIFO is a clean error, not a hang	15;16;17;18;19	2026-10-21	the opener opens without O_NONBLOCK, so a FIFO blocks the backend in open(2)
+local_open_race_free	local_open_race_free	read_parquet on a FIFO is a clean error, not a hang	15;16;17;18;19	2026-10-21	the opener opens without O_NONBLOCK, so a FIFO blocks the backend in open(2)
+local_open_race_free	local_open_race_free	the opener fstats the fd it holds (checks what it opened)	15;16;17;18;19	2026-10-21	the opener checks the path's inode after the open, not the fd it holds
+local_open_race_free	local_open_race_free	the opener never stats a path before opening it (no TOCTOU)	15;16;17;18;19	2026-10-21	the opener checks the path's inode after the open, not the fd it holds
+local_open_race_free	local_open_race_free	the opener opens O_NONBLOCK (a FIFO cannot block the open)	15;16;17;18;19	2026-10-21	the opener opens without O_NONBLOCK, so a FIFO blocks the backend in open(2)
+local_open_race_free	local_open_race_free	the partition coordinator never stats a path before opening it (no TOCTOU)	15;16;17;18;19	2026-10-21	the partition coordinator stats the path before opening it
+local_open_race_free	local_open_race_free	the partition coordinator opens O_NONBLOCK (a FIFO cannot block its open)	15;16;17;18;19	2026-10-21	the partition coordinator opens without O_NONBLOCK
+local_open_race_free	local_open_race_free	the race-free opener exists	15;16;17;18;19	never	-
+local_open_race_free	local_open_race_free	the racy stat-before-open helper is gone	15;16;17;18;19	2026-10-21	the racy PgColumnarRejectNonRegularFile helper comes back
 maintenance_crash	maintenance_crash	after a crash with compact committed, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with compact committed, the table is as compact left it, with the same rows	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	after a crash with compact uncommitted, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)

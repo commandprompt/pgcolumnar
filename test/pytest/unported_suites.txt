@@ -51,7 +51,6 @@ index_delete_liveness
 index_only
 int8_agg_int128
 isolation
-local_open_race_free
 logical_decoding_cdc_recipe
 logical_decoding_source
 logical_subscriber

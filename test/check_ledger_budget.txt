@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 148
+suites_not_covered 147
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4493,4 +4493,25 @@ suites_not_covered 148
 #     never         3503 + 33 = 3536
 #     dated         1720 + 5 = 1725
 #     3536 + 1725 == 5261
-checks_never_observed_red 3536
+#
+# #1341, local_open_race_free seeded, with its twin (OffgridwithJD): 3424 -> 3427,
+# and suites_not_covered 151 -> 150. The suite had no rows. It enters with 11
+# checks from five-major runs (all green on each of 15-19, shell and twin alike). Four
+# holes, each measured on PG17 at origin/main by a mutant or a harness edit the old
+# suite passed whole: an opener that refuses no non-regular file (the FIFO arms took
+# any XX001, which the parsers also raise on a FIFO's empty read; they now require
+# the opener's own "is not a regular file"); a coordinator open(2) without
+# O_NONBLOCK, and its O_NONBLOCK arm counted the fcntl line and comments (both
+# O_NONBLOCK arms now read the open call); an lstat of an alias of the path (the
+# stat arms matched only an argument spelled "path"; they now match any stat or
+# lstat); and a body that was never read, which both stat arms counted as 0. The
+# sweep premise now names how many files it read, so it leaves lossy_arms.tsv, and
+# reads "under src/" rather than "under \$SRC", a name the grader read literally. 8 are
+# dated by eight mutations of the two openers, each reddening the same names in
+# both twins; 3 arrive never.
+#
+#     ledger rows   5261 + 11 = 5272
+#     never         3536 + 3 = 3539
+#     dated         1725 + 8 = 1733
+#     3539 + 1733 == 5272
+checks_never_observed_red 3539

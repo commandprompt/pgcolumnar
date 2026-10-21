@@ -119,7 +119,6 @@ iceberg_name_mapping_memory	premise: core's own parse is the larger part of the 
 iceberg_name_mapping_memory	premise: the two sizes give different peaks
 iceberg_name_mapping_memory	the name-mapping parse does not allocate per entry (#731)
 int8_agg_int128	premise: its values are NOT low-cardinality, so the fold is not answered from runs
-local_open_race_free	premise: the recursive sweep read source files under \$SRC
 logical_decoding_cdc_recipe	premise: and it is the whole block, not a fragment
 logical_subscriber	it retries rather than giving up, so the subscription is wedged
 native_cluster	clustering increases 2D skipping
