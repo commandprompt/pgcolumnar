@@ -2532,6 +2532,33 @@ index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the 50000-r
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the btree on id exists	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the table holds all 1000000 rows	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	the fetch penalty leaves a clustered ORDER BY on its index	15;16;17;18;19	never	-
+index_only	index_only	GUC off: no index-only scan	15;16;17;18;19	2026-10-21	pgcolumnar.enable_index_only_scan off no longer clears canreturn
+index_only	index_only	GUC on: index-only scan chosen	15;16;17;18;19	never	-
+index_only	index_only	after delete+vacuum: clean block 10 still all-visible	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
+index_only	index_only	after delete+vacuum: clean block 120 still all-visible	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
+index_only	index_only	after delete+vacuum: deleted block 50 not all-visible	15;16;17;18;19	2026-10-21	a delete leaves its block's all-visible bit set
+index_only	index_only	after delete: block 50 cleared by write	15;16;17;18;19	2026-10-21	a delete leaves its block's all-visible bit set
+index_only	index_only	after delete: some heap fetches occur	15;16;17;18;19	2026-10-21	a delete leaves its block's all-visible bit set
+index_only	index_only	after vacuum: block 10 all-visible	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
+index_only	index_only	after vacuum: block 120 all-visible	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
+index_only	index_only	after vacuum: block 50 all-visible	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
+index_only	index_only	all-visible interior: zero heap fetches	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
+index_only	index_only	before vacuum: block 50 not all-visible	15;16;17;18;19	never	-
+index_only	index_only	first set on fresh block succeeds	15;16;17;18;19	never	-
+index_only	index_only	index-only results match heap oracle (all-visible)	15;16;17;18;19	never	-
+index_only	index_only	index-only results match heap oracle after delete (fallback)	15;16;17;18;19	2026-10-21	a delete leaves its block's all-visible bit set
+index_only	index_only	iv contents match heap oracle after vacuum/delete	15;16;17;18;19	never	-
+index_only	index_only	iv row count	15;16;17;18;19	never	-
+index_only	index_only	new snapshot sees both batches	15;16;17;18;19	never	-
+index_only	index_only	old snapshot IOS does not see post-snapshot rows	15;16;17;18;19	2026-10-21	vacuum ignores the snapshot horizon when marking groups all-visible
+index_only	index_only	rows loaded	15;16;17;18;19	never	-
+index_only	index_only	second set on same block sees prior bit	15;16;17;18;19	never	-
+index_only	index_only	session A baseline sees batch 1 only	15;16;17;18;19	never	-
+index_only	index_only	session A used an index-only scan	15;16;17;18;19	never	-
+index_only	index_only	vm bit round-trips on columnar rel (block 0)	15;16;17;18;19	never	-
+index_only	index_only	vm bit round-trips on columnar rel (block 171)	15;16;17;18;19	never	-
+index_only	index_only	vm bit round-trips on columnar rel (block 3)	15;16;17;18;19	never	-
+index_only	index_only	vm bit round-trips on columnar rel (block 50)	15;16;17;18;19	never	-
 inheritance	inheritance	INHERITS parent includes the child (columnar)	15;16;17;18;19	never	-
 inheritance	inheritance	INHERITS parent includes the child (heap oracle)	15;16;17;18;19	never	-
 inheritance	inheritance	ONLY parent is still just the parent	15;16;17;18;19	never	-
