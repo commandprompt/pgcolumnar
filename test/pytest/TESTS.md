@@ -264,6 +264,7 @@ behaviour, the source of that number is named.
 - [216. test_projection_rewrite.py: a declared projection survives a rewrite](#216-test_projection_rewritepy-a-declared-projection-survives-a-rewrite)
 - [217. test_avro_manifest.py: Iceberg Avro manifests and manifest lists decode, and refuse what they must](#217-test_avro_manifestpy-iceberg-avro-manifests-and-manifest-lists-decode-and-refuse-what-they-must)
 - [218. test_column_projection.py: column projection reads only the columns a query references](#218-test_column_projectionpy-column-projection-reads-only-the-columns-a-query-references)
+- [219. test_local_open_race_free.py: local file opens are race-free: no stat-before-open](#219-test_local_open_race_freepy-local-file-opens-are-race-free-no-stat-before-open)
 
 ## 1. How to read a test in here
 
@@ -9048,3 +9049,25 @@ A module fixture on a private database replays the shell's steps in order, with 
 | `test_the_narrow_projection_reads_far_fewer_buffers` | the narrow projection really does read far fewer buffers -- not a premise: it measures the projection itself |
 | `test_both_scan_costs_are_measurements` | premise: both scan costs are measurements |
 | `test_the_cost_model_prices_a_narrow_projection_below_a_wide_one` | the cost model prices a narrow projection below a wide one |
+
+## 219. test_local_open_race_free.py: local file opens are race-free: no stat-before-open
+
+The twin of `test/local_open_race_free.sh` (#644/#686). The shape of PgColumnarOpenLocalRegularFile and the parallel-copy partition coordinator: each opens with O_NONBLOCK in the open call and stats nothing before it, and the racy stat-before-open helper is gone from a tree the sweep read. Functionally, read_parquet and read_avro_manifest refuse a FIFO with the opener's own XX001 rather than hang.
+
+### Every test
+
+The shape readings come from the shell's own function-body extraction, in Python, run in the fixture; a body that was not read is a failed reading. The FIFO lives in `server_dir`, and a statement still running after 5s is a HANG, after which the FIFO's write end is opened non-blocking so the backend's open(2) returns.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_race_free_opener_exists` | the race-free opener exists |
+| `test_the_opener_opens_o_nonblock` | the opener opens O_NONBLOCK (a FIFO cannot block the open) |
+| `test_the_opener_fstats_the_fd_it_holds` | the opener fstats the fd it holds (checks what it opened) |
+| `test_the_opener_never_stats_a_path_before_opening_it` | the opener never stats a path before opening it (no TOCTOU) |
+| `test_the_recursive_sweep_read_source_files` | premise: the recursive sweep read source files under src/ |
+| `test_the_racy_stat_before_open_helper_is_gone` | the racy stat-before-open helper is gone |
+| `test_the_partition_coordinator_opens_o_nonblock` | the partition coordinator opens O_NONBLOCK (a FIFO cannot block its open) |
+| `test_the_partition_coordinator_never_stats_a_path_before_opening_it` | the partition coordinator never stats a path before opening it (no TOCTOU) |
+| `test_read_parquet_on_a_fifo_is_a_clean_error` | read_parquet on a FIFO is a clean error, not a hang |
+| `test_read_avro_manifest_on_a_fifo_is_a_clean_error` | read_avro_manifest on a FIFO is a clean error, not a hang |
+| `test_backend_still_up_after_the_fifo_refusals` | backend still up after the FIFO refusals |
