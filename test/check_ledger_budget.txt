@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 136
+suites_not_covered 135
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4739,4 +4739,22 @@ suites_not_covered 136
 #     never         3603 + 2 = 3605
 #     dated         1852 + 6 = 1858
 #     3605 + 1858 == 5463
-checks_never_observed_red 3605
+#
+# #1341, iceberg_catalog seeded, with its twin (OffgridwithJD): 3424 -> 3430,
+# and suites_not_covered 151 -> 150. The suite had no rows. It enters with 12
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: the deny arm's role had no USAGE on the schema, so
+# it was refused before the file gate and the old suite passed with that gate removed;
+# and with no positive control a superuser-only gate passed it too -- both gate
+# mutations passed all eleven checks. The role now has USAGE and a twelfth check has a
+# non-superuser pg_read_server_files member read the catalog. The two oracle comparisons
+# are check_text, and the decoy check carries the row total, so a reader returning no
+# row is not read as one returning no decoy. 6 are dated by five mutations of the
+# gate and the snapshot resolver, each reddening the same names in both twins; 6
+# arrive never.
+#
+#     ledger rows   5463 + 12 = 5475
+#     never         3605 + 6 = 3611
+#     dated         1858 + 6 = 1864
+#     3611 + 1864 == 5475
+checks_never_observed_red 3611

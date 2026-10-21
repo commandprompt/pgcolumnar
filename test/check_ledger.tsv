@@ -2436,6 +2436,18 @@ harness_selftest	640-every-suite-job-installs-the-extensions	the detector names 
 harness_selftest	640-every-suite-job-installs-the-extensions	the detector names a workflow in which it finds no suite job	15;16;17;18;19	2026-10-14	640's _ej_missing without its no-suite-job guard
 harness_selftest	640-every-suite-job-installs-the-extensions	the detector names a workflow it cannot read	15;16;17;18;19	2026-10-14	640's _ej_missing without its unreadable-file guard
 harness_selftest	640-every-suite-job-installs-the-extensions	the suite-running jobs are exactly the five this part knows	15;16;17;18;19	2026-10-14	640's job scan no longer counts a cluster job that runs pytest
+iceberg_catalog	iceberg_catalog	a dangling current-snapshot-id is refused (data_corrupted XX001)	15;16;17;18;19	2026-10-21	a dangling current-snapshot-id reads as no current snapshot
+iceberg_catalog	iceberg_catalog	a non-Iceberg JSON object is refused (invalid_parameter_value 22023)	15;16;17;18;19	2026-10-21	any JSON object is read as Iceberg table metadata
+iceberg_catalog	iceberg_catalog	a pg_read_server_files member who is not superuser may read the catalog	15;16;17;18;19	2026-10-21	the Iceberg SRF gate admits only superusers, refusing every pg_read_server_files member
+iceberg_catalog	iceberg_catalog	a table with no current snapshot returns zero rows	15;16;17;18;19	never	-
+iceberg_catalog	iceberg_catalog	an unprivileged role is refused (42501)	15;16;17;18;19	2026-10-21	the Iceberg SRF gate is gone
+iceberg_catalog	iceberg_catalog	backend still up after the bad file	15;16;17;18;19	never	-
+iceberg_catalog	iceberg_catalog	current snapshot == oracle (id|seq|op|schema|manifest-list)	15;16;17;18;19	never	-
+iceberg_catalog	iceberg_catalog	exactly one current snapshot row	15;16;17;18;19	never	-
+iceberg_catalog	iceberg_catalog	malformed JSON is rejected (22P02), backend survives	15;16;17;18;19	never	-
+iceberg_catalog	iceberg_catalog	resolves the named current snapshot, not snapshots[0]	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
+iceberg_catalog	iceberg_catalog	the decoy snapshot is not returned	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
+iceberg_catalog	iceberg_catalog	the first snapshot has no parent (NULL)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a catalog_uri option on the USER MAPPING is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused before any request (28000)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a link-local oauth_token_uri is refused by the allow-list (42501)	15;16;17;18;19	never	-
