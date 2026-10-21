@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 142
+suites_not_covered 141
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -4631,4 +4631,20 @@ suites_not_covered 142
 #     never         3567 + 9 = 3576
 #     dated         1808 + 7 = 1815
 #     3576 + 1815 == 5391
-checks_never_observed_red 3576
+#
+# #1341, import_exclusion seeded, with its twin (OffgridwithJD): 3424 -> 3427,
+# and suites_not_covered 151 -> 150. The suite had no rows. It enters with 9
+# checks from five-major runs (all green on each of 15-19, shell and twin alike).
+# Measured on PG17 at origin/main: "a rewrite of the same table still succeeds" ran
+# compact_rewrite on a table with nothing deleted, which rewrites 0 groups, so a
+# rewrite that enforced the constraint -- finding each moved row against itself --
+# passed it. One key in ten is now deleted first, the reading is the number of groups
+# rewritten, and that mutation reds it. 6 are dated by three mutations of index
+# maintenance on import and rewrite, each reddening the same names in both twins; 3
+# arrive never.
+#
+#     ledger rows   5391 + 9 = 5400
+#     never         3576 + 3 = 3579
+#     dated         1815 + 6 = 1821
+#     3579 + 1821 == 5400
+checks_never_observed_red 3579

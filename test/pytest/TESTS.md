@@ -271,6 +271,7 @@ behaviour, the source of that number is named.
 - [223. test_eager_ordering_record.py: eager rewrites record the ordering they applied](#223-test_eager_ordering_recordpy-eager-rewrites-record-the-ordering-they-applied)
 - [224. test_int8_agg_int128.py: sum and avg over bigint accumulate in 128 bits](#224-test_int8_agg_int128py-sum-and-avg-over-bigint-accumulate-in-128-bits)
 - [225. test_fsst_verdict_cache.py: the FSST keep/drop verdict is cached with an age bound](#225-test_fsst_verdict_cachepy-the-fsst-keepdrop-verdict-is-cached-with-an-age-bound)
+- [226. test_import_exclusion.py: import_arrow enforces an exclusion constraint, and a rewrite does not](#226-test_import_exclusionpy-import_arrow-enforces-an-exclusion-constraint-and-a-rewrite-does-not)
 
 ## 1. How to read a test in here
 
@@ -9274,3 +9275,23 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_a_bounded_cache_tracks_the_change_more_closely` | a bounded cache tracks the change more closely than an unbounded one |
 | `test_the_changing_column_still_returns_its_values` | and the changing column still returns its values |
 | `test_caching_the_verdict_makes_the_load_measurably_faster` | caching the verdict makes the load measurably faster |
+
+## 226. test_import_exclusion.py: import_arrow enforces an exclusion constraint, and a rewrite does not
+
+The twin of `test/import_exclusion.sh` (follow-up to #153). A clean import into a table with EXCLUDE USING btree (k WITH =) succeeds and reaches the index; a violating import raises and leaves the row count alone, as an ordinary INSERT does; and a rewrite that really moves rows does not check the constraint against the rows it replaces.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. The arrow file lives in `server_dir`, because the backend writes and reads it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_constraint_is_an_exclusion_constraint_not_a_unique_index` | the constraint is an exclusion constraint, not a unique index |
+| `test_importing_rows_that_violate_nothing_succeeds` | importing rows that violate nothing succeeds |
+| `test_and_the_rows_are_there` | and the rows are there |
+| `test_an_index_scan_finds_an_imported_row` | an index scan finds an imported row |
+| `test_importing_rows_that_violate_the_constraint_raises` | importing rows that violate the constraint raises |
+| `test_the_failed_import_left_the_row_count_alone` | and the failed import left the row count alone |
+| `test_an_ordinary_insert_of_the_same_violation_also_raises` | an ordinary INSERT of the same violation also raises |
+| `test_a_rewrite_of_the_same_table_still_succeeds` | a rewrite of the same table still succeeds |
+| `test_and_the_rows_survived_it` | and the rows survived it |

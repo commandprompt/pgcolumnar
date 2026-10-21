@@ -2458,6 +2458,15 @@ iceberg_rest_server	iceberg_rest_server	the client secret never appears in the f
 iceberg_rest_server	iceberg_rest_server	the mapping token never appears in the PG server log	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the request carried an Authorization header	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the warehouse was sent on GET /v1/config (?warehouse=wh1)	15;16;17;18;19	never	-
+import_exclusion	import_exclusion	a rewrite of the same table still succeeds	15;16;17;18;19	2026-10-21	the rewrites enforce constraints, finding each moved row against itself
+import_exclusion	import_exclusion	an index scan finds an imported row	15;16;17;18;19	2026-10-21	import_arrow maintains no index
+import_exclusion	import_exclusion	an ordinary INSERT of the same violation also raises	15;16;17;18;19	2026-10-21	import_arrow maintains no index
+import_exclusion	import_exclusion	and the failed import left the row count alone	15;16;17;18;19	2026-10-21	import_arrow maintains indexes without enforcing constraints
+import_exclusion	import_exclusion	and the rows are there	15;16;17;18;19	never	-
+import_exclusion	import_exclusion	and the rows survived it	15;16;17;18;19	2026-10-21	import_arrow maintains indexes without enforcing constraints
+import_exclusion	import_exclusion	importing rows that violate nothing succeeds	15;16;17;18;19	never	-
+import_exclusion	import_exclusion	importing rows that violate the constraint raises	15;16;17;18;19	2026-10-21	import_arrow maintains indexes without enforcing constraints
+import_exclusion	import_exclusion	the constraint is an exclusion constraint, not a unique index	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	export_arrow refuses SELECT of a table the caller cannot read	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	export_parquet refuses SELECT of a table the caller cannot read	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	get_storage_id refuses a caller who cannot SELECT the relation	15;16;17;18;19	never	-
