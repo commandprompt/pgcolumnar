@@ -1023,4 +1023,6 @@ guard_tests 474
 # 6 tests, one per check, by collection over the cluster files.
 # cluster_tests 2503 -> 2508 for #1341's test_parallel_flush_optin.py, the twin of parallel_flush_optin.sh:
 # 5 tests, one per check, by collection over the cluster files.
-cluster_tests 2508
+# cluster_tests 2508 -> 2670 for #1341's test_parquet_export_stats.py, the twin of parquet_export_stats.sh:
+# 162 tests, one per check, by collection over the cluster files.
+cluster_tests 2670

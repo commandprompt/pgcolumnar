@@ -91,6 +91,7 @@ COMPLETE = ["advisory_lock_class",
             "smoke",
             "sort_status",
             "sort_status_privilege",
+            "parquet_export_stats",
             "parallel_flush_optin",
             "parallel_degree",
             "parquet_count_bounds",
@@ -1309,13 +1310,15 @@ def test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one(expect):
 
 
 def test_the_suite_local_helpers_are_known_and_excluded(expect):
-    """Four helpers are defined by ONE suite each, and the extractor does not read
+    """Three helpers are defined by ONE suite each, and the extractor does not read
     them. That is a scope decision and it is asserted rather than left implicit.
 
     `compare_to_bash.py` grades a `test/<stem>.sh` against a
-    `test/pytest/test_<stem>.py`. None of the four suites defining its own helper
-    has a pytest twin, so none is graded and the exclusion costs nothing TODAY.
+    `test/pytest/test_<stem>.py`. No suite defining its own helper has a pytest
+    twin, so none is graded and the exclusion costs nothing TODAY.
     The day one of them is ported, this arm is what says the grader cannot see it.
+    It said so for parquet_export_stats.sh (#1341), whose check_float went when the
+    suite was ported: its two NaN-fixture checks and eight f4 bounds call `check`.
 
     The population is `check_<something>`, which is not the same as "starts with
     check": `checks_in` in `decode_interrupts.sh` is a COUNTING utility returning a
@@ -1330,11 +1333,10 @@ def test_the_suite_local_helpers_are_known_and_excluded(expect):
         for h in re.findall(r'^(check_[a-z_]+)\(\)\s*\{', sh.read_text(), re.M):
             local.setdefault(h, sh.name)
     expect.text(", ".join(f"{h} ({f})" for h, f in sorted(local.items())),
-                "check_float (parquet_export_stats.sh), "
                 "check_reconstruct (parallel_copy.sh), "
                 "check_split_happened (parallel_copy.sh), "
                 "check_structure (parallel_copy.sh)",
-                "the suite-local helpers are exactly these four")
+                "the suite-local helpers are exactly these three")
     twinned = [f for h, f in local.items()
                if (HERE / f"test_{f[:-3]}.py").exists()]
     expect.num(len(twinned), 0,
