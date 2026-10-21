@@ -91,7 +91,11 @@ check "an output column not in the schema is refused (42703)" \
 # deletes (apply position, refuse equality) are covered by iceberg_deletes.sh
 
 # ---- privilege -------------------------------------------------------------
-psql_run "DROP ROLE IF EXISTS icescan_unpriv; CREATE ROLE icescan_unpriv LOGIN;"
+# USAGE on the schema, so the refusal is the FILE gate's: without it the role was
+# refused by "permission denied for schema pgcolumnar", also 42501, and with the
+# file gate removed entirely this arm still passed (measured).
+psql_run "DROP ROLE IF EXISTS icescan_unpriv; CREATE ROLE icescan_unpriv LOGIN;
+	GRANT USAGE ON SCHEMA pgcolumnar TO icescan_unpriv;"
 check "an unprivileged role is refused (42501)" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U icescan_unpriv -d "$PGC_DB" \
 		-qtA 2>&1 <<SQL | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
@@ -99,5 +103,16 @@ check "an unprivileged role is refused (42501)" \
 SELECT * FROM pgcolumnar.iceberg_scan('$MD') AS t(id bigint);
 SQL
 )" "42501"
+
+# The positive control the deny arm needs: a deny alone is satisfied by a gate
+# that refuses everyone but the superuser, which would lock out every
+# pg_read_server_files member, and that passed this suite whole (measured). A
+# non-superuser holding the role must read all five rows.
+psql_run "DROP ROLE IF EXISTS icescan_reader; CREATE ROLE icescan_reader LOGIN;
+	GRANT pg_read_server_files TO icescan_reader;
+	GRANT USAGE ON SCHEMA pgcolumnar TO icescan_reader;"
+check "a pg_read_server_files member who is not superuser may scan" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U icescan_reader -d "$PGC_DB" \
+		-qtA -c "SELECT count(*) FROM pgcolumnar.iceberg_scan('$MD') AS t(id bigint);" 2>&1 | tail -1)" "5"
 
 pgc_summary

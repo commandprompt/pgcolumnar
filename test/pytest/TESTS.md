@@ -276,6 +276,7 @@ behaviour, the source of that number is named.
 - [228. test_index_only.py: index-only scans on a columnar table, served from the visibility map](#228-test_index_onlypy-index-only-scans-on-a-columnar-table-served-from-the-visibility-map)
 - [229. test_isolation.py: deterministic isolation specs for the compaction and truncation races](#229-test_isolationpy-deterministic-isolation-specs-for-the-compaction-and-truncation-races)
 - [230. test_concurrency.py: concurrent deletes into one chunk group serialize and both survive](#230-test_concurrencypy-concurrent-deletes-into-one-chunk-group-serialize-and-both-survive)
+- [231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate](#231-test_iceberg_scanpy-iceberg_scan-reads-by-field-id-behind-the-server-file-gate)
 
 ## 1. How to read a test in here
 
@@ -9399,3 +9400,22 @@ One module fixture runs the three scenarios in a private database; session 2's b
 | `test_c_different_group_deleter_does_not_block` | C different-group deleter does not block |
 | `test_c_both_different_group_deletes_survived` | C both different-group deletes survived (ids 1,5 gone) |
 | `test_every_bounded_wait_completed` | a bounded wait for a session to reach idle-in-transaction completed -- the shell's four wait_timeout names, recorded only where a wait timed out; declines on a green run, where the shell records nothing |
+
+## 231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate
+
+The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row.
+
+### Every test
+
+One module fixture copies the warehouse into `server_dir`, writes the renamed metadata beside it, and reads every value from a private database; the two roles log in on their own and are dropped at teardown.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_data_file_carries_field_ids` | premise: the data file carries field ids (id=1,region=2,amount=3) |
+| `test_iceberg_scan_reads_the_current_snapshots_rows` | iceberg_scan reads the current snapshot's rows |
+| `test_iceberg_scan_projects_and_reorders_by_field_id` | iceberg_scan projects and reorders by field id (amount, id) |
+| `test_iceberg_scan_reads_a_subset` | iceberg_scan reads a subset (region only) |
+| `test_a_renamed_column_still_reads_by_field_id` | a column renamed in the schema still reads by field id (amt2 = amount) |
+| `test_an_output_column_not_in_the_schema_is_refused` | an output column not in the schema is refused (42703) |
+| `test_an_unprivileged_role_is_refused_the_scan` | an unprivileged role is refused (42501) |
+| `test_a_pg_read_server_files_member_may_scan` | a pg_read_server_files member who is not superuser may scan |

@@ -956,4 +956,6 @@ guard_tests 464
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2037 -> 2045 for #1341's test_concurrency.py, the twin of concurrency.sh:
 # 8 tests, one per check, by collection over the cluster files.
-cluster_tests 2045
+# cluster_tests 2045 -> 2053 for #1341's test_iceberg_scan.py, the twin of iceberg_scan.sh:
+# 8 tests, one per check, by collection over the cluster files.
+cluster_tests 2053
