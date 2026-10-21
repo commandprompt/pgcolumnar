@@ -94,7 +94,9 @@ def _work(conn, catalog, statements):
             (catalog,),
         )
         row = cur.fetchone()
-    return tuple(int(v) for v in row) if row else (0, 0, 0)
+    # None, not zeros, when the statistics row is missing: (0, 0, 0) passed "does not
+    # read it whole" with nothing measured (#1339).
+    return tuple(int(v) for v in row) if row else (None, None, None)
 
 
 def test_catalog_scans_do_not_read_their_catalog_whole(pgc_own_db, expect, server_dir):
@@ -176,22 +178,28 @@ def test_catalog_scans_do_not_read_their_catalog_whole(pgc_own_db, expect, serve
     ]
 
     # The arms below are a loop over a list, and a loop that never ran asserts
-    # nothing while the premises above still pass.
-    expect.num(len(arms), 11, "premise: eleven operations are measured")
-
+    # nothing while the premises above still pass. Counted as MEASURED, after the
+    # loop, not as the list's length (#1339): an arm whose statistics never came back
+    # still made eleven.
+    expect.num(len(arms), 11, "premise: the arm list names eleven operations")
+    measured = 0
     for n, (name, cat, stmts, effect, want, projection) in enumerate(arms, 1):
         t = f"target_{n}"
         _make_target(conn, expect, t, name, projection)
         bufs, seq, idx = _work(conn, cat, [s.format(t=t) for s in stmts])
         print(f"-- {name}: pgcolumnar.{cat} buffers={bufs} seq_scan={seq} idx_scan={idx}")
+        if isinstance(seq, int) and isinstance(idx, int):
+            measured += 1
+        # Not premises (#1339): each operation and its catalog access are pgcolumnar's.
         expect.text(
             _q(conn, effect.format(t=t)),
             want,
-            f"premise: {name} took effect",
+            f"{name} took effect",
         )
         expect.at_least(
-            seq + idx,
+            seq + idx if isinstance(seq, int) and isinstance(idx, int) else None,
             1,
-            f"premise: {name} reached pgcolumnar.{cat}",
+            f"{name} reached pgcolumnar.{cat}",
         )
         expect.num(seq, 0, f"{name} does not read pgcolumnar.{cat} whole")
+    expect.num(measured, 11, "premise: eleven operations are measured")
