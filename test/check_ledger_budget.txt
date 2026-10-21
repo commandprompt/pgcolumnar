@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 117
+suites_not_covered 116
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5134,4 +5134,22 @@ suites_not_covered 117
 #     never         3714 + 4 = 3718
 #     dated         2022 + 4 = 2026
 #     3718 + 2026 == 5744
-checks_never_observed_red 3718
+#
+# #1341, preimage_rewrite seeded, with its twin (jdatcmd): 3533 -> 3592, and
+# suites_not_covered 147 -> 146. The suite had no rows. It enters with 86 checks from
+# five-major runs (86/86 on each of 15-19, shell and twin alike), after three fixes.
+# The three heap mirrors were copied from the columnar tables, so with a slice of pre_c
+# corrupted before the copy every check passed, 86 of 86; they are built from the
+# generators. "backend still up" read SELECT 1, which answers again after crash
+# recovery: with a backend SIGKILLed before it, it passed; it now also requires the
+# log's count of killed backends not to move. And the nine "the range ... prunes"
+# checks read pgcolumnar's zone-map pruning, which a mutant reddens, so they lose the
+# premise prefix (#1339). 27 are dated by two mutations, each reddening the same 18
+# names in both twins: zone maps that never exclude a group, and the preimage keys
+# dropped so no rewrite happens. 59 arrive never.
+#
+#     ledger rows   5744 + 86 = 5830
+#     never         3718 + 59 = 3777
+#     dated         2026 + 27 = 2053
+#     3777 + 2053 == 5830
+checks_never_observed_red 3777

@@ -297,6 +297,7 @@ behaviour, the source of that number is named.
 - [249. test_pushdown_report.py: EXPLAIN reports what qual pushdown did, the same way on every columnar node](#249-test_pushdown_reportpy-explain-reports-what-qual-pushdown-did-the-same-way-on-every-columnar-node)
 - [250. test_row_triggers.py: row-level triggers on a columnar table fire once per row with the right row](#250-test_row_triggerspy-row-level-triggers-on-a-columnar-table-fire-once-per-row-with-the-right-row)
 - [251. test_projection_rename_restore.py: a projection's declaration follows a column rename, so it rebuilds after restore](#251-test_projection_rename_restorepy-a-projections-declaration-follows-a-column-rename-so-it-rebuilds-after-restore)
+- [252. test_preimage_rewrite.py: a predicate on date_trunc of a column prunes like the range it stands for](#252-test_preimage_rewritepy-a-predicate-on-date_trunc-of-a-column-prunes-like-the-range-it-stands-for)
 
 ## 1. How to read a test in here
 
@@ -9933,3 +9934,40 @@ The pytest twin of `test/projection_rename_restore.sh` (ported for #1341), every
 | `test_the_rebuilt_projection_holds_every_row` | the rebuilt projection contains every restored row |
 | `test_the_descendant_declaration_follows_the_parent_rename` | the descendant declaration follows the parent rename |
 | `test_the_rebuilt_child_projection_holds_every_row` | the rebuilt child projection contains every restored row |
+
+## 252. test_preimage_rewrite.py: a predicate on date_trunc of a column prunes like the range it stands for
+
+The pytest twin of `test/preimage_rewrite.sh` (ported for #1341), every check by the shell's name. A predicate on `date_trunc(unit, ts)` is rewritten to a range on `ts`, so the zone maps can prune it (#403 item 1). The answers cannot see the rewrite, so the work checks compare the chunk groups each form removes with the explicit range it stands for: equality, and the four ordered operators in both operand orders and with constants that are not truncated. The answer checks catch a rewrite that prunes wrongly, against the range and against heap mirrors, by count and by rows. Near the end of the timestamp range and on the infinities the rewrite must answer rather than raise; the shapes that must decline still answer as heap does; and the keys stay conservative, so the batch fold declines them. The heap mirrors are built from the generators, never copied from the columnar tables, and the server must not have lost a backend since setup. On a private database, with serial planning.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_spans_many_chunk_groups` | premise: the fixture spans many chunk groups |
+| `test_the_explicit_range_prunes` | the explicit range prunes, so there IS something to remove |
+| `test_date_trunc_equality_prunes` | date_trunc('day', ts) = const prunes chunk groups (#403) |
+| `test_date_trunc_equality_prunes_as_well_as_the_range` | ...and prunes as well as the equivalent explicit range |
+| `test_the_rewritten_predicate_returns_the_ranges_answer` | the rewritten predicate returns the range's answer |
+| `test_the_rewritten_predicate_returns_the_heaps_answer` | and the heap mirror's answer |
+| `test_the_rewritten_predicate_returns_the_heaps_rows` | the actual ROWS match the heap, not just the count |
+| `test_the_range_for_an_ordered_arm_prunes` | one test per ordered arm (8): the range for [arm] prunes, so there is something to remove |
+| `test_an_ordered_arm_prunes` | one test per ordered arm (8): [arm] prunes chunk groups |
+| `test_an_ordered_arm_prunes_as_well_as_the_range` | one test per ordered arm (8): [arm] prunes as well as the equivalent explicit range |
+| `test_an_ordered_arm_returns_the_ranges_answer` | one test per ordered arm (8): [arm] returns the range's answer |
+| `test_an_ordered_arm_returns_the_heaps_answer` | one test per ordered arm (8): [arm] returns the heap's answer |
+| `test_an_ordered_arm_returns_the_heaps_rows` | one test per ordered arm (8): [arm] returns the heap's ROWS, not just its count |
+| `test_the_near_maximum_row_is_there` | premise: the near-maximum row is really there |
+| `test_an_edge_arm_answers_as_heap_does` | one test per edge predicate (11): [arm] answers instead of raising, and agrees with the heap |
+| `test_the_fixture_holds_one_positive_infinity` | premise: the fixture holds one +infinity row |
+| `test_the_fixture_holds_one_negative_infinity` | premise: the fixture holds one -infinity row |
+| `test_a_non_truncated_constant_returns_no_rows` | a non-truncated constant returns no rows |
+| `test_the_heap_agrees_it_is_unsatisfiable` | ...and the heap agrees it is unsatisfiable |
+| `test_timestamptz_is_correct_under_utc` | timestamptz: correct under UTC |
+| `test_timestamptz_is_correct_under_another_zone` | timestamptz: and still correct under a different zone |
+| `test_a_non_constant_unit_answers_correctly` | a non-constant unit still answers correctly |
+| `test_the_rewritten_predicate_does_not_engage_the_batch_fold` | the rewritten predicate does not engage the batch fold |
+| `test_the_rewritten_predicate_answers_with_the_fold_enabled` | ...and still answers correctly with the fold enabled |
+| `test_a_unit_returns_the_heaps_answer` | one test per unit (month, week, quarter, year): unit 'u' returns the heap's answer |
+| `test_a_unit_matches_some_rows` | one test per unit: unit 'u': premise: it matches some rows |
+| `test_an_unlisted_unit_answers_correctly` | an unlisted unit (millennium) still answers correctly |
+| `test_the_backend_is_still_up` | backend still up -- the server answers AND the log shows no backend killed since setup |
