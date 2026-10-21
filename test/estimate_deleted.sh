@@ -37,7 +37,9 @@ check_num "premise: columnar holds 100000 rows before delete" \
 	"$(q 'SELECT count(*) FROM ed_c')" "100000"
 before="$(plan_rows 'SELECT * FROM ed_c')"
 echo "-- rows before delete: $before"
-check "premise: the estimate before delete is the full table" \
+# Not premises (#1339): the estimate and ANALYZE's reltuples are pgcolumnar's own --
+# relation_estimate_size and the sampler -- so a change to either reddens these.
+check "the estimate before delete is the full table" \
 	"$(awk -v v="$before" 'BEGIN { print (v+0 >= 90000) ? "full" : "low " v }')" "full"
 
 psql_run "DELETE FROM ed_c WHERE id > 1000;"
@@ -48,7 +50,7 @@ check_num "premise: 1000 live rows remain" \
 	"$(q 'SELECT count(*) FROM ed_c')" "1000"
 relt="$(q "SELECT reltuples::bigint FROM pg_class WHERE relname='ed_c'")"
 echo "-- reltuples after ANALYZE: $relt"
-check "premise: ANALYZE recorded the live count in reltuples" \
+check "ANALYZE recorded the live count in reltuples" \
 	"$(awk -v v="$relt" 'BEGIN { d = (v > 1000 ? v-1000 : 1000-v); print (d <= 50) ? "close" : "off " v }')" "close"
 
 got="$(plan_rows 'SELECT * FROM ed_c')"
@@ -91,7 +93,7 @@ check "premise: the fixture spans several row groups, not one" \
 	"$(awk -v v="$ed_m_groups" 'BEGIN { print (v+0 >= 3) ? "several" : "only " v }')" "several"
 
 ed_m_stale="$(q "SELECT reltuples::bigint FROM pg_class WHERE relname = 'ed_m'")"
-check "premise: reltuples is 100000 before the delete" \
+check "reltuples is 100000 before the delete" \
 	"$(awk -v v="$ed_m_stale" 'BEGIN { print (v+0 >= 90000) ? "full" : "low " v }')" "full"
 
 # Delete only from the HIGHEST row numbers, so a bug that subtracts deletes for

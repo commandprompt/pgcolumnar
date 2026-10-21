@@ -281,6 +281,7 @@ behaviour, the source of that number is named.
 - [233. test_iceberg_name_mapping_memory.py: the Iceberg name-mapping parse does not allocate per entry](#233-test_iceberg_name_mapping_memorypy-the-iceberg-name-mapping-parse-does-not-allocate-per-entry)
 - [234. test_iceberg_fdw_estimate.py: the Iceberg FDW estimates rows from the manifests](#234-test_iceberg_fdw_estimatepy-the-iceberg-fdw-estimates-rows-from-the-manifests)
 - [235. test_iceberg_fdw_projection.py: the Iceberg FDW's projection pushdown never changes a result](#235-test_iceberg_fdw_projectionpy-the-iceberg-fdws-projection-pushdown-never-changes-a-result)
+- [236. test_estimate_deleted.py: the planner's row estimate follows deletes](#236-test_estimate_deletedpy-the-planners-row-estimate-follows-deletes)
 
 ## 1. How to read a test in here
 
@@ -9505,3 +9506,25 @@ One module fixture copies the warehouse into `server_dir` and reads both sides o
 | `test_filter_references_an_unselected_column` | filter references an unselected column : FDW projection matches iceberg_scan |
 | `test_select_one_filter_another` | select one, filter another : FDW projection matches iceberg_scan |
 | `test_backend_alive_after_the_projections` | backend alive |
+
+## 236. test_estimate_deleted.py: the planner's row estimate follows deletes
+
+The pytest twin of `test/estimate_deleted.sh` (ported for #1341), every check by the shell's name. After deleting 99% of a table and analysing it, EXPLAIN must estimate the live rows, as heap does, not the physical occupancy; with reltuples left stale on a table of several row groups, the estimate must still follow the deletes, while an undeleted table of the same shape estimates its full size.
+
+### Every test
+
+A module fixture on a private database runs the shell's sequence; each test asserts one reading. An estimate that is not a number is a failed reading, never zero.
+
+| test | what it holds |
+| --- | --- |
+| `test_columnar_holds_its_rows_before_the_delete` | premise: columnar holds 100000 rows before delete |
+| `test_the_estimate_before_the_delete_is_the_full_table` | the estimate before delete is the full table |
+| `test_a_thousand_live_rows_remain` | premise: 1000 live rows remain |
+| `test_analyze_recorded_the_live_count_in_reltuples` | ANALYZE recorded the live count in reltuples |
+| `test_the_estimate_after_the_delete_is_the_live_count` | the planner estimate after delete is the live count, not the physical occupancy |
+| `test_heap_is_near_the_live_count_too` | control: heap is also near the live count, so the probe reads EXPLAIN |
+| `test_the_fixture_spans_several_row_groups` | premise: the fixture spans several row groups, not one |
+| `test_reltuples_is_full_before_the_delete` | reltuples is 100000 before the delete |
+| `test_the_estimate_follows_the_deletes_with_a_stale_reltuples` | the estimate follows the deletes with a stale reltuples and several groups |
+| `test_the_live_count_really_is_60000` | control: and the live count really is 60000 |
+| `test_an_undeleted_table_estimates_its_full_size` | control: an undeleted table of the same shape estimates its full size |

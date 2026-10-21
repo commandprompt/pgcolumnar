@@ -1129,6 +1129,17 @@ entry_point_privilege	entry_point_privilege	the relation-by-other-means class is
 entry_point_privilege	entry_point_privilege	truncate refuses an unprivileged caller with 42501	15;16;17;18;19	2026-10-14	truncate without its owner check
 entry_point_privilege	entry_point_privilege	vm_is_visible refuses an unprivileged caller with 42501	15;16;17;18;19	2026-10-14	vm_is_visible without its owner check
 entry_point_privilege	entry_point_privilege	vm_selftest refuses an unprivileged caller with 42501	15;16;17;18;19	never	-
+estimate_deleted	estimate_deleted	ANALYZE recorded the live count in reltuples	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice, so nothing is offered
+estimate_deleted	estimate_deleted	control: an undeleted table of the same shape estimates its full size	15;16;17;18;19	never	-
+estimate_deleted	estimate_deleted	control: and the live count really is 60000	15;16;17;18;19	never	-
+estimate_deleted	estimate_deleted	control: heap is also near the live count, so the probe reads EXPLAIN	15;16;17;18;19	never	-
+estimate_deleted	estimate_deleted	premise: 1000 live rows remain	15;16;17;18;19	never	-
+estimate_deleted	estimate_deleted	premise: columnar holds 100000 rows before delete	15;16;17;18;19	never	-
+estimate_deleted	estimate_deleted	premise: the fixture spans several row groups, not one	15;16;17;18;19	never	-
+estimate_deleted	estimate_deleted	reltuples is 100000 before the delete	15;16;17;18;19	2026-10-20	columnar_tableam.c: the ANALYZE sampler maps no block to a slice, so nothing is offered
+estimate_deleted	estimate_deleted	the estimate before delete is the full table	15;16;17;18;19	never	-
+estimate_deleted	estimate_deleted	the estimate follows the deletes with a stale reltuples and several groups	15;16;17;18;19	2026-10-20	columnar_tableam.c: the row estimate ignores deleted rows and reports physical occupancy
+estimate_deleted	estimate_deleted	the planner estimate after delete is the live count, not the physical occupancy	15;16;17;18;19	2026-10-20	columnar_tableam.c: the row estimate ignores deleted rows and reports physical occupancy
 fdw_plan_privilege	fdw_plan_privilege	a privileged planner estimates the Iceberg table from its manifests	15;16;17;18;19	never	-
 fdw_plan_privilege	fdw_plan_privilege	a privileged planner estimates the Parquet table from the file's size	15;16;17;18;19	never	-
 fdw_plan_privilege	fdw_plan_privilege	an unprivileged planner gets the flat Parquet estimate	15;16;17;18;19	2026-10-14	the Parquet planner stats the file for any role (no pg_read_server_files gate)
