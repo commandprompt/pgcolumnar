@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 103
+suites_not_covered 102
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5409,4 +5409,20 @@ suites_not_covered 103
 #     never         3868 + 10 = 3878
 #     dated         2259 + 12 = 2271
 #     3878 + 2271 == 6149
-checks_never_observed_red 3878
+# #1341, iceberg_objstore seeded, with its twin (OffgridwithJD): 3878 -> 3883,
+# and suites_not_covered 103 -> 102. The suite had no rows. It enters with 16 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The allow-list check counted any SQLSTATE: with the allow-list never enforced, the read went
+# on to 127.0.0.2, where nothing listens, and the connect failure (08006) passed it; it now
+# wants 42501 with the allow-list's own message. The three "backend still up" checks read
+# SELECT 1, which answers again after crash recovery: with a backend SIGKILLed before them,
+# main passed all three; they now also read the server log's count of killed backends. And
+# the two oracle checks agreed on a failed oracle read and a failed scan (both empty); the
+# oracle side now names its failure. 11 are dated by six mutations, each reddening the
+# same names in both twins. 5 arrive never.
+#
+#     ledger rows   6149 + 16 = 6165
+#     never         3878 + 5 = 3883
+#     dated         2271 + 11 = 2282
+#     3883 + 2282 == 6165
+checks_never_observed_red 3883

@@ -47,6 +47,42 @@ $1;
 SQLEOF
 }
 
+# refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
+# message, the bare SQLSTATE when the message lacks it, or what happened instead. The
+# endpoint arm read only "some SQLSTATE": with the allow-list never enforced, the read
+# went on to 127.0.0.2, where nothing listens, and the connect failure (08006) passed it.
+refusal_of() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	local state
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif grep -qF "$2" <<<"$out"; then echo "$state$3"
+	else echo "$state"; fi
+}
+
+# Backends killed by a signal, from the server log: a number, or nothing when the log
+# can't be read. A fresh connection answers again after crash recovery, so "SELECT 1"
+# alone passed with a backend SIGKILLed before it; survival also requires this count
+# not to have moved.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
+
 pg_restart_env() {
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
 	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
@@ -73,6 +109,7 @@ check "premise: sigv4 fixture server is up" \
 	"$(grep -c READY "$PGC_WORKDIR/s3_server.out" 2>/dev/null)" "1"
 
 MDROOT="s3://$BUCKET/db/t/metadata"
+CRASHES_BEFORE="$(crashes)"
 NMROOT="s3://$BUCKET/db/t_nm/metadata"
 
 # ---- an s3 read with no credentials in the environment is refused -----------
@@ -92,6 +129,9 @@ key = {"eq": "eq_surviving", "dv": "dv_surviving"}[sys.argv[2].split(":")[0]]
 print(",".join(str(i) for i in o[key][sys.argv[2].split(":")[1]]))
 PY
 }
+# the oracle, or a value no scan can print: a failed oracle read and a failed scan were
+# both "", and agreed
+oracle() { local o; o="$(del_oracle "$1")"; echo "${o:-no oracle for $1}"; }
 
 # position deletes over s3: same oracle as the filesystem apply arm (3 rows)
 check "position deletes read over s3 (surviving == filesystem oracle)" \
@@ -104,12 +144,12 @@ check "the position-deleted ids are gone over s3" \
 check "equality deletes read over s3 (survivors == oracle)" \
 	"$(q "SELECT string_agg(id::text, ',' ORDER BY id)
 	      FROM pgcolumnar.iceberg_scan('$MDROOT/eqapply.metadata.json')
-	        AS t(id bigint, region text, amount int)")" "$(del_oracle eq:eqapply)"
+	        AS t(id bigint, region text, amount int)")" "$(oracle eq:eqapply)"
 # deletion vectors (Puffin) over s3
 check "deletion vectors read over s3 (survivors == oracle)" \
 	"$(q "SELECT string_agg(id::text, ',' ORDER BY id)
 	      FROM pgcolumnar.iceberg_scan('$MDROOT/dvapply.metadata.json')
-	        AS t(id bigint, region text, amount int)")" "$(del_oracle dv:dvapply)"
+	        AS t(id bigint, region text, amount int)")" "$(oracle dv:dvapply)"
 # a plain (delete-free would be ideal; noapply applies nothing) full read
 check "a scan whose delete does not apply reads all rows over s3" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$MDROOT/noapply.metadata.json')
@@ -118,7 +158,7 @@ check "a scan whose delete does not apply reads all rows over s3" \
 check "name mapping reads an id-less file over s3 (5 rows)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$NMROOT/nmapply.metadata.json')
 	      AS t(id bigint, region text, amount int)")" "5"
-check "backend still up after the s3 reads" "$(q 'SELECT 1')" "1"
+check "backend still up after the s3 reads" "$(survived "$CRASHES_BEFORE")" "1"
 
 # ---- refusals over s3 -------------------------------------------------------
 # a recorded delete path pointing outside the table location (the eqescape
@@ -147,14 +187,15 @@ check "a percent-encoded dotdot delete path is refused over s3 (22023)" \
 check "a percent-encoded dotdot behind an encoded NUL is refused over s3 (22023)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_scan('$MDROOT/eqnulpct.metadata.json')
 	                AS t(id bigint, region text, amount int)")" "22023"
-check "backend still up after the s3 refusal" "$(q 'SELECT 1')" "1"
+check "backend still up after the s3 refusal" "$(survived "$CRASHES_BEFORE")" "1"
 
 # ---- an endpoint not on the allow-list is refused ---------------------------
 pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.2:$S3_PORT'" \
 	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" "AWS_REGION='$REGION'"
 check "an endpoint not on objstore_allowed_endpoints is refused" \
-	"$(sqlstate_of "SELECT count(*) FROM pgcolumnar.iceberg_scan('$MDROOT/apply.metadata.json')
-	                AS t(id bigint, region text, amount int)" | grep -cE '.')" "1"
-check "backend still up after the endpoint refusal" "$(q 'SELECT 1')" "1"
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.iceberg_scan('$MDROOT/apply.metadata.json')
+	                AS t(id bigint, region text, amount int)" \
+	   "is not in pgcolumnar.objstore_allowed_endpoints" " by the allow-list")" "42501 by the allow-list"
+check "backend still up after the endpoint refusal" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary
