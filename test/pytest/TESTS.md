@@ -295,6 +295,7 @@ behaviour, the source of that number is named.
 - [247. test_scan_direction.py: a scrollable cursor over a columnar table never invents a backward answer](#247-test_scan_directionpy-a-scrollable-cursor-over-a-columnar-table-never-invents-a-backward-answer)
 - [248. test_qual_order_selectivity.py: skip predicates are probed most-selective-first](#248-test_qual_order_selectivitypy-skip-predicates-are-probed-most-selective-first)
 - [249. test_pushdown_report.py: EXPLAIN reports what qual pushdown did, the same way on every columnar node](#249-test_pushdown_reportpy-explain-reports-what-qual-pushdown-did-the-same-way-on-every-columnar-node)
+- [250. test_row_triggers.py: row-level triggers on a columnar table fire once per row with the right row](#250-test_row_triggerspy-row-level-triggers-on-a-columnar-table-fire-once-per-row-with-the-right-row)
 
 ## 1. How to read a test in here
 
@@ -9889,3 +9890,28 @@ A comparison of two EXPLAIN fields is numeric, so a field missing from both plan
 | `test_scalar_and_grouped_agree` | scalar and grouped agree on Pushed-Down Filters (#493) |
 | `test_the_ungrouped_node_reports_vector_predicates_separately` | the ungrouped node reports its vector-predicate count separately (#493) |
 | `test_it_is_the_count_that_used_to_be_mislabelled` | and it is the count that used to be mislabelled (#493) |
+
+## 250. test_row_triggers.py: row-level triggers on a columnar table fire once per row with the right row
+
+The pytest twin of `test/row_triggers.sh` (ported for #1341), every check by the shell's name. An AFTER INSERT row trigger re-fetches its row by TID before the stripe is flushed, so the access method answers from its write buffer (#179); deferred, UPDATE and DELETE triggers fetch rows on disk. Each shape runs on a columnar table and its heap twin, and the two trigger logs must agree. On a private database.
+
+### Every test
+
+The two logs agree only when the heap twin's trigger fired at all. A statement succeeds only when it raised nothing.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_single_row_insert_with_an_after_row_trigger_succeeds` | a single-row insert with an after-row trigger succeeds |
+| `test_the_single_row_landed` | and the row itself landed |
+| `test_the_trigger_saw_the_same_row_heap_did` | the trigger saw the same row heap did |
+| `test_a_multi_row_insert_fires_once_per_row` | a multi-row insert fires once per row with the right values |
+| `test_an_insert_crossing_a_stripe_boundary_fires_for_every_row` | an insert crossing a stripe boundary fires for every row |
+| `test_1500_rows_with_no_mid_statement_flush_all_fire` | 1500 rows with no mid-statement flush all fire |
+| `test_after_update_fires_with_the_new_row` | after-update fires with the new row |
+| `test_after_delete_fires_with_the_old_row` | after-delete fires with the old row |
+| `test_insert_then_update_in_one_transaction` | insert then update in one transaction |
+| `test_a_before_row_trigger_still_fires_once_per_row` | a before-row trigger still fires once per row |
+| `test_a_deferred_constraint_trigger_still_fires_at_commit` | a deferred constraint trigger still fires at commit |
+| `test_an_import_into_a_table_with_an_after_row_trigger_succeeds` | an import into a table with an after-row trigger succeeds |
+| `test_the_imported_rows_landed` | the imported rows landed |
+| `test_the_trigger_fired_once_per_imported_row` | and the trigger fired once per imported row |

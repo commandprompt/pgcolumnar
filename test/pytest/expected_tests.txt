@@ -997,4 +997,6 @@ guard_tests 467
 # 11 tests, one per check, by collection over the cluster files.
 # cluster_tests 2260 -> 2311 for #1341's test_pushdown_report.py, the twin of pushdown_report.sh:
 # 51 tests, one per check, by collection over the cluster files.
-cluster_tests 2311
+# cluster_tests 2311 -> 2325 for #1341's test_row_triggers.py, the twin of row_triggers.sh:
+# 14 tests, one per check, by collection over the cluster files.
+cluster_tests 2325
