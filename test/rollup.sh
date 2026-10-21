@@ -145,10 +145,17 @@ load 100001 300000 "2026-04-01 00:00:00+00"
 check_num "a refresh folds a bulk append" "$(q "SELECT pgcolumnar.refresh_rollup('r_hourly');")" "200000"
 check "and after the bulk append the rollup equals a full recompute" "$(matches)" "$(oracle)"
 load 37301 38300 "2026-03-16 00:00:00+00"
-q "SELECT pg_stat_reset();" >/dev/null
-env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
-	-c "SELECT pgcolumnar.refresh_rollup('r_hourly')" -c "SELECT pg_stat_force_next_flush()" >/dev/null 2>&1
-read_blocks="$(q "SELECT coalesce(heap_blks_read, 0) + coalesce(heap_blks_hit, 0) FROM pg_statio_user_tables WHERE relname = 'src';")"
+# With current statistics, as autovacuum leaves a database. Without them the arm
+# measured whichever plan the catalog's statistics happened to give: once
+# autovacuum had analyzed pgcolumnar.row_group, the refresh scanned it and called
+# get_storage_id per catalog row, each call reading the source's first page (#1614).
+q "ANALYZE;" >/dev/null
+# The refresh's own reads: a fresh session, the count read inside the refresh's
+# transaction, so no other backend's reads of src (an autovacuum) are counted. The
+# last line is the count, or the error that replaced it.
+read_blocks="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qAt \
+	-c "BEGIN" -c "SELECT pgcolumnar.refresh_rollup('r_hourly')" \
+	-c "SELECT pg_stat_get_xact_blocks_fetched('src'::regclass)" -c "COMMIT" 2>&1 | tail -1)"
 pages="$(q "SELECT pg_relation_size('src') / 8192;")"
 echo "-- refresh after a 1000-row append read $read_blocks of $pages blocks"
 check_num "the refresh after a small append read the source at all" "$(at_least "$read_blocks" 1)" "1"

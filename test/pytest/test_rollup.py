@@ -26,6 +26,8 @@ import time
 
 import psycopg
 
+from pgc_vacuity import query_error
+
 ORIGIN = "2025-12-29 06:00:00+00"
 AGG_FUNCS = "{count,sum,max,avg}"
 AGG_COLS = "{*,reading,temp,reading}"
@@ -171,13 +173,21 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     expect.text(_refresh(conn), "160000", "a refresh folds a bulk append")
     expect.text(_matches(conn), _oracle(conn), "and after the bulk append the rollup equals a full recompute")
     _load(conn, 30021, 30820, "2026-02-11 00:00:00+00")
+    # With current statistics, as autovacuum leaves a database. Without them the arm
+    # measured whichever plan the catalog's statistics happened to give: once
+    # autovacuum had analyzed pgcolumnar.row_group, the refresh scanned it and called
+    # get_storage_id per catalog row, each call reading the source's first page, and
+    # it read 93 of 132 blocks (#1614).
     with conn.cursor() as cur:
-        cur.execute("SELECT pg_stat_force_next_flush()")
-        cur.execute("SELECT pg_stat_reset()")
-        cur.execute("SELECT pgcolumnar.refresh_rollup('gauge_15m')")
-        cur.execute("SELECT pg_stat_force_next_flush()")
-    read = _one(conn, "SELECT coalesce(heap_blks_read, 0) + coalesce(heap_blks_hit, 0)"
-                      " FROM pg_statio_user_tables WHERE relname = 'feed'")
+        cur.execute("ANALYZE")
+    # The refresh's own reads: a fresh session, the count read inside the refresh's
+    # transaction, so no other backend's reads of feed (an autovacuum) are counted.
+    try:
+        with psycopg.connect(dsn) as own:
+            own.execute("SELECT pgcolumnar.refresh_rollup('gauge_15m')")
+            read = own.execute("SELECT pg_stat_get_xact_blocks_fetched('feed'::regclass)").fetchone()[0]
+    except psycopg.Error as exc:
+        read = query_error(str(exc).splitlines()[0] if str(exc) else type(exc).__name__)
     pages = _one(conn, "SELECT pg_relation_size('feed') / 8192")
     print(f"-- refresh after an 800-row append read {read} of {pages} blocks")
     expect.at_least(read, 1, "the refresh after a small append read the source at all")
