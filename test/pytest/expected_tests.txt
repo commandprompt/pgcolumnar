@@ -999,4 +999,6 @@ guard_tests 467
 # 51 tests, one per check, by collection over the cluster files.
 # cluster_tests 2311 -> 2325 for #1341's test_row_triggers.py, the twin of row_triggers.sh:
 # 14 tests, one per check, by collection over the cluster files.
-cluster_tests 2325
+# cluster_tests 2325 -> 2333 for #1341's test_projection_rename_restore.py, the twin of projection_rename_restore.sh:
+# 8 tests, one per check, by collection over the cluster files.
+cluster_tests 2333

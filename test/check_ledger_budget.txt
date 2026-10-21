@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 118
+suites_not_covered 117
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5122,4 +5122,16 @@ suites_not_covered 118
 #     never         3713 + 1 = 3714
 #     dated         2009 + 13 = 2022
 #     3714 + 2022 == 5736
-checks_never_observed_red 3714
+#
+# #1341, projection_rename_restore seeded, with its twin (jdatcmd): 3536 -> 3540, and
+# suites_not_covered 148 -> 147. The suite had no rows. It enters with 8 checks from
+# five-major runs (8/8 on each of 15-19, shell and twin alike), unchanged: every
+# reading is a fixed count or an exit status. 4 are dated by two mutations of the
+# rename hook, each reddening the same names in both twins: the declaration not
+# following a rename, and the hook stopping at the named relation. 4 arrive never.
+#
+#     ledger rows   5736 + 8 = 5744
+#     never         3714 + 4 = 3718
+#     dated         2022 + 4 = 2026
+#     3718 + 2026 == 5744
+checks_never_observed_red 3718

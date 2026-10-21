@@ -4075,6 +4075,14 @@ projection_privilege	projection_privilege	the owner reads the projection, and ge
 projection_privilege	projection_privilege	the owner reconstructs, and gets rows	15;16;17;18;19	2026-10-14	reconstruct_via_projection stores no rows: its tuplestore_putvalues call removed, so every caller gets zero rows
 projection_privilege	projection_privilege	the policy is in force for ordinary SQL	15;16;17;18;19	2026-10-14	the columnar custom scan drops its restriction quals (plan qual set to NIL), so the row-level-security policy qual is not applied
 projection_privilege	projection_privilege	while the EXECUTE role reaches the projection lookup on the same call	15;16;17;18;19	never	-
+projection_rename_restore	projection_rename_restore	pg_dump succeeds	15;16;17;18;19	never	-
+projection_rename_restore	projection_rename_restore	restore succeeds	15;16;17;18;19	never	-
+projection_rename_restore	projection_rename_restore	the child projection still reads after a parent rename	15;16;17;18;19	never	-
+projection_rename_restore	projection_rename_restore	the descendant declaration follows the parent rename	15;16;17;18;19	2026-10-21	a column rename no longer follows through the projection declaration (#888);the rename hook reaches only the named relation, not its partitions
+projection_rename_restore	projection_rename_restore	the live projection still reads after the rename	15;16;17;18;19	never	-
+projection_rename_restore	projection_rename_restore	the rebuilt child projection contains every restored row	15;16;17;18;19	2026-10-21	a column rename no longer follows through the projection declaration (#888);the rename hook reaches only the named relation, not its partitions
+projection_rename_restore	projection_rename_restore	the rebuilt projection contains every restored row	15;16;17;18;19	2026-10-21	a column rename no longer follows through the projection declaration (#888)
+projection_rename_restore	projection_rename_restore	the renamed projection rebuilds after restore	15;16;17;18;19	2026-10-21	a column rename no longer follows through the projection declaration (#888)
 projection_rewrite	projection_rewrite	PREMISE and the declaration survived, so a rebuild is possible	15;16;17;18;19	never	-
 projection_rewrite	projection_rewrite	PREMISE base holds its rows	15;16;17;18;19	never	-
 projection_rewrite	projection_rewrite	PREMISE no retired projection rows to begin with	15;16;17;18;19	never	-

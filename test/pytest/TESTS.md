@@ -296,6 +296,7 @@ behaviour, the source of that number is named.
 - [248. test_qual_order_selectivity.py: skip predicates are probed most-selective-first](#248-test_qual_order_selectivitypy-skip-predicates-are-probed-most-selective-first)
 - [249. test_pushdown_report.py: EXPLAIN reports what qual pushdown did, the same way on every columnar node](#249-test_pushdown_reportpy-explain-reports-what-qual-pushdown-did-the-same-way-on-every-columnar-node)
 - [250. test_row_triggers.py: row-level triggers on a columnar table fire once per row with the right row](#250-test_row_triggerspy-row-level-triggers-on-a-columnar-table-fire-once-per-row-with-the-right-row)
+- [251. test_projection_rename_restore.py: a projection's declaration follows a column rename, so it rebuilds after restore](#251-test_projection_rename_restorepy-a-projections-declaration-follows-a-column-rename-so-it-rebuilds-after-restore)
 
 ## 1. How to read a test in here
 
@@ -9915,3 +9916,20 @@ The two logs agree only when the heap twin's trigger fired at all. A statement s
 | `test_an_import_into_a_table_with_an_after_row_trigger_succeeds` | an import into a table with an after-row trigger succeeds |
 | `test_the_imported_rows_landed` | the imported rows landed |
 | `test_the_trigger_fired_once_per_imported_row` | and the trigger fired once per imported row |
+
+## 251. test_projection_rename_restore.py: a projection's declaration follows a column rename, so it rebuilds after restore
+
+The pytest twin of `test/projection_rename_restore.sh` (ported for #1341), every check by the shell's name. A projection is declared by column names and restore rebuilds it from the declaration, so a column renamed afterwards, on the table or on a partition through its parent, must be renamed in the declaration too (#888). On two private databases: the source and the restore target.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_live_projection_reads_after_the_rename` | the live projection still reads after the rename |
+| `test_the_child_projection_reads_after_a_parent_rename` | the child projection still reads after a parent rename |
+| `test_pg_dump_succeeds` | pg_dump succeeds |
+| `test_restore_succeeds` | restore succeeds |
+| `test_the_renamed_projection_rebuilds_after_restore` | the renamed projection rebuilds after restore |
+| `test_the_rebuilt_projection_holds_every_row` | the rebuilt projection contains every restored row |
+| `test_the_descendant_declaration_follows_the_parent_rename` | the descendant declaration follows the parent rename |
+| `test_the_rebuilt_child_projection_holds_every_row` | the rebuilt child projection contains every restored row |

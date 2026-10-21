@@ -97,5 +97,4 @@ phase4
 phase6
 planner_choice_quality
 preimage_rewrite
-projection_rename_restore
 read_stream
