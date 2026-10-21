@@ -944,4 +944,6 @@ guard_tests 464
 # 31 tests, one per check, by collection over the cluster files.
 # cluster_tests 1930 -> 1964 for #1341's test_int8_agg_int128.py, the twin of int8_agg_int128.sh:
 # 34 tests, one per check, by collection over the cluster files.
-cluster_tests 1964
+# cluster_tests 1964 -> 1980 for #1341's test_fsst_verdict_cache.py, the twin of fsst_verdict_cache.sh:
+# 16 tests, one per check, by collection over the cluster files.
+cluster_tests 1980

@@ -1158,6 +1158,22 @@ fk_referencing	fk_referencing	the conversion helper is refused identically	15;16
 fk_referencing	fk_referencing	the parent is still a row store	15;16;17;18;19	2026-10-16	columnar_tableam.c: converting an FK-referenced table to columnar no longer refused
 fk_referencing	fk_referencing	the primary key is still enforced	15;16;17;18;19	never	-
 fk_referencing	fk_referencing	the refused table was not left behind	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fsst_verdict_cache	fsst_verdict_cache	a bounded cache tracks the change more closely than an unbounded one	15;16;17;18;19	2026-10-21	the FSST verdict cache ignores its age bound
+fsst_verdict_cache	fsst_verdict_cache	a reuse bound of one row group is byte-identical to no caching	15;16;17;18;19	2026-10-21	a reused FSST verdict is inverted
+fsst_verdict_cache	fsst_verdict_cache	a reused HELPS verdict stores byte-identical chunks	15;16;17;18;19	2026-10-21	a reused FSST verdict is inverted
+fsst_verdict_cache	fsst_verdict_cache	a reused HURTS verdict stores byte-identical chunks	15;16;17;18;19	never	-
+fsst_verdict_cache	fsst_verdict_cache	an unbounded cache really does diverge on this fixture	15;16;17;18;19	2026-10-21	the FSST verdict is never reused
+fsst_verdict_cache	fsst_verdict_cache	and it still declines fsst	15;16;17;18;19	never	-
+fsst_verdict_cache	fsst_verdict_cache	and it still keeps fsst, rather than silently dropping it	15;16;17;18;19	never	-
+fsst_verdict_cache	fsst_verdict_cache	and the changing column still returns its values	15;16;17;18;19	2026-10-21	FSST decode writes symbol 1's bytes for symbol 0
+fsst_verdict_cache	fsst_verdict_cache	caching the verdict makes the load measurably faster	15;16;17;18;19	2026-10-21	the FSST verdict is never reused
+fsst_verdict_cache	fsst_verdict_cache	premise: and it spans several row groups, so caching has something to reuse	15;16;17;18;19	never	-
+fsst_verdict_cache	fsst_verdict_cache	premise: and the md5 corpus DROPS it, so the two arms are different branches	15;16;17;18;19	never	-
+fsst_verdict_cache	fsst_verdict_cache	premise: the md5 fixture loaded	15;16;17;18;19	never	-
+fsst_verdict_cache	fsst_verdict_cache	premise: the prose corpus KEEPS fsst, so the HELPS branch is exercised	15;16;17;18;19	never	-
+fsst_verdict_cache	fsst_verdict_cache	premise: the prose fixture loaded	15;16;17;18;19	never	-
+fsst_verdict_cache	fsst_verdict_cache	premise: the three changing-column loads all produced bytes to compare	15;16;17;18;19	never	-
+fsst_verdict_cache	fsst_verdict_cache	the cached load returns the same values as heap	15;16;17;18;19	2026-10-21	FSST decode writes symbol 1's bytes for symbol 0
 hardening	hardening	backend alive after corrupt bloom	15;16;17;18;19	never	-
 hardening	hardening	backend alive after invalid descriptor	15;16;17;18;19	2026-10-17	columnar_reader.c: an unrecognized native encoding descriptor aborts the backend, with the value-stream bounds before it off
 hardening	hardening	corrupt bloom absent	15;16;17;18;19	never	-
