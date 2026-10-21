@@ -89,23 +89,36 @@ def re_(pgc_cluster):
         d.run(f"INSERT INTO t SELECT g, ((g::bigint * 7919) % 100000)::int, 'v' || g FROM generate_series(1, {BASE}) g")
         r["loaded"] = d.n("SELECT count(*) FROM t")
 
-        # the rewrite in one session, an insert in another two seconds in
+        # the rewrite in one session, held (dev/test) after it has fixed its work set,
+        # and an insert in another once the hold is seen: inside the rewrite by
+        # construction, where a two-second sleep lost the race on a loaded runner
         out = {}
 
         def recluster():
-            out["retired"] = d.n("SELECT pgcolumnar.recluster('t', 'id', 'k')")
+            try:
+                with psycopg.connect(d.dsn, autocommit=True) as conn:
+                    conn.execute("SET pgcolumnar.maintenance_hold_ms = 5000")
+                    out["retired"] = conn.execute("SELECT pgcolumnar.recluster('t', 'id', 'k')").fetchone()[0]
+            except psycopg.Error as exc:
+                out["retired"] = query_error(str(exc).splitlines()[0] if str(exc) else type(exc).__name__)
         th = threading.Thread(target=recluster)
         th.start()
-        time.sleep(2)
-        # asked of the server, before the insert: the rewrite's end comes moments after
-        # the insert commits, so nothing read afterwards can order the two
-        active = d.n("SELECT count(*) FROM pg_stat_activity WHERE state = 'active' "
-                     "AND query LIKE 'SELECT pgcolumnar.recluster(''t''%'")
+        recl = ("SELECT count(*) FROM pg_stat_activity WHERE state = 'active' "
+                "AND query LIKE 'SELECT pgcolumnar.recluster(''t''%'")
+        held = 0
+        for _ in range(120):
+            held = d.n(recl + " AND wait_event_type = 'Extension'")
+            if held == 1 or not th.is_alive():
+                break
+            time.sleep(0.5)
         d.run(f"INSERT INTO t SELECT g, ((g::bigint * 7919) % 100000)::int, 'v' || g "
               f"FROM generate_series({BASE + 1}, {BASE + 50000}) g")
+        # asked again after the insert has committed: the rewrite must still be running
+        after = d.n(recl)
         th.join()
-        r["during"] = {1: "yes", 0: "no (the rewrite was not running when the insert began)"}.get(
-            active, f"no reading ({active})")
+        r["during"] = ("yes" if held == 1 and after == 1
+                       else f"no (the rewrite never reached its hold: {held})" if held != 1
+                       else f"no (the rewrite had ended when the insert committed: {after})")
         r["retired"] = out["retired"]
         r["rows"] = d.n("SELECT count(*) FROM t")
         r["sorted"], r["appended"] = d.ss("sorted_rows"), d.ss("appended_rows")

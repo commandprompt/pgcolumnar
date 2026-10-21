@@ -574,6 +574,8 @@ record_online_sorted_extent(Relation rel, uint64 storageId,
 	pfree(ours);
 }
 
+static void pgcolumnar_maintenance_hold(void);
+
 /*
  * pgcolumnar_recluster_online
  *		Re-establish global clustering on `curve` over the relation's live rows
@@ -701,6 +703,10 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 	 * the reader derives satisfy PG18's heap-visibility assertion. */
 	snap = RegisterSnapshot(GetLatestSnapshot());
 	PushActiveSnapshot(snap);
+
+	/* dev/test: hold with the work set fixed, so a concurrent writer can be
+	 * placed inside the rewrite deterministically (recluster_extent) */
+	pgcolumnar_maintenance_hold();
 
 	augdesc = CreateTemplateTupleDesc(natts + 1);
 	for (i = 1; i <= natts; i++)

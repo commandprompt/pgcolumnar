@@ -4798,7 +4798,8 @@ _PG_init(void)
 							"maintenance verb, interruptibly.",
 							"0 disables. Exists so the autovacuum-yield behaviour is testable "
 							"deterministically: the verb waits with the lock held, so a session "
-							"needing a stronger lock can observe the daemon cancel.",
+							"needing a stronger lock can observe the daemon cancel. recluster "
+							"also waits, after fixing its work set, so a test can write inside it.",
 							&pgcolumnar_maintenance_hold_ms,
 							0, 0, 600000,
 							PGC_USERSET,

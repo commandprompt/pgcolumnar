@@ -46,25 +46,38 @@ check "the table loaded" "$(raw 'SELECT count(*) FROM t;')" "$BASE"
 # ------------------------------------------------------- the concurrent case
 
 # Start the online rewrite, then insert from a second session while it runs.
-raw "SELECT pgcolumnar.recluster('t', 'id', 'k');" >/tmp/pgc_recluster_out.$$ 2>&1 &
+# pgcolumnar.maintenance_hold_ms (dev/test) holds the rewrite after it has fixed
+# its work set and before it reads, so the insert lands inside the rewrite by
+# construction rather than by scheduling luck: a two-second sleep lost the race
+# on a loaded CI runner.
+PGOPTIONS='-c pgcolumnar.maintenance_hold_ms=5000' \
+	raw "SELECT pgcolumnar.recluster('t', 'id', 'k');" >/tmp/pgc_recluster_out.$$ 2>&1 &
 RECL_PID=$!
 
-# Give the rewrite time to take its group locks and begin, then insert. The
-# insert is small so it commits quickly and lands inside the rewrite's window.
-sleep 2
-# Asked of the server, and before the insert: is the rewrite still running? Its
-# end comes moments after the insert commits (measured: 3 and 4 ms), so two client
-# clocks, or a status read after the insert, cannot order them.
-RECL_ACTIVE="$(raw "SELECT count(*) FROM pg_stat_activity
-	WHERE state = 'active' AND query LIKE 'SELECT pgcolumnar.recluster(''t''%';")"
+# Wait until the rewrite sits in its hold, asked of the server.
+recl_count() {
+	raw "SELECT count(*) FROM pg_stat_activity
+	WHERE state = 'active' AND query LIKE 'SELECT pgcolumnar.recluster(''t''%' $1;"
+}
+RECL_HELD=0
+for _ in $(seq 1 120); do
+	RECL_HELD="$(recl_count "AND wait_event_type = 'Extension'")"
+	[ "$RECL_HELD" = 1 ] && break
+	kill -0 "$RECL_PID" 2>/dev/null || break
+	sleep 0.5
+done
 raw "INSERT INTO t SELECT g, ((g::bigint * 7919) % 100000)::int, 'v' || g FROM generate_series($((BASE + 1)), $((BASE + 50000))) g;" >/dev/null
+# Asked again after the insert has committed: the rewrite must still be running.
+RECL_AFTER="$(recl_count "")"
 
 wait $RECL_PID
 
 # The premise. If the insert committed after the rewrite had already finished,
 # nothing concurrent happened and the rest of this suite proves nothing.
 check "the insert ran while the rewrite was still running" \
-	"$(case "$RECL_ACTIVE" in 1) echo yes ;; 0) echo "no (the rewrite was not running when the insert began)" ;; *) echo "no reading ($RECL_ACTIVE)" ;; esac)" "yes"
+	"$(if [ "$RECL_HELD" != 1 ]; then echo "no (the rewrite never reached its hold: $RECL_HELD)"
+	   elif [ "$RECL_AFTER" != 1 ]; then echo "no (the rewrite had ended when the insert committed: $RECL_AFTER)"
+	   else echo yes; fi)" "yes"
 # The real premise, and the one the wall-clock comparison above cannot establish
 # (#342). recluster returns the number of groups it retired, which is exactly the
 # set it read. The base load is BASE rows at stripe_row_limit, so a rewrite that
