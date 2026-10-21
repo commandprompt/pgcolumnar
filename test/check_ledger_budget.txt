@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 116
+suites_not_covered 115
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5152,4 +5152,21 @@ suites_not_covered 116
 #     never         3718 + 59 = 3777
 #     dated         2026 + 27 = 2053
 #     3777 + 2053 == 5830
-checks_never_observed_red 3777
+#
+# #1341, pg19_vacuum_options seeded, with its twin (jdatcmd): 3543 -> 3553, and
+# suites_not_covered 144 -> 143. The suite had no rows. It enters with 12 checks from
+# PG19 and its skip name from PG15-18 (12/12 on 19 in both twins; 15-18 skip in the
+# shell and decline in the twin). Three fixes: "accepted" and the three "succeeds"
+# checks grepped output for ERROR, which a stopped server's "psql: error" lacks, so
+# with the server stopped all six vacuum-section checks passed; they read psql's exit
+# status. The rows and content checks used check, so two empty readings agreed; they
+# are check_num and check_text. "reports nothing" read a failed VACUUM as silent; it
+# needs the VACUUM to have run. The av_c/av_h loop names are literal. 3 are dated by
+# two mutations, each reddening the same names in both twins: the columnar VACUUM
+# raising, and it reporting finished vacuuming as heap does. 10 arrive never.
+#
+#     ledger rows   5830 + 13 = 5843
+#     never         3777 + 10 = 3787
+#     dated         2053 + 3 = 2056
+#     3787 + 2056 == 5843
+checks_never_observed_red 3787

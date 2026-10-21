@@ -298,6 +298,7 @@ behaviour, the source of that number is named.
 - [250. test_row_triggers.py: row-level triggers on a columnar table fire once per row with the right row](#250-test_row_triggerspy-row-level-triggers-on-a-columnar-table-fire-once-per-row-with-the-right-row)
 - [251. test_projection_rename_restore.py: a projection's declaration follows a column rename, so it rebuilds after restore](#251-test_projection_rename_restorepy-a-projections-declaration-follows-a-column-rename-so-it-rebuilds-after-restore)
 - [252. test_preimage_rewrite.py: a predicate on date_trunc of a column prunes like the range it stands for](#252-test_preimage_rewritepy-a-predicate-on-date_trunc-of-a-column-prunes-like-the-range-it-stands-for)
+- [253. test_pg19_vacuum_options.py: PostgreSQL 19's parallel-autovacuum parameter is accepted on a columnar table and changes nothing](#253-test_pg19_vacuum_optionspy-postgresql-19s-parallel-autovacuum-parameter-is-accepted-on-a-columnar-table-and-changes-nothing)
 
 ## 1. How to read a test in here
 
@@ -9971,3 +9972,24 @@ The pytest twin of `test/preimage_rewrite.sh` (ported for #1341), every check by
 | `test_a_unit_matches_some_rows` | one test per unit: unit 'u': premise: it matches some rows |
 | `test_an_unlisted_unit_answers_correctly` | an unlisted unit (millennium) still answers correctly |
 | `test_the_backend_is_still_up` | backend still up -- the server answers AND the log shows no backend killed since setup |
+
+## 253. test_pg19_vacuum_options.py: PostgreSQL 19's parallel-autovacuum parameter is accepted on a columnar table and changes nothing
+
+The pytest twin of `test/pg19_vacuum_options.sh` (ported for #1341), every check by the shell's name. `autovacuum_parallel_workers` is accepted on a columnar table and recorded in reloptions as on heap, and it changes nothing: VACUUM, VACUUM (PARALLEL 2) and `pgcolumnar.vacuum` succeed with it set and leave the rows and their content unchanged, and VACUUM VERBOSE reports on heap but not on the columnar table, whose vacuum path is pgcolumnar's (#398). A statement's success is read from the driver, not from output lacking "ERROR". Each test declines before PostgreSQL 19 under the shell's skip name, `parallel autovacuum`, and is listed per older major in `expected_unrunnable.txt`. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_server_variable_exists` | autovacuum_max_parallel_workers exists on this server |
+| `test_the_parameter_is_accepted_on_columnar` | autovacuum_parallel_workers is accepted on av_c |
+| `test_the_parameter_is_recorded_on_columnar` | and it is recorded in reloptions for av_c |
+| `test_the_parameter_is_accepted_on_heap` | autovacuum_parallel_workers is accepted on av_h |
+| `test_the_parameter_is_recorded_on_heap` | and it is recorded in reloptions for av_h |
+| `test_vacuum_with_the_parameter_succeeds` | VACUUM on a columnar table with the parameter set succeeds |
+| `test_parallel_vacuum_succeeds` | VACUUM (PARALLEL 2) on a columnar table succeeds |
+| `test_pgcolumnar_vacuum_succeeds` | pgcolumnar.vacuum with the parameter set succeeds |
+| `test_the_rows_are_unchanged` | the rows are unchanged by any of it |
+| `test_the_content_is_unchanged` | and the content is unchanged |
+| `test_vacuum_verbose_reports_on_heap` | control: VACUUM VERBOSE reports on the heap table |
+| `test_vacuum_verbose_is_silent_on_columnar` | columnar VACUUM VERBOSE reports nothing, because the AM path is ours |

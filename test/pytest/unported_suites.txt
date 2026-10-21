@@ -90,7 +90,6 @@ parquet_export_stats
 parquet_level_width
 parquet_nested
 parquet_nested_import
-pg19_vacuum_options
 phase2
 phase3
 phase4

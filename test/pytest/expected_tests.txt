@@ -1003,4 +1003,6 @@ guard_tests 467
 # 8 tests, one per check, by collection over the cluster files.
 # cluster_tests 2333 -> 2419 for #1341's test_preimage_rewrite.py, the twin of preimage_rewrite.sh:
 # 86 tests, one per check, by collection over the cluster files.
-cluster_tests 2419
+# cluster_tests 2419 -> 2431 for #1341's test_pg19_vacuum_options.py, the twin of pg19_vacuum_options.sh:
+# 12 tests, one per check, by collection over the cluster files.
+cluster_tests 2431
