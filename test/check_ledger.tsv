@@ -3971,6 +3971,19 @@ partman_columnar	partman_columnar	premise: with default_table_access_method ever
 partman_columnar	partman_columnar	premise: without default_table_access_method pg_partman makes heap partitions	15;16;17;18;19	never	-
 partman_columnar	partman_columnar	retention leaves no pgcolumnar storage row behind	15;16;17;18;19	2026-10-12	the drop hook stops deleting the storage row, so a partition pg_partman drops leaves it behind
 partman_columnar	partman_columnar	the rows went in	15;16;17;18;19	2026-10-12	a sequential scan drops the last row group from its list, so every one-group partition reads empty
+pg19_vacuum_options	pg19_vacuum_options	VACUUM (PARALLEL 2) on a columnar table succeeds	19	2026-10-21	columnar_tableam.c: pgcolumnar_relation_vacuum raises, so a columnar VACUUM fails
+pg19_vacuum_options	pg19_vacuum_options	VACUUM on a columnar table with the parameter set succeeds	19	2026-10-21	columnar_tableam.c: pgcolumnar_relation_vacuum raises, so a columnar VACUUM fails
+pg19_vacuum_options	pg19_vacuum_options	and it is recorded in reloptions for av_c	19	never	-
+pg19_vacuum_options	pg19_vacuum_options	and it is recorded in reloptions for av_h	19	never	-
+pg19_vacuum_options	pg19_vacuum_options	and the content is unchanged	19	never	-
+pg19_vacuum_options	pg19_vacuum_options	autovacuum_max_parallel_workers exists on this server	19	never	-
+pg19_vacuum_options	pg19_vacuum_options	autovacuum_parallel_workers is accepted on av_c	19	never	-
+pg19_vacuum_options	pg19_vacuum_options	autovacuum_parallel_workers is accepted on av_h	19	never	-
+pg19_vacuum_options	pg19_vacuum_options	columnar VACUUM VERBOSE reports nothing, because the AM path is ours	19	2026-10-21	columnar_tableam.c: pgcolumnar_relation_vacuum raises, so a columnar VACUUM fails;columnar_tableam.c: pgcolumnar_relation_vacuum reports finished vacuuming as heap does
+pg19_vacuum_options	pg19_vacuum_options	control: VACUUM VERBOSE reports on the heap table	19	never	-
+pg19_vacuum_options	pg19_vacuum_options	parallel autovacuum	15;16;17;18	never	-
+pg19_vacuum_options	pg19_vacuum_options	pgcolumnar.vacuum with the parameter set succeeds	19	never	-
+pg19_vacuum_options	pg19_vacuum_options	the rows are unchanged by any of it	19	never	-
 pg_dump_roundtrip	pg_dump_roundtrip	a rebuild now builds nothing	15;16;17;18;19	2026-10-16	columnar_projection.c: drop_projection keeps the projection's declaration;pgcolumnar--1.0-alpha5.sql: rebuild_projections() skips the declarations whose projection is missing
 pg_dump_roundtrip	pg_dump_roundtrip	a second projection is declared	15;16;17;18;19	never	-
 pg_dump_roundtrip	pg_dump_roundtrip	and a declaration recorded for it	15;16;17;18;19	never	-
