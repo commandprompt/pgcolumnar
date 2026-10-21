@@ -22,6 +22,22 @@ $1;
 SQLEOF
 }
 
+# Backends killed by a signal, from the server log: a number, or nothing when the
+# log can't be read. A fresh connection answers again after crash recovery, so
+# "SELECT 1" alone passed after a backend died on a bad file; the survival checks
+# below also require that this count has not moved.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
 FX="$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg"
 [ -f "$FX/manifest-0.avro" ] || pgc_skip fixture "iceberg manifest fixtures are missing"
 python3 -c 'import json' 2>/dev/null || pgc_skip python "python3 is needed to read the oracle"
@@ -50,7 +66,7 @@ PY
 DECODED="$(q "SELECT record_count || '|' || file_size_in_bytes || '|' ||
                      split_part(partition, '=', 2)
               FROM pgcolumnar.read_avro_manifest('$M0') ORDER BY 1")"
-check "decoded entries == oracle (record_count|file_size|region)" \
+check_text "decoded entries == oracle (record_count|file_size|region)" \
 	"$DECODED" "$ORACLE"
 
 # the partition is rendered name=value; confirm the field name came from the
@@ -67,10 +83,12 @@ check "all entries are ADDED data files (status=1, content=0)" \
 # ---- the entry's data sequence number (#388 phase 4) ------------------------
 # The committed manifest was a first append: its entries carry a NULL
 # sequence_number (inherited from the manifest's, per the v2 spec).
+# Against the oracle's count: the expected side was read from the same call, so a
+# failed read compared empty with empty and an empty one 0/0 with 0/0.
 check "the committed entries have a NULL (inherited) sequence_number" \
 	"$(q "SELECT count(*) FILTER (WHERE sequence_number IS NULL) || '/' || count(*)
 	      FROM pgcolumnar.read_avro_manifest('$M0')")" \
-	"$(q "SELECT count(*)::text || '/' || count(*) FROM pgcolumnar.read_avro_manifest('$M0')")"
+	"$EXP_N/$EXP_N"
 # A crafted manifest_entry with an EXPLICIT sequence_number = 42, so the decode of
 # a present (non-null) value is proven, not just the null case. Reduced schema
 # (the decoder projects by field name and skips the rest).
@@ -132,33 +150,40 @@ PY
 LPATH="$(python3 -c "import json;print(json.load(open('$FX/expected_list.json'))['manifest_files'][0]['manifest_path_basename'])")"
 check "manifest-list entry count == oracle (1)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_manifest_list('$ML')")" "1"
-check "manifest-list entry == oracle (all scalar fields)" \
+check_text "manifest-list entry == oracle (all scalar fields)" \
 	"$(q "SELECT manifest_length || '|' || content || '|' || partition_spec_id || '|' ||
 	             added_files_count || '|' || existing_files_count || '|' ||
 	             deleted_files_count || '|' || added_rows_count || '|' ||
 	             existing_rows_count || '|' || deleted_rows_count || '|' ||
 	             sequence_number || '|' || min_sequence_number || '|' || added_snapshot_id
 	      FROM pgcolumnar.read_manifest_list('$ML')")" "$LORACLE"
-check "manifest-list manifest_path basename == oracle" \
+check_text "manifest-list manifest_path basename == oracle" \
 	"$(q "SELECT (regexp_match(manifest_path, '[^/]+\$'))[1]
 	      FROM pgcolumnar.read_manifest_list('$ML')")" "$LPATH"
 
 # ---- privilege: needs pg_read_server_files ---------------------------------
-psql_run "DROP ROLE IF EXISTS avro_unpriv; CREATE ROLE avro_unpriv LOGIN;"
+# USAGE on the schema, so the refusal is the function's own: without it the role
+# was refused 42501 for the schema, before the pg_read_server_files gate, and with
+# that gate removed this still passed. The gate's message is read too.
+psql_run "DROP ROLE IF EXISTS avro_unpriv; CREATE ROLE avro_unpriv LOGIN; GRANT USAGE ON SCHEMA pgcolumnar TO avro_unpriv;"
+unpriv_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U avro_unpriv -d "$PGC_DB" \
+		-qtA -c "\\set VERBOSITY verbose" -c "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$M0');" 2>&1)"
 check "an unprivileged role is refused (42501)" \
-	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U avro_unpriv -d "$PGC_DB" \
-		-qtA 2>&1 <<SQL | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
-SELECT count(*) FROM pgcolumnar.read_avro_manifest('$M0');
-SQL
-)" "42501"
+	"$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' <<<"$unpriv_out" | head -1)$(grep -q 'pg_read_server_files' <<<"$unpriv_out" && echo ' by the pg_read_server_files gate')" \
+	"42501 by the pg_read_server_files gate"
 
 # ---- a non-Avro file is refused cleanly, not crashed -----------------------
+CRASHES_BEFORE="$(crashes)"
 printf 'this is not avro at all, not even close, just some bytes' > "$PGC_WORKDIR/notavro.bin"
 chmod 644 "$PGC_WORKDIR/notavro.bin"
+# The magic is read, not inferred from the SQLSTATE: the file is garbage throughout,
+# so with the magic check removed a later parse still raised XX001 and this passed.
+badmagic_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qtA -c "\\set VERBOSITY verbose" -c "SELECT * FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/notavro.bin');" 2>&1)"
 check "a non-Avro file is rejected (bad magic), backend survives" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/notavro.bin')")" "XX001"
-check "backend still up after the bad file" "$(q 'SELECT 1')" "1"
+	"$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' <<<"$badmagic_out" | head -1)$(grep -q 'bad magic' <<<"$badmagic_out" && echo ' (bad magic)')" \
+	"XX001 (bad magic)"
+check "backend still up after the bad file" "$(survived "$CRASHES_BEFORE")" "1"
 
 # the file_format decodes to the bare Iceberg enum name (matches the normalized
 # oracle, not pyiceberg's Python repr)
@@ -198,6 +223,6 @@ PY
 chmod 644 "$PGC_WORKDIR/bomb.avro"
 check "a deflate zip-bomb is refused by the cumulative cap (54000)" \
 	"$(sqlstate_of "SET statement_timeout='60s'; SELECT count(*) FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/bomb.avro')")" "54000"
-check "backend still up after the zip-bomb" "$(q 'SELECT 1')" "1"
+check "backend still up after the zip-bomb" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

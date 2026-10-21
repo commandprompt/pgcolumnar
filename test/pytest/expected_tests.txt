@@ -928,4 +928,6 @@ guard_tests 464
 # autovacuum.sh and autovacuum_yield.sh: 11 and 6 checks, one test each, by collection over the cluster files.
 # cluster_tests 1698 -> 1782 for #1341's test_projection_rewrite.py, the twin of projection_rewrite.sh:
 # 84 tests, one per check, by collection over the cluster files.
-cluster_tests 1782
+# cluster_tests 1782 -> 1800 for #1341's test_avro_manifest.py, the twin of avro_manifest.sh:
+# 16 checks in 16 tests, and one per skip name the shell carries, by collection over the cluster files.
+cluster_tests 1800

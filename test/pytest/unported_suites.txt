@@ -7,7 +7,6 @@
 #
 # The parity goal (#432) is this file empty.
 audit
-avro_manifest
 bench_guards
 cancel_decode
 column_projection

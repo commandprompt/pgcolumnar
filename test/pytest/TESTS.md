@@ -262,6 +262,7 @@ behaviour, the source of that number is named.
 - [214. test_autovacuum.py: the maintenance daemon compacts and reclusters only while it is on](#214-test_autovacuumpy-the-maintenance-daemon-compacts-and-reclusters-only-while-it-is-on)
 - [215. test_autovacuum_yield.py: the maintenance daemon yields its lock to a waiting session](#215-test_autovacuum_yieldpy-the-maintenance-daemon-yields-its-lock-to-a-waiting-session)
 - [216. test_projection_rewrite.py: a declared projection survives a rewrite](#216-test_projection_rewritepy-a-declared-projection-survives-a-rewrite)
+- [217. test_avro_manifest.py: Iceberg Avro manifests and manifest lists decode, and refuse what they must](#217-test_avro_manifestpy-iceberg-avro-manifests-and-manifest-lists-decode-and-refuse-what-they-must)
 
 ## 1. How to read a test in here
 
@@ -8970,3 +8971,31 @@ The pytest twin of `test/projection_rewrite.sh` (ported for #1341), every check 
 | `test_a_projection_rewrite_premise_holds` | one test per row of `PREMISES` (17 rows), each by the shell's name |
 | `test_a_rewrite_keeps_the_projection` | one test per row of `REWRITES` (53 rows), each by the shell's name |
 | `test_the_projection_repair_guards_hold` | one test per row of `GUARDS` (14 rows), each by the shell's name |
+## 217. test_avro_manifest.py: Iceberg Avro manifests and manifest lists decode, and refuse what they must
+
+The pytest twin of `test/avro_manifest.sh` (ported for #1341), every check by the shell's name. `read_avro_manifest` and `read_manifest_list` decode the pyiceberg-written fixtures under `test/fixtures/iceberg`, checked against the JSON oracles beside them; a hand-built manifest pins an explicit sequence number; a role without `pg_read_server_files` is refused by that gate; a file with no Avro magic is rejected as corrupt; and a deflate zip-bomb is refused by the cumulative cap.
+
+### Every test
+
+A module fixture on a private database runs the shell's sequence; each test asserts one reading. Survival also reads the server log's count of killed backends, and each refusal reads its message as well as its SQLSTATE.
+
+| test | what it holds |
+| --- | --- |
+| `test_decoded_entry_count_equals_the_oracle` | decoded entry count == oracle |
+| `test_decoded_entries_equal_the_oracle` | decoded entries == oracle (record_count|file_size|region) |
+| `test_the_partition_renders_the_schemas_field_name` | partition renders the schema's field name |
+| `test_every_entrys_file_path_ends_in_parquet` | every entry's file_path ends in .parquet |
+| `test_all_entries_are_added_data_files` | all entries are ADDED data files (status=1, content=0) |
+| `test_the_committed_entries_inherit_their_sequence_number` | the committed entries have a NULL (inherited) sequence_number |
+| `test_an_explicit_entry_sequence_number_is_decoded` | an explicit entry sequence_number is decoded (42) |
+| `test_the_manifest_list_entry_count_equals_the_oracle` | manifest-list entry count == oracle (1) |
+| `test_the_manifest_list_entry_equals_the_oracle` | manifest-list entry == oracle (all scalar fields) |
+| `test_the_manifest_list_path_basename_equals_the_oracle` | manifest-list manifest_path basename == oracle |
+| `test_an_unprivileged_role_is_refused_the_manifest` | an unprivileged role is refused (42501) -- by the function's own gate, the role holding USAGE on the schema |
+| `test_a_non_avro_file_is_rejected` | a non-Avro file is rejected (bad magic), backend survives -- the message names the bad magic |
+| `test_the_backend_is_still_up_after_the_bad_file` | backend still up after the bad file -- and no backend died since (crash recovery no longer passes) |
+| `test_file_format_decodes_to_the_iceberg_enum_name` | file_format decodes to the Iceberg enum name |
+| `test_a_deflate_zip_bomb_is_refused_by_the_cap` | a deflate zip-bomb is refused by the cumulative cap (54000) |
+| `test_the_backend_is_still_up_after_the_zip_bomb` | backend still up after the zip-bomb -- and no backend died since |
+| `test_the_manifest_fixtures_are_present` | the committed fixture is present; without it the test declines under the shell's skip name, iceberg manifest fixtures are missing |
+| `test_python_can_read_the_oracle` | the oracle lists manifest entries; without json the test declines under the shell's skip name, python3 is needed to read the oracle |
