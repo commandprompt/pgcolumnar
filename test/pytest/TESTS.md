@@ -277,6 +277,7 @@ behaviour, the source of that number is named.
 - [229. test_isolation.py: deterministic isolation specs for the compaction and truncation races](#229-test_isolationpy-deterministic-isolation-specs-for-the-compaction-and-truncation-races)
 - [230. test_concurrency.py: concurrent deletes into one chunk group serialize and both survive](#230-test_concurrencypy-concurrent-deletes-into-one-chunk-group-serialize-and-both-survive)
 - [231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate](#231-test_iceberg_scanpy-iceberg_scan-reads-by-field-id-behind-the-server-file-gate)
+- [232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot](#232-test_iceberg_catalogpy-the-iceberg-catalog-reader-resolves-the-named-current-snapshot)
 
 ## 1. How to read a test in here
 
@@ -9419,3 +9420,26 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed me
 | `test_an_output_column_not_in_the_schema_is_refused` | an output column not in the schema is refused (42703) |
 | `test_an_unprivileged_role_is_refused_the_scan` | an unprivileged role is refused (42501) |
 | `test_a_pg_read_server_files_member_may_scan` | a pg_read_server_files member who is not superuser may scan |
+
+## 232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot
+
+The twin of `test/iceberg_catalog.sh` (#388 phase 3a). Against pyiceberg's own view of a real table, the reader returns the current snapshot, exactly one row with no parent, the snapshot the table names rather than snapshots[0], zero rows with no current snapshot, and refuses a dangling id, non-Iceberg JSON and malformed JSON; a role without pg_read_server_files is refused and a non-superuser member reads the catalog.
+
+### Every test
+
+One module fixture writes every metadata file into `server_dir` and reads every value from a private database; the two roles log in on their own and are dropped at teardown.
+
+| test | what it holds |
+| --- | --- |
+| `test_current_snapshot_matches_the_oracle` | current snapshot == oracle (id|seq|op|schema|manifest-list) |
+| `test_exactly_one_current_snapshot_row` | exactly one current snapshot row |
+| `test_the_first_snapshot_has_no_parent` | the first snapshot has no parent (NULL) |
+| `test_resolves_the_named_current_snapshot` | resolves the named current snapshot, not snapshots[0] |
+| `test_the_decoy_snapshot_is_not_returned` | the decoy snapshot is not returned |
+| `test_a_table_with_no_current_snapshot_returns_zero_rows` | a table with no current snapshot returns zero rows |
+| `test_a_dangling_current_snapshot_id_is_refused` | a dangling current-snapshot-id is refused (data_corrupted XX001) |
+| `test_a_non_iceberg_json_object_is_refused` | a non-Iceberg JSON object is refused (invalid_parameter_value 22023) |
+| `test_malformed_json_is_rejected` | malformed JSON is rejected (22P02), backend survives |
+| `test_backend_still_up_after_the_bad_metadata` | backend still up after the bad file |
+| `test_an_unprivileged_role_is_refused_the_catalog` | an unprivileged role is refused (42501) |
+| `test_a_pg_read_server_files_member_may_read_the_catalog` | a pg_read_server_files member who is not superuser may read the catalog |

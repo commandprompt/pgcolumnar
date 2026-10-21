@@ -26,7 +26,6 @@ generated_columns
 groupagg_table_sizing
 harness_selftest
 hilbert_curve
-iceberg_catalog
 iceberg_deletes
 iceberg_dv
 iceberg_fdw_estimate

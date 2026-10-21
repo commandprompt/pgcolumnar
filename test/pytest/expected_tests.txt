@@ -958,4 +958,6 @@ guard_tests 464
 # 8 tests, one per check, by collection over the cluster files.
 # cluster_tests 2045 -> 2053 for #1341's test_iceberg_scan.py, the twin of iceberg_scan.sh:
 # 8 tests, one per check, by collection over the cluster files.
-cluster_tests 2053
+# cluster_tests 2053 -> 2065 for #1341's test_iceberg_catalog.py, the twin of iceberg_catalog.sh:
+# 12 tests, one per check, by collection over the cluster files.
+cluster_tests 2065
