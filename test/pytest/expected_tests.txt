@@ -991,4 +991,6 @@ guard_tests 467
 # 26 tests, one per check, by collection over the cluster files.
 # cluster_tests 2226 -> 2241 for #1341's test_nologin_workers.py, the twin of nologin_workers.sh:
 # 15 tests, one per check, by collection over the cluster files.
-cluster_tests 2241
+# cluster_tests 2241 -> 2249 for #1341's test_scan_direction.py, the twin of scan_direction.sh:
+# 8 tests, one per check, by collection over the cluster files.
+cluster_tests 2249
