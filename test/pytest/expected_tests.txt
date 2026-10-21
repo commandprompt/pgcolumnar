@@ -985,4 +985,6 @@ guard_tests 467
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2169 -> 2182 for #1341's test_recluster_gate.py, the twin of recluster_gate.sh:
 # 13 tests, one per check, by collection over the cluster files.
-cluster_tests 2182
+# cluster_tests 2182 -> 2200 for #1341's test_recluster_extent.py, the twin of recluster_extent.sh:
+# 18 tests, one per check, by collection over the cluster files.
+cluster_tests 2200

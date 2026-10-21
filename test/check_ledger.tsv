@@ -4290,6 +4290,24 @@ range_pruning	range_pruning	premise: the range type collates differently from it
 range_pruning	range_pruning	so does a containment probe	15;16;17;18;19	never	-
 range_pruning	range_pruning	the overlap qual is pushed down, where it used to be dropped	15;16;17;18;19	never	-
 range_pruning	range_pruning	the same for a containment probe far to its right	15;16;17;18;19	2026-10-17	columnar_write_state.c: the writer ignores an unbounded range, so its unit records only the largest finite upper bound
+recluster_extent	recluster_extent	a group numbered below the run is not counted as ordered	15;16;17;18;19	2026-10-20	the online recluster records no extent at all;the run claims every group, below and above the rewrite (#342)
+recluster_extent	recluster_extent	an uncontended rewrite claims the whole relation	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
+recluster_extent	recluster_extent	an uncontended rewrite counts every row as sorted	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
+recluster_extent	recluster_extent	every row is present afterwards	15;16;17;18;19	never	-
+recluster_extent	recluster_extent	noproj: a full recluster claims every row	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
+recluster_extent	recluster_extent	noproj: a full recluster leaves nothing appended	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
+recluster_extent	recluster_extent	premise: the concurrent insert was not in the rewrite's work set	15;16;17;18;19	never	-
+recluster_extent	recluster_extent	the concurrent rows are reported as appended	15;16;17;18;19	2026-10-20	the run claims every group, below and above the rewrite (#342)
+recluster_extent	recluster_extent	the counts still cover every stored row	15;16;17;18;19	never	-
+recluster_extent	recluster_extent	the id-drawn-below counts still cover every stored row	15;16;17;18;19	never	-
+recluster_extent	recluster_extent	the insert ran while the rewrite was still running	15;16;17;18;19	never	-
+recluster_extent	recluster_extent	the rewrite reported groups reclustered	15;16;17;18;19	never	-
+recluster_extent	recluster_extent	the rows written below the run are reported as appended	15;16;17;18;19	2026-10-20	the online recluster records no extent at all;the run claims every group, below and above the rewrite (#342)
+recluster_extent	recluster_extent	the run does not claim rows written during the rewrite	15;16;17;18;19	2026-10-20	the online recluster records no extent at all;the run claims every group, below and above the rewrite (#342);the run reaches the rewrite's last id, across ids another writer took (#311)
+recluster_extent	recluster_extent	the table loaded	15;16;17;18;19	never	-
+recluster_extent	recluster_extent	withproj: a full recluster claims every row	15;16;17;18;19	2026-10-20	a projection's stripe ids are not merged into the run, so they break it;the online recluster records no extent at all
+recluster_extent	recluster_extent	withproj: a full recluster leaves nothing appended	15;16;17;18;19	2026-10-20	a projection's stripe ids are not merged into the run, so they break it;the online recluster records no extent at all
+recluster_extent	recluster_extent	withproj: add_projection created the projection	15;16;17;18;19	2026-10-21	columnar_projection.c: pgcolumnar_add_projection raises right after reading its arguments, so no projection is created
 recluster_gate	recluster_gate	a repeat recluster by the new key is a no-op	15;16;17;18;19	2026-10-21	columnar_vacuum.c: recluster_online skips record_online_sorted_extent, so no extent or key is recorded;recluster's #415 self-gate removed, so every call rewrites
 recluster_gate	recluster_gate	a third identical recluster is also a no-op	15;16;17;18;19	2026-10-21	columnar_vacuum.c: recluster_online skips record_online_sorted_extent, so no extent or key is recorded;recluster's #415 self-gate removed, so every call rewrites
 recluster_gate	recluster_gate	and it folds the new data back into the run (0 appended after)	15;16;17;18;19	2026-10-21	columnar_vacuum.c: recluster's #415 gate over-applied (if (true || sameKey ...)), so every recluster returns 0 and does nothing;columnar_vacuum.c: recluster_online skips record_online_sorted_extent, so no extent or key is recorded;the gate ignores groups appended past the recorded run

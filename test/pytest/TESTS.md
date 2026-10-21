@@ -289,6 +289,7 @@ behaviour, the source of that number is named.
 - [241. test_index_delete_liveness.py: nbtree's deletion passes never destroy an entry for a live row](#241-test_index_delete_livenesspy-nbtrees-deletion-passes-never-destroy-an-entry-for-a-live-row)
 - [242. test_rewrite_group_scan.py: a rewrite reads each row group once, not once per row](#242-test_rewrite_group_scanpy-a-rewrite-reads-each-row-group-once-not-once-per-row)
 - [243. test_recluster_gate.py: recluster skips its rewrite when the table is already this key's run](#243-test_recluster_gatepy-recluster-skips-its-rewrite-when-the-table-is-already-this-keys-run)
+- [244. test_recluster_extent.py: an online recluster records only the extent it rewrote](#244-test_recluster_extentpy-an-online-recluster-records-only-the-extent-it-rewrote)
 
 ## 1. How to read a test in here
 
@@ -9700,3 +9701,32 @@ The row-set check reads a heap mirror built from the generator, not copied from 
 | `test_sort_status_reports_the_new_key` | and sort_status now reports the new key |
 | `test_a_repeat_by_the_new_key_is_a_no_op` | a repeat recluster by the new key is a no-op |
 | `test_the_no_op_reclusters_preserved_the_row_set` | no-op recluster preserved the exact row set (columnar == heap mirror) |
+
+## 244. test_recluster_extent.py: an online recluster records only the extent it rewrote
+
+The pytest twin of `test/recluster_extent.sh` (ported for #1341), every check by the shell's name. The online recluster runs while other sessions write, and its run must cover the groups it wrote and nothing else: not rows inserted during it (#311), and not a group whose id another writer drew below the rewrite's (#342). The races run in threads, as the shell runs them in background jobs. On a private database.
+
+### Every test
+
+Whether the insert ran during the rewrite is asked of the server before the insert begins. The run must claim at least one row and no more than the base. The projection arm first reads its projection back from the catalog, so a failed `add_projection` cannot turn it into a second arm without one.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_table_loaded` | the table loaded |
+| `test_the_insert_ran_during_the_rewrite` | the insert ran while the rewrite was still running |
+| `test_the_rewrite_reported_groups_reclustered` | the rewrite reported groups reclustered |
+| `test_the_concurrent_insert_was_not_in_the_work_set` | premise: the concurrent insert was not in the rewrite's work set |
+| `test_every_row_is_present_afterwards` | every row is present afterwards |
+| `test_the_run_does_not_claim_rows_written_during_the_rewrite` | the run does not claim rows written during the rewrite |
+| `test_the_counts_still_cover_every_stored_row` | the counts still cover every stored row |
+| `test_the_concurrent_rows_are_reported_as_appended` | the concurrent rows are reported as appended |
+| `test_a_group_numbered_below_the_run_is_not_ordered` | a group numbered below the run is not counted as ordered |
+| `test_the_rows_below_the_run_are_appended` | the rows written below the run are reported as appended |
+| `test_the_id_drawn_below_counts_cover_every_row` | the id-drawn-below counts still cover every stored row |
+| `test_noproj_a_full_recluster_claims_every_row` | noproj: a full recluster claims every row |
+| `test_noproj_a_full_recluster_leaves_nothing_appended` | noproj: a full recluster leaves nothing appended |
+| `test_withproj_add_projection_created_the_projection` | withproj: add_projection created the projection |
+| `test_withproj_a_full_recluster_claims_every_row` | withproj: a full recluster claims every row |
+| `test_withproj_a_full_recluster_leaves_nothing_appended` | withproj: a full recluster leaves nothing appended |
+| `test_an_uncontended_rewrite_claims_the_whole_relation` | an uncontended rewrite claims the whole relation |
+| `test_an_uncontended_rewrite_counts_every_row_as_sorted` | an uncontended rewrite counts every row as sorted |
