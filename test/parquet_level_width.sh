@@ -40,17 +40,23 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src"
 HDR="$SRC/columnar_parquet_format.h"
 
 # The body, so every assertion below reads the shared definition and not a
-# comment that happens to mention it.
-body="$(awk '/^pq_bits_for\(int maxval\)/{f=1} f{print} f&&/^}/{exit}' "$HDR")"
+# comment that happens to mention it. Comments inside the body are blanked too,
+# multi-line ones included: a guard commented out of the code is not a guard.
+body="$(awk '/^pq_bits_for\(int maxval\)/{f=1} f{print} f&&/^}/{exit}' "$HDR" |
+	perl -0777 -pe 's{/\*.*?\*/}{}gs; s{//[^\n]*}{}g')"
 
 check "the shared level-width helper exists" \
 	"$([ -n "$body" ] && echo yes || echo no)" "yes"
 
 # SINGLE-SOURCED. A local copy reappearing in either .c file is the drift this
 # is here to catch, and it would not fail any other check in the tree.
+# Both files must be READ: grep -c over a missing file prints nothing for it, and the
+# sum then reads 0, the passing answer -- with the writer's path wrong this passed (#1341).
 check "no local copy of the helper survives in the writer or the reader" \
-	"$(grep -cE '^[a-z_]*bits_for\(int' "$SRC/columnar_parquet.c" "$SRC/columnar_parquet_reader.c" \
-		| awk -F: '{n += $2} END {print n+0}')" "0"
+	"$(if [ -f "$SRC/columnar_parquet.c" ] && [ -f "$SRC/columnar_parquet_reader.c" ]; then
+		grep -cE '^[a-z_]*bits_for\(int' "$SRC/columnar_parquet.c" "$SRC/columnar_parquet_reader.c" \
+			| awk -F: '{n += $2} END {print n+0}'
+	   else echo "no reading (a source file is missing)"; fi)" "0"
 check "and both callers reach the shared one" \
 	"$([ "$(grep -c 'pq_bits_for(' "$SRC/columnar_parquet.c")" -ge 1 ] &&
 	   [ "$(grep -c 'pq_bits_for(' "$SRC/columnar_parquet_reader.c")" -ge 1 ] &&
@@ -59,8 +65,10 @@ check "and both callers reach the shared one" \
 # UNSIGNED. This is the #710 defect itself.
 check "the shift is unsigned" \
 	"$(grep -c '1u <<' <<<"$body")" "1"
+# Over the body only when there IS one: a count over an empty extraction is 0, the
+# passing answer, so with the header unreadable this passed (#1341).
 check "and no signed 1 << remains in it" \
-	"$(grep -cE '\(1 <<|[^u] 1 <<' <<<"$body")" "0"
+	"$(if [ -n "$body" ]; then grep -cE '\(1 <<|[^u] 1 <<' <<<"$body"; else echo "no reading (no body)"; fi)" "0"
 
 # BOUNDED, which `1u <<` alone does NOT give. Making the shift unsigned also
 # makes the comparison unsigned, so a negative maxval converts to a huge value

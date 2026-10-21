@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 112
+suites_not_covered 111
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5233,4 +5233,21 @@ suites_not_covered 112
 #     never         3793 + 1 = 3794
 #     dated         2073 + 12 = 2085
 #     3794 + 2085 == 5879
-checks_never_observed_red 3794
+#
+# #1341, parquet_level_width seeded, with its twin (jdatcmd): 3543 -> 3545, and
+# suites_not_covered 144 -> 143. The suite had no rows. It enters with 7 checks from
+# five-major runs (7/7 on each of 15-19; its twin needs no cluster). Three fixes: "no local
+# copy" summed grep -c over two files, so with the writer's path wrong it read 0 and
+# passed; it now needs both files. "no signed 1 << remains" counted over the extracted
+# body, so with the header unreadable it read 0 and passed; it now needs a body. And the
+# body checks read the comments inside the body, so a guard or bound commented out of the
+# code passed; the body now has its comments blanked. 5 are dated by four source
+# mutations, each reddening the same names in both twins: a signed shift, the b < 31
+# bound removed, a local copy back in the writer, and the non-positive guard commented
+# out. 2 arrive never.
+#
+#     ledger rows   5879 + 7 = 5886
+#     never         3794 + 2 = 3796
+#     dated         2085 + 5 = 2090
+#     3796 + 2090 == 5886
+checks_never_observed_red 3796

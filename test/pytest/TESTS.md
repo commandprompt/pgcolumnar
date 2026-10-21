@@ -302,6 +302,7 @@ behaviour, the source of that number is named.
 - [254. test_cost_written_geometry.py: the cost model describes the geometry a table was written with](#254-test_cost_written_geometrypy-the-cost-model-describes-the-geometry-a-table-was-written-with)
 - [255. test_encode_invariants.py: encoding invariants for the #155 bulk-load optimisations](#255-test_encode_invariantspy-encoding-invariants-for-the-155-bulk-load-optimisations)
 - [256. test_read_stream.py: reads through a read stream return what the synchronous path returns](#256-test_read_streampy-reads-through-a-read-stream-return-what-the-synchronous-path-returns)
+- [257. test_parquet_level_width.py: the Parquet level-width helper is single-sourced, unsigned and bounded](#257-test_parquet_level_widthpy-the-parquet-level-width-helper-is-single-sourced-unsigned-and-bounded)
 
 ## 1. How to read a test in here
 
@@ -10060,3 +10061,19 @@ Each mode first reads its setting back from a fresh session, since a setting tha
 | `test_a_fresh_session_reads_the_setting_on` | [on] a fresh session reads enable_read_stream as on |
 | `test_a_fresh_session_reads_the_setting_off` | [off] a fresh session reads enable_read_stream as off |
 | `test_a_shape_matches_its_heap_twin` | one test per row of `NAMES` (10 rows), each by the shell's name |
+
+## 257. test_parquet_level_width.py: the Parquet level-width helper is single-sourced, unsigned and bounded
+
+The pytest twin of `test/parquet_level_width.sh` (ported for #1341), every check by the shell's name. A source check, needing no cluster: `pq_bits_for` in `columnar_parquet_format.h` is the one definition of the RLE/bit-pack level width, called from the writer and the reader, with an unsigned shift and a loop bounded below 32 shifts (#710). Read in Python with `re`, independently of the shell's grep and awk.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_shared_helper_exists` | the shared level-width helper exists |
+| `test_no_local_copy_survives` | no local copy of the helper survives in the writer or the reader -- read only when both files are, since a count over a missing file is 0 |
+| `test_both_callers_reach_the_shared_helper` | and both callers reach the shared one |
+| `test_the_shift_is_unsigned` | the shift is unsigned |
+| `test_no_signed_shift_remains` | and no signed 1 << remains in it -- read only over a body that was found |
+| `test_the_loop_is_bounded` | the loop is bounded below 32 shifts |
+| `test_a_non_positive_maximum_returns_first` | a non-positive maximum returns before shifting at all |
