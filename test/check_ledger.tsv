@@ -4011,6 +4011,92 @@ pg_dump_roundtrip	pg_dump_roundtrip	plain: row count survives	15;16;17;18;19	nev
 pg_dump_roundtrip	pg_dump_roundtrip	plain: row data survives (checksum)	15;16;17;18;19	never	-
 pg_dump_roundtrip	pg_dump_roundtrip	plain: the projection declaration IS carried	15;16;17;18;19	2026-10-16	columnar_projection.c: drop_projection keeps the projection's declaration;pgcolumnar--1.0-alpha5.sql: pgcolumnar.projection_declaration no longer registered with pg_extension_config_dump
 pg_dump_roundtrip	pg_dump_roundtrip	the base table has a projection to preserve	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	...and prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
+preimage_rewrite	preimage_rewrite	...and still answers correctly with the fold enabled	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	...and the heap agrees it is unsatisfiable	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[c < ts_trunc (reversed)] prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
+preimage_rewrite	preimage_rewrite	[c < ts_trunc (reversed)] prunes chunk groups	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens;columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	[c < ts_trunc (reversed)] returns the heap's ROWS, not just its count	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[c < ts_trunc (reversed)] returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[c < ts_trunc (reversed)] returns the range's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[c >= ts_trunc (reversed)] prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
+preimage_rewrite	preimage_rewrite	[c >= ts_trunc (reversed)] prunes chunk groups	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens;columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	[c >= ts_trunc (reversed)] returns the heap's ROWS, not just its count	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[c >= ts_trunc (reversed)] returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[c >= ts_trunc (reversed)] returns the range's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[day < infinity] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[day = -infinity] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[day = infinity] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[day >= infinity] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[hour = infinity] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc < c, c not truncated] prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
+preimage_rewrite	preimage_rewrite	[ts_trunc < c, c not truncated] prunes chunk groups	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens;columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	[ts_trunc < c, c not truncated] returns the heap's ROWS, not just its count	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc < c, c not truncated] returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc < c, c not truncated] returns the range's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc < c] prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
+preimage_rewrite	preimage_rewrite	[ts_trunc < c] prunes chunk groups	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens;columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	[ts_trunc < c] returns the heap's ROWS, not just its count	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc < c] returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc < c] returns the range's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc <= c] prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
+preimage_rewrite	preimage_rewrite	[ts_trunc <= c] prunes chunk groups	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens;columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	[ts_trunc <= c] returns the heap's ROWS, not just its count	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc <= c] returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc <= c] returns the range's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc > c] prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
+preimage_rewrite	preimage_rewrite	[ts_trunc > c] prunes chunk groups	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens;columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	[ts_trunc > c] returns the heap's ROWS, not just its count	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc > c] returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc > c] returns the range's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc >= c, c not truncated] prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
+preimage_rewrite	preimage_rewrite	[ts_trunc >= c, c not truncated] prunes chunk groups	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens;columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	[ts_trunc >= c, c not truncated] returns the heap's ROWS, not just its count	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc >= c, c not truncated] returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc >= c, c not truncated] returns the range's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc >= c] prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
+preimage_rewrite	preimage_rewrite	[ts_trunc >= c] prunes chunk groups	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens;columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	[ts_trunc >= c] returns the heap's ROWS, not just its count	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc >= c] returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[ts_trunc >= c] returns the range's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[year < max] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[year <= max] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[year = -infinity] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[year = max] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[year > max] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	[year >= max] answers instead of raising, and agrees with the heap	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	a non-constant unit still answers correctly	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	a non-truncated constant returns no rows	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	an unlisted unit (millennium) still answers correctly	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	and the heap mirror's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	backend still up	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	date_trunc('day', ts) = const prunes chunk groups (#403)	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens;columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	premise: the fixture holds one +infinity row	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	premise: the fixture holds one -infinity row	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	premise: the fixture spans many chunk groups	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	premise: the near-maximum row is really there	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	the actual ROWS match the heap, not just the count	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	the explicit range prunes, so there IS something to remove	15;16;17;18;19	2026-10-21	columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	the range for [c < ts_trunc (reversed)] prunes, so there is something to remove	15;16;17;18;19	2026-10-21	columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	the range for [c >= ts_trunc (reversed)] prunes, so there is something to remove	15;16;17;18;19	2026-10-21	columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	the range for [ts_trunc < c, c not truncated] prunes, so there is something to remove	15;16;17;18;19	2026-10-21	columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	the range for [ts_trunc < c] prunes, so there is something to remove	15;16;17;18;19	2026-10-21	columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	the range for [ts_trunc <= c] prunes, so there is something to remove	15;16;17;18;19	2026-10-21	columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	the range for [ts_trunc > c] prunes, so there is something to remove	15;16;17;18;19	2026-10-21	columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	the range for [ts_trunc >= c, c not truncated] prunes, so there is something to remove	15;16;17;18;19	2026-10-21	columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	the range for [ts_trunc >= c] prunes, so there is something to remove	15;16;17;18;19	2026-10-21	columnar_reader.c: a chunk group is never excluded by its zone map
+preimage_rewrite	preimage_rewrite	the rewritten predicate does not engage the batch fold	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	the rewritten predicate returns the range's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	timestamptz: and still correct under a different zone	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	timestamptz: correct under UTC	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	unit 'month' returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	unit 'month': premise: it matches some rows	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	unit 'quarter' returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	unit 'quarter': premise: it matches some rows	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	unit 'week' returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	unit 'week': premise: it matches some rows	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	unit 'year' returns the heap's answer	15;16;17;18;19	never	-
+preimage_rewrite	preimage_rewrite	unit 'year': premise: it matches some rows	15;16;17;18;19	never	-
 prepared_across_sessions	prepared_across_sessions	ROLLBACK PREPARED of a DELETE leaves every row as it was	15;16;17;18;19	never	-
 prepared_across_sessions	prepared_across_sessions	ROLLBACK PREPARED of an UPDATE leaves every row as it was, none duplicated	15;16;17;18;19	never	-
 prepared_across_sessions	prepared_across_sessions	a prepared insert is invisible to another session	15;16;17;18;19	never	-

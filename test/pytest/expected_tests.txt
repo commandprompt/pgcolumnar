@@ -1001,4 +1001,6 @@ guard_tests 467
 # 14 tests, one per check, by collection over the cluster files.
 # cluster_tests 2325 -> 2333 for #1341's test_projection_rename_restore.py, the twin of projection_rename_restore.sh:
 # 8 tests, one per check, by collection over the cluster files.
-cluster_tests 2333
+# cluster_tests 2333 -> 2419 for #1341's test_preimage_rewrite.py, the twin of preimage_rewrite.sh:
+# 86 tests, one per check, by collection over the cluster files.
+cluster_tests 2419
