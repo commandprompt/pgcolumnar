@@ -1,0 +1,433 @@
+"""The HTTP ranged byte source (#393 M1): the pytest twin of
+`test/objstore_http_read.sh`, every check by the shell's name (#1341).
+
+Reads go through the shell's own fixture server (test/objstore_http_server.py), which
+logs one line per request: `METHOD path query range`. That log is the seam.
+
+A  a foreign table over http://127.0.0.1 returns what the byte-identical local file
+   returns.
+B  the request count, ASSERTED: buffered == 4 + G * width (1 HEAD and 3 ranged GETs to
+   open, one GET per needed chunk), unbuffered >= 10x that, and every GET carried a
+   Range header.
+C  A REFUSAL IS NOT ANY ERROR. Many guards share 08006 and 08P01, so each refusal must
+   carry its own guard's SQLSTATE AND message: an unreachable port, a 404, a server
+   that ignores Range, a short 206 body, EOF mid-body, and a fresh connection the
+   server hangs up on (asked once, never retried). A keep-alive connection the server
+   dropped is the one failure that is retried, and the read equals the local one.
+D  statement_timeout cancels a transfer the server wedged mid-body, within 10 s.
+Survival: the server answers and the server log's "terminated by signal" count has
+not moved -- waited for first, since a crashed server comes back.
+
+Every statement runs on its own connection, as the shell's psql calls do, so each
+read opens the object afresh and the request counts are the shell's.
+
+The parquet fixture is written by a python3 child, as the shell's heredoc writes it.
+"""
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+import psycopg
+import pytest
+
+from pgc_vacuity import query_error
+
+TEST = pathlib.Path(__file__).resolve().parents[1]
+G, NCOLS, ROWS_PER_GROUP = 3, 8, 8000
+COLDEFS = ", ".join(f"c{i} int8" for i in range(NCOLS))
+SUM_ALL = " + ".join(f"sum(c{i})" for i in range(NCOLS))
+K_FULL, K_PROJ = 4 + G * NCOLS, 4 + G * 2
+ALLOW = "SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'"
+SCHEMA = "pgc_objstore_http_read"
+
+WRITER = """
+import sys
+import pyarrow as pa, pyarrow.parquet as pq
+G, NCOLS, RPG = %d, %d, %d
+n = G * RPG
+cols = {("c%%d" %% i): pa.array([(i + 1) * v for v in range(n)], pa.int64())
+        for i in range(NCOLS)}
+pq.write_table(pa.table(cols), sys.argv[1], row_group_size=RPG, data_page_size=1024,
+               compression="NONE", use_dictionary=False)
+assert pq.ParquetFile(sys.argv[1]).metadata.num_row_groups == G
+""" % (G, NCOLS, ROWS_PER_GROUP)
+
+
+def _message(exc):
+    return str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+
+
+def _connect(dsn):
+    conn = psycopg.connect(dsn, autocommit=True, connect_timeout=10)
+    conn.execute(ALLOW)
+    conn.execute(f"SET search_path = {SCHEMA}, public")
+    return conn
+
+
+def _value(dsn, sql):
+    """-> the first row's columns joined by a space, or a query_error()."""
+    try:
+        with _connect(dsn) as conn:
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    if row is None or any(v is None for v in row):
+        return query_error(f"no value from {sql}")
+    return " ".join(str(v) for v in row)
+
+
+def _set_hash(dsn, sql):
+    """The shell's pgc_set_hash: md5 of the rows' text, sorted; EMPTY for no rows."""
+    return _value(dsn, "SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
+                       f"FROM (SELECT _row::text AS t FROM ( {sql} ) _row) _s")
+
+
+def _await_server(dsn):
+    """The shell's await_server: wait up to 30 s for SELECT 1 -> what it last returned.
+    A crash restarts the server, so every reading after one waits for it: otherwise
+    the next reading fails on recovery instead of measuring its own guard."""
+    up = None
+    for _ in range(60):
+        up = _value(dsn, "SELECT 1")
+        if up == "1":
+            break
+        time.sleep(0.5)
+    return up
+
+
+def _refusal(dsn, sql, phrase):
+    """The shell's refusal_of: -> "SQLSTATE: phrase" when `sql` failed with `phrase` in
+    its primary message, else the SQLSTATE and the message it did give, or what came
+    back instead of an error."""
+    _await_server(dsn)
+    try:
+        with _connect(dsn) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        primary = exc.diag.message_primary or ""
+        return f"{exc.sqlstate}: " + (phrase if phrase in primary else primary)
+    return "no error"
+
+
+def _requests(log):
+    """-> the request log's lines split into fields, or a query_error()."""
+    try:
+        return [l.split() for l in pathlib.Path(log).read_text(errors="replace").splitlines()]
+    except OSError as exc:
+        return query_error(f"request log unreadable: {exc}")
+
+
+def _count(log, keep=lambda f: True):
+    lines = _requests(log)
+    return lines if not isinstance(lines, list) else sum(1 for f in lines if keep(f))
+
+
+def _crashes(log):
+    try:
+        return pathlib.Path(log).read_text(errors="replace").count("terminated by signal")
+    except OSError as exc:
+        return query_error(f"crash count unreadable: {exc}")
+
+
+def _write_fixture(path):
+    """-> None, or the decline when pyarrow is absent. Any other failure raises."""
+    w = subprocess.run([sys.executable, "-c", WRITER, str(path)], capture_output=True, text=True)
+    if w.returncode == 0:
+        return None
+    if "No module named 'pyarrow" in w.stderr:
+        return ("MISSING_DEPENDENCY", "pyarrow is not installed")
+    raise RuntimeError(f"writing {path} failed: {w.stderr.strip()}")
+
+
+@pytest.fixture(scope="module")
+def ohr(pgc_cluster):
+    from pgc_cluster import pick_port
+
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-ohr-"))
+    work.chmod(0o755)
+    fixture = work / "fixture.parquet"
+    wrote = _write_fixture(fixture)
+    if wrote is not None:
+        shutil.rmtree(work, ignore_errors=True)
+        yield {"absent": wrote}
+        return
+    fixture.chmod(0o644)
+
+    port = pick_port(31)
+    out, hlog = work / "http_server.out", str(work / "http.log")
+    srv = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
+                            "--port", str(port), "--log", hlog],
+                           stdout=open(out, "w"), stderr=subprocess.STDOUT)
+    for _ in range(50):
+        if out.is_file() and "READY" in out.read_text(errors="replace"):
+            break
+        time.sleep(0.1)
+
+    dsn, plog = pgc_cluster.dsn(), pgc_cluster.datadir / "server.log"
+    base = f"http://127.0.0.1:{port}"
+    r = {"absent": None, "fixture": "yes" if fixture.stat().st_size > 0 else "no",
+         "server up": out.read_text(errors="replace").count("READY") if out.is_file() else 0}
+
+    def logged(sql):
+        """Truncate the request log, run `sql`, -> how many requests it logged."""
+        pathlib.Path(hlog).write_text("")
+        _value(dsn, sql)
+        return _count(hlog)
+
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+            c.execute("DROP SERVER IF EXISTS ohr_srv CASCADE")
+            c.execute(f"CREATE SCHEMA {SCHEMA}")
+            c.execute("CREATE SERVER ohr_srv FOREIGN DATA WRAPPER pgcolumnar_parquet")
+            dead = pick_port(33)
+            for name, path in (("flocal", str(fixture)), ("fhttp", f"{base}/fixture.parquet"),
+                               ("fdead", f"http://127.0.0.1:{dead}/fixture.parquet"),
+                               ("f404", f"{base}/no_such.parquet"),
+                               ("fnorange", f"{base}/norange/fixture.parquet"),
+                               ("fshort", f"{base}/short/fixture.parquet"),
+                               ("ftrunc", f"{base}/trunc/fixture.parquet"),
+                               ("fdropka", f"{base}/dropka/fixture.parquet"),
+                               ("fhangup", f"{base}/hangup/fixture.parquet"),
+                               ("fstall", f"{base}/stall/fixture.parquet")):
+                c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.{name} ({COLDEFS}) SERVER ohr_srv "
+                          f"OPTIONS (path '{path}')")
+        r["crashes0"] = _crashes(plog)
+
+        r["A full"] = (_set_hash(dsn, "SELECT * FROM fhttp"), _set_hash(dsn, "SELECT * FROM flocal"))
+        r["A proj"] = (_set_hash(dsn, "SELECT c1, c6 FROM fhttp"),
+                       _set_hash(dsn, "SELECT c1, c6 FROM flocal"))
+        r["A count"] = _value(dsn, "SELECT count(*) FROM fhttp")
+
+        r["full buf"] = logged(f"SELECT {SUM_ALL} FROM fhttp")
+        r["proj buf"] = logged("SELECT sum(c1) + sum(c6) FROM fhttp")
+        pathlib.Path(hlog).write_text("")
+        try:
+            with _connect(dsn) as conn:
+                conn.execute("SET pgcolumnar.objstore_buffered = off")
+                conn.execute(f"SELECT {SUM_ALL} FROM fhttp").fetchall()
+        except psycopg.Error:
+            pass                     # the count below is the reading, as in the shell
+        r["full unbuf"] = _count(hlog)
+
+        pathlib.Path(hlog).write_text("")
+        _value(dsn, "SELECT sum(c0) FROM fhttp")
+        r["gets"] = _count(hlog, lambda f: f[0] == "GET")
+        r["norange"] = _count(hlog, lambda f: f[0] == "GET" and len(f) > 3 and f[3] == "-")
+
+        r["C dead"] = _refusal(dsn, "SELECT count(*) FROM fdead", "could not connect to")
+        r["C 404"] = _refusal(dsn, "SELECT count(*) FROM f404", "does not exist (HTTP 404)")
+        r["C norange"] = _refusal(dsn, "SELECT count(*) FROM fnorange", "ignored a Range request")
+        r["C short"] = _refusal(dsn, "SELECT count(*) FROM fshort", "requested bytes")
+        r["C trunc"] = _refusal(dsn, "SELECT count(*) FROM ftrunc", "closed mid-body")
+        _await_server(dsn)
+        r["C dropka"] = (_set_hash(dsn, "SELECT c2, c5 FROM fdropka"),
+                         _set_hash(dsn, "SELECT c2, c5 FROM flocal"))
+        pathlib.Path(hlog).write_text("")
+        r["C hangup"] = _refusal(dsn, "SELECT count(*) FROM fhangup", "failed before a response")
+        r["C hangup asked"] = _count(hlog)
+
+        _await_server(dsn)
+        t0 = time.monotonic()
+        try:
+            with _connect(dsn) as conn:
+                conn.execute("SET statement_timeout = '2s'")
+                conn.execute("SELECT count(*) FROM fstall").fetchall()
+            r["D state"] = "no error"
+        except psycopg.Error as exc:
+            r["D state"] = exc.sqlstate or query_error(_message(exc))
+        r["D elapsed"] = time.monotonic() - t0
+
+        r["up"] = _await_server(dsn)
+        r["crashes1"] = _crashes(plog)
+        yield r
+    finally:
+        try:
+            with psycopg.connect(dsn, autocommit=True) as c:
+                c.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+                c.execute("DROP SERVER IF EXISTS ohr_srv CASCADE")
+        except psycopg.Error:
+            pass
+        srv.kill()
+        srv.wait()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _declined(ohr, expect):
+    if ohr["absent"] is None:
+        return False
+    expect.cannot_run(*ohr["absent"])
+    return True
+
+
+def _positive(n):
+    return "yes" if isinstance(n, int) and n > 0 else f"no ({n})"
+
+
+def test_the_http_read_fixture_is_written(ohr, expect):
+    """The shell skips the whole suite without pyarrow, under this name."""
+    if expect.require_module("pyarrow", name="pyarrow is required to write the fixture") is None:
+        return
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["fixture"], "yes", "premise: fixture written")
+
+
+def test_the_http_read_fixture_server_is_up(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.num(ohr["server up"], 1, "premise: fixture server is up")
+
+
+def test_a_full_scan_over_http_equals_the_local_file(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.hash(*ohr["A full"], "A: full scan http == local")
+
+
+def test_a_projection_over_http_equals_the_local_file(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.hash(*ohr["A proj"], "A: projection http == local")
+
+
+def test_count_over_http(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["A count"], str(G * ROWS_PER_GROUP), "A: count(*) over http")
+
+
+def test_the_buffered_run_logged_requests(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(_positive(ohr["full buf"]), "yes", "premise: buffered run logged requests")
+
+
+def test_the_unbuffered_run_logged_requests(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(_positive(ohr["full unbuf"]), "yes", "premise: unbuffered run logged requests")
+
+
+def test_buffered_full_width_requests(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.num(ohr["full buf"], K_FULL, "B: buffered full-width requests (K = 4 + G*NCOLS)")
+
+
+def test_buffered_two_column_requests(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.num(ohr["proj buf"], K_PROJ, "B: buffered 2-col requests (K = 4 + G*2)")
+
+
+def test_unbuffered_is_at_least_ten_times_k(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.at_least(ohr["full unbuf"], 10 * K_FULL, "B: unbuffered >= 10x K")
+
+
+def test_the_buffered_to_unbuffered_request_ratio(ohr, expect):
+    """The shell's check_ratio: a / b rounded to two places, within 0.1x; a zero side
+    measured nothing."""
+    if _declined(ohr, expect):
+        return
+    a, b = ohr["full buf"], ohr["full unbuf"]
+    if not isinstance(a, int) or not isinstance(b, int) or a == 0 or b == 0:
+        got = f"nothing measured: a=[{a}] b=[{b}]"
+    else:
+        ratio = float(f"{a / b:.2f}")
+        got = "within the 0.1x bound" if ratio <= 0.1 else f"{ratio}x (a={a} b={b})"
+    expect.text(got, "within the 0.1x bound", "B: buffered/unbuffered request ratio")
+
+
+def test_the_range_audit_phase_logged_gets(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(_positive(ohr["gets"]), "yes", "premise: the range-audit phase logged GETs")
+
+
+def test_every_get_carried_a_range_header(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.num(ohr["norange"], 0, "B: every GET carried a Range header")
+
+
+def test_an_unreachable_endpoint_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C dead"], "08006: could not connect to", "C: unreachable endpoint SQLSTATE")
+
+
+def test_a_404_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C 404"], "58P01: does not exist (HTTP 404)", "C: http 404 SQLSTATE")
+
+
+def test_a_range_ignoring_server_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C norange"], "08P01: ignored a Range request", "C: range-ignoring server SQLSTATE")
+
+
+def test_a_short_206_body_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C short"], "08P01: requested bytes", "C: a short 206 body is refused")
+
+
+def test_eof_mid_body_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C trunc"], "08006: closed mid-body", "C: EOF mid-body is refused")
+
+
+def test_a_dropped_keep_alive_connection_is_retried(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.hash(*ohr["C dropka"], "C: a dropped keep-alive connection is retried (http == local)")
+
+
+def test_a_server_that_hangs_up_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C hangup"], "08006: failed before a response",
+                "C: a server that hangs up on a fresh connection is refused")
+
+
+def test_a_fresh_connection_is_not_retried(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.num(ohr["C hangup asked"], 1, "C: and that fresh connection is not retried (one request logged)")
+
+
+def test_a_stalled_transfer_is_cancelled(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["D state"], "57014", "D: stalled transfer cancelled with query_canceled")
+
+
+def test_the_http_read_cancel_latency_is_bounded(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    s = ohr["D elapsed"]
+    expect.text("within 10s" if s <= 10 else f"{s:.1f}s", "within 10s", "D: cancel latency bounded (<=10s)")
+
+
+def test_the_server_survives(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    c0, c1, up = ohr["crashes0"], ohr["crashes1"], ohr["up"]
+    if not isinstance(c0, int) or not isinstance(c1, int):
+        got = "no (crash count unreadable)"
+    elif up == "1" and c1 == c0:
+        got = "1"
+    else:
+        got = f"no ([{up}], {c1 - c0} backend crashes)"
+    expect.text(got, "1", "survival: the server answers and no backend crashed")

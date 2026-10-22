@@ -13,6 +13,17 @@
 #   /stall/<file>    answer the first ranged GET's headers, send half the body,
 #                    then sleep: the cancel arm proves statement_timeout gets the
 #                    backend back while the transfer is wedged.
+#   /short/<file>    answer each ranged GET with an honest 206 one byte SHORT of
+#                    the range asked for (Content-Range and Content-Length agree):
+#                    the client must refuse the short body, never pad or use it.
+#   /trunc/<file>    answer each ranged GET's headers with the full length, send
+#                    half the body, then close: EOF mid-body is an error.
+#   /dropka/<file>   serve normally, but close the connection after every
+#                    response WITHOUT a Connection: close header: the client's
+#                    next request on it fails before a status line, and must be
+#                    retried once on a fresh connection (the keep-alive race).
+#   /hangup/<file>   close every connection without answering at all: on a fresh
+#                    connection that is the server's answer, not a race to retry.
 #
 # SigV4 verification mode (#393 M2): with --sigv4-key/--sigv4-secret/
 # --sigv4-region, every request must carry a valid AWS Signature Version 4
@@ -114,7 +125,7 @@ class Handler(BaseHTTPRequestHandler):
         # query never names a file.
         path = urllib.parse.unquote(self.path.partition("?")[0])
         mode = "normal"
-        for prefix in ("/norange/", "/stall/"):
+        for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -206,9 +217,15 @@ class Handler(BaseHTTPRequestHandler):
         self._log_line()
         if not self._sigv4_check():
             return
-        size = self._head_common(self._resolve()[1])
+        mode, local = self._resolve()
+        if mode == "hangup":
+            self.close_connection = True
+            return
+        size = self._head_common(local)
         if size < 0:
             return
+        if mode == "dropka":
+            self.close_connection = True
         self.send_response(200)
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
@@ -297,9 +314,14 @@ class Handler(BaseHTTPRequestHandler):
             self._do_list_v2(_query)
             return
         mode, local = self._resolve()
+        if mode == "hangup":
+            self.close_connection = True
+            return
         size = self._head_common(local)
         if size < 0:
             return
+        if mode == "dropka":
+            self.close_connection = True
 
         rng = self.headers.get("Range")
         m = RANGE_RE.match(rng.replace(" ", "")) if rng else None
@@ -325,6 +347,8 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        if mode == "short" and hi > lo:
+            hi -= 1
         n = hi - lo + 1
         with open(local, "rb") as f:
             f.seek(lo)
@@ -333,6 +357,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Range", "bytes %d-%d/%d" % (lo, hi, size))
         self.send_header("Content-Length", str(n))
         self.end_headers()
+        if mode == "trunc":
+            self.wfile.write(body[: n // 2])
+            self.wfile.flush()
+            self.close_connection = True
+            return
         if mode == "stall":
             self.wfile.write(body[: n // 2])
             self.wfile.flush()
