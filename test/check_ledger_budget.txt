@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 58
+suites_not_covered 57
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6286,4 +6286,24 @@ suites_not_covered 58
 #     never         4230 + 2 = 4232
 #     dated         2943 + 15 = 2958
 #     4232 + 2958 == 7190
-checks_never_observed_red 4232
+#
+# #1341, native_parquet_hardening seeded, with its twin (OffgridwithJD): 4232 -> 4234,
+# and suites_not_covered 58 -> 57. The suite had no rows. It enters with 18 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes,
+# each measured on main's shell on PG17. The short-chunk verdict matched any 'has a malformed
+# row group', which five guards raise: with the chunk-count guard removed a later guard
+# rejected the file and main passed 18/18; it now wants this guard's detail. The 'still
+# reads' arms counted rows: a date, time or timestamp decoded one unit off passed 18/18; they
+# now compare the decoded values. The no-wrap arm counted -25536 in the in-range file, which
+# never holds 40000, so it could not fail; it now reads the out-of-range file, which must
+# refuse. And survival was a bare SELECT 1: with the chunk refusal turned into abort() and the
+# probe 5 s late it passed; it now reads the server log's count of killed backends, and every
+# reading waits for the server. The range refusals also want their own type's message, since
+# four share 22008. 16 are dated by eleven mutations, each the same names in both twins. 2
+# arrive never.
+#
+#     ledger rows   7190 + 18 = 7208
+#     never         4232 + 2 = 4234
+#     dated         2958 + 16 = 2974
+#     4234 + 2974 == 7208
+checks_never_observed_red 4234
