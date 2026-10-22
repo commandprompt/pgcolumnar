@@ -355,6 +355,7 @@ behaviour, the source of that number is named.
 - [307. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes](#307-test_native_zonemap_narrowpy-group-skipping-reads-only-the-predicate-columns-zone-maps-and-still-prunes)
 - [308. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values](#308-test_native_vecdecodepy-decode-honours-the-skip-vector-and-the-fold-reads-neither-holes-nor-nulls-as-values)
 - [309. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard](#309-test_native_parquet_fieldidpy-read_parquet-binds-output-columns-by-parquet-field-id-and-refuses-each-misuse-by-its-own-guard)
+- [310. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused](#310-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-and-a-crafted-page-size-is-refused)
 
 ## 1. How to read a test in here
 
@@ -11723,3 +11724,28 @@ Every test makes one check under the shell's name, on a private database. The wr
 | `test_a_duplicate_requested_field_id_is_refused` | a duplicate requested field id is refused (22023) |
 | `test_the_duplicate_requested_id_error_names_the_id` | the duplicate-requested-id error names the id, not the file |
 | `test_the_backend_survives_the_fieldid_refusals` | backend still up after the refusals |
+
+## 310. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused
+
+The twin of `test/native_parquet_codecs.sh`. `test/craft_parquet_codecs.py`, the shell's own crafter, writes the same 20000 rows with each codec plus an uncompressed control, and a gzip page whose header declares an uncompressed size of -1. Each file's codec is read from its own metadata; every file decodes through `read_parquet` to the generator's rows, built in SQL; each FDW count and a sum read every value; and the crafted header is refused with the reader's own decode error, killing no backend.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Each test declines under the shell's pyarrow skip name before it asks for the fixture, which runs the crafter as a subprocess, so the fixture never imports pyarrow. A failed reading is a `query_error()`, and survival also requires the server log's count of backends killed by a signal not to have moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_uncompressed_file_is_uncompressed` | premise: the uncompressed file is UNCOMPRESSED |
+| `test_the_gzip_file_is_gzip_compressed` | premise: the gzip file is GZIP-compressed |
+| `test_the_zstd_file_is_zstd_compressed` | premise: the zstd file is ZSTD-compressed |
+| `test_the_lz4_file_is_lz4_compressed` | premise: the lz4 file is LZ4-compressed |
+| `test_uncompressed_decodes_to_the_generators_rows` | uncompressed decodes to the generator's rows |
+| `test_gzip_decodes_to_the_generators_rows` | gzip decodes to the generator's rows |
+| `test_zstd_decodes_to_the_generators_rows` | zstd decodes to the generator's rows |
+| `test_lz4_decodes_to_the_generators_rows` | lz4 decodes to the generator's rows |
+| `test_the_gzip_fdw_counts_every_row` | gzip FDW count |
+| `test_the_zstd_fdw_counts_every_row` | zstd FDW count |
+| `test_the_lz4_fdw_counts_every_row` | lz4 FDW count |
+| `test_the_gzip_sum_matches_the_generator` | gzip sum matches the generator |
+| `test_a_crafted_uncompressed_size_is_a_clean_decode_error` | crafted uncompressed size gives a clean decode error |
+| `test_the_backend_survives_the_crafted_header` | backend survived the crafted header |
