@@ -332,6 +332,7 @@ behaviour, the source of that number is named.
 - [284. test_fuzz_arrow.py: the Arrow IPC decoder survives malformed input](#284-test_fuzz_arrowpy-the-arrow-ipc-decoder-survives-malformed-input)
 - [285. test_fuzz_parquet.py: the Parquet decoder survives malformed input](#285-test_fuzz_parquetpy-the-parquet-decoder-survives-malformed-input)
 - [286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead](#286-test_native_compactpy-online-compaction-retires-only-what-every-snapshot-agrees-is-dead)
+- [287. test_native_agg_deletes.py: metadata aggregates over a table with deletes answer right and stay cheap](#287-test_native_agg_deletespy-metadata-aggregates-over-a-table-with-deletes-answer-right-and-stay-cheap)
 
 ## 1. How to read a test in here
 
@@ -11081,3 +11082,27 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_the_table_agrees_with_its_mirror_after_the_held_compact` | parity after the held-snapshot compact |
 | `test_compact_holds_share_update_exclusive_lock` | compact holds ShareUpdateExclusiveLock |
 | `test_compact_holds_no_access_exclusive_lock` | compact holds no AccessExclusiveLock |
+
+## 287. test_native_agg_deletes.py: metadata aggregates over a table with deletes answer right and stay cheap
+
+The twin of `test/native_agg_deletes.sh` (#149). An ungrouped, unfiltered aggregate is answered from row group metadata, and a group with deletes is decided per group: count(*) folds rowCount minus deleted, and only dirty groups are scanned for min/max. The answers are compared with a heap mirror over four delete patterns, and two in-server timings bound count(*) and min/max against a full scan.
+
+### Every test
+
+Every test makes one check under the shell's name. The heap mirror is written from the generator, and a premise per stage checks it holds exactly the rows the generator says survive. A failed reading is a `query_error()`: an aggregate either side failed to read is "no reading", never "same", and a timing that is not a number is "no reading", never fast.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_heap_mirror_holds_every_generated_row` | premise: the heap mirror holds every generated row |
+| `test_aggregates_match_heap_with_nothing_deleted` | aggregates match heap with nothing deleted |
+| `test_the_heap_mirror_lost_exactly_the_one_deleted_row` | premise: the heap mirror lost exactly the one deleted row |
+| `test_aggregates_match_heap_after_one_row_is_deleted` | aggregates match heap after one row is deleted |
+| `test_the_heap_mirror_lost_exactly_the_contiguous_tenth` | premise: the heap mirror lost exactly the contiguous tenth |
+| `test_aggregates_match_heap_after_a_contiguous_tenth_is_deleted` | aggregates match heap after a contiguous tenth is deleted |
+| `test_the_heap_mirror_lost_exactly_every_seventh_row_as_well` | premise: the heap mirror lost exactly every seventh row as well |
+| `test_aggregates_match_heap_after_every_group_is_dirtied` | aggregates match heap after every group is dirtied |
+| `test_the_timing_fixture_has_the_row_groups_its_margin_assumes` | the timing fixture has the row groups its margin assumes |
+| `test_the_timing_table_counts_the_row_its_one_delete_removed` | the timing table counts the row its one delete removed |
+| `test_one_deleted_row_does_not_send_count_back_to_a_full_scan` | one deleted row does not send count(*) back to a full scan |
+| `test_a_dirty_group_is_scanned_without_scanning_the_clean_ones` | a dirty group is scanned without scanning the clean ones |
+| `test_the_metadata_aggregate_path_is_still_chosen_with_a_row_deleted` | the metadata aggregate path is still chosen with a row deleted |
