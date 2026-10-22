@@ -1212,4 +1212,8 @@ guard_tests 839
 # one structural test, by collection over the cluster files.
 # cluster_tests 4231 -> 4249 for #1706: test_parquet_timestamp_zone.py, the twin of parquet_timestamp_zone.sh
 # (16 tests, one per check), and two mixed-kind hour() arms in test_iceberg_fdw.py, by collection.
-cluster_tests 4249
+# cluster_tests 4249 -> 4258 for #1712's test_parquet_skip_cross_type.py, the twin of parquet_skip_cross_type.sh:
+# 9 tests, one per check, by collection over the cluster files.
+# cluster_tests 4258 -> 4261 for #1712's three soundness arms in test_parquet_export_stats.py
+# (parametrized), by collection over the cluster files.
+cluster_tests 4261
