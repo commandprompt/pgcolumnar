@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 74
+suites_not_covered 73
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5977,4 +5977,21 @@ suites_not_covered 74
 #     never         4137 + 4 = 4141
 #     dated         2798 + 9 = 2807
 #     4141 + 2807 == 6948
-checks_never_observed_red 4141
+#
+# #1341, native_lazy_slot seeded, with its twin (OffgridwithJD): 4141 -> 4144,
+# and suites_not_covered 74 -> 73. The suite had no rows. It enters with its 10
+# checks from five-major runs (all green on each of 15-19, shell and twin alike), after two
+# fixes. The heap mirror was a copy of lz_c, read through the reader under test, so a value
+# the writer stored wrong was wrong on both sides: with the writer storing c40 off by one,
+# main passed 10/10. It is now written from the generator, and that mutant reddens four
+# checks. And five comparisons read `q ... | tail -1` and compared with check, so two failed
+# reads agreed, and a failed timing read as fast: with the server stopped after setup, six
+# checks passed on main. Each side's failure now carries its side's name, and a failed
+# timing is no reading. 7 are dated by four mutations, each reddening the same names in
+# both twins. 3 arrive never.
+#
+#     ledger rows   6948 + 10 = 6958
+#     never         4141 + 3 = 4144
+#     dated         2807 + 7 = 2814
+#     4144 + 2814 == 6958
+checks_never_observed_red 4144
