@@ -335,6 +335,7 @@ behaviour, the source of that number is named.
 - [287. test_native_agg_deletes.py: metadata aggregates over a table with deletes answer right and stay cheap](#287-test_native_agg_deletespy-metadata-aggregates-over-a-table-with-deletes-answer-right-and-stay-cheap)
 - [288. test_native_cluster.py: Z-order clustering reorders storage, tightens the zone maps, and refuses what it cannot cluster on](#288-test_native_clusterpy-z-order-clustering-reorders-storage-tightens-the-zone-maps-and-refuses-what-it-cannot-cluster-on)
 - [289. test_native_exact_selection.py: exact selection rules out vectors no zone map can, and loses no row on a bound](#289-test_native_exact_selectionpy-exact-selection-rules-out-vectors-no-zone-map-can-and-loses-no-row-on-a-bound)
+- [290. test_native_ctas.py: CREATE TABLE AS into a columnar table works with a parallel source plan, and a committed table's first write still serializes](#290-test_native_ctaspy-create-table-as-into-a-columnar-table-works-with-a-parallel-source-plan-and-a-committed-tables-first-write-still-serializes)
 
 ## 1. How to read a test in here
 
@@ -11160,3 +11161,29 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_nes_a_partially_matching_range_returns_the_right_rows` | and a partially matching range does too |
 | `test_nes_a_range_matching_only_on_its_bounds_returns_them` | a range whose only matches lie on its bounds still returns them |
 | `test_nes_the_control_returns_every_row` | the control returns every row |
+
+## 290. test_native_ctas.py: CREATE TABLE AS into a columnar table works with a parallel source plan, and a committed table's first write still serializes
+
+The twin of `test/native_ctas.sh` (#387). A parallel CTAS, a serial CTAS and WITH NO DATA plus INSERT each run to the end and write every row, the parallel one with its content and exactly one storage row; and a committed empty table first-written by two sessions at once still serializes on the first-writer lock.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. "Succeeds" means the statements ran and committed, not merely that no ERROR was printed. The race is forced: writer A holds its transaction open after its first write, writer B is seen waiting on a lock, then A commits. Survival reads the server log's crash count as well as SELECT 1.
+
+| test | what it holds |
+| --- | --- |
+| `test_ctas_source_plan_is_parallel` | premise: the CTAS source plan is parallel |
+| `test_ctas_parallel_into_columnar_succeeds` | parallel CTAS into a columnar table succeeds (#387) |
+| `test_ctas_parallel_wrote_every_row` | parallel CTAS wrote every row (#387) |
+| `test_ctas_parallel_content_matches_the_source` | parallel CTAS content matches the source (#387) |
+| `test_ctas_serial_still_succeeds` | serial CTAS still succeeds |
+| `test_ctas_serial_row_count` | serial CTAS row count |
+| `test_ctas_with_no_data_then_insert_succeeds` | WITH NO DATA then INSERT still succeeds |
+| `test_ctas_with_no_data_then_insert_row_count` | WITH NO DATA then INSERT row count |
+| `test_ctas_parallel_produced_one_storage_row` | the parallel CTAS produced exactly one storage row |
+| `test_ctas_backend_still_up_after_the_loads` | backend still up after the CTAS loads |
+| `test_ctas_second_writer_started_while_the_first_was_open` | the second writer started while the first held its transaction open |
+| `test_ctas_concurrent_first_writes_both_succeed` | concurrent first writes to a committed empty table both succeed |
+| `test_ctas_race_produced_one_storage_row` | and they produced one storage row, not two |
+| `test_ctas_race_every_row_present` | and every row from both writers is present |
+| `test_ctas_backend_still_up_after_the_race` | backend still up after the concurrent first writes |

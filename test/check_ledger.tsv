@@ -3684,6 +3684,21 @@ native_compact	native_compact	premise: the holder's snapshot is open	15;16;17;18
 native_compact	native_compact	row count	15;16;17;18;19	never	-
 native_compact	native_compact	second compact retires nothing	15;16;17;18;19	never	-
 native_compact	native_compact	the older snapshot read the group's rows before the delete	15;16;17;18;19	never	-
+native_ctas	native_ctas	WITH NO DATA then INSERT row count	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
+native_ctas	native_ctas	WITH NO DATA then INSERT still succeeds	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
+native_ctas	native_ctas	and every row from both writers is present	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write under the first-writer lock aborts the backend
+native_ctas	native_ctas	and they produced one storage row, not two	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write under the first-writer lock aborts the backend
+native_ctas	native_ctas	backend still up after the CTAS loads	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
+native_ctas	native_ctas	backend still up after the concurrent first writes	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write under the first-writer lock aborts the backend
+native_ctas	native_ctas	concurrent first writes to a committed empty table both succeed	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write under the first-writer lock aborts the backend
+native_ctas	native_ctas	parallel CTAS content matches the source (#387)	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
+native_ctas	native_ctas	parallel CTAS into a columnar table succeeds (#387)	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
+native_ctas	native_ctas	parallel CTAS wrote every row (#387)	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
+native_ctas	native_ctas	premise: the CTAS source plan is parallel	15;16;17;18;19	never	-
+native_ctas	native_ctas	serial CTAS row count	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
+native_ctas	native_ctas	serial CTAS still succeeds	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
+native_ctas	native_ctas	the parallel CTAS produced exactly one storage row	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
+native_ctas	native_ctas	the second writer started while the first held its transaction open	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write under the first-writer lock aborts the backend
 native_decode_gate_width	native_decode_gate_width	control, gate forced on: a matches-everything narrow qual skips no vector (full decode)	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	control, gate forced on: a matches-everything wide qual skips no vector (full decode)	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	correctness: narrow needle matches the heap either way	15;16;17;18;19	never	-
