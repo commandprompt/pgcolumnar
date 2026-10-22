@@ -7856,7 +7856,7 @@ The pytest twin of `test/native_encdesc_golden.sh` (ported for #1341), every che
 
 ## 161. test_native_parquet_schema.py: parquet_schema round trip
 
-The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.parquet_schema(path)` reports a Parquet file's leaf columns with the PostgreSQL type each maps to. A columnar table covering every exported type is exported, and each source type must come back, every column nullable. A file that isn't Parquet must be refused by the magic check itself: any error was the old arm, and with the magic check gone the same file is still refused, as a corrupt footer. pyarrow supplies what the exporter can't: a REQUIRED column, and field ids out of order, with absence reported as NULL.
+The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.parquet_schema(path)` reports a Parquet file's leaf columns with the PostgreSQL type each maps to. A columnar table covering every exported type is exported, and each source type must come back, every column nullable. A file that isn't Parquet must be refused by the magic check itself: any error was the old arm, and with the magic check gone the same file is still refused, as a corrupt footer. pyarrow supplies what the exporter can't: a REQUIRED column, and field ids out of order, with absence reported as NULL. The timestamp tests (#1706) export a `timestamp` and a `timestamptz` column and read the file back with pyarrow, the independent reader: a `timestamp` must carry no time zone and read back as its wall time, a `timestamptz` must be UTC-adjusted and read back as its instant. pgcolumnar's own `read_parquet` must return both unchanged under a non-UTC session. Each is one check, and a failed export or read is a `query_error()` that fails that check by name.
 
 ### Every test
 
@@ -7864,6 +7864,11 @@ The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every che
 | --- | --- |
 | `test_the_exported_schema_round_trips` | every exported type and its nullability come back from `parquet_schema`, and bad magic is refused by the magic check |
 | `test_required_columns_and_field_ids` | a pyarrow REQUIRED column reports nullable=f, and field ids report as written or as NULL when absent |
+| `test_read_parquet_returns_exported_timestamps_unchanged` | read_parquet returns the exported timestamp and timestamptz unchanged |
+| `test_an_exported_timestamp_is_not_utc_adjusted` | an exported timestamp column is not UTC-adjusted (pyarrow reads no time zone) |
+| `test_an_exported_timestamptz_is_utc_adjusted` | an exported timestamptz column is UTC-adjusted (pyarrow reads UTC) |
+| `test_pyarrow_reads_an_exported_timestamp_as_its_wall_time` | pyarrow reads an exported timestamp back as its wall time |
+| `test_pyarrow_reads_an_exported_timestamptz_as_its_instant` | pyarrow reads an exported timestamptz back as its instant |
 
 ## 162. test_native_vecskip.py: per-vector skipping by the zone maps
 

@@ -72,7 +72,7 @@ typedef enum ParquetKind
 	P_BINARY,
 	P_DATE,						/* date -> INT32 (days from Unix epoch) */
 	P_TIME,						/* time -> INT64 TIME_MICROS */
-	P_TIMESTAMP,				/* timestamp/tz -> INT64 TIMESTAMP_MICROS */
+	P_TIMESTAMP,				/* timestamp/tz -> INT64 TIMESTAMP(MICROS) */
 	P_UUID,						/* uuid -> FIXED_LEN_BYTE_ARRAY(16) */
 	P_DECIMAL					/* numeric(p,s) -> FIXED_LEN_BYTE_ARRAY(16) */
 }			ParquetKind;
@@ -176,6 +176,7 @@ typedef struct PqLeaf
 	ParquetKind kind;
 	int			ptype;			/* Parquet physical type */
 	int			convType;		/* ConvertedType, or -1 */
+	int			tsAdjusted;		/* TIMESTAMP's isAdjustedToUTC (1 or 0), or -1 */
 	int			typeLength;		/* FIXED_LEN_BYTE_ARRAY length, else 0 */
 	int			precision;
 	int			scale;
@@ -350,7 +351,17 @@ parquet_kind_for_type(Oid typid, int32 typmod, int *ptype, int *convType,
 			*convType = PQ_CT_TIME_MICROS;
 			return P_TIME;
 		case TIMESTAMPOID:
+			/*
+			 * A wall time with no zone: the TIMESTAMP logical type with
+			 * isAdjustedToUTC=false, written in write_schema_leaf. NO converted
+			 * type, because TIMESTAMP_MICROS means adjusted-to-UTC, and every
+			 * other reader took this column for a UTC instant (#1706).
+			 */
+			*ptype = PQ_INT64;
+			return P_TIMESTAMP;
 		case TIMESTAMPTZOID:
+			/* an instant: isAdjustedToUTC=true, and the legacy converted type
+			 * that means the same, for readers older than logical types */
 			*ptype = PQ_INT64;
 			*convType = PQ_CT_TIMESTAMP_MICROS;
 			return P_TIMESTAMP;
@@ -746,6 +757,27 @@ write_schema_leaf(StringInfo b, const char *name, PqLeaf *leaf, int repetition)
 		PgColumnarThriftPutI32Field(b, &last, 7, leaf->scale);
 		PgColumnarThriftPutI32Field(b, &last, 8, leaf->precision);
 	}
+	if (leaf->tsAdjusted >= 0)
+	{
+		/*
+		 * logicalType (10): LogicalType union, member TIMESTAMP (8):
+		 * TimestampType { 1: isAdjustedToUTC, 2: unit TimeUnit { 2: MICROS {} } }.
+		 * A bool's value is its compact-protocol field type, so it has no body.
+		 */
+		int16		lt = 0,
+					ts = 0,
+					unit = 0;
+
+		PgColumnarThriftPutField(b, &last, 10, TC_STRUCT);
+		PgColumnarThriftPutField(b, &lt, PQ_LT_TIMESTAMP, TC_STRUCT);
+		PgColumnarThriftPutField(b, &ts, 1, leaf->tsAdjusted ? TC_BOOL_TRUE : TC_BOOL_FALSE);
+		PgColumnarThriftPutField(b, &ts, 2, TC_STRUCT);
+		PgColumnarThriftPutField(b, &unit, PQ_TUNIT_MICROS, TC_STRUCT);
+		PgColumnarThriftPutStop(b);		/* MicroSeconds {} */
+		PgColumnarThriftPutStop(b);		/* TimeUnit */
+		PgColumnarThriftPutStop(b);		/* TimestampType */
+		PgColumnarThriftPutStop(b);		/* LogicalType */
+	}
 	PgColumnarThriftPutStop(b);
 }
 
@@ -969,6 +1001,7 @@ build_leaf_scalar(PqLeaf *leaf, Oid typid, int32 typmod,
 	leaf->kind = kind;
 	leaf->ptype = ptype;
 	leaf->convType = convType;
+	leaf->tsAdjusted = (kind == P_TIMESTAMP) ? (typid == TIMESTAMPTZOID) : -1;
 	leaf->typeLength = typeLength;
 	leaf->precision = precision;
 	leaf->scale = scale;

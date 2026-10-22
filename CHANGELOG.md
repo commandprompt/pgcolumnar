@@ -400,6 +400,15 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+- **`export_parquet` no longer marks a `timestamp` column as a UTC instant.** Both
+  `timestamp` and `timestamptz` were written as the converted type `TIMESTAMP_MICROS`,
+  which the Parquet spec defines as adjusted to UTC. Every other reader (pyarrow,
+  DuckDB, Spark) then took a wall time for an instant: `12:00` read back as
+  `12:00 UTC`, which is 08:00 under a New York session. Each column now carries the
+  `TIMESTAMP` logical type, with `isAdjustedToUTC=false` for `timestamp` and `true`
+  for `timestamptz`, and only `timestamptz` keeps the converted type (#1706).
+  pgcolumnar's own `read_parquet` returns both unchanged, as before.
+  `test/native_parquet_schema.sh` and `test_native_parquet_schema.py`.
 - **`pgcolumnar.stats()` and `pgcolumnar.sort_status()` no longer read more as
   the database holds more columnar tables.** Both filtered a shared catalog on
   `pgcolumnar.get_storage_id(rel)`. Once the catalog had statistics, the planner
