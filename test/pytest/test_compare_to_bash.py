@@ -1729,6 +1729,19 @@ def _registered_suites():
 
 UNPORTED_FILE = HERE / "unported_suites.txt"
 
+# REGISTERED SUITES THAT TEST THE SHELL HARNESS ITSELF, and so have no pytest twin by
+# design, not by backlog (#1341). A twin of one would re-test bash library code from
+# Python and prove nothing about pytest's own harness, which has its own guards
+# (test_harness_deps.py, the pgc_vacuity self-tests, test_build_refusal.py). Held both
+# ways by `test_a_shell_harness_suite_is_declared_both_ways`: a declared stem that gains
+# a twin, stops being a registered suite, is also listed unported, or carries no reason
+# reddens, so this cannot rot into a one-way exemption.
+SHELL_HARNESS = {
+    "harness_selftest": "tests lib.sh and portlib.sh themselves (the port-squatter "
+                        "identity guard, start retries, the suite list's rules), not "
+                        "pgcolumnar; pytest's own harness has its own guards",
+}
+
 
 def _unported():
     if not UNPORTED_FILE.exists():
@@ -1762,7 +1775,7 @@ def test_every_registered_suite_is_ported_or_declared_unported(expect):
         return
     expect.num(len(unp), len(set(unp)), "premise: no stem is declared unported twice")
     paired = {s for s in reg if (HERE / f"test_{s}.py").exists()}
-    undeclared = sorted(s for s in reg if s not in paired and s not in set(unp))
+    undeclared = sorted(s for s in reg if s not in paired and s not in set(unp) and s not in SHELL_HARNESS)
     ported = sorted(s for s in unp if s in paired)
     phantom = sorted(set(unp) - set(reg))
     expect.text(", ".join(undeclared) or "none", "none",
@@ -1771,6 +1784,44 @@ def test_every_registered_suite_is_ported_or_declared_unported(expect):
                 "and a suite that gained its twin is no longer declared unported")
     expect.text(", ".join(phantom) or "none", "none",
                 "and every declared unported stem is a registered suite")
+
+
+def _shell_harness_violations(declared, reg, unported, twin_exists):
+    """-> (gained a twin, not a registered suite, also listed unported, no reason), each
+    a sorted list of stems: the four ways a SHELL_HARNESS declaration can rot."""
+    return (sorted(s for s in declared if twin_exists(s)),
+            sorted(s for s in declared if s not in reg),
+            sorted(s for s in declared if s in unported),
+            sorted(s for s, why in declared.items() if not str(why).strip()))
+
+
+def test_a_shell_harness_suite_is_declared_both_ways(expect):
+    """A SHELL-HARNESS SUITE IS A DECLARATION, NOT AN EXEMPTION (#1341).
+
+    `SHELL_HARNESS` names registered suites whose subject is the shell harness, so the
+    unported guard above accepts them without a twin. It is held in the other direction
+    here, so it cannot become a list that only grows:
+
+        a declared stem that gains test_<stem>.py      reddens: then it is a port
+        a declared stem that is not a registered suite reddens: the list cannot rot
+        a declared stem also in unported_suites.txt    reddens: one state per stem
+        a declared stem with an empty reason           reddens: say why
+    """
+    reg = set(_registered_suites())
+    expect.at_least(len(reg), 200, "premise: the runner's SUITES array was read for the shell-harness check")
+    unp = _unported()
+    expect.text("present" if unp is not None else f"missing: {UNPORTED_FILE.name}", "present",
+                "premise: the unported declaration exists for the shell-harness check")
+    twin, phantom, both, unexplained = _shell_harness_violations(
+        SHELL_HARNESS, reg, set(unp or ()), lambda s: (HERE / f"test_{s}.py").exists())
+    expect.text(", ".join(twin) or "none", "none",
+                "a shell-harness suite has no pytest twin")
+    expect.text(", ".join(phantom) or "none", "none",
+                "and every shell-harness stem is a registered suite")
+    expect.text(", ".join(both) or "none", "none",
+                "and no shell-harness stem is also declared unported")
+    expect.text(", ".join(unexplained) or "none", "none",
+                "and every shell-harness stem says why")
 
 
 def test_the_ported_suites_in_this_tree_are_graded_one_for_one(expect):
