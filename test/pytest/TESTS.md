@@ -337,6 +337,7 @@ behaviour, the source of that number is named.
 - [289. test_native_exact_selection.py: exact selection rules out vectors no zone map can, and loses no row on a bound](#289-test_native_exact_selectionpy-exact-selection-rules-out-vectors-no-zone-map-can-and-loses-no-row-on-a-bound)
 - [290. test_native_ctas.py: CREATE TABLE AS into a columnar table works with a parallel source plan, and a committed table's first write still serializes](#290-test_native_ctaspy-create-table-as-into-a-columnar-table-works-with-a-parallel-source-plan-and-a-committed-tables-first-write-still-serializes)
 - [291. test_native_encoding.py: native cascade encoding engages, picks ALP and FSST, and round-trips on every codec](#291-test_native_encodingpy-native-cascade-encoding-engages-picks-alp-and-fsst-and-round-trips-on-every-codec)
+- [292. test_native_fastdecode.py: the inlined byval decode returns what the call path returns, through every encoding and a vector jump](#292-test_native_fastdecodepy-the-inlined-byval-decode-returns-what-the-call-path-returns-through-every-encoding-and-a-vector-jump)
 
 ## 1. How to read a test in here
 
@@ -11250,3 +11251,40 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_a_sample_below_the_floor_still_encodes` | a sample setting below the floor still encodes |
 | `test_a_chunk_smaller_than_the_sample_window_is_encoded` | a chunk smaller than the sample window still encodes |
 | `test_a_chunk_smaller_than_the_sample_window_reads_back` | a chunk smaller than the sample window reads back exactly |
+
+## 292. test_native_fastdecode.py: the inlined byval decode returns what the call path returns, through every encoding and a vector jump
+
+The twin of `test/native_fastdecode.sh`. Every attbyval fixed type, with NULL patterns, adversarial bit patterns, every fixed-width encoding, per-vector skipping, deletes and ADD COLUMN, is compared with a heap mirror built from the generator, by-reference and varlena columns serving as controls. The vector-skipping section sets chunk_group_row_limit so a group holds several vectors, and requires the scan to report vectors skipped.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each comparison hashes both sides as lib.sh's `pgc_set_hash` does, and a failed reading is a `query_error()`, so two failed reads never agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_fastdecode_row_count_matches` | row count matches |
+| `test_fastdecode_scan_is_the_columnar_custom_scan` | scan is the columnar custom scan |
+| `test_fastdecode_many_row_groups_written` | many row groups written (widen runs per group) |
+| `test_fastdecode_byval_columns_carry_real_descriptors` | byval fixed columns carry non-baseline descriptors |
+| `test_fastdecode_full_projection_matches_heap` | full projection is byte-identical to heap |
+| `test_fastdecode_exact_aggregates_match_heap` | exact aggregates match heap |
+| `test_fastdecode_grouped_aggregate_matches_heap` | grouped aggregate matches heap |
+| `test_fastdecode_filtered_by_int_matches_heap` | filtered by int matches heap |
+| `test_fastdecode_filtered_by_bigint_matches_heap` | filtered by bigint matches heap |
+| `test_fastdecode_filtered_by_float_matches_heap` | filtered by float matches heap |
+| `test_fastdecode_filtered_by_date_matches_heap` | filtered by date matches heap |
+| `test_fastdecode_boundary_bit_patterns_round_trip` | boundary int/float bit patterns round-trip exactly |
+| `test_fastdecode_negative_zero_preserved` | negative zero preserved |
+| `test_fastdecode_nan_preserved` | NaN preserved |
+| `test_fastdecode_encoded_columns_carry_real_descriptors` | encoded columns carry non-baseline descriptors |
+| `test_fastdecode_all_encodings_decode_identically` | all encodings decode identically to heap |
+| `test_fastdecode_aggregates_over_encoded_columns_match` | aggregates over encoded columns match |
+| `test_fastdecode_a_row_group_holds_multiple_vectors` | vecskip: a row group holds multiple vectors |
+| `test_fastdecode_narrow_range_with_vector_skipping_matches` | narrow range with vector skipping matches heap |
+| `test_fastdecode_the_narrow_range_skips_whole_vectors` | the narrow range skips whole vectors |
+| `test_fastdecode_two_narrow_ranges_match` | two narrow ranges (non-adjacent vectors) match heap |
+| `test_fastdecode_aggregate_under_skipping_matches` | aggregate under skipping matches heap |
+| `test_fastdecode_scan_after_deletes_matches` | scan after scattered deletes matches heap |
+| `test_fastdecode_aggregate_after_deletes_matches` | aggregate after deletes matches heap |
+| `test_fastdecode_scan_across_add_column_matches` | scan across an ADD COLUMN boundary matches heap |
+| `test_fastdecode_aggregate_across_add_column_matches` | aggregate across ADD COLUMN matches heap |

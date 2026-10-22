@@ -65,10 +65,11 @@ check "many row groups written (widen runs per group)" \
 # the byval fixed columns must carry real descriptors, or the fast path is never
 # reached and this whole test would pass while exercising nothing.
 check "byval fixed columns carry non-baseline descriptors" \
-	"$(q "SELECT count(*) FROM pgcolumnar.column_chunk
+	"$(q "SELECT CASE WHEN count(*) = 0 THEN 'no chunks counted'
+	             ELSE (count(*) FILTER (WHERE octet_length(encoding_descriptor) < 6))::text END
+	      FROM pgcolumnar.column_chunk
 	      WHERE storage_id = pgcolumnar.get_storage_id('t_col')
-	        AND column_index BETWEEN 1 AND 10
-	        AND octet_length(encoding_descriptor) < 6;")" "0"
+	        AND column_index BETWEEN 1 AND 10;")" "0"
 
 # The core oracle: every value, exact, order-independent.
 diff_query "full projection is byte-identical to heap" "SELECT * FROM %T"
@@ -112,7 +113,7 @@ psql_run "INSERT INTO t_heap VALUES
 psql_run "INSERT INTO t_col SELECT * FROM t_heap;"
 diff_query "boundary int/float bit patterns round-trip exactly" "SELECT * FROM %T"
 # -0.0 and NaN specifically: text form must survive the widen verbatim.
-check "negative zero preserved" \
+check_text "negative zero preserved" \
 	"$(q "SELECT f8::text FROM t_col WHERE id = 5;")" \
 	"$(q "SELECT f8::text FROM t_heap WHERE id = 5;")"
 check "NaN preserved" "$(q "SELECT f4::text FROM t_col WHERE id = 1;")" "NaN"
@@ -131,10 +132,11 @@ load_pair "SELECT g,
 	(g * 0.01)::float8                               -- ALP (decimal)
 	FROM generate_series(1, 6000) g"
 check "encoded columns carry non-baseline descriptors" \
-	"$(q "SELECT count(*) FROM pgcolumnar.column_chunk
+	"$(q "SELECT CASE WHEN count(*) = 0 THEN 'no chunks counted'
+	             ELSE (count(*) FILTER (WHERE octet_length(encoding_descriptor) < 6))::text END
+	      FROM pgcolumnar.column_chunk
 	      WHERE storage_id = pgcolumnar.get_storage_id('t_col')
-	        AND column_index BETWEEN 1 AND 5
-	        AND octet_length(encoding_descriptor) < 6;")" "0"
+	        AND column_index BETWEEN 1 AND 5;")" "0"
 diff_query "all encodings decode identically to heap" "SELECT * FROM %T"
 diff_query "aggregates over encoded columns match" \
 	"SELECT count(*), sum(seq), sum(dod), sum(cst::bigint), min(gor), max(gor), min(alp), max(alp) FROM %T"
@@ -146,12 +148,29 @@ diff_query "aggregates over encoded columns match" \
 # compare would fail.
 
 make_pair "id int, k bigint, v float8"
-psql_run "SELECT pgcolumnar.set_options('t_col', stripe_row_limit => 8192);"
+# chunk_group_row_limit too: with only stripe_row_limit set, the default 10000-row
+# chunk group made each 8192-row group ONE vector, so nothing inside a group was ever
+# skipped -- the section skipped whole groups and never tested the jump it exists for
+# (head read "Columnar Vectors Skipped: 0"). 1024 gives eight vectors a group.
+psql_run "SELECT pgcolumnar.set_options('t_col', stripe_row_limit => 8192, chunk_group_row_limit => 1024);"
 load_pair "SELECT g, g::bigint, (g * 2.5)::float8 FROM generate_series(1, 40000) g"
-check "vecskip: table has multiple vectors per group" \
-	"$([ "$(chunk_group_count)" -gt 1 ] && echo yes || echo no)" "yes"
+# Per GROUP: the table total was 5 here even with one vector per group, and with one
+# vector a group has nothing to skip inside it.
+check "vecskip: a row group holds multiple vectors" \
+	"$(q "SELECT CASE WHEN max(n) > 1 THEN 'yes' ELSE 'no (' || coalesce(max(n)::text, 'none') || ')' END
+	      FROM (SELECT count(*) n FROM pgcolumnar.zone_map
+	            WHERE storage_id = pgcolumnar.get_storage_id('t_col')
+	              AND vector_index >= 0 AND column_index = 0 GROUP BY group_number) s;")" "yes"
 diff_query "narrow range with vector skipping matches heap" \
 	"SELECT * FROM %T WHERE k BETWEEN 20000 AND 20100"
+# The compares above prove nothing about skipping if no vector was skipped: with the
+# skip mask dropped every vector decodes, the values are still right, and main passed
+# 25/25. The scan's own counter says whether a jump happened.
+VSKIP="$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+            SELECT * FROM t_col WHERE k BETWEEN 20000 AND 20100;" |
+	sed -n 's/.*Columnar Vectors Skipped: \([0-9][0-9]*\).*/\1/p' | head -1)"
+check "the narrow range skips whole vectors" \
+	"$( [ -n "$VSKIP" ] && [ "$VSKIP" -gt 0 ] && echo yes || echo "no (skipped [$VSKIP])")" "yes"
 diff_query "two narrow ranges (non-adjacent vectors) match heap" \
 	"SELECT id, v FROM %T WHERE k < 50 OR k BETWEEN 30000 AND 30050"
 diff_query "aggregate under skipping matches heap" \
