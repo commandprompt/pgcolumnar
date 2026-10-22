@@ -331,6 +331,7 @@ behaviour, the source of that number is named.
 - [283. test_fuzz_listing.py: the ListObjectsV2 listing parser survives malformed input](#283-test_fuzz_listingpy-the-listobjectsv2-listing-parser-survives-malformed-input)
 - [284. test_fuzz_arrow.py: the Arrow IPC decoder survives malformed input](#284-test_fuzz_arrowpy-the-arrow-ipc-decoder-survives-malformed-input)
 - [285. test_fuzz_parquet.py: the Parquet decoder survives malformed input](#285-test_fuzz_parquetpy-the-parquet-decoder-survives-malformed-input)
+- [286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead](#286-test_native_compactpy-online-compaction-retires-only-what-every-snapshot-agrees-is-dead)
 
 ## 1. How to read a test in here
 
@@ -11050,3 +11051,33 @@ Every test makes one check under the shell's name, over counts the module fixtur
 | `test_no_parquet_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
 | `test_every_parquet_mutant_was_generated_and_ran_its_statements` | every mutant was generated and ran its three statements |
 | `test_the_parquet_corpus_reached_the_decoder` | the corpus reached the decoder at all |
+
+## 286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead
+
+The twin of `test/native_compact.sh`. Two fully deleted row groups are retired and a half-deleted one is kept, against a heap mirror built from the same generator; a group deleted under an open REPEATABLE READ snapshot is kept until that snapshot ends; and compact holds ShareUpdateExclusiveLock, never AccessExclusiveLock.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()`, so two failed reads never agree. The held compact runs under a 10 s lock_timeout in both harnesses, so a compact that wanted a stronger lock fails its own check instead of waiting out the holder.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_compacted_table_holds_every_row` | row count |
+| `test_the_table_starts_in_eight_groups` | initial group count |
+| `test_the_table_agrees_with_its_mirror_after_the_deletes` | parity after deletes |
+| `test_compact_retires_the_two_fully_deleted_groups` | compact retired the two fully-deleted groups |
+| `test_the_group_count_drops_by_two` | group count dropped by two |
+| `test_the_table_agrees_with_its_mirror_after_compact` | parity after compact |
+| `test_the_live_row_count_survives_compact` | live row count after compact |
+| `test_the_half_deleted_groups_live_rows_survive_compact` | partial-group rows still present |
+| `test_a_second_compact_retires_nothing` | second compact retires nothing |
+| `test_the_holders_snapshot_is_open` | premise: the holder's snapshot is open |
+| `test_compact_keeps_a_group_an_older_snapshot_can_see` | compact keeps a group an older snapshot can still see |
+| `test_the_group_count_holds_while_the_snapshot_lives` | and the group count stays at six while that snapshot lives |
+| `test_the_older_snapshot_read_the_group_before_the_delete` | the older snapshot read the group's rows before the delete |
+| `test_the_older_snapshot_still_reads_the_group_after_compact` | and still reads all of them after the delete and the compact |
+| `test_compact_retires_the_group_once_the_snapshot_ends` | once that snapshot ends, compact retires the group |
+| `test_the_group_count_drops_to_five` | and the group count drops to five |
+| `test_the_table_agrees_with_its_mirror_after_the_held_compact` | parity after the held-snapshot compact |
+| `test_compact_holds_share_update_exclusive_lock` | compact holds ShareUpdateExclusiveLock |
+| `test_compact_holds_no_access_exclusive_lock` | compact holds no AccessExclusiveLock |

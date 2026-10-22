@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 85
+suites_not_covered 84
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5757,4 +5757,27 @@ suites_not_covered 85
 #     never         4051 + 0 = 4051
 #     dated         2700 + 2 = 2702
 #     4051 + 2702 == 6753
-checks_never_observed_red 4051
+# #1341, native_compact seeded, with its twin (OffgridwithJD): 4051 -> 4058, and
+# suites_not_covered 85 -> 84. The suite had no rows. It enters with 19 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# compact retires a group only when every delete on it is visible to every live
+# snapshot, and nothing held a snapshot open across a delete: with the horizon test
+# removed (a delete newer than oldestXmin counted), main's shell passed 11/11 while
+# compact retired a group an open REPEATABLE READ snapshot could still see (that
+# snapshot still read it through the old catalog rows; the breach measured is the
+# retirement itself, against compact's own contract). A holder now keeps a
+# snapshot across the delete of group 6, compact must keep the group while it lives
+# and retire it after. And "live row count after compact" and "partial-group rows
+# still present" compared two readings with check: with the server stopped both
+# passed on two empty strings; they are check_num now. 12 are dated by four
+# mutations, each reddening the same names in both twins. 7 arrive never: the
+# holder premise, the old snapshot's two readings, the first row and group counts,
+# parity after the deletes, and the second compact's 0. Dropping the settled-group
+# test reddens nothing: the horizon test shadows it, since a group created after
+# the horizon carries only deletes newer than it.
+#
+#     ledger rows   6753 + 19 = 6772
+#     never         4051 + 7 = 4058
+#     dated         2702 + 12 = 2714
+#     4058 + 2714 == 6772
+checks_never_observed_red 4058
