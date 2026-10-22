@@ -333,6 +333,7 @@ behaviour, the source of that number is named.
 - [285. test_fuzz_parquet.py: the Parquet decoder survives malformed input](#285-test_fuzz_parquetpy-the-parquet-decoder-survives-malformed-input)
 - [286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead](#286-test_native_compactpy-online-compaction-retires-only-what-every-snapshot-agrees-is-dead)
 - [287. test_native_agg_deletes.py: metadata aggregates over a table with deletes answer right and stay cheap](#287-test_native_agg_deletespy-metadata-aggregates-over-a-table-with-deletes-answer-right-and-stay-cheap)
+- [288. test_native_cluster.py: Z-order clustering reorders storage, tightens the zone maps, and refuses what it cannot cluster on](#288-test_native_clusterpy-z-order-clustering-reorders-storage-tightens-the-zone-maps-and-refuses-what-it-cannot-cluster-on)
 
 ## 1. How to read a test in here
 
@@ -11106,3 +11107,27 @@ Every test makes one check under the shell's name. The heap mirror is written fr
 | `test_one_deleted_row_does_not_send_count_back_to_a_full_scan` | one deleted row does not send count(*) back to a full scan |
 | `test_a_dirty_group_is_scanned_without_scanning_the_clean_ones` | a dirty group is scanned without scanning the clean ones |
 | `test_the_metadata_aggregate_path_is_still_chosen_with_a_row_deleted` | the metadata aggregate path is still chosen with a row deleted |
+
+## 288. test_native_cluster.py: Z-order clustering reorders storage, tightens the zone maps, and refuses what it cannot cluster on
+
+The twin of `test/native_cluster.sh` (Phase F2). pgcolumnar.cluster() reorders 40960 rows by the Z-order curve over (x, y): the table answers as a heap mirror built from the same generator before and after; a 2D box skips more of the 20 chunk groups after clustering, and most of them; clustering on id alone brings back an id range's skipping that the (x, y) clustering scattered; an unsupported type and a missing column are refused by their own guards, and the backend survives both.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value (a failed query is a `query_error()` that fails its own check) from a module fixture on a private database. A refusal reads the SQLSTATE and the guard's words, and survival reads the server log's crash count as well as SELECT 1.
+
+| test | what it holds |
+| --- | --- |
+| `test_native_cluster_row_count` | row count |
+| `test_native_cluster_box_parity_before_clustering` | box parity (pre-cluster) |
+| `test_native_cluster_plan_is_the_columnar_scan` | the plan under test is a columnar custom scan |
+| `test_native_cluster_row_count_after_clustering` | row count after cluster |
+| `test_native_cluster_box_parity_after_clustering` | box parity (post-cluster) |
+| `test_native_cluster_full_table_parity_after_clustering` | full-table parity after cluster |
+| `test_native_cluster_increases_2d_skipping` | clustering increases 2D skipping |
+| `test_native_cluster_skips_most_groups` | clustering skips most groups |
+| `test_native_cluster_single_column_restores_id_skipping` | single-column clustering lets an id range skip most groups |
+| `test_native_cluster_single_column_parity` | single-column cluster parity |
+| `test_native_cluster_unsupported_type_is_refused` | unsupported type errors cleanly |
+| `test_native_cluster_missing_column_is_refused` | missing column errors cleanly |
+| `test_native_cluster_backend_survives_the_refusals` | backend still up after the refusals |
