@@ -378,6 +378,7 @@ behaviour, the source of that number is named.
 - [330. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard](#330-test_objstore_http_readpy-the-http-ranged-byte-source-with-request-counts-and-each-refusals-own-guard)
 - [331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload](#331-test_objstore_sink_writepy-exports-to-s3-go-as-one-put-or-a-completed-multipart-upload-read-back-as-the-generator-and-a-failed-export-leaves-no-key-and-no-open-upload)
 - [332. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable](#332-test_native_fetch_interruptpy-the-by-row-number-fetch-is-cancellable)
+- [333. test_objstore_module.py: the object-store module's packaging and loader, every refusal pinned](#333-test_objstore_modulepy-the-object-store-modules-packaging-and-loader-every-refusal-pinned)
 
 ## 1. How to read a test in here
 
@@ -12463,3 +12464,45 @@ Every test makes one check under the shell's name. Each function body is taken f
 | `test_fetch_row_carries_an_interrupt_check` | pgcolumnar_fetch_row carries an interrupt check |
 | `test_the_check_precedes_the_row_group_resolution` | the interrupt check precedes the row-group resolution |
 | `test_the_resolution_is_where_the_catalog_read_lives` | the row-group resolution is where the catalog read lives |
+
+## 333. test_objstore_module.py: the object-store module's packaging and loader, every refusal pinned
+
+The twin of `test/objstore_module.sh`. nm finds the module's entry point absent from `pgcolumnar.so` and present in `pgcolumnar_objstore.so`. An s3://, gs:// and https:// read are each refused with their own SQLSTATE and message (https:// by whether the module links libssl), a remote glob is listed remotely, a local file `export_parquet` wrote reads back through `read_parquet`, and a relative path is not taken for a URL. Then the installed module is moved: present, absent and broken are three different reports, each the same twice in one session.
+
+### Every test
+
+Every test makes one check under the shell's name, from one module fixture that takes a pristine copy of the module first and puts it back in its finally; the file runs alone, as the shell does. A refusal reads as `SQLSTATE: primary message`; a read that succeeded reads as a query_error. Counts are lines of the error text, as the shell's grep -c. With an ambient AWS_* in this process's environment (the session postmaster inherits it) the remote refusals decline UNMET_PRECONDITION; with the module unmovable the moving arms decline under the shell's skip name.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_restored_stash_is_a_module` | a stash restored over a missing module is a module -- the shell records it only when it fails, so it has no ledger row |
+| `test_the_main_library_is_installed` | the main library is installed |
+| `test_the_module_is_installed_beside_it` | the object-store module is installed BESIDE it, not inside it |
+| `test_the_entry_point_is_not_in_the_preloaded_library` | the module's entry point is NOT inside the preloaded library |
+| `test_the_entry_point_is_defined_in_the_module` | positive control: it IS defined in the module, so nm really looked |
+| `test_an_s3_url_reports_an_object_storage_error` | a s3 URL reports an object-storage error, not a missing file |
+| `test_an_s3_url_is_not_a_missing_file` | and the s3 URL is NOT reported as a missing file |
+| `test_a_gs_url_reports_an_object_storage_error` | a gs URL reports an object-storage error, not a missing file |
+| `test_a_gs_url_is_not_a_missing_file` | and the gs URL is NOT reported as a missing file |
+| `test_an_https_url_reports_an_object_storage_error` | a https URL reports an object-storage error, not a missing file |
+| `test_an_https_url_is_not_a_missing_file` | and the https URL is NOT reported as a missing file |
+| `test_a_star_glob_is_handled_remotely` | a remote glob (*) is handled remotely (an object-storage error, not a local one) |
+| `test_a_star_glob_is_not_a_local_miss` | and the * glob is NOT reported as a local filesystem miss |
+| `test_a_question_glob_is_handled_remotely` | a remote glob (?) is handled remotely (an object-storage error, not a local one) |
+| `test_a_question_glob_is_not_a_local_miss` | and the ? glob is NOT reported as a local filesystem miss |
+| `test_a_bracket_glob_is_handled_remotely` | a remote glob ([0-9]) is handled remotely (an object-storage error, not a local one) |
+| `test_a_bracket_glob_is_not_a_local_miss` | and the [0-9] glob is NOT reported as a local filesystem miss |
+| `test_a_local_path_still_works` | a local path still works |
+| `test_a_relative_path_is_not_a_url` | a relative path is not mistaken for a URL |
+| `test_present_both_reads_report_an_unhandled_scheme` | with the module present, both reads report an unhandled scheme |
+| `test_present_neither_claims_the_module_is_missing` | and neither claims the module is missing |
+| `test_premise_the_module_was_absent` | premise: the module really was absent while those two reads ran |
+| `test_premise_the_module_is_back` | premise: and the real module is back afterwards |
+| `test_absent_no_read_leaks_the_loader_error` | with the module absent, neither read leaks the loader's own error |
+| `test_absent_both_reads_name_the_missing_module` | both reads name the missing module, identically |
+| `test_absent_neither_downgrades_to_an_unhandled_scheme` | and neither downgrades it to an unhandled scheme |
+| `test_premise_the_module_is_corrupt` | premise: the module really is corrupt for this run, not merely intended to be |
+| `test_premise_the_module_was_restored` | premise: the real module was restored afterwards |
+| `test_broken_is_not_an_unhandled_scheme` | a broken module does NOT masquerade as an unhandled scheme |
+| `test_broken_is_not_a_module_never_installed` | nor as a module that was never installed |
+| `test_broken_keeps_the_loader_reason` | and the loader's own reason survives |

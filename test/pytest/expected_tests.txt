@@ -1007,6 +1007,8 @@ guard_tests 809
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 3957 -> 3988 for #1341's test_objstore_module.py, the twin of objstore_module.sh:
+# 30 checks in 31 tests, by collection over the cluster files.
 # cluster_tests 3919 -> 3954 for #1341's test_objstore_sink_write.py, the twin of objstore_sink_write.sh:
 # 35 checks in 35 tests, by collection over the cluster files.
 # cluster_tests 3954 -> 3955 for #1722: test_objstore_sink_write.py gains the cancel arm's
@@ -1174,4 +1176,4 @@ guard_tests 809
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 3957
+cluster_tests 3988

@@ -11,7 +11,6 @@ decode_interrupts
 decode_skip_interrupts
 harness_selftest
 native_cancel
-objstore_module
 parquet_export
 phase2
 phase3
