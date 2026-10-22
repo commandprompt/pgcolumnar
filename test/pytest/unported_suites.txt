@@ -24,7 +24,6 @@ native_parquet_units
 native_read_parquet
 native_rewrite_conc
 native_vecdecode
-native_zonemap
 native_zonemap_narrow
 native_zonemap_session
 objstore_addressing

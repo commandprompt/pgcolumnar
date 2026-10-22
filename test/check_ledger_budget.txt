@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 60
+suites_not_covered 59
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6293,4 +6293,21 @@ suites_not_covered 60
 #     never         4230 + 11 = 4241
 #     dated         3017 + 9 = 3026
 #     4241 + 3026 == 7267
-checks_never_observed_red 4241
+#
+# #1341, native_zonemap seeded, with its twin (OffgridwithJD): 4241 -> 4259, and
+# suites_not_covered 60 -> 59. The suite had no rows. It enters with 23 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The bounds were checked for presence and width only, and every column ascended, so a
+# vector's first value was always its minimum: with a vector max never raised past its
+# first value, a min never lowered, or a chunk max never folded past its first vector,
+# main passed 18/18. v is now a permutation (values, nulls and counts unchanged), and
+# four checks decode each bound of id, k and v and compare it with the heap's for its
+# group and vector. And three checks compared two readings with check: with the server
+# stopped they passed on two empty strings; they are now check_num. 5 are dated by
+# four mutations, each reddening the same names in both twins. 18 arrive never.
+#
+#     ledger rows   7267 + 23 = 7290
+#     never         4241 + 18 = 4259
+#     dated         3026 + 5 = 3031
+#     4259 + 3031 == 7290
+checks_never_observed_red 4259

@@ -1005,6 +1005,8 @@ guard_tests 806
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 3538 -> 3561 for #1341's test_native_zonemap.py, the twin of native_zonemap.sh:
+# 23 checks in 23 tests, by collection over the cluster files.
 # cluster_tests 3518 -> 3538 for #1341's test_native_rewrite.py, the twin of native_rewrite.sh:
 # 20 checks in 20 tests, by collection over the cluster files.
 # cluster_tests 3496 -> 3518 for #1341's test_native_sort_by.py, the twin of native_sort_by.sh:
@@ -1124,4 +1126,4 @@ guard_tests 806
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 3538
+cluster_tests 3561
