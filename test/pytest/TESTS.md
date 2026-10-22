@@ -342,6 +342,7 @@ behaviour, the source of that number is named.
 - [294. test_native_fold_skipguard.py: the batch fold is reachable for a shape that skips vectors, and accounts for the skipping](#294-test_native_fold_skipguardpy-the-batch-fold-is-reachable-for-a-shape-that-skips-vectors-and-accounts-for-the-skipping)
 - [295. test_native_fetch_group_memo.py: the by-row-number fetch resolves its row group from a memo, and the memo never serves a group it should not](#295-test_native_fetch_group_memopy-the-by-row-number-fetch-resolves-its-row-group-from-a-memo-and-the-memo-never-serves-a-group-it-should-not)
 - [296. test_parallel_copy_dedup.py: pgcolumnar.parallel_copy can refuse a load it has already done](#296-test_parallel_copy_deduppy-pgcolumnarparallel_copy-can-refuse-a-load-it-has-already-done)
+- [297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically](#297-test_parallel_copypy-parallel_copy-splits-a-file-on-record-boundaries-and-loads-it-atomically)
 
 ## 1. How to read a test in here
 
@@ -4358,7 +4359,7 @@ the tool grades THIS tree.
 | `test_the_grader_itself_refuses_the_suite_it_cannot_read` | `main` exits 2 and prints no verdict, with a readable suite as the control |
 | `test_a_helper_reaching_only_the_primitive_is_found` | the closure is seeded from `pgc_record`, not the `check` family; four suites turn on it |
 | `test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one` | `check_ratio` must not eat `check_ratio_needs_quiet_machine` |
-| `test_the_suite_local_helpers_are_known_and_excluded` | the four suite-local helpers, and that none of their suites is graded |
+| `test_the_suite_local_helpers_are_known_and_excluded` | no suite defines its own check_ helper, which the grader would not read |
 | `test_every_pair_in_the_tree_is_declared` | the declaration is asserted BOTH ways, so a new pair cannot be silently ungraded |
 | `test_every_registered_suite_is_ported_or_declared_unported` | every registered suite with no twin is listed in `unported_suites.txt`, a ported one leaves it, and no listed stem is phantom (#1341); the parity goal (#432) is that file empty |
 | `test_the_ported_suites_in_this_tree_are_graded_one_for_one` | the standing arm: every pair in the tree, graded |
@@ -11379,3 +11380,58 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 | `test_pcdedup_the_skipped_load_left_no_record` | the skipped load left exactly one record for that table and file |
 | `test_pcdedup_the_records_hold_each_files_sha256` | the records hold the SHA-256 of each loaded file's bytes |
 | `test_pcdedup_no_prepared_transaction_leaked` | no prepared transaction leaked through any of it |
+
+## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
+
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_parallel_copy_single_copy_heap_and_columnar_agree` | a single COPY of the 5000-row file into heap and into pgcolumnar gives the same rows |
+| `test_parallel_copy_split_offsets_are_newline_aligned` | `file_split_offsets` returns workers+1 offsets from 0 to the file size, never decreasing, each interior one right after a newline: 9 tests, one per file and worker count |
+| `test_parallel_copy_range_loads_give_back_the_generated_rows` | loading each range on its own gives back the rows the file was generated from: 9 tests, one per file and worker count |
+| `test_parallel_copy_every_range_of_a_large_file_is_non_empty` | on a file with far more records than workers, every range is non-empty, so a split degraded to one range fails: 5 tests |
+| `test_parallel_copy_zero_workers_is_rejected` | workers < 1 is refused ("at least 1") |
+| `test_parallel_copy_split_of_a_directory_is_rejected` | a directory is refused as not a regular file, not split as an 8-exabyte file |
+| `test_parallel_copy_returns_every_row_loaded` | `parallel_copy` into a partitioned and into a single table, with 1, 2 and 4 workers, returns 5000: 6 tests |
+| `test_parallel_copy_load_equals_the_single_copy` | each of those loads holds the rows of a single heap COPY of the file: 6 tests |
+| `test_parallel_copy_load_leaves_no_prepared_transaction` | each of those loads leaves no prepared transaction: 6 tests |
+| `test_parallel_copy_signed_keys_return_every_row` | keys from -100 to 399 with an unbounded first partition: 500 rows returned |
+| `test_parallel_copy_signed_keys_equal_the_oracle` | that load equals its heap oracle (no misbucketing, no deadlock) |
+| `test_parallel_copy_signed_keys_leave_no_prepared_transaction` | that load leaves no prepared transaction |
+| `test_parallel_copy_text_partition_key_is_rejected` | a text partition key is refused ("numeric or date/time") |
+| `test_parallel_copy_text_partition_key_leaves_the_server_up` | the server answers and no backend was killed since the suite began |
+| `test_parallel_copy_key_after_a_generated_column_returns_every_row` | a key after a generated column: 3000 rows returned |
+| `test_parallel_copy_key_after_a_generated_column_equals_the_oracle` | that load equals its heap oracle |
+| `test_parallel_copy_bad_partition_key_value_is_rejected` | a non-integer key is refused by the splitter ("invalid input syntax") |
+| `test_parallel_copy_bad_partition_key_loads_nothing` | the refused load leaves the target empty |
+| `test_parallel_copy_bad_partition_key_leaves_no_prepared_transaction` | the refused load leaves no prepared transaction |
+| `test_parallel_copy_loader_failure_fails_the_load_with_its_cause` | rows routed into a partition gap fail the load with the loader's own message ("failed: no partition of relation") |
+| `test_parallel_copy_loader_failure_rolls_back_the_siblings` | the failed load leaves the target empty: the prepared siblings were rolled back |
+| `test_parallel_copy_loader_failure_leaves_no_prepared_transaction` | the failed load leaves no prepared transaction |
+| `test_parallel_copy_loader_failure_leaves_the_server_up` | the server answers and no backend was killed |
+| `test_parallel_copy_unsorted_input_is_rejected` | a shuffled file is refused ("not sorted") |
+| `test_parallel_copy_unsorted_input_loads_nothing` | the refused load leaves the target empty |
+| `test_parallel_copy_default_partition_is_rejected` | a target with a DEFAULT partition is refused |
+| `test_parallel_copy_prepared_transaction_guard_fires` | 10 workers against max_prepared_transactions = 8 are refused up front, naming the setting |
+| `test_parallel_copy_prepared_transaction_guard_loads_nothing` | the refused load leaves the target empty |
+| `test_parallel_copy_missing_file_errors` | a missing file is refused with a file error |
+| `test_parallel_copy_missing_file_leaves_the_server_up` | the server answers and no backend was killed |
+| `test_parallel_copy_missing_file_loads_nothing` | the refused load leaves the target empty |
+| `test_parallel_copy_heap_target_is_rejected` | a heap target is refused ("not a pgcolumnar table") |
+| `test_parallel_copy_bulk_parallel_writer_is_off_by_default` | `pgcolumnar.bulk_parallel_writer` is off by default |
+| `test_parallel_copy_witness_loads_every_row` | 4 workers load 40000 rows into one table with small stripes: 40000 returned |
+| `test_parallel_copy_witness_equals_the_oracle` | that load equals its heap oracle |
+| `test_parallel_copy_witness_has_more_stripes_than_workers` | more than 4 distinct stripes: each worker reserved several |
+| `test_parallel_copy_witness_stripes_do_not_overlap` | no two stripes' byte ranges overlap |
+| `test_parallel_copy_witness_stripes_cover_every_row` | the stripes' row counts sum to 40000 |
+| `test_parallel_copy_witness_leaves_no_prepared_transaction` | that load leaves no prepared transaction |
+| `test_parallel_copy_single_table_bad_row_fails_with_its_cause` | a bad row fails a single-table load with the loader's own message ("failed: invalid input syntax") |
+| `test_parallel_copy_single_table_failure_loads_nothing` | the failed load leaves the target empty |
+| `test_parallel_copy_single_table_failure_leaves_no_prepared_transaction` | the failed load leaves no prepared transaction |
+| `test_parallel_copy_fifo_is_refused_not_a_hang` | a FIFO given to a single-table load is refused with 42809 within 5 seconds (#686) |
+| `test_parallel_copy_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
+| `test_parallel_copy_fifo_on_a_partitioned_target_is_refused_not_a_hang` | a FIFO given to a partitioned load is refused with 42809 within 5 seconds |
+| `test_parallel_copy_partitioned_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |

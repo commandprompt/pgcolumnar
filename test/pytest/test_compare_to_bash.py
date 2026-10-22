@@ -92,6 +92,7 @@ COMPLETE = ["advisory_lock_class",
             "smoke",
             "sort_status",
             "sort_status_privilege",
+            "parallel_copy",
             "parallel_copy_dedup",
             "parquet_export_stats",
             "parallel_flush_optin",
@@ -1359,16 +1360,15 @@ def test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one(expect):
 
 
 def test_the_suite_local_helpers_are_known_and_excluded(expect):
-    """Three helpers are defined by one suite, `parallel_copy.sh`, and the extractor
-    does not read them. That is a scope decision and it is asserted rather than left
-    implicit.
+    """No suite defines its own `check_<something>` helper, which the extractor does
+    not read. That is a scope decision and it is asserted rather than left implicit.
 
-    `compare_to_bash.py` grades a `test/<stem>.sh` against a
-    `test/pytest/test_<stem>.py`. `parallel_copy.sh` has no pytest twin, so it is not
-    graded and the exclusion costs nothing TODAY.
-    The day one of them is ported, this arm is what says the grader cannot see it.
-    It said so for parquet_export_stats.sh (#1341), whose check_float went when the
-    suite was ported: its two NaN-fixture checks and eight f4 bounds call `check`.
+    `compare_to_bash.py` reads the checks a suite records through `lib.sh`; a helper
+    a suite defines for itself, recording under a name it builds, is invisible to it.
+    There were three such helpers, all in parallel_copy.sh, and they went when that
+    suite was ported (#1341): its checks now carry literal names at the call site.
+    parquet_export_stats.sh's check_float went the same way before it. A suite that
+    adds one again reddens this arm, which is what says the grader cannot see it.
 
     The population is `check_<something>`, which is not the same as "starts with
     check": `checks_in` in `decode_interrupts.sh` is a COUNTING utility returning a
@@ -1382,15 +1382,8 @@ def test_the_suite_local_helpers_are_known_and_excluded(expect):
             continue
         for h in re.findall(r'^(check_[a-z_]+)\(\)\s*\{', sh.read_text(), re.M):
             local.setdefault(h, sh.name)
-    expect.text(", ".join(f"{h} ({f})" for h, f in sorted(local.items())),
-                "check_reconstruct (parallel_copy.sh), "
-                "check_split_happened (parallel_copy.sh), "
-                "check_structure (parallel_copy.sh)",
-                "the suite-local helpers are exactly these three")
-    twinned = [f for h, f in local.items()
-               if (HERE / f"test_{f[:-3]}.py").exists()]
-    expect.num(len(twinned), 0,
-               "and none of their suites has a pytest twin, so none is graded today")
+    expect.text(", ".join(f"{h} ({f})" for h, f in sorted(local.items())) or "none", "none",
+                "no suite defines its own check_ helper, which the grader would not read")
 
 
 def test_a_suites_own_forwarding_wrapper_is_read(expect):
