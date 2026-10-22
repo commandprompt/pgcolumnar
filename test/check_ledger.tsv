@@ -4497,6 +4497,19 @@ range_pruning	range_pruning	premise: the range type collates differently from it
 range_pruning	range_pruning	so does a containment probe	15;16;17;18;19	never	-
 range_pruning	range_pruning	the overlap qual is pushed down, where it used to be dropped	15;16;17;18;19	never	-
 range_pruning	range_pruning	the same for a containment probe far to its right	15;16;17;18;19	2026-10-17	columnar_write_state.c: the writer ignores an unbounded range, so its unit records only the largest finite upper bound
+read_stream	read_stream	[off] a fresh session reads enable_read_stream as off	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.enable_read_stream registered as pgcolumnar.enable_read_streamz, so the product's setting is gone
+read_stream	read_stream	[off] aggregate	15;16;17;18;19	2026-10-20	the synchronous block-read path copies each page's bytes one byte late
+read_stream	read_stream	[off] filtered	15;16;17;18;19	2026-10-20	the synchronous block-read path copies each page's bytes one byte late
+read_stream	read_stream	[off] full scan	15;16;17;18;19	2026-10-20	the synchronous block-read path copies each page's bytes one byte late
+read_stream	read_stream	[off] range	15;16;17;18;19	2026-10-20	the synchronous block-read path copies each page's bytes one byte late
+read_stream	read_stream	[off] wide sample	15;16;17;18;19	2026-10-20	the synchronous block-read path copies each page's bytes one byte late
+read_stream	read_stream	[on] a fresh session reads enable_read_stream as on	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.enable_read_stream registered as pgcolumnar.enable_read_streamz, so the product's setting is gone
+read_stream	read_stream	[on] aggregate	15;16;17;18;19	2026-10-20	the read-stream path copies each page's bytes one byte late (PG17+)
+read_stream	read_stream	[on] filtered	15;16;17;18;19	2026-10-20	the read-stream path copies each page's bytes one byte late (PG17+)
+read_stream	read_stream	[on] full scan	15;16;17;18;19	2026-10-20	the read-stream path copies each page's bytes one byte late (PG17+)
+read_stream	read_stream	[on] range	15;16;17;18;19	2026-10-20	the read-stream path copies each page's bytes one byte late (PG17+)
+read_stream	read_stream	[on] wide sample	15;16;17;18;19	2026-10-20	the read-stream path copies each page's bytes one byte late (PG17+)
+read_stream	read_stream	multiple stripes present	15;16;17;18;19	never	-
 reader_buffer_reuse	reader_buffer_reuse	a PROJECTED scan (one column of two) matches too	15;16;17;18;19	never	-
 reader_buffer_reuse	reader_buffer_reuse	a column ADDED after the groups exist reads back NULL, as on heap	15;16;17;18;19	2026-10-21	columnar_reader.c: when the group buffer is reused rather than grown, a projected read does not refresh it, so it decodes the previous group's bytes
 reader_buffer_reuse	reader_buffer_reuse	a rescan (nested loop) returns the same rows	15;16;17;18;19	never	-

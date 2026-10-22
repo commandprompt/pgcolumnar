@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 113
+suites_not_covered 112
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5211,4 +5211,26 @@ suites_not_covered 113
 #     never         3790 + 3 = 3793
 #     dated         2063 + 10 = 2073
 #     3793 + 2073 == 5866
-checks_never_observed_red 3793
+#
+# #1341, read_stream seeded, with its twin (jdatcmd): 3503 -> 3504, and
+# suites_not_covered 149 -> 148. The suite had no rows. It enters with 13 checks from
+# five-major runs (13/13 on each of 15-19, shell and twin alike), two of them new.
+# The setting arrives by ALTER DATABASE SET, whose error the shell's q drops, so a
+# setting that never took ran both modes down one path: with it misspelled and the
+# synchronous path broken, the shell passed 11 of 11. Each mode now reads the setting
+# back from a fresh session first. Those two reads name a pgcolumnar setting, and the
+# setting registered under another name reddens them, so they are not premises. The
+# twin's fixture returns the failed setting as their value, so they red by name there
+# too. The ten comparisons' names are literal, and the stripe premise carries its
+# count and leaves lossy_arms.tsv. 12 are dated on PG17, each in both twins with the
+# same names: each mode's five comparisons by its path copying a page one byte late,
+# and the two read-backs by the renamed setting. 1 arrives never. Nothing observes
+# which path a read took: with the stream path taken whatever the setting says and the
+# synchronous path broken, all 13 pass, so the [off] rows hold only while the setting
+# routes reads. On 15 and 16 the stream path is compiled out and [on] repeats [off].
+#
+#     ledger rows   5866 + 13 = 5879
+#     never         3793 + 1 = 3794
+#     dated         2073 + 12 = 2085
+#     3794 + 2085 == 5879
+checks_never_observed_red 3794
