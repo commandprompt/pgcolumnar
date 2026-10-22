@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 32
+suites_not_covered 31
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6841,4 +6841,22 @@ suites_not_covered 32
 #     never         4490 + 38 = 4528
 #     dated         3349 + 5 = 3354
 #     4528 + 3354 == 7882
-checks_never_observed_red 4528
+#
+# #1341, cancel_decode seeded, with its twin (OffgridwithJD): 4528 -> 4531,
+# and suites_not_covered 32 -> 31. The suite had no rows. It enters with 11 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The three after-the-cancel checks each opened a new psql, so they read a backend that had
+# never been cancelled: with a flag the group load sets and a cancel leaves set, the next
+# scan in that backend raised an ERROR (stalestate) or called abort() (stalecrash), and main
+# passed 10/10 under both; one session now takes the cancel and then answers all three. A
+# crash was not looked for: a new check counts "terminated by signal" in the server log once
+# the server answers again. And a cancel was any output containing "canceling statement"; it
+# is now SQLSTATE 57014 with the timeout's own message. 8 are dated by five mutations, each
+# the same names in both twins. 3 arrive never: the three fixture checks (the two group counts and the
+# scan outlasting the timeout), which no product mutation here moves.
+#
+#     ledger rows   7882 + 11 = 7893
+#     never         4528 + 3 = 4531
+#     dated         3354 + 8 = 3362
+#     4531 + 3362 == 7893
+checks_never_observed_red 4531

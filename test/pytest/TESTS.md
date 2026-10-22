@@ -383,6 +383,7 @@ behaviour, the source of that number is named.
 - [335. test_phase3.py: read-your-writes, DELETE, UPDATE, rollback, savepoints and temporary tables](#335-test_phase3py-read-your-writes-delete-update-rollback-savepoints-and-temporary-tables)
 - [336. test_phase4.py: btree and hash index reads through the index fetch, and refusals by SQLSTATE](#336-test_phase4py-btree-and-hash-index-reads-through-the-index-fetch-and-refusals-by-sqlstate)
 - [337. test_phase6.py: vectorized aggregates and scans against a heap oracle, not only against themselves](#337-test_phase6py-vectorized-aggregates-and-scans-against-a-heap-oracle-not-only-against-themselves)
+- [338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it](#338-test_cancel_decodepy-a-cancel-lands-inside-one-large-row-groups-decode-and-the-session-it-lands-in-survives-it)
 
 ## 1. How to read a test in here
 
@@ -12705,3 +12706,25 @@ Every test makes one check under the shell's name, from readings a module fixtur
 | `test_count_after_delete` | count after delete |
 | `test_sum_after_delete` | sum after delete |
 | `test_scan_after_delete` | scan after delete |
+
+## 338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it
+
+The twin of `test/cancel_decode.sh`. On a private database, two 4,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
+
+### Every test
+
+Every test makes one check under the shell's name, reading what a module fixture measured in the shell's order. A cancel is SQLSTATE 57014 with the message "canceling statement due to statement timeout"; anything else is reported as what came back. One connection takes a cancel and then answers the three follow-up checks, and the crash check reads the server log once the server answers again.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_many_group_table_has_many_groups` | the many-group table has many groups |
+| `test_the_one_group_table_has_exactly_one_group` | the one-group table has exactly one group |
+| `test_the_scan_outlasts_the_timeout` | the scan outlasts the timeout, so a cancel is possible |
+| `test_a_scan_of_many_small_groups_is_cancelled` | a scan of many small groups is cancelled |
+| `test_a_scan_of_one_large_group_is_cancelled` | a scan of one large group is cancelled |
+| `test_cancel_latency_does_not_grow_with_row_group_size` | cancel latency does not grow with row group size |
+| `test_the_cancel_arrives_within_an_absolute_bound` | the cancel arrives within a generous absolute bound |
+| `test_the_session_is_usable_after_the_cancel` | the session is usable after the cancel |
+| `test_the_table_still_reads_correctly_after_the_cancel` | the table still reads correctly after the cancel |
+| `test_the_cancelled_predicate_returns_its_true_answer` | the cancelled predicate returns its true answer when allowed to finish |
+| `test_no_backend_crashed_while_the_scans_were_cancelled` | no backend crashed while the scans were cancelled |
