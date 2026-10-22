@@ -1025,4 +1025,6 @@ guard_tests 474
 # 5 tests, one per check, by collection over the cluster files.
 # cluster_tests 2508 -> 2670 for #1341's test_parquet_export_stats.py, the twin of parquet_export_stats.sh:
 # 162 tests, one per check, by collection over the cluster files.
-cluster_tests 2670
+# cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
+# 7 tests, one per check, by collection over the cluster files.
+cluster_tests 2677

@@ -5361,4 +5361,17 @@ suites_not_covered 105
 #     never         3821 + 29 = 3850
 #     dated         2106 + 133 = 2239
 #     3850 + 2239 == 6089
-checks_never_observed_red 3850
+#
+# #1637, catalog_filter_reads seeded, with its twin (jdatcmd): 3850 -> 3853. A new suite, so
+# suites_not_covered does not move: it is registered and covered in the same change. It
+# enters with 7 checks from five-major runs (all green on each of 15-19, shell and twin
+# alike). 4 are dated by four mutations, each reddening one name in both twins: stats()
+# and sort_status() each filtering on get_storage_id(rel) again, as before #1637 (105
+# and 171 blocks of the table where the bound is 5), and each losing its filter, so it
+# reports every table's groups (103 where t has 3). The 3 premises arrive never.
+#
+#     ledger rows   6089 + 7 = 6096
+#     never         3850 + 3 = 3853
+#     dated         2239 + 4 = 2243
+#     3853 + 2243 == 6096
+checks_never_observed_red 3853
