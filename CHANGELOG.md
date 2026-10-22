@@ -418,8 +418,10 @@ true until the next version shipped.
   column of a Parquet foreign table read every row group; only `150000::int8`
   skipped. The check now compares through the operator family's cross-type
   comparison, as the native columnar scan already did. Answers were always correct;
-  this only reads less (#1712). `test/parquet_skip_cross_type.sh` and
-  `test_parquet_skip_cross_type.py`.
+  this only reads less (#1712). A `timestamp` column compared with a `timestamptz`
+  constant still does not skip: across a spring-forward gap the session zone's
+  conversion does not keep the statistics' order. `test/parquet_skip_cross_type.sh`
+  and `test_parquet_skip_cross_type.py`.
 - **`export_parquet` no longer marks a `timestamp` column as a UTC instant.** Both
   `timestamp` and `timestamptz` were written as the converted type `TIMESTAMP_MICROS`,
   which the Parquet spec defines as adjusted to UTC. Every other reader (pyarrow,
