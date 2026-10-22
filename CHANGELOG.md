@@ -400,6 +400,14 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+- **`pgcolumnar.stats()` and `pgcolumnar.sort_status()` no longer read more as
+  the database holds more columnar tables.** Both filtered a shared catalog on
+  `pgcolumnar.get_storage_id(rel)`. Once the catalog had statistics, the planner
+  could choose a sequential scan, which called that function once per catalog row,
+  and each call reads the table's first page. With 20 other tables of 5 row groups
+  each, `stats()` read 104 blocks of the table and `sort_status()` 170. Each now reads
+  the storage id once: 1 block (#1637). `test/catalog_filter_reads.sh` and
+  `test_catalog_filter_reads.py`.
 - **A NOLOGIN role can run `parallel_export_parquet`, `parallel_copy` and the
   parallel flush on PostgreSQL 15 and 16.** After `SET ROLE` to a role without
   LOGIN, the export failed `worker 0 failed: worker exited without reporting a

@@ -569,6 +569,13 @@ catalog_delete_index	catalog_delete_index	the phase A compaction retired the emp
 catalog_delete_index	catalog_delete_index	the phase B compaction retired the emptied groups	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	the vacuum's default does less row_group work than reading it whole	15;16;17;18;19	2026-10-12	pgcolumnar_index_min_blocks default 3 -> 2147483647, so no site probes;pgcolumnar_scan_index_oid stops asking the relation its size, so every site probes;the eight converted scan sites back to InvalidOid
 catalog_delete_index	catalog_delete_index	with few catalog pages the drop's default does less work than probing every one	15;16;17;18;19	2026-10-12	pgcolumnar_index_min_blocks default 3 -> 2147483647, so no site probes;pgcolumnar_scan_index_oid stops asking the relation its size, so every site probes
+catalog_filter_reads	catalog_filter_reads	control: sort_status() counts t's 3 row groups and no other table's	15;16;17;18;19	2026-10-22	sort_status() drops its storage filter (the s CTE reads every storage row), so it counts every table's groups
+catalog_filter_reads	catalog_filter_reads	control: stats() reports t's 3 row groups and no other table's	15;16;17;18;19	2026-10-22	stats() drops its row_group filter, so it reports every table's groups
+catalog_filter_reads	catalog_filter_reads	premise: one get_storage_id call reads t	15;16;17;18;19	never	-
+catalog_filter_reads	catalog_filter_reads	premise: other tables put at least 100 row groups in the catalog	15;16;17;18;19	never	-
+catalog_filter_reads	catalog_filter_reads	premise: pgcolumnar.row_group and pgcolumnar.storage have statistics	15;16;17;18;19	never	-
+catalog_filter_reads	catalog_filter_reads	sort_status() reads the storage id once, not once per catalog row	15;16;17;18;19	2026-10-22	sort_status() filters pgcolumnar.storage on get_storage_id(rel) again, as before #1637, so a sequential scan calls it once per catalog row
+catalog_filter_reads	catalog_filter_reads	stats() reads the storage id once, not once per catalog row group	15;16;17;18;19	2026-10-22	stats() filters pgcolumnar.row_group on get_storage_id(rel) again, as before #1637, so a sequential scan calls it once per catalog row
 catalog_natts	catalog_natts	Natts_bloom matches the width of pgcolumnar.bloom	15;16;17;18;19	never	-
 catalog_natts	catalog_natts	Natts_column_chunk matches the width of pgcolumnar.column_chunk	15;16;17;18;19	never	-
 catalog_natts	catalog_natts	Natts_column_extent matches the width of pgcolumnar.column_extent	15;16;17;18;19	never	-

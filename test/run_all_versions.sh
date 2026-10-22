@@ -66,6 +66,7 @@ SUITES=(
 	bloom_sizing
 	cancel_decode
 	catalog_delete_index
+	catalog_filter_reads
 	catalog_natts
 	catalog_plan_index
 	catalog_scan_index

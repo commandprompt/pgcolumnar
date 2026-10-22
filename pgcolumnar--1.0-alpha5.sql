@@ -845,8 +845,14 @@ CREATE FUNCTION pgcolumnar.stats(
 	LANGUAGE plpgsql STABLE SECURITY DEFINER
 	SET search_path = pg_catalog, pg_temp
 	AS $stats$
+DECLARE
+	-- once, not per catalog row: in the filter of a sequential scan of the
+	-- catalog the call runs for every row, and each call reads the table's
+	-- first page (#1637)
+	sid bigint;
 BEGIN
 	PERFORM pgcolumnar.require_caller_select(rel);
+	sid := pgcolumnar.get_storage_id(rel);
 	RETURN QUERY
 	-- Native (PGCN v1) tables report one row per row group from the native
 	-- catalog.
@@ -864,7 +870,7 @@ BEGIN
 			  AND zm.vector_index >= 0),
 		   rg.byte_length
 	FROM pgcolumnar.row_group rg
-	WHERE rg.storage_id = pgcolumnar.get_storage_id(rel)
+	WHERE rg.storage_id = sid
 	ORDER BY 1;
 END;
 $stats$;
@@ -931,12 +937,18 @@ CREATE FUNCTION pgcolumnar.sort_status(
 	LANGUAGE plpgsql STABLE SECURITY DEFINER
 	SET search_path = pg_catalog, pg_temp
 	AS $sort_status$
+DECLARE
+	-- once, not per catalog row: in the filter of a sequential scan of the
+	-- catalog the call runs for every row, and each call reads the table's
+	-- first page (#1637)
+	sid bigint;
 BEGIN
 	PERFORM pgcolumnar.require_caller_select(rel);
+	sid := pgcolumnar.get_storage_id(rel);
 	WITH s AS (
 		SELECT st.storage_id, st.sorted_through, st.sorted_from
 		FROM pgcolumnar.storage st
-		WHERE st.storage_id = pgcolumnar.get_storage_id(rel)
+		WHERE st.storage_id = sid
 	),
 	g AS (
 		-- A NULL mark means the storage was never ordered, so no group is in the
@@ -962,7 +974,7 @@ BEGIN
 	-- declared key, so it was NULL on a table clustered but never declared.
 	SELECT COALESCE(
 			(SELECT st.sorted_by FROM pgcolumnar.storage st
-			 WHERE st.storage_id = pgcolumnar.get_storage_id(rel)),
+			 WHERE st.storage_id = sid),
 			(SELECT o.sort_by FROM pgcolumnar.options o WHERE o.regclass = rel)),
 		   -- HOW that key is applied (#761). sort_key names the columns and says
 		   -- nothing about whether they are sorted or laid on a Z-order curve,
@@ -972,7 +984,7 @@ BEGIN
 		   -- read it nowhere. NULL when the storage was never ordered, or was
 		   -- ordered before the column existed.
 		   (SELECT st.sorted_kind FROM pgcolumnar.storage st
-			WHERE st.storage_id = pgcolumnar.get_storage_id(rel)),
+			WHERE st.storage_id = sid),
 		   (SELECT count(*)::bigint FROM g),
 		   (SELECT count(*)::bigint FROM g WHERE g.in_run),
 		   (SELECT count(*)::bigint FROM g WHERE NOT g.in_run),

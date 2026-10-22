@@ -309,6 +309,7 @@ behaviour, the source of that number is named.
 - [261. test_parallel_degree.py: identical data in heap and columnar is granted the same parallel degree](#261-test_parallel_degreepy-identical-data-in-heap-and-columnar-is-granted-the-same-parallel-degree)
 - [262. test_parallel_flush_optin.py: parallel_flush stays opt-in, and the dispatch metric cannot separate the shapes](#262-test_parallel_flush_optinpy-parallel_flush-stays-opt-in-and-the-dispatch-metric-cannot-separate-the-shapes)
 - [263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics](#263-test_parquet_export_statspy-the-parquet-files-we-export-carry-correct-per-row-group-statistics)
+- [264. test_catalog_filter_reads.py: stats() and sort_status() read a table's storage id once](#264-test_catalog_filter_readspy-stats-and-sort_status-read-a-tables-storage-id-once)
 
 ## 1. How to read a test in here
 
@@ -10253,3 +10254,19 @@ The bound and null-count oracles read the heap built from the generator, not the
 | `test_export_stats_fdw_result_equals_the_oracle` | the FDW result equals the oracle for [P]: 20 tests, one per predicate the skip checks use |
 | `test_export_stats_parser_finds_pyarrow_bounds` | control: the parser finds pyarrow's bounds |
 | `test_export_stats_parser_reports_deprecated_fields` | control: the parser reports the deprecated fields where they exist |
+
+## 264. test_catalog_filter_reads.py: stats() and sort_status() read a table's storage id once
+
+The pytest twin of `test/catalog_filter_reads.sh` (#1637), every check by the shell's name. With 20 other columnar tables of 5 row groups each and statistics on the catalog, `pgcolumnar.stats('t')` and `pgcolumnar.sort_status('t')` each read at most 5 blocks of `t`, counted by `pg_stat_get_xact_blocks_fetched` inside the call's own transaction in a fresh session. Before #1637 both filtered a shared catalog on `get_storage_id(rel)`, which a sequential scan calls once per catalog row: 104 and 170 blocks. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_catalog_holds_other_tables_row_groups` | premise: other tables put at least 100 row groups in the catalog |
+| `test_the_catalogs_have_statistics` | premise: pgcolumnar.row_group and pgcolumnar.storage have statistics -- the plan that scans is the one a database with current statistics gets |
+| `test_the_counter_counts_one_call` | premise: one get_storage_id call reads t -- without it, a counter that always read 0 would pass both bounds |
+| `test_stats_reads_the_storage_id_once` | stats() reads the storage id once, not once per catalog row group |
+| `test_stats_reports_only_the_tables_groups` | control: stats() reports t's 3 row groups and no other table's |
+| `test_sort_status_reads_the_storage_id_once` | sort_status() reads the storage id once, not once per catalog row |
+| `test_sort_status_counts_only_the_tables_groups` | control: sort_status() counts t's 3 row groups and no other table's |
