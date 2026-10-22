@@ -84,7 +84,7 @@ check "control: a valid listing reaches the parser and reads the object" \
 	"$(q "$READ")" "3"
 
 LOGPOS=0
-crashes=0; hangs=0; sanitizer=0; errors=0; clean=0
+crashes=0; hangs=0; sanitizer=0; errors=0; clean=0; fresh=0
 log_since() {
 	local sz
 	sz=$(stat -c %s "$PGC_LOGFILE" 2>/dev/null || echo 0)
@@ -105,7 +105,12 @@ log_since
 echo "-- fuzzing $ITERS listing mutants (seed base $SEED)"
 for ((i = 0; i < ITERS; i++)); do
 	s=$((SEED + i))
-	python3 "$CORPUS" "$s" "$OVERRIDE"
+	# The override is removed first: with no override the fixture serves the real
+	# listing, so a generator that writes nothing read as a clean accept every time and
+	# every check below passed with no mutant ever generated.
+	rm -f "$OVERRIDE"
+	python3 "$CORPUS" "$s" "$OVERRIDE" 2>/dev/null
+	[ -f "$OVERRIDE" ] && fresh=$((fresh + 1))
 	log_since
 	out="$(timeout 30 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
 		-U postgres -d "$PGC_DB" -v ON_ERROR_STOP=0 \
@@ -140,6 +145,7 @@ check "no mutant tripped a sanitizer" "$sanitizer" "0"
 # (the control above proved the pipeline; here the count must add up).
 check "every mutant ran (errors + clean == iters)" \
 	"$((errors + clean))" "$ITERS"
+check "every iteration wrote a fresh mutant" "$fresh" "$ITERS"
 check "the corpus reached the parser at all (some mutant errored or accepted)" \
 	"$([ "$((errors + clean))" -gt 0 ] && echo yes || echo no)" "yes"
 

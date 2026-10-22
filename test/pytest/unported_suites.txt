@@ -9,11 +9,6 @@
 cancel_decode
 decode_interrupts
 decode_skip_interrupts
-fuzz
-fuzz_arrow
-fuzz_avro
-fuzz_listing
-fuzz_parquet
 harness_selftest
 native_agg_deletes
 native_cancel
