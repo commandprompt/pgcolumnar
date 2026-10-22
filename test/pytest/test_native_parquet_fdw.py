@@ -166,7 +166,8 @@ def pfdw(pgc_cluster, server_dir):
         r["skip export"] = _rows(dsn, f"SELECT pgcolumnar.export_parquet('sk', '{skf}')")
         _run(dsn, f"CREATE FOREIGN TABLE fsk (id int8) SERVER pqsrv OPTIONS (path '{skf}')")
         r["skip plan"] = _rows(dsn, EXPLAIN + "SELECT count(*) FROM fsk WHERE id > 196608::int8")
-        r["skip count"] = _rows(dsn, "SELECT count(*) FROM fsk WHERE id > 196608")
+        # the plan's own query: a plain 196608 is cross-type and skips nothing (#1711 review)
+        r["skip count"] = _rows(dsn, "SELECT count(*) FROM fsk WHERE id > 196608::int8")
         _run(dsn, "CREATE TYPE fdw_npc AS (x int, y text)")
         _run(dsn, "CREATE TABLE np (id int, ia int[], ta text[], c fdw_npc) USING pgcolumnar")
         _run(dsn, "INSERT INTO np SELECT g, "

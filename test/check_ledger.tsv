@@ -4416,7 +4416,7 @@ native_parquet_codecs	native_parquet_codecs	zstd decodes to the generator's rows
 native_parquet_fdw	native_parquet_fdw	EXPLAIN shows Foreign Scan	15;16;17;18;19	never	-
 native_parquet_fdw	native_parquet_fdw	a one-column query reads one of the eleven columns	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: projection pushdown ignored, every column decoded
 native_parquet_fdw	native_parquet_fdw	a selective predicate skips the three row groups it cannot match	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: row-group skipping never skips a group
-native_parquet_fdw	native_parquet_fdw	and the skipped scan still returns every matching row	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: every row group skipped once any qual is pushable
+native_parquet_fdw	native_parquet_fdw	and the skipped scan still returns every matching row	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_skip moves each group's skip decision to the next group, skipping the one that matches
 native_parquet_fdw	native_parquet_fdw	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scan's missing-path refusal removed (the backend crashes)
 native_parquet_fdw	native_parquet_fdw	fdw row count	15;16;17;18;19	never	-
 native_parquet_fdw	native_parquet_fdw	full scan: fdw == source	15;16;17;18;19	never	-
