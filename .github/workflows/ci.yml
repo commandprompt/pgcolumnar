@@ -165,7 +165,11 @@ jobs:
   pytest-cluster:
     name: pytest (cluster tests, PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 40, not 20. The run is serial and grows with every ported twin: main took 12 to 17
+    # minutes on 2026-10-22, and seven stacked port PRs were cancelled at 20m16s. More
+    # workers (-n) would be faster, but a port race under -n 2 is known (#1635), so the
+    # budget moves first and the parallel run waits for that to be settled.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -195,8 +199,8 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
             https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
-          sudo timeout 600 apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+          .github/scripts/apt-retry.sh 100 3 update
+          .github/scripts/apt-retry.sh 200 3 install -y --no-install-recommends \
             postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} postgresql-${{ matrix.pg }}-partman postgresql-${{ matrix.pg }}-hll postgresql-${{ matrix.pg }}-tdigest \
             liblz4-dev libzstd-dev zlib1g-dev
           # NOT cached, deliberately. The suites job caches because it runs a matrix for
@@ -331,7 +335,7 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           # Acquire retries cover a flaky mirror; the outer timeout keeps a
           # wedged one from consuming the whole job budget.
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
+          .github/scripts/apt-retry.sh 100 3 update
 
       # The key has to track the package VERSIONS and not only their names.
       #
@@ -399,7 +403,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/apt-archives/partial"
-          sudo timeout 600 apt-get -o Acquire::Retries=5 \
+          .github/scripts/apt-retry.sh 200 3 \
             -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} \
             liblz4-dev libzstd-dev zlib1g-dev 2>&1 | tee /tmp/apt-install.log
@@ -480,7 +484,7 @@ jobs:
       - name: Install build dependencies
         run: |
           set -euo pipefail
-          sudo apt-get update
+          .github/scripts/apt-retry.sh 100 3 update
           # gcc-14 explicitly, so one compiler configures PostgreSQL and builds
           # the extension.
           #
@@ -495,7 +499,7 @@ jobs:
           # project's own Makefile for PostgreSQL 19, whose headers use C23
           # constructs, and the Makefile now probes for the spelling the
           # compiler accepts. See #294.
-          sudo apt-get install -y --no-install-recommends \
+          .github/scripts/apt-retry.sh 200 3 install -y --no-install-recommends \
             build-essential gcc-14 flex bison libreadline-dev zlib1g-dev \
             liblz4-dev libzstd-dev pkg-config
 
@@ -597,7 +601,7 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           # Acquire retries cover a flaky mirror; the outer timeout keeps a
           # wedged one from consuming the whole job budget.
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
+          .github/scripts/apt-retry.sh 100 3 update
 
       # See the build job for why the key hashes the resolved versions: a fixed
       # key freezes the archives, and the next routine PGDG minor then turns the
@@ -653,7 +657,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/apt-archives/partial"
-          sudo timeout 600 apt-get -o Acquire::Retries=5 \
+          .github/scripts/apt-retry.sh 200 3 \
             -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} postgresql-${{ matrix.pg }}-partman postgresql-${{ matrix.pg }}-hll postgresql-${{ matrix.pg }}-tdigest \
             liblz4-dev libzstd-dev zlib1g-dev python3-pip 2>&1 | tee /tmp/apt-install.log
