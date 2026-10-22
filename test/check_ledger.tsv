@@ -5917,6 +5917,43 @@ phase2	phase2	zstd count	15;16;17;18;19	never	-
 phase2	phase2	zstd distinct pl	15;16;17;18;19	never	-
 phase2	phase2	zstd payload ok	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
 phase2	phase2	zstd sum(id)	15;16;17;18;19	never	-
+phase3	phase3	bulk update rows	15;16;17;18;19	never	-
+phase3	phase3	bulk update sfx	15;16;17;18;19	never	-
+phase3	phase3	delete boundaries	15;16;17;18;19	never	-
+phase3	phase3	delete count	15;16;17;18;19	never	-
+phase3	phase3	delete gone	15;16;17;18;19	never	-
+phase3	phase3	delete neighbors	15;16;17;18;19	never	-
+phase3	phase3	delete tail count	15;16;17;18;19	never	-
+phase3	phase3	delete tail max	15;16;17;18;19	never	-
+phase3	phase3	delete_vector cleaned	15;16;17;18;19	2026-10-22	columnar_metadata.c: a dropped table's delete_vector rows kept
+phase3	phase3	delete_vector deleted	15;16;17;18;19	never	-
+phase3	phase3	delete_vector rows>0	15;16;17;18;19	never	-
+phase3	phase3	durable odd only	15;16;17;18;19	never	-
+phase3	phase3	durable survivors	15;16;17;18;19	never	-
+phase3	phase3	rb after count	15;16;17;18;19	never	-
+phase3	phase3	rb after range	15;16;17;18;19	never	-
+phase3	phase3	rb before	15;16;17;18;19	never	-
+phase3	phase3	reg count	15;16;17;18;19	never	-
+phase3	phase3	reg filter a<100	15;16;17;18;19	never	-
+phase3	phase3	row group cleaned	15;16;17;18;19	2026-10-22	columnar_metadata.c: a dropped table's row_group rows kept
+phase3	phase3	ryw count	15;16;17;18;19	never	-
+phase3	phase3	ryw persisted	15;16;17;18;19	never	-
+phase3	phase3	ryw sum	15;16;17;18;19	never	-
+phase3	phase3	savepoint failed delete discarded	15;16;17;18;19	2026-10-22	columnar_tableam.c: a savepoint's abort keeps its pending delete-vector changes
+phase3	phase3	savepoint failed final	15;16;17;18;19	never	-
+phase3	phase3	savepoint failed insert discarded	15;16;17;18;19	2026-10-22	columnar_tableam.c: a savepoint's abort keeps its pending writes
+phase3	phase3	savepoint final	15;16;17;18;19	never	-
+phase3	phase3	savepoint in-txn	15;16;17;18;19	never	-
+phase3	phase3	savepoint nested read in a delete sees its deleted rows, as on heap	15;16;17;18;19	2026-10-22	columnar_tableam.c: a savepoint's commit does not hand its delete buffers and written marks to the parent
+phase3	phase3	temp deleted	15;16;17;18;19	never	-
+phase3	phase3	temp survivors	15;16;17;18;19	never	-
+phase3	phase3	the deleted range straddles vectors 0 and 1	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.chunk_group_row_limit boots at 16384, not 10000
+phase3	phase3	update count	15;16;17;18;19	never	-
+phase3	phase3	update key gone	15;16;17;18;19	never	-
+phase3	phase3	update key new	15;16;17;18;19	never	-
+phase3	phase3	update key total	15;16;17;18;19	never	-
+phase3	phase3	update one row	15;16;17;18;19	never	-
+phase3	phase3	update value	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
 preimage_rewrite	preimage_rewrite	...and still answers correctly with the fold enabled	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and the heap agrees it is unsatisfiable	15;16;17;18;19	never	-
