@@ -1003,6 +1003,8 @@ guard_tests 804
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 3117 -> 3168 for #1341's test_native_encoding.py, the twin of native_encoding.sh:
+# 51 checks in 51 tests, by collection over the cluster files.
 # cluster_tests 3102 -> 3117 for #1341's test_native_ctas.py, the twin of native_ctas.sh:
 # 15 checks in 15 tests, by collection over the cluster files.
 # cluster_tests 3085 -> 3102 for #1341's test_native_exact_selection.py, the twin of native_exact_selection.sh:
@@ -1084,4 +1086,4 @@ guard_tests 804
 # cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
-cluster_tests 3117
+cluster_tests 3168

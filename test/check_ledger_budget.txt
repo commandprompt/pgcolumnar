@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 80
+suites_not_covered 79
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5855,4 +5855,29 @@ suites_not_covered 80
 #     never         4071 + 1 = 4072
 #     dated         2744 + 14 = 2758
 #     4072 + 2758 == 6830
-checks_never_observed_red 4072
+#
+# #1341, native_encoding seeded, with its twin (OffgridwithJD): 4072 -> 4112, and
+# suites_not_covered 80 -> 79. The suite had no rows. It enters with 51 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after four fixes.
+# With every vector stored raw (encoding NONE), main's shell failed only 4 of 46: the
+# [pglz], [lz4] and [zstd] "constant column encoded small" checks passed because the
+# block codec shrinks a constant column on its own, and every "no baseline
+# descriptors" check passed too. Each codec now reads its constant column's stored
+# encoding type ("the constant column's vectors are encoded, not stored raw"). With a
+# chunk too small to sample stored raw, "a chunk smaller than the sample window still
+# encodes" passed on its values; it now reads the stored encoding, and a separate
+# check reads the values. "fsst stores one shared table per chunk" passed with no
+# chunk choosing FSST, because the caller stores the table regardless; it now needs
+# FSST chosen. And the nulls, aggregate and ALP special-value checks compared two
+# readings with check: with the server stopped, main passed 9 checks on empty
+# strings; they are check_num now, and the stopped server fails all 51. The codec loop
+# is unrolled so the grader reads every name, and each count reads bad/total so an
+# empty catalog cannot pass. 11 are dated by four mutations, each reddening the same
+# names in both twins. 40 arrive never: round-trips and parities that no single
+# encoding mutation reaches on this data.
+#
+#     ledger rows   6830 + 51 = 6881
+#     never         4072 + 40 = 4112
+#     dated         2758 + 11 = 2769
+#     4112 + 2769 == 6881
+checks_never_observed_red 4112

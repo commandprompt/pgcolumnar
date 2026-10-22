@@ -3814,6 +3814,57 @@ native_encdesc_golden	native_encdesc_golden	int column a rawLen parses as 1200 (
 native_encdesc_golden	native_encdesc_golden	the table reads back all rows	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	trailing sharedTableLen is 0 (u32 at offset 6+13=19)	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	vectorCount parses as 1 (at offset 2)	15;16;17;18;19	never	-
+native_encoding	native_encoding	[lz4] aggregate over encoded column	15;16;17;18;19	never	-
+native_encoding	native_encoding	[lz4] all columns round-trip	15;16;17;18;19	never	-
+native_encoding	native_encoding	[lz4] constant column encoded small	15;16;17;18;19	never	-
+native_encoding	native_encoding	[lz4] filtered scan	15;16;17;18;19	never	-
+native_encoding	native_encoding	[lz4] no baseline descriptors remain	15;16;17;18;19	never	-
+native_encoding	native_encoding	[lz4] nulls round-trip	15;16;17;18;19	never	-
+native_encoding	native_encoding	[lz4] row count	15;16;17;18;19	never	-
+native_encoding	native_encoding	[lz4] the constant column's vectors are encoded, not stored raw	15;16;17;18;19	2026-10-22	columnar_encoding.c: a chunk too small to sample is stored raw instead of trying every candidate
+native_encoding	native_encoding	[none] aggregate over encoded column	15;16;17;18;19	never	-
+native_encoding	native_encoding	[none] all columns round-trip	15;16;17;18;19	never	-
+native_encoding	native_encoding	[none] constant column encoded small	15;16;17;18;19	2026-10-22	columnar_encoding.c: a chunk too small to sample is stored raw instead of trying every candidate
+native_encoding	native_encoding	[none] filtered scan	15;16;17;18;19	never	-
+native_encoding	native_encoding	[none] no baseline descriptors remain	15;16;17;18;19	never	-
+native_encoding	native_encoding	[none] no block codec used	15;16;17;18;19	never	-
+native_encoding	native_encoding	[none] nulls round-trip	15;16;17;18;19	never	-
+native_encoding	native_encoding	[none] row count	15;16;17;18;19	never	-
+native_encoding	native_encoding	[none] the constant column's vectors are encoded, not stored raw	15;16;17;18;19	2026-10-22	columnar_encoding.c: a chunk too small to sample is stored raw instead of trying every candidate
+native_encoding	native_encoding	[pglz] aggregate over encoded column	15;16;17;18;19	never	-
+native_encoding	native_encoding	[pglz] all columns round-trip	15;16;17;18;19	never	-
+native_encoding	native_encoding	[pglz] constant column encoded small	15;16;17;18;19	never	-
+native_encoding	native_encoding	[pglz] filtered scan	15;16;17;18;19	never	-
+native_encoding	native_encoding	[pglz] no baseline descriptors remain	15;16;17;18;19	never	-
+native_encoding	native_encoding	[pglz] nulls round-trip	15;16;17;18;19	never	-
+native_encoding	native_encoding	[pglz] row count	15;16;17;18;19	never	-
+native_encoding	native_encoding	[pglz] the constant column's vectors are encoded, not stored raw	15;16;17;18;19	2026-10-22	columnar_encoding.c: a chunk too small to sample is stored raw instead of trying every candidate
+native_encoding	native_encoding	[zstd] aggregate over encoded column	15;16;17;18;19	never	-
+native_encoding	native_encoding	[zstd] all columns round-trip	15;16;17;18;19	never	-
+native_encoding	native_encoding	[zstd] constant column encoded small	15;16;17;18;19	never	-
+native_encoding	native_encoding	[zstd] filtered scan	15;16;17;18;19	never	-
+native_encoding	native_encoding	[zstd] no baseline descriptors remain	15;16;17;18;19	never	-
+native_encoding	native_encoding	[zstd] nulls round-trip	15;16;17;18;19	never	-
+native_encoding	native_encoding	[zstd] row count	15;16;17;18;19	never	-
+native_encoding	native_encoding	[zstd] the constant column's vectors are encoded, not stored raw	15;16;17;18;19	2026-10-22	columnar_encoding.c: a chunk too small to sample is stored raw instead of trying every candidate
+native_encoding	native_encoding	a chunk smaller than the sample window reads back exactly	15;16;17;18;19	never	-
+native_encoding	native_encoding	a chunk smaller than the sample window still encodes	15;16;17;18;19	2026-10-22	columnar_encoding.c: a chunk too small to sample is stored raw instead of trying every candidate
+native_encoding	native_encoding	a misleading column head does not cost much ratio	15;16;17;18;19	never	-
+native_encoding	native_encoding	a run-length column is not misjudged by the sample	15;16;17;18;19	never	-
+native_encoding	native_encoding	a sample setting below the floor still encodes	15;16;17;18;19	never	-
+native_encoding	native_encoding	alp chosen for the decimal column	15;16;17;18;19	2026-10-22	columnar_encoding.c: ALP is never chosen, on the exhaustive or the sampled path
+native_encoding	native_encoding	alp column round-trips exactly	15;16;17;18;19	never	-
+native_encoding	native_encoding	alp special values round-trip	15;16;17;18;19	never	-
+native_encoding	native_encoding	fsst chosen for the shared-substring column	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
+native_encoding	native_encoding	fsst column round-trips exactly	15;16;17;18;19	never	-
+native_encoding	native_encoding	fsst filtered scan round-trips	15;16;17;18;19	never	-
+native_encoding	native_encoding	fsst shrinks the url column	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
+native_encoding	native_encoding	fsst stores one shared table per chunk (E3b)	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
+native_encoding	native_encoding	misleading-head column still reads back exactly	15;16;17;18;19	never	-
+native_encoding	native_encoding	run-length column reads back exactly	15;16;17;18;19	2026-10-22	columnar_encoding.c: RLE decode flips one bit of each vector's last value
+native_encoding	native_encoding	sampling changes nothing a query can see	15;16;17;18;19	never	-
+native_encoding	native_encoding	sampling off == heap oracle	15;16;17;18;19	never	-
+native_encoding	native_encoding	sampling on == heap oracle	15;16;17;18;19	never	-
 native_exact_selection	native_exact_selection	EXPLAIN reports Columnar Vector Decodes	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_exact_selection	native_exact_selection	ZONE MAPS RULE OUT NOTHING, which is what makes this 1b-ii	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_exact_selection	native_exact_selection	a range whose only matches lie on its bounds still returns them	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection evaluates >= as > (a value on the lower bound does not match)
