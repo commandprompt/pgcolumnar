@@ -10,7 +10,6 @@ audit
 cancel_decode
 decode_interrupts
 decode_skip_interrupts
-docs_style
 fuzz
 fuzz_arrow
 fuzz_avro

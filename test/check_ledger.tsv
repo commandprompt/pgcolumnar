@@ -1141,6 +1141,59 @@ doc_parallel_premise	doc_parallel_premise	the fixture holds several row groups, 
 doc_parallel_premise	doc_parallel_premise	the group counters were read, not blank	15;16;17;18;19	2026-10-21	EXPLAIN stops printing Columnar Chunk Groups Read;pgcolumnar.enable_custom_scan boots false (columnar_tableam.c)
 doc_parallel_premise	doc_parallel_premise	the page still names a narrow query	15;16;17;18;19	2026-10-21	docs/limitations.md stops naming a narrow query
 doc_parallel_premise	doc_parallel_premise	the sel plan is exactly one columnar scan node	15;16;17;18;19	2026-10-21	pgcolumnar.enable_custom_scan boots false (columnar_tableam.c)
+docs_style	docs_style	CHANGELOG.md carries no em or en dash	15;16;17;18;19	2026-10-21	CHANGELOG.md: a line with an em dash
+docs_style	docs_style	CHANGELOG.md has a union merge driver, so two entries do not conflict	15;16;17;18;19	2026-10-21	.gitattributes: the CHANGELOG.md merge=union line removed
+docs_style	docs_style	META.json provides.pgcolumnar.version is the version VERSION holds, in PGXN form	15;16;17;18;19	2026-10-21	META.json: provides.pgcolumnar.version left at 1.0.0-alpha.4
+docs_style	docs_style	META.json version is the version VERSION holds, in PGXN form	15;16;17;18;19	2026-10-21	META.json: version left at 1.0.0-alpha.4
+docs_style	docs_style	README's badge alt text names the version VERSION holds	15;16;17;18;19	2026-10-21	README.md: the badge alt text left at 1.0-alpha3
+docs_style	docs_style	administration.md states it in the section that says to lower the setting	15;16;17;18;19	2026-10-21	docs/administration.md: the stripe_row_limit floor written as 1000
+docs_style	docs_style	and CHANGELOG.md still has the union merge driver those instructions are about	15;16;17;18;19	2026-10-21	.gitattributes: the CHANGELOG.md merge=union line removed
+docs_style	docs_style	and CONTEXT.md tells a contributor what a CONFLICTING badge means	15;16;17;18;19	2026-10-21	CONTEXT.md: the CONFLICTING-badge heading reworded
+docs_style	docs_style	and it actually examined the documents	15;16;17;18;19	never	-
+docs_style	docs_style	and names the command rather than only the problem	15;16;17;18;19	2026-10-21	CONTEXT.md: git rebase origin/main written as git rebase main
+docs_style	docs_style	and says WHY rebasing works where merging does not	15;16;17;18;19	2026-10-21	CONTEXT.md: merging **into** without its emphasis
+docs_style	docs_style	and the page that nav entry points at exists	15;16;17;18;19	2026-10-21	docs/roadmap.md deleted, its nav entry kept
+docs_style	docs_style	and warns against the button that reintroduces the conflict	15;16;17;18;19	2026-10-21	CONTEXT.md: do not click reworded
+docs_style	docs_style	best-practices names clustering on the join key	15;16;17;18;19	2026-10-21	docs/best-practices.md: join key kept only inside an HTML comment
+docs_style	docs_style	best-practices.md carries it with the load-sizing advice	15;16;17;18;19	2026-10-21	docs/best-practices.md: the stripe_row_limit floor written as 1000
+docs_style	docs_style	configuration.md states the 1024 floor where it documents the setting	15;16;17;18;19	2026-10-21	docs/configuration.md: the 1024 floor kept only inside an HTML comment
+docs_style	docs_style	each shipped version starts exactly one upgrade script, so the chain is a walk	15;16;17;18;19	2026-10-21	an untracked pgcolumnar--1.0-alpha2--1.0-alphaX.sql, a second script starting at 1.0-alpha2
+docs_style	docs_style	every dated changelog section has its own section at its release tag	15;16;17;18;19	2026-10-21	CHANGELOG.md: a dated 1.0-alpha2.5 section no tag shipped
+docs_style	docs_style	every dated changelog section holds what its tag shipped, plus only what is recorded	15;16;17;18;19	2026-10-21	CHANGELOG.md: an entry added to the released 1.0-alpha4 section
+docs_style	docs_style	every dated changelog section still holds every entry its tag shipped	15;16;17;18;19	2026-10-21	CHANGELOG.md: an entry removed from the released 1.0-alpha4 section
+docs_style	docs_style	every document citing VERSION quotes the version VERSION holds	15;16;17;18;19	2026-10-21	docs/limitations.md: a stale VERSION citation, the right one only in an HTML comment
+docs_style	docs_style	every document making the claim states it in a form this rule can read	15;16;17;18;19	2026-10-21	README.md: the latest-published claim reworded out of both readable forms
+docs_style	docs_style	every document names the same latest published pre-release	15;16;17;18;19	2026-10-21	docs/roadmap.md: the latest-published claim names v1.0-alpha1
+docs_style	docs_style	every document stating the upgrade chain states it in a form this rule can read	15;16;17;18;19	2026-10-21	docs/limitations.md: the upgrade-chain sentence names no destination
+docs_style	docs_style	every pgcolumnar--*.sql in the tree is in the published distribution	15;16;17;18;19	2026-10-21	an untracked pgcolumnar--1.0-alpha2--1.0-alphaX.sql, a second script starting at 1.0-alpha2
+docs_style	docs_style	every recorded post-tag entry carries a reason	15;16;17;18;19	2026-10-21	test/changelog_post_tag.txt: a row with no reason
+docs_style	docs_style	every such document names default_version as the version one UPDATE reaches	15;16;17;18;19	2026-10-21	docs/limitations.md: the upgrade-chain sentence names no destination
+docs_style	docs_style	every such document names the versions that reach default_version in one update	15;16;17;18;19	2026-10-21	docs/limitations.md: 1.0-alpha2 dropped from the starting versions
+docs_style	docs_style	every user-facing document meets the measurable plain-language rules	15;16;17;18;19	2026-10-21	docs/how-to.md: a sentence with an em dash
+docs_style	docs_style	how-to names clustering on the join key for the runtime filter	15;16;17;18;19	2026-10-21	docs/how-to.md: join key reworded to join column
+docs_style	docs_style	no document carries a merge conflict marker	15;16;17;18;19	2026-10-21	docs/user-guide.md: a merge conflict marker line
+docs_style	docs_style	no documented query tests pg_extension while listing databases	15;16;17;18;19	2026-10-21	docs/how-to.md: a sql block testing pg_extension while listing pg_database
+docs_style	docs_style	no recorded post-tag entry is stale, so the allowance cannot widen silently	15;16;17;18;19	2026-10-21	test/changelog_post_tag.txt: a row for 1.0-alpha9, which has no section
+docs_style	docs_style	premise: META.json is present and parses	15;16;17;18;19	never	-
+docs_style	docs_style	premise: META.json names a base install script	15;16;17;18;19	never	-
+docs_style	docs_style	premise: and it names VERSION's version at all	15;16;17;18;19	never	-
+docs_style	docs_style	premise: at least one document cites the VERSION file	15;16;17;18;19	never	-
+docs_style	docs_style	premise: at least one document names the latest published pre-release	15;16;17;18;19	never	-
+docs_style	docs_style	premise: at least one document states the upgrade chain	15;16;17;18;19	never	-
+docs_style	docs_style	premise: some shipped version reaches default_version, so the walk found a chain	15;16;17;18;19	never	-
+docs_style	docs_style	premise: the PGXN form was derived from VERSION, not empty	15;16;17;18;19	never	-
+docs_style	docs_style	premise: the VERSION file has a version to compare against	15;16;17;18;19	never	-
+docs_style	docs_style	premise: the changelog sweep found dated release sections	15;16;17;18;19	never	-
+docs_style	docs_style	premise: the control file names a default_version to arrive at	15;16;17;18;19	never	-
+docs_style	docs_style	premise: the post-tag allowance file is present and readable	15;16;17;18;19	never	-
+docs_style	docs_style	premise: the scan read SQL statements from the documents	15;16;17;18;19	never	-
+docs_style	docs_style	premise: the tree has install scripts to check	15;16;17;18;19	never	-
+docs_style	docs_style	premise: the tree ships upgrade scripts to derive the chain from	15;16;17;18;19	never	-
+docs_style	docs_style	premise: the version badge is present	15;16;17;18;19	never	-
+docs_style	docs_style	the how-to keeps its pg_partman section under its own heading	15;16;17;18;19	2026-10-21	docs/how-to.md: a paragraph inserted between the pg_partman heading and its steps
+docs_style	docs_style	the roadmap is in the documentation nav	15;16;17;18;19	2026-10-21	mkdocs.yml: the roadmap nav entry commented out with #
+docs_style	docs_style	the script META.json names is in the published distribution	15;16;17;18;19	2026-10-21	META.json: provides.pgcolumnar.file names pgcolumnar--1.0-alpha3.sql
+docs_style	docs_style	the version badge names no version other than VERSION's	15;16;17;18;19	2026-10-21	badges/version.svg: one of its three version strings left at 1.0-alpha3
 eager_ordering_record	eager_ordering_record	an unsorted rewrite claims no ordering	15;16;17;18;19	2026-10-21	an unsorted rewrite still records a lexicographic run
 eager_ordering_record	eager_ordering_record	and it rewrote no group: the physical layout is unchanged	15;16;17;18;19	2026-10-21	the recluster self-gate never fires
 eager_ordering_record	eager_ordering_record	and records it as a lexicographic run	15;16;17;18;19	2026-10-21	eager vacuum_sorted records no key and no kind (#758)

@@ -324,6 +324,7 @@ behaviour, the source of that number is named.
 - [276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else](#276-test_iceberg_rest_serverpy-an-iceberg-rest-catalog-foreign-server-authenticates-by-its-user-mapping-and-by-nothing-else)
 - [277. test_hilbert_curve.py: the Hilbert clustering curve, pinned by its properties and by frozen bytes](#277-test_hilbert_curvepy-the-hilbert-clustering-curve-pinned-by-its-properties-and-by-frozen-bytes)
 - [278. test_bench_guards.py: the benchmark's own guards refuse what they must, and the report asks them](#278-test_bench_guardspy-the-benchmarks-own-guards-refuse-what-they-must-and-the-report-asks-them)
+- [279. test_docs_style.py: the documentation's measurable rules and the facts it states](#279-test_docs_stylepy-the-documentations-measurable-rules-and-the-facts-it-states)
 
 ## 1. How to read a test in here
 
@@ -1794,8 +1795,8 @@ the population and that both buckets are occupied.
 ### `test_the_accounted_reader_takes_either_runtime_mechanism`
 
 Two runtime-observable mechanisms exist: `pgc_summary`'s accounting line, used by 239
-suites, and a suite's own `checks run:` line, which `bench_guards` and `docs_style`
-print from private counters without ever sourcing `lib.sh`. A reader that knew only the
+suites, and a suite's own `checks run:` line, which `bench_guards` prints from private
+counters without ever sourcing `lib.sh` (`docs_style` did too, until #1341 moved it onto `lib.sh`). A reader that knew only the
 first would call those two unaccounted, which is false. Both alternatives are anchored,
 and an indented or extended line of either shape is refused (#1339).
 
@@ -10833,3 +10834,67 @@ Every test makes one check under the shell's name; the six runner checks are par
 | `test_the_extractor_reads_wrapped_ids` | the variation-claim extractor reads ids wrapped across two lines |
 | `test_no_query_is_called_variation_without_a_tie` | no query is called run-to-run variation unless its figures are a measured tie |
 | `test_the_tuned_arm_names_its_settings` | the tuned-arm section names all four settings and the group-cap value |
+
+## 279. test_docs_style.py: the documentation's measurable rules and the facts it states
+
+The pytest twin of `test/docs_style.sh` (#291, #1341). It reads the published pages, `META.json`, the tree's scripts and the release tags as files and through `git`. It needs no server, so it runs in the guards job. Every arm that asks whether a page says something reads the page with its HTML comments removed. The nav check ignores YAML comments.
+
+### Every test
+
+Every test makes one check, by the shell's name. Readings are computed once, in a module fixture, with Python's `re` and `pathlib` rather than the shell's grep and awk. A reading that cannot be taken is a value that fails its own check, never an exception. The four changelog arms decline with UNMET_PRECONDITION in a checkout without the release tags.
+
+| test | what it holds |
+| --- | --- |
+| `test_every_user_facing_document_meets_the_plain_language_rules` | every user-facing document meets the measurable plain-language rules |
+| `test_the_plain_language_checker_examined_the_documents` | and it actually examined the documents |
+| `test_the_roadmap_is_in_the_documentation_nav` | the roadmap is in the documentation nav |
+| `test_the_roadmap_nav_entry_points_at_a_page` | and the page that nav entry points at exists |
+| `test_no_document_carries_a_merge_conflict_marker` | no document carries a merge conflict marker |
+| `test_the_how_to_keeps_its_pg_partman_heading` | the how-to keeps its pg_partman section under its own heading |
+| `test_changelog_carries_no_em_or_en_dash` | CHANGELOG.md carries no em or en dash |
+| `test_how_to_names_clustering_on_the_join_key` | how-to names clustering on the join key for the runtime filter |
+| `test_best_practices_names_clustering_on_the_join_key` | best-practices names clustering on the join key |
+| `test_configuration_states_the_1024_floor` | configuration.md states the 1024 floor where it documents the setting |
+| `test_administration_states_the_floor_beside_its_advice` | administration.md states it in the section that says to lower the setting |
+| `test_best_practices_carries_the_floor` | best-practices.md carries it with the load-sizing advice |
+| `test_the_version_file_has_a_version` | premise: the VERSION file has a version to compare against |
+| `test_some_document_cites_the_version_file` | premise: at least one document cites the VERSION file |
+| `test_every_version_citation_quotes_version` | every document citing VERSION quotes the version VERSION holds |
+| `test_the_version_badge_is_present` | premise: the version badge is present |
+| `test_the_badge_names_no_other_version` | the version badge names no version other than VERSION's |
+| `test_the_badge_names_the_version` | premise: and it names VERSION's version at all |
+| `test_the_readme_badge_alt_text_names_the_version` | README's badge alt text names the version VERSION holds |
+| `test_some_document_names_the_latest_published_pre_release` | premise: at least one document names the latest published pre-release |
+| `test_every_published_claim_is_in_a_readable_form` | every document making the claim states it in a form this rule can read |
+| `test_every_document_names_the_same_published_pre_release` | every document names the same latest published pre-release |
+| `test_the_tree_ships_upgrade_scripts` | premise: the tree ships upgrade scripts to derive the chain from |
+| `test_the_control_file_names_a_default_version` | premise: the control file names a default_version to arrive at |
+| `test_each_version_starts_one_upgrade_script` | each shipped version starts exactly one upgrade script, so the chain is a walk |
+| `test_some_version_reaches_the_default` | premise: some shipped version reaches default_version, so the walk found a chain |
+| `test_some_document_states_the_upgrade_chain` | premise: at least one document states the upgrade chain |
+| `test_every_upgrade_chain_claim_is_readable` | every document stating the upgrade chain states it in a form this rule can read |
+| `test_every_document_names_the_versions_that_reach_the_default` | every such document names the versions that reach default_version in one update |
+| `test_every_document_names_the_default_as_the_destination` | every such document names default_version as the version one UPDATE reaches |
+| `test_meta_json_parses` | premise: META.json is present and parses |
+| `test_the_pgxn_form_was_derived` | premise: the PGXN form was derived from VERSION, not empty |
+| `test_meta_json_version_is_the_version` | META.json version is the version VERSION holds, in PGXN form |
+| `test_meta_json_provides_version_is_the_version` | META.json provides.pgcolumnar.version is the version VERSION holds, in PGXN form |
+| `test_meta_json_names_a_base_script` | premise: META.json names a base install script |
+| `test_the_meta_json_script_ships` | the script META.json names is in the published distribution |
+| `test_the_tree_has_install_scripts` | premise: the tree has install scripts to check |
+| `test_every_install_script_ships` | every pgcolumnar--*.sql in the tree is in the published distribution |
+| `test_changelog_has_a_union_merge_driver` | CHANGELOG.md has a union merge driver, so two entries do not conflict |
+| `test_every_dated_section_exists_at_its_tag` | every dated changelog section has its own section at its release tag |
+| `test_every_dated_section_holds_only_what_shipped_or_is_recorded` | every dated changelog section holds what its tag shipped, plus only what is recorded |
+| `test_every_dated_section_keeps_what_shipped` | every dated changelog section still holds every entry its tag shipped |
+| `test_the_changelog_sweep_found_sections` | premise: the changelog sweep found dated release sections |
+| `test_the_post_tag_allowance_file_is_readable` | premise: the post-tag allowance file is present and readable |
+| `test_every_post_tag_entry_carries_a_reason` | every recorded post-tag entry carries a reason |
+| `test_no_post_tag_entry_is_stale` | no recorded post-tag entry is stale, so the allowance cannot widen silently |
+| `test_changelog_still_has_the_union_driver_for_the_instructions` | and CHANGELOG.md still has the union merge driver those instructions are about |
+| `test_context_explains_a_conflicting_badge` | and CONTEXT.md tells a contributor what a CONFLICTING badge means |
+| `test_context_names_the_rebase_command` | and names the command rather than only the problem |
+| `test_context_warns_against_the_update_button` | and warns against the button that reintroduces the conflict |
+| `test_context_says_why_rebasing_works` | and says WHY rebasing works where merging does not |
+| `test_the_scan_read_sql_statements` | premise: the scan read SQL statements from the documents |
+| `test_no_documented_query_tests_pg_extension_across_databases` | no documented query tests pg_extension while listing databases |
