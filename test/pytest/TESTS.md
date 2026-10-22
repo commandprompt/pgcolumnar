@@ -344,6 +344,7 @@ behaviour, the source of that number is named.
 - [296. test_parallel_copy_dedup.py: pgcolumnar.parallel_copy can refuse a load it has already done](#296-test_parallel_copy_deduppy-pgcolumnarparallel_copy-can-refuse-a-load-it-has-already-done)
 - [297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically](#297-test_parallel_copypy-parallel_copy-splits-a-file-on-record-boundaries-and-loads-it-atomically)
 - [298. test_parallel.py: a parallel columnar scan returns what the heap returns](#298-test_parallelpy-a-parallel-columnar-scan-returns-what-the-heap-returns)
+- [299. test_parallel_vector_agg.py: the parallel vectorized aggregates fold every row group once](#299-test_parallel_vector_aggpy-the-parallel-vectorized-aggregates-fold-every-row-group-once)
 
 ## 1. How to read a test in here
 
@@ -11460,3 +11461,43 @@ The table must hold 25 row groups: with one, a claim that skips every other grou
 | `test_serial_range_scan_matches_the_heap` | serial range scan |
 | `test_serial_count_and_sum_match_the_heap` | serial count |
 | `test_serial_queries_plan_no_gather` | serial queries plan no Gather |
+
+## 299. test_parallel_vector_agg.py: the parallel vectorized aggregates fold every row group once
+
+The pytest twin of `test/parallel_vector_agg.sh` (ported for #1341), every check by the shell's name. With `pgcolumnar.enable_parallel_vector_agg` on, the ungrouped batch fold plans as a parallel partial node under a Gather and a Finalize Aggregate, and the grouped fold (#349) as a parallel partial node under a Finalize HashAggregate, each worker claiming distinct row groups through the shared counter. Counts and integer sums equal a serial oracle exactly; float sums and averages equal core's own parallel aggregate; the empty, all-null, more-workers-than-groups and not-batch-foldable cases, committed deletes and deletes earlier in the same transaction (H2) agree too; and no backend died. On a private database.
+
+### Every test
+
+Every comparison refuses a failed reading, so two failed arms never agree. The grouped oracles are core's grouped aggregate (`pgcolumnar.enable_group_vectorization` off), not pgcolumnar's grouped fold run serially. "server still up" also needs the server log's count of killed backends unmoved since setup.
+
+| test | what it holds |
+| --- | --- |
+| `test_pva_finalize_aggregate_present` | Finalize Aggregate present |
+| `test_pva_gather_present` | Gather present |
+| `test_pva_the_partial_columnar_agg_node_present` | the partial columnar agg node present |
+| `test_pva_the_partial_runs_the_batch_fold` | the partial runs the batch fold |
+| `test_pva_count_equals_the_serial_oracle` | count(*) parallel-vec == serial oracle |
+| `test_pva_avg_float8_matches_core_parallel` | avg(v) parallel-vec ~= core parallel agg |
+| `test_pva_sum_float8_matches_core_parallel` | sum(v) parallel-vec ~= core parallel agg |
+| `test_pva_avg_float4_matches_core_parallel` | avg(w::float8) f4 ~= core parallel agg |
+| `test_pva_int_sum_avg_takes_the_parallel_fold` | int sum/avg takes the parallel fold |
+| `test_pva_int_sum_avg_equal_serial_exactly` | sum(k)+avg(k) int: parallel fold == serial (exact) |
+| `test_pva_not_batch_foldable_all_null_avg` | not-batch-foldable filter: all-null avg is NULL |
+| `test_pva_not_batch_foldable_count_exact` | not-batch-foldable filter: count(*) exact |
+| `test_pva_empty_count_is_zero` | empty count(*) == 0 |
+| `test_pva_empty_avg_is_null` | empty avg is NULL |
+| `test_pva_more_workers_than_groups_exact` | more-workers-than-groups count+sum exact |
+| `test_pva_committed_deletes_equal_serial` | committed deletes: parallel fold == serial |
+| `test_pva_in_xact_deletes_equal_serial` | in-xact deletes (H2): parallel fold == serial |
+| `test_pva_the_grouped_fixture_has_its_rows` | the grouped fixture has its rows |
+| `test_pva_grouped_finalize_hashaggregate_present` | grouped Finalize HashAggregate present (#349) |
+| `test_pva_partial_grouped_node_under_the_gather` | the partial grouped node is under the Gather (#349) |
+| `test_pva_workers_launched_for_our_grouped_node` | workers actually launched for OUR grouped node (#349) |
+| `test_pva_gather_carries_per_worker_partials` | the Gather carries per-worker partials, more than one row per group (#349) |
+| `test_pva_finalize_collapses_to_the_group_count` | the Finalize collapses them back to exactly the group count (#349) |
+| `test_pva_grouped_int_equals_core_serial` | grouped count+sum(int): parallel fold == serial oracle (#349) |
+| `test_pva_grouped_multikey_where_equals_core_serial` | grouped multi-key + WHERE: parallel fold == serial oracle (#349) |
+| `test_pva_grouped_float_equals_core_parallel` | grouped avg/sum(float8): parallel fold == core parallel agg (#349) |
+| `test_pva_grouped_few_groups_many_workers` | grouped few-groups-many-workers: parallel == serial (#349) |
+| `test_pva_grouped_in_xact_deletes_equal_core_serial` | grouped in-xact deletes (H2): parallel fold == serial (#349) |
+| `test_pva_server_still_up` | server still up |

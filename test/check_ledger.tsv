@@ -4871,6 +4871,35 @@ parallel_scan_cost	parallel_scan_cost	premise: the serial plan has no Gather	15;
 parallel_scan_cost	parallel_scan_cost	premise: the serial plan is a columnar scan	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	premise: the table holds every inserted row	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	the leader-participation branch changes the divisor	15;16;17;18;19	never	-
+parallel_vector_agg	parallel_vector_agg	Finalize Aggregate present	15;16;17;18;19	2026-10-22	columnar_vector.c: the ungrouped parallel partial path never added (if (false && dimPath == NULL ...))
+parallel_vector_agg	parallel_vector_agg	Gather present	15;16;17;18;19	2026-10-22	columnar_vector.c: the ungrouped parallel partial path never added (if (false && dimPath == NULL ...))
+parallel_vector_agg	parallel_vector_agg	avg(v) parallel-vec ~= core parallel agg	15;16;17;18;19	never	-
+parallel_vector_agg	parallel_vector_agg	avg(w::float8) f4 ~= core parallel agg	15;16;17;18;19	never	-
+parallel_vector_agg	parallel_vector_agg	committed deletes: parallel fold == serial	15;16;17;18;19	2026-10-22	columnar_vector.c: each ungrouped parallel worker claims row groups through its own private counter
+parallel_vector_agg	parallel_vector_agg	count(*) parallel-vec == serial oracle	15;16;17;18;19	2026-10-22	columnar_vector.c: each ungrouped parallel worker claims row groups through its own private counter
+parallel_vector_agg	parallel_vector_agg	empty avg is NULL	15;16;17;18;19	never	-
+parallel_vector_agg	parallel_vector_agg	empty count(*) == 0	15;16;17;18;19	never	-
+parallel_vector_agg	parallel_vector_agg	grouped Finalize HashAggregate present (#349)	15;16;17;18;19	2026-10-22	columnar_vector.c: the grouped parallel partial path never added (if (false && pgcolumnar_enable_parallel_vector_agg))
+parallel_vector_agg	parallel_vector_agg	grouped avg/sum(float8): parallel fold == core parallel agg (#349)	15;16;17;18;19	never	-
+parallel_vector_agg	parallel_vector_agg	grouped count+sum(int): parallel fold == serial oracle (#349)	15;16;17;18;19	2026-10-22	columnar_vector.c: each grouped parallel worker claims row groups through its own private counter;columnar_vector.c: the grouped row path skips its WHERE recheck, serial and parallel alike
+parallel_vector_agg	parallel_vector_agg	grouped few-groups-many-workers: parallel == serial (#349)	15;16;17;18;19	2026-10-22	columnar_vector.c: each grouped parallel worker claims row groups through its own private counter
+parallel_vector_agg	parallel_vector_agg	grouped in-xact deletes (H2): parallel fold == serial (#349)	15;16;17;18;19	2026-10-22	columnar_vector.c: a grouped parallel worker dies with SIGSEGV in a transaction holding an XID;columnar_vector.c: both parallel InitializeDSM callbacks raise ERROR in a transaction holding an XID;columnar_vector.c: each grouped parallel worker claims row groups through its own private counter
+parallel_vector_agg	parallel_vector_agg	grouped multi-key + WHERE: parallel fold == serial oracle (#349)	15;16;17;18;19	2026-10-22	columnar_vector.c: each grouped parallel worker claims row groups through its own private counter;columnar_vector.c: the grouped row path skips its WHERE recheck, serial and parallel alike
+parallel_vector_agg	parallel_vector_agg	in-xact deletes (H2): parallel fold == serial	15;16;17;18;19	2026-10-22	columnar_vector.c: both parallel InitializeDSM callbacks raise ERROR in a transaction holding an XID;columnar_vector.c: each ungrouped parallel worker claims row groups through its own private counter
+parallel_vector_agg	parallel_vector_agg	int sum/avg takes the parallel fold	15;16;17;18;19	2026-10-22	columnar_vector.c: the batch-fold shape gate always refuses (return false && pgcolumnar_batch_gates_ok(...));columnar_vector.c: the ungrouped parallel partial path never added (if (false && dimPath == NULL ...))
+parallel_vector_agg	parallel_vector_agg	more-workers-than-groups count+sum exact	15;16;17;18;19	2026-10-22	columnar_vector.c: each ungrouped parallel worker claims row groups through its own private counter
+parallel_vector_agg	parallel_vector_agg	not-batch-foldable filter: all-null avg is NULL	15;16;17;18;19	never	-
+parallel_vector_agg	parallel_vector_agg	not-batch-foldable filter: count(*) exact	15;16;17;18;19	2026-10-22	columnar_vector.c: each ungrouped parallel worker claims row groups through its own private counter
+parallel_vector_agg	parallel_vector_agg	server still up	15;16;17;18;19	2026-10-22	columnar_vector.c: a grouped parallel worker dies with SIGSEGV in a transaction holding an XID
+parallel_vector_agg	parallel_vector_agg	sum(k)+avg(k) int: parallel fold == serial (exact)	15;16;17;18;19	2026-10-22	columnar_vector.c: each ungrouped parallel worker claims row groups through its own private counter
+parallel_vector_agg	parallel_vector_agg	sum(v) parallel-vec ~= core parallel agg	15;16;17;18;19	2026-10-22	columnar_vector.c: each ungrouped parallel worker claims row groups through its own private counter
+parallel_vector_agg	parallel_vector_agg	the Finalize collapses them back to exactly the group count (#349)	15;16;17;18;19	never	-
+parallel_vector_agg	parallel_vector_agg	the Gather carries per-worker partials, more than one row per group (#349)	15;16;17;18;19	never	-
+parallel_vector_agg	parallel_vector_agg	the grouped fixture has its rows	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_vector_agg	parallel_vector_agg	the partial columnar agg node present	15;16;17;18;19	2026-10-22	columnar_vector.c: the ungrouped parallel partial path never added (if (false && dimPath == NULL ...))
+parallel_vector_agg	parallel_vector_agg	the partial grouped node is under the Gather (#349)	15;16;17;18;19	2026-10-22	columnar_vector.c: the grouped parallel partial path never added (if (false && pgcolumnar_enable_parallel_vector_agg))
+parallel_vector_agg	parallel_vector_agg	the partial runs the batch fold	15;16;17;18;19	2026-10-22	columnar_vector.c: the batch-fold shape gate always refuses (return false && pgcolumnar_batch_gates_ok(...))
+parallel_vector_agg	parallel_vector_agg	workers actually launched for OUR grouped node (#349)	15;16;17;18;19	2026-10-22	columnar_vector.c: the grouped parallel partial path never added (if (false && pgcolumnar_enable_parallel_vector_agg))
 parquet_count_bounds	parquet_count_bounds	a huge num_rows is rejected rather than walking off the allocation	15;16;17;18;19	never	-
 parquet_count_bounds	parquet_count_bounds	a valid three-record list imports three rows (not over-rejected)	15;16;17;18;19	never	-
 parquet_count_bounds	parquet_count_bounds	an honest file imports its rows	15;16;17;18;19	never	-
