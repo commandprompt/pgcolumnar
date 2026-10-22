@@ -338,6 +338,7 @@ behaviour, the source of that number is named.
 - [290. test_native_ctas.py: CREATE TABLE AS into a columnar table works with a parallel source plan, and a committed table's first write still serializes](#290-test_native_ctaspy-create-table-as-into-a-columnar-table-works-with-a-parallel-source-plan-and-a-committed-tables-first-write-still-serializes)
 - [291. test_native_encoding.py: native cascade encoding engages, picks ALP and FSST, and round-trips on every codec](#291-test_native_encodingpy-native-cascade-encoding-engages-picks-alp-and-fsst-and-round-trips-on-every-codec)
 - [292. test_native_fastdecode.py: the inlined byval decode returns what the call path returns, through every encoding and a vector jump](#292-test_native_fastdecodepy-the-inlined-byval-decode-returns-what-the-call-path-returns-through-every-encoding-and-a-vector-jump)
+- [293. test_native_fetch_sort_context.py: a merge join over sorted, index-fetched columnar rows decodes outside the sort's context](#293-test_native_fetch_sort_contextpy-a-merge-join-over-sorted-index-fetched-columnar-rows-decodes-outside-the-sorts-context)
 
 ## 1. How to read a test in here
 
@@ -11288,3 +11289,21 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_fastdecode_aggregate_after_deletes_matches` | aggregate after deletes matches heap |
 | `test_fastdecode_scan_across_add_column_matches` | scan across an ADD COLUMN boundary matches heap |
 | `test_fastdecode_aggregate_across_add_column_matches` | aggregate across ADD COLUMN matches heap |
+
+## 293. test_native_fetch_sort_context.py: a merge join over sorted, index-fetched columnar rows decodes outside the sort's context
+
+The twin of `test/native_fetch_sort_context.sh`. Under the forced plan the #720 bug needs, a Merge Join whose columnar side is a Sort (an Incremental Sort on 18+) directly over an Index Scan using f_id on f, a two-key and a three-key merge condition return the numbers the generator gives, and two single-key controls stay right. On 15 and 16 there is no bump allocator, and the checks guard that the fix changed nothing.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order, each forced query run in one session after the shell's SET statements. A failed reading is a `query_error()`, so an errored arm is a red, as the shell's numeric comparison against a SET tag is.
+
+| test | what it holds |
+| --- | --- |
+| `test_nfsc_the_plan_is_a_merge_join` | premise: plan is a merge join |
+| `test_nfsc_the_columnar_side_is_an_index_scan_under_a_sort` | premise: the columnar side is an index scan under a sort |
+| `test_nfsc_the_two_key_merge_join_count_is_right` | two-key merge join count is right (#720) |
+| `test_nfsc_the_two_key_merge_join_sum_is_right` | two-key merge join sum(id) is right (#720) |
+| `test_nfsc_a_three_key_merge_cond_with_a_filter_is_right` | three-key merge cond with a filter (#720) |
+| `test_nfsc_a_single_int_key_is_still_right` | control: single int key still right |
+| `test_nfsc_a_single_text_key_is_still_right` | control: single text key still right |
