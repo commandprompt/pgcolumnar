@@ -69,16 +69,32 @@ detail_of() {
 		-c "SELECT pgcolumnar.import_parquet('pcb','$W/$1');" 2>&1
 }
 
-# The server must still be up between calls. If a malformed file crashed the
-# backend, this probe fails and every arm below is meaningless, so it gates them.
-alive() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
-		-c 'SELECT 1;' 2>&1 | head -1
+# The server must still be up between calls, AND no backend may have died since setup.
+# A fresh connection answers again after crash recovery, so "SELECT 1" alone passed with
+# the num_values bound removed: the 2^62 file crashed the backend, recovery finished,
+# and "the backend survived it" read 1 (#1341, as avro_manifest found in #1576). The
+# count of killed backends in the server log must not have moved either.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
 }
+alive() {	# -> 1 when the server answers and no backend died since setup
+	local _up _now
+	_up="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		-c 'SELECT 1;' 2>&1 | head -1)"
+	_now="$(crashes)"
+	if ! [[ "$CRASHES_BEFORE" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$CRASHES_BEFORE" ]; then echo 1
+	else echo "no ([$_up], $(( _now - CRASHES_BEFORE )) backend crashes)"; fi
+}
+CRASHES_BEFORE="$(crashes)"
 
 # ---- premises ---------------------------------------------------------------
-check "premise: the crafter produced the four files" \
-	"$([ -s "$W/honest.parquet" ] && [ -s "$W/bignv.parquet" ] && [ -s "$W/bignr.parquet" ] && [ -s "$W/hugenr.parquet" ] && echo yes || echo no)" "yes"
+# All seven: the three list files were never checked, so a crafter that skipped them
+# left the list arms reading "could not open file" (#1341).
+check "premise: the crafter produced the seven files" \
+	"$(m=""; for f in honest bignv bignr hugenr list_honest list_valid3 list_bad; do [ -s "$W/$f.parquet" ] || m="$m $f"; done; echo "${m:-yes}" | sed 's/^ /missing:/')" "yes"
 check "premise: the server is up before any malformed file is read" "$(alive)" "1"
 
 # ---- the honest file is unaffected -----------------------------------------
@@ -96,8 +112,10 @@ r_bignr="$(import_of bignr.parquet)"
 check "num_rows past the chunk's values is rejected, not emitted as phantom rows" \
 	"$(grep -qi 'malformed row group' <<<"$r_bignr" && echo rejected || echo "$r_bignr")" "rejected"
 # The phantom-row harm specifically: it must NOT return 40 rows for an 8-value file.
+# ANY count above the file's 8 rows is a leak, not only the 40 the crafter declares:
+# with the bound removed, a different phantom count read "ok" (#1341).
 check "and it did not silently return more rows than the file holds" \
-	"$([ "$r_bignr" = "40" ] && echo leaked || echo ok)" "ok"
+	"$(if [[ "$r_bignr" =~ ^[0-9]+$ ]] && [ "$r_bignr" -gt 8 ]; then echo "leaked ($r_bignr rows)"; else echo ok; fi)" "ok"
 
 r_hugenr="$(import_of hugenr.parquet)"
 check "a huge num_rows is rejected rather than walking off the allocation" \
@@ -134,7 +152,7 @@ r_listbad="$(import_list_of list_bad.parquet)"
 check "num_rows past a list's record count is rejected, not emitted as phantom rows" \
 	"$(grep -qi 'malformed row group' <<<"$r_listbad" && echo rejected || echo "$r_listbad")" "rejected"
 check "and it did not silently return more rows than the file's records" \
-	"$([ "$r_listbad" = "8" ] && echo leaked || echo ok)" "ok"
+	"$(if [[ "$r_listbad" =~ ^[0-9]+$ ]] && [ "$r_listbad" -gt 1 ]; then echo "leaked ($r_listbad rows)"; else echo ok; fi)" "ok"
 check "and the backend survived the list over-read" "$(alive)" "1"
 
 pgc_summary

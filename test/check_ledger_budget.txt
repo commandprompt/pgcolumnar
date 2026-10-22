@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 109
+suites_not_covered 108
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5277,4 +5277,22 @@ suites_not_covered 109
 #     never         3800 + 4 = 3804
 #     dated         2092 + 3 = 2095
 #     3804 + 2095 == 5899
-checks_never_observed_red 3804
+#
+# #1341, parquet_count_bounds seeded, with its twin (jdatcmd): 3650 -> 3665, and
+# suites_not_covered 125 -> 124. The suite had no rows. It enters with 17 checks from
+# five-major runs (17/17 on each of 15-19, shell and twin alike), after three fixes. The
+# survival checks read SELECT 1, which answers after crash recovery: with the num_values
+# bound removed the 2^62 file crashed the backend and "the backend survived it" passed;
+# they now also need the log's count of killed backends unmoved. The phantom-row checks
+# caught only the crafter's exact count; they now catch any count above the file's. And
+# the crafter premise covers all seven files, not four. 2 are dated, by pq_require_entry
+# refusing nothing, which reddens the two list checks in both twins. The num_values and
+# num_rows mutations crash the backend, and a crash reddens checks it does not target
+# (every read during recovery fails), so the ledger cannot attribute them and those rows
+# stay never; the PR records what they reddened. 15 arrive never.
+#
+#     ledger rows   5899 + 17 = 5916
+#     never         3804 + 15 = 3819
+#     dated         2095 + 2 = 2097
+#     3819 + 2097 == 5916
+checks_never_observed_red 3819

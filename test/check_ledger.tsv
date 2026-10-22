@@ -3902,6 +3902,23 @@ parallel_scan_cost	parallel_scan_cost	premise: the serial plan has no Gather	15;
 parallel_scan_cost	parallel_scan_cost	premise: the serial plan is a columnar scan	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	premise: the table holds every inserted row	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	the leader-participation branch changes the divisor	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	a huge num_rows is rejected rather than walking off the allocation	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	a valid three-record list imports three rows (not over-rejected)	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	an honest file imports its rows	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	an honest one-record list imports one row	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	and it did not silently return more rows than the file holds	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	and it did not silently return more rows than the file's records	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: pq_require_entry never refuses a read past the decoded entries
+parquet_count_bounds	parquet_count_bounds	and the backend is still up (it did not wrap-allocate and crash)	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	and the backend survived it	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	and the backend survived the list over-read	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	num_rows past a list's record count is rejected, not emitted as phantom rows	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: pq_require_entry never refuses a read past the decoded entries
+parquet_count_bounds	parquet_count_bounds	num_rows past the chunk's values is rejected, not emitted as phantom rows	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	num_values 2^62 is rejected, not imported	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	premise: the crafter produced the seven files	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	premise: the server is up before any malformed file is read	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	the num_rows rejection names num_rows in its detail	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	the num_values rejection names num_values in its detail	15;16;17;18;19	never	-
+parquet_count_bounds	parquet_count_bounds	the server is still up after the honest import	15;16;17;18;19	never	-
 parquet_level_width	parquet_level_width	a non-positive maximum returns before shifting at all	15;16;17;18;19	2026-10-21	columnar_parquet_format.h: pq_bits_for's non-positive guard is commented out
 parquet_level_width	parquet_level_width	and both callers reach the shared one	15;16;17;18;19	never	-
 parquet_level_width	parquet_level_width	and no signed 1 << remains in it	15;16;17;18;19	2026-10-21	columnar_parquet_format.h: pq_bits_for shifts a signed 1
