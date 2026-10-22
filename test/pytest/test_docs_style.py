@@ -364,6 +364,9 @@ def ds():
     r["meta provides"] = str(prov.get("version", "no provides version in META.json"))
     meta_file = prov.get("file", "")
     r["meta file"] = "yes" if meta_file else "no"
+    # Shipped is not enough: it must be the BASE script (#1339). Every upgrade script
+    # ships too, so naming pgcolumnar--1.0-alpha4--1.0-alpha5.sql passed the arm below.
+    r["meta base"] = (meta_file or "no file in META.json", f"pgcolumnar--{ver}.sql")
     rc, tar = _git("archive", "HEAD")
     if rc != 0:
         shipped = None
@@ -570,6 +573,11 @@ def test_meta_json_names_a_base_script(ds, expect):
 
 def test_the_meta_json_script_ships(ds, expect):
     expect.text(ds["meta shipped"], "1", "the script META.json names is in the published distribution")
+
+
+def test_meta_json_names_the_base_script_of_the_version(ds, expect):
+    got, want = ds["meta base"]
+    expect.text(got, want, "META.json names the base install script of the version VERSION holds")
 
 
 def test_the_tree_has_install_scripts(ds, expect):

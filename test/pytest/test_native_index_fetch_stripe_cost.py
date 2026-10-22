@@ -87,12 +87,10 @@ def test_native_index_fetch_stripe_cost(pgc_conn, expect):
     # asks whether its `sed` produced digits; here the value arrives typed from
     # FORMAT JSON, so the question is whether it is a real estimate rather than a
     # zero. A floor of 1 refuses a missing or zero cost without pinning any of this
-    # box's cost constants.
-    expect.at_least(
-        c1, 1,
-        "the index-fetch cost responds to the per-table stripe_row_limit "
-        "(c1 is a number)",
-    )
+    # box's cost constants. NAMED FOR WHAT IT MEASURES (#1339): one cost cannot show
+    # a response to the option, so the name no longer claims one. The response is
+    # the `expect.differ` arm below.
+    expect.at_least(c1, 1, "the index-fetch cost is a number of at least 1")
 
     # SAME SHAPE ON BOTH ARMS, ASSERTED BEFORE THE PRICES ARE COMPARED. Arms, not
     # premises (#1339, #1236): the planner's choice is repository behaviour. See the

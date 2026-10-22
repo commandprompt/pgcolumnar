@@ -11,7 +11,9 @@
 #     groups and compacting frees many small adjacent byte ranges, and with the
 #     GUC on they collapse to FEWER free_space rows than with it off (direct,
 #     deterministic evidence the coalesce path runs); and
-#   * coalesce is never worse than whole-range reuse for the final file size.
+#   * coalesce is never worse than whole-range reuse for the final file size; and
+#   * with the GUC on, reuse splits an oversized freed range and records its tail as
+#     free, so no byte between the live groups and the free ranges is lost (#1339).
 # The assert-build no-overlap validator (PgColumnarCheckFreeSpaceNoOverlap) runs at
 # the end of every compaction here, so this also exercises the tiling invariant
 # on variable-size ranges.
@@ -29,7 +31,27 @@ GEN="SELECT g AS id, repeat('ab', 5 + ((g / 1000) % 16) * 8) AS payload
 
 freerows() { q "SELECT count(*) FROM pgcolumnar.free_space WHERE storage_id = pgcolumnar.get_storage_id('n');"; }
 
-run() {			# $1 = on|off ; echoes "<free_rows_after_compact>|<final_size>|<ok|MISMATCH>"
+# THE SPLIT, MEASURED AS A GAP (#1339). Every live group (rounded up to whole pages,
+# as the allocator reserves it) and every free_space range, in offset order: each
+# should end where the next one starts. Reuse of an oversized freed range without
+# the split records no remnant, so its tail belongs to nothing and shows here as a
+# gap. The file size cannot show it: with the split switched off the final sizes
+# were the same (262144 on, 286720 off), and "never larger" stayed green.
+gaps() {
+	q "WITH p AS (SELECT current_setting('block_size')::bigint - 24 AS pg),
+	   r AS (SELECT file_offset AS off, ((byte_length + p.pg - 1) / p.pg) * p.pg AS len
+	           FROM pgcolumnar.row_group, p
+	          WHERE storage_id = pgcolumnar.get_storage_id('n') AND byte_length > 0
+	         UNION ALL
+	         SELECT file_offset, byte_length FROM pgcolumnar.free_space
+	          WHERE storage_id = pgcolumnar.get_storage_id('n')),
+	   s AS (SELECT off, len, lead(off) OVER (ORDER BY off) AS nxt FROM r)
+	   SELECT count(*) FILTER (WHERE nxt > off + len) || ' gaps of '
+	          || coalesce(sum(nxt - off - len) FILTER (WHERE nxt > off + len), 0) || ' bytes'
+	     FROM s;"
+}
+
+run() {			# $1 = on|off ; echoes "<free_rows_after_compact>|<final_size>|<ok|MISMATCH>|<gaps>"
 	{
 		psql_run "DROP TABLE IF EXISTS n;"
 		psql_run "DROP TABLE IF EXISTS h;"
@@ -47,7 +69,7 @@ run() {			# $1 = on|off ; echoes "<free_rows_after_compact>|<final_size>|<ok|MIS
 	} >/dev/null 2>&1
 
 	# free_space rows right after the compaction, before anything consumes them.
-	local fr size ph hh
+	local fr size ph hh gp
 	fr="$(freerows)"
 
 	{
@@ -57,22 +79,26 @@ run() {			# $1 = on|off ; echoes "<free_rows_after_compact>|<final_size>|<ok|MIS
 	} >/dev/null 2>&1
 
 	size="$(q 'SELECT pg_relation_size('"'"'n'"'"');')"
+	gp="$(gaps)"
 	ph="$(pgc_set_hash 'SELECT id, payload FROM n')"
 	hh="$(pgc_set_hash 'SELECT id, payload FROM h')"
-	echo "${fr}|${size}|$([ "$ph" = "$hh" ] && echo ok || echo MISMATCH)"
+	echo "${fr}|${size}|$([ "$ph" = "$hh" ] && echo ok || echo MISMATCH)|${gp}"
 }
 
 on="$(run on)";  off="$(run off)"
-on_fr="${on%%|*}";   on_rest="${on#*|}";   on_size="${on_rest%%|*}";   on_par="${on##*|}"
-off_fr="${off%%|*}"; off_rest="${off#*|}"; off_size="${off_rest%%|*}"; off_par="${off##*|}"
+IFS='|' read -r on_fr on_size on_par on_gap <<<"$on"
+IFS='|' read -r off_fr off_size off_par off_gap <<<"$off"
 
 check "coalesce on: parity with heap"  "$on_par"  "ok"
 check "coalesce off: parity with heap" "$off_par" "ok"
 echo "  (free_space rows after compact: coalesce-on=$on_fr coalesce-off=$off_fr)"
 echo "  (final file size: coalesce-on=$on_size coalesce-off=$off_size)"
+echo "  (unowned bytes between ranges after recluster: coalesce-on=$on_gap coalesce-off=$off_gap)"
 check "coalesce merges adjacent frees (fewer free_space rows)" \
 	"$([ "$on_fr" -lt "$off_fr" ] && echo yes || echo no)" "yes"
 check "coalesce never larger than whole-range reuse" \
 	"$([ "$on_size" -le "$off_size" ] && echo yes || echo no)" "yes"
+check "coalesce on: reuse splits an oversized freed range, so no byte between ranges is lost" \
+	"$on_gap" "0 gaps of 0 bytes"
 
 pgc_summary

@@ -21,6 +21,14 @@ noise is real -- but it means a failed `INSERT`, a refused `set_options` or an e
 below it would then compare two empty tables and report parity. Here the driver raises
 on any of them, and the row counts are asserted per mode before anything is compared,
 so "both modes agree" cannot be satisfied by both modes having done nothing.
+
+THE SPLIT IS MEASURED AS A GAP (#1339). "Never larger" cannot see it: with the split
+switched off (`if (pgcolumnar_reclaim_coalesce)` around the remnant insert made
+`if (false)`) the final sizes stayed 262144 against 286720, and the arm stayed green.
+What the missing split does leave is a tail that belongs to nothing: no live group
+and no `free_space` row covers it. So the live groups, rounded up to whole pages as
+the allocator reserves them, and the free ranges are laid out in offset order, and
+each must end where the next one starts.
 """
 ROWS = 30_000
 GROUP = 1_000
@@ -31,6 +39,21 @@ GEN = (f"SELECT g AS id, repeat('ab', 5 + ((g / 1000) % 16) * 8) AS payload "
        f"FROM generate_series(1, {ROWS}) g")
 
 
+GAPS = """
+WITH p AS (SELECT current_setting('block_size')::bigint - 24 AS pg),
+r AS (SELECT file_offset AS off, ((byte_length + p.pg - 1) / p.pg) * p.pg AS len
+        FROM pgcolumnar.row_group, p
+       WHERE storage_id = pgcolumnar.get_storage_id('n') AND byte_length > 0
+      UNION ALL
+      SELECT file_offset, byte_length FROM pgcolumnar.free_space
+       WHERE storage_id = pgcolumnar.get_storage_id('n')),
+s AS (SELECT off, len, lead(off) OVER (ORDER BY off) AS nxt FROM r)
+SELECT count(*) FILTER (WHERE nxt > off + len),
+       coalesce(sum(nxt - off - len) FILTER (WHERE nxt > off + len), 0)
+  FROM s
+"""
+
+
 def _rows(conn, table):
     with conn.cursor() as cur:
         cur.execute(f"SELECT id, payload FROM {table}")
@@ -38,7 +61,10 @@ def _rows(conn, table):
 
 
 def _run(conn, expect, mode):
-    """One whole cycle in one coalesce mode -> (free rows after compact, final size)."""
+    """One whole cycle in one coalesce mode.
+
+    -> (free rows after compact, final size, (gaps, unowned bytes) after recluster)
+    """
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS n")
         cur.execute("DROP TABLE IF EXISTS h")
@@ -79,20 +105,23 @@ def _run(conn, expect, mode):
         cur.execute("SELECT pgcolumnar.recluster('n', 'id')")
         cur.execute("SELECT pg_relation_size('n')")
         size = cur.fetchone()[0]
-    return free_rows, size
+        cur.execute(GAPS)
+        gaps, unowned = cur.fetchone()
+    return free_rows, size, (gaps, int(unowned))
 
 
 def test_native_reclaim_frag(pgc_conn, expect):
-    on_free, on_size = _run(pgc_conn, expect, "on")
+    on_free, on_size, on_gap = _run(pgc_conn, expect, "on")
     expect.rows(_rows(pgc_conn, "n"), _rows(pgc_conn, "h"),
                 "coalesce on: parity with heap")
 
-    off_free, off_size = _run(pgc_conn, expect, "off")
+    off_free, off_size, off_gap = _run(pgc_conn, expect, "off")
     expect.rows(_rows(pgc_conn, "n"), _rows(pgc_conn, "h"),
                 "coalesce off: parity with heap")
 
     print(f"-- free_space rows after compact: on={on_free} off={off_free}")
     print(f"-- final file size: on={on_size} off={off_size}")
+    print(f"-- (gaps, unowned bytes) after recluster: on={on_gap} off={off_gap}")
 
     expect.text(
         "yes" if on_free < off_free else f"no (on={on_free} off={off_free})",
@@ -103,4 +132,10 @@ def test_native_reclaim_frag(pgc_conn, expect):
         "yes" if on_size <= off_size else f"no (on={on_size} off={off_size})",
         "yes",
         "coalesce never larger than whole-range reuse",
+    )
+    expect.text(
+        f"{on_gap[0]} gaps of {on_gap[1]} bytes",
+        "0 gaps of 0 bytes",
+        "coalesce on: reuse splits an oversized freed range, so no byte between "
+        "ranges is lost",
     )
