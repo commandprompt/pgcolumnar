@@ -321,6 +321,7 @@ behaviour, the source of that number is named.
 - [273. test_iceberg_rest.py: the Iceberg REST catalog resolves a table, keeps its token out of every log, and refuses what it must](#273-test_iceberg_restpy-the-iceberg-rest-catalog-resolves-a-table-keeps-its-token-out-of-every-log-and-refuses-what-it-must)
 - [274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table](#274-test_iceberg_rest_scanpy-the-iceberg-rest-catalog-reads-a-table-as-iceberg_scan-does-lists-and-refuses-an-unknown-table)
 - [275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does](#275-test_iceberg_rest_vendedpy-an-iceberg-rest-catalogs-vended-credentials-sign-the-reads-and-nothing-else-does)
+- [276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else](#276-test_iceberg_rest_serverpy-an-iceberg-rest-catalog-foreign-server-authenticates-by-its-user-mapping-and-by-nothing-else)
 
 ## 1. How to read a test in here
 
@@ -10670,3 +10671,43 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_a_vended_endpoint_off_the_allow_list_is_refused` | vended creds for an off-allow-list endpoint are refused (42501) |
 | `test_a_catalog_vending_nothing_falls_back_to_ambient` | a table vending no creds still reads with ambient (cfg NULL path) |
 | `test_the_backend_survives_the_vended_arms` | backend still up after the vended-credential arms |
+
+## 276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else
+
+The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; and a non-superuser borrows the environment token only when a superuser waived its credentials.
+
+### Every test
+
+Every test makes one check under the shell's name. An "accepted" arm reads `ok` only when the statement ran, a refusal reads its SQLSTATE only when the message is its own guard's, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and every reading first waits for the server to answer.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_rest_server_suite_can_run_here` | premise: rest fixture up |
+| `test_a_server_name_call_reads_via_the_mapping_token` | iceberg_rest_table_location('cat',...) reads via the mapping token |
+| `test_the_request_carried_an_authorization_header` | the request carried an Authorization header |
+| `test_the_server_log_holds_lines_for_the_mapping_token` | premise: the PG server log holds lines to search, for the mapping token |
+| `test_the_mapping_token_is_not_in_the_server_log` | the mapping token never appears in the PG server log |
+| `test_a_wrong_mapping_token_is_refused` | a wrong mapping token is refused (28000) |
+| `test_no_mapping_and_no_env_token_is_refused` | no mapping and no env token is refused, not bypassed (28000) |
+| `test_a_token_on_the_server_is_rejected` | a token option on the SERVER is rejected (HV00D) |
+| `test_a_catalog_uri_on_the_mapping_is_rejected` | a catalog_uri option on the USER MAPPING is rejected (HV00D) |
+| `test_a_warehouse_option_on_the_server_is_accepted` | a warehouse option on the SERVER is accepted (not HV00D) |
+| `test_a_warehouse_server_resolves_a_location` | a warehouse-configured server resolves a table location |
+| `test_the_warehouse_is_sent_on_get_config` | the warehouse was sent on GET /v1/config (?warehouse=wh1) |
+| `test_an_oauth_mapping_reads_by_a_minted_bearer` | a server with an OAuth2 mapping reads by a minted bearer |
+| `test_the_oauth_token_endpoint_was_called` | the OAuth2 token endpoint was called (POST /v1/oauth/tokens) |
+| `test_load_table_carried_the_minted_bearer` | loadTable then carried the minted bearer (Authorization present) |
+| `test_the_client_secret_is_not_in_the_fixture_log` | the client secret never appears in the fixture request log |
+| `test_the_server_log_holds_lines_for_the_client_secret` | premise: the PG server log holds lines to search, for the client secret |
+| `test_the_client_secret_is_not_in_the_server_log` | the client secret never appears in the PG server log |
+| `test_a_wrong_oauth_client_secret_is_refused` | a wrong OAuth2 client secret is refused (28000) |
+| `test_a_half_oauth_credential_is_refused_before_any_request` | a half OAuth2 credential (id, no secret) is refused before any request (28000) |
+| `test_oauth_options_are_accepted_on_a_mapping` | oauth options are accepted on a USER MAPPING (no error) |
+| `test_an_oauth_option_on_the_server_is_rejected` | an oauth option on the SERVER is rejected (HV00D) |
+| `test_a_link_local_token_uri_is_refused_by_the_allow_list` | a link-local oauth_token_uri is refused by the allow-list (42501) |
+| `test_an_off_list_token_uri_host_is_refused` | an off-allow-list oauth_token_uri host is refused (42501) |
+| `test_the_uri_form_works_with_the_env_token` | the catalog-URI form still works with the env token |
+| `test_a_non_superuser_does_not_borrow_the_env_token` | a non-superuser with no token mapping is refused (28000) despite the environment token, before any request |
+| `test_a_non_superuser_cannot_waive_its_own_credentials` | and it cannot mark its own mapping credentials_required false (42501) |
+| `test_a_superuser_waiver_lets_the_role_read_by_the_env_token` | control: with credentials_required false set by a superuser, the same role reads by the environment token |
+| `test_the_backend_survives_the_rest_server_arms` | backend still up |

@@ -2735,23 +2735,23 @@ iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_tables lists a namespace's tabl
 iceberg_rest_scan	iceberg_rest_scan	premise: rest fixture server is up	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	the catalog reports the relocated metadata location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_server	iceberg_rest_server	a catalog_uri option on the USER MAPPING is rejected (HV00D)	15;16;17;18;19	never	-
-iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused before any request (28000)	15;16;17;18;19	never	-
-iceberg_rest_server	iceberg_rest_server	a link-local oauth_token_uri is refused by the allow-list (42501)	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused before any request (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a half OAuth2 credential (id, no secret) is not refused, so the mint runs with a NULL secret and the backend dies
+iceberg_rest_server	iceberg_rest_server	a link-local oauth_token_uri is refused by the allow-list (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: an endpoint off pgcolumnar.objstore_allowed_endpoints is not refused
 iceberg_rest_server	iceberg_rest_server	a non-superuser with no token mapping is refused (28000) despite the environment token, before any request	15;16;17;18;19	2026-10-15	the REST resolver letting every role borrow the environment token
 iceberg_rest_server	iceberg_rest_server	a server with an OAuth2 mapping reads by a minted bearer	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a token option on the SERVER is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a warehouse option on the SERVER is accepted (not HV00D)	15;16;17;18;19	never	-
-iceberg_rest_server	iceberg_rest_server	a warehouse-configured server resolves a table location	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	a warehouse-configured server resolves a table location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the USER MAPPING token option is ignored
 iceberg_rest_server	iceberg_rest_server	a wrong OAuth2 client secret is refused (28000)	15;16;17;18;19	never	-
-iceberg_rest_server	iceberg_rest_server	a wrong mapping token is refused (28000)	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	a wrong mapping token is refused (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: abort() in place of the catalog's 401/403 refusal
 iceberg_rest_server	iceberg_rest_server	an oauth option on the SERVER is rejected (HV00D)	15;16;17;18;19	never	-
-iceberg_rest_server	iceberg_rest_server	an off-allow-list oauth_token_uri host is refused (42501)	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	an off-allow-list oauth_token_uri host is refused (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: an endpoint off pgcolumnar.objstore_allowed_endpoints is not refused
 iceberg_rest_server	iceberg_rest_server	and it cannot mark its own mapping credentials_required false (42501)	15;16;17;18;19	2026-10-15	the catalog validator letting a non-superuser set credentials_required false
-iceberg_rest_server	iceberg_rest_server	backend still up	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	backend still up	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a half OAuth2 credential (id, no secret) is not refused, so the mint runs with a NULL secret and the backend dies
 iceberg_rest_server	iceberg_rest_server	control: with credentials_required false set by a superuser, the same role reads by the environment token	15;16;17;18;19	never	-
-iceberg_rest_server	iceberg_rest_server	iceberg_rest_table_location('cat',...) reads via the mapping token	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	iceberg_rest_table_location('cat',...) reads via the mapping token	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the USER MAPPING token option is ignored
 iceberg_rest_server	iceberg_rest_server	loadTable then carried the minted bearer (Authorization present)	15;16;17;18;19	never	-
-iceberg_rest_server	iceberg_rest_server	no mapping and no env token is refused, not bypassed (28000)	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	no mapping and no env token is refused, not bypassed (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: abort() in place of the catalog's 401/403 refusal
 iceberg_rest_server	iceberg_rest_server	oauth options are accepted on a USER MAPPING (no error)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	premise: rest fixture up	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	premise: the PG server log holds lines to search, for the client secret	15;16;17;18;19	never	-
@@ -2761,8 +2761,8 @@ iceberg_rest_server	iceberg_rest_server	the catalog-URI form still works with th
 iceberg_rest_server	iceberg_rest_server	the client secret never appears in the PG server log	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the client secret never appears in the fixture request log	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the mapping token never appears in the PG server log	15;16;17;18;19	never	-
-iceberg_rest_server	iceberg_rest_server	the request carried an Authorization header	15;16;17;18;19	never	-
-iceberg_rest_server	iceberg_rest_server	the warehouse was sent on GET /v1/config (?warehouse=wh1)	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	the request carried an Authorization header	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the USER MAPPING token option is ignored
+iceberg_rest_server	iceberg_rest_server	the warehouse was sent on GET /v1/config (?warehouse=wh1)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the warehouse server option is never sent on GET /v1/config
 iceberg_rest_vended	iceberg_rest_vended	a table vending no creds still reads with ambient (cfg NULL path)	15;16;17;18;19	never	-
 iceberg_rest_vended	iceberg_rest_vended	a wrong vended secret is refused by S3, not bypassed (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: vended credentials are never built, so every read falls back to ambient
 iceberg_rest_vended	iceberg_rest_vended	backend still up after the vended-credential arms	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: abort() in place of the HTTP 403 refusal
