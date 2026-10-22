@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 73
+suites_not_covered 72
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5994,4 +5994,24 @@ suites_not_covered 73
 #     never         4141 + 3 = 4144
 #     dated         2807 + 7 = 2814
 #     4144 + 2814 == 6958
-checks_never_observed_red 4144
+#
+# #1341, native_metadata_flush seeded, with its twin (OffgridwithJD): 4144 -> 4146,
+# and suites_not_covered 73 -> 72. The suite had no rows. It enters with 8 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes,
+# each measured on main's shell, which passed all six under it. A witness that counted
+# nothing (zerocount, opens=0 for every flush) passed both open-count checks, since 0 equals
+# 0 and 0 is small: a floor now wants at least the three tables every flush writes. The heap
+# mirror was copied from the columnar table, so a writer storing a wrong value
+# (writecorrupt) agreed with itself: it is now written from the generator. Nothing showed
+# the zone rows were read, since the reader also rules vectors out by value after decoding:
+# a check now wants a vector ruled out by its zone row alone (Skipped minus Ruled Out by
+# Value), and zone rows with no min/max (zonenull) redden it. And the witness check was
+# labelled a premise though a flush that never begins its session (nosession) reddens it,
+# so it lost the prefix (#1339). 6 are dated by five mutations, each the same names in
+# both twins. 2 arrive never: the row count and the range read against the heap mirror.
+#
+#     ledger rows   6958 + 8 = 6966
+#     never         4144 + 2 = 4146
+#     dated         2814 + 6 = 2820
+#     4146 + 2820 == 6966
+checks_never_observed_red 4146

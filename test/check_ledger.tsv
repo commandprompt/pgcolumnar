@@ -4355,6 +4355,14 @@ native_lazy_slot	native_lazy_slot	copying index-fetched rows into a heap table k
 native_lazy_slot	native_lazy_slot	count(*) through the index matches heap	15;16;17;18;19	never	-
 native_lazy_slot	native_lazy_slot	single-row index fetches match heap for every column position	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert stores c40 off by one in a wide bigint table, so lz_c holds a wrong value
 native_lazy_slot	native_lazy_slot	the fetch really is an index scan	15;16;17;18;19	never	-
+native_metadata_flush	native_metadata_flush	a 20-column flush opens a small constant number of metadata relations, not one per row	15;16;17;18;19	2026-10-22	columnar_metadata.c: open_columnar_table never reuses a session's open relation (#445 reverted), so each metadata row opens its catalog again
+native_metadata_flush	native_metadata_flush	a zone-map-pruned range read matches heap (the batched zone rows are correct)	15;16;17;18;19	never	-
+native_metadata_flush	native_metadata_flush	and that range read rules out a vector by its zone row alone	15;16;17;18;19	2026-10-22	columnar_metadata.c: zone_map rows are written with a NULL minimum and maximum, so no vector can be ruled out by its zone row
+native_metadata_flush	native_metadata_flush	and the 20-column flush opens at least the three tables every flush writes	15;16;17;18;19	2026-10-22	columnar_metadata.c: the flush session never counts an open, so the witness reads opens=0 for every flush
+native_metadata_flush	native_metadata_flush	every column reads back correct (sum over all 20 columns matches the heap mirror)	15;16;17;18;19	2026-10-22	columnar_reader.c: PgColumnarEncodeValueByLen stores a 4-byte by-value 1777 as 1778
+native_metadata_flush	native_metadata_flush	narrow (3 col) and wide (20 col) flush open the same number of metadata relations	15;16;17;18;19	2026-10-22	columnar_metadata.c: open_columnar_table never reuses a session's open relation (#445 reverted), so each metadata row opens its catalog again
+native_metadata_flush	native_metadata_flush	the flush emits the metadata-open witness	15;16;17;18;19	2026-10-22	columnar_write_state.c: the flush never begins a metadata session, so it neither batches nor emits the witness
+native_metadata_flush	native_metadata_flush	the wide table's row count survives the batched flush	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	FDW scan == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL keeps its null	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL reads	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an INT32 or INT64 DECIMAL is widened byte-reversed;columnar_parquet_reader.c: pq_decimal_to_numeric reads a narrower-than-16-byte negative DECIMAL as its unsigned magnitude
