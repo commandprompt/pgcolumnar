@@ -350,6 +350,7 @@ behaviour, the source of that number is named.
 - [302. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen](#302-test_native_param_pushdownpy-a-parameterized-qual-prunes-chunk-groups-and-a-correlated-one-is-never-frozen)
 - [303. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's](#303-test_native_sort_bypy-the-declared-sort_by-key-orders-the-rows-it-says-and-each-refusal-is-its-own-guards)
 - [304. test_native_rewrite.py: compact_rewrite reclaims partially-deleted groups online, and vacuum's rewrite keeps every row reachable](#304-test_native_rewritepy-compact_rewrite-reclaims-partially-deleted-groups-online-and-vacuums-rewrite-keeps-every-row-reachable)
+- [305. test_native_zonemap.py: zone-map rows carry exact counts, sums and the right bounds, by value](#305-test_native_zonemappy-zone-map-rows-carry-exact-counts-sums-and-the-right-bounds-by-value)
 
 ## 1. How to read a test in here
 
@@ -11582,3 +11583,37 @@ Every test makes one check under the shell's name, from one module fixture that 
 | `test_vacuum_rewrites_into_a_fresh_storage_id` | vacuum rewrites into a fresh storage id |
 | `test_every_live_row_still_reads_back_after_rewrite_and_vacuum` | every live row still reads back after rewrite and vacuum |
 | `test_an_index_range_read_after_vacuum_returns_the_rows_asked_for` | an index range read after vacuum returns the rows asked for |
+
+## 305. test_native_zonemap.py: zone-map rows carry exact counts, sums and the right bounds, by value
+
+The twin of `test/native_zonemap.sh`. On a four-column table of three row groups of two vectors each, the pgcolumnar.zone_map rows are checked against a heap mirror written from the same generator: their number, value and null counts, sums, the presence and width of their bounds, and each bound of id, k and v decoded and compared with the heap's own for its group and vector; the read path still matches the heap, and the rows go with the table.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each reading opens its own connection and returns a failure as a `query_error()`, so two failed reads never agree and a count that cannot be read is never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_zonemap_row_count` | row count |
+| `test_zonemap_read_parity` | read parity (no regression) |
+| `test_zonemap_whole_chunk_zone_rows` | whole-chunk zone rows |
+| `test_zonemap_per_vector_zone_rows` | per-vector zone rows |
+| `test_zonemap_whole_chunk_rows_cover_their_group` | whole-chunk value+null = group rows |
+| `test_zonemap_each_vector_covers_1024` | per-vector value+null = 1024 |
+| `test_zonemap_value_count_sums_for_nullable_v` | value_count sums (v, nullable) |
+| `test_zonemap_null_count_sums_for_nullable_v` | null_count sums (v, nullable) |
+| `test_zonemap_value_count_sums_for_id` | value_count sums (id, no nulls) |
+| `test_zonemap_null_count_zero_for_id` | null_count zero (id, no nulls) |
+| `test_zonemap_vector_value_counts_fold_into_the_chunk` | per-vector value_count folds into chunk (k) |
+| `test_zonemap_min_max_present_for_all_columns` | min/max present for all columns |
+| `test_zonemap_int4_min_width` | id (int4) min width = 4 bytes |
+| `test_zonemap_int8_max_width` | k (int8) max width = 8 bytes |
+| `test_zonemap_v_is_not_ascending_within_a_vector` | premise: v is not ascending within a vector, so a stale minimum would show |
+| `test_zonemap_every_vector_minimum_is_the_heaps` | every vector's minimum of id, k and v is the heap's |
+| `test_zonemap_every_vector_maximum_is_the_heaps` | every vector's maximum of id, k and v is the heap's |
+| `test_zonemap_every_chunk_minimum_is_the_heaps` | every whole-chunk minimum of id, k and v is the heap's |
+| `test_zonemap_every_chunk_maximum_is_the_heaps` | every whole-chunk maximum of id, k and v is the heap's |
+| `test_zonemap_sum_present_for_int4_columns` | sum present for int4 columns |
+| `test_zonemap_sum_null_for_other_columns` | sum null for non-int4 columns |
+| `test_zonemap_whole_chunk_sum_of_id_matches_heap` | whole-chunk sum(id) matches heap |
+| `test_zonemap_zone_maps_go_with_the_table` | zone maps cleaned on drop |

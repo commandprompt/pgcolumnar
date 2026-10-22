@@ -4781,6 +4781,29 @@ native_writer	native_writer	native row groups (5000 rows / 1000 limit)	15;16;17;
 native_writer	native_writer	native row-group row total	15;16;17;18;19	never	-
 native_writer	native_writer	native storage row written	15;16;17;18;19	never	-
 native_writer	native_writer	native vector length recorded	15;16;17;18;19	2026-10-16	columnar.h: COLUMNAR_NATIVE_VECTOR_LENGTH 2048
+native_zonemap	native_zonemap	every vector's maximum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
+native_zonemap	native_zonemap	every vector's minimum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
+native_zonemap	native_zonemap	every whole-chunk maximum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
+native_zonemap	native_zonemap	every whole-chunk minimum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
+native_zonemap	native_zonemap	id (int4) min width = 4 bytes	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	k (int8) max width = 8 bytes	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	min/max present for all columns	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
+native_zonemap	native_zonemap	null_count sums (v, nullable)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	null_count zero (id, no nulls)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	per-vector value+null = 1024	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	per-vector value_count folds into chunk (k)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	per-vector zone rows	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	premise: v is not ascending within a vector, so a stale minimum would show	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	read parity (no regression)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	row count	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	sum null for non-int4 columns	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	sum present for int4 columns	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	value_count sums (id, no nulls)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	value_count sums (v, nullable)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	whole-chunk sum(id) matches heap	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	whole-chunk value+null = group rows	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	whole-chunk zone rows	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	zone maps cleaned on drop	15;16;17;18;19	never	-
 nologin_workers	nologin_workers	a NOLOGIN role's parallel flush encodes every column in a worker	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
 nologin_workers	nologin_workers	a NOLOGIN role's parallel_copy loads every row	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
 nologin_workers	nologin_workers	a NOLOGIN role's parallel_export_parquet exports every row	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
