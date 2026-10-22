@@ -6962,4 +6962,21 @@ suites_not_covered 28
 #     never         4534 + 4 = 4538
 #     dated         3411 + 1 = 3412
 #     4538 + 3412 == 7950
-checks_never_observed_red 4538
+#
+# #1741, a second cancel during a remote export's cleanup, objstore_export_double_cancel
+# seeded with its twin (OffgridwithJD): 4538 -> 4543. A new suite, registered with its
+# rows, so suites_not_covered stays 28. A parallel_export_parquet to s3:// is cancelled
+# while its workers upload, and again while the dispatcher's cleanup DELETE is held in flight
+# by the fixture server's new __delete_delay__ hook. On main the module's best-effort catch
+# swallowed the second cancel with FlushErrorState(), which also emptied the first cancel's
+# error off the stack, and the re-throw reported "errstart was not called" (XX000), on every
+# major 15-19, shell and twin alike. 7 checks: 2 dated by main's dispatcher and by a
+# mutation of the fix that runs the cleanup with the handled error still on the stack, each
+# reddening the same names in both twins. 5 arrive never: three premises, the prefix left
+# empty and the survival check, which no mutation moved.
+#
+#     ledger rows   7950 + 7 = 7957
+#     never         4538 + 5 = 4543
+#     dated         3412 + 2 = 3414
+#     4543 + 3414 == 7957
+checks_never_observed_red 4543

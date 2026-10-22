@@ -236,6 +236,7 @@ SUITES=(
 	objstore_allowlist
 	objstore_credentials
 	objstore_crlf
+	objstore_export_double_cancel
 	objstore_http_read
 	objstore_listing
 	objstore_module

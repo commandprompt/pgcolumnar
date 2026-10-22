@@ -5189,6 +5189,13 @@ objstore_crlf	objstore_crlf	a CR/LF in the URL path is rejected before the reque
 objstore_crlf	objstore_crlf	backend alive	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	backend alive after the REST attempt	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	no injected line reached the listener (no request splitting)	15;16;17;18;19	2026-10-14	the request-line guard on the URL path removed
+objstore_export_double_cancel	objstore_export_double_cancel	double cancel: no completed object remains at the prefix	15;16;17;18;19	never	-
+objstore_export_double_cancel	objstore_export_double_cancel	double cancel: the export reports its own cancel (57014)	15;16;17;18;19	2026-10-22	PgColumnarCleanupAndRethrow runs the cleanup with the handled error still on the error stack and PG_RE_THROWs (the pre-#1741 order)
+objstore_export_double_cancel	objstore_export_double_cancel	double cancel: the server log has no 'errstart was not called'	15;16;17;18;19	2026-10-22	PgColumnarCleanupAndRethrow runs the cleanup with the handled error still on the error stack and PG_RE_THROWs (the pre-#1741 order)
+objstore_export_double_cancel	objstore_export_double_cancel	double cancel: the server survived	15;16;17;18;19	never	-
+objstore_export_double_cancel	objstore_export_double_cancel	premise: a worker was uploading before the first cancel	15;16;17;18;19	never	-
+objstore_export_double_cancel	objstore_export_double_cancel	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
+objstore_export_double_cancel	objstore_export_double_cancel	premise: the first cancel's cleanup was deleting when the second cancel landed	15;16;17;18;19	never	-
 objstore_http_read	objstore_http_read	A: count(*) over http	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
 objstore_http_read	objstore_http_read	A: full scan http == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
 objstore_http_read	objstore_http_read	A: projection http == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted

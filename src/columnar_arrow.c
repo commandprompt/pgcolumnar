@@ -1171,8 +1171,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		PgColumnarSinkAbort(snk);
-		PG_RE_THROW();
+		PgColumnarSinkAbortAndRethrow(snk);	/* never returns (#1741) */
 	}
 	PG_END_TRY();
 

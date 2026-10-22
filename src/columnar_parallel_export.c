@@ -419,8 +419,7 @@ pexport_write_success_marker(const char *dir)
 	}
 	PG_CATCH();
 	{
-		PgColumnarSinkAbort(snk);
-		PG_RE_THROW();
+		PgColumnarSinkAbortAndRethrow(snk);	/* never returns (#1741) */
 	}
 	PG_END_TRY();
 }
@@ -437,6 +436,13 @@ pexport_cleanup(int code, Datum arg)
 		if (s->handles[i] != NULL)
 			TerminateBackgroundWorker(s->handles[i]);
 	pexport_remove_outputs(s->dirpath, s->nkeys);
+}
+
+/* the ERROR path's form of pexport_cleanup, for PgColumnarCleanupAndRethrow */
+static void
+pexport_cleanup_in_catch(void *arg)
+{
+	pexport_cleanup(0, PointerGetDatum(arg));
 }
 
 /*
@@ -815,11 +821,17 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	bw.bgw_notify_pid = MyProcPid;
 
 	/*
-	 * PG_ENSURE_ERROR_CLEANUP so a FATAL in this backend still terminates the
-	 * workers before it exits, rather than orphaning them to read on after the
-	 * exported snapshot is gone.
+	 * PG_ENSURE_ERROR_CLEANUP's shape, spelled out: before_shmem_exit so a FATAL
+	 * in this backend still terminates the workers before it exits, rather than
+	 * orphaning them to read on after the exported snapshot is gone. The ERROR
+	 * path runs the same cleanup through PgColumnarCleanupAndRethrow, not the
+	 * macro's PG_CATCH (#1741): the cleanup's remote DELETEs wait on the store,
+	 * a second cancel lands there, and swallowing it with the cancel being
+	 * handled still on the error stack lost that error ("errstart was not
+	 * called").
 	 */
-	PG_ENSURE_ERROR_CLEANUP(pexport_cleanup, PointerGetDatum(&spawn));
+	before_shmem_exit(pexport_cleanup, PointerGetDatum(&spawn));
+	PG_TRY();
 	{
 		for (i = 0; i < workers; i++)
 		{
@@ -854,7 +866,13 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 			ResetLatch(MyLatch);
 		}
 	}
-	PG_END_ENSURE_ERROR_CLEANUP(pexport_cleanup, PointerGetDatum(&spawn));
+	PG_CATCH();
+	{
+		cancel_before_shmem_exit(pexport_cleanup, PointerGetDatum(&spawn));
+		PgColumnarCleanupAndRethrow(pexport_cleanup_in_catch, &spawn);
+	}
+	PG_END_TRY();
+	cancel_before_shmem_exit(pexport_cleanup, PointerGetDatum(&spawn));
 
 	for (i = 0; i < workers; i++)
 	{

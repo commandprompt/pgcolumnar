@@ -20,6 +20,7 @@
 #include "lib/ilist.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
+#include "utils/memutils.h"
 #include "storage/ipc.h"
 
 #include "columnar_objstore.h"
@@ -251,4 +252,49 @@ PgColumnarSinkAbort(PqSink *snk)
 		snk->f = NULL;
 	}
 	(void) unlink(snk->tmpPath);
+}
+
+/*
+ * PgColumnarCleanupAndRethrow
+ *		Called from a PG_CATCH. The error being handled is copied out and the
+ *		error stack emptied BEFORE the cleanup runs, so whatever the cleanup
+ *		raises and swallows (the module's best-effort DELETEs flush the error
+ *		stack, and a second cancel lands exactly there, #1741) cannot take the
+ *		handled error with it. An error the cleanup does not swallow ends the
+ *		cleanup early and is dropped: the error to report is the one being
+ *		handled. That one is then re-thrown, as PG_RE_THROW would have.
+ */
+void
+PgColumnarCleanupAndRethrow(void (*cleanup) (void *arg), void *arg)
+{
+	/* in a transaction for every caller; the copy only needs to outlive this */
+	MemoryContext keep = TopTransactionContext ? TopTransactionContext : TopMemoryContext;
+	ErrorData  *edata;
+
+	MemoryContextSwitchTo(keep);
+	edata = CopyErrorData();
+	FlushErrorState();
+	PG_TRY();
+	{
+		cleanup(arg);
+	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(keep);
+		FlushErrorState();
+	}
+	PG_END_TRY();
+	ReThrowError(edata);
+}
+
+static void
+sink_abort_cleanup(void *arg)
+{
+	PgColumnarSinkAbort((PqSink *) arg);
+}
+
+void
+PgColumnarSinkAbortAndRethrow(PqSink *snk)
+{
+	PgColumnarCleanupAndRethrow(sink_abort_cleanup, snk);
 }
