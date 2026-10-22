@@ -69,14 +69,14 @@ PLAN_ALL="$(explain_of "$ALLQ")"
 
 # ---- premises --------------------------------------------------------------
 
-check "premise: the zero-match plan is a columnar custom scan" \
+check "the zero-match plan is a columnar custom scan" \
 	"$(has_line "$PLAN_ZERO" 'Columnar Projected Columns')" "yes"
 check "premise: one row group, so every count below is one group's" \
 	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('n');")" \
 	"1"
 check "premise: the predicate really matches no row" \
 	"$(q 'SELECT count(*) FROM n WHERE z BETWEEN 51 AND 59;')" "0"
-check "premise: and the control matches every row" \
+check "and the control matches every row" \
 	"$(q 'SELECT count(*) FROM n WHERE z >= 0;')" "$ROWS"
 
 # The whole point of the fixture. If zone maps prune here, this is the 1b-i case
@@ -86,10 +86,16 @@ check "premise: and the control matches every row" \
 # premise is stated as the subtraction: every vector skipped here was ruled out
 # by value, therefore the zone maps ruled out none. Asserting the total is 0
 # would have been the obvious phrasing and it fails the moment the feature works.
-check "premise: ZONE MAPS RULE OUT NOTHING, which is what makes this 1b-ii" \
-	"$(( $(counter_in "$PLAN_ZERO" 'Columnar Vectors Skipped') - $(counter_in "$PLAN_ZERO" 'Columnar Vectors Ruled Out by Value') ))" \
+# Both counters must be read as numbers before they are subtracted. An unread one
+# made the arithmetic fail, and the check then recorded nothing at all: with the
+# custom scan off by default, the accounting read 15 checks, not 16.
+zm_skipped="$(counter_in "$PLAN_ZERO" 'Columnar Vectors Skipped')"
+zm_byvalue="$(counter_in "$PLAN_ZERO" 'Columnar Vectors Ruled Out by Value')"
+check "ZONE MAPS RULE OUT NOTHING, which is what makes this 1b-ii" \
+	"$(if [[ "$zm_skipped" =~ ^[0-9]+$ && "$zm_byvalue" =~ ^[0-9]+$ ]]; then echo $(( zm_skipped - zm_byvalue ));
+	   else echo "no reading (skipped [$zm_skipped], by value [$zm_byvalue])"; fi)" \
 	"0"
-check "premise: no whole row group is pruned either" \
+check "no whole row group is pruned either" \
 	"$(counter_in "$PLAN_ZERO" 'Columnar Chunk Groups Removed by Filter')" "0"
 
 # ---- the observable --------------------------------------------------------
@@ -131,7 +137,7 @@ check "the zero-matching query returns nothing" \
 # uses a range at all: the equality form of the same question never reaches
 # decode, so a future edit that "simplifies" the predicate back to z = 51 would
 # silently stop testing anything.
-check "premise: the EQUALITY form is pruned by bloom and reaches no decode" \
+check "the EQUALITY form is pruned by bloom and reaches no decode" \
 	"$(counter_in "$(explain_of 'SELECT * FROM n WHERE z = 51')" 'Columnar Chunk Groups Removed by Filter')" \
 	"1"
 check "a selective matching predicate still returns the right rows" \
@@ -140,7 +146,15 @@ check "a selective matching predicate still returns the right rows" \
 check "and a partially matching range does too" \
 	"$(pgc_set_hash 'SELECT * FROM n WHERE z BETWEEN 100 AND 220')" \
 	"$(pgc_set_hash 'SELECT * FROM h WHERE z BETWEEN 100 AND 220')"
-check "the control returns every row" \
+# Every vector holds every z value, so the ranges above match many rows per vector,
+# and an exact selection whose comparison was off by one at the bound (>= taken as
+# >, or <= as <) still found a match in each vector and ruled out nothing it
+# shouldn't: main passed 16/16 under both. Here the only matching rows sit ON both
+# bounds, so such a selection rules out every vector and the rows go missing.
+check "a range whose only matches lie on its bounds still returns them" \
+	"$(pgc_set_hash 'SELECT * FROM n WHERE z BETWEEN 990 AND 990')" \
+	"$(pgc_set_hash 'SELECT * FROM h WHERE z BETWEEN 990 AND 990')"
+check_text "the control returns every row" \
 	"$(q 'SELECT count(*), sum(p1) FROM n WHERE z >= 0;')" \
 	"$(q 'SELECT count(*), sum(p1) FROM h WHERE z >= 0;')"
 

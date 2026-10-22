@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 82
+suites_not_covered 81
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5812,4 +5812,25 @@ suites_not_covered 82
 #     never         4065 + 4 = 4069
 #     dated         2720 + 9 = 2729
 #     4069 + 2729 == 6798
-checks_never_observed_red 4069
+#
+# #1341, native_exact_selection seeded, with its twin (OffgridwithJD): 4069 -> 4072, and
+# suites_not_covered 82 -> 81. The suite had no rows. It enters with 17 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# Every vector holds every z value, so an exact selection off by one at a bound (>= taken
+# as >, or <= as <) still found a match in each vector: main passed 16/16 under both. A
+# range whose only matches sit on its bounds now must return them. The zone-map premise
+# subtracted two counters in bash arithmetic, and with the custom scan off the empty
+# counters made the check record nothing at all (accounting 15, not 16); it now reads
+# both as numbers first. And "the control returns every row" compared two readings with
+# check: with the server stopped it passed on two empty strings; it is check_text now.
+# Four premises a one-line pgcolumnar change reddens (the custom scan, the control's
+# count, no group pruned, the bloom-pruned equality) and the zone-map one lost the
+# prefix. 14 are dated by six mutations, each reddening the same names in both twins.
+# 3 arrive never: the two remaining premises and the checks no measured mutation
+# reaches.
+#
+#     ledger rows   6798 + 17 = 6815
+#     never         4069 + 3 = 4072
+#     dated         2729 + 14 = 2743
+#     4072 + 2743 == 6815
+checks_never_observed_red 4072

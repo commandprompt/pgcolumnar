@@ -3799,6 +3799,23 @@ native_encdesc_golden	native_encdesc_golden	int column a rawLen parses as 1200 (
 native_encdesc_golden	native_encdesc_golden	the table reads back all rows	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	trailing sharedTableLen is 0 (u32 at offset 6+13=19)	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	vectorCount parses as 1 (at offset 2)	15;16;17;18;19	never	-
+native_exact_selection	native_exact_selection	EXPLAIN reports Columnar Vector Decodes	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_exact_selection	native_exact_selection	ZONE MAPS RULE OUT NOTHING, which is what makes this 1b-ii	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_exact_selection	native_exact_selection	a range whose only matches lie on its bounds still returns them	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection evaluates >= as > (a value on the lower bound does not match)
+native_exact_selection	native_exact_selection	a selective matching predicate still returns the right rows	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection rules out every vector, matching rows or not
+native_exact_selection	native_exact_selection	a zero-matching predicate decodes the qual column and no payload column	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection never rules a vector out
+native_exact_selection	native_exact_selection	and a partially matching range does too	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection rules out every vector, matching rows or not
+native_exact_selection	native_exact_selection	and the control matches every row	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection rules out every vector, matching rows or not
+native_exact_selection	native_exact_selection	and the control rules out no vector by value	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection rules out every vector, matching rows or not
+native_exact_selection	native_exact_selection	exact selection rules out every vector, none of them by zone map	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection never rules a vector out
+native_exact_selection	native_exact_selection	no whole row group is pruned either	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_exact_selection	native_exact_selection	premise: one row group, so every count below is one group's	15;16;17;18;19	never	-
+native_exact_selection	native_exact_selection	premise: the predicate really matches no row	15;16;17;18;19	never	-
+native_exact_selection	native_exact_selection	the EQUALITY form is pruned by bloom and reaches no decode	15;16;17;18;19	2026-10-22	columnar_reader.c: a bloom filter never prunes a chunk group
+native_exact_selection	native_exact_selection	the control decodes every column of every vector	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection rules out every vector, matching rows or not
+native_exact_selection	native_exact_selection	the control returns every row	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection rules out every vector, matching rows or not
+native_exact_selection	native_exact_selection	the zero-match plan is a columnar custom scan	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_exact_selection	native_exact_selection	the zero-matching query returns nothing	15;16;17;18;19	never	-
 native_fetch_bigcap	native_fetch_bigcap	a narrow projection over a wide group is cached too (#433)	15;16;17;18;19	2026-10-16	the fetch cache reads its row group whole and drops an entry whose group exceeds the cap after every fetch, the #433 defect (columnar_reader.c)
 native_fetch_bigcap	native_fetch_bigcap	columns that fit are cached even when their group does not (#433)	15;16;17;18;19	2026-10-16	the fetch cache reads its row group whole and drops an entry whose group exceeds the cap after every fetch, the #433 defect (columnar_reader.c)
 native_fetch_bigcap	native_fetch_bigcap	every payload survived the round trip at full length	15;16;17;18;19	never	-
