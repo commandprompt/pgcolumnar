@@ -4615,6 +4615,26 @@ native_repack	native_repack	the columnar table is unharmed: content hash	19	2026
 native_repack	native_repack	the columnar table is unharmed: row count	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing
 native_repack	native_repack	the columnar table is unharmed: storage options	19	never	-
 native_repack	native_repack	without an identity index it is refused by PostgreSQL, not by us	19	never	-
+native_rewrite	native_rewrite	a group deleted below the threshold is not rewritten	15;16;17;18;19	2026-10-22	columnar_vacuum.c: every group with a live row is a rewrite candidate, deleted or not
+native_rewrite	native_rewrite	a rewrite plus later writes reuse no group number	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	a second rewrite with nothing deleted rewrites no group	15;16;17;18;19	2026-10-22	columnar_vacuum.c: every group with a live row is a rewrite candidate, deleted or not
+native_rewrite	native_rewrite	an index range read after vacuum returns the rows asked for	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group inserts no index entries for the rows it moves
+native_rewrite	native_rewrite	compact_rewrite holds ShareUpdateExclusiveLock	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	compact_rewrite holds no AccessExclusiveLock	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	dead-row space reclaimed	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	deleted id absent via index	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	every live row still reads back after rewrite and vacuum	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	group numbers issued after a rewrite are past every earlier one	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	index scan returns each live row once	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	live id present via index	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	parity after delete	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	parity after rewrite	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	rewrote some groups	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	row count after delete	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	row count after rewrite	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	there are deleted rows to reclaim	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	unique constraint still enforced	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	vacuum rewrites into a fresh storage id	15;16;17;18;19	never	-
 native_roundtrip	native_roundtrip	native aggregate (sum over a scanned column)	15;16;17;18;19	2026-10-17	columnar_reader.c: the native reader never loads the last row group
 native_roundtrip	native_roundtrip	native count with filter	15;16;17;18;19	2026-10-17	columnar_reader.c: the native reader never loads the last row group
 native_roundtrip	native_roundtrip	native filtered scan	15;16;17;18;19	2026-10-17	columnar_reader.c: a null by-reference column reads back as a present empty value;columnar_reader.c: zone-map pruning skips the groups that can match and keeps the ones that cannot

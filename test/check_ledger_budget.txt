@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 61
+suites_not_covered 60
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6275,4 +6275,22 @@ suites_not_covered 61
 #     never         4216 + 14 = 4230
 #     dated         3008 + 9 = 3017
 #     4230 + 3017 == 7247
-checks_never_observed_red 4230
+#
+# #1341, native_rewrite seeded, with its twin (OffgridwithJD): 4230 -> 4241,
+# and suites_not_covered 61 -> 60. The suite had no rows. It enters with its 20
+# checks from five-major runs (all green on each of 15-19, shell and twin alike), after four
+# fixes. Rewriting every undeleted group, or ignoring min_deleted_fraction, passed all 17 on
+# main: two checks now hold the threshold from both sides. vacuum without its index rebuild
+# passed too: stale entries land on every live row once over the whole table, so a count
+# and a hash through the index both matched; a narrow index range read now catches it
+# (id 4097 read back as 6146). The four counts compared two readings with plain check, and
+# "unique constraint still enforced" took any psql failure: with the server stopped after
+# the rewrite, four checks passed on main. Counts are check_num and the refusal wants
+# 23505 and n_id_uq's message. 9 are dated by five mutations of the rewrite, each
+# reddening the same names in both twins. 11 arrive never.
+#
+#     ledger rows   7247 + 20 = 7267
+#     never         4230 + 11 = 4241
+#     dated         3017 + 9 = 3026
+#     4241 + 3026 == 7267
+checks_never_observed_red 4241
