@@ -1189,6 +1189,7 @@ guard_tests 839
 # cluster_tests 4176 -> 4200 for #1339's hilbert batch: test_hilbert_cluster.py's S1 and (a2) tests split
 # into one check per test (S1 8 -> 24, (a2) 1 -> 7) and two daemon tests on a decayed zorder table, by collection.
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
+# cluster_tests 4200 -> 4214 for #1738's fourteen timestamp/timestamptz tests in test_native_skip.py, by collection.
 # cluster_tests 3222 -> 3239 for #1341's test_parallel_copy_dedup.py, the twin of parallel_copy_dedup.sh:
 # 17 tests, one per check, by collection over the cluster files.
 # cluster_tests 3239 -> 3320 for #1341's test_parallel_copy.py, the twin of parallel_copy.sh:
@@ -1199,4 +1200,4 @@ guard_tests 839
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 4200
+cluster_tests 4214

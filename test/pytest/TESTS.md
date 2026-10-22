@@ -7592,8 +7592,16 @@ The pytest twin of `test/native_skip.sh`, every check by the shell's name (#1433
 | `test_a_partitioned_columnar_table_returns_heaps_rows` | the partitioned table returns heap's rows (#436) |
 | `test_a_partition_takes_the_columnar_custom_scan` | it plans the columnar custom scan (#436) |
 | `test_a_partition_prunes_row_groups` | and it prunes row groups (#436) |
+| `test_heap_finds_rows_across_the_gap` | **premise**: heap finds rows for each of `>`, `>=`, `=`, `<`, `<=` against a timestamptz constant across the 2024-03-10 New York gap (#1738) (parametrized) |
+| `test_a_timestamptz_constant_across_the_gap_returns_heaps_rows` | a timestamp column against a timestamptz constant across a spring-forward gap returns heap's rows, for each operator (#1738) (parametrized) |
+| `test_across_the_fall_back_hour_returns_heaps_rows` | across the fall-back hour, where the conversion stays monotonic, the rows match heap's (#1738) |
+| `test_the_reverse_pair_in_the_gap_returns_heaps_rows` | the reverse pair, a timestamptz column against a timestamp constant in the gap, returns heap's rows (#1738) |
+| `test_a_same_type_constant_still_skips` | a timestamp column against a timestamp constant still removes a group (#1738) |
+| `test_the_reverse_pair_still_skips` | the reverse pair still removes a group: the refusal covers only (timestamp, timestamptz) (#1738) |
 
 ONE CHECK PER TEST (#1339): module fixtures build each data set once, and each test asserts one reading. Measured with zone-map skipping disabled in the scan on PG17: the shell reddens 21 checks. The earlier twin, 13 tests holding 76 checks, reported 10. This one reports the same 21.
+
+A TIMESTAMP COLUMN AGAINST A TIMESTAMPTZ CONSTANT (#1738) is not skipped on: the cross-type proc reads each group's min/max wall time as an instant in the session zone, which is not order-preserving across a spring-forward gap (02:30 is 07:30Z, 03:00 is 07:00Z in New York on 2024-03-10). Main's reader fails the five gap arms on PG15-19, in shell and twin alike; refusing the reverse pair as well fails only `the reverse pair, tz against a timestamp constant, still skips groups (#1738)`.
 
 ## 134. test_unique_conc.py: concurrent inserters of one unique key serialize
 
