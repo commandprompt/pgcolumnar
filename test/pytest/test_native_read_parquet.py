@@ -218,7 +218,7 @@ def test_read_parquet_returns_the_generated_nested_rows(rp, expect):
 
 
 def test_a_missing_column_definition_list_is_refused(rp, expect):
-    expect.text(rp["no list"], "42601 (no column list)", "reject missing column definition list")
+    expect.text(rp["no list"], "42601 (no column list)", "premise: reject missing column definition list")
 
 
 def test_fewer_declared_columns_than_the_file_is_refused(rp, expect):

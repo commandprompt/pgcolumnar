@@ -4696,16 +4696,16 @@ native_read_parquet	native_read_parquet	and a member of pg_read_server_files rea
 native_read_parquet	native_read_parquet	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
 native_read_parquet	native_read_parquet	import parity rows	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
 native_read_parquet	native_read_parquet	nested export rows	15;16;17;18;19	never	-
-native_read_parquet	native_read_parquet	nested round-trip: read_parquet == the generated rows	15;16;17;18;19	2026-10-22	columnar_reader.c: the columnar writer stores int4 777 as 778, so the source table and the file agree on the wrong value
+native_read_parquet	native_read_parquet	nested round-trip: read_parquet == the generated rows	15;16;17;18;19	2026-10-22	columnar_reader.c: the columnar reader returns int4 777 as 778 (store_att_byval), so the source table and the file agree on the wrong value
+native_read_parquet	native_read_parquet	premise: reject missing column definition list	15;16;17;18;19	never	-
 native_read_parquet	native_read_parquet	projected column round-trips	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
 native_read_parquet	native_read_parquet	read_parquet == import_parquet	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
 native_read_parquet	native_read_parquet	reject fewer columns than file	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the leaf-count guard removed
 native_read_parquet	native_read_parquet	reject incompatible declared type	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scalar physical-type guard removed
-native_read_parquet	native_read_parquet	reject missing column definition list	15;16;17;18;19	never	-
 native_read_parquet	native_read_parquet	reject non-parquet file	15;16;17;18;19	never	-
 native_read_parquet	native_read_parquet	scalar export rows	15;16;17;18;19	never	-
 native_read_parquet	native_read_parquet	scalar read_parquet row count	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
-native_read_parquet	native_read_parquet	scalar round-trip: read_parquet == the generated rows	15;16;17;18;19	2026-10-22	columnar_reader.c: the columnar writer stores int4 777 as 778, so the source table and the file agree on the wrong value
+native_read_parquet	native_read_parquet	scalar round-trip: read_parquet == the generated rows	15;16;17;18;19	2026-10-22	columnar_reader.c: the columnar reader returns int4 777 as 778 (store_att_byval), so the source table and the file agree on the wrong value
 native_reclaim	native_reclaim	and every live row is still there, once	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 0.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac <= 0.0
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 1.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac >= 1.0

@@ -122,7 +122,7 @@ check "nested round-trip: read_parquet == the generated rows" \
 # no column definition list: the record-returning function has no shape. The parser
 # refuses this before read_parquet runs (its own guard is unreachable from SQL), so
 # this pins PostgreSQL's 42601, not a pgColumnar guard.
-check "reject missing column definition list" \
+check "premise: reject missing column definition list" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.read_parquet('$SCALAR')" \
 	   "a column definition list is required" " (no column list)")" \
 	"42601 (no column list)"
