@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 81
+suites_not_covered 80
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5837,4 +5837,22 @@ suites_not_covered 81
 #     never         4069 + 2 = 4071
 #     dated         2729 + 15 = 2744
 #     4071 + 2744 == 6815
-checks_never_observed_red 4071
+#
+# #1341, native_ctas seeded, with its twin (OffgridwithJD): 4071 -> 4072, and
+# suites_not_covered 81 -> 80. The suite had no rows. It enters with 15 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The three "... succeeds" checks grepped psql's output for ERROR, and a backend that
+# crashed prints none: with the creation path replaced by abort(), main's shell passed
+# all three. They now read psql's exit status. The race arm ran two plain concurrent
+# INSERTs, which rarely overlapped, so with the first-writer lock dropped main passed
+# 12/12; writer B now first-writes while writer A holds its transaction open, and the
+# dropped lock fails on storage_pkey every run. And nothing read survival: two checks
+# now read the server log's crash count, and each reading waits for the server, so a
+# crash reds its own arm. 14 are dated by five mutations, each reddening the same
+# names in both twins. 1 arrive never: the parallel-plan premise.
+#
+#     ledger rows   6815 + 15 = 6830
+#     never         4071 + 1 = 4072
+#     dated         2744 + 14 = 2758
+#     4072 + 2758 == 6830
+checks_never_observed_red 4072
