@@ -6551,4 +6551,16 @@ suites_not_covered 44
 #     never         4308 + 24 = 4332
 #     dated         3128 + 11 = 3139
 #     4332 + 3139 == 7471
+#
+# #1722, a cancelled remote parallel export aborts its workers' uploads (OffgridwithJD):
+# 3907 -> 3907. One check joins objstore_sink_write, red first on all five majors in both
+# twins: after the cancel the fixture server still held 4 open multipart uploads under cx/,
+# because SIGTERM ends each worker in FATAL, which never unwinds to the writers' PG_CATCH
+# and its sink abort. It is dated by dropping the new before_shmem_exit registration, which
+# reddens it by name in both twins.
+#
+#     ledger rows   7471 + 1 = 7472
+#     never         4332 + 0 = 4332
+#     dated         3139 + 1 = 3140
+#     4332 + 3140 == 7472
 checks_never_observed_red 4332
