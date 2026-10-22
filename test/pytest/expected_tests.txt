@@ -1003,6 +1003,8 @@ guard_tests 804
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 3292 -> 3302 for #1341's test_native_param_pushdown.py, the twin of native_param_pushdown.sh:
+# 10 checks in 10 tests, by collection over the cluster files.
 # cluster_tests 3280 -> 3292 for #1341's test_native_page_offset_bound.py, the twin of native_page_offset_bound.sh:
 # 12 checks in 12 tests, by collection over the cluster files.
 # cluster_tests 3267 -> 3280 for #1341's test_native_reclaim_reconcile.py, the twin of native_reclaim_reconcile.sh:
@@ -1106,4 +1108,4 @@ guard_tests 804
 # cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
-cluster_tests 3292
+cluster_tests 3302

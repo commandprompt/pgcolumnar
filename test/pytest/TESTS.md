@@ -347,6 +347,7 @@ behaviour, the source of that number is named.
 - [299. test_native_late_materialization.py: a row the qual rejects is not materialized, and the answers do not change](#299-test_native_late_materializationpy-a-row-the-qual-rejects-is-not-materialized-and-the-answers-do-not-change)
 - [300. test_native_reclaim_reconcile.py: a reuse op drops the free_space row that overlaps a live group, and only that row](#300-test_native_reclaim_reconcilepy-a-reuse-op-drops-the-free_space-row-that-overlaps-a-live-group-and-only-that-row)
 - [301. test_native_page_offset_bound.py: a corrupt page_offset is refused by the containment guard on both reads, and an intact table still reads](#301-test_native_page_offset_boundpy-a-corrupt-page_offset-is-refused-by-the-containment-guard-on-both-reads-and-an-intact-table-still-reads)
+- [302. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen](#302-test_native_param_pushdownpy-a-parameterized-qual-prunes-chunk-groups-and-a-correlated-one-is-never-frozen)
 
 ## 1. How to read a test in here
 
@@ -11494,3 +11495,24 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_the_backend_survives_the_whole_group_minus_one` | alive after whole-group page_offset=-1 |
 | `test_a_projected_page_offset_of_minus_one_hits_the_guard` | projected page_offset=-1 hits the containment guard |
 | `test_the_backend_survives_the_projected_minus_one` | alive after projected page_offset=-1 |
+
+## 302. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen
+
+The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()`, a plan line that is missing is a failed reading, and survival also requires the server log's crash count to be unchanged.
+
+| test | what it holds |
+| --- | --- |
+| `test_param_pushdown_a_generic_plan_parameterized_qual_prunes` | a generic-plan parameterized qual prunes chunk groups (19 of 20 removed) |
+| `test_param_pushdown_the_parameterized_count_matches_the_literal` | parameterized count matches the literal count |
+| `test_param_pushdown_the_literal_count_is_the_expected_value` | literal count is the expected value |
+| `test_param_pushdown_the_correlated_arm_rescans_the_columnar_scan` | the correlated arm rescans the columnar scan once per outer row |
+| `test_param_pushdown_a_correlated_param_exec_builds_no_skip_predicate` | a correlated PARAM_EXEC builds no skip predicate |
+| `test_param_pushdown_a_correlated_param_exec_is_not_mis_pruned` | a correlated PARAM_EXEC is not mis-pruned (results stay correct) |
+| `test_param_pushdown_a_correlated_upper_bound_is_not_mis_pruned` | a correlated PARAM_EXEC upper bound is not mis-pruned either |
+| `test_param_pushdown_a_second_execution_counts_with_its_own_value` | a second execution in the same session counts with its own value |
+| `test_param_pushdown_a_second_execution_prunes_with_its_own_value` | and prunes with its own value too (18 of 20 removed) |
+| `test_param_pushdown_the_backend_is_alive` | backend alive |

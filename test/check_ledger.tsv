@@ -4389,6 +4389,16 @@ native_page_offset_bound	native_page_offset_bound	projected page_offset=-1 hits 
 native_page_offset_bound	native_page_offset_bound	whole-group page_offset overrun is refused by the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
 native_page_offset_bound	native_page_offset_bound	whole-group page_offset=-1 hits the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
 native_page_offset_bound	native_page_offset_bound	whole-group page_offset=0 is refused by the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_param_pushdown	native_param_pushdown	a correlated PARAM_EXEC builds no skip predicate	15;16;17;18;19	2026-10-22	columnar_customscan.c: a correlated PARAM_EXEC is frozen into a scan key too
+native_param_pushdown	native_param_pushdown	a correlated PARAM_EXEC is not mis-pruned (results stay correct)	15;16;17;18;19	never	-
+native_param_pushdown	native_param_pushdown	a correlated PARAM_EXEC upper bound is not mis-pruned either	15;16;17;18;19	2026-10-22	columnar_customscan.c: a correlated PARAM_EXEC is frozen into a scan key too
+native_param_pushdown	native_param_pushdown	a generic-plan parameterized qual prunes chunk groups (19 of 20 removed)	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
+native_param_pushdown	native_param_pushdown	a second execution in the same session counts with its own value	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
+native_param_pushdown	native_param_pushdown	and prunes with its own value too (18 of 20 removed)	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
+native_param_pushdown	native_param_pushdown	backend alive	15;16;17;18;19	never	-
+native_param_pushdown	native_param_pushdown	literal count is the expected value	15;16;17;18;19	never	-
+native_param_pushdown	native_param_pushdown	parameterized count matches the literal count	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
+native_param_pushdown	native_param_pushdown	the correlated arm rescans the columnar scan once per outer row	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	FDW scan == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL keeps its null	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL reads	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an INT32 or INT64 DECIMAL is widened byte-reversed;columnar_parquet_reader.c: pq_decimal_to_numeric reads a narrower-than-16-byte negative DECIMAL as its unsigned magnitude
