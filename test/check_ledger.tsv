@@ -4677,6 +4677,29 @@ native_saop_pushdown	native_saop_pushdown	the predicate builder's reject express
 native_saop_pushdown	native_saop_pushdown	the predicate builder's reject expression contains SK_SEARCHNULL	15;16;17;18;19	2026-10-16	columnar_reader.c: the reject expression keeps only SK_ISNULL
 native_saop_pushdown	native_saop_pushdown	vector-agg count over an IN-list is exact (conservative keys not folded)	15;16;17;18;19	2026-10-16	columnar_reader.c: a set key never probes the bloom filter (it probes zero values and rules the group out)
 native_saop_pushdown	native_saop_pushdown	vector-agg path engaged for the guard arm (plan shape)	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_vacuum.c: vacuum_sorted with no key declared aborts the backend in place of its refusal
+native_sort_by	native_sort_by	declared sort_by round-trips	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	empty table sorts without error	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the sorted rewrite orders each key descending
+native_sort_by	native_sort_by	equality parity (post-sort)	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	equality parity (pre-sort)	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	explicit columns lay the rows out as the declared key does	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the declared key loses its first column, so the rewrite sorts by ts alone
+native_sort_by	native_sort_by	explicit-column sort parity	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	full-table parity after sort	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	premise: before sorting, the scan order does not follow (host, ts)	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	row count	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	row count after sort	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	set_options rejects a nonexistent sort_by column	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	set_options rejects a virtual generated sort_by column	18;19	never	-
+native_sort_by	native_sort_by	single-row parity	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	single-row table sorts without error	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the sorted rewrite orders each key descending
+native_sort_by	native_sort_by	sort_by cleared	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	sorting a text key enables group skipping	15;16;17;18;19	2026-10-22	columnar_vacuum.c: vacuum_sorted rewrites in arrival order (no sort keys)
+native_sort_by	native_sort_by	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	the scan order follows the declared key (host, ts)	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the sorted rewrite applies only the first sort key (host), leaving ts unordered
+native_sort_by	native_sort_by	vacuum_sorted rejects an explicit virtual generated column	18;19	2026-10-22	columnar_vacuum.c: the virtual-column refusal aborts the backend in place of its error (PG18+)
+native_sort_by	native_sort_by	virtual generated sort keys	15;16;17	never	-
+native_sort_by	native_sort_by	zero-arg errors on a dropped declared column	15;16;17;18;19	2026-10-22	columnar_vacuum.c: a dropped declared sort_by column gets the generic column-does-not-exist message
+native_sort_by	native_sort_by	zero-arg errors when no key declared	15;16;17;18;19	2026-10-22	columnar_vacuum.c: vacuum_sorted with no key declared aborts the backend in place of its refusal
 native_toasted_write	native_toasted_write	equality on a toasted value (bloom + recheck) matches heap	15;16;17;18;19	2026-10-17	columnar_write_state.c: the bloom hash of a varlena is taken from a fixed value, not the row's flattened one;columnar_write_state.c: the running maximum is never raised past a chunk's first value
 native_toasted_write	native_toasted_write	premise: each range selects some rows and not all	15;16;17;18;19	never	-
 native_toasted_write	native_toasted_write	premise: the source values are toasted (pglz)	15;16;17;18;19	never	-

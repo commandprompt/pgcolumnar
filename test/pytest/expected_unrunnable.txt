@@ -175,6 +175,15 @@
 18 test_pg19_vacuum_options.py::test_vacuum_verbose_reports_on_heap
 18 test_pg19_vacuum_options.py::test_vacuum_verbose_is_silent_on_columnar
 
+# PostgreSQL 15 to 17: virtual generated columns arrived in PostgreSQL 18, so the
+# virtual arm of test_native_sort_by.py declines, as the shell records its skip.
+15 test_native_sort_by.py::test_nsb_set_options_rejects_a_virtual_generated_sort_by_column
+15 test_native_sort_by.py::test_nsb_vacuum_sorted_rejects_an_explicit_virtual_generated_column
+16 test_native_sort_by.py::test_nsb_set_options_rejects_a_virtual_generated_sort_by_column
+16 test_native_sort_by.py::test_nsb_vacuum_sorted_rejects_an_explicit_virtual_generated_column
+17 test_native_sort_by.py::test_nsb_set_options_rejects_a_virtual_generated_sort_by_column
+17 test_native_sort_by.py::test_nsb_vacuum_sorted_rejects_an_explicit_virtual_generated_column
+
 # PostgreSQL 15 and 16 refuse PARTITION BY ... USING pgcolumnar, so audit.sh's
 # partitioned-parent arm declines there under its check_skip name (#1341).
 15 test_audit.py::test_audit_a_partitioned_parent_carries_the_am

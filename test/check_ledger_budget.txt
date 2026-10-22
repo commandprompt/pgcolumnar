@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 62
+suites_not_covered 61
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6253,4 +6253,26 @@ suites_not_covered 62
 #     never         4212 + 4 = 4216
 #     dated         3002 + 6 = 3008
 #     4216 + 3008 == 7224
-checks_never_observed_red 4216
+#
+# #1341, native_sort_by seeded, with its twin (OffgridwithJD): 4216 -> 4230, and
+# suites_not_covered 62 -> 61. The suite had no rows. It enters with 23 rows: 20 checks
+# run on every major, two virtual-column checks run on 18-19, and their skip recorded
+# on 15-17, all green in shell and twin alike on each of 15-19, after two fixes.
+# The physical order was never read: group skipping on host was the only evidence of a
+# sort, and a rewrite that applied only the first key (ts left unordered) passed 16/16 on
+# main. The rows are now read in scan order and every adjacent pair is compared on (host,
+# ts), with a premise that the inserted order is not already sorted, and the explicit-
+# column sort must lay the rows out as the declared key does. And every refusal counted
+# any psql failure: a backend aborting in place of the no-key refusal passed its own
+# check, a crash in place of the virtual-column refusal passed 18/18 on PG18, and a
+# dropped declared column given the generic message passed. Each refusal now wants its
+# guard's SQLSTATE and message, and a new check reads the server log's crash count. 9
+# are dated by the mutations, each reddening the same names in both twins. 14 arrive
+# never: the premise, the virtual arm's skip on 15-17, and the checks no measured
+# mutation reaches.
+#
+#     ledger rows   7224 + 23 = 7247
+#     never         4216 + 14 = 4230
+#     dated         3008 + 9 = 3017
+#     4230 + 3017 == 7247
+checks_never_observed_red 4230

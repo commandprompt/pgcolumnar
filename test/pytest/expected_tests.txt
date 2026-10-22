@@ -1005,6 +1005,8 @@ guard_tests 806
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 3496 -> 3518 for #1341's test_native_sort_by.py, the twin of native_sort_by.sh:
+# 21 checks in 22 tests, by collection over the cluster files.
 # cluster_tests 3486 -> 3496 for #1341's test_native_param_pushdown.py, the twin of native_param_pushdown.sh:
 # 10 checks in 10 tests, by collection over the cluster files.
 # cluster_tests 3474 -> 3486 for #1341's test_native_page_offset_bound.py, the twin of native_page_offset_bound.sh:
@@ -1120,4 +1122,4 @@ guard_tests 806
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 3496
+cluster_tests 3518
