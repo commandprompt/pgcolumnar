@@ -373,6 +373,7 @@ behaviour, the source of that number is named.
 - [325. test_native_rewrite_conc.py: The online rewrite runs alongside writers without losing a row, and without blocking them](#325-test_native_rewrite_concpy-the-online-rewrite-runs-alongside-writers-without-losing-a-row-and-without-blocking-them)
 - [326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received](#326-test_objstore_addressingpy-gs-and-s3-virtual-host-addressing-checked-by-the-request-path-the-server-received)
 - [327. test_objstore_stash_recovery.py: recovery from a stash an interrupted objstore_module run left](#327-test_objstore_stash_recoverypy-recovery-from-a-stash-an-interrupted-objstore_module-run-left)
+- [328. test_objstore_s3_read.py: SigV4-signed s3:// reads, every refusal naming its cause](#328-test_objstore_s3_readpy-sigv4-signed-s3-reads-every-refusal-naming-its-cause)
 
 ## 1. How to read a test in here
 
@@ -12306,3 +12307,32 @@ Every test reads one observation the module fixture took, and makes one check un
 | `test_stand_in_suite_completes` | the suite replaces the stand-in with the real module and completes |
 | `test_stand_in_real_module_survived` | the real module survived, rather than being deleted with the stash |
 | `test_stand_in_stash_cleared` | and the stash is cleared |
+
+## 328. test_objstore_s3_read.py: SigV4-signed s3:// reads, every refusal naming its cause
+
+The twin of `test/objstore_s3_read.sh`. A private cluster reads a parquet object through the local fixture server in SigV4 mode, which recomputes every signature with python's stdlib, requires the session token in the signed set, and refuses a tamper bucket against a different secret. Reads are compared with the byte-identical local file, the request count with the unsigned arithmetic, and the region with both AWS_REGION and AWS_DEFAULT_REGION set, then the fallback alone. A missing endpoint, region and secret are each refused naming what is missing; a 403 names the HTTP 403 and a 404 stays 58P01; an https endpoint is never downgraded.
+
+### Every test
+
+Every test makes one check under the shell's name. Refusals are a SQLSTATE plus the phrase that names the cause; a failed read is a query_error, never text. Every reading waits for the server first, and survival also counts killed backends in the private cluster's log. The first tests decline without pyarrow, under the shell's skip message. The real-S3 arm declines UNMET_PRECONDITION unless PGC_S3_INTEGRATION_ENDPOINT is set, which no matrix run does, so expected_unrunnable.txt lists it on every major.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_is_written` | premise: fixture written |
+| `test_the_sigv4_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_an_s3_read_with_no_environment_is_refused_naming_the_endpoint` | config: s3 read with no environment is 28000 |
+| `test_aws_region_outranks_aws_default_region` | region: AWS_REGION outranks AWS_DEFAULT_REGION |
+| `test_a_full_scan_over_s3_reads_what_the_local_file_reads` | A: full scan s3 == local |
+| `test_a_projection_over_s3_reads_what_the_local_file_reads` | A: projection s3 == local |
+| `test_a_percent_encoded_key_over_s3_reads_what_the_local_file_reads` | A: percent-encoded key s3 == local |
+| `test_count_over_s3` | A: count(*) over s3 |
+| `test_the_signed_run_logged_requests` | premise: signed run logged requests |
+| `test_signing_left_the_request_arithmetic_unchanged` | B: signing left the request arithmetic unchanged |
+| `test_the_tamper_bucket_surfaces_its_403_as_28000` | 403: tamper bucket surfaces 28000 |
+| `test_a_verified_request_for_a_missing_key_still_reaches_404` | 403 ordering premise: verified requests still reach 404 = 58P01 |
+| `test_aws_default_region_is_the_fallback` | region: AWS_DEFAULT_REGION is the fallback |
+| `test_an_s3_read_with_no_region_is_refused_naming_it` | config: s3 read with no region is refused naming it |
+| `test_an_s3_read_with_no_secret_is_refused_naming_it` | config: s3 read with no AWS_SECRET_ACCESS_KEY is refused naming it |
+| `test_an_https_endpoint_is_not_downgraded` | https endpoint is not downgraded |
+| `test_the_backend_is_still_up_after_the_s3_refusals` | backend still up after the s3 refusals |
+| `test_a_real_s3_implementation_reads_what_the_local_file_reads` | integration: real S3 implementation == local |

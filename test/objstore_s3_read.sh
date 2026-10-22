@@ -11,7 +11,9 @@
 #
 #   config   an s3:// read with no AWS_* in the postmaster environment errors
 #            28000 naming AWS_ENDPOINT_URL, before any connection exists to
-#            fail differently.
+#            fail differently. A missing region and a missing secret are each
+#            refused naming what is missing.
+#   region   AWS_REGION outranks AWS_DEFAULT_REGION, which is the fallback.
 #   A        differential oracle vs the byte-identical local file, including a
 #            key that needs percent-encoding (space in both directory and
 #            file name): an encoding disagreement cannot pass the verifier.
@@ -22,10 +24,18 @@
 #            arms prove token signing rather than merely tolerating it.
 #   403      a tamper bucket the server verifies against a different secret:
 #            correct client signature, always refused; must surface 28000 and
-#            never rows. 404 on the real bucket stays 58P01, and its
+#            never rows, naming the HTTP 403. 404 on the real bucket stays 58P01, and its
 #            reachability doubles as proof requests pass verification first.
 #   https    an https:// endpoint is refused 0A000 (TLS is M3), never
 #            silently downgraded.
+#
+# A REFUSAL IS NOT ANY ERROR (#1341): five guards here share 28000 -- no
+# endpoint, no region, no secret, a 403, and a missing token -- so each refusal
+# must name its own cause. With s3:// falling back to a default host when
+# AWS_ENDPOINT_URL is unset, the no-environment read was refused by the REGION
+# guard instead, and a bare 28000 passed it. A refusal's ERROR reaches the
+# client before abort cleanup runs, so a backend killed in that cleanup passed
+# every SQLSTATE check: survival reads the server log's crash count too.
 #
 # The postmaster environment is the ambient credential source (the decided
 # default), so the suite restarts its own cluster between phases instead of
@@ -62,6 +72,7 @@ trap objstore_s3_teardown EXIT INT TERM
 
 # Restart OUR cluster with the given environment strings in the postmaster.
 pg_restart_env() {
+	wait_up	# a backend that crashed in the last reading: let recovery finish first
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
 	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
 	for _ in $(seq 1 30); do
@@ -81,6 +92,45 @@ SQLEOF
 }
 
 reqs() { wc -l < "$S3_LOG" | tr -d ' '; }
+
+# wait_up: wait up to 15 s for the server, so a backend that crashed in one reading
+# fails that reading and survival, not every reading after it during recovery.
+wait_up() { for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done; }
+
+# refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
+# message, the bare SQLSTATE when the message lacks it, or what happened instead.
+refusal_of() {
+	local out state
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif grep -qF "$2" <<<"$out"; then echo "$state$3"
+	else echo "$state"; fi
+}
+
+# Backends killed by a signal, from the server log: a number, or nothing when the log
+# can't be read. A fresh connection answers again after crash recovery, so "SELECT 1"
+# alone passed with a backend aborted before it; survival also requires this count
+# not to have moved.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	wait_up
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
 
 # ---- fixture ----------------------------------------------------------------
 G=3
@@ -127,23 +177,35 @@ psql_run "CREATE FOREIGN TABLE fs3tamper ($COLDEFS) SERVER s3srv OPTIONS (path '
 psql_run "CREATE FOREIGN TABLE fs3miss ($COLDEFS) SERVER s3srv OPTIONS (path 's3://$BUCKET/no_such.parquet');"
 
 # ---- phase 1: no AWS environment at all ------------------------------------
+CRASHES_BEFORE="$(crashes)"
 check "config: s3 read with no environment is 28000" \
-	"$(sqlstate_of "SELECT count(*) FROM fs3")" "28000"
+	"$(refusal_of "SELECT count(*) FROM fs3" \
+		"requires AWS_ENDPOINT_URL in the server environment" " naming AWS_ENDPOINT_URL")" \
+	"28000 naming AWS_ENDPOINT_URL"
 
 # ---- phase 2: full ambient environment, fixture endpoint --------------------
+# AWS_DEFAULT_REGION names a region the fixture refuses: AWS_REGION must win.
 pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.1:$S3_PORT'" \
 	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" \
-	"AWS_REGION='$REGION'" "AWS_SESSION_TOKEN='$TOKEN'"
+	"AWS_REGION='$REGION'" "AWS_DEFAULT_REGION='pgc-wrong-1'" \
+	"AWS_SESSION_TOKEN='$TOKEN'"
 
+check_num "region: AWS_REGION outranks AWS_DEFAULT_REGION" \
+	"$(q "SELECT count(*) FROM fs3")" "$((G * ROWS_PER_GROUP))"
+wait_up
 check "A: full scan s3 == local" \
 	"$(pgc_set_hash "SELECT * FROM fs3")" "$(pgc_set_hash "SELECT * FROM flocal")"
+wait_up
 check "A: projection s3 == local" \
 	"$(pgc_set_hash "SELECT c1, c6 FROM fs3")" "$(pgc_set_hash "SELECT c1, c6 FROM flocal")"
+wait_up
 check "A: percent-encoded key s3 == local" \
 	"$(pgc_set_hash "SELECT * FROM fs3enc")" "$(pgc_set_hash "SELECT * FROM flocal")"
+wait_up
 check_num "A: count(*) over s3" "$(q "SELECT count(*) FROM fs3")" "$((G * ROWS_PER_GROUP))"
 
 K_FULL=$((4 + G * NCOLS))
+wait_up
 : > "$S3_LOG"
 q "SELECT $SUM_ALL FROM fs3" >/dev/null
 FULL_SIGNED="$(reqs)"
@@ -151,10 +213,35 @@ check "premise: signed run logged requests" \
 	"$([ "${FULL_SIGNED:-0}" -gt 0 ] 2>/dev/null && echo yes)" "yes"
 check_num "B: signing left the request arithmetic unchanged" "$FULL_SIGNED" "$K_FULL"
 
+# The refusal must name the HTTP 403, not be another guard's 28000. (The open's HEAD
+# carries no body, so the server's <Code> never reaches the message.)
 check "403: tamper bucket surfaces 28000" \
-	"$(sqlstate_of "SELECT count(*) FROM fs3tamper")" "28000"
+	"$(refusal_of "SELECT count(*) FROM fs3tamper" \
+		"was denied (HTTP 403" " as a 403")" "28000 as a 403"
 check "403 ordering premise: verified requests still reach 404 = 58P01" \
-	"$(sqlstate_of "SELECT count(*) FROM fs3miss")" "58P01"
+	"$(refusal_of "SELECT count(*) FROM fs3miss" "does not exist (HTTP 404)" " as a 404")" \
+	"58P01 as a 404"
+
+# ---- phase 2b: AWS_DEFAULT_REGION alone is the fallback ---------------------
+pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.1:$S3_PORT'" \
+	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" \
+	"AWS_DEFAULT_REGION='$REGION'" "AWS_SESSION_TOKEN='$TOKEN'"
+check_num "region: AWS_DEFAULT_REGION is the fallback" \
+	"$(q "SELECT count(*) FROM fs3")" "$((G * ROWS_PER_GROUP))"
+
+# ---- phase 2c: no region at all, and no secret ------------------------------
+pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.1:$S3_PORT'" \
+	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" \
+	"AWS_SESSION_TOKEN='$TOKEN'"
+check "config: s3 read with no region is refused naming it" \
+	"$(refusal_of "SELECT count(*) FROM fs3" "requires a region option" " naming the region")" \
+	"28000 naming the region"
+pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.1:$S3_PORT'" \
+	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_REGION='$REGION'" "AWS_SESSION_TOKEN='$TOKEN'"
+check "config: s3 read with no AWS_SECRET_ACCESS_KEY is refused naming it" \
+	"$(refusal_of "SELECT count(*) FROM fs3" \
+		"requires AWS_SECRET_ACCESS_KEY in the server environment" " naming AWS_SECRET_ACCESS_KEY")" \
+	"28000 naming AWS_SECRET_ACCESS_KEY"
 
 # ---- phase 3: an https endpoint is never silently downgraded ---------------
 # The property is no-downgrade; its SQLSTATE depends on the build. A module
@@ -173,8 +260,11 @@ if [ "$(grep -c libssl <<<"$_ldd_out" || true)" -ne 0 ]; then
 else
 	HTTPS_WANT="0A000"
 fi
-check "https endpoint is not downgraded (want $HTTPS_WANT for this build)" \
-	"$(sqlstate_of "SELECT count(*) FROM fs3")" "$HTTPS_WANT"
+# The name is literal so the grader can read it; the build's want is in the reading.
+wait_up
+check "https endpoint is not downgraded" \
+	"$(sqlstate_of "SELECT count(*) FROM fs3") for this build" "$HTTPS_WANT for this build"
+check "backend still up after the s3 refusals" "$(survived "$CRASHES_BEFORE")" "1"
 
 # ---- phase 4: optional integration against a real S3 implementation --------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then

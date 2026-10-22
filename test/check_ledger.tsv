@@ -5135,6 +5135,23 @@ objstore_listing	objstore_listing	hidden (_SUCCESS) and non-parquet (notes.txt) 
 objstore_listing	objstore_listing	premise: fixture up	15;16;17;18;19	never	-
 objstore_listing	objstore_listing	read_parquet over a prefix reads every object under it (4 parts, recursive)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
 objstore_listing	objstore_listing	the prefix listing paged (more than one list-type=2 request)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_s3_read	objstore_s3_read	403 ordering premise: verified requests still reach 404 = 58P01	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a 404 on open is refused 28000 instead of 58P01
+objstore_s3_read	objstore_s3_read	403: tamper bucket surfaces 28000	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a 403 on open is read as an empty object
+objstore_s3_read	objstore_s3_read	A: count(*) over s3	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_s3_read	objstore_s3_read	A: full scan s3 == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_s3_read	objstore_s3_read	A: percent-encoded key s3 == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_s3_read	objstore_s3_read	A: projection s3 == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_s3_read	objstore_s3_read	B: signing left the request arithmetic unchanged	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_s3_read	objstore_s3_read	backend still up after the s3 refusals	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort cleanup of an open handle calls abort() after the ERROR reached the client
+objstore_s3_read	objstore_s3_read	config: s3 read with no AWS_SECRET_ACCESS_KEY is refused naming it	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a missing AWS_SECRET_ACCESS_KEY signs with an empty secret
+objstore_s3_read	objstore_s3_read	config: s3 read with no environment is 28000	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: s3:// with no AWS_ENDPOINT_URL falls back to a default host instead of refusing
+objstore_s3_read	objstore_s3_read	config: s3 read with no region is refused naming it	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: with no region configured the signer uses us-east-1 instead of refusing
+objstore_s3_read	objstore_s3_read	https endpoint is not downgraded	15;16;17;18;19	never	-
+objstore_s3_read	objstore_s3_read	premise: fixture written	15;16;17;18;19	never	-
+objstore_s3_read	objstore_s3_read	premise: signed run logged requests	15;16;17;18;19	never	-
+objstore_s3_read	objstore_s3_read	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
+objstore_s3_read	objstore_s3_read	region: AWS_DEFAULT_REGION is the fallback	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION is never consulted
+objstore_s3_read	objstore_s3_read	region: AWS_REGION outranks AWS_DEFAULT_REGION	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
 objstore_stash_recovery	objstore_stash_recovery	and the installed module is still the one that was there, not the debris	15;16;17;18;19	2026-10-22	objstore_module.sh start guard with no debris branch: every stash restored over the installed module
 objstore_stash_recovery	objstore_stash_recovery	and the module left installed is still valid	15;16;17;18;19	never	-
 objstore_stash_recovery	objstore_stash_recovery	and the stash is cleared	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
