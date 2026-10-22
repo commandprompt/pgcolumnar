@@ -391,6 +391,7 @@ behaviour, the source of that number is named.
 - [343. test_parquet_timestamp_zone.py: a Parquet timestamp read into the other timestamp type follows PostgreSQL's casts](#343-test_parquet_timestamp_zonepy-a-parquet-timestamp-read-into-the-other-timestamp-type-follows-postgresqls-casts)
 - [344. test_parquet_skip_cross_type.py: Parquet row-group skipping uses a constant of another type in the operator family](#344-test_parquet_skip_cross_typepy-parquet-row-group-skipping-uses-a-constant-of-another-type-in-the-operator-family)
 - [345. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap](#345-test_parquet_exportpy-pgcolumnarexport_parquet-writes-a-file-two-readers-read-back-equal-to-the-heap)
+- [346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined](#346-test_planner_choice_qualitypy-the-planners-chosen-plan-is-not-far-slower-than-the-plans-it-declined)
 
 ## 1. How to read a test in here
 
@@ -12942,3 +12943,25 @@ Each value comparison needs the generator's ids on both sides and the file's row
 | `test_the_extended_parquet_types_are_the_mapped_ones` | extended parquet types |
 | `test_duckdb_reads_the_parquet_decimal` | duckdb reads decimal |
 | `test_duckdb_counts_every_extended_parquet_row` | duckdb extended row count |
+
+## 346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined
+
+The twin of `test/planner_choice_quality.sh` (#433, #434). On 200,000 wide rows whose payload does not compress, with an index on a correlated key, two queries run the planner's own choice and then two forced alternatives (indexes off; the custom scan and the sequential scan off). The chosen plan must run to completion, and must be no more than PLAN_BOUND (3) times slower than the fastest forced alternative that is a different plan. A forced alternative that fails fails the comparison instead of counting as the fastest plan.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database with serial planning, as the shell's cluster runs. Each arm runs its EXPLAIN, a warming run and the timed run in one session, so the plan named is the plan timed. An error, a statement-timeout cancel or a lost connection is a failure by name, never a short time. With PGC_SKIP_TIMING=1 nothing executes, the fixture is 20,000 rows, and the two measured tests per query are declared unrunnable under the shell's names, so the session does not end green; the shell's driver does not run the suite at all under that flag.
+
+| test | what it holds |
+| --- | --- |
+| `test_planner_choice_fixture_rows` | fixture rows |
+| `test_planner_choice_payload_did_not_compress` | premise: the payload did not compress, so the fetch path is exercised |
+| `test_planner_choice_index_key_is_correlated` | premise: the index key is correlated, which is the case that misprices |
+| `test_range_aggregate_chosen_plan_was_identified` | premise: [range scan with aggregate] the chosen plan was identified |
+| `test_range_aggregate_forcing_produced_a_different_plan` | [range scan with aggregate] forcing produced a different plan |
+| `test_range_aggregate_chosen_plan_ran_to_completion` | [range scan with aggregate] the chosen plan ran to completion |
+| `test_range_aggregate_chosen_plan_is_not_far_slower` | [range scan with aggregate] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
+| `test_wide_range_count_chosen_plan_was_identified` | premise: [wide range, narrow projection] the chosen plan was identified |
+| `test_wide_range_count_forcing_produced_a_different_plan` | [wide range, narrow projection] forcing produced a different plan |
+| `test_wide_range_count_chosen_plan_ran_to_completion` | [wide range, narrow projection] the chosen plan ran to completion |
+| `test_wide_range_count_chosen_plan_is_not_far_slower` | [wide range, narrow projection] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
