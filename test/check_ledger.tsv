@@ -2549,6 +2549,55 @@ iceberg_catalog	iceberg_catalog	malformed JSON is rejected (22P02), backend surv
 iceberg_catalog	iceberg_catalog	resolves the named current snapshot, not snapshots[0]	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the decoy snapshot is not returned	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the first snapshot has no parent (NULL)	15;16;17;18;19	never	-
+iceberg_deletes	iceberg_deletes	...and the boundary refusal names the escape	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_rebase does not hold a recorded path under the recorded table location
+iceberg_deletes	iceberg_deletes	...and the negative-pos refusal names the negative pos	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a negative position-delete pos is not refused
+iceberg_deletes	iceberg_deletes	...and the null-pos refusal names pos	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position-delete row with a null pos is not refused (the n1 || n2 guard skipped)
+iceberg_deletes	iceberg_deletes	...and the refusal names the type	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a timestamp equality-delete column is mapped to text instead of refused
+iceberg_deletes	iceberg_deletes	a cross-spec partition-scoped delete applies to nothing (5 rows)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition-scoped equality delete applies across partition spec ids
+iceberg_deletes	iceberg_deletes	a data file lacking partition_spec_id is refused under a partitioned delete (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a data file without partition_spec_id is not refused under a partition-scoped delete
+iceberg_deletes	iceberg_deletes	a delete older than the data (lower seq) does not apply (5 rows)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies whatever its sequence number
+iceberg_deletes	iceberg_deletes	a delete scoped to an empty partition deletes nothing (5 rows)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition-scoped equality delete ignores the partition value
+iceberg_deletes	iceberg_deletes	a dotdot-escaping delete path is refused (22023)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_rebase does not re-check containment after canonicalize_path
+iceberg_deletes	iceberg_deletes	a manifest list without partition_spec_id is refused for equality deletes (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete whose manifest list carries no partition_spec_id is not refused
+iceberg_deletes	iceberg_deletes	a never-applicable equality delete is skipped, not validated (5 rows)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete at the oldest data file's sequence number is not skipped before validation
+iceberg_deletes	iceberg_deletes	a never-applicable equality delete without equality_ids is skipped (5 rows)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete at the oldest data file's sequence number is not skipped before validation
+iceberg_deletes	iceberg_deletes	a null delete value matches only null data values	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a null equality-delete value matches any data value (comparing the null Datum kills the backend)
+iceberg_deletes	iceberg_deletes	a partition spec without its fields key is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition spec without a fields array is not refused (a NULL deref kills the backend)
+iceberg_deletes	iceberg_deletes	a partition-scoped delete with an uncomparable partition value is refused (0A000)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition-scoped equality delete with an uncomparable partition tuple is not refused
+iceberg_deletes	iceberg_deletes	a partition-scoped equality delete applies only to its partition	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition-scoped equality delete ignores the partition value
+iceberg_deletes	iceberg_deletes	a position delete naming a different data file deletes nothing (5 rows)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies to every data file, not only the one it names
+iceberg_deletes	iceberg_deletes	a position delete of ordinal 0 deletes the first row (id 1 gone, 4 remain)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
+iceberg_deletes	iceberg_deletes	a position delete with a negative pos is refused (XX001, not cast inert)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a negative position-delete pos is not refused
+iceberg_deletes	iceberg_deletes	a position delete with a null pos is refused (XX001, not silently dropped)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position-delete row with a null pos is not refused (the n1 || n2 guard skipped)
+iceberg_deletes	iceberg_deletes	a position delete with an inherited (null-entry) sequence number applies	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
+iceberg_deletes	iceberg_deletes	a v1 manifest without a sequence_number column reads (default 0, 5 rows)	15;16;17;18;19	never	-
+iceberg_deletes	iceberg_deletes	an EXISTING entry with a null sequence number is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an EXISTING (status 0) manifest entry with a null sequence number is not refused
+iceberg_deletes	iceberg_deletes	an equality column missing from the data file errors (22023)	15;16;17;18;19	never	-
+iceberg_deletes	iceberg_deletes	an equality delete at an equal sequence number does not apply	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete applies at an equal sequence number (both the pre-skip and the per-file strict < relaxed to <=)
+iceberg_deletes	iceberg_deletes	an equality delete on an unsupported column type is refused (0A000)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a timestamp equality-delete column is mapped to text instead of refused
+iceberg_deletes	iceberg_deletes	an equality delete without equality_ids is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete without equality_ids is not refused
+iceberg_deletes	iceberg_deletes	an equality-delete path outside the table location is refused (22023)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_rebase does not hold a recorded path under the recorded table location
+iceberg_deletes	iceberg_deletes	an equality_ids value beyond int32 refuses the manifest (XX001)	15;16;17;18;19	2026-10-21	columnar_avro.c: an equality_ids value beyond int32 is not refused (truncated)
+iceberg_deletes	iceberg_deletes	backend still up after the audit arms	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition spec without a fields array is not refused (a NULL deref kills the backend)
+iceberg_deletes	iceberg_deletes	backend still up after the bad-sequence refusal	15;16;17;18;19	never	-
+iceberg_deletes	iceberg_deletes	backend still up after the equality applications	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a null equality-delete value matches any data value (comparing the null Datum kills the backend)
+iceberg_deletes	iceberg_deletes	backend still up after the equality refusals	15;16;17;18;19	never	-
+iceberg_deletes	iceberg_deletes	backend still up after the negative-pos refusal	15;16;17;18;19	never	-
+iceberg_deletes	iceberg_deletes	backend still up after the null-pos refusal	15;16;17;18;19	2026-10-21	columnar_iceberg.c: abort() in place of the null-pos refusal
+iceberg_deletes	iceberg_deletes	columns beyond equality_ids are ignored for matching	15;16;17;18;19	2026-10-21	columnar_iceberg.c: no equality-delete row ever matches
+iceberg_deletes	iceberg_deletes	equality delete drops matching rows (survivors == oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: no equality-delete row ever matches
+iceberg_deletes	iceberg_deletes	equality deletes apply when the delete column is not projected	15;16;17;18;19	2026-10-21	columnar_iceberg.c: no equality-delete row ever matches
+iceberg_deletes	iceberg_deletes	exactly the two deleted rows were removed (5 - 2 = 3)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
+iceberg_deletes	iceberg_deletes	multi-column equality matches all columns (AND, not OR)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete compares only its first equality column (multi-column match becomes first-column)
+iceberg_deletes	iceberg_deletes	multiple equality-delete files apply their union	15;16;17;18;19	2026-10-21	columnar_iceberg.c: no equality-delete row ever matches
+iceberg_deletes	iceberg_deletes	position and equality deletes combine	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
+iceberg_deletes	iceberg_deletes	position deletes apply under column projection (id only -> 1,3,5)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
+iceberg_deletes	iceberg_deletes	position deletes drop the listed rows (surviving == oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
+iceberg_deletes	iceberg_deletes	the data file has 5 rows before deletes	15;16;17;18;19	never	-
+iceberg_deletes	iceberg_deletes	the deleted ids (2, 4) are gone	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
+iceberg_deletes	iceberg_deletes	the null-region row is gone, the non-null rows remain	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a null equality-delete value matches any data value (comparing the null Datum kills the backend)
+iceberg_deletes	iceberg_deletes	the us-partition rows survive an eu-scoped delete	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition-scoped equality delete ignores the partition value
+iceberg_deletes	iceberg_deletes	the would-be-deleted ids survive when the delete is older than the data	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies whatever its sequence number
 iceberg_dv	iceberg_dv	...and the refusal names the compressed footer	15;16;17;18;19	2026-10-21	columnar_puffin.c: a compressed Puffin footer (flags bit 0) is not refused
 iceberg_dv	iceberg_dv	...and the refusal names the format version	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a deletion vector in a format-version 2 table is not refused
 iceberg_dv	iceberg_dv	a DV blob declaring a compression codec is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_puffin.c: a deletion-vector blob may declare a compression codec

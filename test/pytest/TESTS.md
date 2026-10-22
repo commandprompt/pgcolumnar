@@ -315,6 +315,7 @@ behaviour, the source of that number is named.
 - [267. test_iceberg_objstore.py: Iceberg tables read over object storage](#267-test_iceberg_objstorepy-iceberg-tables-read-over-object-storage)
 - [268. test_iceberg_dv.py: Iceberg v3 deletion vectors apply, supersede, and refuse what they must](#268-test_iceberg_dvpy-iceberg-v3-deletion-vectors-apply-supersede-and-refuse-what-they-must)
 - [269. test_logical_decoding_source.py: a columnar table is not a logical decoding source](#269-test_logical_decoding_sourcepy-a-columnar-table-is-not-a-logical-decoding-source)
+- [270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must](#270-test_iceberg_deletespy-iceberg-position-and-equality-deletes-apply-scope-and-refuse-what-they-must)
 
 ## 1. How to read a test in here
 
@@ -10459,3 +10460,63 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 | `test_lds_second_slot_heap_control_is_decoded` | CONTROL: the second slot decodes the heap table's 5000 inserts |
 | `test_lds_big_columnar_emits_no_change` | and it too emits no decodable change of its own |
 | `test_lds_internal_records_do_not_follow_rows` | 100x the rows does not give 100x the internal records |
+
+## 270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must
+
+The twin of `test/iceberg_deletes.sh`. Hand-crafted snapshots exercise position deletes (the <= sequence rule, inheritance, per-file scoping, ordinal 0), equality deletes (the strict < rule, multi-column AND, nulls, unions, mixed with position deletes) and partition-scoped equality deletes, against the generator's oracle; thirteen corrupt or unsupported snapshots are refused, each by its own guard, and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal reads as its SQLSTATE only when the message is that guard's own (XX001 and 22023 are shared), and a failed reading is a `query_error()`. Each survival check also requires that the server log's count of backends killed by a signal has not moved since its section began, and every reading first waits for the server to answer, so a crash reddens only its own arm and its section's survival check.
+
+| test | what it holds |
+| --- | --- |
+| `test_iceberg_deletes_the_data_file_has_five_rows` | the data file has 5 rows before deletes |
+| `test_position_deletes_drop_the_listed_rows` | position deletes drop the listed rows (surviving == oracle) |
+| `test_position_deleted_ids_are_gone` | the deleted ids (2, 4) are gone |
+| `test_position_deletes_remove_exactly_two_rows` | exactly the two deleted rows were removed (5 - 2 = 3) |
+| `test_position_deletes_apply_under_projection` | position deletes apply under column projection (id only -> 1,3,5) |
+| `test_a_position_delete_older_than_the_data_does_not_apply` | a delete older than the data (lower seq) does not apply (5 rows) |
+| `test_older_position_delete_leaves_its_ids` | the would-be-deleted ids survive when the delete is older than the data |
+| `test_a_position_delete_inherits_a_null_sequence_number` | a position delete with an inherited (null-entry) sequence number applies |
+| `test_a_position_delete_naming_another_file_deletes_nothing` | a position delete naming a different data file deletes nothing (5 rows) |
+| `test_a_null_pos_is_refused` | a position delete with a null pos is refused (XX001, not silently dropped) |
+| `test_the_null_pos_refusal_names_pos` | ...and the null-pos refusal names pos |
+| `test_the_backend_survives_the_null_pos_refusal` | backend still up after the null-pos refusal |
+| `test_a_negative_pos_is_refused` | a position delete with a negative pos is refused (XX001, not cast inert) |
+| `test_the_negative_pos_refusal_names_it` | ...and the negative-pos refusal names the negative pos |
+| `test_the_backend_survives_the_negative_pos_refusal` | backend still up after the negative-pos refusal |
+| `test_a_position_delete_of_ordinal_zero_deletes_the_first_row` | a position delete of ordinal 0 deletes the first row (id 1 gone, 4 remain) |
+| `test_an_equality_delete_drops_matching_rows` | equality delete drops matching rows (survivors == oracle) |
+| `test_an_equality_delete_at_an_equal_sequence_does_not_apply` | an equality delete at an equal sequence number does not apply |
+| `test_multi_column_equality_is_an_and` | multi-column equality matches all columns (AND, not OR) |
+| `test_columns_beyond_equality_ids_are_ignored` | columns beyond equality_ids are ignored for matching |
+| `test_a_null_equality_value_matches_only_nulls` | a null delete value matches only null data values |
+| `test_the_null_region_row_is_gone` | the null-region row is gone, the non-null rows remain |
+| `test_multiple_equality_delete_files_apply_their_union` | multiple equality-delete files apply their union |
+| `test_position_and_equality_deletes_combine` | position and equality deletes combine |
+| `test_equality_deletes_apply_to_an_unprojected_column` | equality deletes apply when the delete column is not projected |
+| `test_the_backend_survives_the_equality_applications` | backend still up after the equality applications |
+| `test_an_equality_delete_without_equality_ids_is_refused` | an equality delete without equality_ids is refused (XX001) |
+| `test_a_never_applicable_equality_delete_without_ids_is_skipped` | a never-applicable equality delete without equality_ids is skipped (5 rows) |
+| `test_a_partition_scoped_equality_delete_stays_in_its_partition` | a partition-scoped equality delete applies only to its partition |
+| `test_the_us_partition_survives_an_eu_scoped_delete` | the us-partition rows survive an eu-scoped delete |
+| `test_a_delete_scoped_to_an_empty_partition_deletes_nothing` | a delete scoped to an empty partition deletes nothing (5 rows) |
+| `test_a_data_file_without_partition_spec_id_is_refused` | a data file lacking partition_spec_id is refused under a partitioned delete (XX001) |
+| `test_a_cross_spec_partition_delete_applies_to_nothing` | a cross-spec partition-scoped delete applies to nothing (5 rows) |
+| `test_an_uncomparable_partition_value_is_refused` | a partition-scoped delete with an uncomparable partition value is refused (0A000) |
+| `test_an_equality_delete_on_an_unsupported_type_is_refused` | an equality delete on an unsupported column type is refused (0A000) |
+| `test_the_unsupported_type_refusal_names_the_type` | ...and the refusal names the type |
+| `test_an_equality_column_missing_from_the_data_file_errors` | an equality column missing from the data file errors (22023) |
+| `test_an_equality_delete_path_outside_the_table_is_refused` | an equality-delete path outside the table location is refused (22023) |
+| `test_the_boundary_refusal_names_the_escape` | ...and the boundary refusal names the escape |
+| `test_a_dotdot_escaping_delete_path_is_refused` | a dotdot-escaping delete path is refused (22023) |
+| `test_the_backend_survives_the_equality_refusals` | backend still up after the equality refusals |
+| `test_an_equality_id_beyond_int32_is_refused` | an equality_ids value beyond int32 refuses the manifest (XX001) |
+| `test_a_manifest_list_without_partition_spec_id_is_refused` | a manifest list without partition_spec_id is refused for equality deletes (XX001) |
+| `test_a_partition_spec_without_fields_is_refused` | a partition spec without its fields key is refused (XX001) |
+| `test_a_never_applicable_equality_delete_is_not_validated` | a never-applicable equality delete is skipped, not validated (5 rows) |
+| `test_a_v1_manifest_without_sequence_numbers_reads` | a v1 manifest without a sequence_number column reads (default 0, 5 rows) |
+| `test_the_backend_survives_the_delete_audit_arms` | backend still up after the audit arms |
+| `test_an_existing_entry_with_a_null_sequence_number_is_refused` | an EXISTING entry with a null sequence number is refused (XX001) |
+| `test_the_backend_survives_the_bad_sequence_refusal` | backend still up after the bad-sequence refusal |
