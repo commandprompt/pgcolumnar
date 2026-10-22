@@ -23,7 +23,6 @@ iceberg_rest
 iceberg_rest_scan
 iceberg_rest_server
 iceberg_rest_vended
-logical_decoding_cdc_recipe
 native_agg_deletes
 native_cancel
 native_cluster
