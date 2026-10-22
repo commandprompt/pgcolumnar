@@ -16,6 +16,16 @@
 # below assert that nothing was pruned, so a green run cannot be pruning wearing
 # this feature's name.
 #
+# EVERY READING FAILS CLOSED. A counter that could not be read is "no reading", never 0:
+# four checks want exactly 0, and with the server stopped they used to read an empty
+# counter as 0 and pass (#1341).
+#
+# NOT MEASURABLE HERE: whether a rejected row's payload is actually left unbuilt. With
+# the payload built anyway and the row still counted (mutant "matall"), every check
+# stays green: no EXPLAIN counter reports per-row materialization, and the answers are
+# the same by design. "Columnar Rows Filtered Before Materialization" counts the rows
+# the qual rejected on this path, not the copies avoided.
+#
 # Usage:  test/native_late_materialization.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -52,15 +62,27 @@ psql_run "ANALYZE h; ANALYZE n;"
 Q="SELECT * FROM n WHERE k LIKE '%${NEEDLE}%'"
 QH="SELECT * FROM h WHERE k LIKE '%${NEEDLE}%'"
 
-# One EXPLAIN ANALYZE counter for a query.
-counter() {  # counter <label> <query>
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -At -c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $2" 2>/dev/null \
-		| grep "$1" | grep -oE '[0-9]+' | head -1
+# counter <label> <query> [setting] -> the integer on the plan line holding <label>, or
+# "no reading (...)" when the EXPLAIN failed or printed no such line. These counters are
+# always printed, so a missing line is a failed reading, not 0.
+counter() {
+	local out v
+	if ! out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -v ON_ERROR_STOP=1 ${3:+-c "$3"} \
+		-c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $2" 2>&1)"; then
+		echo "no reading (EXPLAIN failed: $(head -1 <<<"$out"))"
+		return
+	fi
+	v="$(grep -F "$1" <<<"$out" | grep -oE '[0-9]+' | head -1)"
+	if [ -n "$v" ]; then echo "$v"; else echo "no reading (no \"$1\" line)"; fi
 }
-scalar() {  # scalar <sql>
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -At -c "$1" 2>/dev/null
+# scalar <sql> [setting] -> the last output line, or "" when psql failed (check_num and
+# check_text both refuse an empty side).
+scalar() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -v ON_ERROR_STOP=1 ${2:+-c "$2"} -c "$1" 2>/dev/null)" || return 0
+	tail -1 <<<"$out"
 }
 
 # ---- premises, so a green run cannot mean something else --------------------
@@ -77,21 +99,24 @@ check_num "premise: heap agrees on how many rows match" "$h_match" "$n_match"
 # node reports it. Without this the counters below would be read off a node that
 # is not the one under test.
 proj=$(counter "Columnar Projected Columns" "$Q")
-check "premise: the query runs on the columnar custom scan" \
-	"$([ -n "$proj" ] && echo yes || echo no)" "yes"
+# Not a premise: with the custom scan off by default (one line of pgcolumnar) it fails.
+check "the query runs on the columnar custom scan" \
+	"$(case "$proj" in ''|*[!0-9]*) echo "no ($proj)" ;; *) echo yes ;; esac)" "yes"
 
 # A leading-wildcard LIKE must not prune. If it ever does, this suite is
 # measuring pruning and its headline check means nothing.
+# Not premises: with the custom scan off by default (one line of pgcolumnar) these
+# counters are not printed and both fail as no reading (#1339).
 removed=$(counter "Columnar Chunk Groups Removed by Filter" "$Q")
 vskip=$(counter "Columnar Vectors Skipped" "$Q")
-check_num "premise: nothing was pruned at the group level" "${removed:-0}" "0"
-check_num "premise: nothing was pruned at the vector level" "${vskip:-0}" "0"
+check_num "nothing was pruned at the group level" "$removed" "0"
+check_num "nothing was pruned at the vector level" "$vskip" "0"
 
 # ---- the feature -----------------------------------------------------------
 
 early=$(counter "Columnar Rows Filtered Before Materialization" "$Q")
 check_num "a rejected row does not materialize its payload columns" \
-	"${early:-0}" "$((ROWS - n_match))"
+	"$early" "$((ROWS - n_match))"
 
 # ---- the executor's own counter must keep counting -------------------------
 #
@@ -105,7 +130,7 @@ check_num "a rejected row does not materialize its payload columns" \
 # majors); this pins it here, next to the feature that broke it.
 removed=$(counter "Rows Removed by Filter" "$Q")
 check_num "the executor still reports the rows the scan filtered" \
-	"${removed:-0}" "$((ROWS - n_match))"
+	"$removed" "$((ROWS - n_match))"
 
 # ---- and it may not change a single answer ---------------------------------
 #
@@ -120,19 +145,11 @@ check_text "the rows are identical to the heap mirror" "$nn" "$nh"
 # With the feature off the counter must be 0 AND the answers must be unchanged.
 # Asserting only the first would let a broken implementation that silently
 # emitted nothing pass the off-arm.
-psql_run "SET pgcolumnar.enable_late_materialization = off;"
-off_early=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-	-d "$PGC_DB" -At \
-	-c "SET pgcolumnar.enable_late_materialization = off;" \
-	-c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $Q" 2>/dev/null \
-	| grep "Columnar Rows Filtered Before Materialization" | grep -oE '[0-9]+' | head -1)
-check_num "with the feature off nothing is filtered early" "${off_early:-0}" "0"
+OFF="SET pgcolumnar.enable_late_materialization = off;"
+off_early=$(counter "Columnar Rows Filtered Before Materialization" "$Q" "$OFF")
+check_num "with the feature off nothing is filtered early" "$off_early" "0"
 
-nn_off=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-	-d "$PGC_DB" -At \
-	-c "SET pgcolumnar.enable_late_materialization = off;" \
-	-c "SELECT md5(string_agg(t::text, '|' ORDER BY id)) FROM ($Q) t;" 2>/dev/null \
-	| tail -1)
+nn_off=$(scalar "SELECT md5(string_agg(t::text, '|' ORDER BY id)) FROM ($Q) t;" "$OFF")
 check_text "and the answers are the same with it off" "$nn_off" "$nh"
 
 # ---- a volatile qual must refuse the path entirely -------------------------
@@ -153,17 +170,18 @@ QV="SELECT * FROM n WHERE k LIKE '%${NEEDLE}%' AND random() < 2"
 QVH="SELECT * FROM h WHERE k LIKE '%${NEEDLE}%' AND random() < 2"
 
 vol_early=$(counter "Columnar Rows Filtered Before Materialization" "$QV")
-check_num "a volatile qual is refused the two-pass path" "${vol_early:-0}" "0"
+check_num "a volatile qual is refused the two-pass path" "$vol_early" "0"
 
 # And refusing it must not change the answer either.
 vh=$(scalar "SELECT md5(string_agg(t::text, '|' ORDER BY id)) FROM ($QVH) t;")
 vn=$(scalar "SELECT md5(string_agg(t::text, '|' ORDER BY id)) FROM ($QV) t;")
 check_text "and the volatile query still matches the heap mirror" "$vn" "$vh"
 
-# The premise that makes the check above mean something: the SAME query without
-# the volatile term does take the path. Without this, "0" would be satisfied by a
-# fixture that never qualified for late materialization at all.
-check_num "premise: the same shape without the volatile term does use it" \
+# What makes the check above mean something: the SAME query without the volatile term
+# does take the path. Without this, "0" would be satisfied by a fixture that never
+# qualified for late materialization at all. Not a premise: the counter dropped, the
+# custom scan off, or a survivor lost each fail it (#1339).
+check_num "the same shape without the volatile term does use it" \
 	"$(counter "Columnar Rows Filtered Before Materialization" "$Q")" \
 	"$((ROWS - n_match))"
 

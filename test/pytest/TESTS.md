@@ -349,6 +349,7 @@ behaviour, the source of that number is named.
 - [301. test_native_fold_deferral.py: the batch fold defers payload until a row passes its keys, and the work is measured](#301-test_native_fold_deferralpy-the-batch-fold-defers-payload-until-a-row-passes-its-keys-and-the-work-is-measured)
 - [302. test_native_lazy_slot.py: the index fetch decodes only the prefix the executor asks for, and never a stale one](#302-test_native_lazy_slotpy-the-index-fetch-decodes-only-the-prefix-the-executor-asks-for-and-never-a-stale-one)
 - [303. test_native_metadata_flush.py: a stripe flush opens each metadata table once, and the flush's writes read back correctly](#303-test_native_metadata_flushpy-a-stripe-flush-opens-each-metadata-table-once-and-the-flushs-writes-read-back-correctly)
+- [304. test_native_late_materialization.py: a row the qual rejects is not materialized, and the answers do not change](#304-test_native_late_materializationpy-a-row-the-qual-rejects-is-not-materialized-and-the-answers-do-not-change)
 
 ## 1. How to read a test in here
 
@@ -11617,3 +11618,28 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_native_metadata_flush_every_column_reads_back` | every column reads back correct (sum over all 20 columns matches the heap mirror) |
 | `test_native_metadata_flush_range_read_matches_heap` | a zone-map-pruned range read matches heap (the batched zone rows are correct) |
 | `test_native_metadata_flush_zone_row_rules_out_a_vector` | and that range read rules out a vector by its zone row alone |
+
+## 304. test_native_late_materialization.py: a row the qual rejects is not materialized, and the answers do not change
+
+The twin of `test/native_late_materialization.sh`. A leading-wildcard LIKE that cannot be pruned selects one row in 1024 from a one-group table with wide payload columns; the scan counts the rejected rows as filtered before materialization, the executor still reports them as removed by filter, and every answer, with the feature on, off and refused for a volatile qual, equals a heap mirror written from the generator.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order, with serial plans as the shell's cluster runs them. A failed reading is a `query_error()`, and a counter the plan did not print is a failed reading, never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_late_materialization_fixture_loaded_every_row` | premise: the fixture loaded every row |
+| `test_late_materialization_needle_is_selective` | premise: the needle is selective, not most of the table |
+| `test_late_materialization_heap_agrees_on_matches` | premise: heap agrees on how many rows match |
+| `test_late_materialization_query_runs_on_the_custom_scan` | the query runs on the columnar custom scan |
+| `test_late_materialization_nothing_pruned_at_group_level` | nothing was pruned at the group level |
+| `test_late_materialization_nothing_pruned_at_vector_level` | nothing was pruned at the vector level |
+| `test_late_materialization_rejected_row_not_materialized` | a rejected row does not materialize its payload columns |
+| `test_late_materialization_executor_still_reports_filtered_rows` | the executor still reports the rows the scan filtered |
+| `test_late_materialization_rows_identical_to_heap` | the rows are identical to the heap mirror |
+| `test_late_materialization_off_filters_nothing_early` | with the feature off nothing is filtered early |
+| `test_late_materialization_off_answers_unchanged` | and the answers are the same with it off |
+| `test_late_materialization_volatile_qual_refused` | a volatile qual is refused the two-pass path |
+| `test_late_materialization_volatile_matches_heap` | and the volatile query still matches the heap mirror |
+| `test_late_materialization_same_shape_uses_the_path` | the same shape without the volatile term does use it |

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 66
+suites_not_covered 65
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6169,4 +6169,24 @@ suites_not_covered 66
 #     never         4199 + 2 = 4201
 #     dated         2968 + 6 = 2974
 #     4201 + 2974 == 7175
-checks_never_observed_red 4201
+#
+# #1341, native_late_materialization seeded, with its twin (OffgridwithJD): 4201 -> 4207, and
+# suites_not_covered 66 -> 65. The suite had no rows. It enters with 14 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# Every counter defaulted to 0 when it could not be read, and four checks want exactly
+# 0: with the server stopped before the feature-off arm, "with the feature off nothing
+# is filtered early" and "a volatile qual is refused the two-pass path" passed on main.
+# An unread counter is now "no reading". And four premises a one-line pgcolumnar change
+# reddens (the custom scan off by default, the early counter dropped, a survivor
+# rejected) lost the prefix. 8 are dated by six mutations, each reddening the same
+# names in both twins. 6 arrive never: the three fixture premises, the executor's
+# own Rows Removed by Filter (no mutant made it disagree), and the two answer checks
+# with the feature off and refused, which no mutation of the late-materialization
+# path reaches because neither runs it. Building a rejected row's payload anyway
+# (matall) reddens nothing: no counter reports per-row materialization.
+#
+#     ledger rows   7175 + 14 = 7189
+#     never         4201 + 6 = 4207
+#     dated         2974 + 8 = 2982
+#     4207 + 2982 == 7189
+checks_never_observed_red 4207
