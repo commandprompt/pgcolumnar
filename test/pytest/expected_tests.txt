@@ -308,7 +308,10 @@
 # test_every_comm_in_the_runner_pins_its_collation, by collection over NO_CLUSTER.
 # guard_tests 467 -> 474 for #1341's test_parquet_level_width.py, the twin of parquet_level_width.sh,
 # which needs no cluster: 7 tests, by collection over NO_CLUSTER.
-guard_tests 474
+# guard_tests 474 -> 476 for #1339's test_mutation_ledger.py :525 and :1002: the new
+# test_the_prior_ceiling_is_resolved_rather_than_assumed and
+# test_a_ledger_row_must_name_a_real_major, by collection over NO_CLUSTER.
+guard_tests 476
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

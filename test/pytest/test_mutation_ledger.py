@@ -22,6 +22,8 @@ These tests drive the real tool, for the same reason the other files drive the r
 shell: a Python twin of a Python tool would agree with itself.
 """
 
+import datetime
+import os
 import pathlib
 import re
 import subprocess
@@ -36,9 +38,9 @@ RED = ("RESULT\tdemo\tpart1\tfirst check\tFAIL\t18\t\n"
        "RESULT\tdemo\tpart1\tsecond check\tPASS\t18\t\nchecks run: 2\n")
 
 
-def _run(*args, cwd=None):
+def _run(*args, cwd=None, env=None):
     r = subprocess.run(["python3", str(TOOL), *args],
-                       capture_output=True, text=True, cwd=cwd)
+                       capture_output=True, text=True, cwd=cwd, env=env)
     return r.stdout + r.stderr, r.returncode
 
 
@@ -65,12 +67,16 @@ def test_bad_input_is_an_integrity_failure_not_a_clean_run(tmp_path, expect):
     empty = _w(tmp_path, "empty.log", "")
     short = _w(tmp_path, "short.log", "RESULT\tdemo\tpart1\tname\n")
 
-    for label, log in (("nonexistent", str(tmp_path / "nope.log")),
-                       ("empty", empty), ("malformed", short)):
+    # Each with the phrase only ITS failure prints. Counting "ledger integrity failure"
+    # alone passed for a refusal that named no cause at all (#1339 :73): the label said
+    # "says what was wrong" and the check read only that something was.
+    for label, log, why in (("nonexistent", str(tmp_path / "nope.log"), "cannot read"),
+                            ("empty", empty, "no RESULT records"),
+                            ("malformed", short, "a record has 6 fields")):
         out, rc = _run("gate", "--ledger", ledger, "--budget", budget,
                        "--registered", reg, log)
         expect.num(rc, 2, f"a {label} log is an integrity failure")
-        expect.num(out.count("ledger integrity failure"), 1,
+        expect.num(out.count(why), 1,
                    f"and the {label} log says what was wrong with it")
 
     # It must stay distinguishable from a real refusal, or fail-closed just renames
@@ -296,9 +302,14 @@ def test_two_runs_of_a_check_are_not_a_duplicate_of_it(tmp_path, expect):
     name twice in one run", and reported the first as the second."""
     ledger = _w(tmp_path, "l.tsv", "")
     g = _w(tmp_path, "g.log", GREEN)
-    out, _ = _run("merge", "--ledger", ledger, "--date", "2026-09-10", g, g)
+    out, rc = _run("merge", "--ledger", ledger, "--date", "2026-09-10", g, g)
     expect.num(out.count("duplicate"), 0,
                "the same check in two logs is two runs, not a duplicate")
+    # Not reporting a duplicate is also what a merge that REFUSED both logs does, in
+    # any wording without that word (#1339 :252). So the merge must succeed, and
+    # leave one row per check rather than one per run.
+    expect.num(rc, 0, "and a merge of one check's two runs succeeds")
+    expect.num(len(_rows(ledger)), 2, "leaving one row per check, not one per run")
 
     twice = _w(tmp_path, "twice.log",
                "RESULT\tdemo\tpart1\tsame\tPASS\t18\t\n"
@@ -339,6 +350,25 @@ def test_renames_are_grouped_by_part_and_scanned_against_one_run(tmp_path, expec
     expect.num(_run("rename-scan", "--ledger", ledger, before, after)[1], 2,
                "a before-log and an after-log together are refused, not silently empty")
 
+    # A check merely added, or merely removed, is not a rename (#1339 :264, the shell
+    # twin's arms). Pairing an unpaired disappearance with nothing passed every arm
+    # above, because no part in them only lost a check.
+    one = _w(tmp_path, "one.tsv", "")
+    _run("merge", "--ledger", one, "--date", "2026-09-01",
+         _w(tmp_path, "o.log",
+            "RESULT\tdemo\tpart1\tthe old name\tPASS\t18\t\n"
+            "RESULT\tdemo\tpart1\ta stable check\tPASS\t18\t\nchecks run: 2\n"))
+    added = _w(tmp_path, "added.log",
+               "RESULT\tdemo\tpart1\tthe old name\tPASS\t18\t\n"
+               "RESULT\tdemo\tpart1\ta stable check\tPASS\t18\t\n"
+               "RESULT\tdemo\tpart1\tbrand new\tPASS\t18\t\nchecks run: 3\n")
+    expect.num(_run("rename-scan", "--ledger", one, added)[0].count("possible rename"), 0,
+               "a check merely added is not reported as a rename")
+    removed = _w(tmp_path, "removed.log",
+                 "RESULT\tdemo\tpart1\ta stable check\tPASS\t18\t\nchecks run: 1\n")
+    expect.num(_run("rename-scan", "--ledger", one, removed)[0].count("possible rename"), 0,
+               "nor is one merely removed")
+
 
 def test_an_orphan_row_is_named_and_the_unscanned_rows_are_counted(tmp_path, expect):
     """The other direction of the set-compare: a ledger row no record matches.
@@ -361,7 +391,7 @@ def test_an_orphan_row_is_named_and_the_unscanned_rows_are_counted(tmp_path, exp
     after = _w(tmp_path, "a.log",
                "RESULT\tdemo\tpart1\tstill here\tPASS\t18\t\nchecks run: 1\n")
     _run("merge", "--ledger", ledger, "--date", "2026-09-01", before)
-    expect.num(len(_rows(ledger)), 3, "premise: the ledger holds all three rows")
+    expect.num(len(_rows(ledger)), 3, "the ledger holds all three rows")
 
     out, rc = _run("orphan-scan", "--ledger", ledger, after)
     expect.num(out.count("orphan: demo\tpart1\tgone tomorrow"), 1,
@@ -404,9 +434,9 @@ def test_a_row_outside_the_run_majors_is_counted_once_not_twice(tmp_path, expect
               "RESULT\tdemo\tpart1\tonly on 18\tPASS\t18\t\n"
               "RESULT\tdemo\tpart1\talso only on 18\tPASS\t18\t\nchecks run: 2\n")
     _run("merge", "--ledger", ledger, "--date", "2026-09-01", on18)
-    expect.num(len(_rows(ledger)), 2, "premise: the ledger holds both rows")
+    expect.num(len(_rows(ledger)), 2, "the ledger holds both rows")
     expect.num(sum(1 for r in _rows(ledger) if r[3] == "18"), 2,
-               "premise: and both claim major 18 only, which is what makes 19 outside them")
+               "and both claim major 18 only, which is what makes 19 outside them")
 
     # The SAME part and the SAME checks, emitted by a run on a major the rows do not
     # claim. The keys are therefore in `now` while the majors do not intersect.
@@ -468,7 +498,7 @@ def test_prune_drops_a_historyless_orphan_and_refuses_one_carrying_history(tmp_p
             "RESULT\tdemo\tpart1\tstill here\tPASS\t18\t\n"
             "RESULT\tdemo\tpart1\tgone tomorrow\tFAIL\t18\t\nchecks run: 2\n"))
     expect.text({r[2]: r[4] for r in _rows(hist)}["gone tomorrow"], "2026-09-01",
-                "premise: the orphan now carries a date")
+                "the orphan now carries a date")
 
     out, rc = _run("orphan-scan", "--prune", "--ledger", hist, after)
     expect.num(out.count("ORPHAN CARRYING HISTORY"), 1,
@@ -479,7 +509,7 @@ def test_prune_drops_a_historyless_orphan_and_refuses_one_carrying_history(tmp_p
     expect.num(out.count("the catalogue is what this ledger is for"), 1,
                "and it says why, rather than only that it refused")
     expect.num(len([r for r in _rows(hist) if r[2] == "gone tomorrow"]), 1,
-               "premise: and the refusal removed NOTHING")
+               "and the refusal removed nothing")
 
 
 def test_a_part_that_skipped_is_unprunable_because_absence_is_not_removal(tmp_path, expect):
@@ -504,7 +534,7 @@ def test_a_part_that_skipped_is_unprunable_because_absence_is_not_removal(tmp_pa
             "RESULT\tdemo\tpart1\tarm one\tPASS\t18\t\n"
             "RESULT\tdemo\tpart1\tarm two\tPASS\t18\t\n"
             "RESULT\tdemo\tpart1\tthe whole thing\tPASS\t18\t\nchecks run: 3\n"))
-    expect.num(len(_rows(ledger)), 3, "premise: the ledger holds all three rows")
+    expect.num(len(_rows(ledger)), 3, "the ledger holds all three rows")
     skipped = _w(tmp_path, "skipped.log",
                  "RESULT\tdemo\tpart1\tthe whole thing\tSKIP\t18\tno fixture on this box\n"
                  "checks run: 1\n")
@@ -516,8 +546,25 @@ def test_a_part_that_skipped_is_unprunable_because_absence_is_not_removal(tmp_pa
                "and the summary keeps the two apart")
     expect.num(rc, 1, "it is still a finding, so the scan does not return success")
 
-    _run("orphan-scan", "--prune", "--ledger", ledger, skipped)
+    # --orphans-only asks the gate's narrower question (#1339 :437, the shell's arms):
+    # a skipped part is not an orphan, it is still printed, and a REAL orphan still
+    # answers 1. Without the control, a flag that always returned 0 passed.
+    out, rc = _run("orphan-scan", "--orphans-only", "--ledger", ledger, skipped)
+    expect.num(rc, 0, "a skipped part is not an orphan, so --orphans-only returns 0")
+    expect.num(out.count("unprunable: 2 row(s)"), 1,
+               "and it still reports the skipped part, so the gate cannot silence it")
+    real = _w(tmp_path, "real.tsv",
+              "demo\tpart1\tthe whole thing\t18\tnever\t-\n"
+              "demo\tpart1\ta deleted check\t18\tnever\t-\n")
+    expect.num(_run("orphan-scan", "--orphans-only", "--ledger", real,
+                    _w(tmp_path, "real.log",
+                       "RESULT\tdemo\tpart1\tthe whole thing\tPASS\t18\t\nchecks run: 1\n"))[1],
+               1, "control: a real orphan still returns 1 under --orphans-only")
+
+    out, rc = _run("orphan-scan", "--prune", "--ledger", ledger, skipped)
     expect.num(len(_rows(ledger)), 3, "--prune removes nothing from a part that skipped")
+    # #1339 :471: the prune that could not finish must not report success either.
+    expect.num(rc, 1, "and a prune that could not finish still reports the finding")
     expect.num(_run("orphan-scan", "--prune", "--ledger", ledger, skipped)[0]
                .count("the run did not exercise those checks"), 1,
                "and it says so rather than declining silently")
@@ -652,7 +699,18 @@ def test_the_committed_ledger_and_budget_agree(expect):
     never = [r for r in rows if r[4] == "never"]
     red = [r for r in rows if r[4] != "never"]
     print(f"  ledger: inputs={len(rows)} | observed red={len(red)}, never={len(never)}")
-    expect.num(len(red) + len(never), len(rows), "the ledger partitions")
+    # `red` is the complement of `never`, so their sum is the row count by construction
+    # and said nothing (#1339 :602). The partition that can fail: every last-red is one
+    # of the three things the tool writes -- never, unknown, or a calendar date.
+    def _last_red_ok(v):
+        if v in ("never", "unknown"):
+            return True
+        try:
+            return datetime.date.fromisoformat(v).isoformat() == v
+        except ValueError:
+            return False
+    bad = [r[4] for r in rows if not _last_red_ok(r[4])]
+    expect.num(len(bad), 0, "the ledger partitions")
     expect.num(len([r for r in rows if len(r) != 6]), 0, "every committed row has six fields")
     expect.num(ledger.read_text().count("\t\n"), 0, "and none ends in a tab")
 
@@ -784,14 +842,14 @@ def test_the_gate_refuses_two_checks_sharing_one_ledger_key(tmp_path, expect):
              "checks run: 2\n")
     out, rc = _run("gate", "--ledger", ledger, "--budget", budget,
                    "--registered", reg, dup)
-    expect.at_least(len(out), 20, "premise: the gate produced output to read")
+    expect.at_least(len(out), 20, "the gate produced output to read")
     expect.num(out.count("one ledger key covers 2 checks"), 1,
                "a key covering two checks in one run is refused, and named")
     expect.contains(out, "part1", "with the part, since the part is half the key")
     expect.num(rc, 1, "and the gate fails rather than noting it")
     expect.contains(
         out, "Traceback",
-        "premise: rc came from the refusal, not from a crash", absent=True)
+        "rc came from the refusal, not from a crash", absent=True)
 
 
 def test_a_shared_key_is_refused_in_a_suite_the_ledger_does_not_cover(expect, tmp_path):
@@ -825,9 +883,9 @@ def test_a_shared_key_is_refused_in_a_suite_the_ledger_does_not_cover(expect, tm
     expect.num(rc, 1, "and refused, with no row in the ledger for that suite")
     expect.contains(
         out, "Traceback",
-        "premise: rc came from the refusal, not from a crash", absent=True)
+        "rc came from the refusal, not from a crash", absent=True)
     expect.num(out.count("not in the ledger:"), 0,
-               "premise: and not from the new-check refusal, which this suite escapes")
+               "and not from the new-check refusal, which this suite escapes")
 
 
 def test_the_same_check_in_two_runs_is_not_a_shared_key(tmp_path, expect):
@@ -888,9 +946,9 @@ def test_the_gate_refuses_a_census_that_contradicts_its_own_ledger(tmp_path, exp
     # THE PREMISE, asserted: the numbers below mean nothing unless the ledger really
     # holds two rows and both are `never`.
     rows = _rows(ledger)
-    expect.num(len(rows), 2, "premise: the merged ledger holds two rows")
+    expect.num(len(rows), 2, "the merged ledger holds two rows")
     expect.num(len([r for r in rows if r[4] == "never"]), 2,
-               "premise: both entered as never, so this ledger's census is 2")
+               "both entered as never, so this ledger's census is 2")
 
     ok = _w(tmp_path, "ok.txt", "suites_not_covered 0\nchecks_never_observed_red 2\n")
     out, rc = _run("gate", "--ledger", ledger, "--budget", ok, "--registered", reg, log)
@@ -979,6 +1037,8 @@ def test_last_red_may_only_move_forward(tmp_path, expect):
     expect.text(stored(), "2026-09-20", "and a newer one does")
     _run("merge", "--reds-are-real", "--ledger", led, red)
     expect.text(stored(), "2026-09-20", "and an undated merge does not erase a known date")
+    _run("merge", "--ledger", led, "--date", "2026-09-21", _w(tmp_path, "green.log", GREEN))
+    expect.text(stored(), "2026-09-20", "a later green run does not erase an observation")
     expect.num(_run("merge", "--reds-are-real", "--ledger", led, "--date", "not-a-date", red)[1], 2,
                "a date that is not a date is refused rather than stored")
 
@@ -1076,7 +1136,10 @@ def test_a_record_that_does_not_name_its_major_is_not_evidence(tmp_path, expect)
     out, rc = _run("gate", "--ledger", ledger, "--budget", budget,
                    "--registered", reg, old)
     expect.num(rc, 2, "a record with no major field is an integrity failure")
-    expect.num(out.count("major"), 1, "and the message says the major is what is missing")
+    # It counted the bare word "major", which the generic field-count message holds in
+    # its field list, so any wording that kept the word passed (#1339 :1026).
+    expect.num(out.count("suite, part, name, verdict, major, reason"), 1,
+               "and the message lists the six fields a record carries, the major among them")
 
     # A major that is not a major. Refused for the same reason a free-form --date was:
     # stored verbatim, it becomes an attribution nothing measured.
@@ -1304,6 +1367,12 @@ def test_the_reconciliation_is_built_from_the_printed_total(expect):
                 "to len(rows) by construction and would say nothing about the display")
     expect.text("dist.values()" in line[0], False,
                 "and it is not built from the Counter, which is the drift this pins")
+    # The line can still say `sum(emitted)` after `emitted` is refilled from the Counter
+    # (#1339 :1249), so the name is pinned too: assigned once, empty, then appended.
+    assigns = [l.strip() for l in src.splitlines()
+               if re.match(r"\s*emitted\s*=", l)]
+    expect.text(";".join(assigns), "emitted = []",
+                "and `emitted` is assigned once, empty, and only appended to after")
 
 
 def test_the_merge_summary_distinguishes_a_minority_major_set_from_a_uniform_one(
@@ -1356,9 +1425,9 @@ def test_the_merge_summary_distinguishes_a_minority_major_set_from_a_uniform_one
     # The premise: the two merges really did write different ledgers. Without this the
     # arm could pass while proving nothing about the summary.
     expect.text({r[2]: r[3] for r in _rows(good)}["new one"], "15;16;17;18;19",
-                "premise: the correct merge wrote the full major set")
+                "the correct merge wrote the full major set")
     expect.text({r[2]: r[3] for r in _rows(bad)}["new one"], "18",
-                "premise: the defect merge wrote the minority set")
+                "the defect merge wrote the minority set")
 
     def summary(out):
         """The majors block: from the `majors:` line to its reconciliation.
@@ -1471,9 +1540,9 @@ def test_merge_warns_when_it_writes_a_strict_subset_of_the_ledgers_majors(
                              _one_major_log(tmp_path, "gnoop.log", "15", "new one"))
 
     expect.text({r[2]: r[3] for r in _rows(bad)}["new one"], "18",
-                "premise: the single-major merge really did write the minority set")
+                "the single-major merge really did write the minority set")
     expect.text({r[2]: r[3] for r in _rows(good)}["new one"], "15;16;17;18;19",
-                "premise: and the five-log merge wrote the full set")
+                "and the five-log merge wrote the full set")
 
     expect.num(bad_out.count("WARNING"), 1,
                "the single-major merge warns exactly once")
@@ -1497,14 +1566,14 @@ def test_the_warning_names_the_majors_the_gate_will_redden_on(tmp_path, expect):
                   _one_major_log(tmp_path, "b18.log", "18", "new one"))
 
     warn = [l for l in out.splitlines() if "WARNING" in l]
-    expect.num(len(warn), 1, "premise: there is exactly one warning line to read")
+    expect.num(len(warn), 1, "there is exactly one warning line to read")
 
     # THE MAJORS ARE READ OUT OF THE TEXT, not searched for loosely. `"15" in block`
     # is also satisfied by the prevailing set `15;16;17;18;19` printed beside it, so
     # a substring sweep would pass for a warning that named no missing major at all.
     reddens = re.search(r"reddens on ([0-9;]+)", out)
     expect.text("found" if reddens else "absent", "found",
-                "premise: the warning states which majors this reddens on")
+                "the warning states which majors this reddens on")
     expect.text(reddens.group(1).split(";"), ["15", "16", "17", "19"],
                 "every major the gate will redden on is named, and only those")
 
@@ -1617,3 +1686,85 @@ def test_a_premise_never_observed_red_passes_the_gate(tmp_path, expect):
     expect.num(out.count("a premise the ledger has seen go red"), 0,
                "an undated premise is not refused")
     expect.num(rc, 0, "and the same fixture passes the gate")
+
+
+def test_a_ledger_row_must_name_a_real_major(tmp_path, expect):
+    """#1339 :1002, the shell twin's arms. `read_ledger` validates every major a row names.
+
+    A record's major is checked where the log is read; a ROW's majors are the hand-edited
+    half, and a row naming no major, or a word, says nothing about where its check exists.
+    """
+    log = _w(tmp_path, "m18.log", "RESULT\tdemo\tpart1\tboth majors\tPASS\t18\t\nchecks run: 1\n")
+    bad = _w(tmp_path, "badmaj.tsv", "demo\tpart1\tboth majors\teighteen\tnever\t-\n")
+    expect.num(_run("orphan-scan", "--ledger", bad, log)[1], 2,
+               "a ledger row naming a major that is not a major is an integrity failure")
+    none = _w(tmp_path, "nomaj.tsv", "demo\tpart1\tboth majors\t\tnever\t-\n")
+    expect.num(_run("orphan-scan", "--ledger", none, log)[1], 2,
+               "and a row naming NO major says nothing about where its check exists")
+    good = _w(tmp_path, "goodmaj.tsv", "demo\tpart1\tboth majors\t18\tnever\t-\n")
+    expect.num(_run("orphan-scan", "--ledger", good, log)[1], 0,
+               "control: the same row with a real major is read without complaint")
+
+
+def test_the_prior_ceiling_is_resolved_rather_than_assumed(tmp_path, expect):
+    """#1339 :525, the shell twin's arms (part 410). The ceiling comparison reads the
+    budget as of a PRIOR, and every way of not finding that prior has to be a decision
+    rather than a shrug:
+
+    - an ABSOLUTE budget path is resolved against its repository (the production caller
+      passes one; the first version printed "no prior ceiling to compare" and passed);
+    - a budget the prior does not have is a note, since this change introduces it;
+    - `--against auto` with no base ref and no upstream refuses, rather than falling
+      back to something weaker; a base ref that does not resolve says what to fetch; one
+      that does is named, and a raise against it is refused.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*a):
+        return subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True)
+    for a in (("init", "-q", "-b", "main", "."), ("config", "user.email", "t@t"),
+              ("config", "user.name", "t")):
+        git(*a)
+    (repo / "b.txt").write_text("suites_not_covered 7\n")
+    git("add", "b.txt")
+    git("commit", "-qm", "base")
+    git("update-ref", "refs/remotes/origin/basebranch", "HEAD")
+
+    ledger = _w(tmp_path, "l.tsv", "")
+    reg = _w(tmp_path, "reg", "demo\n")
+    _run("merge", "--ledger", ledger, "--date", "2026-09-10", _w(tmp_path, "g.log", GREEN))
+    log = _w(tmp_path, "g2.log", GREEN)
+    gate = ("gate", "--ledger", ledger, "--registered", reg)
+
+    absb = str(repo / "b.txt")
+    out, rc = _run(*gate, "--budget", absb, "--against", "HEAD", log)
+    expect.num(out.count("ceiling against HEAD"), 1,
+               "an absolute budget path resolves against git rather than shrugging")
+    expect.num(rc, 0, "and the comparison passes when the ceiling did not rise")
+
+    new = repo / "introduced.txt"
+    new.write_text("suites_not_covered 99\n")
+    out, rc = _run(*gate, "--budget", str(new), "--against", "HEAD", log)
+    expect.num(rc, 0, "a budget that does not exist at the prior is a note, not a refusal")
+    expect.num(out.count("this change introduces it"), 1,
+               "and it says the change introduces the file rather than raising anything")
+
+    env = {k: v for k, v in os.environ.items() if k != "GITHUB_BASE_REF"}
+    out, rc = _run(*gate, "--budget", "b.txt", "--against", "auto", log, cwd=repo, env=env)
+    expect.num(rc, 2, "auto with no base ref and no upstream is an integrity failure")
+    expect.num(out.count("no trustworthy prior ceiling"), 1,
+               "and it says why, rather than falling back to something weaker")
+
+    out, rc = _run(*gate, "--budget", "b.txt", "--against", "auto", log, cwd=repo,
+                   env=dict(env, GITHUB_BASE_REF="nosuchbranch"))
+    expect.num(out.count("The checkout needs to fetch the base branch"), 1,
+               "auto refuses when GITHUB_BASE_REF names a ref that is not here")
+
+    (repo / "b.txt").write_text("suites_not_covered 99\n")
+    out, rc = _run(*gate, "--budget", "b.txt", "--against", "auto", log, cwd=repo,
+                   env=dict(env, GITHUB_BASE_REF="basebranch"))
+    expect.num(out.count("against refs/remotes/origin/basebranch"), 1,
+               "auto uses the base ref when it resolves, and names it")
+    expect.num(out.count("was raised from 7 to 99"), 1,
+               "and a raise against the base ref is refused, naming both values")
+    expect.num(rc, 1, "and the gate fails on it")
