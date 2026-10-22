@@ -133,7 +133,6 @@ native_rewrite	group numbers issued after a rewrite are past every earlier one
 native_truncate	file shrank
 native_truncate	GUC on: file shrank
 native_upgrade_converge	fresh $TARGET install has objects to compare
-native_vecdecode	a ruled-out vector is not decoded
 objstore_listing	the prefix listing paged (more than one list-type=2 request)
 objstore_module	premise: the real module was restored afterwards
 objstore_sink_write	parallel: every worker PUT went to the prefix

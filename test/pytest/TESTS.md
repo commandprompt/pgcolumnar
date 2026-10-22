@@ -358,6 +358,7 @@ behaviour, the source of that number is named.
 - [310. test_native_zonemap.py: zone-map rows carry exact counts, sums and the right bounds, by value](#310-test_native_zonemappy-zone-map-rows-carry-exact-counts-sums-and-the-right-bounds-by-value)
 - [311. test_native_zonemap_session.py: a scan resolves zone_map once, and each scan holds its own session](#311-test_native_zonemap_sessionpy-a-scan-resolves-zone_map-once-and-each-scan-holds-its-own-session)
 - [312. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes](#312-test_native_zonemap_narrowpy-group-skipping-reads-only-the-predicate-columns-zone-maps-and-still-prunes)
+- [313. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values](#313-test_native_vecdecodepy-decode-honours-the-skip-vector-and-the-fold-reads-neither-holes-nor-nulls-as-values)
 
 ## 1. How to read a test in here
 
@@ -11858,3 +11859,42 @@ Every test makes one check under the shell's name, on a private database. Each r
 | `test_a_pruning_predicate_still_prunes_on_the_wide_table` | a pruning predicate still prunes on the wide table |
 | `test_the_zone_map_removes_nine_groups_on_the_wide_table` | the zone map removes the nine groups c1 > 19000 cannot match, on the wide table |
 | `test_the_zone_map_removes_nine_groups_on_the_narrow_table` | and on the narrow table |
+
+## 313. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values
+
+The twin of `test/native_vecdecode.sh`. One row group of 32 1024-row vectors with a monotonic id, so a narrow range rules most vectors out: "Columnar Vectors Decoded" must move by exactly the skipped count, every range must match a heap mirror written from the generator, and the batch fold must answer correctly over skipped vectors and over a nullable column.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each counter is read from the plan text and a missing one is a `query_error()`, never 0; every comparison of two readings refuses a failed side. The fold arm runs with the shell's SET statements.
+
+| test | what it holds |
+| --- | --- |
+| `test_vecdecode_narrow_plan_is_the_custom_scan` | premise: the narrow plan is a columnar custom scan |
+| `test_vecdecode_wide_plan_is_the_custom_scan` | premise: the wide plan is a columnar custom scan |
+| `test_vecdecode_one_row_group` | premise: one row group, so every difference is per-vector |
+| `test_vecdecode_no_whole_group_pruned` | premise: no whole group is pruned on the narrow query |
+| `test_vecdecode_narrow_range_skips_vectors` | the narrow range skips vectors |
+| `test_vecdecode_wide_range_skips_none` | premise: the wide range skips none, so the arms really differ |
+| `test_vecdecode_explain_reports_vectors_decoded` | EXPLAIN reports Columnar Vectors Decoded |
+| `test_vecdecode_full_scan_decodes_something` | and it is not stuck at zero when a full scan decodes everything |
+| `test_vecdecode_ruled_out_vector_not_decoded` | a ruled-out vector is not decoded |
+| `test_vecdecode_decoded_plus_skipped_is_the_groups_vectors` | and EVERY ruled-out vector is: decoded plus skipped is the group's vectors |
+| `test_vecdecode_narrow_range_parity` | narrow range parity with heap |
+| `test_vecdecode_cross_vector_parity` | cross-vector range parity |
+| `test_vecdecode_boundary_range_parity` | boundary range parity, a range starting exactly on a vector edge |
+| `test_vecdecode_nullable_column_has_nulls` | premise: the nullable column has nulls inside the ranges read below |
+| `test_vecdecode_nullable_cross_vector_parity` | cross-vector parity of a nullable column, nulls included |
+| `test_vecdecode_aggregate_over_skipping_range` | aggregate over a skipping range matches heap |
+| `test_vecdecode_aggregate_over_many_skipped_vectors` | aggregate over a range spanning many skipped vectors matches heap |
+| `test_vecdecode_range_matching_no_row` | a range matching no row at all is still correct |
+| `test_vecdecode_aggregate_reaches_the_fold` | the aggregate really reaches the batch fold |
+| `test_vecdecode_fold_answers_over_skipping_range` | the fold answers correctly over a range that skips vectors |
+| `test_vecdecode_nullable_aggregate_reaches_the_fold` | a nullable aggregate reaches the fold |
+| `test_vecdecode_fold_nullable_count_and_sum` | the fold answers count and sum of a nullable column over a skipping range |
+| `test_vecdecode_deep_range_reaches_the_fold` | the deep range reaches the fold too |
+| `test_vecdecode_deep_range_agrees_with_heap` | and it agrees with heap after many leading skipped vectors |
+| `test_vecdecode_poison_range_reaches_the_fold` | the poison-accepting range reaches the fold |
+| `test_vecdecode_fold_arm_decodes_only_what_it_needs` | the FOLD ARM really decodes only the vectors it needs |
+| `test_vecdecode_fold_counter_reads_every_vector_when_none_skipped` | control: and the same counter reads every vector when nothing is skipped |
+| `test_vecdecode_fold_does_not_count_undecoded_rows` | the fold does not count rows from a vector it never decoded |
