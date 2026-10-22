@@ -10,7 +10,6 @@ cancel_decode
 decode_interrupts
 decode_skip_interrupts
 harness_selftest
-native_agg_deletes
 native_cancel
 native_cluster
 native_ctas

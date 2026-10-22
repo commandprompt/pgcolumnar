@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 84
+suites_not_covered 83
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5780,4 +5780,20 @@ suites_not_covered 84
 #     never         4051 + 7 = 4058
 #     dated         2702 + 12 = 2714
 #     4058 + 2714 == 6772
-checks_never_observed_red 4058
+# #1341, native_agg_deletes seeded, with its twin (OffgridwithJD): 4058 -> 4065, and
+# suites_not_covered 84 -> 83. The suite had no rows. It enters with 13 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# A failed reading is no longer agreement: an aggregate both sides failed to read was
+# "same", so with the server stopped after setup the four differentials passed, and an
+# empty timing read as fast, so with the measured query failing both timing arms passed.
+# And each delete went to /dev/null with its table, so a delete that never ran left every
+# "after ..." arm comparing two untouched tables (main passed 8/8): a premise per stage
+# now wants the heap mirror to hold exactly the rows the generator says survive, and the
+# timing table's one delete is read back through pgcolumnar. 6 are dated by four
+# mutations, each reddening the same names in both twins. 7 arrive never.
+#
+#     ledger rows   6772 + 13 = 6785
+#     never         4058 + 7 = 4065
+#     dated         2714 + 6 = 2720
+#     4065 + 2720 == 6785
+checks_never_observed_red 4065
