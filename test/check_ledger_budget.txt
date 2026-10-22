@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 48
+suites_not_covered 47
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6521,4 +6521,24 @@ suites_not_covered 48
 #     never         4304 + 6 = 4310
 #     dated         3141 + 29 = 3170
 #     4310 + 3170 == 7480
-checks_never_observed_red 4310
+#
+# #1341, native_parquet_fdw seeded, with its twin (OffgridwithJD): 4310 -> 4320,
+# and suites_not_covered 48 -> 47. The suite had no rows. It enters with 20 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes.
+# Projection and row-group skipping were never read: every arm compared answers, which the
+# executor's recheck and a discarding projection keep right, so with every column decoded
+# (noproj) or no group skipped (noskip) main passed 14/14. Two checks now read the scan's
+# EXPLAIN ANALYZE counters, over a 200,000-row file of four row groups. The refusal arms
+# accepted any psql failure: with the scan's missing-path guard removed (nopathguard) the
+# backend crashed and main passed, and with the short-file guard removed (nolen) the
+# bad-magic guard refused instead and main passed. Each arm now wants its own guard's
+# SQLSTATE and message, and a survival check reads the server log's count of killed
+# backends. The oracle is a heap table written from the generator, and the self-join counts
+# are check_num, since two failed reads agreed. 10 are dated by seven mutations, each the
+# same names in both twins. 10 arrive never.
+#
+#     ledger rows   7480 + 20 = 7500
+#     never         4310 + 10 = 4320
+#     dated         3170 + 10 = 3180
+#     4320 + 3180 == 7500
+checks_never_observed_red 4320

@@ -367,6 +367,7 @@ behaviour, the source of that number is named.
 - [319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend](#319-test_native_parquet_stackpy-a-crafted-parquet-footer-trips-the-recursion-guard-instead-of-crashing-the-backend)
 - [320. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time](#320-test_native_parquet_streamingpy-external-parquet-reads-stream-an-oversized-file-describes-itself-crafted-pages-are-refused-the-fdw-decodes-one-row-group-at-a-time)
 - [321. test_native_parquet_partition.py: Hive-style partition columns materialize and prune whole files, and a tree that does not match fails loudly](#321-test_native_parquet_partitionpy-hive-style-partition-columns-materialize-and-prune-whole-files-and-a-tree-that-does-not-match-fails-loudly)
+- [322. test_native_parquet_fdw.py: the Parquet FDW reads an exported file as a foreign table, prunes what it can, and refuses each misuse by its own guard](#322-test_native_parquet_fdwpy-the-parquet-fdw-reads-an-exported-file-as-a-foreign-table-prunes-what-it-can-and-refuses-each-misuse-by-its-own-guard)
 
 ## 1. How to read a test in here
 
@@ -12138,3 +12139,34 @@ Every test makes one check under the shell's name, on a private database. The wr
 | `test_a_byte_invalid_in_the_server_encoding_is_rejected` | a byte invalid in the server encoding is rejected |
 | `test_the_encoded_tree_reads_again_once_both_are_gone` | the tree reads again once both are gone |
 | `test_the_backend_survives_the_malformed_partition_values` | backend survived the malformed partition values |
+
+## 322. test_native_parquet_fdw.py: the Parquet FDW reads an exported file as a foreign table, prunes what it can, and refuses each misuse by its own guard
+
+The twin of `test/native_parquet_fdw.sh`. A columnar table is exported and read back through a pgcolumnar_parquet foreign table, compared with a heap table written from the generator across full scan, projection, predicate, a nested-loop self-join (rescan) and a nested-type table. EXPLAIN ANALYZE must show a one-column query reading one of eleven columns, and a selective predicate skipping three of four row groups. The option validator and the scan refuse an invalid option, an empty path, a missing path, a non-Parquet file and an incompatible declared type, each with its own guard's message, and the backend survives.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database with its own foreign server; the files live in server_dir. A failed reading is a query_error(), unique per call, so two failures never agree. A refusal reads as '<SQLSTATE> (<label>)' only when the primary message is the guard's own; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_scalar_table_exports_every_row` | scalar export rows |
+| `test_a_full_foreign_scan_equals_the_source` | full scan: fdw == source |
+| `test_the_foreign_table_counts_every_row` | fdw row count |
+| `test_a_projection_equals_the_source` | projection: fdw == source |
+| `test_a_predicate_equals_the_source` | predicate: fdw == source |
+| `test_a_nested_loop_self_join_rescans_correctly` | nested-loop self-join (rescan): fdw == source |
+| `test_explain_shows_a_foreign_scan` | EXPLAIN shows Foreign Scan |
+| `test_a_one_column_query_reads_one_column` | a one-column query reads one of the eleven columns |
+| `test_the_skip_table_exports_every_row` | skip export rows |
+| `test_the_skip_file_has_four_row_groups` | the skip file has four row groups |
+| `test_a_selective_predicate_skips_three_row_groups` | a selective predicate skips the three row groups it cannot match |
+| `test_the_skipped_scan_returns_every_matching_row` | and the skipped scan still returns every matching row |
+| `test_the_fdw_nested_table_exports_every_row` | nested export rows |
+| `test_a_nested_full_scan_equals_the_source` | nested full scan: fdw == source |
+| `test_an_invalid_table_option_is_rejected` | reject invalid table option (HV00D) |
+| `test_an_empty_path_option_is_rejected` | reject empty path option (HV00D) |
+| `test_a_scan_without_a_path_option_errors` | scan without path option errors (HV00J) |
+| `test_a_scan_of_a_non_parquet_file_errors` | scan of non-parquet file errors (XX001) |
+| `test_a_scan_with_an_incompatible_declared_type_errors` | scan with incompatible declared type errors (42804) |
+| `test_the_backend_is_still_up_after_the_fdw_refusals` | backend still up after the refusals |
