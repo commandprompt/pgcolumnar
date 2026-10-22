@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 39
+suites_not_covered 38
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6687,4 +6687,23 @@ suites_not_covered 39
 #     never         4355 + 8 = 4363
 #     dated         3266 + 16 = 3282
 #     4363 + 3282 == 7645
-checks_never_observed_red 4363
+#
+# #1341, objstore_sink_write seeded, with its twin (OffgridwithJD): 4363 -> 4387,
+# and suites_not_covered 39 -> 38. The suite had no rows. It enters with 35 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after five fixes.
+# The fixture server completed an upload from every stored part, whatever the complete listed,
+# so dropping the last part from the list (droplist) passed 30/30; it now assembles the listed
+# parts, each checked against its ETag, as S3 does. No check made a part fail, so a refused
+# part read as stored (partok) passed 30/30; a __part_status__ hook and four checks want the
+# part check's own 58030, no key and no open upload. Abort was read from the DELETE count, so
+# an abort naming the wrong upload (abortwrongid) passed 30/30; the server now keeps its open
+# uploads and two checks want none. The Arrow arm read only export_arrow > 0 (green under
+# shortput); the object is imported back. Every oracle is the generator, not the scanned
+# table, and each refusal wants its own guard's message. 11 are dated by eight mutations,
+# each the same names in both twins. 24 arrive never.
+#
+#     ledger rows   7645 + 35 = 7680
+#     never         4363 + 24 = 4387
+#     dated         3282 + 11 = 3293
+#     4387 + 3293 == 7680
+checks_never_observed_red 4387
