@@ -46,6 +46,11 @@ def _scan_rows(plan):
     return -1
 
 
+# The shell's IDX_FORCE: what makes the index-forced read take the index.
+IDX_FORCE = ("SET enable_seqscan=off", "SET enable_bitmapscan=off",
+             "SET pgcolumnar.enable_custom_scan=off")
+
+
 def _plan(conn, sql, costs=False):
     with conn.cursor() as cur:
         cur.execute("SET enable_seqscan=off")
@@ -119,9 +124,13 @@ def test_index_fetch_penalty_crossover(pgc_conn, expect):
     with pgc_conn.cursor() as cur:
         cur.execute(f"SELECT sum(g % 10) FROM generate_series(1, {k_range}) g")
         gen_sum = cur.fetchone()[0]
-        cur.execute("SET enable_seqscan=off")
-        cur.execute("SET enable_bitmapscan=off")
-        cur.execute("SET pgcolumnar.enable_custom_scan=off")
+        # ONE SET LIST FOR THE READ AND ITS PLAN, as the shell's IDX_FORCE is: the
+        # plan is taken on this cursor, in this session state, right before the
+        # read, so a change to how the read is forced is a change to what is planned.
+        for s in IDX_FORCE:
+            cur.execute(s)
+        cur.execute(f"EXPLAIN (FORMAT JSON, COSTS OFF) SELECT sum(a) FROM ifc WHERE id <= {k_range}")
+        forced = cur.fetchone()[0]
         cur.execute(f"SELECT sum(a) FROM ifc WHERE id <= {k_range}")
         idx_sum = cur.fetchone()[0]
         cur.execute("SET pgcolumnar.enable_custom_scan=on")
@@ -131,11 +140,6 @@ def test_index_fetch_penalty_crossover(pgc_conn, expect):
         cur.execute("RESET enable_indexscan")
     expect.text(f"index {idx_sum}, scan {cs_sum}", f"index {gen_sum}, scan {gen_sum}",
                 f"both paths return the same aggregate at {k_range}")
-    with pgc_conn.cursor() as cur:
-        cur.execute("SET pgcolumnar.enable_custom_scan=off")
-    forced = _plan(pgc_conn, f"SELECT sum(a) FROM ifc WHERE id <= {k_range}")
-    with pgc_conn.cursor() as cur:
-        cur.execute("RESET pgcolumnar.enable_custom_scan")
     expect.text(_scan_node(forced), "Index Scan", "and the index-forced path really fetches by index")
 
     n_ord = 300_000
