@@ -340,6 +340,7 @@ behaviour, the source of that number is named.
 - [292. test_native_fastdecode.py: the inlined byval decode returns what the call path returns, through every encoding and a vector jump](#292-test_native_fastdecodepy-the-inlined-byval-decode-returns-what-the-call-path-returns-through-every-encoding-and-a-vector-jump)
 - [293. test_native_fetch_sort_context.py: a merge join over sorted, index-fetched columnar rows decodes outside the sort's context](#293-test_native_fetch_sort_contextpy-a-merge-join-over-sorted-index-fetched-columnar-rows-decodes-outside-the-sorts-context)
 - [294. test_native_fold_skipguard.py: the batch fold is reachable for a shape that skips vectors, and accounts for the skipping](#294-test_native_fold_skipguardpy-the-batch-fold-is-reachable-for-a-shape-that-skips-vectors-and-accounts-for-the-skipping)
+- [295. test_native_fetch_group_memo.py: the by-row-number fetch resolves its row group from a memo, and the memo never serves a group it should not](#295-test_native_fetch_group_memopy-the-by-row-number-fetch-resolves-its-row-group-from-a-memo-and-the-memo-never-serves-a-group-it-should-not)
 
 ## 1. How to read a test in here
 
@@ -11325,3 +11326,29 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_the_query_reaches_the_batch_fold` | the query reaches the batch fold |
 | `test_the_fold_answers_correctly_while_decode_skips` | the fold answers correctly while decode skips 58 of 59 vectors |
 | `test_the_scalar_arm_agrees_with_the_oracle` | and the scalar arm agrees |
+
+## 295. test_native_fetch_group_memo.py: the by-row-number fetch resolves its row group from a memo, and the memo never serves a group it should not
+
+The twin of `test/native_fetch_group_memo.sh` (#709). 3000 index-probe fetches cost a bounded number of row_group index reads and no heap scan of row_group; scattered fetches are exact; and a group flushed under an aborted savepoint, or retired mid-statement by compact_rewrite() or compact(), never resurrects through a stale memo. Unique checks, an AFTER UPDATE trigger's OLD row, a fresh DELETE and a same-transaction TRUNCATE keep their behaviour.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Where the shell runs one psql -c, the twin runs one transaction, so the transaction-local scan counters bracket the measured statement as they do in the shell. Readings are values: a failed query is a query_error(), a reading taken before a later statement fails is kept, and a failed fixture step reds the checks that depend on it by name. Survival reads the server log's crash count as well as SELECT 1.
+
+| test | what it holds |
+| --- | --- |
+| `test_fgm_measured_plan_is_a_nested_loop_of_index_probes` | the measured plan is a nested loop of index probes (fetch path engaged) |
+| `test_fgm_the_fetch_count_is_exact` | the fetch count is exact (3000 rows found) |
+| `test_fgm_index_fetches_cost_bounded_row_group_reads` | 3000 index fetches cost a bounded number of row_group reads (delta <= 20) |
+| `test_fgm_row_group_is_never_heap_scanned` | row_group is never heap-scanned in the window (index resolution intact) |
+| `test_fgm_scattered_fetched_values_are_exact` | scattered index-fetched values are exact |
+| `test_fgm_same_transaction_flush_then_fetch` | same-transaction flush then fetch sees the new rows |
+| `test_fgm_aborted_savepoint_rows_do_not_resurrect` | rows flushed under an aborted savepoint do not resurrect through the cursor |
+| `test_fgm_same_statement_retire_neither_loses_nor_doubles` | a same-statement retire neither loses nor doubles rows (500|t|500) |
+| `test_fgm_same_statement_compact_resurrects_nothing` | a same-statement compact() of a fully deleted group resurrects nothing (10|t|0) |
+| `test_fgm_table_is_exact_after_the_rewrite` | the table is exact after the in-statement rewrite |
+| `test_fgm_duplicate_still_violates_a_unique_index` | a buffered + flushed duplicate still violates a unique index (23505) |
+| `test_fgm_after_update_trigger_sees_the_old_row` | an AFTER UPDATE trigger still sees the OLD row (SnapshotAny re-fetch) |
+| `test_fgm_delete_visible_to_the_next_fetch` | a DELETE is visible to the very next fetch (delete vectors uncached) |
+| `test_fgm_same_transaction_truncate_then_fetch` | same-transaction TRUNCATE then fetch sees only the new rows |
+| `test_fgm_backend_alive` | backend alive |

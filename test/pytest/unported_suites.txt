@@ -11,7 +11,6 @@ decode_interrupts
 decode_skip_interrupts
 harness_selftest
 native_cancel
-native_fetch_group_memo
 native_fetch_interrupt
 native_fold_deferral
 native_late_materialization
