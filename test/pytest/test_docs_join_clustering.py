@@ -7,6 +7,7 @@ that is not clustered on the join key still holds every key in every group, so
 sideways information passing cannot skip.
 """
 
+import re
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -15,8 +16,19 @@ HOWTO = ROOT / "docs" / "how-to.md"
 PRACTICES = ROOT / "docs" / "best-practices.md"
 
 
+# A sentence that tells the reader to cluster ON the join key: "cluster", then within the
+# same sentence "on the join key". The two words anywhere in a section are not that: a
+# section can name clustering by time and mention a join key in passing (#1339).
+CLUSTER_ON_KEY = re.compile(r"\bcluster\w*\b[^.]*?\bon (?:the |its |a )?join key", re.I)
+
+
+def _read(path):
+    """The page as a reader sees it: HTML comments are not shown, so they do not count."""
+    return re.sub(r"<!--.*?-->", "", path.read_text(encoding="utf-8"), flags=re.S)
+
+
 def _section_after(path, heading):
-    text = path.read_text(encoding="utf-8")
+    text = _read(path)
     start = text.find(heading)
     if start < 0:
         return ""
@@ -31,14 +43,18 @@ def test_how_to_names_join_key_clustering_for_the_runtime_filter(expect):
     """The star-schema how-to must say when group skip is a no-op.
 
     Public seam: docs/how-to.md. Independently of docs_style.sh, this reads the
-    section and requires both the layout verb and the join key in that section.
+    section as a reader sees it (HTML comments removed) and requires a sentence that
+    says to cluster ON the join key: "cluster" in one sentence and "join key" in another
+    passed before (#1339). The file and heading checks are not premises: a docs change
+    reddens them (#1236).
     """
-    expect.num(int(HOWTO.is_file()), 1, "premise: how-to.md is in the tree")
+    expect.num(int(HOWTO.is_file()), 1, "how-to.md is in the tree")
     section = _section_after(HOWTO, "## Skip fact-table work under a star-schema join")
-    expect.at_least(len(section), 1, "premise: the star-schema join heading is present")
+    expect.at_least(len(section), 1, "the star-schema join heading is present")
     low = section.lower()
     expect.contains(low, "cluster", "the runtime-filter how-to names clustering")
-    expect.contains(low, "join key", "and it names the join key as the clustering column")
+    expect.at_least(len(CLUSTER_ON_KEY.findall(section)), 1,
+                    "and it names the join key as the clustering column")
 
 
 def test_best_practices_names_join_key_clustering_for_a_fact_table(expect):
@@ -47,6 +63,7 @@ def test_best_practices_names_join_key_clustering_for_a_fact_table(expect):
     Public seam: docs/best-practices.md. The skipping section told readers to
     cluster on the column they filter by ranges. A join key is not a range.
     """
-    expect.num(int(PRACTICES.is_file()), 1, "premise: best-practices.md is in the tree")
-    text = PRACTICES.read_text(encoding="utf-8").lower()
-    expect.contains(text, "join key", "best-practices names clustering on the join key")
+    expect.num(int(PRACTICES.is_file()), 1, "best-practices.md is in the tree")
+    text = _read(PRACTICES)
+    expect.at_least(len(CLUSTER_ON_KEY.findall(text)), 1,
+                    "best-practices names clustering on the join key")
