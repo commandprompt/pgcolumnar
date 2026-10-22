@@ -11870,12 +11870,12 @@ Every test makes one check under the shell's name, on a private database built o
 
 | test | what it holds |
 | --- | --- |
-| `test_vecdecode_narrow_plan_is_the_custom_scan` | premise: the narrow plan is a columnar custom scan |
-| `test_vecdecode_wide_plan_is_the_custom_scan` | premise: the wide plan is a columnar custom scan |
-| `test_vecdecode_one_row_group` | premise: one row group, so every difference is per-vector |
-| `test_vecdecode_no_whole_group_pruned` | premise: no whole group is pruned on the narrow query |
+| `test_vecdecode_narrow_plan_is_the_custom_scan` | the narrow plan is a columnar custom scan |
+| `test_vecdecode_wide_plan_is_the_custom_scan` | the wide plan is a columnar custom scan |
+| `test_vecdecode_one_row_group` | one row group, so every difference is per-vector |
+| `test_vecdecode_no_whole_group_pruned` | no whole group is pruned on the narrow query |
 | `test_vecdecode_narrow_range_skips_vectors` | the narrow range skips vectors |
-| `test_vecdecode_wide_range_skips_none` | premise: the wide range skips none, so the arms really differ |
+| `test_vecdecode_wide_range_skips_none` | the wide range skips none, so the arms really differ |
 | `test_vecdecode_explain_reports_vectors_decoded` | EXPLAIN reports Columnar Vectors Decoded |
 | `test_vecdecode_full_scan_decodes_something` | and it is not stuck at zero when a full scan decodes everything |
 | `test_vecdecode_ruled_out_vector_not_decoded` | a ruled-out vector is not decoded |

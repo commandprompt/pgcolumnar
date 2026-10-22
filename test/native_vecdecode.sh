@@ -60,21 +60,24 @@ WIDE="SELECT id, v FROM n WHERE id BETWEEN 1 AND $ROWS"
 PLAN_NARROW="$(explain_of "$NARROW")"
 PLAN_WIDE="$(explain_of "$WIDE")"
 
-# ---- premises -------------------------------------------------------------
+# ---- the ground --------------------------------------------------------------
 #
 # Every number below is read out of these two plans. If the planner stops
 # choosing the columnar custom scan, or the group splits, the comparisons start
 # reporting a decode regression that is really a plan or a layout change. Assert
-# the ground first so a failure names its own cause.
+# the ground first so a failure names its own cause. None of these is a premise:
+# each reads pgcolumnar's plan or its writer's row_group catalog, and a one-line
+# pgcolumnar change reddens it (the custom scan off by default; a writer that
+# reads stripe_row_limit wrong).
 
-check "premise: the narrow plan is a columnar custom scan" \
+check "the narrow plan is a columnar custom scan" \
 	"$(has_line "$PLAN_NARROW" 'Columnar Projected Columns')" "yes"
-check "premise: the wide plan is a columnar custom scan" \
+check "the wide plan is a columnar custom scan" \
 	"$(has_line "$PLAN_WIDE" 'Columnar Projected Columns')" "yes"
-check "premise: one row group, so every difference is per-vector" \
+check "one row group, so every difference is per-vector" \
 	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('n');")" \
 	"1"
-check "premise: no whole group is pruned on the narrow query" \
+check "no whole group is pruned on the narrow query" \
 	"$(counter_in "$PLAN_NARROW" 'Columnar Chunk Groups Removed by Filter')" "0"
 
 # The two arms must differ in what the zone maps rule out, or the central check
@@ -83,7 +86,7 @@ SKIP_NARROW="$(counter_in "$PLAN_NARROW" 'Columnar Vectors Skipped')"
 SKIP_WIDE="$(counter_in "$PLAN_WIDE" 'Columnar Vectors Skipped')"
 check "the narrow range skips vectors" \
 	"$(isnum "$SKIP_NARROW" && { [ "$SKIP_NARROW" -gt 0 ] && echo yes || echo no; } || echo "no reading [$SKIP_NARROW]")" "yes"
-check "premise: the wide range skips none, so the arms really differ" \
+check "the wide range skips none, so the arms really differ" \
 	"$SKIP_WIDE" "0"
 
 # ---- the observable -------------------------------------------------------

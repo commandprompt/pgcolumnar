@@ -6348,23 +6348,28 @@ suites_not_covered 56
 #     dated         3044 + 6 = 3050
 #     4259 + 3050 == 7309
 #
-# #1341, native_vecdecode seeded, with its twin (OffgridwithJD): 4259 -> 4277,
+# #1341, native_vecdecode seeded, with its twin (OffgridwithJD): 4259 -> 4269,
 # and suites_not_covered 57 -> 56. The suite had no rows. It enters with 28 checks
 # from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
 # The fixture had no nulls, so a fold that ignored the validity bitmap (nonull) passed all
 # 24 on main: a nullable column w now runs through the fold and through a scalar parity
 # check. "decoded plus skipped is the group's vectors" read missing counters as 0, so with
 # the plans failing it passed as 0 + 0 = 0, and two aggregate parities compared two empty
-# readings: with the server stopped before the plans main passed 3, now none. And four
-# "premise:" checks read pgcolumnar's own behaviour: nofold reddens the three "reaches the
-# fold" checks and decodeall the fold arm's decode count, so they lost the prefix (#1339),
-# as did "the narrow range skips vectors" (noskip). 10 are dated by five mutations, each
-# the same names in both twins. The poison check is dated by holeread, whose hole is
-# zero-filled so a fold that reads it counts rows that are not there on a non-assert build
-# too. 18 arrive never.
+# readings: with the server stopped before the plans main passed 3, now none. And nine
+# "premise:" checks read pgcolumnar's own behaviour, so they lost the prefix (#1339):
+# nofold reddens the three "reaches the fold" checks, decodeall the fold arm's decode
+# count, noskip "the narrow range skips vectors"; and (jdatcmd's #1700 review) noscan,
+# the custom scan off by default, reddens the two plan-shape checks, "no whole group is
+# pruned" and "the wide range skips none", while optdiv100, a writer that divides the
+# table's stripe_row_limit by 100, reddens "one row group". 18 are dated by seven
+# mutations, each the same names in both twins; noscan also dates "EXPLAIN reports
+# Columnar Vectors Decoded", "and it is not stuck at zero" and the control. The poison
+# check is dated by holeread, whose hole is zero-filled so a fold that reads it counts
+# rows that are not there on a non-assert build too. 10 arrive never: the heap-side
+# nulls premise and nine parity checks with heap.
 #
 #     ledger rows   7309 + 28 = 7337
-#     never         4259 + 18 = 4277
-#     dated         3050 + 10 = 3060
-#     4277 + 3060 == 7337
-checks_never_observed_red 4277
+#     never         4259 + 10 = 4269
+#     dated         3050 + 18 = 3068
+#     4269 + 3068 == 7337
+checks_never_observed_red 4269
