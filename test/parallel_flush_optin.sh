@@ -222,4 +222,24 @@ after_unpin="$(perl -0777 -ne '
 check_text "the collect loop forgets a worker's handle in the statement after it unpins the segment" \
 	"$after_unpin" "slots[i].outHandle = DSM_HANDLE_INVALID;"
 
+# ---- 6. nothing raises between a worker's pin and its DONE (#1747) ----------
+#
+# A worker pins its OUTPUT segment so it outlives the worker. On the NORMAL path the
+# dispatcher's collect loop unpins only a DONE slot; a worker that raised after the
+# pin reported FAILED, and its pinned segment stayed until postmaster restart
+# (measured on main with an injected ERROR after the pin: 8 segments left by a
+# two-stripe flush). The worker now commits first and pins last, so nothing between
+# dsm_pin_segment and the DONE write can raise: the source is read, comments blanked,
+# and the stretch must be the detach alone.
+after_pin="$(perl -0777 -ne '
+	if (/\npgcolumnar_parallel_flush_worker\(Datum main_arg\)\n\{(.*?)\n\}\n/s) {
+		my $f = $1;
+		if ($f =~ /dsm_pin_segment\(outseg\);(.*?)pg_atomic_write_u32\(&me->state, PFLUSH_DONE\);/s) {
+			my $b = $1; $b =~ s{/\*.*?\*/}{}gs; $b =~ s{//[^\n]*}{}g; $b =~ s/\s+/ /g; $b =~ s/^ | $//g;
+			print $b eq "" ? "(nothing)" : $b;
+		} else { print "the pin and the DONE write are not both in the worker" }
+	} else { print "pgcolumnar_parallel_flush_worker not found" }' "$SRC/columnar_write_state.c")"
+check_text "a flush worker runs nothing that can raise between pinning its output and reporting DONE" \
+	"$after_pin" "dsm_detach(outseg);"
+
 pgc_summary

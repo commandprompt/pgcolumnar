@@ -7010,4 +7010,18 @@ suites_not_covered 28
 #     never         4545 + 0 = 4545
 #     dated         3416 + 1 = 3417
 #     4545 + 3417 == 7962
+#
+# #1747, a parallel flush worker that fails after pinning its output, in
+# parallel_flush_optin (OffgridwithJD): 4545 -> 4545. On the normal path the collect
+# loop unpinned only a DONE slot, so a worker that raised after dsm_pin_segment (its
+# commit ran after the pin) reported FAILED and left the segment pinned to postmaster
+# restart: 8 segments from a two-stripe flush, measured on main with an injected ERROR
+# that is not committed. The worker now commits first and pins last, and arm 6 reads
+# the source: between the pin and the DONE write only the detach may run. Dated by the
+# worker committing after the pin again, which reddens the same name in both twins.
+#
+#     ledger rows   7962 + 1 = 7963
+#     never         4545 + 0 = 4545
+#     dated         3417 + 1 = 3418
+#     4545 + 3418 == 7963
 checks_never_observed_red 4545

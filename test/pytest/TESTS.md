@@ -10302,8 +10302,11 @@ The ON check reads the split line ("N of M columns by K worker(s)") as well as t
 | `test_double_cancel_reports_the_first_cancel` | a twice-cancelled parallel flush reports the first cancel |
 | `test_double_cancel_leaves_no_segment_pinned` | a twice-cancelled parallel flush leaves no worker segment pinned |
 | `test_the_collect_loop_forgets_a_handle_after_its_unpin` | the collect loop forgets a worker's handle in the statement after it unpins the segment |
+| `test_a_flush_worker_raises_nothing_after_its_pin` | a flush worker runs nothing that can raise between pinning its output and reporting DONE |
 
 Arm 4 (#1745) runs on a private cluster with `dynamic_shared_memory_type = mmap`, so the workers' output segments are files in that cluster's own `pg_dynshmem` and can be counted from SQL. A 2s `statement_timeout` cancels a parallel flush while one worker still encodes a zstd-19 text column, and `pg_cancel_backend` cancels it again 1.5s later, inside the error cleanup's wait. No new segment may survive, and the error reported must be the first cancel's.
+
+Arm 6 (#1747) reads `pgcolumnar_parallel_flush_worker` with comments blanked: between `dsm_pin_segment` and the DONE write only `dsm_detach` may run, because the collect loop unpins only a DONE slot and a worker that raised after its pin left the segment pinned to postmaster restart.
 
 ## 263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics
 

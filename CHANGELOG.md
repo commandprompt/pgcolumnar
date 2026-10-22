@@ -418,6 +418,12 @@ true until the next version shipped.
   `_SUCCESS` writers, now copies the error out first and re-throws it afterwards
   (#1741). `test/objstore_export_double_cancel.sh` and
   `test_objstore_export_double_cancel.py`.
+- **A parallel flush worker that fails after publishing its output no longer leaks
+  it.** A worker pinned its shared memory output and then committed; an error in
+  between reported the worker as failed, and the dispatcher, which collects only
+  finished workers, never freed the segment, so it stayed until the server
+  restarted. The worker now commits before it publishes, and the dispatcher frees
+  any output it did not collect (#1747).
 - **A second cancel during a parallel flush's error cleanup no longer leaks the
   workers' output segments.** With `pgcolumnar.parallel_flush` on, a cancel during
   the flush terminates the workers and frees the shared memory segments they
