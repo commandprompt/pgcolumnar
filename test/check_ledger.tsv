@@ -4399,6 +4399,17 @@ native_param_pushdown	native_param_pushdown	backend alive	15;16;17;18;19	never	-
 native_param_pushdown	native_param_pushdown	literal count is the expected value	15;16;17;18;19	never	-
 native_param_pushdown	native_param_pushdown	parameterized count matches the literal count	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
 native_param_pushdown	native_param_pushdown	the correlated arm rescans the columnar scan once per outer row	15;16;17;18;19	never	-
+native_parquet_fieldid	native_parquet_fieldid	a duplicate field id in the file is refused (42702)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
+native_parquet_fieldid	native_parquet_fieldid	a duplicate requested field id is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
+native_parquet_fieldid	native_parquet_fieldid	a field_ids/column-count mismatch is refused (22023)	15;16;17;18;19	never	-
+native_parquet_fieldid	native_parquet_fieldid	a file with no field ids is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the 'file carries no field ids' guard removed, so an id-less file falls to the absent-id refusal
+native_parquet_fieldid	native_parquet_fieldid	a nested/array output column is refused (0A000)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scalar-only guard on field-id projection removed
+native_parquet_fieldid	native_parquet_fieldid	an absent field id is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the absent-field-id refusal becomes abort()
+native_parquet_fieldid	native_parquet_fieldid	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the absent-field-id refusal becomes abort()
+native_parquet_fieldid	native_parquet_fieldid	field-id projection binds and reorders by id (g=gamma, a=alpha)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
+native_parquet_fieldid	native_parquet_fieldid	field-id projection reads a subset (only id 3 = beta)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
+native_parquet_fieldid	native_parquet_fieldid	positional read_parquet is unaffected	15;16;17;18;19	never	-
+native_parquet_fieldid	native_parquet_fieldid	the duplicate-requested-id error names the id, not the file	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_flba	native_parquet_flba	FDW scan == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL keeps its null	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL reads	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an INT32 or INT64 DECIMAL is widened byte-reversed;columnar_parquet_reader.c: pq_decimal_to_numeric reads a narrower-than-16-byte negative DECIMAL as its unsigned magnitude

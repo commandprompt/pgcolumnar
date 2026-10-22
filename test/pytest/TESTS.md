@@ -354,6 +354,7 @@ behaviour, the source of that number is named.
 - [306. test_native_zonemap_session.py: a scan resolves zone_map once, and each scan holds its own session](#306-test_native_zonemap_sessionpy-a-scan-resolves-zone_map-once-and-each-scan-holds-its-own-session)
 - [307. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes](#307-test_native_zonemap_narrowpy-group-skipping-reads-only-the-predicate-columns-zone-maps-and-still-prunes)
 - [308. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values](#308-test_native_vecdecodepy-decode-honours-the-skip-vector-and-the-fold-reads-neither-holes-nor-nulls-as-values)
+- [309. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard](#309-test_native_parquet_fieldidpy-read_parquet-binds-output-columns-by-parquet-field-id-and-refuses-each-misuse-by-its-own-guard)
 
 ## 1. How to read a test in here
 
@@ -11700,3 +11701,25 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_vecdecode_fold_arm_decodes_only_what_it_needs` | the FOLD ARM really decodes only the vectors it needs |
 | `test_vecdecode_fold_counter_reads_every_vector_when_none_skipped` | control: and the same counter reads every vector when nothing is skipped |
 | `test_vecdecode_fold_does_not_count_undecoded_rows` | the fold does not count rows from a vector it never decoded |
+
+## 309. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard
+
+The twin of `test/native_parquet_fieldid.sh`. pyarrow writes a file whose field ids are out of order and disjoint from position (alpha=7, beta=3, gamma=12), one with no field ids, and one where two columns share an id. read_parquet(path, field_ids) must bind and reorder by id, read a subset, leave the positional read alone, and refuse an absent id, a duplicate id in the file, a non-scalar output column, a count mismatch, an id-less file and a duplicate requested id, each with its own guard's message; the backend must survive.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The writer runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A refusal reads as '<SQLSTATE> (<label>)' only when the primary message is the guard's own; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_fieldid_projection_binds_and_reorders_by_id` | field-id projection binds and reorders by id (g=gamma, a=alpha) |
+| `test_fieldid_projection_reads_a_subset` | field-id projection reads a subset (only id 3 = beta) |
+| `test_positional_read_parquet_is_unaffected_by_fieldid_binding` | positional read_parquet is unaffected |
+| `test_an_absent_field_id_is_refused` | an absent field id is refused (22023) |
+| `test_a_duplicate_field_id_in_the_parquet_file_is_refused` | a duplicate field id in the file is refused (42702) |
+| `test_a_nested_fieldid_output_column_is_refused` | a nested/array output column is refused (0A000) |
+| `test_a_field_ids_column_count_mismatch_is_refused` | a field_ids/column-count mismatch is refused (22023) |
+| `test_a_parquet_file_with_no_field_ids_is_refused` | a file with no field ids is refused (22023) |
+| `test_a_duplicate_requested_field_id_is_refused` | a duplicate requested field id is refused (22023) |
+| `test_the_duplicate_requested_id_error_names_the_id` | the duplicate-requested-id error names the id, not the file |
+| `test_the_backend_survives_the_fieldid_refusals` | backend still up after the refusals |

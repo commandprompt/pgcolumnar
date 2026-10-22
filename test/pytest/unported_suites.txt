@@ -14,7 +14,6 @@ native_cancel
 native_fetch_interrupt
 native_parquet_codecs
 native_parquet_fdw
-native_parquet_fieldid
 native_parquet_hardening
 native_parquet_partition
 native_parquet_projection
