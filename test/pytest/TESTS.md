@@ -364,6 +364,7 @@ behaviour, the source of that number is named.
 - [316. test_native_parquet_partition.py: Hive-style partition columns materialize and prune whole files, and a tree that does not match fails loudly](#316-test_native_parquet_partitionpy-hive-style-partition-columns-materialize-and-prune-whole-files-and-a-tree-that-does-not-match-fails-loudly)
 - [317. test_native_parquet_fdw.py: the Parquet FDW reads an exported file as a foreign table, prunes what it can, and refuses each misuse by its own guard](#317-test_native_parquet_fdwpy-the-parquet-fdw-reads-an-exported-file-as-a-foreign-table-prunes-what-it-can-and-refuses-each-misuse-by-its-own-guard)
 - [318. test_native_read_parquet.py: read_parquet returns the rows that were written, refuses what it must, and keeps its file gate](#318-test_native_read_parquetpy-read_parquet-returns-the-rows-that-were-written-refuses-what-it-must-and-keeps-its-file-gate)
+- [319. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused](#319-test_objstore_listingpy-a-remote-prefix-or-glob-is-listed-page-by-page-an-exact-key-is-not-listed-and-a-listing-that-cannot-advance-or-fails-is-refused)
 
 ## 1. How to read a test in here
 
@@ -11999,3 +12000,29 @@ Every test makes one check under the shell's name, on a private database. Every 
 | `test_the_backend_is_still_up_after_the_read_parquet_refusals` | backend still up after the refusals |
 | `test_import_parquet_loads_every_row` | import parity rows |
 | `test_read_parquet_agrees_with_import_parquet` | read_parquet == import_parquet |
+
+## 319. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused
+
+The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, an exact key is read with no LIST, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard, and the backend survives.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private cluster restarted with AWS_* in its environment; the Parquet fixtures are written by a subprocess, and without pyarrow every test declines under the shell's skip message. A failed reading is a query_error(), unique per call, so two failures never agree. A refusal reads as '<SQLSTATE> by the <guard>' only when the message is the guard's own; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_listing_fixture_server_is_up` | premise: fixture up |
+| `test_read_parquet_over_a_prefix_reads_every_object_under_it` | read_parquet over a prefix reads every object under it (4 parts, recursive) |
+| `test_the_prefix_listing_paged` | the prefix listing paged (more than one list-type=2 request) |
+| `test_the_fdw_over_a_prefix_reads_what_read_parquet_reads` | FDW over a prefix == read_parquet over the prefix |
+| `test_hidden_and_non_parquet_objects_are_excluded_from_the_listing` | hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded |
+| `test_a_remote_glob_matches_only_the_top_level_parts` | glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/ |
+| `test_an_exact_key_read_returns_its_rows` | exact-key read returns its rows |
+| `test_an_exact_key_read_issues_no_list` | an exact-key read issues no ListObjectsV2 |
+| `test_the_exact_key_read_reached_the_request_log` | and the request log recorded the exact-key read |
+| `test_hive_over_a_remote_prefix_stamps_the_partition_column` | Hive over a remote prefix stamps the partition column |
+| `test_a_partition_predicate_prunes_a_remote_file` | a partition predicate prunes a remote file (Files Pruned = 1) |
+| `test_a_non_advancing_continuation_token_is_refused` | a non-advancing continuation token is refused, not an infinite paging loop |
+| `test_a_truncated_page_with_no_keys_is_refused` | a truncated page with no keys is refused, not looped |
+| `test_a_list_that_fails_is_refused_not_read_as_empty` | a LIST that returns HTTP 500 is refused, not read as an empty prefix |
+| `test_the_backend_is_still_up_after_the_listing_refusals` | backend still up after the listing refusals |

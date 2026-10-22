@@ -43,14 +43,48 @@ pg_restart_env() {
 	done
 	echo "FATAL: cluster did not come back after env restart"; exit 1
 }
-sqlstate_of() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
+listn() { grep -cE 'list-type=2' "$S3_LOG" | tr -d ' '; }
+
+# wait_up: wait up to 15 s for the server, so a backend that crashed in one reading
+# fails that reading and survival, not every reading after it during recovery.
+wait_up() { for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done; }
+
+# refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
+# message, the bare SQLSTATE when the message lacks it, or what happened instead. The
+# two non-progress refusals share 08P01: with the no-keys check removed, the replayed
+# page reached the token check and the bare SQLSTATE still passed.
+refusal_of() {
+	local out state
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
 $1;
 SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif grep -qF "$2" <<<"$out"; then echo "$state$3"
+	else echo "$state"; fi
 }
-listn() { grep -cE 'list-type=2' "$S3_LOG" | tr -d ' '; }
+
+# Backends killed by a signal, from the server log: a number, or nothing when the log
+# can't be read. A fresh connection answers again after crash recovery, so "SELECT 1"
+# alone passed with a backend aborted before it; survival also requires this count
+# not to have moved.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	wait_up
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
 
 # ---- fixtures on disk: a prefix of parts, a nested part, hidden + non-parquet,
 #      and a Hive-partitioned layout ------------------------------------------
@@ -89,6 +123,7 @@ check "premise: fixture up" "$(grep -c READY "$PGC_WORKDIR/s3_server.out" 2>/dev
 
 pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.1:$S3_PORT'" \
 	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" "AWS_REGION='$REGION'"
+CRASHES_BEFORE="$(crashes)"
 
 psql_run "CREATE SERVER s3srv FOREIGN DATA WRAPPER pgcolumnar_parquet;"
 
@@ -118,6 +153,9 @@ check "glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/" \
 psql_run "CREATE FOREIGN TABLE fexact (id int8) SERVER s3srv OPTIONS (path 's3://$BUCKET/lst/part-0000.parquet');"
 check "exact-key read returns its rows" "$(q "SELECT count(*), sum(id) FROM fexact" | tr '|' ' ')" "3 3"
 check "an exact-key read issues no ListObjectsV2" "$(listn)" "0"
+# the 0 above reads the same log: it must hold the exact key's own request
+check "and the request log recorded the exact-key read" \
+	"$(grep -qE '^(GET|HEAD) /'"$BUCKET"'/lst/part-0000\.parquet ' "$S3_LOG" && echo logged || echo "not logged")" "logged"
 
 # ---- Hive partition columns over a remote prefix ----------------------------
 psql_run "CREATE FOREIGN TABLE fhive (id int8, dt date) SERVER s3srv
@@ -133,27 +171,42 @@ check "a partition predicate prunes a remote file (Files Pruned = 1)" \
 # ---- a non-advancing continuation token is refused, not looped forever ------
 # A broken or hostile endpoint that replays one truncated page with the same
 # token would spin the paging loop toward the page cap. The client detects the
-# token that does not advance and errors (08P01) instead. Removal proof: without
-# that check the read loops until statement_timeout (57014), not 08P01.
+# token that does not advance and errors (08P01) instead, by that check's own
+# message. Removal proof: without that check the read loops until
+# statement_timeout (57014), not 08P01.
 cat > "$PGC_WORKDIR/__listing_override__" <<'XML'
 <?xml version="1.0"?><ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>STUCK</NextContinuationToken><Contents><Key>lst/part-0000.parquet</Key></Contents></ListBucketResult>
 XML
 check "a non-advancing continuation token is refused, not an infinite paging loop" \
-	"$(sqlstate_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)")" "08P01"
+	"$(refusal_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)" \
+		"returned a non-advancing continuation token" " by the token check")" "08P01 by the token check"
 rm -f "$PGC_WORKDIR/__listing_override__"
 
 # A truncated page that carries NO keys is the other non-progress shape: an
 # endpoint that varies its token each page (which the token check cannot catch)
 # but never returns a key would otherwise page to the OS_LIST_MAX_PAGES backstop.
 # ListObjectsV2 always returns a key on a truncated page, so an empty truncated
-# page is refused on the first page (08P01). Removal proof: without the progress
-# check this pages until statement_timeout (57014).
+# page is refused on the first page (08P01), by the progress check's own message:
+# this page replays its token, so without the progress check the token check
+# refuses it on the second page with the same SQLSTATE.
 cat > "$PGC_WORKDIR/__listing_override__" <<'XML'
 <?xml version="1.0"?><ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>next-1</NextContinuationToken></ListBucketResult>
 XML
 check "a truncated page with no keys is refused, not looped" \
-	"$(sqlstate_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)")" "08P01"
+	"$(refusal_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)" \
+		"returned a truncated page with no keys" " by the progress check")" "08P01 by the progress check"
 rm -f "$PGC_WORKDIR/__listing_override__"
+
+# ---- a LIST that fails is refused, never read as an empty prefix -------------
+# An empty listing is a legal answer (a prefix with nothing under it), so a client
+# that took a failed LIST for one would read zero rows from a prefix it never saw.
+echo 500 > "$PGC_WORKDIR/__listing_status__"
+check "a LIST that returns HTTP 500 is refused, not read as an empty prefix" \
+	"$(refusal_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)" \
+		"returned HTTP 500" " by the HTTP status check")" "08006 by the HTTP status check"
+rm -f "$PGC_WORKDIR/__listing_status__"
+
+check "backend still up after the listing refusals" "$(survived "$CRASHES_BEFORE")" "1"
 
 # ---- optional: a real S3 (Garage), same as the sibling suites ---------------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then

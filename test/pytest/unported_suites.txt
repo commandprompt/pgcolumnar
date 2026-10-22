@@ -15,7 +15,6 @@ native_fetch_interrupt
 native_rewrite_conc
 objstore_addressing
 objstore_http_read
-objstore_listing
 objstore_module
 objstore_s3_read
 objstore_sink_write

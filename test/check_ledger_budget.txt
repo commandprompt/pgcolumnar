@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 52
+suites_not_covered 51
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6408,4 +6408,22 @@ suites_not_covered 52
 #     never         4265 + 4 = 4269
 #     dated         3026 + 11 = 3037
 #     4269 + 3037 == 7306
-checks_never_observed_red 4269
+#
+# #1341, objstore_listing seeded, with its twin (OffgridwithJD): 4269 -> 4273,
+# and suites_not_covered 52 -> 51. The suite had no rows. It enters with 15 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The two non-progress refusals share 08P01 and read only the SQLSTATE: the no-keys page
+# replays its token, so with the progress check removed (noprogress) the token check refused
+# it on the next page and main passed 12/12. Each refusal now wants its own guard's message.
+# No check made a LIST fail, so a non-2xx read as an empty prefix (non200empty) passed 12/12;
+# the fixture server gained a __listing_status__ hook and a check wants the HTTP status
+# refusal (08006). The exact-key 'no LIST' count read a log nothing proved alive; a control
+# now wants the key's own GET in it. A survival check reads the server log's count of killed
+# backends, and every refusal waits for the server first. 11 are dated by seven mutations,
+# each the same names in both twins. 4 arrive never.
+#
+#     ledger rows   7306 + 15 = 7321
+#     never         4269 + 4 = 4273
+#     dated         3037 + 11 = 3048
+#     4273 + 3048 == 7321
+checks_never_observed_red 4273
