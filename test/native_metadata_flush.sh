@@ -49,7 +49,9 @@ opens() { # opens <insertSql>
 
 q "CREATE TABLE tprobe (a int, b int, c int) USING pgcolumnar;" >/dev/null
 probe="$(opens "INSERT INTO tprobe SELECT g, g*2, g%7 FROM generate_series(1,2000) g;")"
-check_text "premise: the flush emits the metadata-open witness" \
+# Not a premise: with the flush session never begun (a one-line pgcolumnar change)
+# no witness line is emitted, so this is an ordinary check (#1339).
+check_text "the flush emits the metadata-open witness" \
 	"$([ -n "$probe" ] && echo yes || echo no)" "yes"
 
 # ---- the batched open count is a small constant -----------------------------
@@ -77,13 +79,24 @@ check_text "a 20-column flush opens a small constant number of metadata relation
 	"$([ -n "$n_wide" ] && [ "$n_wide" -le 6 ] && echo small || echo "big:[$n_wide]")" \
 	"small"
 
+# A floor as well as a ceiling. Every flush writes a row_group row, column_chunk
+# rows and zone_map rows, so it opens at least those three tables. Without the
+# floor a witness that counted nothing (opens=0 for every flush) passed both checks
+# above: 0 equals 0, and 0 is small.
+check_text "and the 20-column flush opens at least the three tables every flush writes" \
+	"$([ -n "$n_wide" ] && [ "$n_wide" -ge 3 ] && echo yes || echo "no:[$n_wide]")" \
+	"yes"
+
 # ---- the writes are correct, batched or not ---------------------------------
 
 # The batching must not change what is written. Mirror the wide table in heap and
 # compare, so a corrupted or dropped metadata row would show as a count or sum
 # mismatch.
 q "CREATE TABLE twide_h (LIKE twide);" >/dev/null
-q "INSERT INTO twide_h SELECT * FROM twide;" >/dev/null
+# THE MIRROR IS WRITTEN FROM THE GENERATOR, NOT COPIED FROM twide. Copied, it read
+# twide through the reader under test, so a writer that stored a wrong value put the
+# same wrong value in both and the sum below still agreed.
+q "INSERT INTO twide_h SELECT g,g,g,g,g,g,g,g,g,g,g,g,g,g,g,g,g,g,g,g FROM generate_series(1,2000) g;" >/dev/null
 
 check_num "the wide table's row count survives the batched flush" \
 	"$(q "SELECT count(*) FROM twide")" "2000"
@@ -95,5 +108,18 @@ check_num "every column reads back correct (sum over all 20 columns matches the 
 check_num "a zone-map-pruned range read matches heap (the batched zone rows are correct)" \
 	"$(q "SELECT count(*) FROM twide WHERE c00 BETWEEN 500 AND 1500")" \
 	"$(q "SELECT count(*) FROM twide_h WHERE c00 BETWEEN 500 AND 1500")"
+
+# And the zone rows are read: the range excludes the last vector of the stripe
+# (1501..2000 lies above 1500), and the zone row for that vector is what rules it out.
+# Vectors Skipped alone cannot show that, because the reader also rules out vectors
+# by value after decoding the qual column, with or without a zone map. So this reads
+# the zone-map part: Skipped minus Ruled Out by Value. Without it, a flush that wrote
+# no usable min/max still answered every range read correctly.
+plan="$(q "SET max_parallel_workers_per_gather=0;
+	EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM twide WHERE c00 BETWEEN 500 AND 1500;")"
+skipped="$(grep -oE 'Columnar Vectors Skipped: [0-9]+' <<<"$plan" | head -1 | grep -oE '[0-9]+')"
+byvalue="$(grep -oE 'Columnar Vectors Ruled Out by Value: [0-9]+' <<<"$plan" | head -1 | grep -oE '[0-9]+')"
+check_text "and that range read rules out a vector by its zone row alone" \
+	"$([ -n "$skipped" ] && [ -n "$byvalue" ] && [ $((skipped - byvalue)) -ge 1 ] && echo yes || echo "no:[skipped $skipped, by value $byvalue]")" "yes"
 
 pgc_summary

@@ -348,6 +348,7 @@ behaviour, the source of that number is named.
 - [300. test_parallel_export_parquet.py: parallel Parquet export equals serial export equals the source](#300-test_parallel_export_parquetpy-parallel-parquet-export-equals-serial-export-equals-the-source)
 - [301. test_native_fold_deferral.py: the batch fold defers payload until a row passes its keys, and the work is measured](#301-test_native_fold_deferralpy-the-batch-fold-defers-payload-until-a-row-passes-its-keys-and-the-work-is-measured)
 - [302. test_native_lazy_slot.py: the index fetch decodes only the prefix the executor asks for, and never a stale one](#302-test_native_lazy_slotpy-the-index-fetch-decodes-only-the-prefix-the-executor-asks-for-and-never-a-stale-one)
+- [303. test_native_metadata_flush.py: a stripe flush opens each metadata table once, and the flush's writes read back correctly](#303-test_native_metadata_flushpy-a-stripe-flush-opens-each-metadata-table-once-and-the-flushs-writes-read-back-correctly)
 
 ## 1. How to read a test in here
 
@@ -11597,3 +11598,22 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_lazy_slot_a_copy_keeps_every_column` | copying index-fetched rows into a heap table keeps every column |
 | `test_lazy_slot_a_unique_violation_is_detected` | a unique violation is still detected through the fetch path |
 | `test_lazy_slot_a_wide_table_is_not_in_another_class` | a wide table is not in a different class from a narrow one |
+
+## 303. test_native_metadata_flush.py: a stripe flush opens each metadata table once, and the flush's writes read back correctly
+
+The twin of `test/native_metadata_flush.sh`. A 3-column and a 20-column table each flush one stripe under small limits; the flush's DEBUG1 witness (`metadata flush: opens=N`) must report the same small count for both, no more than six and at least the three tables every flush writes. The wide table must read back exactly what the generator wrote, and a range read must rule out a vector by its zone row alone.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. The witness is captured from the inserting session's notices, with the stripe limits set in that session as the shell does. The heap mirror is written from the generator. A failed reading is a `query_error()`, so two failures never agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_native_metadata_flush_emits_the_witness` | the flush emits the metadata-open witness |
+| `test_native_metadata_flush_narrow_and_wide_open_the_same` | narrow (3 col) and wide (20 col) flush open the same number of metadata relations |
+| `test_native_metadata_flush_wide_opens_a_small_constant` | a 20-column flush opens a small constant number of metadata relations, not one per row |
+| `test_native_metadata_flush_wide_opens_at_least_three` | and the 20-column flush opens at least the three tables every flush writes |
+| `test_native_metadata_flush_row_count_survives` | the wide table's row count survives the batched flush |
+| `test_native_metadata_flush_every_column_reads_back` | every column reads back correct (sum over all 20 columns matches the heap mirror) |
+| `test_native_metadata_flush_range_read_matches_heap` | a zone-map-pruned range read matches heap (the batched zone rows are correct) |
+| `test_native_metadata_flush_zone_row_rules_out_a_vector` | and that range read rules out a vector by its zone row alone |

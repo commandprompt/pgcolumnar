@@ -1005,6 +1005,8 @@ guard_tests 806
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 3439 -> 3447 for #1341's test_native_metadata_flush.py, the twin of native_metadata_flush.sh:
+# 8 checks in 8 tests, by collection over the cluster files.
 # cluster_tests 3429 -> 3439 for #1341's test_native_lazy_slot.py, the twin of native_lazy_slot.sh:
 # 10 checks in 10 tests, by collection over the cluster files.
 # cluster_tests 3416 -> 3429 for #1341's test_native_fold_deferral.py, the twin of native_fold_deferral.sh:
@@ -1110,4 +1112,4 @@ guard_tests 806
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 3439
+cluster_tests 3447
