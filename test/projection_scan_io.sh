@@ -200,8 +200,21 @@ check "premise: the empty projection is found and its storage holds no row group
 	      GROUP BY p.proj_storage_id;")" \
 	"true/0"
 
+psio_e_plan="$(explain_scan on "SELECT ik FROM psio_e WHERE ik BETWEEN 1 AND 50")"
 check "an empty covering projection is still priced as one page, so it is chosen" \
-	"$(explain_scan on "SELECT ik FROM psio_e WHERE ik BETWEEN 1 AND 50" | grep -c 'Columnar Projection: byik')" \
+	"$(printf '%s\n' "$psio_e_plan" | grep -c 'Columnar Projection: byik')" \
 	"1"
+
+# THE OTHER DIRECTION (#1339). The arm above catches over-pricing only: priced
+# at 0 pages instead of 1, the projection is cheaper still and stays chosen.
+# With every CPU cost set to 0 by explain_scan, the projection scan's whole cost
+# is its page cost, so a total of zero means it was priced at zero pages.
+# Measured on PG17: 5.00 with the clamp, 0.00 with `if (pages < 1) pages = 1;`
+# deleted, and the projection chosen both times.
+psio_e_cost="$(printf '%s\n' "$psio_e_plan" | grep -m1 'Custom Scan' |
+	sed -n 's/.*cost=[0-9.]*\.\.\([0-9.]*\) .*/\1/p')"
+check "and its scan is not priced at zero pages" \
+	"$(awk -v c="${psio_e_cost:-none}" 'BEGIN { if (c ~ /^[0-9]+(\.[0-9]+)?$/) print (c + 0 > 0 ? "priced" : "free at " c); else print "unread: " c }')" \
+	"priced"
 
 pgc_summary

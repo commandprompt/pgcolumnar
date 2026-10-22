@@ -263,3 +263,14 @@ def test_an_empty_covering_projection_is_priced_as_one_page(pgc_conn, expect):
         "onck",
         "an empty covering projection is still priced as one page, so it is chosen",
     )
+    # THE OTHER DIRECTION (#1339). The arm above catches over-pricing only: priced at
+    # 0 pages instead of 1, the projection is cheaper still and stays chosen. `_plan`
+    # sets every CPU cost to 0, so the scan's whole cost is its page cost, and a total
+    # of zero means it was priced at zero pages. Measured on PG17: 5.0 with the clamp,
+    # 0.0 with `if (pages < 1) pages = 1;` deleted, and the projection chosen both times.
+    cost = (node or {}).get("Total Cost")
+    expect.text(
+        "unread" if cost is None else ("priced" if cost > 0 else f"free at {cost}"),
+        "priced",
+        "and its scan is not priced at zero pages",
+    )

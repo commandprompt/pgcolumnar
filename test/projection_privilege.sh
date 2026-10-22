@@ -191,8 +191,12 @@ check "premise: t_prjexec can open a session, so a refusal below is a refusal" \
 	"$(as t_prjexec 'SELECT 1;' | head -1)" "1"
 check "a role with EXECUTE but no SELECT is refused read_projection" \
 	"$(count_as t_prjexec read_projection)" "refused"
+# The SQLSTATE, not merely "refused", as the pytest twin asserts (#1339): this
+# function has no second arm reading the code, so "refused" alone accepted any
+# error at all, a login FATAL included.
 check "and is refused reconstruct_via_projection, which leaks non-covered columns" \
-	"$(count_as t_prjexec reconstruct_via_projection)" "refused"
+	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection('secret','p1');")" \
+	"42501"
 check "and THAT refusal is the C check, which raises 42501 from aclcheck_error" \
 	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.read_projection('secret','p1');")" \
 	"42501"
@@ -241,7 +245,8 @@ check_num "the policy is in force for ordinary SQL" \
 check "read_projection now refuses a policy-restricted caller (#563)" \
 	"$(count_as t_prjsel read_projection)" "refused"
 check "and so does reconstruct_via_projection" \
-	"$(count_as t_prjsel reconstruct_via_projection)" "refused"
+	"$(state_as t_prjsel "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection('secret','p1');")" \
+	"0A000"
 # 0A000, not a phrase. PgColumnarRequireNoRowSecurity raises
 # ERRCODE_FEATURE_NOT_SUPPORTED, which is a different SQLSTATE CLASS from either
 # ACL refusal -- 0A against 42 -- so no rewording of any message can confuse them.

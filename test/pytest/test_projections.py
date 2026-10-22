@@ -136,6 +136,20 @@ def _projection_in_plan(plan):
     return found[0] if found else None
 
 
+def _plan_field(plan, key):
+    """-> the first value of `key` anywhere in a JSON plan, or None."""
+    if isinstance(plan, dict):
+        if key in plan:
+            return plan[key]
+        plan = list(plan.values())
+    if isinstance(plan, list):
+        for v in plan:
+            found = _plan_field(v, key)
+            if found is not None:
+                return found
+    return None
+
+
 def _read_projection(cur, table, name):
     """The projection's rows as the server renders them: columns joined by '|'."""
     return _rows(cur, "SELECT pgcolumnar.read_projection(%s, %s)", (table, name))
@@ -492,6 +506,23 @@ def test_a_covering_sort_key_query_reads_the_projection(planner, expect):
                     _rows(cur, "SELECT count(*), sum(a) FROM ps_h "
                                "WHERE c BETWEEN 100 AND 200"),
                     "aggregate over projection scan matches oracle")
+        # THE EXECUTOR, NOT THE PLANNER (#1339). The first arm reads the name from
+        # EXPLAIN, which takes it before the executor decides what to open, and the
+        # two oracle arms pass whichever storage is read. So a scan that EXPLAINs as
+        # `pc` and reads the base passed all three. Executed, the sorted projection
+        # lets the reader skip the vectors outside 100..200 and the filter sees only
+        # part of the table; the base, unsorted on c, sends every row to the filter.
+        # Measured on PG17: 5980 removed against 17980 for the base.
+        analyzed = _one(cur, "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, "
+                             "FORMAT JSON) " + COVERING)
+        removed = _plan_field(analyzed, "Rows Removed by Filter")
+        outside = _one(cur, "SELECT count(*) FROM ps_h WHERE NOT (c BETWEEN 100 AND 200)")
+        expect.text(
+            "unread" if removed is None
+            else ("fewer" if removed < outside else f"all {removed} of {outside}"),
+            "fewer",
+            "executing it reads the projection, so the filter sees fewer rows than "
+            "the base holds")
 
 
 def test_the_guc_is_an_off_switch(planner, expect):
@@ -620,6 +651,32 @@ def test_an_old_snapshot_never_sees_rows_committed_after_it(pgc_conn, expect):
         dsn = pgc_conn.info.dsn
 
     COUNT = "SELECT count(a) FROM pm WHERE c BETWEEN 1 AND 20000"
+
+    # THE PLAN THE ARMS BELOW NAME (#1339). Four of them say "via projection" or
+    # "projection scan", and nothing asked how COUNT plans. Planned on the base, every
+    # one of them passes whatever the projection scan does with the snapshot.
+    with pgc_conn.cursor() as cur:
+        cur.execute("SET pgcolumnar.enable_projection_scan = on")
+        expect.text(_projection_in_plan(_plan(cur, COUNT)) or "none", "pmp",
+                    "the old-snapshot count is planned as a projection scan")
+
+    def answer(ac):
+        """-> session A's count, or the error that stopped it.
+
+        The shell suite's two timeout arms fail when session A gives no count. Here a
+        statement_timeout stands in for its 20-second poll, and an error is caught
+        rather than raised, so those two arms read what they say: that A answered.
+        """
+        try:
+            return _one(ac, COUNT)
+        except psycopg.Error as exc:
+            ac.connection.rollback()
+            return exc
+
+    def answered(reading):
+        return ("answered" if not isinstance(reading, psycopg.Error)
+                else f"no answer: {reading.sqlstate}")
+
     a = psycopg.connect(dsn, autocommit=False)
     try:
         with a.cursor() as ac:
@@ -627,10 +684,11 @@ def test_an_old_snapshot_never_sees_rows_committed_after_it(pgc_conn, expect):
             # the same one or it would read a different (absent) table.
             ac.execute(f'SET search_path TO "{schema}", public')
             ac.execute("SET pgcolumnar.enable_projection_scan = on")
+            ac.execute("SET statement_timeout = '20s'")
             ac.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
 
-            base = _one(ac, COUNT)
-            expect.num(base, 10000, "session A opened snapshot")
+            base = answer(ac)
+            expect.text(answered(base), "answered", "session A opened snapshot")
             expect.num(base, 10000,
                        "session A baseline via projection sees batch 1")
 
@@ -638,8 +696,8 @@ def test_an_old_snapshot_never_sees_rows_committed_after_it(pgc_conn, expect):
                 cur.execute("INSERT INTO pm SELECT g, g "
                             "FROM generate_series(10001,20000) g")
 
-            after = _one(ac, COUNT)
-            expect.num(after, 10000, "session A responded post-commit")
+            after = answer(ac)
+            expect.text(answered(after), "answered", "session A responded post-commit")
             expect.num(after, 10000,
                        "old snapshot projection scan does not see post-snapshot rows")
         a.commit()

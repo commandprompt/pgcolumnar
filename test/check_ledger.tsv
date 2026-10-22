@@ -5212,11 +5212,22 @@ prepared_writes	prepared_writes	no backend was terminated by a signal	15;16;17;1
 prepared_writes	prepared_writes	premise: prepared transactions are enabled	15;16;17;18;19	never	-
 prepared_writes	prepared_writes	premise: the fetch is an index scan, which is what reaches the fetch cache	15;16;17;18;19	never	-
 prepared_writes	prepared_writes	premise: the server log is where a crash would be recorded	15;16;17;18;19	never	-
+projection_drop_column	projection_drop_column	a non-owner is refused before it waits for the table lock	15;16;17;18;19	2026-10-22	columnar_tableam.c: both DROP COLUMN ownership checks deleted, so a stranger gets 2BP01 for a projected column and 42501 for another;columnar_tableam.c: the unlocked DROP COLUMN ownership check deleted, so a stranger queues for ShareUpdateExclusiveLock before it is refused
+projection_drop_column	projection_drop_column	a non-owner learns nothing from a projected column	15;16;17;18;19	2026-10-22	columnar_tableam.c: both DROP COLUMN ownership checks deleted, so a stranger gets 2BP01 for a projected column and 42501 for another
+projection_drop_column	projection_drop_column	a parent DROP sees projections on columnar partitions	15;16;17;18;19	never	-
+projection_drop_column	projection_drop_column	and the projection still receives the row	15;16;17;18;19	never	-
+projection_drop_column	projection_drop_column	and the two refusals are the same error, so neither leaks	15;16;17;18;19	2026-10-22	columnar_tableam.c: both DROP COLUMN ownership checks deleted, so a stranger gets 2BP01 for a projected column and 42501 for another
+projection_drop_column	projection_drop_column	dropping a projected column is refused as a dependency	15;16;17;18;19	never	-
+projection_drop_column	projection_drop_column	dropping an unrelated column remains allowed	15;16;17;18;19	never	-
+projection_drop_column	projection_drop_column	premise: the owner holds SHARE on pdc before the stranger asks	15;16;17;18;19	never	-
+projection_drop_column	projection_drop_column	the rejected DDL leaves the table writable	15;16;17;18;19	never	-
+projection_drop_column	projection_drop_column	the rejected parent DDL leaves its partition writable	15;16;17;18;19	never	-
+projection_drop_column	projection_drop_column	the same non-owner error is returned for an unprojected column	15;16;17;18;19	never	-
+projection_parallel	projection_parallel	ANALYZE printed a rows= line per launched worker	15;16;17;18;19	2026-10-22	columnar_customscan.c: the parallel projection path's parallel_workers set to 1 instead of workers
+projection_parallel	projection_parallel	EXPLAIN ANALYZE launched two workers	15;16;17;18;19	2026-10-22	columnar_customscan.c: the parallel projection path's parallel_workers set to 1 instead of workers
 projection_parallel	projection_parallel	a covering projection can be a parallel scan	15;16;17;18;19	2026-09-18	-
 projection_parallel	projection_parallel	a page cost that makes I/O dominate costs the parallel covering path	15;16;17;18;19	2026-09-23	the partial covering total amortises I/O as well as CPU: (ioRunProj + cpuRunProj) / divisor
 projection_parallel	projection_parallel	a parallel covering projection returns the covering rows once	15;16;17;18;19	2026-10-13	a parallel worker never wires the shared row-group counter, so every worker scans every group
-projection_parallel	projection_parallel	premise: ANALYZE printed a rows= line per launched worker	15;16;17;18;19	never	-
-projection_parallel	projection_parallel	premise: EXPLAIN ANALYZE launched two workers	15;16;17;18;19	never	-
 projection_parallel	projection_parallel	premise: a covering projection exists	15;16;17;18;19	never	-
 projection_parallel	projection_parallel	premise: a parallel base scan is available when the projection is off	15;16;17;18;19	never	-
 projection_parallel	projection_parallel	premise: a serial covering query uses the projection	15;16;17;18;19	never	-
@@ -5224,18 +5235,18 @@ projection_parallel	projection_parallel	premise: the covering plan is parallel a
 projection_parallel	projection_parallel	premise: the table holds every inserted row	15;16;17;18;19	never	-
 projection_parallel	projection_parallel	the parallel count is a parallel covering projection scan	15;16;17;18;19	never	-
 projection_parallel	projection_parallel	the workers' rows add up to the covering rows, each returned once	15;16;17;18;19	2026-10-13	a parallel worker never wires the shared row-group counter, so every worker scans every group
-projection_parallel	projection_parallel	workers share the covering projection scan, it is not a single claimer	15;16;17;18;19	2026-10-13	first-wins-claimer;only the first parallel worker claims row groups, so one worker scans the whole table (#1336)
-projection_privilege	projection_privilege	a caller with no SELECT is told a privilege is missing, not that RLS is in force	15;16;17;18;19	never	-
+projection_parallel	projection_parallel	workers share the covering projection scan, it is not a single claimer	15;16;17;18;19	2026-10-22	columnar_customscan.c: the parallel projection path's parallel_workers set to 1 instead of workers;first-wins-claimer;only the first parallel worker claims row groups, so one worker scans the whole table (#1336)
+projection_privilege	projection_privilege	a caller with no SELECT is told a privilege is missing, not that RLS is in force	15;16;17;18;19	2026-10-22	columnar_projection.c: read_projection's aclcheck_error replaced by a plain elog, so its refusal is XX000
 projection_privilege	projection_privilege	a role WITH SELECT still reads the projection	15;16;17;18;19	2026-10-14	read_projection stores no rows: its tuplestore_putvalues call removed, so every caller gets zero rows
 projection_privilege	projection_privilege	a role with EXECUTE but no SELECT is refused read_projection	15;16;17;18;19	never	-
 projection_privilege	projection_privilege	a role with only schema USAGE is refused read_projection	15;16;17;18;19	never	-
-projection_privilege	projection_privilege	and THAT refusal is the C check, which raises 42501 from aclcheck_error	15;16;17;18;19	never	-
+projection_privilege	projection_privilege	and THAT refusal is the C check, which raises 42501 from aclcheck_error	15;16;17;18;19	2026-10-22	columnar_projection.c: read_projection's aclcheck_error replaced by a plain elog, so its refusal is XX000
 projection_privilege	projection_privilege	and is refused reconstruct_via_projection	15;16;17;18;19	never	-
-projection_privilege	projection_privilege	and is refused reconstruct_via_projection, which leaks non-covered columns	15;16;17;18;19	never	-
+projection_privilege	projection_privilege	and is refused reconstruct_via_projection, which leaks non-covered columns	15;16;17;18;19	2026-10-22	columnar_projection.c: reconstruct_via_projection's aclcheck_error replaced by a plain elog, so its refusal is XX000
 projection_privilege	projection_privilege	and read_projection does NOT, so the two differ as the issue says	15;16;17;18;19	2026-10-14	read_projection bound to the reconstruct_via_projection C symbol in the extension SQL, so it returns the non-covered columns too;read_projection stores no rows: its tuplestore_putvalues call removed, so every caller gets zero rows
-projection_privilege	projection_privilege	and so does reconstruct_via_projection	15;16;17;18;19	never	-
+projection_privilege	projection_privilege	and so does reconstruct_via_projection	15;16;17;18;19	2026-10-22	columnar_vacuum.c: PgColumnarRequireNoRowSecurity raises 42501 instead of 0A000
 projection_privilege	projection_privilege	and still reconstructs	15;16;17;18;19	2026-10-14	reconstruct_via_projection stores no rows: its tuplestore_putvalues call removed, so every caller gets zero rows
-projection_privilege	projection_privilege	and the refusal says the feature is not supported, not that a privilege is missing	15;16;17;18;19	never	-
+projection_privilege	projection_privilege	and the refusal says the feature is not supported, not that a privilege is missing	15;16;17;18;19	2026-10-22	columnar_vacuum.c: PgColumnarRequireNoRowSecurity raises 42501 instead of 0A000
 projection_privilege	projection_privilege	premise: t_prjexec can open a session, so a refusal below is a refusal	15;16;17;18;19	never	-
 projection_privilege	projection_privilege	premise: t_prjexec really does hold EXECUTE, so it reaches the C gate	15;16;17;18;19	never	-
 projection_privilege	projection_privilege	premise: t_prjsel CAN read the table, so its arm below tests the bar	15;16;17;18;19	never	-
@@ -5243,11 +5254,11 @@ projection_privilege	projection_privilege	premise: the test roles are not superu
 projection_privilege	projection_privilege	premise: the unprivileged role cannot read the table by any ordinary route	15;16;17;18;19	never	-
 projection_privilege	projection_privilege	read_projection now refuses a policy-restricted caller (#563)	15;16;17;18;19	never	-
 projection_privilege	projection_privilege	reconstruct really does return the NON-COVERED column	15;16;17;18;19	2026-10-14	reconstruct_via_projection renders every column the projection does not cover as NULL instead of the base value;reconstruct_via_projection stores no rows: its tuplestore_putvalues call removed, so every caller gets zero rows
-projection_privilege	projection_privilege	reconstruct: a caller with no SELECT is told a privilege is missing, not that RLS is in force	15;16;17;18;19	never	-
+projection_privilege	projection_privilege	reconstruct: a caller with no SELECT is told a privilege is missing, not that RLS is in force	15;16;17;18;19	2026-10-22	columnar_projection.c: reconstruct_via_projection's aclcheck_error replaced by a plain elog, so its refusal is XX000
 projection_privilege	projection_privilege	reconstruct: the EXECUTE role reaches the projection lookup on the same call	15;16;17;18;19	never	-
-projection_privilege	projection_privilege	reconstruct: the base ACL is checked before the projection name is looked up	15;16;17;18;19	never	-
+projection_privilege	projection_privilege	reconstruct: the base ACL is checked before the projection name is looked up	15;16;17;18;19	2026-10-22	columnar_projection.c: reconstruct_via_projection's aclcheck_error replaced by a plain elog, so its refusal is XX000
 projection_privilege	projection_privilege	reconstruct: the no-EXECUTE role never reaches the body, so the grant is what stopped it	15;16;17;18;19	never	-
-projection_privilege	projection_privilege	the base ACL is checked before the projection name is looked up	15;16;17;18;19	never	-
+projection_privilege	projection_privilege	the base ACL is checked before the projection name is looked up	15;16;17;18;19	2026-10-22	columnar_projection.c: read_projection's aclcheck_error replaced by a plain elog, so its refusal is XX000
 projection_privilege	projection_privilege	the no-EXECUTE role never reaches the body, so the grant is what stopped it	15;16;17;18;19	never	-
 projection_privilege	projection_privilege	the owner reads the projection, and gets rows	15;16;17;18;19	2026-10-14	read_projection stores no rows: its tuplestore_putvalues call removed, so every caller gets zero rows
 projection_privilege	projection_privilege	the owner reconstructs, and gets rows	15;16;17;18;19	2026-10-14	reconstruct_via_projection stores no rows: its tuplestore_putvalues call removed, so every caller gets zero rows
@@ -5365,6 +5376,7 @@ projection_scan_cost	projection_scan_cost	while a plain range on the sort key st
 projection_scan_io	projection_scan_io	a covering projection is not priced from the base table's pages	15;16;17;18;19	2026-09-19	rel->pages
 projection_scan_io	projection_scan_io	a covering projection whose storage cannot be found is not priced as one page	15;16;17;18;19	2026-09-21	return 1
 projection_scan_io	projection_scan_io	an empty covering projection is still priced as one page, so it is chosen	15;16;17;18;19	2026-09-23	pages = 997 on the third return of pgcolumnar_projection_pages
+projection_scan_io	projection_scan_io	and its scan is not priced at zero pages	15;16;17;18;19	2026-10-22	columnar_customscan.c: the one-page floor in pgcolumnar_projection_pages deleted, so an empty projection is priced at 0 pages
 projection_scan_io	projection_scan_io	premise: a covering path is still offered when projection storage cannot be found	15;16;17;18;19	never	-
 projection_scan_io	projection_scan_io	premise: a covering projection exists	15;16;17;18;19	never	-
 projection_scan_io	projection_scan_io	premise: the covering projection occupies a minority of the relation	15;16;17;18;19	never	-
@@ -5413,6 +5425,7 @@ projections	projections	drop unknown rejected	15;16;17;18;19	never	-
 projections	projections	duplicate column rejected	15;16;17;18;19	never	-
 projections	projections	duplicate name rejected	15;16;17;18;19	never	-
 projections	projections	empty columns rejected	15;16;17;18;19	never	-
+projections	projections	executing it reads the projection, so the filter sees fewer rows than the base holds	15;16;17;18;19	2026-10-22	columnar_customscan.c: projection pages multiplied by 1000000, so the planner chooses the base;columnar_customscan.c: the executor never opens the chosen projection (if (false && projName)) while EXPLAIN still names it
 projections	projections	fp chunks carry min/max skip metadata	15;16;17;18;19	never	-
 projections	projections	fp count after delete matches base	15;16;17;18;19	never	-
 projections	projections	fp fan-out matches base (a,c)	15;16;17;18;19	never	-
@@ -5424,7 +5437,7 @@ projections	projections	fq fan-out matches base (b)	15;16;17;18;19	never	-
 projections	projections	new snapshot projection scan sees both batches	15;16;17;18;19	never	-
 projections	projections	no projection rows before first add	15;16;17;18;19	never	-
 projections	projections	non-covering query (references b) uses the base	15;16;17;18;19	never	-
-projections	projections	old snapshot projection scan does not see post-snapshot rows	15;16;17;18;19	never	-
+projections	projections	old snapshot projection scan does not see post-snapshot rows	15;16;17;18;19	2026-10-22	columnar_customscan.c: the projection scan and its base liveness cache both read GetLatestSnapshot() instead of the query snapshot
 projections	projections	p1 columns	15;16;17;18;19	never	-
 projections	projections	p1 gone after drop	15;16;17;18;19	never	-
 projections	projections	p1 has its own storage id	15;16;17;18;19	never	-
@@ -5433,9 +5446,9 @@ projections	projections	p1 sort_key	15;16;17;18;19	never	-
 projections	projections	p2 columns	15;16;17;18;19	never	-
 projections	projections	p2 id is 2	15;16;17;18;19	never	-
 projections	projections	p2 sort_key empty	15;16;17;18;19	never	-
-projections	projections	planner still uses projection after vacuum	15;16;17;18;19	never	-
+projections	projections	planner still uses projection after vacuum	15;16;17;18;19	2026-10-22	columnar_customscan.c: projection pages multiplied by 1000000, so the planner chooses the base
 projections	projections	premise: the base table holds every committed row	15;16;17;18;19	never	-
-projections	projections	projection chosen for covering + sort-key query	15;16;17;18;19	never	-
+projections	projections	projection chosen for covering + sort-key query	15;16;17;18;19	2026-10-22	columnar_customscan.c: projection pages multiplied by 1000000, so the planner chooses the base
 projections	projections	projection matches base after second vacuum	15;16;17;18;19	never	-
 projections	projections	projection scan matches oracle after delete	15;16;17;18;19	never	-
 projections	projections	projection survives vacuum	15;16;17;18;19	never	-
@@ -5454,6 +5467,7 @@ projections	projections	storage id resolves	15;16;17;18;19	never	-
 projections	projections	table populated	15;16;17;18;19	never	-
 projections	projections	table still readable after DDL	15;16;17;18;19	never	-
 projections	projections	the drop really removed the projection	15;16;17;18;19	never	-
+projections	projections	the old-snapshot count is planned as a projection scan	15;16;17;18;19	2026-10-22	columnar_customscan.c: projection pages multiplied by 1000000, so the planner chooses the base
 projections	projections	the rebuild does not abort on it	15;16;17;18;19	never	-
 projections	projections	two declared projections to start	15;16;17;18;19	never	-
 projections	projections	two rows after first add (base + p1)	15;16;17;18;19	never	-

@@ -194,6 +194,19 @@ check "projection-scan results match heap oracle" \
 check "aggregate over projection scan matches oracle" \
 	"$(q "SELECT count(*), sum(a) FROM ps WHERE c BETWEEN 100 AND 200;")" \
 	"$(q "SELECT count(*), sum(a) FROM ps_h WHERE c BETWEEN 100 AND 200;")"
+# THE EXECUTOR, NOT THE PLANNER (#1339). The first arm reads the name from
+# EXPLAIN, which takes it before the executor decides what to open, and the two
+# oracle arms pass whichever storage is read. So a scan that EXPLAINs as `pc` and
+# reads the base passed all three. Executed, the sorted projection lets the
+# reader skip the vectors outside 100..200 and the filter sees only part of the
+# table; the base, unsorted on c, sends every row to the filter.
+pj_removed="$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT a, c FROM ps WHERE c BETWEEN 100 AND 200;" |
+	grep -m1 'Rows Removed by Filter:' | grep -oE '[0-9.]+$')"
+pj_outside="$(q "SELECT count(*) FROM ps_h WHERE NOT (c BETWEEN 100 AND 200);")"
+check "executing it reads the projection, so the filter sees fewer rows than the base holds" \
+	"$(if pgc_is_number "$pj_removed" && pgc_is_number "$pj_outside"; then
+		awk -v r="$pj_removed" -v o="$pj_outside" 'BEGIN { print (r + 0 < o + 0 ? "fewer" : "all " r " of " o) }'
+	else echo "unread: [$pj_removed] [$pj_outside]"; fi)" "fewer"
 
 check "GUC off: no projection scan" \
 	"$(q "SET pgcolumnar.enable_projection_scan=off; EXPLAIN (COSTS OFF) SELECT a, c FROM ps WHERE c BETWEEN 100 AND 200;" | grep -c 'Columnar Projection')" "0"
@@ -266,6 +279,12 @@ psql_run "CREATE TABLE pm (a int, c int) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.add_projection('pm', 'pmp', ARRAY['a','c'], ARRAY['c']);"
 psql_run "INSERT INTO pm SELECT g, g FROM generate_series(1,10000) g;"   # batch 1
 
+# THE PLAN THE ARMS BELOW NAME (#1339). Four of them say "via projection" or
+# "projection scan", and nothing asked how this count plans. Planned on the base,
+# every one of them passes whatever the projection scan does with the snapshot.
+check "the old-snapshot count is planned as a projection scan" \
+	"$(q "SET pgcolumnar.enable_projection_scan = on; EXPLAIN (COSTS OFF) SELECT count(a) FROM pm WHERE c BETWEEN 1 AND 20000;" | grep -c 'Columnar Projection: pmp')" "1"
+
 A_IN="$PGC_WORKDIR/pmA.in"; A_OUT="$PGC_WORKDIR/pmA.out"
 mkfifo "$A_IN"; : > "$A_OUT"
 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
@@ -273,7 +292,10 @@ env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 A_PID=$!
 exec 9> "$A_IN"
 pa_send() { printf '%s\n' "$*" >&9; }
-pa_wait() { local t="$1" i; for i in $(seq 1 200); do grep -q "$t" "$A_OUT" && return 0; sleep 0.1; done; return 1; }
+# The token must carry a count. An ERROR echoes the statement, token included
+# ("LINE 1: SELECT 'PMA_' || ..."), so matching the bare token read a failed
+# query as an answer and the timeout arms below could not fire on it (#1339).
+pa_wait() { local t="$1" i; for i in $(seq 1 200); do grep -qE "${t}[0-9]+" "$A_OUT" && return 0; sleep 0.1; done; return 1; }
 
 # A opens a snapshot that sees batch 1, using a projection scan.
 pa_send "SET pgcolumnar.enable_projection_scan = on;"
