@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 74
+suites_not_covered 73
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5997,4 +5997,26 @@ suites_not_covered 74
 #     never         4132 + 0 = 4132
 #     dated         2817 + 1 = 2818
 #     4132 + 2818 == 6950
-checks_never_observed_red 4132
+#
+# #1341, parallel_copy_dedup seeded, with its twin (jdatcmd): 3853 -> 3857, and
+# suites_not_covered 105 -> 104. The suite had no rows. It enters with 17 checks from
+# five-major runs (17/17 on each of 15-19, shell and twin alike), after three fixes.
+# The changed file differed from the first in its first bytes and fitted in one
+# 256 KiB read, so a fingerprint of the first read alone still loaded it and main's
+# shell passed 14/14; the changed file now differs only in its last row, past the
+# first read, and a new check compares the table's records with the server's
+# sha256() of each file. The skip's NOTICE, promised in the header, was never read:
+# with it removed main's shell passed 14/14; a new check reads it. And the two
+# control checks lost their premise: prefix under #1339: dedup is pgcolumnar's own
+# default, and forcing it on reddens them. 13 are dated by six mutations, each
+# reddening the same names in both twins: the NOTICE never raised, the first read
+# alone fingerprinted, dedup forced on, the refused load committed anyway, a
+# fingerprint matched in any table, and the refused load reporting the rows it
+# discarded. 4 arrive never: the fixture-size premise, the first load's two checks,
+# and the prepared-transaction leak.
+#
+#     ledger rows   6950 + 17 = 6967
+#     never         4132 + 4 = 4136
+#     dated         2818 + 13 = 2831
+#     4136 + 2831 == 6967
+checks_never_observed_red 4136

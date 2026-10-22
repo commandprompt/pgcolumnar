@@ -341,6 +341,7 @@ behaviour, the source of that number is named.
 - [293. test_native_fetch_sort_context.py: a merge join over sorted, index-fetched columnar rows decodes outside the sort's context](#293-test_native_fetch_sort_contextpy-a-merge-join-over-sorted-index-fetched-columnar-rows-decodes-outside-the-sorts-context)
 - [294. test_native_fold_skipguard.py: the batch fold is reachable for a shape that skips vectors, and accounts for the skipping](#294-test_native_fold_skipguardpy-the-batch-fold-is-reachable-for-a-shape-that-skips-vectors-and-accounts-for-the-skipping)
 - [295. test_native_fetch_group_memo.py: the by-row-number fetch resolves its row group from a memo, and the memo never serves a group it should not](#295-test_native_fetch_group_memopy-the-by-row-number-fetch-resolves-its-row-group-from-a-memo-and-the-memo-never-serves-a-group-it-should-not)
+- [296. test_parallel_copy_dedup.py: pgcolumnar.parallel_copy can refuse a load it has already done](#296-test_parallel_copy_deduppy-pgcolumnarparallel_copy-can-refuse-a-load-it-has-already-done)
 
 ## 1. How to read a test in here
 
@@ -11352,3 +11353,29 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_fgm_delete_visible_to_the_next_fetch` | a DELETE is visible to the very next fetch (delete vectors uncached) |
 | `test_fgm_same_transaction_truncate_then_fetch` | same-transaction TRUNCATE then fetch sees only the new rows |
 | `test_fgm_backend_alive` | backend alive |
+
+## 296. test_parallel_copy_dedup.py: pgcolumnar.parallel_copy can refuse a load it has already done
+
+The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check by the shell's name. With `dedup => true`, `pgcolumnar.parallel_copy` refuses a second load of a file whose bytes it already loaded into the same table (#403 item 7): it stores nothing, returns 0 and says so in a NOTICE. Without dedup the same load doubles the table; a file changed only in its last row, past the coordinator's first 256 KiB read, loads; the record is per table; and the table's records are exactly the server's `sha256()` of the two files it loaded. On a private database, with the files in `server_dir`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_pcdedup_the_changed_row_lies_past_the_first_read` | premise: the changed row lies past the first 256 KiB of the file |
+| `test_pcdedup_without_dedup_a_repeated_load_doubles_the_table` | without dedup a repeated load doubles the table, which is the defect |
+| `test_pcdedup_each_plain_load_reported_its_rows` | and each of those loads reported its rows |
+| `test_pcdedup_the_first_load_stores_its_rows` | the first load stores its rows normally (#403 item 7) |
+| `test_pcdedup_the_first_load_reports_them` | and reports them |
+| `test_pcdedup_the_second_load_of_the_same_file_stores_nothing` | the second load of the same file stores nothing (#403 item 7) |
+| `test_pcdedup_the_second_load_reports_0` | and reports 0 rather than claiming it loaded them |
+| `test_pcdedup_the_skip_says_so_in_a_notice` | and says in a NOTICE that it skipped the load, rather than returning a silent 0 |
+| `test_pcdedup_a_changed_file_at_the_same_path_is_loaded` | a changed file at the same path is loaded, not skipped (#403 item 7) |
+| `test_pcdedup_the_changed_file_reports_its_rows` | and reports the rows it loaded |
+| `test_pcdedup_the_same_file_loads_into_a_different_table` | the same file loads into a DIFFERENT table (the record is per table) |
+| `test_pcdedup_the_other_table_load_reports_its_rows` | and reports its rows |
+| `test_pcdedup_dedup_off_loads_again` | asking for no dedup loads again even though the file is on record |
+| `test_pcdedup_dedup_off_reports_those_rows` | and reports those rows too |
+| `test_pcdedup_the_skipped_load_left_no_record` | the skipped load left exactly one record for that table and file |
+| `test_pcdedup_the_records_hold_each_files_sha256` | the records hold the SHA-256 of each loaded file's bytes |
+| `test_pcdedup_no_prepared_transaction_leaked` | no prepared transaction leaked through any of it |
