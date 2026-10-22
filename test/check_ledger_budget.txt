@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 56
+suites_not_covered 55
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6372,4 +6372,21 @@ suites_not_covered 56
 #     never         4259 + 10 = 4269
 #     dated         3050 + 18 = 3068
 #     4269 + 3068 == 7337
-checks_never_observed_red 4269
+#
+# #1341, native_parquet_fieldid seeded, with its twin (OffgridwithJD): 4269 -> 4271,
+# and suites_not_covered 56 -> 55. The suite had no rows. It enters with 11 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The refusal arms read only the SQLSTATE, and four refusals share 22023: with the 'no field
+# ids' guard removed (noanyid) an id-less file fell to the absent-id refusal and main passed
+# 11/11. Each arm now wants its own guard's message. And survival was a bare SELECT 1: with
+# the absent-id refusal turned into abort() it passed after crash recovery, and the crash took
+# five later refusal arms with it. Survival now reads the server log's count of killed
+# backends, and every reading waits for the server first, so a crash fails only its own arm
+# and survival. 9 are dated by five mutations, each the same names in both twins. 2
+# arrive never.
+#
+#     ledger rows   7337 + 11 = 7348
+#     never         4269 + 2 = 4271
+#     dated         3068 + 9 = 3077
+#     4271 + 3077 == 7348
+checks_never_observed_red 4271
