@@ -5103,6 +5103,17 @@ pg_dump_roundtrip	pg_dump_roundtrip	plain: row count survives	15;16;17;18;19	nev
 pg_dump_roundtrip	pg_dump_roundtrip	plain: row data survives (checksum)	15;16;17;18;19	never	-
 pg_dump_roundtrip	pg_dump_roundtrip	plain: the projection declaration IS carried	15;16;17;18;19	2026-10-16	columnar_projection.c: drop_projection keeps the projection's declaration;pgcolumnar--1.0-alpha5.sql: pgcolumnar.projection_declaration no longer registered with pg_extension_config_dump
 pg_dump_roundtrip	pg_dump_roundtrip	the base table has a projection to preserve	15;16;17;18;19	never	-
+planner_choice_quality	planner_choice_quality	[range scan with aggregate] forcing produced a different plan	15;16;17;18;19	2026-10-22	src/columnar_customscan.c: the planner ignores pgcolumnar.enable_custom_scan=off
+planner_choice_quality	planner_choice_quality	[range scan with aggregate] the chosen plan is within the bound of the best alternative	15;16;17;18;19	2026-10-22	src/columnar_customscan.c: pgcolumnar_refined_scan_cost prices the custom scan 100x, so the planner picks the index scan;src/columnar_tableam.c: pgcolumnar_index_fetch_tuple raises an error on every fetch;src/columnar_vector.c: PgColumnarBeginGroupAggScan raises an error whenever the grouped aggregate executes
+planner_choice_quality	planner_choice_quality	[range scan with aggregate] the chosen plan ran to completion	15;16;17;18;19	2026-10-22	src/columnar_vector.c: PgColumnarBeginGroupAggScan raises an error whenever the grouped aggregate executes
+planner_choice_quality	planner_choice_quality	[wide range, narrow projection] forcing produced a different plan	15;16;17;18;19	2026-10-22	src/columnar_customscan.c: the planner ignores pgcolumnar.enable_custom_scan=off
+planner_choice_quality	planner_choice_quality	[wide range, narrow projection] the chosen plan is within the bound of the best alternative	15;16;17;18;19	2026-10-22	src/columnar_customscan.c: PgColumnarBeginCustomScan raises an error whenever the scan executes;src/columnar_customscan.c: pgcolumnar_refined_scan_cost prices the custom scan 100x, so the planner picks the index scan;src/columnar_tableam.c: pgcolumnar_index_fetch_tuple raises an error on every fetch
+planner_choice_quality	planner_choice_quality	[wide range, narrow projection] the chosen plan ran to completion	15;16;17;18;19	2026-10-22	src/columnar_customscan.c: PgColumnarBeginCustomScan raises an error whenever the scan executes
+planner_choice_quality	planner_choice_quality	fixture rows	15;16;17;18;19	never	-
+planner_choice_quality	planner_choice_quality	premise: [range scan with aggregate] the chosen plan was identified	15;16;17;18;19	never	-
+planner_choice_quality	planner_choice_quality	premise: [wide range, narrow projection] the chosen plan was identified	15;16;17;18;19	never	-
+planner_choice_quality	planner_choice_quality	premise: the index key is correlated, which is the case that misprices	15;16;17;18;19	never	-
+planner_choice_quality	planner_choice_quality	premise: the payload did not compress, so the fetch path is exercised	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
 preimage_rewrite	preimage_rewrite	...and still answers correctly with the fold enabled	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and the heap agrees it is unsatisfiable	15;16;17;18;19	never	-

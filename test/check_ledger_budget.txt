@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 75
+suites_not_covered 74
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5957,4 +5957,24 @@ suites_not_covered 75
 #     never         4129 + 8 = 4137
 #     dated         2791 + 7 = 2798
 #     4137 + 2798 == 6935
-checks_never_observed_red 4137
+#
+# #1341, planner_choice_quality seeded, with its twin (jdatcmd): 4137 -> 4142, and
+# suites_not_covered 75 -> 74. The suite had no rows. It enters with 11 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# psql prints "Time:" after a statement that errored, so a chosen plan that raised an
+# error in 2 ms was read as a plan that answered in 2 ms: with the custom scan or the
+# grouped aggregate raising at execution, main's shell passed every check. The chosen
+# plan must now run to completion, by psql's exit status, and a forced alternative that
+# fails fails the comparison. And the ratio check's name carried the node that won, so
+# it had one name green and another red; the names now carry only the query's label.
+# "forcing produced a different plan" lost its premise prefix (#1339): with
+# pgcolumnar.enable_custom_scan ignored it is the check that goes red. 6 are dated by
+# five mutations, each reddening the same names in both twins. 5 arrive never: fixture
+# rows and four premises. The suite stays out of CI's suites job under PGC_SKIP_TIMING;
+# its twin declares the two measured checks per query unrunnable under that flag.
+#
+#     ledger rows   6935 + 11 = 6946
+#     never         4137 + 5 = 4142
+#     dated         2798 + 6 = 2804
+#     4142 + 2804 == 6946
+checks_never_observed_red 4142

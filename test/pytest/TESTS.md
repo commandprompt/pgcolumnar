@@ -341,6 +341,7 @@ behaviour, the source of that number is named.
 - [293. test_native_fetch_sort_context.py: a merge join over sorted, index-fetched columnar rows decodes outside the sort's context](#293-test_native_fetch_sort_contextpy-a-merge-join-over-sorted-index-fetched-columnar-rows-decodes-outside-the-sorts-context)
 - [294. test_native_fold_skipguard.py: the batch fold is reachable for a shape that skips vectors, and accounts for the skipping](#294-test_native_fold_skipguardpy-the-batch-fold-is-reachable-for-a-shape-that-skips-vectors-and-accounts-for-the-skipping)
 - [295. test_native_fetch_group_memo.py: the by-row-number fetch resolves its row group from a memo, and the memo never serves a group it should not](#295-test_native_fetch_group_memopy-the-by-row-number-fetch-resolves-its-row-group-from-a-memo-and-the-memo-never-serves-a-group-it-should-not)
+- [296. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined](#296-test_planner_choice_qualitypy-the-planners-chosen-plan-is-not-far-slower-than-the-plans-it-declined)
 
 ## 1. How to read a test in here
 
@@ -11352,3 +11353,25 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_fgm_delete_visible_to_the_next_fetch` | a DELETE is visible to the very next fetch (delete vectors uncached) |
 | `test_fgm_same_transaction_truncate_then_fetch` | same-transaction TRUNCATE then fetch sees only the new rows |
 | `test_fgm_backend_alive` | backend alive |
+
+## 296. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined
+
+The twin of `test/planner_choice_quality.sh` (#433, #434). On 200,000 wide rows whose payload does not compress, with an index on a correlated key, two queries run the planner's own choice and then two forced alternatives (indexes off; the custom scan and the sequential scan off). The chosen plan must run to completion, and must be no more than PLAN_BOUND (3) times slower than the fastest forced alternative that is a different plan. A forced alternative that fails fails the comparison instead of counting as the fastest plan.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database with serial planning, as the shell's cluster runs. Each arm runs its EXPLAIN, a warming run and the timed run in one session, so the plan named is the plan timed. An error, a statement-timeout cancel or a lost connection is a failure by name, never a short time. With PGC_SKIP_TIMING=1 nothing executes, the fixture is 20,000 rows, and the two measured tests per query are declared unrunnable under the shell's names, so the session does not end green; the shell's driver does not run the suite at all under that flag.
+
+| test | what it holds |
+| --- | --- |
+| `test_planner_choice_fixture_rows` | fixture rows |
+| `test_planner_choice_payload_did_not_compress` | premise: the payload did not compress, so the fetch path is exercised |
+| `test_planner_choice_index_key_is_correlated` | premise: the index key is correlated, which is the case that misprices |
+| `test_range_aggregate_chosen_plan_was_identified` | premise: [range scan with aggregate] the chosen plan was identified |
+| `test_range_aggregate_forcing_produced_a_different_plan` | [range scan with aggregate] forcing produced a different plan |
+| `test_range_aggregate_chosen_plan_ran_to_completion` | [range scan with aggregate] the chosen plan ran to completion |
+| `test_range_aggregate_chosen_plan_is_not_far_slower` | [range scan with aggregate] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
+| `test_wide_range_count_chosen_plan_was_identified` | premise: [wide range, narrow projection] the chosen plan was identified |
+| `test_wide_range_count_forcing_produced_a_different_plan` | [wide range, narrow projection] forcing produced a different plan |
+| `test_wide_range_count_chosen_plan_ran_to_completion` | [wide range, narrow projection] the chosen plan ran to completion |
+| `test_wide_range_count_chosen_plan_is_not_far_slower` | [wide range, narrow projection] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
