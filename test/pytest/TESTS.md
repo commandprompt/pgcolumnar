@@ -343,6 +343,7 @@ behaviour, the source of that number is named.
 - [295. test_native_fetch_group_memo.py: the by-row-number fetch resolves its row group from a memo, and the memo never serves a group it should not](#295-test_native_fetch_group_memopy-the-by-row-number-fetch-resolves-its-row-group-from-a-memo-and-the-memo-never-serves-a-group-it-should-not)
 - [296. test_parallel_copy_dedup.py: pgcolumnar.parallel_copy can refuse a load it has already done](#296-test_parallel_copy_deduppy-pgcolumnarparallel_copy-can-refuse-a-load-it-has-already-done)
 - [297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically](#297-test_parallel_copypy-parallel_copy-splits-a-file-on-record-boundaries-and-loads-it-atomically)
+- [298. test_parallel.py: a parallel columnar scan returns what the heap returns](#298-test_parallelpy-a-parallel-columnar-scan-returns-what-the-heap-returns)
 
 ## 1. How to read a test in here
 
@@ -11435,3 +11436,27 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
 | `test_parallel_copy_fifo_on_a_partitioned_target_is_refused_not_a_hang` | a FIFO given to a partitioned load is refused with 42809 within 5 seconds |
 | `test_parallel_copy_partitioned_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
+
+## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
+
+The pytest twin of `test/parallel.sh` (ported for #1341), every check by the shell's name. A 50000-row table is written in 25 row groups of 2000 rows, and the planner settings force a parallel plan, so several backends claim distinct row groups from one shared counter. Each "par" query must plan a Gather over a PgColumnarScan and return the heap's rows; forced serial, the same queries plan no Gather and still return the heap's rows. On a private database.
+
+### Every test
+
+The table must hold 25 row groups: with one, a claim that skips every other group returns the right rows. "par no-filter" returns rows rather than count(*), which the vectorized aggregate answered without a Gather. Two plan counts say every "par" query planned a Gather and every "serial" one did not.
+
+| test | what it holds |
+| --- | --- |
+| `test_parallel_table_has_row_groups_to_claim` | par table has 25 row groups to claim |
+| `test_parallel_plan_has_a_gather` | parallel plan has Gather |
+| `test_parallel_plan_has_the_columnar_scan` | parallel plan has PgColumnarScan |
+| `test_parallel_filtered_scan_matches_the_heap` | par filtered scan |
+| `test_parallel_range_scan_matches_the_heap` | par range scan |
+| `test_parallel_whole_row_sample_matches_the_heap` | par whole sample |
+| `test_parallel_count_and_sum_match_the_heap` | par count |
+| `test_parallel_unfiltered_scan_matches_the_heap` | par no-filter |
+| `test_parallel_every_par_query_plans_a_gather` | par queries all plan a Gather |
+| `test_serial_filtered_scan_matches_the_heap` | serial filtered scan |
+| `test_serial_range_scan_matches_the_heap` | serial range scan |
+| `test_serial_count_and_sum_match_the_heap` | serial count |
+| `test_serial_queries_plan_no_gather` | serial queries plan no Gather |

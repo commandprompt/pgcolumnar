@@ -4722,6 +4722,19 @@ objstore_crlf	objstore_crlf	a CR/LF in the URL path is rejected before the reque
 objstore_crlf	objstore_crlf	backend alive	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	backend alive after the REST attempt	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	no injected line reached the listener (no request splitting)	15;16;17;18;19	2026-10-14	the request-line guard on the URL path removed
+parallel	parallel	par count	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
+parallel	parallel	par filtered scan	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
+parallel	parallel	par no-filter	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
+parallel	parallel	par queries all plan a Gather	15;16;17;18;19	2026-10-22	columnar_customscan.c: the parallel PgColumnarScan path is never added (add_partial_path dropped);columnar_customscan.c: the scan methods' CustomName is ColumnarScan, as before #428
+parallel	parallel	par range scan	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
+parallel	parallel	par table has 25 row groups to claim	15;16;17;18;19	2026-10-22	columnar_write_state.c: the writer ignores the per-table stripe_row_limit (if (false && opts.stripeRowLimitSet)), so 50000 rows land in 1 row group
+parallel	parallel	par whole sample	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
+parallel	parallel	parallel plan has Gather	15;16;17;18;19	2026-10-22	columnar_customscan.c: the parallel PgColumnarScan path is never added (add_partial_path dropped)
+parallel	parallel	parallel plan has PgColumnarScan	15;16;17;18;19	2026-10-22	columnar_customscan.c: the scan methods' CustomName is ColumnarScan, as before #428
+parallel	parallel	serial count	15;16;17;18;19	2026-10-22	columnar_reader.c: a serial scan advances rowGroupIndex by 2, so it reads every other row group
+parallel	parallel	serial filtered scan	15;16;17;18;19	2026-10-22	columnar_reader.c: a serial scan advances rowGroupIndex by 2, so it reads every other row group
+parallel	parallel	serial queries plan no Gather	15;16;17;18;19	2026-10-22	columnar_customscan.c: the scan methods' CustomName is ColumnarScan, as before #428
+parallel	parallel	serial range scan	15;16;17;18;19	2026-10-22	columnar_reader.c: a serial scan advances rowGroupIndex by 2, so it reads every other row group
 parallel_am_scan	parallel_am_scan	a parallel index build indexes every row of the table	15;16;17;18;19	never	-
 parallel_am_scan	parallel_am_scan	a parallel table-AM scan returns the same row count as serial	15;16;17;18;19	never	-
 parallel_am_scan	parallel_am_scan	premise: ANALYZE printed a rows= line per launched worker	15;16;17;18;19	never	-
