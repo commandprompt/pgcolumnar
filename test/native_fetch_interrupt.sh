@@ -31,8 +31,16 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src"
 
-# The body of pgcolumnar_fetch_row, from its definition to its closing brace.
-body="$(awk '/^pgcolumnar_fetch_row\(/{p=1} p{print} p&&/^}/{exit}' "$SRC/columnar_reader.c")"
+# The body of a function in columnar_reader.c, from its definition to its closing
+# brace, with its comments blanked, multi-line ones included: a guard commented out
+# of the code is not a guard, and every check below passed with the call written
+# as /* CHECK_FOR_INTERRUPTS(); */ (#1341). Each line keeps its place, so the
+# placement check still compares line numbers of the code itself.
+fn_body() {
+	awk -v fn="$1" '$0 ~ "^" fn "\\(" {p=1} p{print} p&&/^}/{exit}' "$SRC/columnar_reader.c" |
+		perl -0777 -pe 's{/\*.*?\*/}{ my $c = $&; $c =~ tr/\n//cd; $c }gse; s{//[^\n]*}{}g'
+}
+body="$(fn_body pgcolumnar_fetch_row)"
 
 # The guard has to be in this function, not merely in the file. The interrupt
 # checks elsewhere in columnar_reader.c are on the scan/decode path, which the
@@ -50,14 +58,14 @@ check "pgcolumnar_fetch_row carries an interrupt check" \
 # the catalog read moved, so this arm cannot rot into comparing against a
 # call that no longer does the work.
 cfi_line="$(printf '%s\n' "$body" | grep -n 'CHECK_FOR_INTERRUPTS' | head -1 | cut -d: -f1)"
-# match the CALL, with its paren -- the bare name also appears in a comment
-# above the call, and a comment must not satisfy a placement check
+# match the CALL, with its paren; comments are already blanked, so a comment
+# that names it cannot satisfy a placement check
 rgl_line="$(printf '%s\n' "$body" | grep -n 'pgcolumnar_lookup_row_group(' | head -1 | cut -d: -f1)"
 check "the interrupt check precedes the row-group resolution" \
 	"$( [ -n "$cfi_line" ] && [ -n "$rgl_line" ] && [ "$cfi_line" -lt "$rgl_line" ] && echo yes || echo no )" \
 	"yes"
 
-lookup_body="$(awk '/^pgcolumnar_lookup_row_group\(/{p=1} p{print} p&&/^}/{exit}' "$SRC/columnar_reader.c")"
+lookup_body="$(fn_body pgcolumnar_lookup_row_group)"
 check "the row-group resolution is where the catalog read lives" \
 	"$(printf '%s\n' "$lookup_body" | grep -c 'PgColumnarReadRowGroupList' | awk '{print ($1>=1)?"yes":"no"}')" \
 	"yes"

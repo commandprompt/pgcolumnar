@@ -372,6 +372,7 @@ behaviour, the source of that number is named.
 - [324. test_objstore_tls_read.py: TLS for object-store reads, every verification proven by a certificate that must be refused](#324-test_objstore_tls_readpy-tls-for-object-store-reads-every-verification-proven-by-a-certificate-that-must-be-refused)
 - [325. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard](#325-test_objstore_http_readpy-the-http-ranged-byte-source-with-request-counts-and-each-refusals-own-guard)
 - [326. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload](#326-test_objstore_sink_writepy-exports-to-s3-go-as-one-put-or-a-completed-multipart-upload-read-back-as-the-generator-and-a-failed-export-leaves-no-key-and-no-open-upload)
+- [327. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable](#327-test_native_fetch_interruptpy-the-by-row-number-fetch-is-cancellable)
 
 ## 1. How to read a test in here
 
@@ -12250,3 +12251,17 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_no_success_marker_remains_after_the_cancel` | cancel: no _SUCCESS marker at the prefix |
 | `test_no_upload_stays_open_after_the_cancel` | cancel: the server holds no open upload under the prefix -- #1722: the workers the cancel terminates abort their uploads on the way out |
 | `test_terminated_workers_exit_while_the_store_is_silent` | terminate: export workers exit within 75 s while the store is silent -- #1727: each wait slice times out, so the 60 s quiet limit ends a worker's abort |
+
+## 327. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable
+
+The twin of `test/native_fetch_interrupt.sh`. It reads `src/columnar_reader.c` as the shell does: `pgcolumnar_fetch_row` carries a `CHECK_FOR_INTERRUPTS`, the check comes before the `pgcolumnar_lookup_row_group(` call it guards, and that helper is where `PgColumnarReadRowGroupList` is called. It needs no cluster and is listed in NO_CLUSTER.
+
+### Every test
+
+Every test makes one check under the shell's name. Each function body is taken from its signature to the first closing brace at column 0, with its comments blanked (multi-line ones too, newlines kept), so a call commented out is not a call. A missing file or function reads as an empty body, which fails every check.
+
+| test | what it holds |
+| --- | --- |
+| `test_fetch_row_carries_an_interrupt_check` | pgcolumnar_fetch_row carries an interrupt check |
+| `test_the_check_precedes_the_row_group_resolution` | the interrupt check precedes the row-group resolution |
+| `test_the_resolution_is_where_the_catalog_read_lives` | the row-group resolution is where the catalog read lives |

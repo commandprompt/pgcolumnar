@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 44
+suites_not_covered 43
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6580,4 +6580,17 @@ suites_not_covered 44
 #     never         4332 + 0 = 4332
 #     dated         3140 + 2 = 3142
 #     4332 + 3142 == 7474
+#
+# #1341, native_fetch_interrupt seeded, with its twin (OffgridwithJD): 4332 -> 4332,
+# and suites_not_covered 44 -> 43. The suite had no rows. It enters with 3 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after one fix: the
+# checks read the function bodies with their comments in them, so the guard written as
+# /* CHECK_FOR_INTERRUPTS(); */, or folded into the comment above it, passed 3/3 on main, and so
+# did the lookup's catalog read commented out. Both bodies now have their comments blanked,
+# newlines kept. All 3 are dated by three mutations, each the same names in both twins; none arrive never.
+#
+#     ledger rows   7474 + 3 = 7477
+#     never         4332 + 0 = 4332
+#     dated         3142 + 3 = 3145
+#     4332 + 3145 == 7477
 checks_never_observed_red 4332
