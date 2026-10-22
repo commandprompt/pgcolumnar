@@ -189,6 +189,7 @@ def _cancel_run(dsn, s3log, bucket, r):
     r["cx delete"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
     r["cx parts"] = str(_parts(bucket / "cx"))
     r["cx marker"] = "present" if (bucket / "cx" / "_SUCCESS").exists() else "absent"
+    r["cx open"] = _open_uploads(bucket.parent, r"^pgc-bucket/cx/")
 
 
 @pytest.fixture(scope="module")
@@ -489,3 +490,8 @@ def test_no_completed_object_remains_after_the_cancel(osw, expect):
 
 def test_no_success_marker_remains_after_the_cancel(osw, expect):
     expect.text(osw["cx marker"], "absent", "cancel: no _SUCCESS marker at the prefix")
+
+
+def test_no_upload_stays_open_after_the_cancel(osw, expect):
+    # #1722: a worker the cancel terminates aborts its multipart upload on the way out
+    expect.text(osw["cx open"], "0", "cancel: the server holds no open upload under the prefix")

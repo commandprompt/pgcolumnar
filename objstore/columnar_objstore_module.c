@@ -2170,6 +2170,14 @@ objstore_sink_abort(PgColumnarObjSink *s)
 			char	   *encId = os_uriencode_query(s->uploadId);
 			char	   *query = psprintf("uploadId=%s", encId);
 
+			/*
+			 * The abort can land mid-request (a cancel or a SIGTERM inside
+			 * os_wait), with a part's body still on this connection: the
+			 * DELETE would be read as more of that body, or its answer
+			 * confused with the part's. A fresh connection makes it a request
+			 * of its own (#1722).
+			 */
+			os_disconnect(s->h);
 			os_write_request(s->h, "DELETE", query, NULL, 0, &resp, NULL);
 			pfree(query);
 			pfree(encId);

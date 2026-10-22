@@ -5182,6 +5182,7 @@ objstore_sink_write	objstore_sink_write	arrow export to s3:// also round-trips	1
 objstore_sink_write	objstore_sink_write	cancel: no _SUCCESS marker at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	cancel: no completed object remains at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	cancel: the dispatcher issued DELETE over the known keys	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	cancel: the server holds no open upload under the prefix	15;16;17;18;19	2026-10-22	the before_shmem_exit registration in PgColumnarSinkOpen dropped (noreg)
 objstore_sink_write	objstore_sink_write	inject: every upload started was aborted (no billable orphan)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a failed export never aborts its multipart upload
 objstore_sink_write	objstore_sink_write	inject: mid-upload failure surfaces as disk-full (53100)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	inject: the key does not exist	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no multipart, the growing object is PUT to the final key as it grows

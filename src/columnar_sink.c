@@ -16,8 +16,11 @@
 
 #include <unistd.h>
 
+#include "access/xact.h"
+#include "lib/ilist.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
+#include "storage/ipc.h"
 
 #include "columnar_objstore.h"
 #include "columnar_sink.h"
@@ -34,7 +37,61 @@ struct PqSink
 	/* remote (#394): NULL api => local sink */
 	const PgColumnarObjStoreApi *api;
 	PgColumnarObjSink *rsink;
+	dlist_node	openNode;		/* on sink_open_remote while rsink is live */
 };
+
+/*
+ * Remote sinks with an upload in progress (#1722). A FATAL exit (SIGTERM, as
+ * pexport_cleanup sends each parallel_export worker on cancel, or
+ * pg_terminate_backend) calls proc_exit without unwinding, so the writers'
+ * PG_CATCH never reaches PgColumnarSinkAbort and the multipart upload stays
+ * open on the store, billed until a lifecycle rule reaps it. A
+ * before_shmem_exit callback aborts whatever is still on this list. It is
+ * registered after InitPostgres's ShutdownPostgres, so it runs first, while
+ * the transaction and the module's handles are still intact. Transaction end
+ * empties the list: every writer finishes or aborts its sink inside its own
+ * statement, so an entry still listed then belongs to memory being released.
+ */
+static dlist_head sink_open_remote = DLIST_STATIC_INIT(sink_open_remote);
+static bool sink_exit_registered = false;
+
+static void
+sink_abort_open_at_exit(int code, Datum arg)
+{
+	dlist_mutable_iter it;
+
+	/*
+	 * The module's abort never raises through PG_TRY, but under proc_exit an
+	 * ERROR is promoted to FATAL, which no CATCH sees. A failed DELETE then
+	 * ends this callback with one more FATAL line; shmem_exit has already
+	 * popped it, so the remaining callbacks still run.
+	 */
+	dlist_foreach_modify(it, &sink_open_remote)
+	{
+		PqSink	   *snk = dlist_container(PqSink, openNode, it.cur);
+
+		dlist_delete(&snk->openNode);
+		snk->api->sink_abort(snk->rsink);
+		snk->rsink = NULL;
+	}
+}
+
+static void
+sink_xact_callback(XactEvent event, void *arg)
+{
+	switch (event)
+	{
+		case XACT_EVENT_COMMIT:
+		case XACT_EVENT_PARALLEL_COMMIT:
+		case XACT_EVENT_ABORT:
+		case XACT_EVENT_PARALLEL_ABORT:
+		case XACT_EVENT_PREPARE:
+			dlist_init(&sink_open_remote);
+			break;
+		default:
+			break;
+	}
+}
 
 PqSink *
 PgColumnarSinkOpenLocal(const char *path)
@@ -83,6 +140,13 @@ PgColumnarSinkOpen(const char *path)
 		snk->finalPath = pstrdup(path);
 		snk->api = api;
 		snk->rsink = api->sink_create(path, NULL);
+		if (!sink_exit_registered)
+		{
+			before_shmem_exit(sink_abort_open_at_exit, (Datum) 0);
+			RegisterXactCallback(sink_xact_callback, NULL);
+			sink_exit_registered = true;
+		}
+		dlist_push_head(&sink_open_remote, &snk->openNode);
 		return snk;
 	}
 	return PgColumnarSinkOpenLocal(path);
@@ -140,6 +204,8 @@ PgColumnarSinkFinish(PqSink *snk)
 	if (snk->api != NULL)
 	{
 		snk->api->sink_finish(snk->rsink);
+		/* only now: a complete that raised leaves it listed for the abort */
+		dlist_delete(&snk->openNode);
 		snk->rsink = NULL;
 		return;
 	}
@@ -173,6 +239,7 @@ PgColumnarSinkAbort(PqSink *snk)
 	{
 		if (snk->rsink != NULL)
 		{
+			dlist_delete(&snk->openNode);
 			snk->api->sink_abort(snk->rsink);
 			snk->rsink = NULL;
 		}

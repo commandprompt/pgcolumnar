@@ -276,6 +276,10 @@ check_num "cancel: no completed object remains at the prefix" \
 # only on full success), and the dispatcher's cleanup also drops any stale one.
 check "cancel: no _SUCCESS marker at the prefix" \
 	"$([ -e "$PGC_WORKDIR/$BUCKET/cx/_SUCCESS" ] && echo present || echo absent)" "absent"
+# #1722: a worker the cancel terminates aborts its multipart upload on the way out,
+# so no billable orphan is left under the prefix
+check "cancel: the server holds no open upload under the prefix" \
+	"$(open_uploads '^pgc-bucket/cx/')" "0"
 
 # ---- optional: a real S3 implementation (Garage) ----------------------------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then
