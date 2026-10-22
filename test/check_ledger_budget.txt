@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 30
+suites_not_covered 29
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6877,4 +6877,23 @@ suites_not_covered 30
 #     never         4531 + 0 = 4531
 #     dated         3362 + 29 = 3391
 #     4531 + 3391 == 7922
+#
+# #1341, decode_skip_interrupts seeded, with its twin (OffgridwithJD): 4531 -> 4531,
+# and suites_not_covered 30 -> 29. The suite had no rows. It enters with 5 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes.
+# Survival was a fresh SELECT 1, which answers once crash recovery is over: with abort()
+# in the list arm (thriftcrash) it passed; it now counts "terminated by signal" since the
+# scenario began. The cancel was any 57014: a guard that refused the list under the cancel
+# code (fakecancel) passed; it now wants the timeout's own message. With the interrupt
+# check moved into the struct arm (thriftstruct), the cancel still came, after a whole
+# 4.3e9-element list (7 s), inside the 30 s cap, and the shape count still read 1: main
+# passed 4/4. A new check wants the cancel within 3 s of a 1 s timeout, and the Thrift
+# shape now counts before the switch, as av_skip's does. Both shape counts read comments:
+# with av_skip's check commented out (avcomment) main passed 4/4; comments are blanked now.
+# 5 are dated by eight mutations, each the same names in both twins. 0 arrive never.
+#
+#     ledger rows   7922 + 5 = 7927
+#     never         4531 + 0 = 4531
+#     dated         3391 + 5 = 3396
+#     4531 + 3396 == 7927
 checks_never_observed_red 4531
