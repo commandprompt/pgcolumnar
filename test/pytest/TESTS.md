@@ -369,6 +369,7 @@ behaviour, the source of that number is named.
 - [321. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received](#321-test_objstore_addressingpy-gs-and-s3-virtual-host-addressing-checked-by-the-request-path-the-server-received)
 - [322. test_objstore_stash_recovery.py: recovery from a stash an interrupted objstore_module run left](#322-test_objstore_stash_recoverypy-recovery-from-a-stash-an-interrupted-objstore_module-run-left)
 - [323. test_objstore_s3_read.py: SigV4-signed s3:// reads, every refusal naming its cause](#323-test_objstore_s3_readpy-sigv4-signed-s3-reads-every-refusal-naming-its-cause)
+- [324. test_objstore_tls_read.py: TLS for object-store reads, every verification proven by a certificate that must be refused](#324-test_objstore_tls_readpy-tls-for-object-store-reads-every-verification-proven-by-a-certificate-that-must-be-refused)
 
 ## 1. How to read a test in here
 
@@ -12138,3 +12139,28 @@ Every test makes one check under the shell's name. Refusals are a SQLSTATE plus 
 | `test_an_https_endpoint_is_not_downgraded` | https endpoint is not downgraded |
 | `test_the_backend_is_still_up_after_the_s3_refusals` | backend still up after the s3 refusals |
 | `test_a_real_s3_implementation_reads_what_the_local_file_reads` | integration: real S3 implementation == local |
+
+## 324. test_objstore_tls_read.py: TLS for object-store reads, every verification proven by a certificate that must be refused
+
+The twin of `test/objstore_tls_read.sh`. A private cluster, trusting the fixture CA through SSL_CERT_FILE in the postmaster environment, reads a parquet object over https from the shell's fixture server and over s3:// with SigV4 on an https endpoint, then must refuse four servers: a wrong host, an expired certificate, an untrusted CA and a self-signed leaf. A transfer stalled mid-body must be cancelled by statement_timeout, and a restart with SSL_CERT_DIR alone must still trust the CA.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal is 08006, the module's own message naming the URL, and OpenSSL's verification reason for that certificate as the whole DETAIL; each carries the premise that the fixture logged the handshake, and waits for SELECT 1 afterwards so a crash fails only its own checks, which the closing survival check counts in the server log. The PKI, the fixture and the logs live in `server_dir`, since the backend reads the CA. The first test mirrors the shell's two pgc_skip names: it declines without pyarrow or without the openssl CLI, and the rest decline with it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_expired_certificate_is_genuinely_expired` | premise: expired certificate is genuinely expired |
+| `test_six_tls_servers_are_up` | premise: six TLS servers are up |
+| `test_an_https_read_equals_the_local_read` | A: https differential == local |
+| `test_count_over_https` | A: count(*) over https |
+| `test_s3_over_https_equals_the_local_read` | A2: s3 over https differential == local |
+| `test_the_handshake_was_attempted[...]` | premise: {label} handshake was attempted, one test per label (wrong-host, expired, untrusted-ca, self-signed) |
+| `test_the_certificate_is_refused_08006[...]` | C: {label} refused with 08006, one test per label |
+| `test_the_refusal_is_the_tls_one[...]` | C: {label} refusal is the TLS one: the module's message naming the URL, one test per label |
+| `test_the_refusal_names_its_reason[...]` | C: {label} names its reason: the whole DETAIL, OpenSSL's verification reason, one test per label |
+| `test_the_refused_read_returned_no_rows[...]` | C: {label} returned no rows, one test per label |
+| `test_a_stalled_tls_transfer_is_cancelled` | D: stalled TLS transfer cancelled with query_canceled |
+| `test_the_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
+| `test_ssl_cert_dir_alone_trusts_the_ca` | E: SSL_CERT_DIR alone trusts the CA (count(*) over https) |
+| `test_no_backend_was_terminated_by_a_signal` | survival: no backend was terminated by a signal |

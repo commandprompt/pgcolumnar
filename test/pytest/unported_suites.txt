@@ -15,7 +15,6 @@ native_fetch_interrupt
 objstore_http_read
 objstore_module
 objstore_sink_write
-objstore_tls_read
 parallel
 parallel_copy
 parallel_copy_dedup
