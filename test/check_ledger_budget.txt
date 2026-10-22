@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 35
+suites_not_covered 34
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6741,4 +6741,22 @@ suites_not_covered 35
 #     never         4476 + 0 = 4476
 #     dated         3237 + 5 = 3242
 #     4476 + 3242 == 7718
-checks_never_observed_red 4476
+#
+# #1341, native_cancel seeded, with its twin (OffgridwithJD): 4476 -> 4478,
+# and suites_not_covered 35 -> 34. The suite had no rows. It enters with 4 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The table had two columns, so load_group's per-chunk interrupt check fell at half the
+# load: with COLUMNAR_DECODE_INTERRUPT a no-op (nodecode) the cancel landed there, 90 ms
+# against a 172 ms load and a 106 ms limit, and main passed 4/4, the opposite of what
+# its own header claimed. The table is now one column of 16M values, so every per-chunk
+# check falls before the decode. The timeout's error is now pinned by SQLSTATE too, and
+# the cancel is the quickest of three that each raised it, so a refused connection
+# during crash recovery cannot read as an early cancel.
+# 2 are dated by four mutations, each the same names in both twins. 2 arrive never:
+# the row-group premise and the load-outlasts-the-timeout premise.
+#
+#     ledger rows   7718 + 4 = 7722
+#     never         4476 + 2 = 4478
+#     dated         3242 + 2 = 3244
+#     4478 + 3244 == 7722
+checks_never_observed_red 4478

@@ -7,7 +7,6 @@
 #
 # The parity goal (#432) is this file empty.
 harness_selftest
-native_cancel
 parallel
 parallel_copy
 parallel_copy_dedup
