@@ -964,6 +964,35 @@ debug_hook_privilege	debug_hook_privilege	peon may even brick its OWN scratch ta
 debug_hook_privilege	debug_hook_privilege	premise: the peon role runs its own statements	15;16;17;18;19	never	-
 debug_hook_privilege	debug_hook_privilege	the gated table still reads (version untouched by the refused calls)	15;16;17;18;19	2026-10-14	the debug set-metapage-version hook without its owner check
 debug_hook_privilege	debug_hook_privilege	the owner can call the advance hook (no-op advance)	15;16;17;18;19	2026-10-14	the debug advance hook refuses every caller including the owner
+decode_interrupts	decode_interrupts	bitunpack checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in bitunpack moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	bitunpack was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: bitunpack renamed bitunpack_v2
+decode_interrupts	decode_interrupts	decode_alp checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_alp moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_alp was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_alp renamed decode_alp_v2
+decode_interrupts	decode_interrupts	decode_delta checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_delta moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_delta was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_delta renamed decode_delta_v2
+decode_interrupts	decode_interrupts	decode_dict checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_dict moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_dict was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_dict renamed decode_dict_v2
+decode_interrupts	decode_interrupts	decode_dod checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_dod moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_dod was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_dod renamed decode_dod_v2
+decode_interrupts	decode_interrupts	decode_for checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_for's COLUMNAR_DECODE_INTERRUPT(i) written as a comment
+decode_interrupts	decode_interrupts	decode_for was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_for renamed decode_for_v2
+decode_interrupts	decode_interrupts	decode_fsst_shared checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_fsst_shared's check moved below its decode loop
+decode_interrupts	decode_interrupts	decode_fsst_shared checks inside its decode loop, not only in the table parse	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_fsst_shared's check moved below its decode loop
+decode_interrupts	decode_interrupts	decode_fsst_shared was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_fsst_shared renamed decode_fsst_shared_v2
+decode_interrupts	decode_interrupts	decode_fsst_shared's decode loop was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_fsst_shared's decode loop header respelled (end > p)
+decode_interrupts	decode_interrupts	decode_gorilla checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_gorilla moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_gorilla was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_gorilla renamed decode_gorilla_v2
+decode_interrupts	decode_interrupts	decode_rle checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_rle moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_rle checks inside its value loop, not only around it	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_rle's check moved below the run's value loop
+decode_interrupts	decode_interrupts	decode_rle was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_rle renamed decode_rle_v2
+decode_interrupts	decode_interrupts	decode_rle's inner value loop was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_rle's value loop header respelled (produced < n && run-- > 0)
+decode_interrupts	decode_interrupts	the decode interrupt macro exists	15;16;17;18;19	2026-10-22	columnar_encoding.c: the decode macro's parameter renamed (k for i)
+decode_interrupts	decode_interrupts	the group load checks for interrupts per column chunk	15;16;17;18;19	2026-10-22	columnar_reader.c: the group load's CHECK_FOR_INTERRUPTS moved in front of its per-chunk loop
+decode_interrupts	decode_interrupts	the macro calls CHECK_FOR_INTERRUPTS	15;16;17;18;19	2026-10-22	columnar_encoding.c: the decode macro's CHECK_FOR_INTERRUPTS() written as a comment
+decode_interrupts	decode_interrupts	the row loop checks for interrupts	15;16;17;18;19	2026-10-22	columnar_reader.c: next_row's CHECK_FOR_INTERRUPTS moved in front of its row loop
+decode_interrupts	decode_interrupts	the stride is a power of two	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT_STRIDE 65535, not a power of two
+decode_interrupts	decode_interrupts	the stride is defined	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT_STRIDE spelled (1 << 16)
+decode_interrupts	decode_interrupts	the stride is not so large that a check never lands	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT_STRIDE 16777216
 dependency_estimate	dependency_estimate	a case core already estimates well is unchanged (within 20%)	15;16;17;18;19	2026-10-19	core's estimate overridden where it is right (rel->rows = depRows * 3 unconditionally)
 dependency_estimate	dependency_estimate	a table with no dependency statistic is left to core's estimate (not raised)	15;16;17;18;19	2026-10-19	the #438 correction fires with no dependency statistic (degree forced to 1)
 dependency_estimate	dependency_estimate	and it is not an over-correction (bounded by the most selective marginal)	15;16;17;18;19	2026-10-19	core's estimate overridden where it is right (rel->rows = depRows * 3 unconditionally);the #438 raise overshoots tenfold (rel->rows = depRows * 10)

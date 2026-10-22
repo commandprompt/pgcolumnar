@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 37
+suites_not_covered 36
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6704,4 +6704,22 @@ suites_not_covered 37
 #     never         4473 + 3 = 4476
 #     dated         3200 + 8 = 3208
 #     4476 + 3208 == 7684
+#
+# #1341, decode_interrupts seeded, with its twin (OffgridwithJD): 4476 -> 4476,
+# and suites_not_covered 37 -> 36. The suite had no rows. It enters with 29 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# Every check read the source with its comments in it: with decode_for's call or the macro's
+# own CHECK_FOR_INTERRUPTS() written as a comment, main passed 29/29; both files are now read
+# with comments blanked. And presence in a function stood for presence in its loop: with
+# decode_for's check hoisted in front of its loop (where it runs once), decode_rle's or
+# decode_fsst_shared's moved below the loop it guarded, either reader check moved in front of
+# its loop, or any of six other decoders' checks hoisted to the top of the body, main
+# passed 29/29; a check now counts only inside the braces of a loop body, or of the named
+# loop where placement is the point. 29 are dated by 30 mutations, each the same names in
+# both twins. 0 arrive never. No cluster, so the twin moves guard_tests.
+#
+#     ledger rows   7684 + 29 = 7713
+#     never         4476 + 0 = 4476
+#     dated         3208 + 29 = 3237
+#     4476 + 3237 == 7713
 checks_never_observed_red 4476

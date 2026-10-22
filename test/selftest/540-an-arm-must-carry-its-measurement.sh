@@ -137,7 +137,9 @@
 #   last `print` then reads the second stage's condition, correctly. Rewrite
 #   that first stage as `grep` and the arm leaves the sweep without its verdict
 #   changing at all. Membership, so the two claims can be checked separately:
-#   7 piped arms == 2 inside the 136 + 5 outside it.
+#   7 piped arms == 2 inside the 136 + 5 outside it. (#1341 retired those two:
+#   decode_interrupts.sh now compares the count its own `in_loop` returns, so the
+#   piped arms are the five outside.)
 #
 #   ZERO ARE LOSSY TODAY: all seven conditions are `> 0` or `>= 1`, which the
 #   carve-out excuses. Proven rather than eyeballed, by putting four arms
