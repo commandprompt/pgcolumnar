@@ -165,7 +165,11 @@ jobs:
   pytest-cluster:
     name: pytest (cluster tests, PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 40, not 20. The run is serial and grows with every ported twin: main took 12 to 17
+    # minutes on 2026-10-22, and seven stacked port PRs were cancelled at 20m16s. More
+    # workers (-n) would be faster, but a port race under -n 2 is known (#1635), so the
+    # budget moves first and the parallel run waits for that to be settled.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
