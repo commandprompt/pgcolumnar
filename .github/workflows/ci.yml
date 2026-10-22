@@ -185,6 +185,13 @@ jobs:
       - name: fetch the release tags, for the fixture-blob comparisons
         run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
 
+      - name: Resolve the object-storage suite host names
+        # test_objstore_addressing.py, the twin of objstore_addressing.sh, reads
+        # through virtual-host-style S3 addressing (pgc-bucket.s3.local) against
+        # its own loopback fixture server, as the suites job's shells do. Without
+        # the names its tests decline UNAVAILABLE_ENDPOINT and the run ends 67.
+        run: echo "127.0.0.1 s3.local pgc-bucket.s3.local" | sudo tee -a /etc/hosts
+
       - name: Add the PGDG repository and install PostgreSQL ${{ matrix.pg }} with its headers
         run: |
           set -euo pipefail
