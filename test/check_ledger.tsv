@@ -4440,6 +4440,24 @@ native_parquet_flba	native_parquet_flba	pyarrow decimal128 values are exact	15;1
 native_parquet_flba	native_parquet_flba	pyarrow uuid reads as uuid	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	uuid round-trips through export/read	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	whole-row round-trip == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
+native_parquet_hardening	native_parquet_hardening	backend survived short chunk list	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the chunk-count refusal becomes abort()
+native_parquet_hardening	native_parquet_hardening	date in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range date decodes one day late
+native_parquet_hardening	native_parquet_hardening	date invalid -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the date validity check removed (the offset-overflow branch kept)
+native_parquet_hardening	native_parquet_hardening	date offset overflow -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the whole date guard removed, so the epoch offset wraps
+native_parquet_hardening	native_parquet_hardening	import_parquet also raises 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	import_parquet left no wrapped rows	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	int2 in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 guard over-applied, refusing the in-range 30000
+native_parquet_hardening	native_parquet_hardening	int2 out of range -> 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	no wrapped -25536 appears	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	parquet_schema still describes a bad chunk list	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	read_parquet also raises 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	read_parquet in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 guard over-applied, refusing the in-range 30000
+native_parquet_hardening	native_parquet_hardening	short chunk list rejected with a specific error	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the row-group chunk-count guard removed
+native_parquet_hardening	native_parquet_hardening	time in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range INT64 time decodes one microsecond late
+native_parquet_hardening	native_parquet_hardening	time out of day -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the INT64 time range guard removed
+native_parquet_hardening	native_parquet_hardening	timestamp in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range timestamp decodes one microsecond late
+native_parquet_hardening	native_parquet_hardening	timestamp overflow -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the timestamp guard removed, so the epoch offset wraps
+native_parquet_hardening	native_parquet_hardening	valid two-column file still reads	15;16;17;18;19	never	-
 native_parquet_multifile	native_parquet_multifile	EXPLAIN reports 3 files	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
 native_parquet_multifile	native_parquet_multifile	EXPLAIN sums row groups across files	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
 native_parquet_multifile	native_parquet_multifile	FDW(directory) == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension

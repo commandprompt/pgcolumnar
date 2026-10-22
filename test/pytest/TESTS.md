@@ -363,6 +363,7 @@ behaviour, the source of that number is named.
 - [315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused](#315-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-and-a-crafted-page-size-is-refused)
 - [316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly](#316-test_native_parquet_unitspy-time-and-timestamp-units-decode-to-the-right-instant-and-their-stats-skip-correctly)
 - [317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows](#317-test_native_parquet_projectionpy-a-projected-parquet-scan-decodes-only-the-columns-it-references-and-reads-the-generators-rows)
+- [318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks](#318-test_native_parquet_hardeningpy-the-parquet-reader-refuses-values-that-do-not-fit-their-column-and-a-row-group-with-too-few-chunks)
 
 ## 1. How to read a test in here
 
@@ -12008,3 +12009,32 @@ Every test makes one check under the shell's name, on a private database. Each t
 | `test_count_star_decodes_nothing_and_survives_the_corruption` | count(*) decodes nothing, survives corruption |
 | `test_selecting_the_corrupt_column_does_error` | selecting the corrupt column does error |
 | `test_the_good_column_values_are_still_correct` | good-column values are still correct |
+
+## 318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks
+
+The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range) and a two-column file whose row group carries one column chunk. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, the short chunk list must be refused by the chunk-count guard itself, and the backend must survive.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The crafter runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A refusal reads as 'SQLSTATE: message' through the shell's own pgc_try; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_parquet_hardening_int2_out_of_range_raises_22003` | int2 out of range -> 22003 |
+| `test_parquet_hardening_time_out_of_day_raises_22008` | time out of day -> 22008 |
+| `test_parquet_hardening_invalid_date_raises_22008` | date invalid -> 22008 |
+| `test_parquet_hardening_date_offset_overflow_raises_22008` | date offset overflow -> 22008 |
+| `test_parquet_hardening_timestamp_overflow_raises_22008` | timestamp overflow -> 22008 |
+| `test_parquet_hardening_int2_in_range_still_reads` | int2 in range still reads |
+| `test_parquet_hardening_time_in_range_still_reads` | time in range still reads |
+| `test_parquet_hardening_date_in_range_still_reads` | date in range still reads |
+| `test_parquet_hardening_timestamp_in_range_still_reads` | timestamp in range still reads |
+| `test_parquet_hardening_no_wrapped_value_appears` | no wrapped -25536 appears |
+| `test_parquet_hardening_read_parquet_also_raises_22003` | read_parquet also raises 22003 |
+| `test_parquet_hardening_read_parquet_in_range_still_reads` | read_parquet in range still reads |
+| `test_parquet_hardening_import_parquet_also_raises_22003` | import_parquet also raises 22003 |
+| `test_parquet_hardening_import_parquet_left_no_wrapped_rows` | import_parquet left no wrapped rows |
+| `test_parquet_hardening_short_chunk_list_is_a_clean_reject` | short chunk list rejected with a specific error |
+| `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
+| `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
+| `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
