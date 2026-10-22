@@ -109,6 +109,14 @@
 18 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
 19 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
 
+# Every major: test_objstore_s3_read.py's real-S3 arm needs PGC_S3_INTEGRATION_ENDPOINT,
+# which no matrix run sets; the shell records nothing for it there either.
+15 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads
+16 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads
+17 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads
+18 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads
+19 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads
+
 # Every major: test_concurrency.py's timeout mirror records the shell's fixed
 # wait_timeout names only where a bounded wait timed out, as the shell records them
 # only on its timeout path. On a green run there is nothing to record, so it declines.

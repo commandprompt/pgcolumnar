@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 48
+suites_not_covered 47
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6476,4 +6476,23 @@ suites_not_covered 48
 #     never         4280 + 9 = 4289
 #     dated         3068 + 9 = 3077
 #     4289 + 3077 == 7366
-checks_never_observed_red 4289
+#
+# #1341, objstore_s3_read seeded, with its twin (OffgridwithJD): 4289 -> 4293,
+# and suites_not_covered 48 -> 47. The suite had no rows. It enters with 17 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after these fixes.
+# The no-environment and 403 refusals read a bare 28000, which five guards share: with s3://
+# falling back to a default host (noepreq) the region guard refused instead and main passed
+# 12/12. Each refusal now names its cause. Region handling was never tested: dropping the
+# AWS_DEFAULT_REGION fallback, swapping its precedence, signing us-east-1 when no region is set,
+# or signing with an empty secret each passed 12/12, and four checks now pin them. Nothing
+# read the crash count, and an abort() in abort cleanup passed every SQLSTATE check (main's
+# shell exited FATAL on the restart with no red): survival now reads the server log. The https
+# check's name interpolated the build's want, so the grader could not read it. 13 are dated
+# by twelve mutations, each the same names in both twins. 4 arrive never. Neither the
+# pyarrow pgc_skip name nor the optional real-S3 check gets a row: CI emits neither.
+#
+#     ledger rows   7366 + 17 = 7383
+#     never         4289 + 4 = 4293
+#     dated         3077 + 13 = 3090
+#     4293 + 3090 == 7383
+checks_never_observed_red 4293
