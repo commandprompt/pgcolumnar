@@ -34,7 +34,9 @@ SEL="SELECT id, ia::text, ta::text, c::text FROM"
 check "nested import round-trips (arrays + composite)" \
 	"$(pgc_set_hash "$SEL pna2")" \
 	"$(pgc_set_hash "$SEL pna")"
-check "import count matches" "$(q 'SELECT count(*) FROM pna2;')" "$(q 'SELECT count(*) FROM pna;')"
+# check_num: under check two failed counts were both empty and agreed, so with both
+# tables missing this passed (#1341).
+check_num "import count matches" "$(q 'SELECT count(*) FROM pna2;')" "$(q 'SELECT count(*) FROM pna;')"
 
 # after a delete on the source, a fresh export+import still round-trips the live set
 psql_run "DELETE FROM pna WHERE id BETWEEN 1000 AND 2000;"

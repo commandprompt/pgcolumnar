@@ -85,7 +85,6 @@ parallel_vector_agg
 parquet_count_bounds
 parquet_export
 parquet_export_stats
-parquet_nested_import
 phase2
 phase3
 phase4

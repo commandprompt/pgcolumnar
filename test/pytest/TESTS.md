@@ -304,6 +304,7 @@ behaviour, the source of that number is named.
 - [256. test_read_stream.py: reads through a read stream return what the synchronous path returns](#256-test_read_streampy-reads-through-a-read-stream-return-what-the-synchronous-path-returns)
 - [257. test_parquet_level_width.py: the Parquet level-width helper is single-sourced, unsigned and bounded](#257-test_parquet_level_widthpy-the-parquet-level-width-helper-is-single-sourced-unsigned-and-bounded)
 - [258. test_parquet_nested.py: Parquet nested export writes lists and groups that read back as the generator's values](#258-test_parquet_nestedpy-parquet-nested-export-writes-lists-and-groups-that-read-back-as-the-generators-values)
+- [259. test_parquet_nested_import.py: nested Parquet import round-trips arrays and composites](#259-test_parquet_nested_importpy-nested-parquet-import-round-trips-arrays-and-composites)
 
 ## 1. How to read a test in here
 
@@ -10093,3 +10094,19 @@ The pytest twin of `test/parquet_nested.sh` (ported for #1341), every check by t
 | `test_the_multi_row_group_export_writes_every_row` | np2 export rows |
 | `test_the_multi_row_group_values_match` | np2 values match |
 | `test_a_multidimensional_array_is_refused_for_parquet` | reject multi-dim array -- the multi-dimensional refusal itself; any error used to count |
+
+## 259. test_parquet_nested_import.py: nested Parquet import round-trips arrays and composites
+
+The pytest twin of `test/parquet_nested_import.sh` (ported for #1341), every check by the shell's name. A table with int[], text[] and composite columns, NULL arrays, empty arrays, NULL elements and NULL composites among them, is exported to Parquet and imported into a fresh table, which must equal the original as a set, before and after a DELETE; a nested file written by pyarrow must import as the generator's rows. Sets are hashed in SQL as the shell's `pgc_set_hash` does, a failed query reading as a unique `query_error()`. On a private database, with the files in `server_dir`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_nested_table_exports_every_row` | export rows |
+| `test_the_nested_file_imports_every_row` | import rows |
+| `test_the_nested_parquet_import_round_trips` | nested import round-trips (arrays + composite) |
+| `test_the_parquet_import_count_matches` | import count matches -- compared as numbers, since two failed counts agreed as text |
+| `test_a_fresh_round_trip_after_a_delete_matches` | round-trips after delete |
+| `test_a_pyarrow_nested_file_imports_every_row` | pyarrow import rows; declines by this name without pyarrow |
+| `test_a_pyarrow_nested_file_matches_the_oracle` | pyarrow nested file matches oracle; declines by this name without pyarrow |
