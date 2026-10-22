@@ -264,6 +264,41 @@ typedef struct RetiredGroup
 }			RetiredGroup;
 
 static int
+retired_group_row_cmp(const void *a, const void *b)
+{
+	uint64		x = ((const RetiredGroup *) a)->firstRowNumber;
+	uint64		y = ((const RetiredGroup *) b)->firstRowNumber;
+
+	return (x > y) - (x < y);
+}
+
+/*
+ * Is rowNumber in one of the n groups of `byRow` (sorted by firstRowNumber)? The
+ * online recluster reads only the groups it listed, so a row a concurrent writer
+ * committed after the listing is left where it is, as an appended group, rather
+ * than rewritten AND kept (#1633).
+ */
+static bool
+row_in_listed_groups(const RetiredGroup *byRow, int n, uint64 rowNumber)
+{
+	int			lo = 0,
+				hi = n - 1;
+
+	while (lo <= hi)
+	{
+		int			mid = lo + (hi - lo) / 2;
+
+		if (rowNumber < byRow[mid].firstRowNumber)
+			hi = mid - 1;
+		else if (rowNumber >= byRow[mid].firstRowNumber + byRow[mid].rowCount)
+			lo = mid + 1;
+		else
+			return true;
+	}
+	return false;
+}
+
+static int
 retired_group_cmp(const void *a, const void *b)
 {
 	uint64		x = ((const RetiredGroup *) a)->groupNumber;
@@ -606,6 +641,7 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 	List	   *rgList;
 	ListCell   *lc;
 	RetiredGroup *oldGroups;
+	RetiredGroup *byRow;
 	int			nGroups = 0;
 	int			i;
 	Snapshot	snap;
@@ -695,6 +731,14 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 		}
 	}
 
+	/*
+	 * dev/test: hold with the work set fixed by the listing above, before the group
+	 * locks and the read snapshot, so a concurrent writer can be placed inside the
+	 * whole window deterministically (recluster_extent, #1632, #1633). Waiting for
+	 * the group locks is part of that window in production too.
+	 */
+	pgcolumnar_maintenance_hold();
+
 	for (i = 0; i < nGroups; i++)
 		PgColumnarLockChunkGroup(storageId, oldGroups[i].groupNumber);
 
@@ -703,10 +747,6 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 	 * the reader derives satisfy PG18's heap-visibility assertion. */
 	snap = RegisterSnapshot(GetLatestSnapshot());
 	PushActiveSnapshot(snap);
-
-	/* dev/test: hold with the work set fixed, so a concurrent writer can be
-	 * placed inside the rewrite deterministically (recluster_extent) */
-	pgcolumnar_maintenance_hold();
 
 	augdesc = CreateTemplateTupleDesc(natts + 1);
 	for (i = 1; i <= natts; i++)
@@ -729,6 +769,17 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 	putSlot = MakeSingleTupleTableSlot(augdesc, &TTSOpsVirtual);
 	augSlot = MakeSingleTupleTableSlot(augdesc, &TTSOpsMinimalTuple);
 
+	/*
+	 * Read only the groups listed above (#1633). The listing and this read are two
+	 * snapshots apart, with the group locks between them; a group a concurrent
+	 * writer committed in that window is visible to `snap` but is not retired
+	 * below, so reading it would rewrite its rows AND keep them. A DELETE committed
+	 * in the window is visible to `snap`, so a deleted row is not read back either.
+	 */
+	byRow = palloc(sizeof(RetiredGroup) * nGroups);
+	memcpy(byRow, oldGroups, sizeof(RetiredGroup) * nGroups);
+	qsort(byRow, nGroups, sizeof(RetiredGroup), retired_group_row_cmp);
+
 	readState = PgColumnarBeginRead(rel, snap, NULL, NULL, 0, NULL);
 	while (PgColumnarReadNextRow(readState, readSlot->tts_values,
 							   readSlot->tts_isnull, &rowNumber))
@@ -736,6 +787,8 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 		bytea	   *ckey;
 
 		CHECK_FOR_INTERRUPTS();
+		if (!row_in_listed_groups(byRow, nGroups, rowNumber))
+			continue;
 		memcpy(putSlot->tts_values, readSlot->tts_values, natts * sizeof(Datum));
 		memcpy(putSlot->tts_isnull, readSlot->tts_isnull, natts * sizeof(bool));
 		ckey = keyfn(readSlot->tts_values, readSlot->tts_isnull,
@@ -747,6 +800,7 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 		ExecClearTuple(putSlot);
 	}
 	PgColumnarEndRead(readState);
+	pfree(byRow);
 	ExecDropSingleTupleTableSlot(readSlot);
 	ExecDropSingleTupleTableSlot(putSlot);
 	tuplesort_performsort(tsort);

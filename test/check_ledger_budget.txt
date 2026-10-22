@@ -6759,4 +6759,19 @@ suites_not_covered 34
 #     never         4476 + 2 = 4478
 #     dated         3242 + 2 = 3244
 #     4478 + 3244 == 7722
-checks_never_observed_red 4478
+# #1633, recluster_online duplicated rows written between its group listing and its
+# read (OffgridwithJD): 4478 -> 4477, and suites_not_covered stays. The rewrite
+# listed the groups it would retire, then locked them and read under a later
+# snapshot, and retired only what it listed, so a row committed in between was
+# rewritten and kept. recluster_extent's hold now sits between the listing and the
+# read, and a DELETE joins the insert inside it. Two checks are new: "no row was
+# rewritten and also kept", dated by the fix reverted (50000 duplicates), and "a row
+# deleted during the rewrite stays deleted", dated by a read under the listing's
+# snapshot (all 1000 come back). "every row is present afterwards" was never and is
+# now dated by the fix reverted.
+#
+#     ledger rows   7722 + 2 = 7724
+#     never         4478 - 1 = 4477
+#     dated         3244 + 3 = 3247
+#     4477 + 3247 == 7724
+checks_never_observed_red 4477

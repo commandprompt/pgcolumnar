@@ -9828,6 +9828,8 @@ Whether the insert ran during the rewrite is asked of the server before the inse
 | `test_the_rewrite_reported_groups_reclustered` | the rewrite reported groups reclustered |
 | `test_the_concurrent_insert_was_not_in_the_work_set` | premise: the concurrent insert was not in the rewrite's work set |
 | `test_every_row_is_present_afterwards` | every row is present afterwards |
+| `test_no_row_was_rewritten_and_also_kept` | no row was rewritten and also kept (#1633) |
+| `test_a_row_deleted_during_the_rewrite_stays_deleted` | a row deleted during the rewrite stays deleted (#1633) |
 | `test_the_run_does_not_claim_rows_written_during_the_rewrite` | the run does not claim rows written during the rewrite |
 | `test_the_counts_still_cover_every_stored_row` | the counts still cover every stored row |
 | `test_the_concurrent_rows_are_reported_as_appended` | the concurrent rows are reported as appended |
