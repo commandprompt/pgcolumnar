@@ -3956,6 +3956,21 @@ native_fetch_coalesce	native_fetch_coalesce	premise: fetching one projected colu
 native_fetch_coalesce	native_fetch_coalesce	premise: the coalescing helper holds both the bound and the validity copy	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	the validity copy is bounded by the chunk length before it runs	15;16;17;18;19	never	-
 native_fetch_coalesce	native_fetch_coalesce	the wide fetch returns the projected values	15;16;17;18;19	2026-10-14	every column of a coalesced fetch is copied from the start of the span (off = 0)
+native_fetch_group_memo	native_fetch_group_memo	3000 index fetches cost a bounded number of row_group reads (delta <= 20)	15;16;17;18;19	2026-10-22	columnar_reader.c: the memo's last-group fast path serves rows up to 1000 past that group's end
+native_fetch_group_memo	native_fetch_group_memo	a DELETE is visible to the very next fetch (delete vectors uncached)	15;16;17;18;19	never	-
+native_fetch_group_memo	native_fetch_group_memo	a buffered + flushed duplicate still violates a unique index (23505)	15;16;17;18;19	never	-
+native_fetch_group_memo	native_fetch_group_memo	a same-statement compact() of a fully deleted group resurrects nothing (10|t|0)	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarRetireGroup no longer resets the group-list memo
+native_fetch_group_memo	native_fetch_group_memo	a same-statement retire neither loses nor doubles rows (500|t|500)	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarRetireGroup no longer resets the group-list memo
+native_fetch_group_memo	native_fetch_group_memo	an AFTER UPDATE trigger still sees the OLD row (SnapshotAny re-fetch)	15;16;17;18;19	never	-
+native_fetch_group_memo	native_fetch_group_memo	backend alive	15;16;17;18;19	never	-
+native_fetch_group_memo	native_fetch_group_memo	row_group is never heap-scanned in the window (index resolution intact)	15;16;17;18;19	2026-10-22	columnar_reader.c: the memo's last-group fast path serves rows up to 1000 past that group's end
+native_fetch_group_memo	native_fetch_group_memo	rows flushed under an aborted savepoint do not resurrect through the cursor	15;16;17;18;19	2026-10-22	columnar_reader.c: the memo's last-group fast path serves rows up to 1000 past that group's end
+native_fetch_group_memo	native_fetch_group_memo	same-transaction TRUNCATE then fetch sees only the new rows	15;16;17;18;19	never	-
+native_fetch_group_memo	native_fetch_group_memo	same-transaction flush then fetch sees the new rows	15;16;17;18;19	never	-
+native_fetch_group_memo	native_fetch_group_memo	scattered index-fetched values are exact	15;16;17;18;19	2026-10-22	columnar_reader.c: the memo's last-group fast path serves rows up to 1000 past that group's end
+native_fetch_group_memo	native_fetch_group_memo	the fetch count is exact (3000 rows found)	15;16;17;18;19	2026-10-22	columnar_reader.c: the memo's last-group fast path serves rows up to 1000 past that group's end
+native_fetch_group_memo	native_fetch_group_memo	the measured plan is a nested loop of index probes (fetch path engaged)	15;16;17;18;19	never	-
+native_fetch_group_memo	native_fetch_group_memo	the table is exact after the in-statement rewrite	15;16;17;18;19	never	-
 native_fetch_position	native_fetch_position	a varying-length column reaches its value through an offset table	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row reaches a varying-length value by decoding every earlier one (the #143 walk)
 native_fetch_position	native_fetch_position	doubling the row group does not double the cost of the same fetches	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row counts the validity bits from the group's start for every fetch (the #143 walk);columnar_reader.c: pgcolumnar_fetch_row reaches a varying-length value by decoding every earlier one (the #143 walk)
 native_fetch_position	native_fetch_position	every column matches the heap mirror	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row takes the row number as the rank, counting rows rather than present values;columnar_reader.c: pgcolumnar_fetch_row's rank is one past the row's

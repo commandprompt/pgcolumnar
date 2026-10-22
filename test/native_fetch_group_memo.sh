@@ -47,6 +47,23 @@ q "SET pgcolumnar.stripe_row_limit=2000;
 
 psql_c() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -c "$1" 2>&1; }
 
+# Survival reads the server log's count of backends killed by a signal as well as
+# SELECT 1: SELECT 1 answers again once crash recovery has finished, so with a
+# client backend SIGKILLed before it, "backend alive" passed on main (#1341).
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
+CRASHES_BEFORE="$(crashes)"
+
 # Join-method forcing matters as much as scan forcing: with merge join
 # available the planner answers the LATERAL with a Sort over a FULL index
 # scan (every row fetched -- the measured delta once read 199840), which the
@@ -92,8 +109,11 @@ check "3000 index fetches cost a bounded number of row_group reads (delta <= 20)
 	"$( [ -n "$base_idx" ] && [ -n "$after_idx" ] && [ $((after_idx - base_idx)) -le 20 ] && echo bounded || echo "unbounded($base_idx -> $after_idx)")" \
 	"bounded"
 
+# Both counters must be READ: an empty pair used to subtract to 0 and pass, so with
+# the measured session failing (the server stopped before it) this was the one
+# check that stayed green.
 check "row_group is never heap-scanned in the window (index resolution intact)" \
-	"$((after_seq - base_seq))" "0"
+	"$( [[ "$base_seq" =~ ^[0-9]+$ && "$after_seq" =~ ^[0-9]+$ ]] && echo $((after_seq - base_seq)) || echo "no reading ($base_seq -> $after_seq)")" "0"
 
 # --- correctness: scattered fetches return the right values -------------------
 # The value comparison sits INSIDE the lateral so it filters on the fetched
@@ -243,6 +263,6 @@ check "same-transaction TRUNCATE then fetch sees only the new rows" \
 	COMMIT;" | grep -E '^[0-9]+$' | tr '\n' '/')" \
 	"50/100/100/"
 
-check "backend alive" "$(q 'SELECT 1;')" "1"
+check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

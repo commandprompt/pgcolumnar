@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 76
+suites_not_covered 75
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5941,4 +5941,20 @@ suites_not_covered 76
 #     never         4128 + 1 = 4129
 #     dated         2786 + 5 = 2791
 #     4129 + 2791 == 6920
-checks_never_observed_red 4129
+#
+# #1341, native_fetch_group_memo seeded, with its twin (OffgridwithJD): 4129 -> 4137,
+# and suites_not_covered 76 -> 75. The suite had no rows. It enters with its 15
+# checks from five-major runs (all green on each of 15-19, shell and twin alike), after two
+# fixes. "row_group is never heap-scanned in the window" subtracted two counters with bash
+# arithmetic, which reads an empty reading as 0: with the server stopped before the
+# measured session it was the one check main's shell passed. It now requires two numbers.
+# And "backend alive" was a bare SELECT 1, which answers again after crash recovery: with
+# a client backend SIGKILLed before it, main passed. It now also reads the server log's
+# crash count. 7 are dated by four mutations of the memo, each reddening the same names
+# in both twins. 8 arrive never.
+#
+#     ledger rows   6920 + 15 = 6935
+#     never         4129 + 8 = 4137
+#     dated         2791 + 7 = 2798
+#     4137 + 2798 == 6935
+checks_never_observed_red 4137
