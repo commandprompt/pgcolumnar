@@ -57,13 +57,9 @@ def _int(v):
     return int(v) if isinstance(v, str) and v.isdigit() else v
 
 
-def _write_reference(path):
-    """Write the pyarrow nested file the shell writes; False without pyarrow."""
-    try:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except ImportError:
-        return False
+def _write_reference(path, pa, pq):
+    """Write the pyarrow nested file the shell writes, with the modules the test's
+    require_module returned: a fixture cannot decline, so it never imports pyarrow."""
     ids = list(range(1, 201))
     ia = [None if g % 10 == 0 else ([] if g % 7 == 0 else [g, None, g + 3]) for g in ids]
     c = [None if g % 5 == 0 else {"x": g * 2, "y": "c" + str(g)} for g in ids]
@@ -74,7 +70,24 @@ def _write_reference(path):
     })
     pq.write_table(t, str(path))
     path.chmod(0o644)
-    return True
+
+
+def _pyarrow_arm(ni, pa, pq):
+    """Run the shell's pyarrow arm once, on the first pyarrow test that gets here."""
+    if "pyarrow import" not in ni:
+        dsn = ni["dsn"]
+        pyf = ni["dir"] / "pyarrow_nested.parquet"
+        _write_reference(pyf, pa, pq)
+        _run(dsn, "CREATE TABLE pna3 (id int, ia int[], c pnic) USING pgcolumnar")
+        ni["pyarrow import"] = _value(dsn, f"SELECT pgcolumnar.import_parquet('pna3', '{pyf}')")
+        _run(dsn, "CREATE TABLE pna3_o (id int, ia int[], c pnic)")
+        _run(dsn, "INSERT INTO pna3_o SELECT g, "
+                  "CASE WHEN g % 10 = 0 THEN NULL WHEN g % 7 = 0 THEN '{}'::int[] "
+                  "ELSE ARRAY[g, NULL, g + 3] END, "
+                  "CASE WHEN g % 5 = 0 THEN NULL ELSE ROW(g * 2, 'c' || g)::pnic END "
+                  "FROM generate_series(1, 200) g")
+        ni["pyarrow oracle"] = (_set_hash(dsn, f"{SEL3} pna3"), _set_hash(dsn, f"{SEL3} pna3_o"))
+    return ni
 
 
 @pytest.fixture(scope="module")
@@ -105,17 +118,7 @@ def ni(pgc_cluster, server_dir):
         _run(dsn, f"SELECT pgcolumnar.import_parquet('pna2', '{pf}')")
         r["after delete"] = (_set_hash(dsn, f"{SEL} pna2"), _set_hash(dsn, f"{SEL} pna"))
 
-        pyf = server_dir / "pyarrow_nested.parquet"
-        if _write_reference(pyf):
-            _run(dsn, "CREATE TABLE pna3 (id int, ia int[], c pnic) USING pgcolumnar")
-            r["pyarrow import"] = _value(dsn, f"SELECT pgcolumnar.import_parquet('pna3', '{pyf}')")
-            _run(dsn, "CREATE TABLE pna3_o (id int, ia int[], c pnic)")
-            _run(dsn, "INSERT INTO pna3_o SELECT g, "
-                      "CASE WHEN g % 10 = 0 THEN NULL WHEN g % 7 = 0 THEN '{}'::int[] "
-                      "ELSE ARRAY[g, NULL, g + 3] END, "
-                      "CASE WHEN g % 5 = 0 THEN NULL ELSE ROW(g * 2, 'c' || g)::pnic END "
-                      "FROM generate_series(1, 200) g")
-            r["pyarrow oracle"] = (_set_hash(dsn, f"{SEL3} pna3"), _set_hash(dsn, f"{SEL3} pna3_o"))
+        r["dsn"], r["dir"] = dsn, server_dir
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -146,13 +149,17 @@ def test_a_fresh_round_trip_after_a_delete_matches(ni, expect):
 
 
 def test_a_pyarrow_nested_file_imports_every_row(ni, expect):
-    if expect.require_module("pyarrow", name="pyarrow import rows") is None:
+    pa = expect.require_module("pyarrow", name="pyarrow import rows")
+    pq = expect.require_module("pyarrow.parquet", name="pyarrow import rows") if pa else None
+    if pq is None:
         return
-    expect.text(ni["pyarrow import"], "200", "pyarrow import rows")
+    expect.text(_pyarrow_arm(ni, pa, pq)["pyarrow import"], "200", "pyarrow import rows")
 
 
 def test_a_pyarrow_nested_file_matches_the_oracle(ni, expect):
-    if expect.require_module("pyarrow", name="pyarrow nested file matches oracle") is None:
+    pa = expect.require_module("pyarrow", name="pyarrow nested file matches oracle")
+    pq = expect.require_module("pyarrow.parquet", name="pyarrow nested file matches oracle") if pa else None
+    if pq is None:
         return
-    got, want = ni["pyarrow oracle"]
+    got, want = _pyarrow_arm(ni, pa, pq)["pyarrow oracle"]
     expect.text(got, want, "pyarrow nested file matches oracle")
