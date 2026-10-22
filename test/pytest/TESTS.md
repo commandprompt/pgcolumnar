@@ -357,6 +357,7 @@ behaviour, the source of that number is named.
 - [309. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard](#309-test_native_parquet_fieldidpy-read_parquet-binds-output-columns-by-parquet-field-id-and-refuses-each-misuse-by-its-own-guard)
 - [310. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused](#310-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-and-a-crafted-page-size-is-refused)
 - [311. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly](#311-test_native_parquet_unitspy-time-and-timestamp-units-decode-to-the-right-instant-and-their-stats-skip-correctly)
+- [312. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows](#312-test_native_parquet_projectionpy-a-projected-parquet-scan-decodes-only-the-columns-it-references-and-reads-the-generators-rows)
 
 ## 1. How to read a test in here
 
@@ -11781,3 +11782,31 @@ Every test makes one check under the shell's name, on a private database, and de
 | `test_millis_scaled_stats_skip_the_non_matching_group` | millis-scaled stats skip the non-matching group |
 | `test_the_millis_file_reads_back_exactly_as_written` | the millis file reads back exactly as written |
 | `test_millis_pushdown_result_equals_the_oracle` | millis pushdown result == oracle |
+
+## 312. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows
+
+The twin of `test/native_parquet_projection.sh`. `test/craft_parquet_projection.py`, the shell's own crafter, writes a four-column file and a two-column file whose second column's data page is smashed. Each projection, a qual on an unselected column, and a projection behind a dropped column return the generator's rows, built in SQL; the EXPLAIN "Columns Read" counter reflects each projection; and the smashed column is never decoded when projected out.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Each test declines under the shell's pyarrow skip name before it asks for the fixture, which runs the crafter as a subprocess, so the fixture never imports pyarrow. A failed reading is a `query_error()`, and a setup step that fails is not raised: every reading then fails by its own name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_a_projection_matches_the_oracle` | projection [a] == oracle |
+| `test_the_c_projection_matches_the_oracle` | projection [c] == oracle |
+| `test_the_a_d_projection_matches_the_oracle` | projection [a, d] == oracle |
+| `test_the_b_c_d_projection_matches_the_oracle` | projection [b, c, d] == oracle |
+| `test_the_star_projection_matches_the_oracle` | projection [*] == oracle |
+| `test_a_qual_on_an_unselected_column_matches_the_oracle` | qual on unselected column == oracle |
+| `test_one_column_reads_one` | one column reads 1 |
+| `test_two_columns_read_two` | two columns read 2 |
+| `test_select_star_reads_four` | select star reads 4 |
+| `test_count_star_reads_zero` | count(*) reads 0 |
+| `test_after_a_dropped_column_the_d_projection_matches_the_oracle` | after a dropped column, projection [d] == oracle |
+| `test_after_a_dropped_column_one_column_reads_one` | after a dropped column, one column reads 1 |
+| `test_a_selected_column_and_a_qual_column_read_two` | selected 1 + qual 1 reads 2 |
+| `test_selecting_the_good_column_skips_the_corrupt_one` | selecting the good column skips the corrupt one |
+| `test_count_star_decodes_nothing_and_survives_the_corruption` | count(*) decodes nothing, survives corruption |
+| `test_selecting_the_corrupt_column_does_error` | selecting the corrupt column does error |
+| `test_the_good_column_values_are_still_correct` | good-column values are still correct |
