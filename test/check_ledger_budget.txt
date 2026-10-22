@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 41
+suites_not_covered 40
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6650,4 +6650,24 @@ suites_not_covered 41
 #     never         4344 + 4 = 4348
 #     dated         3231 + 13 = 3244
 #     4348 + 3244 == 7592
-checks_never_observed_red 4348
+#
+# #1341, objstore_tls_read seeded, with its twin (OffgridwithJD): 4348 -> 4355,
+# and suites_not_covered 41 -> 40. The suite had no rows. It enters with 29 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes.
+# A refusal was any 08006 plus a reason grepped anywhere in the output: with the module
+# speaking cleartext to the TLS port (httpfall), main's three "refused with 08006" checks
+# passed; each refusal now also wants the module's own TLS message naming the URL, and the
+# whole DETAIL, OpenSSL's reason for that certificate. A self-signed leaf had no arm; it has
+# one now. Trust from SSL_CERT_DIR was never read: with only SSL_CERT_FILE honoured
+# (nocadir), main passed 19/19; arm E restarts with SSL_CERT_DIR alone and reads the good
+# server. Nothing read the server log: with abort() in place of the verification refusal,
+# the crash also reddened the next arm's premise and D, and "returned no rows" passed; each
+# refusal now waits for SELECT 1, and a survival check counts "terminated by signal".
+# 22 are dated by six mutations, each the same names in both twins. 7 arrive never.
+# Neither pgc_skip name (pyarrow, openssl) gets a row: CI emits neither.
+#
+#     ledger rows   7592 + 29 = 7621
+#     never         4348 + 7 = 4355
+#     dated         3244 + 22 = 3266
+#     4355 + 3266 == 7621
+checks_never_observed_red 4355

@@ -1005,6 +1005,8 @@ guard_tests 806
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 3866 -> 3895 for #1341's test_objstore_tls_read.py, the twin of objstore_tls_read.sh:
+# 29 checks in 29 tests, by collection over the cluster files.
 # cluster_tests 3848 -> 3866 for #1341's test_objstore_s3_read.py, the twin of objstore_s3_read.sh:
 # 17 checks in 18 tests, by collection over the cluster files.
 # cluster_tests 3829 -> 3848 for #1341's test_objstore_stash_recovery.py, the twin of objstore_stash_recovery.sh:
@@ -1162,4 +1164,4 @@ guard_tests 806
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 3866
+cluster_tests 3895

@@ -5170,6 +5170,35 @@ objstore_stash_recovery	objstore_stash_recovery	the real module survived, rather
 objstore_stash_recovery	objstore_stash_recovery	the suite recovers the only surviving copy and runs to completion	15;16;17;18;19	2026-10-22	objstore_module.sh start guard walks .away only, so a .probe that is the only copy is never restored
 objstore_stash_recovery	objstore_stash_recovery	the suite replaces the stand-in with the real module and completes	15;16;17;18;19	2026-10-22	objstore_module.sh start guard decides on presence alone: every stash is debris and is deleted
 objstore_stash_recovery	objstore_stash_recovery	the suite runs to completion with debris beside a valid module	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
+objstore_tls_read	objstore_tls_read	A2: s3 over https differential == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: trust from SSL_CERT_DIR only (SSL_CTX_set_default_verify_dir in place of set_default_verify_paths)
+objstore_tls_read	objstore_tls_read	A: count(*) over https	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: trust from SSL_CERT_DIR only (SSL_CTX_set_default_verify_dir in place of set_default_verify_paths)
+objstore_tls_read	objstore_tls_read	A: https differential == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: trust from SSL_CERT_DIR only (SSL_CTX_set_default_verify_dir in place of set_default_verify_paths)
+objstore_tls_read	objstore_tls_read	C: expired names its reason	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: expired refusal is the TLS one	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: expired refused with 08006	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: expired returned no rows	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: SSL_VERIFY_NONE in place of SSL_VERIFY_PEER
+objstore_tls_read	objstore_tls_read	C: self-signed names its reason	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: self-signed refusal is the TLS one	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: self-signed refused with 08006	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: self-signed returned no rows	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: SSL_VERIFY_NONE in place of SSL_VERIFY_PEER
+objstore_tls_read	objstore_tls_read	C: untrusted-ca names its reason	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: untrusted-ca refusal is the TLS one	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: untrusted-ca refused with 08006	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: untrusted-ca returned no rows	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: SSL_VERIFY_NONE in place of SSL_VERIFY_PEER
+objstore_tls_read	objstore_tls_read	C: wrong-host names its reason	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: wrong-host refusal is the TLS one	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: wrong-host refused with 08006	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: wrong-host returned no rows	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the IP-literal endpoint is never bound (X509_VERIFY_PARAM_set1_ip_asc skipped)
+objstore_tls_read	objstore_tls_read	D: cancel latency bounded (<=10s)	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	D: stalled TLS transfer cancelled with query_canceled	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: trust from SSL_CERT_DIR only (SSL_CTX_set_default_verify_dir in place of set_default_verify_paths)
+objstore_tls_read	objstore_tls_read	E: SSL_CERT_DIR alone trusts the CA (count(*) over https)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: trust from SSL_CERT_FILE only (SSL_CTX_set_default_verify_file in place of set_default_verify_paths)
+objstore_tls_read	objstore_tls_read	premise: expired certificate is genuinely expired	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	premise: expired handshake was attempted	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	premise: self-signed handshake was attempted	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	premise: six TLS servers are up	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	premise: untrusted-ca handshake was attempted	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	premise: wrong-host handshake was attempted	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	survival: no backend was terminated by a signal	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
 parallel	parallel	par count	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
 parallel	parallel	par filtered scan	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
 parallel	parallel	par no-filter	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
