@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 63
+suites_not_covered 62
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6192,4 +6192,24 @@ suites_not_covered 63
 #     never         4204 + 0 = 4204
 #     dated         2890 + 6 = 2896
 #     4204 + 2896 == 7100
-checks_never_observed_red 4204
+#
+# #1341, native_vecdecode seeded, with its twin (OffgridwithJD): 4204 -> 4222,
+# and suites_not_covered 63 -> 62. The suite had no rows. It enters with 28 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The fixture had no nulls, so a fold that ignored the validity bitmap (nonull) passed all
+# 24 on main: a nullable column w now runs through the fold and through a scalar parity
+# check. "decoded plus skipped is the group's vectors" read missing counters as 0, so with
+# the plans failing it passed as 0 + 0 = 0, and two aggregate parities compared two empty
+# readings: with the server stopped before the plans main passed 3, now none. And four
+# "premise:" checks read pgcolumnar's own behaviour: nofold reddens the three "reaches the
+# fold" checks and decodeall the fold arm's decode count, so they lost the prefix (#1339),
+# as did "the narrow range skips vectors" (noskip). 10 are dated by five mutations, each
+# the same names in both twins. The poison check is dated by holeread, whose hole is
+# zero-filled so a fold that reads it counts rows that are not there on a non-assert build
+# too. 18 arrive never.
+#
+#     ledger rows   7100 + 28 = 7128
+#     never         4204 + 18 = 4222
+#     dated         2896 + 10 = 2906
+#     4222 + 2906 == 7128
+checks_never_observed_red 4222
