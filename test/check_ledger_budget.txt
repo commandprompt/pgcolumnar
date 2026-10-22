@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 97
+suites_not_covered 96
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5536,4 +5536,22 @@ suites_not_covered 97
 #     never         3907 + 29 = 3936
 #     dated         2370 + 7 = 2377
 #     3936 + 2377 == 6313
-checks_never_observed_red 3936
+#
+# #1341, iceberg_rest seeded, with its twin (OffgridwithJD): 3936 -> 3938, and
+# suites_not_covered 97 -> 96. The suite had no rows. It enters with 14 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The 42501 arms read the SQLSTATE alone, and two guards raise 42501: with the allow-list
+# refusing everything and the link-local refusal gone, "a link-local catalog host is
+# refused" passed on the allow-list's 42501, and with every address read as link-local
+# and the allow-list gone, "a catalog endpoint off the allow-list is refused" passed on
+# the link-local guard's. Every refusal now reads its own guard's message. And "backend
+# still up after the REST refusals" read SELECT 1, which answers again after crash
+# recovery: with the backend aborting on the catalog's 404, main passed it. It now also
+# reads the server log's count of killed backends. 12 are dated by eleven mutations,
+# each reddening the same names in both twins. 2 arrive never: the two premises.
+#
+#     ledger rows   6313 + 14 = 6327
+#     never         3936 + 2 = 3938
+#     dated         2377 + 12 = 2389
+#     3938 + 2389 == 6327
+checks_never_observed_red 3938

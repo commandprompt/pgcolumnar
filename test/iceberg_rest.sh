@@ -41,12 +41,42 @@ rest_teardown() {
 }
 trap rest_teardown EXIT INT TERM
 
-sqlstate_of() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
+# refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
+# message, the bare SQLSTATE when the message lacks it, or what happened instead. Two
+# guards here raise 42501: with the allow-list refusing everything and the link-local
+# guard gone, "a link-local catalog host is refused" passed on the allow-list's 42501,
+# and with every address read as link-local and the allow-list gone, "a catalog
+# endpoint off the allow-list is refused" passed on the link-local guard's. Each
+# refusal now wants its own guard's message.
+refusal_of() {
+	local out state
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
 $1;
 SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif grep -qF "$2" <<<"$out"; then echo "$state$3"
+	else echo "$state"; fi
+}
+
+# Backends killed by a signal, from the server log: a number, or nothing when the log
+# can't be read. A fresh connection answers again after crash recovery, so "SELECT 1"
+# alone passed with a backend killed on the unknown-table arm; survival also requires
+# this count not to have moved.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
 }
 
 # restart the postmaster with a given environment prefix (the REST token lives
@@ -70,6 +100,7 @@ check "premise: rest fixture server is up" \
 	"$(grep -c READY "$PGC_WORKDIR/rest_server.out" 2>/dev/null)" "1"
 
 CAT="http://127.0.0.1:$REST_PORT"
+CRASHES_BEFORE="$(crashes)"
 
 # bring the token into the postmaster environment and allow the local endpoint
 pg_restart_env "PGCOLUMNAR_ICEBERG_REST_TOKEN='$TOKEN'"
@@ -120,42 +151,48 @@ pg_restart_env "PGCOLUMNAR_ICEBERG_REST_TOKEN='wrong-token'"
 q "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'" >/dev/null
 q "SELECT pg_reload_conf()" >/dev/null
 check "a wrong bearer token is refused (28000)" \
-	"$(sqlstate_of "SELECT pgcolumnar.iceberg_rest_table_location('$CAT','db','events')")" \
-	"28000"
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$CAT','db','events')" \
+	   "the REST catalog refused the request" " by the catalog")" \
+	"28000 by the catalog"
 
 pg_restart_env ""   # no token in the environment at all
 q "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'" >/dev/null
 q "SELECT pg_reload_conf()" >/dev/null
 check "an anonymous request to a token-protected catalog is refused (28000)" \
-	"$(sqlstate_of "SELECT pgcolumnar.iceberg_rest_table_location('$CAT','db','events')")" \
-	"28000"
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$CAT','db','events')" \
+	   "the REST catalog refused the request" " by the catalog")" \
+	"28000 by the catalog"
 
 # restore the good token for the remaining arms
 pg_restart_env "PGCOLUMNAR_ICEBERG_REST_TOKEN='$TOKEN'"
 
 # ---- the allow-list is the SSRF boundary (42501) ----------------------------
 check "a catalog endpoint off the allow-list is refused (42501)" \
-	"$(sqlstate_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
-	                SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.2:$REST_PORT','db','events')")" \
-	"42501"
+	"$(refusal_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
+	                SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.2:$REST_PORT','db','events')" \
+	   "is not in pgcolumnar.objstore_allowed_endpoints" " by the allow-list")" \
+	"42501 by the allow-list"
 
 # a link-local / instance-metadata catalog is refused even when allow-listed
 check "a link-local catalog host is refused even if allow-listed (42501)" \
-	"$(sqlstate_of "SET pgcolumnar.objstore_allowed_endpoints='169.254.169.254';
-	                SELECT pgcolumnar.iceberg_rest_table_location('http://169.254.169.254/','db','events')")" \
-	"42501"
+	"$(refusal_of "SET pgcolumnar.objstore_allowed_endpoints='169.254.169.254';
+	                SELECT pgcolumnar.iceberg_rest_table_location('http://169.254.169.254/','db','events')" \
+	   "resolves into a link-local range" " by the link-local guard")" \
+	"42501 by the link-local guard"
 
 # ---- a response beyond the cap is refused (54000) ---------------------------
 check "an over-cap catalog response is refused (54000)" \
-	"$(sqlstate_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
-	                SELECT pgcolumnar.iceberg_rest_table_location('$CAT','db','toobig')")" \
-	"54000"
+	"$(refusal_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
+	                SELECT pgcolumnar.iceberg_rest_table_location('$CAT','db','toobig')" \
+	   "exceeded" " by the cap")" \
+	"54000 by the cap"
 
 # ---- an unknown table surfaces the catalog 404 cleanly (42P01) --------------
 check "an unknown table surfaces a clean not-found (42P01)" \
-	"$(sqlstate_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
-	                SELECT pgcolumnar.iceberg_rest_table_location('$CAT','db','nosuch')")" \
-	"42P01"
+	"$(refusal_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
+	                SELECT pgcolumnar.iceberg_rest_table_location('$CAT','db','nosuch')" \
+	   "the REST catalog has no such table" " by the catalog's 404")" \
+	"42P01 by the catalog's 404"
 
 # ---- a non-object /v1/config body is refused, never walked (XX001) ----------
 # an untrusted catalog whose config is a JSON array/scalar must not reach the
@@ -169,12 +206,13 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/iceberg_rest_server.py" \
 BAD_PID=$!
 for _ in $(seq 1 50); do grep -q READY "$PGC_WORKDIR/badcfg.out" 2>/dev/null && break; sleep 0.1; done
 check "a non-object catalog config is refused, not walked (XX001)" \
-	"$(sqlstate_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
-	                SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:$BAD_PORT','db','events')")" \
-	"XX001"
+	"$(refusal_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
+	                SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:$BAD_PORT','db','events')" \
+	   "config response is not a JSON object" " by the config guard")" \
+	"XX001 by the config guard"
 kill "$BAD_PID" 2>/dev/null
 
 # ---- backend still healthy after the refusals -------------------------------
-check "backend still up after the REST refusals" "$(q 'SELECT 1')" "1"
+check "backend still up after the REST refusals" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

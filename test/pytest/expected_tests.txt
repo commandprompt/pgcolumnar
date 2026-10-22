@@ -916,6 +916,8 @@ guard_tests 476
 # 20 checks in 20 tests, by collection over the cluster files.
 # cluster_tests 2861 -> 2898 for #1341's test_logical_decoding_cdc_recipe.py, the twin of logical_decoding_cdc_recipe.sh:
 # 37 checks in 37 tests, by collection over the cluster files.
+# cluster_tests 2898 -> 2912 for #1341's test_iceberg_rest.py, the twin of iceberg_rest.sh:
+# 14 checks in 14 tests, by collection over the cluster files.
 # cluster_tests 1264 -> 1287 for #1341's test_vector_agg_rescan_memory.py, the twin of vector_agg_rescan_memory.sh:
 # 23 tests, one per check, by collection over the cluster files.
 # cluster_tests 1287 -> 1329 for #1341's test_analyze_stats.py, the twin of analyze_stats.sh:
@@ -1047,4 +1049,4 @@ guard_tests 476
 # cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
-cluster_tests 2898
+cluster_tests 2912
