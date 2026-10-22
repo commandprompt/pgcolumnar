@@ -341,6 +341,7 @@ behaviour, the source of that number is named.
 - [293. test_native_fetch_sort_context.py: a merge join over sorted, index-fetched columnar rows decodes outside the sort's context](#293-test_native_fetch_sort_contextpy-a-merge-join-over-sorted-index-fetched-columnar-rows-decodes-outside-the-sorts-context)
 - [294. test_native_fold_skipguard.py: the batch fold is reachable for a shape that skips vectors, and accounts for the skipping](#294-test_native_fold_skipguardpy-the-batch-fold-is-reachable-for-a-shape-that-skips-vectors-and-accounts-for-the-skipping)
 - [295. test_native_fetch_group_memo.py: the by-row-number fetch resolves its row group from a memo, and the memo never serves a group it should not](#295-test_native_fetch_group_memopy-the-by-row-number-fetch-resolves-its-row-group-from-a-memo-and-the-memo-never-serves-a-group-it-should-not)
+- [296. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap](#296-test_parquet_exportpy-pgcolumnarexport_parquet-writes-a-file-two-readers-read-back-equal-to-the-heap)
 
 ## 1. How to read a test in here
 
@@ -6890,6 +6891,10 @@ Written red first: all seven failed before `pgc_vacuity` had the methods. The fo
 | `test_a_missing_dependency_of_pyarrow_fails_rather_than_declines` | a `pyarrow` that cannot import its own dependency raises `ModuleNotFoundError` naming that dependency, and fails rather than declines; shown red with `require_module`'s `.name` check deleted (OffgridwithJD, review of #1286) |
 | `test_every_unguarded_import_spelling_is_refused` | each of six spellings, `__import__` among them, is named and refused; a file using `require_module` is not |
 | `test_an_unguarded_import_is_refused_under_xdist_too` | under `-n 2` the controller names the unguarded import once and the run is refused, as the serial run is: workers ship their sites back through `workeroutput` (#1305) |
+| `test_the_declinable_capabilities_are_exactly_pyarrow_and_duckdb` | the closed list is `pyarrow` and `duckdb`, and nothing else; `duckdb` joined on OffgridwithJD's decision on #1341 |
+| `test_a_missing_duckdb_declines_by_name_and_the_run_stays_green` | a missing `duckdb` declines by name, with its capability, and the inner run exits 0 |
+| `test_pgc_require_turns_a_duckdb_decline_into_a_failure` | with `PGC_REQUIRE=pyarrow,duckdb` a missing `duckdb` fails, and says duckdb is required |
+| `test_an_unguarded_duckdb_import_is_refused` | a file that imports `duckdb` outside `require_module` is named and the run is refused |
 
 ## 92. test_tid_range_scan.py: a ctid range reads only the row groups that hold it
 
@@ -11352,3 +11357,28 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_fgm_delete_visible_to_the_next_fetch` | a DELETE is visible to the very next fetch (delete vectors uncached) |
 | `test_fgm_same_transaction_truncate_then_fetch` | same-transaction TRUNCATE then fetch sees only the new rows |
 | `test_fgm_backend_alive` | backend alive |
+
+## 296. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap
+
+The pytest twin of `test/parquet_export.sh` (ported for #1341), every check by the shell's name. A mixed-type columnar table of 80003 rows, more than one row group, is exported and read back by pyarrow and by DuckDB; an empty table, two refusals and the extended types (date, time, timestamps, uuid, numeric, json) follow. On a private database.
+
+### Every test
+
+Each value comparison needs the generator's ids on both sides and the file's row count, so two empty readings cannot agree. DuckDB's non-null count of b is held to the generator's 80002, not to the table under test. Each refusal must carry its own message. Without pyarrow every test declines. DuckDB is the `duckdb` Python package, pinned in `requirements-test.txt`, reached only through `require_module`; without it the four DuckDB tests decline by the shell's check names, as the shell skips them by name without the `duckdb` CLI. CI sets `PGC_REQUIRE=pyarrow,duckdb`, so there either decline fails.
+
+| test | what it holds |
+| --- | --- |
+| `test_export_parquet_reports_every_row` | export_parquet rows written |
+| `test_parquet_values_match_the_heap_oracle` | parquet values match heap oracle |
+| `test_the_parquet_schema_has_the_expected_types` | parquet schema |
+| `test_duckdb_counts_every_parquet_row` | duckdb row count |
+| `test_duckdb_counts_the_generators_non_null_b` | duckdb non-null count(b) |
+| `test_an_empty_table_exports_no_parquet_rows` | empty export rows written |
+| `test_an_empty_table_writes_a_readable_parquet_file` | empty parquet readable |
+| `test_parquet_export_refuses_a_heap_table` | reject non-columnar table |
+| `test_parquet_export_refuses_an_unsupported_type` | reject unsupported type |
+| `test_the_extended_parquet_export_reports_every_row` | extended export rows written |
+| `test_extended_parquet_values_match_the_heap_oracle` | extended values match heap oracle |
+| `test_the_extended_parquet_types_are_the_mapped_ones` | extended parquet types |
+| `test_duckdb_reads_the_parquet_decimal` | duckdb reads decimal |
+| `test_duckdb_counts_every_extended_parquet_row` | duckdb extended row count |

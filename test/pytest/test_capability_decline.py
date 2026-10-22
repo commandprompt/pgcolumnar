@@ -16,6 +16,10 @@ something closed off (OffgridwithJD, review of #1286):
     import spelling, each proven seen
   5 the run's accounting line carries the declines
 
+duckdb declines the same way, and is held to the same three of those rules here
+(by name, PGC_REQUIRE, the import scan): it joined the closed list on the owner's
+decision on #1341 (2026-10-21), as the second reader of an exported Parquet file.
+
 Runs pytest inside pytest; needs no cluster and no driver.
 """
 
@@ -55,6 +59,62 @@ def test_pgc_require_turns_a_decline_into_a_failure(pytester, monkeypatch, expec
                     passed=0, failed=1)
     expect.contains(result.stdout.str(), "PGC_REQUIRE names pyarrow",
                     "and it fails BECAUSE pyarrow is required, not for another reason")
+
+
+def test_the_declinable_capabilities_are_exactly_pyarrow_and_duckdb(expect):
+    # The list is closed, so "optional" cannot grow by one call site at a time. duckdb
+    # joined on OffgridwithJD's decision on #1341 (2026-10-21): the second reader of an
+    # exported Parquet file, pinned and required in CI like pyarrow.
+    import pgc_vacuity
+    expect.text(",".join(pgc_vacuity.DECLINABLE_CAPABILITIES), "pyarrow,duckdb",
+                "the declinable capabilities are pyarrow and duckdb, and nothing else")
+
+
+def test_a_missing_duckdb_declines_by_name_and_the_run_stays_green(pytester, monkeypatch, expect):
+    # The caller's PGC_REQUIRE must not decide this test (CI exports it).
+    monkeypatch.delenv("PGC_REQUIRE", raising=False)
+    pytester.makepyfile(ABSENT + """
+    def test_inner_duckdb_declines_green(expect, monkeypatch):
+        monkeypatch.setitem(sys.modules, "duckdb", None)
+        db = expect.require_module("duckdb", name="the second reader counts the rows")
+        assert db is None
+""")
+    result = pytester.runpytest("-p", "pgc_vacuity")
+    expect.outcomes(result, "a test declined on duckdb leaves the run green", passed=1, failed=0)
+    expect.num(result.ret, 0, "and the run with a duckdb decline exits 0")
+    expect.contains(result.stdout.str(),
+                    "DECLINED  test_a_missing_duckdb_declines_by_name_and_the_run_stays_green.py::test_inner_duckdb_declines_green: duckdb",
+                    "and the duckdb decline is named, with its capability")
+
+
+def test_pgc_require_turns_a_duckdb_decline_into_a_failure(pytester, monkeypatch, expect):
+    monkeypatch.setenv("PGC_REQUIRE", "pyarrow,duckdb")
+    pytester.makepyfile(ABSENT + """
+    def test_inner_duckdb_required_fails(expect, monkeypatch):
+        monkeypatch.setitem(sys.modules, "duckdb", None)
+        expect.require_module("duckdb", name="the second reader counts the rows")
+""")
+    result = pytester.runpytest("-p", "pgc_vacuity")
+    expect.outcomes(result, "with PGC_REQUIRE=pyarrow,duckdb a missing duckdb fails",
+                    passed=0, failed=1)
+    expect.contains(result.stdout.str(), "PGC_REQUIRE names duckdb",
+                    "and it fails BECAUSE duckdb is required, not for another reason")
+
+
+def test_an_unguarded_duckdb_import_is_refused(pytester, monkeypatch, expect):
+    # The caller's PGC_REQUIRE must not decide this test (CI exports it).
+    monkeypatch.delenv("PGC_REQUIRE", raising=False)
+    # Inside a function that never runs: the scan reads the AST, so it must find the
+    # import there too, and the real duckdb is never imported. An in-process import
+    # that pytester's sys.modules snapshot then removed left duckdb's C extension
+    # unimportable for every later test in the session (measured: the four DuckDB
+    # tests of test_parquet_export.py failed after this file, in one session).
+    pytester.makepyfile(test_duck_bare="def _never_called():\n    import duckdb\n\n\n"
+                                       "def test_x(expect):\n    expect.num(1, 1, 'x')\n")
+    result = pytester.runpytest("-p", "pgc_vacuity")
+    expect.contains(result.stdout.str(), "test_duck_bare.py imports duckdb outside require_module",
+                    "a file importing duckdb outside require_module is named")
+    expect.num(1 if result.ret != 0 else 0, 1, "and a run carrying it is refused")
 
 
 def test_a_decline_after_a_counted_check_is_refused(pytester, monkeypatch, expect):

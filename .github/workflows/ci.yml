@@ -276,8 +276,11 @@ jobs:
           # developer box without it; in CI that would be green forever, so CI proves
           # the module imports and sets PGC_REQUIRE, which turns a decline into a
           # failure (OffgridwithJD, review of #1286).
+          # DUCKDB TOO (#1341): the one reader of an exported Parquet file that is not
+          # pyarrow, pinned beside it in requirements-test.txt and required the same way.
           /tmp/pgcvenv/bin/python -c 'import pyarrow, pyarrow.parquet; print("pyarrow", pyarrow.__version__)'
-          export PGC_REQUIRE=pyarrow
+          /tmp/pgcvenv/bin/python -c 'import duckdb; print("duckdb", duckdb.__version__)'
+          export PGC_REQUIRE=pyarrow,duckdb
           PYTHONPATH=. /tmp/pgcvenv/bin/pytest -q \
             --pg-config /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
             --pgc-expect-tests "$WANT" \
