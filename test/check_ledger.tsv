@@ -2620,6 +2620,22 @@ iceberg_name_mapping_memory	iceberg_name_mapping_memory	the name-mapping parse d
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	the padded mapping still binds every row	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	the small arm produced three readings	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
 iceberg_name_mapping_memory	iceberg_name_mapping_memory	the two sizes give different peaks	15;16;17;18;19	2026-10-21	the name-mapping parse ignores every entry's names, so nothing binds
+iceberg_objstore	iceberg_objstore	a delete path outside the table location is refused over s3 (22023)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_rebase drops the recorded-root boundary check
+iceberg_objstore	iceberg_objstore	a dotdot-escaping delete path is refused over s3 (22023)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_rebase drops the remote literal-dotdot guard
+iceberg_objstore	iceberg_objstore	a percent-encoded dotdot behind an encoded NUL is refused over s3 (22023)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_rebase drops the remote decode-and-reject guard
+iceberg_objstore	iceberg_objstore	a percent-encoded dotdot delete path is refused over s3 (22023)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_rebase drops the remote decode-and-reject guard
+iceberg_objstore	iceberg_objstore	a scan whose delete does not apply reads all rows over s3	15;16;17;18;19	2026-10-21	columnar_objstore_module.c: os_check_endpoint_allowed refuses every endpoint, the listed one included
+iceberg_objstore	iceberg_objstore	an endpoint not on objstore_allowed_endpoints is refused	15;16;17;18;19	2026-10-21	columnar_objstore_module.c: os_check_endpoint_allowed never refuses, so an endpoint off objstore_allowed_endpoints is connected to
+iceberg_objstore	iceberg_objstore	backend still up after the endpoint refusal	15;16;17;18;19	never	-
+iceberg_objstore	iceberg_objstore	backend still up after the s3 reads	15;16;17;18;19	never	-
+iceberg_objstore	iceberg_objstore	backend still up after the s3 refusal	15;16;17;18;19	never	-
+iceberg_objstore	iceberg_objstore	config: an s3 iceberg read with no AWS environment is refused (28000)	15;16;17;18;19	never	-
+iceberg_objstore	iceberg_objstore	deletion vectors read over s3 (survivors == oracle)	15;16;17;18;19	2026-10-21	columnar_objstore_module.c: os_check_endpoint_allowed refuses every endpoint, the listed one included
+iceberg_objstore	iceberg_objstore	equality deletes read over s3 (survivors == oracle)	15;16;17;18;19	2026-10-21	columnar_objstore_module.c: os_check_endpoint_allowed refuses every endpoint, the listed one included
+iceberg_objstore	iceberg_objstore	name mapping reads an id-less file over s3 (5 rows)	15;16;17;18;19	2026-10-21	columnar_objstore_module.c: os_check_endpoint_allowed refuses every endpoint, the listed one included
+iceberg_objstore	iceberg_objstore	position deletes read over s3 (surviving == filesystem oracle)	15;16;17;18;19	2026-10-21	columnar_objstore_module.c: os_check_endpoint_allowed refuses every endpoint, the listed one included
+iceberg_objstore	iceberg_objstore	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
+iceberg_objstore	iceberg_objstore	the position-deleted ids are gone over s3	15;16;17;18;19	2026-10-21	columnar_objstore_module.c: os_check_endpoint_allowed refuses every endpoint, the listed one included
 iceberg_rest_server	iceberg_rest_server	a catalog_uri option on the USER MAPPING is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused before any request (28000)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a link-local oauth_token_uri is refused by the allow-list (42501)	15;16;17;18;19	never	-

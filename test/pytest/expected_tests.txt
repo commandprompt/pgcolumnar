@@ -904,6 +904,8 @@ guard_tests 476
 # 63 tests: one per check, except that the oracle's three run in one test and the empty and all-NULL four in another, by collection over the cluster files.
 # cluster_tests 1242 -> 1264 for #1341's test_alter_column_type.py, the twin of alter_column_type.sh:
 # 22 checks in 22 tests, by collection over the cluster files.
+# cluster_tests 2732 -> 2748 for #1341's test_iceberg_objstore.py, the twin of iceberg_objstore.sh:
+# 16 checks in 16 tests, by collection over the cluster files.
 # cluster_tests 1264 -> 1287 for #1341's test_vector_agg_rescan_memory.py, the twin of vector_agg_rescan_memory.sh:
 # 23 tests, one per check, by collection over the cluster files.
 # cluster_tests 1287 -> 1329 for #1341's test_analyze_stats.py, the twin of analyze_stats.sh:
@@ -1034,4 +1036,4 @@ guard_tests 476
 # 22 checks in 22 tests, by collection over the cluster files.
 # cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
 # 7 tests, one per check, by collection over the cluster files.
-cluster_tests 2732
+cluster_tests 2748

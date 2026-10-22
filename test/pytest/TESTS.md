@@ -312,6 +312,7 @@ behaviour, the source of that number is named.
 - [264. test_catalog_filter_reads.py: stats() and sort_status() read a table's storage id once](#264-test_catalog_filter_readspy-stats-and-sort_status-read-a-tables-storage-id-once)
 - [265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging](#265-test_iceberg_malformedpy-the-iceberg-reader-refuses-crafted-metadata-cleanly-never-crashing-or-hanging)
 - [266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping](#266-test_iceberg_name_mappingpy-an-iceberg-data-file-with-no-field-ids-binds-by-name-mapping)
+- [267. test_iceberg_objstore.py: Iceberg tables read over object storage](#267-test_iceberg_objstorepy-iceberg-tables-read-over-object-storage)
 
 ## 1. How to read a test in here
 
@@ -10363,3 +10364,30 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_name_mapping_cap_refusal_names_the_cap` | ...and the refusal names the cap |
 | `test_name_mapping_opening_capacity_is_bounded` | the opening capacity is bounded by the cap, not by the declared count |
 | `test_name_mapping_backend_up_after_cap` | backend still up after the cap reads |
+
+## 267. test_iceberg_objstore.py: Iceberg tables read over object storage
+
+The twin of `test/iceberg_objstore.sh` (#388 phase 6). The committed delete and name-mapping warehouses are served over S3 by the shell's own SigV4 fixture server, and read exactly as the filesystem suites read them: position deletes, equality deletes and deletion vectors against the same oracle, and a name-mapped id-less file. A read with no AWS environment is refused 28000; recorded delete paths that leave the table location (outside it, a literal `..`, a percent-encoded `..`, and one behind an encoded NUL) are refused 22023, never fetched; and an endpoint off `pgcolumnar.objstore_allowed_endpoints` is refused 42501 by the allow-list's own message.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value from a module fixture on a private cluster, restarted with AWS_* in the postmaster environment as the shell does. A refusal reads as its SQLSTATE, the allow-list's with its message. A survival check also wants the server log's count of killed backends unchanged since the reads began.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_iceberg_objstore_fixtures_are_present` | premise: sigv4 fixture server is up |
+| `test_an_s3_iceberg_read_with_no_aws_environment_is_refused` | config: an s3 iceberg read with no AWS environment is refused (28000) |
+| `test_position_deletes_read_over_s3` | position deletes read over s3 (surviving == filesystem oracle) |
+| `test_the_position_deleted_ids_are_gone_over_s3` | the position-deleted ids are gone over s3 |
+| `test_equality_deletes_read_over_s3` | equality deletes read over s3 (survivors == oracle) |
+| `test_deletion_vectors_read_over_s3` | deletion vectors read over s3 (survivors == oracle) |
+| `test_a_scan_whose_delete_does_not_apply_reads_all_rows_over_s3` | a scan whose delete does not apply reads all rows over s3 |
+| `test_name_mapping_reads_an_id_less_file_over_s3` | name mapping reads an id-less file over s3 (5 rows) |
+| `test_the_backend_is_still_up_after_the_s3_reads` | backend still up after the s3 reads |
+| `test_a_delete_path_outside_the_table_location_is_refused_over_s3` | a delete path outside the table location is refused over s3 (22023) |
+| `test_a_dotdot_escaping_delete_path_is_refused_over_s3` | a dotdot-escaping delete path is refused over s3 (22023) |
+| `test_a_percent_encoded_dotdot_delete_path_is_refused_over_s3` | a percent-encoded dotdot delete path is refused over s3 (22023) |
+| `test_a_percent_encoded_dotdot_behind_an_encoded_nul_is_refused_over_s3` | a percent-encoded dotdot behind an encoded NUL is refused over s3 (22023) |
+| `test_the_backend_is_still_up_after_the_s3_refusal` | backend still up after the s3 refusal |
+| `test_an_endpoint_not_on_the_allow_list_is_refused` | an endpoint not on objstore_allowed_endpoints is refused |
+| `test_the_backend_is_still_up_after_the_endpoint_refusal` | backend still up after the endpoint refusal |
