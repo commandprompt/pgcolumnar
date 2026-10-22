@@ -206,6 +206,7 @@ COMPLETE = ["advisory_lock_class",
             "format_downgrade",
             "hardening",
             "hilbert_cluster",
+            "hilbert_curve",
             "hilbert_locality",
             "iceberg_fdw",
             "import_export_privilege",
@@ -1434,7 +1435,8 @@ def test_a_composing_wrapper_is_left_alone(expect):
 
 
 def test_a_helper_whose_name_cannot_be_resolved_is_refused(expect):
-    """THE REFUSE HALF. `hilbert_curve.sh` is the whole population, and it is real:
+    """THE REFUSE HALF. `hilbert_curve.sh` was the whole population, and it was real
+    until its port (#1341) wrote these loops out at their call sites:
 
         arms_failed() {            # arms_failed "LIST" DETAIL
             while IFS= read -r _a; do
@@ -1460,8 +1462,8 @@ def test_a_helper_whose_name_cannot_be_resolved_is_refused(expect):
 
 def test_the_refusal_names_exactly_the_suites_it_refuses(expect):
     """A STATIC GUARD NEEDS A FALSE-POSITIVE BUDGET, measured over the tree before it
-    ships rather than discovered by it. One suite of 264 is refused and it is a true
-    positive; every graded pair is unchanged.
+    ships rather than discovered by it. One suite of 264 was refused and it was a
+    true positive; every graded pair was unchanged. Since #1341 none is.
 
     THE SET IS PINNED, NOT THE COUNT, and that is not a style choice.
     `checks_never_observed_red` is this repo's worked example of the other shape: a
@@ -1476,9 +1478,12 @@ def test_the_refusal_names_exactly_the_suites_it_refuses(expect):
     """
     refused = sorted(sh.name[:-3] for sh in HERE.parent.glob("*.sh")
                      if sh.name != "lib.sh" and _suite_recorders(sh.read_text())[1])
-    expect.text(", ".join(refused), "hilbert_curve",
-                "exactly these suites are refused -- `hilbert_curve`, whose helpers "
-                "take a newline-separated LIST of names in one argument")
+    # `hilbert_curve` was the one refused suite until its port (#1341) wrote the two
+    # list-taking helpers out as loops at their call sites. The refusal itself is
+    # still exercised, against a fixture, by the arm below.
+    expect.text(", ".join(refused) or "none", "none",
+                "exactly these suites are refused -- none, since `hilbert_curve` "
+                "stopped taking a newline-separated LIST of names in one argument")
     twinned = [r for r in refused if (HERE / f"test_{r}.py").exists()]
     expect.text(", ".join(twinned) or "none", "none",
                 "and none of them has a pytest twin, so the refusal grades nothing "
@@ -1524,10 +1529,20 @@ def test_the_grader_itself_refuses_the_suite_it_cannot_read(expect, tmp_path):
 
     port = tmp_path / "test_stub.py"
     port.write_text("def test_x(expect):\n    expect.num(1, 1, 'a name')\n")
+    # THE SUITE SIDE IS A FIXTURE TOO, since #1341: it was `hilbert_curve.sh`, the one
+    # real suite with these helpers, until that suite's port wrote them out as loops.
+    # These are its two helpers as they stood.
+    unreadable = tmp_path / "unreadable.sh"
+    unreadable.write_text(
+        'arms_unrunnable() {\n\tlocal _a\n\twhile IFS= read -r _a; do\n'
+        '\t\t[ -n "$_a" ] && check_unrunnable "$_a" "$2" "$3"\n\tdone <<< "$1"\n}\n'
+        'arms_failed() {\n\tlocal _a\n\twhile IFS= read -r _a; do\n'
+        '\t\t[ -n "$_a" ] && pgc_fail "$_a" "$2"\n\tdone <<< "$1"\n}\n'
+        'check "a name" "$a" "$b"\n')
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        rc = main(str(HERE.parent / "hilbert_curve.sh"), str(port))
+        rc = main(str(unreadable), str(port))
     text = out.getvalue()
     expect.num(rc, 2, "the grader exits 2 -- neither a pass nor an ordinary MISSING -- "
                       "on a suite whose names it cannot fully read")

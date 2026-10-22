@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 94
+suites_not_covered 93
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5602,4 +5602,24 @@ suites_not_covered 94
 #     never         3943 - 10 = 3933
 #     dated         2403 + 10 = 2413
 #     3933 + 2413 == 6346
-checks_never_observed_red 3933
+#
+# #1341, hilbert_curve seeded, with its twin (OffgridwithJD): 3933 -> 3949, and
+# suites_not_covered 94 -> 93. The suite had no rows. It enters with its 184
+# checks from five-major runs, 184/184 in the shell and in the twin on each of 15-19.
+# Seventeen mutations of src/columnar_curve.c each reddened checks in the shell on
+# main, and between them every arm but the six premises and the ten INSTRUMENT
+# controls, which link nothing from src/ by design. Two shell changes. The battery
+# now fills every key buffer with 0xa5 before the pack writes it: under a memset one
+# byte short, which goldens went red depended on what the previous call had left in
+# the buffer (121 red on main, against a stable 124), and the first use of a buffer
+# read uninitialized memory. And the two list-taking helpers are written out as loops
+# at their call sites, so compare_to_bash reads the suite instead of refusing it,
+# which it did as the tree's one refused suite. The seventeen date 168 rows, each
+# reddening the same names in the shell and the twin. 16 arrive never: the six
+# premises and the ten controls.
+#
+#     ledger rows   6346 + 184 = 6530
+#     never         3933 + 16 = 3949
+#     dated         2413 + 168 = 2581
+#     3949 + 2581 == 6530
+checks_never_observed_red 3949

@@ -322,6 +322,7 @@ behaviour, the source of that number is named.
 - [274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table](#274-test_iceberg_rest_scanpy-the-iceberg-rest-catalog-reads-a-table-as-iceberg_scan-does-lists-and-refuses-an-unknown-table)
 - [275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does](#275-test_iceberg_rest_vendedpy-an-iceberg-rest-catalogs-vended-credentials-sign-the-reads-and-nothing-else-does)
 - [276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else](#276-test_iceberg_rest_serverpy-an-iceberg-rest-catalog-foreign-server-authenticates-by-its-user-mapping-and-by-nothing-else)
+- [277. test_hilbert_curve.py: the Hilbert clustering curve, pinned by its properties and by frozen bytes](#277-test_hilbert_curvepy-the-hilbert-clustering-curve-pinned-by-its-properties-and-by-frozen-bytes)
 
 ## 1. How to read a test in here
 
@@ -10711,3 +10712,51 @@ Every test makes one check under the shell's name. An "accepted" arm reads `ok` 
 | `test_a_non_superuser_cannot_waive_its_own_credentials` | and it cannot mark its own mapping credentials_required false (42501) |
 | `test_a_superuser_waiver_lets_the_role_read_by_the_env_token` | control: with credentials_required false set by a superuser, the same role reads by the environment token |
 | `test_the_backend_survives_the_rest_server_arms` | backend still up |
+
+## 277. test_hilbert_curve.py: the Hilbert clustering curve, pinned by its properties and by frozen bytes
+
+The pytest twin of `test/hilbert_curve.sh` (#889, #1341). No cluster: `src/columnar_curve.c` is compiled with a small driver into a shared library and called through ctypes. The driver only encodes and counts its calls; every property is checked in Python with its own readers -- the permutation test (C1), the memcmp-order adjacency walk (C2), dyadic contiguity (C3, counted as runs per level along index order, which over a permutation is the shell's max - min + 1 == count), the production-width bridge (C4a), a Python transcription of Skilling's TransposetoAxes with a mutated twin for the round trips (C4b), the goldens and the pack's extent (C5), ncols == 1 (C6) and the frozen Z-order bytes (C7). The INSTRUMENT arms run the serpentine, Z-order and truncating control encoders through the same checkers, so a checker stuck at pass or stuck at fail is named. No compiler declines every arm as MISSING_DEPENDENCY; an absent or unbuildable code under test is a failed reading for every battery arm.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole battery once, and asserts it under the shell's check name. The golden, extent and Z-order families are parametrised one test per member, named by the same template as the shell's loop.
+
+| test | what it holds |
+| --- | --- |
+| `test_hilbert_instrument_control_battery_covered_every_point` | INSTRUMENT C0 premise: the control battery encoded every case and every point |
+| `test_hilbert_instrument_control_encoders_called_once_per_point` | INSTRUMENT C0 premise: the control encoders were called once per point |
+| `test_hilbert_instrument_control_pack_is_the_frozen_zorder` | INSTRUMENT the control's own pack reproduces the frozen Z-order bytes |
+| `test_hilbert_instrument_serpentine_is_a_permutation` | INSTRUMENT C1 control: the serpentine is a permutation of the index range |
+| `test_hilbert_instrument_serpentine_passes_adjacency` | INSTRUMENT C2 control: the serpentine PASSES unit-step adjacency |
+| `test_hilbert_instrument_serpentine_fails_contiguity` | INSTRUMENT C3 control: the serpentine FAILS dyadic contiguity in every nested case |
+| `test_hilbert_instrument_zorder_is_a_permutation` | INSTRUMENT C1 control: Z-order is a permutation of the index range |
+| `test_hilbert_instrument_zorder_fails_adjacency` | INSTRUMENT C2 control: Z-order FAILS unit-step adjacency in every multi-column case |
+| `test_hilbert_instrument_zorder_passes_contiguity` | INSTRUMENT C3 control: Z-order PASSES dyadic contiguity |
+| `test_hilbert_instrument_truncation_fails_permutation` | INSTRUMENT C1 control: a truncating encoder FAILS the permutation test in every case |
+| `test_hilbert_battery_covered_every_point` | C0 premise: the battery encoded every case and every point |
+| `test_hilbert_encoder_called_once_per_point` | C0 premise: the encoder was called once per point |
+| `test_hilbert_index_set_is_the_contiguous_range` | C1 the Hilbert index set is exactly the contiguous range |
+| `test_hilbert_memcmp_order_is_unit_adjacent` | C2 consecutive points in memcmp key order are unit-adjacent |
+| `test_hilbert_dyadic_subcubes_are_contiguous` | C3 every dyadic sub-cube occupies a contiguous run of indices |
+| `test_hilbert_bridge_covered_every_point` | C4a premise: the bridge covered every case and every point |
+| `test_hilbert_full_width_prefix_ignores_low_bits` | C4a the full-width key prefix does not move when the low bits change |
+| `test_hilbert_full_width_prefixes_are_the_index_range` | C4a the full-width key prefixes are exactly the index range |
+| `test_hilbert_distinct_full_width_keys_round_tripped` | C4b premise: 3,000 DISTINCT full-width keys per ncols were round-tripped |
+| `test_hilbert_published_inverse_round_trips` | C4b the published inverse round-trips full-width keys |
+| `test_hilbert_mutated_inverse_breaks_every_round_trip` | C4b control: a mutated inverse breaks every round trip the clean one made |
+| `test_hilbert_consecutive_key_pairs_were_formed` | C4b premise: consecutive key pairs were formed |
+| `test_hilbert_consecutive_keys_decode_to_neighbours` | C4b consecutive keys decode to unit-adjacent points, re-encoded by the code under test |
+| `test_hilbert_golden_key` | C5 golden Hilbert keys: ncols={n} {v} (one test per member) |
+| `test_hilbert_pack_bit_order_column_zero` | C5 the pack bit order: pack(2^63, 0) starts 0x80 |
+| `test_hilbert_pack_bit_order_column_one` | C5 the pack bit order: pack(0, 2^63) starts 0x40 |
+| `test_hilbert_pack_extent` | C5 the pack establishes exactly 8*ncols bytes: ncols={n} (one test per member) |
+| `test_hilbert_pack_tail_untouched` | C5 the pack wrote nothing past the key: ncols={n} (one test per member) |
+| `test_hilbert_pack_sets_every_bit_of_all_ones` | C5 the pack sets every bit of the key for an all-ones vector: ncols={n} (one test per member) |
+| `test_hilbert_one_column_zero` | C6 ncols == 1 is the big-endian ordinal: 0 |
+| `test_hilbert_one_column_one` | C6 ncols == 1 is the big-endian ordinal: 1 |
+| `test_hilbert_one_column_top_bit` | C6 ncols == 1 is the big-endian ordinal: 2^63 |
+| `test_hilbert_one_column_all_ones` | C6 ncols == 1 is the big-endian ordinal: UINT64_MAX |
+| `test_hilbert_one_column_loop_ran` | C6 premise: the comparison loop ran 200,000 times |
+| `test_hilbert_one_column_is_big_endian_over_random_values` | C6 ncols == 1 is the big-endian ordinal over 200,000 random values |
+| `test_hilbert_one_column_agrees_with_zorder` | C6 ncols == 1 agrees with Z-order over 200,000 random values |
+| `test_hilbert_zorder_pack_unchanged` | C7 the Z-order pack is byte-for-byte what it was: ncols={n} {v} (one test per member) |
