@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 64
+suites_not_covered 63
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6177,4 +6177,19 @@ suites_not_covered 64
 #     never         4204 + 0 = 4204
 #     dated         2877 + 13 = 2890
 #     4204 + 2890 == 7094
+#
+# #1341, native_zonemap_narrow seeded, with its twin (OffgridwithJD): 4204 -> 4204,
+# and suites_not_covered 64 -> 63. The suite had no rows. It enters with 6 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after one fix.
+# Nothing showed a group was skipped: the pruning check read only the answer, so a scan
+# that read the zone maps but never excluded a group, or never consulted them, returned
+# the same 1000 rows, and main passed all four checks under each. Two checks now read the
+# scan's Columnar Chunk Groups Removed by Filter (9 of 10, on each table), and the width
+# check refuses an unread count rather than comparing two blanks. 6 are dated by four
+# mutations, each reddening the same names in both twins. 0 arrive never.
+#
+#     ledger rows   7094 + 6 = 7100
+#     never         4204 + 0 = 4204
+#     dated         2890 + 6 = 2896
+#     4204 + 2896 == 7100
 checks_never_observed_red 4204
