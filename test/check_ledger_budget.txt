@@ -5425,4 +5425,18 @@ suites_not_covered 102
 #     never         3878 + 5 = 3883
 #     dated         2271 + 11 = 2282
 #     3883 + 2282 == 6165
-checks_never_observed_red 3883
+# #1706, export_parquet's timestamp UTC flag, in native_parquet_schema (OffgridwithJD):
+# 3883 -> 3884. export_parquet wrote timestamp and timestamptz alike as the converted
+# type TIMESTAMP_MICROS, which means adjusted-to-UTC, so pyarrow read a timestamp's
+# wall time 12:00 as 12:00 UTC. Five checks read the export with pyarrow and with
+# read_parquet. The two timestamp checks are dated by the exporter as it was (revert),
+# and the two timestamptz checks by a mutation exporting timestamptz unadjusted with
+# no converted type, each reddening the same names in both twins. The read_parquet
+# round trip arrives never: pgcolumnar's own reader ignores the flag, and no mutation
+# moved it.
+#
+#     ledger rows   6165 + 5 = 6170
+#     never         3883 + 1 = 3884
+#     dated         2282 + 4 = 2286
+#     3884 + 2286 == 6170
+checks_never_observed_red 3884

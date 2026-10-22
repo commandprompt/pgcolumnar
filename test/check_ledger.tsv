@@ -3660,6 +3660,8 @@ native_parquet_schema	native_parquet_schema	OPTIONAL column reports nullable=t	1
 native_parquet_schema	native_parquet_schema	REQUIRED column reports nullable=f	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports every column nullable
 native_parquet_schema	native_parquet_schema	REQUIRED int32 maps to integer	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	a file without field ids reports NULL, not zero	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports an absent field id as -1, not NULL
+native_parquet_schema	native_parquet_schema	an exported timestamp column is not UTC-adjusted (pyarrow reads no time zone)	15;16;17;18;19	2026-10-22	columnar_parquet.c: export_parquet writes timestamp as TIMESTAMP_MICROS (adjusted to UTC), as before #1706
+native_parquet_schema	native_parquet_schema	an exported timestamptz column is UTC-adjusted (pyarrow reads UTC)	15;16;17;18;19	2026-10-22	columnar_parquet.c: timestamptz exported with isAdjustedToUTC=false and no converted type
 native_parquet_schema	native_parquet_schema	bad magic is rejected by the magic check	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: the reader skips the PAR1 magic check
 native_parquet_schema	native_parquet_schema	export_parquet rows written	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	field ids report as written, in schema order	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports the position as the field id
@@ -3678,6 +3680,9 @@ native_parquet_schema	native_parquet_schema	nullable of c_ts	15;16;17;18;19	neve
 native_parquet_schema	native_parquet_schema	nullable of c_uuid	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	parquet_schema column count	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	premise: pyarrow wrote the field-id file	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	pyarrow reads an exported timestamp back as its wall time	15;16;17;18;19	2026-10-22	columnar_parquet.c: export_parquet writes timestamp as TIMESTAMP_MICROS (adjusted to UTC), as before #1706
+native_parquet_schema	native_parquet_schema	pyarrow reads an exported timestamptz back as its instant	15;16;17;18;19	2026-10-22	columnar_parquet.c: timestamptz exported with isAdjustedToUTC=false and no converted type
+native_parquet_schema	native_parquet_schema	read_parquet returns the exported timestamp and timestamptz unchanged	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_bool	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_bytea	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_date	15;16;17;18;19	never	-

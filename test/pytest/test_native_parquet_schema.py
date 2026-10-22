@@ -14,6 +14,8 @@ import pathlib
 
 import psycopg
 
+from pgc_vacuity import QUERY_ERROR, query_error
+
 
 def _one(cur, sql, params=None):
     cur.execute(sql, params)
@@ -90,3 +92,84 @@ def test_required_columns_and_field_ids(pgc_conn, server_dir, expect):
         expect.text(_one(cur, "SELECT count(*) FILTER (WHERE field_id IS NULL) || '/' || count(*) "
                               "FROM pgcolumnar.parquet_schema(%s)", (str(req),)),
                     "2/2", "a file without field ids reports NULL, not zero")
+
+
+# ---- timestamp vs timestamptz: the UTC flag the exporter writes (#1706) -------------
+# A timestamp is a wall time, a timestamptz an instant; Parquet says which through
+# TIMESTAMP's isAdjustedToUTC. Both used to leave as TIMESTAMP_MICROS (adjusted), so
+# other readers took a wall time for a UTC instant, while pgcolumnar's own import,
+# which ignores the flag, round-tripped either way. pyarrow is the independent reader.
+
+def _tsflag_export(pgc_conn, server_dir):
+    """-> the exported file's path, or a query_error() when the export failed."""
+    path = str(server_dir / "tsflag.parquet")
+    try:
+        with pgc_conn.cursor() as cur:
+            cur.execute("CREATE TABLE tsf (ts timestamp, tz timestamptz) USING pgcolumnar")
+            cur.execute("INSERT INTO tsf VALUES ('2024-06-01 12:00:00', '2024-06-01 12:00:00-04')")
+            cur.execute("SELECT pgcolumnar.export_parquet('tsf', %s)", (path,))
+    except psycopg.Error as exc:
+        return query_error(exc.diag.message_primary or type(exc).__name__)
+    return path
+
+
+def _tsflag_read(pq, path, field, what):
+    """-> the field's tz ("none" when it has none) or its first value, as text."""
+    if not isinstance(path, str) or path.startswith(QUERY_ERROR):
+        return path
+    try:
+        col = pq.read_table(path).column(field)
+    except (OSError, ValueError, KeyError) as exc:  # a missing file, ArrowInvalid, a missing column
+        return query_error(f"pyarrow could not read {field}: {type(exc).__name__}")
+    if what == "tz":
+        return col.type.tz if getattr(col.type, "tz", None) else "none"
+    return str(col[0].as_py())
+
+
+def test_read_parquet_returns_exported_timestamps_unchanged(pgc_conn, server_dir, expect):
+    path = _tsflag_export(pgc_conn, server_dir)
+    got = path
+    if not path.startswith(QUERY_ERROR):
+        try:
+            with pgc_conn.cursor() as cur:
+                cur.execute("SET timezone = 'America/New_York'")
+                got = _one(cur, "SELECT ts || '|' || tz FROM pgcolumnar.read_parquet(%s) "
+                                "AS x(ts timestamp, tz timestamptz)", (path,))
+        except psycopg.Error as exc:
+            got = query_error(exc.diag.message_primary or type(exc).__name__)
+    expect.text(got, "2024-06-01 12:00:00|2024-06-01 12:00:00-04",
+                "read_parquet returns the exported timestamp and timestamptz unchanged")
+
+
+def test_an_exported_timestamp_is_not_utc_adjusted(pgc_conn, server_dir, expect):
+    pq = expect.require_module("pyarrow.parquet",
+                               name="an exported timestamp column is not UTC-adjusted (pyarrow reads no time zone)")
+    if pq is None:
+        return
+    expect.text(_tsflag_read(pq, _tsflag_export(pgc_conn, server_dir), "ts", "tz"), "none",
+                "an exported timestamp column is not UTC-adjusted (pyarrow reads no time zone)")
+
+
+def test_an_exported_timestamptz_is_utc_adjusted(pgc_conn, server_dir, expect):
+    pq = expect.require_module("pyarrow.parquet",
+                               name="an exported timestamptz column is UTC-adjusted (pyarrow reads UTC)")
+    if pq is None:
+        return
+    expect.text(_tsflag_read(pq, _tsflag_export(pgc_conn, server_dir), "tz", "tz"), "UTC",
+                "an exported timestamptz column is UTC-adjusted (pyarrow reads UTC)")
+
+
+def test_pyarrow_reads_an_exported_timestamp_as_its_wall_time(pgc_conn, server_dir, expect):
+    pq = expect.require_module("pyarrow.parquet", name="pyarrow reads an exported timestamp back as its wall time")
+    if pq is None:
+        return
+    expect.text(_tsflag_read(pq, _tsflag_export(pgc_conn, server_dir), "ts", "value"), "2024-06-01 12:00:00",
+                "pyarrow reads an exported timestamp back as its wall time")
+
+
+def test_pyarrow_reads_an_exported_timestamptz_as_its_instant(pgc_conn, server_dir, expect):
+    pq = expect.require_module("pyarrow.parquet", name="pyarrow reads an exported timestamptz back as its instant")
+    if pq is None:
+        return
+    expect.text(_tsflag_read(pq, _tsflag_export(pgc_conn, server_dir), "tz", "value"), "2024-06-01 16:00:00+00:00",
+                "pyarrow reads an exported timestamptz back as its instant")

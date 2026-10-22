@@ -168,4 +168,52 @@ else
 	done
 fi
 
+# ---- timestamp vs timestamptz: the UTC flag the exporter writes (#1706) -------
+# A timestamp is a wall time with no zone; a timestamptz is an instant. Parquet says
+# which through TIMESTAMP's isAdjustedToUTC, and the legacy TIMESTAMP_MICROS
+# converted type implies true. The exporter used to write both columns as
+# TIMESTAMP_MICROS, so every other reader took a wall time for a UTC instant: under
+# a New York session, 12:00 came back as 12:00 UTC, 08:00 local. pgcolumnar's own
+# import ignores the flag, so its round trip hid it. pyarrow is the independent
+# reader. The round trip needs no pyarrow and stays outside the guard.
+TSF="$PGC_WORKDIR/tsflag.parquet"
+psql_run "CREATE TABLE tsf (ts timestamp, tz timestamptz) USING pgcolumnar;"
+psql_run "INSERT INTO tsf VALUES ('2024-06-01 12:00:00', '2024-06-01 12:00:00-04');"
+psql_run "SELECT pgcolumnar.export_parquet('tsf', '$TSF');"
+check_text "read_parquet returns the exported timestamp and timestamptz unchanged" \
+	"$(PGOPTIONS='-c timezone=America/New_York' q "SELECT ts || '|' || tz FROM pgcolumnar.read_parquet('$TSF') AS x(ts timestamp, tz timestamptz);")" \
+	"2024-06-01 12:00:00|2024-06-01 12:00:00-04"
+if python3 -c 'import pyarrow.parquet' 2>/dev/null; then
+	tsf_read() {	# FIELD WHAT -> the field's tz ("none" when it has none) or its first value
+		python3 - "$TSF" "$1" "$2" 2>&1 <<'PY' | tail -1
+import sys, pyarrow.parquet as pq
+path, field, what = sys.argv[1:4]
+col = pq.read_table(path).column(field)
+if what == "tz":
+    print(col.type.tz if getattr(col.type, "tz", None) else "none")
+else:
+    print(col[0].as_py())
+PY
+	}
+	check_text "an exported timestamp column is not UTC-adjusted (pyarrow reads no time zone)" \
+		"$(tsf_read ts tz)" "none"
+	check_text "an exported timestamptz column is UTC-adjusted (pyarrow reads UTC)" \
+		"$(tsf_read tz tz)" "UTC"
+	check_text "pyarrow reads an exported timestamp back as its wall time" \
+		"$(tsf_read ts value)" "2024-06-01 12:00:00"
+	check_text "pyarrow reads an exported timestamptz back as its instant" \
+		"$(tsf_read tz value)" "2024-06-01 16:00:00+00:00"
+else
+	for _nps_arm in \
+		"an exported timestamp column is not UTC-adjusted (pyarrow reads no time zone)" \
+		"an exported timestamptz column is UTC-adjusted (pyarrow reads UTC)" \
+		"pyarrow reads an exported timestamp back as its wall time" \
+		"pyarrow reads an exported timestamptz back as its instant"
+	do
+		check_skip "$_nps_arm" \
+			"SKIP  $_nps_arm (pyarrow not available to read the export)" \
+			"pyarrow not available"
+	done
+fi
+
 pgc_summary
