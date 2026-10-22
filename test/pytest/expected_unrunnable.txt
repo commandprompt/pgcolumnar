@@ -174,3 +174,14 @@
 18 test_pg19_vacuum_options.py::test_the_content_is_unchanged
 18 test_pg19_vacuum_options.py::test_vacuum_verbose_reports_on_heap
 18 test_pg19_vacuum_options.py::test_vacuum_verbose_is_silent_on_columnar
+
+# PostgreSQL 15 and 16 refuse PARTITION BY ... USING pgcolumnar, so audit.sh's
+# partitioned-parent arm declines there under its check_skip name (#1341).
+15 test_audit.py::test_audit_a_partitioned_parent_carries_the_am
+15 test_audit.py::test_audit_reject_set_options_on_a_partitioned_parent
+15 test_audit.py::test_audit_nothing_was_recorded_for_the_partitioned_parent
+15 test_audit.py::test_audit_the_partition_itself_is_still_accepted
+16 test_audit.py::test_audit_a_partitioned_parent_carries_the_am
+16 test_audit.py::test_audit_reject_set_options_on_a_partitioned_parent
+16 test_audit.py::test_audit_nothing_was_recorded_for_the_partitioned_parent
+16 test_audit.py::test_audit_the_partition_itself_is_still_accepted

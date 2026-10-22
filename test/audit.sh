@@ -62,10 +62,10 @@ set -euo pipefail
 # not turn an abort into a pass; it stops an abort from being mistaken for a
 # short run that went fine.
 AUDIT_REACHED_END=0
-trap 'rc=$?; if [ "$AUDIT_REACHED_END" = 0 ]; then
-	echo; echo "AUDIT TEST ABORTED (exit $rc) before reaching its verdict.";
-	echo "The checks after the failing command did not run.";
-fi' EXIT
+# THE NOTICE LIVES IN cleanup() BELOW, NOT IN A trap OF ITS OWN. It was a trap here,
+# and `trap cleanup EXIT` further down replaced it, so it never printed: with
+# set_options failing at entry the suite stopped after the partitioned arm, 13 checks
+# unrecorded, and the log ended on the server's error with no notice at all.
 
 # lib.sh for the check vocabulary (#965). It sources portlib.sh itself
 # (lib.sh:110), so this is a superset of what was here, and its top level is
@@ -121,8 +121,14 @@ fi
 run_pg() { "${RUNPG[@]}" env PATH="$BINDIR:$PATH" bash -lc "$1"; }
 
 cleanup() {
+	local rc=$?
+	if [ "$AUDIT_REACHED_END" = 0 ]; then
+		echo; echo "AUDIT TEST ABORTED (exit $rc) before reaching its verdict."
+		echo "The checks after the failing command did not run."
+	fi
 	run_pg "pg_ctl -D '$PGDATA' stop -m immediate -w" >/dev/null 2>&1 || true
 	rm -rf "$WORKDIR"
+	return $rc
 }
 trap cleanup EXIT
 
@@ -137,46 +143,36 @@ run_pg "createdb -p $PORT audit"
 PSQL="psql -p $PORT -d audit -qAtX -v ON_ERROR_STOP=1"
 q() { run_pg "$PSQL -c \"$1\""; }
 
-fail=0
-# RECORDS RATHER THAN ONLY PRINTING (#965). This suite emitted human PASS lines
-# and no RESULT records, so every mechanism built on the record vocabulary -- the
-# ledger, the census, checks_never_observed_red, the red-observation record,
-# duplicate-name detection -- was blind to all of them. The ledger did not merely
-# return nothing on this log, it REFUSED it: "no RESULT records, so there is
-# nothing to reconcile".
-#
-# `pgc_record` takes the DISPLAY whole, so the human output below is byte-for-byte
-# what it was. NOT lib.sh's own `check`: that composes its own display and would
-# drop the `: $got` suffix, which is the measured value rather than a label.
-#
-# `fail` is still set, so this suite's exit logic is untouched. Its verdict line
-# stays for the same reason: under `set -euo pipefail` a failing command aborts the
-# suite, and the verdict is what distinguishes finished from stopped.
-#
-# The `checks run:` line is READ BY NOTHING YET. The matrix gates reconciliation on
-# the ACCOUNTING line via `pgc_log_shows_accounting`, and this suite emits none
-# because it emits no accounting line. The line is still correct and wanted --
-# it is the total the records reconcile against -- so the remaining step is a gate
-# flip rather than new work (@jdatcmd, #969 review).
-check() {
-	local name="$1" got="$2" want="$3"
-	if [ "$got" = "$want" ]; then
-		pgc_record PASS "$name" "PASS  $name: $got"
-	else
-		pgc_record FAIL "$name" "FAIL  $name: got [$got] want [$want]"
-		fail=1
-	fi
-}
+# LIB.SH'S check, NOT A LOCAL ONE (#1341). This suite used to define its own
+# check() and call pgc_record from it, to keep the measured value on every PASS
+# line. Nothing else here needs a local recorder, and a suite that calls
+# pgc_record directly cannot have a pytest twin (test_compare_to_bash's seed
+# arm), so it records through lib.sh like the rest of the corpus. A FAIL line still
+# carries both sides; a PASS line carries the name.
 
-# run SQL that is expected to raise an error; PASS when it does.
+# expect_error NAME SQL MESSAGE -- PASS when SQL is refused WITH MESSAGE.
+#
+# ANY error used to pass. Measured on PG17 with set_options failing at entry for a
+# reason that is none of its guards (a division by zero): all five refusal arms below
+# passed, while the two that already read the reason went red. MESSAGE is the guard's
+# own text, so a refusal must come from the guard the arm names.
+#
+# The name stays `expect_error`: selftest 270 recognises an out-of-range set_options
+# literal as deliberate only inside this helper.
 expect_error() {
-	local name="$1" sql="$2"
-	if run_pg "$PSQL -c \"$sql\"" >/dev/null 2>&1; then
-		pgc_record FAIL "$name" "FAIL  $name: statement unexpectedly succeeded"
-		fail=1
+	local name="$1" sql="$2" want="$3" out
+	local got
+	if out="$(run_pg "$PSQL -c \"$sql\"" 2>&1)"; then
+		got="statement unexpectedly succeeded"
+	elif [ -z "$want" ]; then
+		got="no refusal message to require (harness)"
 	else
-		pgc_record PASS "$name" "PASS  $name (rejected)"
+		case "$out" in
+			*"$want"*) got="rejected" ;;
+			*) got="refused for another reason: $(printf '%s\n' "$out" | head -1)" ;;
+		esac
 	fi
+	check "$name" "$got" "rejected"
 }
 
 q "CREATE EXTENSION pgcolumnar;" >/dev/null
@@ -262,11 +258,14 @@ q "DROP TABLE col;" >/dev/null
 # ---------------------------------------------------------------------------
 q "CREATE TABLE opt (a int) USING pgcolumnar;" >/dev/null
 expect_error "reject chunk_group_row_limit 0" \
-	"SELECT pgcolumnar.set_options('opt'::regclass, chunk_group_row_limit => 0);"
+	"SELECT pgcolumnar.set_options('opt'::regclass, chunk_group_row_limit => 0);" \
+	"chunk_group_row_limit must be at least 100"
 expect_error "reject stripe_row_limit 5" \
-	"SELECT pgcolumnar.set_options('opt'::regclass, stripe_row_limit => 5);"
+	"SELECT pgcolumnar.set_options('opt'::regclass, stripe_row_limit => 5);" \
+	"stripe_row_limit must be at least 1000"
 expect_error "reject compression_level 99" \
-	"SELECT pgcolumnar.set_options('opt'::regclass, compression_level => 99);"
+	"SELECT pgcolumnar.set_options('opt'::regclass, compression_level => 99);" \
+	"compression_level must be between 1 and 22"
 
 # A relation that is not columnar must be refused rather than recorded. The drop
 # hook that clears pgcolumnar.options fires only for columnar relations, so a row
@@ -276,9 +275,10 @@ expect_error "reject compression_level 99" \
 # as the bare oid, while the identical sequence on a columnar table cleaned up.
 q "CREATE TABLE opt_heap (a int) USING heap;" >/dev/null
 expect_error "reject set_options on a heap table" \
-	"SELECT pgcolumnar.set_options('opt_heap'::regclass, chunk_group_row_limit => 1000);"
-# expect_error passes on ANY error, including a typo in this file's own SQL, so
-# assert the reason too. Captured and then matched: piping an erroring psql into
+	"SELECT pgcolumnar.set_options('opt_heap'::regclass, chunk_group_row_limit => 1000);" \
+	"is not a columnar table"
+# expect_error now requires the guard's message too; this check reads the full
+# reason the same way, and stays as its own record. Captured and then matched: piping an erroring psql into
 # grep reports on the pipeline rather than on the message.
 # `|| true` because this file runs under `set -e` and the call is EXPECTED to
 # fail: without it the assignment takes the non-zero status and aborts the suite
@@ -332,13 +332,16 @@ if [ "$audit_srv" -ge 170000 ]; then
 		"$(q "SELECT c.relkind::text || '/' || a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE c.relname = 'opt_part';")" \
 		"p/pgcolumnar"
 	expect_error "reject set_options on a partitioned parent" \
-		"SELECT pgcolumnar.set_options('opt_part'::regclass, chunk_group_row_limit => 1000);"
+		"SELECT pgcolumnar.set_options('opt_part'::regclass, chunk_group_row_limit => 1000);" \
+		"is not a columnar table"
 	check "nothing was recorded for the partitioned parent" \
 		"$(q "SELECT count(*) FROM pgcolumnar.options WHERE regclass = 'opt_part'::regclass;")" "0"
 	# And the leaf, which is an ordinary table, must still be accepted -- the guard
 	# has to refuse the parent without refusing the thing that actually stores rows.
 	q "CREATE TABLE opt_part_1 PARTITION OF opt_part FOR VALUES FROM (0) TO (100);" >/dev/null
-	q "SELECT pgcolumnar.set_options('opt_part_1'::regclass, chunk_group_row_limit => 1000);" >/dev/null
+	# `|| true`: a set_options that fails here is what the next check reports, by name.
+	# Under set -e it used to end the suite instead, with every later check unrecorded.
+	q "SELECT pgcolumnar.set_options('opt_part_1'::regclass, chunk_group_row_limit => 1000);" >/dev/null || true
 	check "the partition itself is still accepted" \
 		"$(q "SELECT count(*) FROM pgcolumnar.options WHERE regclass = 'opt_part_1'::regclass;")" "1"
 	q "DROP TABLE opt_part;" >/dev/null
@@ -355,8 +358,9 @@ else
 fi
 
 # valid values are accepted, and delete/update work (no divide-by-zero)
+# `|| true` for the same reason: "is recorded" below names a failed call.
 q "SELECT pgcolumnar.set_options('opt'::regclass,
-     chunk_group_row_limit => 1000, stripe_row_limit => 2000, compression_level => 9);" >/dev/null
+     chunk_group_row_limit => 1000, stripe_row_limit => 2000, compression_level => 9);" >/dev/null || true
 q "INSERT INTO opt SELECT g FROM generate_series(1,10) g;" >/dev/null
 q "DELETE FROM opt WHERE a=5;" >/dev/null
 check "valid options delete works" "$(q "SELECT count(*) FROM opt;")" "9"
@@ -378,18 +382,27 @@ q "DROP TABLE opt;" >/dev/null
 q "SET pgcolumnar.stripe_row_limit=10000;
    CREATE TABLE idxleak (a int, b int) USING pgcolumnar WITH (parallel_workers=2);" >/dev/null
 q "INSERT INTO idxleak SELECT g, g%100 FROM generate_series(1,50000) g;" >/dev/null
-run_pg "$PSQL -c \"SET max_parallel_maintenance_workers=2; SET min_parallel_table_scan_size=0;
-   CREATE INDEX idxleak_a_idx ON idxleak(a);\"" >/dev/null 2>&1 || true
+# THE BUILD'S OUTCOME IS RECORDED, NOT DISCARDED. It was `>/dev/null 2>&1 || true`.
+# Measured on PG17 with a parallel build participant raising an error: CREATE INDEX
+# failed, no index existed, and "no relation leak" passed (nothing was built, so
+# nothing leaked) and "rows indexed once" passed (50000, counted by a Seq Scan).
+# Only the plan check went red, and it was labelled a premise.
+idx_out="$(run_pg "$PSQL -c \"SET max_parallel_maintenance_workers=2; SET min_parallel_table_scan_size=0;
+   CREATE INDEX idxleak_a_idx ON idxleak(a);\"" 2>&1)" && idx_rc=0 || idx_rc=$?
+check "the parallel CREATE INDEX completed" \
+	"$([ "$idx_rc" = 0 ] && echo yes || echo "no: $(printf '%s\n' "$idx_out" | head -1)")" "yes"
 
 # the server logfile must carry no resource-leak warning
 LEAKS="$(run_pg "grep -c 'resource was not closed' '$LOGFILE'" || true)"
 check "create index no relation leak" "$LEAKS" "0"
 
 # and every row is indexed exactly once (no duplicate TIDs from a per-worker rescan)
-check "premise: the indexed-once count reads idxleak_a_idx" \
-	"$(reads_index idxleak_a_idx "SELECT count(*) FROM idxleak WHERE a>0")" "yes"
+# NOT A PREMISE: a failed parallel build reddens it (#1339). And the count is read
+# only when that plan reads the index, so a Seq Scan cannot answer for it.
+idx_plan="$(reads_index idxleak_a_idx "SELECT count(*) FROM idxleak WHERE a>0")"
+check "the indexed-once count reads idxleak_a_idx" "$idx_plan" "yes"
 check "create index rows indexed once" \
-	"$(q "$IDXONLY SELECT count(*) FROM idxleak WHERE a>0;" | tail -1)" "50000"
+	"$([ "$idx_plan" = yes ] && q "$IDXONLY SELECT count(*) FROM idxleak WHERE a>0;" | tail -1 || echo "not read through idxleak_a_idx")" "50000"
 q "DROP TABLE idxleak;" >/dev/null
 
 # ---------------------------------------------------------------------------
@@ -454,13 +467,13 @@ q "DROP TABLE ss_dup;" >/dev/null
 
 echo
 AUDIT_REACHED_END=1
-if [ "$fail" = "0" ]; then
-	echo "checks run: $PGC_CHECKS"
+# The verdict is lib.sh's, from the counters every check updates. pgc_summary adds
+# the accounting line the matrix reconciles on, which this suite never printed.
+if [ "${PGC_FAIL:-0}" = "0" ]; then
 	echo "AUDIT TEST PASSED"
 else
-	echo "checks run: $PGC_CHECKS"
 	echo "AUDIT TEST FAILED"
 	echo "---- server log tail ----"
 	run_pg "tail -30 '$LOGFILE'" || true
 fi
-exit $fail
+pgc_summary

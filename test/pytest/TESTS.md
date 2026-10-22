@@ -325,6 +325,7 @@ behaviour, the source of that number is named.
 - [277. test_hilbert_curve.py: the Hilbert clustering curve, pinned by its properties and by frozen bytes](#277-test_hilbert_curvepy-the-hilbert-clustering-curve-pinned-by-its-properties-and-by-frozen-bytes)
 - [278. test_bench_guards.py: the benchmark's own guards refuse what they must, and the report asks them](#278-test_bench_guardspy-the-benchmarks-own-guards-refuse-what-they-must-and-the-report-asks-them)
 - [279. test_docs_style.py: the documentation's measurable rules and the facts it states](#279-test_docs_stylepy-the-documentations-measurable-rules-and-the-facts-it-states)
+- [280. test_audit.py: the bug-audit regressions hold, and each refusal is its own guard's](#280-test_auditpy-the-bug-audit-regressions-hold-and-each-refusal-is-its-own-guards)
 
 ## 1. How to read a test in here
 
@@ -10898,3 +10899,48 @@ Every test makes one check, by the shell's name. Readings are computed once, in 
 | `test_context_says_why_rebasing_works` | and says WHY rebasing works where merging does not |
 | `test_the_scan_read_sql_statements` | premise: the scan read SQL statements from the documents |
 | `test_no_documented_query_tests_pg_extension_across_databases` | no documented query tests pg_extension while listing databases |
+
+## 280. test_audit.py: the bug-audit regressions hold, and each refusal is its own guard's
+
+The twin of `test/audit.sh` (#965). ADD COLUMN after data exists reads the missing value through every read path; chunk-group skipping does not use a predicate under another collation; set_options refuses out-of-range limits, a heap table and (PostgreSQL 17 and later) a partitioned parent, each with its own guard's message, and records a valid call; a parallel CREATE INDEX completes, leaks no relation reference and indexes each row once; a write buffer opened before ADD COLUMN in the same transaction keeps the values written into the new column; a same-statement duplicate against a unique index is rejected rather than spun on.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value (a failed query is a `query_error()` that fails its own check) from a module fixture on a private database. On PostgreSQL 15 and 16 the four partitioned-parent tests decline UNSUPPORTED_MAJOR under the shell's skip name.
+
+| test | what it holds |
+| --- | --- |
+| `test_audit_add_column_nullable_is_null` | add-column nullable is null |
+| `test_audit_add_column_const_default` | add-column const default |
+| `test_audit_add_column_text_default` | add-column text default |
+| `test_audit_add_column_projected_only` | add-column projected only |
+| `test_audit_add_column_mixed_rows` | add-column mixed rows |
+| `test_audit_add_column_aggregate` | add-column aggregate |
+| `test_audit_the_add_column_lookup_reads_its_index` | premise: the add-column lookup reads ac_c_idx |
+| `test_audit_add_column_index_scan` | add-column index scan |
+| `test_audit_collation_pushdown_matches_no_pushdown` | collation pushdown == no-pushdown |
+| `test_audit_collation_result_correct` | collation result correct |
+| `test_audit_same_collation_still_pushes` | same-collation still pushes |
+| `test_audit_reject_chunk_group_row_limit_0` | reject chunk_group_row_limit 0 |
+| `test_audit_reject_stripe_row_limit_5` | reject stripe_row_limit 5 |
+| `test_audit_reject_compression_level_99` | reject compression_level 99 |
+| `test_audit_reject_set_options_on_a_heap_table` | reject set_options on a heap table |
+| `test_audit_the_refusal_says_not_columnar` | the refusal says the relation is not columnar |
+| `test_audit_nothing_was_recorded_for_the_heap_table` | nothing was recorded for the heap table |
+| `test_audit_the_sqlstate_probe_reads_a_known_code` | premise: the SQLSTATE probe reads a known code |
+| `test_audit_set_options_on_a_heap_raises_42809` | set_options on a non-columnar relation raises 42809, not P0001 |
+| `test_audit_a_partitioned_parent_carries_the_am` | premise: this major really lets a partitioned parent carry the AM |
+| `test_audit_reject_set_options_on_a_partitioned_parent` | reject set_options on a partitioned parent |
+| `test_audit_nothing_was_recorded_for_the_partitioned_parent` | nothing was recorded for the partitioned parent |
+| `test_audit_the_partition_itself_is_still_accepted` | the partition itself is still accepted |
+| `test_audit_valid_options_delete_works` | valid options delete works |
+| `test_audit_the_same_call_on_a_columnar_table_is_recorded` | the same call on a columnar table is recorded |
+| `test_audit_the_parallel_create_index_completed` | the parallel CREATE INDEX completed |
+| `test_audit_create_index_no_relation_leak` | create index no relation leak |
+| `test_audit_the_indexed_once_count_reads_its_index` | the indexed-once count reads idxleak_a_idx |
+| `test_audit_create_index_rows_indexed_once` | create index rows indexed once |
+| `test_audit_add_column_mid_transaction_keeps_the_inserted_value` | add-column mid-transaction keeps the inserted value |
+| `test_audit_add_column_without_a_default_keeps_the_inserted_value` | add-column without a default keeps the inserted value |
+| `test_audit_add_column_mid_transaction_keeps_a_later_update` | add-column mid-transaction keeps a later UPDATE |
+| `test_audit_same_statement_duplicate_is_rejected` | same-statement duplicate is rejected, not spun on |
+| `test_audit_same_statement_duplicate_inserted_nothing` | same-statement duplicate inserted nothing |

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 91
+suites_not_covered 90
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5658,4 +5658,23 @@ suites_not_covered 91
 #     never         3991 + 17 = 4008
 #     dated         2630 + 36 = 2666
 #     4008 + 2666 == 6674
-checks_never_observed_red 4008
+#
+# #1341, audit seeded, with its twin (OffgridwithJD): 4008 -> 4018, and
+# suites_not_covered 91 -> 90. The suite had no rows. It enters with 35 rows: 34 checks
+# on 17-19, of which the four partitioned-parent checks run only there, and on 15 and 16
+# the one skip that arm records instead. From five-major runs (all green on each of 15-19,
+# shell and twin alike), after three fixes. The refusal arms
+# accepted any error: with set_options failing at entry for a reason that is none of its
+# guards, all five passed; each now requires its guard's own message. The parallel CREATE
+# INDEX's outcome was discarded: with a build participant raising an error, no index existed
+# and both the leak check and the indexed-once count passed (the count by a Seq Scan); the
+# build is now a check, the count is read only through the index, and the plan check is no
+# longer a premise. And the abort notice never printed, because a second EXIT trap replaced
+# it. Eleven mutations date checks, each red by the same names in both twins. 25 are
+# dated. 10 arrive never, the skip row among them.
+#
+#     ledger rows   6674 + 35 = 6709
+#     never         4008 + 10 = 4018
+#     dated         2666 + 25 = 2691
+#     4018 + 2691 == 6709
+checks_never_observed_red 4018

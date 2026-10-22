@@ -87,6 +87,7 @@ from compare_to_bash import (_as_names, _bash_names, _bodies,  # noqa: E402
 # directions for the same reason: a one-way list rots into a permanent exemption.
 COMPLETE = ["advisory_lock_class",
             "projection_rewrite",
+            "audit",
             "server_file_privilege",
             "smoke",
             "sort_status",

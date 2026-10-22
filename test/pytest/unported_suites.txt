@@ -6,7 +6,6 @@
 # in that file. A port PR removes its own line, so two ports never conflict here.
 #
 # The parity goal (#432) is this file empty.
-audit
 cancel_decode
 decode_interrupts
 decode_skip_interrupts
