@@ -375,6 +375,7 @@ behaviour, the source of that number is named.
 - [327. test_objstore_stash_recovery.py: recovery from a stash an interrupted objstore_module run left](#327-test_objstore_stash_recoverypy-recovery-from-a-stash-an-interrupted-objstore_module-run-left)
 - [328. test_objstore_s3_read.py: SigV4-signed s3:// reads, every refusal naming its cause](#328-test_objstore_s3_readpy-sigv4-signed-s3-reads-every-refusal-naming-its-cause)
 - [329. test_objstore_tls_read.py: TLS for object-store reads, every verification proven by a certificate that must be refused](#329-test_objstore_tls_readpy-tls-for-object-store-reads-every-verification-proven-by-a-certificate-that-must-be-refused)
+- [330. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard](#330-test_objstore_http_readpy-the-http-ranged-byte-source-with-request-counts-and-each-refusals-own-guard)
 
 ## 1. How to read a test in here
 
@@ -12362,3 +12363,38 @@ Every test makes one check under the shell's name. A refusal is 08006, the modul
 | `test_the_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
 | `test_ssl_cert_dir_alone_trusts_the_ca` | E: SSL_CERT_DIR alone trusts the CA (count(*) over https) |
 | `test_no_backend_was_terminated_by_a_signal` | survival: no backend was terminated by a signal |
+
+## 330. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard
+
+The twin of `test/objstore_http_read.sh`. Foreign tables over the local fixture server (`test/objstore_http_server.py`, the shell's own) read a G-row-group parquet fixture: the answer must equal the byte-identical local file, the buffered request count must equal the arithmetic from the fixture's shape with every GET carrying a Range header, and statement_timeout must cancel a transfer stalled mid-body. An unreachable port, a 404, a server that ignores Range, a short 206 body, EOF mid-body and a server that hangs up are each refused by their own guard; a keep-alive connection the server dropped is retried once, and a fresh connection is not.
+
+### Every test
+
+Every test makes one check under the shell's name, from readings a module fixture takes in the shell's order, each statement on its own connection as the shell's psql calls are. Request counts come from the fixture's request log. A refusal is the SQLSTATE plus the phrase from its own guard's message, since many guards share 08006 and 08P01; each refusal reading first waits for the server, so a crash in one arm can't leak into the next. A failed read is a query_error, never text. The first test mirrors the shell's pgc_skip name: it declines without pyarrow, and the rest decline with it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_http_read_fixture_is_written` | premise: fixture written |
+| `test_the_http_read_fixture_server_is_up` | premise: fixture server is up |
+| `test_a_full_scan_over_http_equals_the_local_file` | A: full scan http == local |
+| `test_a_projection_over_http_equals_the_local_file` | A: projection http == local |
+| `test_count_over_http` | A: count(*) over http |
+| `test_the_buffered_run_logged_requests` | premise: buffered run logged requests |
+| `test_the_unbuffered_run_logged_requests` | premise: unbuffered run logged requests |
+| `test_buffered_full_width_requests` | B: buffered full-width requests (K = 4 + G*NCOLS) |
+| `test_buffered_two_column_requests` | B: buffered 2-col requests (K = 4 + G*2) |
+| `test_unbuffered_is_at_least_ten_times_k` | B: unbuffered >= 10x K |
+| `test_the_buffered_to_unbuffered_request_ratio` | B: buffered/unbuffered request ratio |
+| `test_the_range_audit_phase_logged_gets` | premise: the range-audit phase logged GETs |
+| `test_every_get_carried_a_range_header` | B: every GET carried a Range header |
+| `test_an_unreachable_endpoint_is_refused` | C: unreachable endpoint SQLSTATE |
+| `test_a_404_is_refused` | C: http 404 SQLSTATE |
+| `test_a_range_ignoring_server_is_refused` | C: range-ignoring server SQLSTATE |
+| `test_a_short_206_body_is_refused` | C: a short 206 body is refused |
+| `test_eof_mid_body_is_refused` | C: EOF mid-body is refused |
+| `test_a_dropped_keep_alive_connection_is_retried` | C: a dropped keep-alive connection is retried (http == local) |
+| `test_a_server_that_hangs_up_is_refused` | C: a server that hangs up on a fresh connection is refused |
+| `test_a_fresh_connection_is_not_retried` | C: and that fresh connection is not retried (one request logged) |
+| `test_a_stalled_transfer_is_cancelled` | D: stalled transfer cancelled with query_canceled |
+| `test_the_http_read_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
+| `test_the_server_survives` | survival: the server answers and no backend crashed |

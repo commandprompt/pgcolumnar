@@ -5120,6 +5120,30 @@ objstore_crlf	objstore_crlf	a CR/LF in the URL path is rejected before the reque
 objstore_crlf	objstore_crlf	backend alive	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	backend alive after the REST attempt	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	no injected line reached the listener (no request splitting)	15;16;17;18;19	2026-10-14	the request-line guard on the URL path removed
+objstore_http_read	objstore_http_read	A: count(*) over http	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	A: full scan http == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	A: projection http == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	B: buffered 2-col requests (K = 4 + G*2)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	B: buffered full-width requests (K = 4 + G*NCOLS)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	B: buffered/unbuffered request ratio	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	B: every GET carried a Range header	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no Range header sent on a GET
+objstore_http_read	objstore_http_read	B: unbuffered >= 10x K	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	C: EOF mid-body is refused	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_read_exact ends the read on EOF mid-body instead of raising
+objstore_http_read	objstore_http_read	C: a dropped keep-alive connection is retried (http == local)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_request never retries a stale keep-alive connection
+objstore_http_read	objstore_http_read	C: a server that hangs up on a fresh connection is refused	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	C: a short 206 body is refused	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_read_body accepts a 206 body shorter than the range (cl > want only)
+objstore_http_read	objstore_http_read	C: and that fresh connection is not retried (one request logged)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_request retries a fresh connection that failed before a response
+objstore_http_read	objstore_http_read	C: http 404 SQLSTATE	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a HEAD 404 read as an empty object
+objstore_http_read	objstore_http_read	C: range-ignoring server SQLSTATE	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range-ignored guard dropped (a 200 falls through to unexpected HTTP status)
+objstore_http_read	objstore_http_read	C: unreachable endpoint SQLSTATE	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	D: cancel latency bounded (<=10s)	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	D: stalled transfer cancelled with query_canceled	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	premise: buffered run logged requests	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	premise: fixture server is up	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	premise: fixture written	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	premise: the range-audit phase logged GETs	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	premise: unbuffered run logged requests	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	survival: the server answers and no backend crashed	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the HEAD 404 refusal
 objstore_listing	objstore_listing	FDW over a prefix == read_parquet over the prefix	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
 objstore_listing	objstore_listing	Hive over a remote prefix stamps the partition column	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last key of every page is dropped
 objstore_listing	objstore_listing	a LIST that returns HTTP 500 is refused, not read as an empty prefix	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a non-2xx LIST read as an empty, untruncated page

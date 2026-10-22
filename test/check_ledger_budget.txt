@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 40
+suites_not_covered 39
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6670,4 +6670,21 @@ suites_not_covered 40
 #     never         4348 + 7 = 4355
 #     dated         3244 + 22 = 3266
 #     4355 + 3266 == 7621
-checks_never_observed_red 4355
+#
+# #1341, objstore_http_read seeded, with its twin (OffgridwithJD): 4355 -> 4363,
+# and suites_not_covered 40 -> 39. The suite had no rows. It enters with 24 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike). Main's arm C took
+# the SQLSTATE alone, so a dropped Range-ignored guard (noguard200) passed on 08P01 from
+# "unexpected HTTP status 200"; each refusal now also needs its own guard's message. Short
+# 206 bodies, EOF mid-body and the keep-alive retry had no fixture: noshort, eofok, noretry
+# and alwaysretry each passed 18/18 on main. The fixture server gains /short/, /trunc/,
+# /dropka/ and /hangup/ modes, inert unless a path names them, and a survival check reads
+# the crash count after waiting for the server. 16 are dated by ten mutations, each the
+# same names in both twins. 8 arrive never. The pgc_skip name (pyarrow) gets no row:
+# CI does not emit it.
+#
+#     ledger rows   7621 + 24 = 7645
+#     never         4355 + 8 = 4363
+#     dated         3266 + 16 = 3282
+#     4363 + 3282 == 7645
+checks_never_observed_red 4363
