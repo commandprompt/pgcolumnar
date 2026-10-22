@@ -608,6 +608,11 @@ check "premise: META.json names a base install script" \
 	"$([ -n "$_meta_file" ] && echo yes || echo no)" "yes"
 check "the script META.json names is in the published distribution" \
 	"$(cd "$SRCDIR" && git archive HEAD 2>/dev/null | tar -t 2>/dev/null | grep -cx "$_meta_file")" "1"
+# Shipped is not enough: it must be the BASE script (#1339). `provides.file` is the
+# script a fresh install runs, and every upgrade script ships too, so naming
+# `pgcolumnar--1.0-alpha4--1.0-alpha5.sql` passed the arm above.
+check "META.json names the base install script of the version VERSION holds" \
+	"$_meta_file" "pgcolumnar--$_ver.sql"
 
 # AND THE SCRIPTS META.json CANNOT NAME. `provides.file` is ONE filename, so the arm
 # above cannot notice an `export-ignore` that drops a DIFFERENT install script -- an

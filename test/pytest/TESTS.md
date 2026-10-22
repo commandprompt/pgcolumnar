@@ -11011,6 +11011,7 @@ Every test makes one check, by the shell's name. Readings are computed once, in 
 | `test_meta_json_provides_version_is_the_version` | META.json provides.pgcolumnar.version is the version VERSION holds, in PGXN form |
 | `test_meta_json_names_a_base_script` | premise: META.json names a base install script |
 | `test_the_meta_json_script_ships` | the script META.json names is in the published distribution |
+| `test_meta_json_names_the_base_script_of_the_version` | META.json names the base install script of the version VERSION holds |
 | `test_the_tree_has_install_scripts` | premise: the tree has install scripts to check |
 | `test_every_install_script_ships` | every pgcolumnar--*.sql in the tree is in the published distribution |
 | `test_changelog_has_a_union_merge_driver` | CHANGELOG.md has a union merge driver, so two entries do not conflict |

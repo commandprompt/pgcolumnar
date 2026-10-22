@@ -249,6 +249,14 @@ def test_partition_create_ahead(pgc_conn, expect):
                           str(_kids(conn, "wid"))]),
                 f"{bad}|{bad}|{bad}|0",
                 "a width that is not positive, or a negative lead, is refused before any DDL")
+    # AND THE NULL HALVES OF THAT GUARD (#1339). The function is not STRICT, so a NULL
+    # reaches the body; without `width IS NULL OR ... ahead IS NULL` the comparison is
+    # NULL, the guard does not fire and the call answers instead of refusing.
+    expect.text("|".join([refusal("SELECT pgcolumnar.partition_create_ahead('wid', NULL, 1)"),
+                          refusal("SELECT pgcolumnar.partition_create_ahead('wid', '6 hours', NULL)"),
+                          str(_kids(conn, "wid"))]),
+                f"{bad}|{bad}|0",
+                "a NULL width or a NULL lead is refused before any DDL")
     with conn.cursor() as cur:
         cur.execute("CREATE TABLE lst (at timestamptz NOT NULL, reading float8) PARTITION BY LIST (at)")
         cur.execute("CREATE TABLE two (at timestamptz NOT NULL, reading float8) PARTITION BY RANGE (at, reading)")

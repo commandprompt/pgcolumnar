@@ -28,6 +28,7 @@ that suite is deleted.
 import pytest
 
 ALLOWED = "127.0.0.1"
+URL = "s3://mybucket/x.parquet"
 
 # endpoint, alias, and what the shape is called. The two userinfo shapes are separate
 # rows because they used to fail by DIFFERENT mechanisms, and a single row would not
@@ -62,7 +63,7 @@ def endpoints(pgc_cluster):
             cur.execute(f"CREATE SERVER srv_{alias} FOREIGN DATA WRAPPER "
                         f"pgcolumnar_parquet OPTIONS (endpoint '{endpoint}')")
             cur.execute(f"CREATE FOREIGN TABLE ft_{alias} (id int) SERVER srv_{alias} "
-                        f"OPTIONS (path 's3://mybucket/x.parquet')")
+                        f"OPTIONS (path '{URL}')")
             tables[alias] = f"ft_{alias}"
     yield conn, tables
     conn.close()
@@ -98,8 +99,14 @@ def test_a_userinfo_endpoint_is_refused(endpoints, expect, endpoint, alias, name
                f"and the message for {endpoint} names userinfo")
     # The offending string is the ENDPOINT. Saying `userinfo in "s3://bucket/key"`
     # would name a URL that carries none, and send the reader to the wrong place.
-    expect.num(1 if "endpoint" in message else 0, 1,
-               f"and it names the endpoint rather than the s3:// URL, for {endpoint}")
+    # THE QUOTED STRING, not the word (#1339). "endpoint" is in the message's own
+    # text and in its hint, so a message that quoted the s3:// URL instead (`ep`
+    # swapped for `url` in the errmsg) still contained it and this passed.
+    expect.text(
+        "endpoint" if f'"{endpoint}"' in message and URL not in message
+        else f"not the endpoint: {message.splitlines()[0] if message else 'no message'}",
+        "endpoint",
+        f"and it names the endpoint rather than the s3:// URL, for {endpoint}")
 
 
 def test_the_guard_fires_without_a_region_configured(endpoints, expect):
@@ -114,8 +121,20 @@ def test_the_guard_fires_without_a_region_configured(endpoints, expect):
     MEASURED: every endpoint arm returned `requires a region option` until the guard
     moved. This cluster configures no region, so a `userinfo` message here IS the
     reachability claim.
+
+    AND THAT "NO REGION" IS ASSERTED, NOT ASSUMED (#1339). Nothing here set a region,
+    but nothing showed none was set either: with `AWS_REGION` in the server's
+    environment and the guard moved back below the region demand, every arm in this
+    file passed. The clean endpoint shows the cluster's state: with no region
+    configured, it is refused for want of one.
     """
     conn, tables = endpoints
+    _exc, clean = _error(conn, f"SELECT * FROM {tables['clean']}")
+    expect.text(
+        "no region" if "requires a region option" in clean
+        else f"a region is configured: {clean.splitlines()[0] if clean else 'no error'}",
+        "no region",
+        "no region is configured: a clean endpoint here is refused for want of one")
     _exc, message = _error(conn, f"SELECT * FROM {tables['ui_pass']}")
     expect.num(1 if "region" in message else 0, 0,
                "no region is configured, and the refusal is NOT about the region")

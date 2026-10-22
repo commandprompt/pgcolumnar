@@ -37,8 +37,15 @@ p2="$(topplan on)"; c2="$(cost_of "$p2")"
 echo "-- index-scan total cost: stripe_row_limit=2000 -> $c1 ; =150000 -> $c2"
 echo "-- top node: $(node_of "$p1") then $(node_of "$p2")"
 
-check "the index-fetch cost responds to the per-table stripe_row_limit (c1 is a number)" \
-	"$(case "$c1" in ''|*[!0-9.]*) ;; *) echo num ;; esac)" "num"
+# NAMED FOR WHAT IT MEASURES (#1339). It was called "the index-fetch cost responds
+# to the per-table stripe_row_limit", but it reads one cost, so it cannot see a
+# response; the arm below that compares two costs does. And it asks for a cost of at
+# least 1, as the pytest twin does, not only for digits. A mutation that set the
+# penalised path's total cost to 0 printed "0.00": digits, so this arm passed while
+# the twin went red.
+check "the index-fetch cost is a number of at least 1" \
+	"$(case "$c1" in ''|*[!0-9.]*) echo "not a number: [$c1]" ;; \
+		*) awk -v c="$c1" 'BEGIN{ print (c >= 1) ? "at least 1" : "below 1: " c }' ;; esac)" "at least 1"
 check "both arms priced the same plan shape" "$(node_of "$p2")" "$(node_of "$p1")"
 check "the priced plan is the per-row index fetch the penalty prices" "$(node_of "$p1")" "Index Scan"
 check "changing the per-table stripe_row_limit changes the estimated cost" \

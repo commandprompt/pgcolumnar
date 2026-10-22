@@ -1236,6 +1236,7 @@ doc_parallel_premise	doc_parallel_premise	the page still names a narrow query	15
 doc_parallel_premise	doc_parallel_premise	the sel plan is exactly one columnar scan node	15;16;17;18;19	2026-10-21	pgcolumnar.enable_custom_scan boots false (columnar_tableam.c)
 docs_style	docs_style	CHANGELOG.md carries no em or en dash	15;16;17;18;19	2026-10-21	CHANGELOG.md: a line with an em dash
 docs_style	docs_style	CHANGELOG.md has a union merge driver, so two entries do not conflict	15;16;17;18;19	2026-10-21	.gitattributes: the CHANGELOG.md merge=union line removed
+docs_style	docs_style	META.json names the base install script of the version VERSION holds	15;16;17;18;19	2026-10-22	META.json: provides.pgcolumnar.file names pgcolumnar--1.0-alpha4--1.0-alpha5.sql
 docs_style	docs_style	META.json provides.pgcolumnar.version is the version VERSION holds, in PGXN form	15;16;17;18;19	2026-10-21	META.json: provides.pgcolumnar.version left at 1.0.0-alpha.4
 docs_style	docs_style	META.json version is the version VERSION holds, in PGXN form	15;16;17;18;19	2026-10-21	META.json: version left at 1.0.0-alpha.4
 docs_style	docs_style	README's badge alt text names the version VERSION holds	15;16;17;18;19	2026-10-21	README.md: the badge alt text left at 1.0-alpha3
@@ -5598,14 +5599,14 @@ parallel_scan_cost	parallel_scan_cost	an I/O-dominated parallel scan is not pric
 parallel_scan_cost	parallel_scan_cost	premise: both leader settings produced a row estimate to compare	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	premise: both scans have a positive run cost	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	premise: the leader-on parallel scan has a positive run cost	15;16;17;18;19	never	-
-parallel_scan_cost	parallel_scan_cost	premise: the leader-on plan is still a parallel columnar scan	15;16;17;18;19	never	-
-parallel_scan_cost	parallel_scan_cost	premise: the parallel plan has Gather	15;16;17;18;19	never	-
-parallel_scan_cost	parallel_scan_cost	premise: the parallel plan is a columnar scan	15;16;17;18;19	never	-
-parallel_scan_cost	parallel_scan_cost	premise: the parallel plan uses two workers	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	premise: the serial plan has no Gather	15;16;17;18;19	never	-
-parallel_scan_cost	parallel_scan_cost	premise: the serial plan is a columnar scan	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	premise: the table holds every inserted row	15;16;17;18;19	never	-
+parallel_scan_cost	parallel_scan_cost	the leader-on plan is still a parallel columnar scan	15;16;17;18;19	2026-10-22	columnar_customscan.c: the scan's CustomScanMethods CustomName PgColumnarScan changed to PgColumnarScanX
 parallel_scan_cost	parallel_scan_cost	the leader-participation branch changes the divisor	15;16;17;18;19	never	-
+parallel_scan_cost	parallel_scan_cost	the parallel plan has Gather	15;16;17;18;19	2026-10-22	columnar_customscan.c: the columnar partial path planned with parallel_workers = 1
+parallel_scan_cost	parallel_scan_cost	the parallel plan is a columnar scan	15;16;17;18;19	2026-10-22	columnar_customscan.c: the scan's CustomScanMethods CustomName PgColumnarScan changed to PgColumnarScanX
+parallel_scan_cost	parallel_scan_cost	the parallel plan uses two workers	15;16;17;18;19	2026-10-22	columnar_customscan.c: the columnar partial path planned with parallel_workers = workers + 1
+parallel_scan_cost	parallel_scan_cost	the serial plan is a columnar scan	15;16;17;18;19	2026-10-22	columnar_customscan.c: the scan's CustomScanMethods CustomName PgColumnarScan changed to PgColumnarScanX
 parallel_vector_agg	parallel_vector_agg	Finalize Aggregate present	15;16;17;18;19	2026-10-22	columnar_vector.c: the ungrouped parallel partial path never added (if (false && dimPath == NULL ...))
 parallel_vector_agg	parallel_vector_agg	Gather present	15;16;17;18;19	2026-10-22	columnar_vector.c: the ungrouped parallel partial path never added (if (false && dimPath == NULL ...))
 parallel_vector_agg	parallel_vector_agg	avg(v) parallel-vec ~= core parallel agg	15;16;17;18;19	never	-
@@ -5884,6 +5885,7 @@ parquet_timestamp_zone	parquet_timestamp_zone	premise: pyarrow wrote the naive f
 parquet_timestamp_zone	parquet_timestamp_zone	premise: the legacy fixture carries the TIMESTAMP_MICROS converted type and no logical type	15;16;17;18;19	never	-
 parquet_timestamp_zone	parquet_timestamp_zone	the gap file's wall times 02:00, 02:30 and 03:00 become, sorted, the instants 07:00Z, 07:00Z and 07:30Z	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a naive wall time takes the zone offset in force at that wall time read as UTC, not at the wall time itself;columnar_parquet_reader.c: isAdjustedToUTC is ignored, so every timestamp column reads as UTC-adjusted
 partition_lifecycle	partition_lifecycle	a NULL cutoff is refused, in both overloads	15;16;17;18;19	2026-10-13	partition_drop_plan without its NULL-cutoff check, in both overloads
+partition_lifecycle	partition_lifecycle	a NULL width or a NULL lead is refused before any DDL	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: partition_create_ahead without the NULL halves of its width and ahead check
 partition_lifecycle	partition_lifecycle	a call that would create more than 1000 partitions is refused before any DDL	15;16;17;18;19	2026-10-12	partition_create_ahead without the 1000-partition bound
 partition_lifecycle	partition_lifecycle	a cutoff before every partition plans nothing	15;16;17;18;19	2026-10-13	the cutoff filter removed: every partition planned
 partition_lifecycle	partition_lifecycle	a cutoff of the other timestamp type is refused	15;16;17;18;19	2026-10-13	a cutoff of the other timestamp type planned instead of refused

@@ -332,7 +332,7 @@
 # and the corpus's highest slot gets a port, in test_runshape.py, by collection over NO_CLUSTER.
 # guard_tests 842 -> 846 for #1341's test_capability_decline.py: duckdb joins the declinable
 # capabilities, held by four new tests, by collection over NO_CLUSTER.
-guard_tests 846
+guard_tests 847
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
