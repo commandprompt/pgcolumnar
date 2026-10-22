@@ -242,8 +242,12 @@ def test_a_user_advisory_lock_on_that_tag_does_not_block_an_insert(
                     "AND objsubid = 2 AND (classid, objid) IN "
                     "(SELECT * FROM unnest(%s::bigint[], %s::bigint[]))",
                     ([c for c, _o in addressable], [o for _c, o in addressable]))
-        expect.at_least(held, 1,
-                        "premise: the other session really holds that exact tag in class 2")
+        # EVERY addressable tag, as the shell asks (#1339). At least one was satisfied by a
+        # holder that took only the first tag, and the insert below then contended for a
+        # lock nobody was holding.
+        expect.text("yes" if held == len(addressable)
+                    else f"no (holds {held} of {len(addressable)})", "yes",
+                    "premise: the other session really holds that exact tag in class 2")
 
         verdict = "ok"
         try:

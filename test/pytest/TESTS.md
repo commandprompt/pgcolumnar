@@ -5418,9 +5418,12 @@ already past it. Measured, penalty on:
 | 20 | 7 | Index Scan | **Custom Scan** |
 
 With four rungs below 20, `FW` is a measured 5 rather than a floor, and the arm gained
-`premise: and the wide table fetches by index somewhere on it too`. The shell suite has
-the same one-sidedness; it is reported rather than changed here, because this pull
-request adds no bash check and so moves no ledger row.
+`and the wide table fetches by index somewhere on it too`. The shell suite now has the
+same four rungs and the same arm (#1339): before, it read `FW` as 0 on every run and
+its ordering arm passed for the wrong reason. That arm and "the penalty is what moves
+this plan" and "the narrow table does fetch by index somewhere on the ladder" are not
+premises: they read pgcolumnar's own costing, and the penalty switched off in the
+source reddens the first.
 
 **The row-group limit is a per-table option here, not a cluster setting.** The shell suite
 pins `pgcolumnar.stripe_row_limit=20000` in the cluster config, because the writing and

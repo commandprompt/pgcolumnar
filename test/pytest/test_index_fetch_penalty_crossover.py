@@ -101,7 +101,7 @@ def test_index_fetch_penalty_crossover(pgc_conn, expect):
     expect.num(
         _scan_rows(priced),
         k_range,
-        f"premise: the {k_range}-row estimate is exact, "
+        f"the {k_range}-row estimate is exact, "
         "so no arm here rests on a sample draw",
     )
 
@@ -112,7 +112,13 @@ def test_index_fetch_penalty_crossover(pgc_conn, expect):
         f"a {k_range}-row correlated range uses the custom scan, not a fetching index",
     )
 
+    # BOTH PATHS AGAINST THE GENERATOR, AND THE INDEX PATH SEEN TO BE ONE (#1339). The
+    # two sums used to be compared with each other only, so two equally wrong answers
+    # agreed, and nothing said the "index" path fetched by index. a is g % 10, so the
+    # sum over ids 1..K comes from generate_series, not from the table.
     with pgc_conn.cursor() as cur:
+        cur.execute(f"SELECT sum(g % 10) FROM generate_series(1, {k_range}) g")
+        gen_sum = cur.fetchone()[0]
         cur.execute("SET enable_seqscan=off")
         cur.execute("SET enable_bitmapscan=off")
         cur.execute("SET pgcolumnar.enable_custom_scan=off")
@@ -122,7 +128,15 @@ def test_index_fetch_penalty_crossover(pgc_conn, expect):
         cur.execute("SET enable_indexscan=off")
         cur.execute(f"SELECT sum(a) FROM ifc WHERE id <= {k_range}")
         cs_sum = cur.fetchone()[0]
-    expect.num(idx_sum, cs_sum, f"both paths return the same aggregate at {k_range}")
+        cur.execute("RESET enable_indexscan")
+    expect.text(f"index {idx_sum}, scan {cs_sum}", f"index {gen_sum}, scan {gen_sum}",
+                f"both paths return the same aggregate at {k_range}")
+    with pgc_conn.cursor() as cur:
+        cur.execute("SET pgcolumnar.enable_custom_scan=off")
+    forced = _plan(pgc_conn, f"SELECT sum(a) FROM ifc WHERE id <= {k_range}")
+    with pgc_conn.cursor() as cur:
+        cur.execute("RESET pgcolumnar.enable_custom_scan")
+    expect.text(_scan_node(forced), "Index Scan", "and the index-forced path really fetches by index")
 
     n_ord = 300_000
     with pgc_conn.cursor() as cur:
