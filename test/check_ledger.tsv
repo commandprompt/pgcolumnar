@@ -4597,6 +4597,26 @@ native_parquet_stack	native_parquet_stack	backend survived the valid file	15;16;
 native_parquet_stack	native_parquet_stack	nested-struct footer raises stack-depth, not SIGSEGV	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's check_stack_depth() removed, so a nested-struct footer is not bounded
 native_parquet_stack	native_parquet_stack	read_parquet rejects the nested-struct footer the same way	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's check_stack_depth() removed, so a nested-struct footer is not bounded
 native_parquet_stack	native_parquet_stack	schema-chain footer raises stack-depth, not SIGSEGV	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema's check_stack_depth() removed, so a schema chain is not bounded
+native_parquet_streaming	native_parquet_streaming	a second dictionary page in a chunk is rejected	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the one-dictionary-page-per-chunk guard removed
+native_parquet_streaming	native_parquet_streaming	all-null column (empty dictionary page) still reads	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	backend survived the crafted page areas	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the second-dictionary-page refusal becomes abort()
+native_parquet_streaming	native_parquet_streaming	backend survived the failed read	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	negative page offset is rejected by the offset check	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_read_page_header no longer refuses a negative page offset
+native_parquet_streaming	native_parquet_streaming	page size past end of file is rejected by the size bound	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: compressed_size no longer bounded by what is left of the file
+native_parquet_streaming	native_parquet_streaming	parquet_schema reads a file over the 1GB palloc ceiling	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	parquet_schema reports the columns of the oversized file	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	parquet_schema still reads a normal file	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	read_parquet still reads a normal file	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	streaming: LIMIT 10 (inside group 0) decodes one row group	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	streaming: LIMIT 1010 (into group 1) decodes two row groups	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	streaming: a full scan decodes all four row groups	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	streaming: full scan content is correct	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	streaming: rescan under a nested loop is correct	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	the uncompressed source file still reads	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	unparseable page header is rejected	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	v2 level lengths past the page are rejected	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	value read of the sparse file fails cleanly	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	zero-filled page area is rejected, not walked byte by byte	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the progress guard for a data page with no values removed
 native_parquet_units	native_parquet_units	import_parquet honours the unit	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
 native_parquet_units	native_parquet_units	millis == micros	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
 native_parquet_units	native_parquet_units	millis pushdown result == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
