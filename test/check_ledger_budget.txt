@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 41
+suites_not_covered 40
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6628,4 +6628,25 @@ suites_not_covered 41
 #     never         4354 + 25 = 4379
 #     dated         3153 + 22 = 3175
 #     4379 + 3175 == 7554
-checks_never_observed_red 4379
+#
+# #1341, phase3 seeded, with its twin (OffgridwithJD): 4379 -> 4410,
+# and suites_not_covered 41 -> 40. The suite had no rows. It enters with 37 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# Its savepoint arm rolled back only completed statements, whose buffers executor end had
+# already flushed under the subtransaction, so the abort's xmin verdict hid them (#1441):
+# with the savepoint's discard of pending writes or pending deletes removed, all 32 passed.
+# An INSERT and a DELETE that fail partway inside a savepoint must now leave nothing, in
+# the transaction and after it (three checks). The delete arm said its range straddled a
+# vector boundary and nothing read one: with 16384-row vectors all 32 passed; the zone
+# maps' maxima are now read (one check). And a DELETE whose RETURNING reads the table in
+# a block that commits into one that aborts must see the rows deleted so far, as heap
+# does: with the commit not handing the read's written marks to the parent, no later
+# read wrote them again, and the reads summed 19999 against heap's 14950 (one check).
+# 6 are dated by six mutations of the subtransaction callback, the vector size and the
+# drop cleanup, each reddening the same names in both twins. 31 arrive never.
+#
+#     ledger rows   7554 + 37 = 7591
+#     never         4379 + 31 = 4410
+#     dated         3175 + 6 = 3181
+#     4410 + 3181 == 7591
+checks_never_observed_red 4410

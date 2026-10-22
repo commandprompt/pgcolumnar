@@ -1005,6 +1005,8 @@ guard_tests 807
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 3841 -> 3878 for #1341's test_phase3.py, the twin of phase3.sh:
+# 37 checks in 37 tests, by collection over the cluster files.
 # cluster_tests 3794 -> 3841 for #1341's test_phase2.py, the twin of phase2.sh:
 # 47 checks in 47 tests, by collection over the cluster files.
 # cluster_tests 3763 -> 3794 for #1341's test_objstore_module.py, the twin of objstore_module.sh:
@@ -1166,4 +1168,4 @@ guard_tests 807
 # cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
-cluster_tests 3841
+cluster_tests 3878

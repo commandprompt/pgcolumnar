@@ -375,6 +375,7 @@ behaviour, the source of that number is named.
 - [327. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable](#327-test_native_fetch_interruptpy-the-by-row-number-fetch-is-cancellable)
 - [328. test_objstore_module.py: the object-store module's packaging and loader, every refusal pinned](#328-test_objstore_modulepy-the-object-store-modules-packaging-and-loader-every-refusal-pinned)
 - [329. test_phase2.py: compression, projection, zone maps and chunk-group filtering](#329-test_phase2py-compression-projection-zone-maps-and-chunk-group-filtering)
+- [330. test_phase3.py: read-your-writes, DELETE, UPDATE, rollback, savepoints and temporary tables](#330-test_phase3py-read-your-writes-delete-update-rollback-savepoints-and-temporary-tables)
 
 ## 1. How to read a test in here
 
@@ -12352,3 +12353,51 @@ Every test reads one value the fixture took and makes one check under the shell'
 | `test_a_range_inside_the_last_vector_decodes_one_of_three` | range decodes 1 of 3 vectors |
 | `test_no_row_group_outlives_its_table` | orphan row groups |
 | `test_no_column_chunk_outlives_its_table` | orphan chunks |
+
+## 330. test_phase3.py: read-your-writes, DELETE, UPDATE, rollback, savepoints and temporary tables
+
+The twin of `test/phase3.sh`. A private database, built once by a module fixture in the shell's order. Statements the shell runs in one psql session run on one connection here, including the savepoint arms, where a statement meant to fail may fail only with division_by_zero (22012). Every expected value comes from the generator, except the nested-read arm's, which is heap's answer to the same statement on the same rows.
+
+### Every test
+
+Every test reads one value the fixture took and makes one check under the shell's name. A failed query, or a reading the session never reached, is a query_error(), never text standing in for one.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_regression_table_counts_every_row` | reg count |
+| `test_the_regression_table_filters` | reg filter a<100 |
+| `test_a_table_created_in_the_transaction_reads_its_rows` | ryw count |
+| `test_an_insert_is_read_by_its_own_transaction` | ryw sum |
+| `test_the_transaction_s_rows_persist` | ryw persisted |
+| `test_the_deleted_range_straddles_a_vector_boundary` | the deleted range straddles vectors 0 and 1 |
+| `test_a_delete_leaves_the_survivors` | delete count |
+| `test_deleted_rows_are_gone` | delete gone |
+| `test_the_deleted_range_s_neighbours_survive` | delete neighbors |
+| `test_the_table_s_bounds_survive` | delete boundaries |
+| `test_a_tail_delete_leaves_the_survivors` | delete tail count |
+| `test_a_tail_delete_lowers_the_maximum` | delete tail max |
+| `test_the_delete_vector_catalog_has_rows` | delete_vector rows>0 |
+| `test_the_delete_vector_catalog_counts_every_deletion` | delete_vector deleted |
+| `test_an_update_shows_the_new_value` | update value |
+| `test_an_update_changes_one_row` | update one row |
+| `test_an_update_keeps_the_row_count` | update count |
+| `test_a_key_update_removes_the_old_keys` | update key gone |
+| `test_a_key_update_writes_the_new_keys` | update key new |
+| `test_a_key_update_keeps_the_row_count` | update key total |
+| `test_a_bulk_update_keeps_the_row_count` | bulk update rows |
+| `test_a_bulk_update_rewrites_every_row` | bulk update sfx |
+| `test_the_rollback_table_starts_with_its_rows` | rb before |
+| `test_a_rolled_back_transaction_leaves_the_count` | rb after count |
+| `test_a_rolled_back_transaction_leaves_the_range` | rb after range |
+| `test_rollback_to_a_savepoint_keeps_the_work_before_it` | savepoint in-txn |
+| `test_rollback_to_a_savepoint_holds_after_commit` | savepoint final |
+| `test_an_insert_that_failed_inside_a_savepoint_leaves_nothing` | savepoint failed insert discarded |
+| `test_a_delete_that_failed_inside_a_savepoint_deletes_nothing` | savepoint failed delete discarded |
+| `test_the_failed_statements_leave_nothing_after_commit` | savepoint failed final |
+| `test_a_read_in_a_block_that_commits_into_an_aborted_one_sees_the_deletes` | savepoint nested read in a delete sees its deleted rows, as on heap |
+| `test_a_temporary_table_keeps_its_survivors` | temp survivors |
+| `test_a_temporary_table_s_deleted_rows_are_gone` | temp deleted |
+| `test_deletes_survive_their_transaction` | durable survivors |
+| `test_only_the_undeleted_rows_survive` | durable odd only |
+| `test_drop_removes_the_delete_vector_rows` | delete_vector cleaned |
+| `test_drop_removes_the_row_group_rows` | row group cleaned |
