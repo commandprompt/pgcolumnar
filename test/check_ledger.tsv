@@ -5175,6 +5175,7 @@ objstore_s3_read	objstore_s3_read	premise: signed run logged requests	15;16;17;1
 objstore_s3_read	objstore_s3_read	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 objstore_s3_read	objstore_s3_read	region: AWS_DEFAULT_REGION is the fallback	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION is never consulted
 objstore_s3_read	objstore_s3_read	region: AWS_REGION outranks AWS_DEFAULT_REGION	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_sink_write	objstore_sink_write	all four workers' uploads were open before the cancel	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the sink never flushes a part, so no export opens a multipart upload
 objstore_sink_write	objstore_sink_write	allow-list: an unlisted endpoint refuses 42501 before any write	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	and completed it exactly once (POST with uploadId, no partNumber)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: CompleteMultipartUpload is never sent and read as done
 objstore_sink_write	objstore_sink_write	arrow export to s3:// also round-trips	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
@@ -5211,6 +5212,7 @@ objstore_sink_write	objstore_sink_write	shrink: the 4-worker run wrote 4 parts +
 objstore_sink_write	objstore_sink_write	small export to s3:// succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	small object went as ONE plain PUT (no multipart)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	small round trip: s3 read-back == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
+objstore_sink_write	objstore_sink_write	terminate: export workers exit within 75 s while the store is silent	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_wait without WL_TIMEOUT, so a silent store never counts a quiet slice
 objstore_stash_recovery	objstore_stash_recovery	and the installed module is still the one that was there, not the debris	15;16;17;18;19	2026-10-22	objstore_module.sh start guard with no debris branch: every stash restored over the installed module
 objstore_stash_recovery	objstore_stash_recovery	and the module left installed is still valid	15;16;17;18;19	never	-
 objstore_stash_recovery	objstore_stash_recovery	and the stash is cleared	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix

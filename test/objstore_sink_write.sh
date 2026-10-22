@@ -257,6 +257,19 @@ for _ in $(seq 1 300); do
 	sleep 0.1
 done
 check "premise: a worker was uploading before the cancel" "$wrote" "yes"
+# Cancel only once all four workers' uploads are registered on the server. A cancel
+# landing while a worker's POST ?uploads is still in flight leaves an upload whose id
+# the worker never received, so nothing can abort it: that window is #1743's, not what
+# the open-upload check below pins (it flaked on it in CI, #1723's head). Not a
+# premise: a writer that never opens a multipart upload reddens it.
+cx_open=0
+for _ in $(seq 1 300); do
+	cx_open="$(open_uploads '^pgc-bucket/cx/')"
+	[ "$cx_open" -ge 4 ] && break
+	sleep 0.1
+done
+check "all four workers' uploads were open before the cancel" \
+	"$([ "$cx_open" -ge 4 ] && echo yes || echo "no ($cx_open open)")" "yes"
 q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity
    WHERE query LIKE '%parallel_export_parquet%' AND state = 'active'
      AND pid <> pg_backend_pid()" >/dev/null
@@ -280,6 +293,46 @@ check "cancel: no _SUCCESS marker at the prefix" \
 # so no billable orphan is left under the prefix
 check "cancel: the server holds no open upload under the prefix" \
 	"$(open_uploads '^pgc-bucket/cx/')" "0"
+
+# #1727 review: a worker that SIGTERM ends aborts its upload in an exit callback, and a
+# store that stops answering must not hold it there. Each wait slice times out, so the
+# 60 s quiet limit ends the abort; without WL_TIMEOUT the wait never woke and the review
+# saw all four workers alive at +92 s. Stop the fixture mid-upload, terminate the
+# workers, and require them gone within 75 s. One check: no upload seen is a red too.
+WORKERS="backend_type = 'pgcolumnar parallel_export worker'"
+: > "$S3_LOG"
+rm -rf "$PGC_WORKDIR/$BUCKET/hs"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "SET pgcolumnar.objstore_part_size = 262144" \
+	-c "SELECT pgcolumnar.parallel_export_parquet('es_parbig'::regclass, 's3://$BUCKET/hs', 4)" \
+	>"$PGC_WORKDIR/hs_bg.out" 2>&1 &
+hspid=$!
+hwrote=no
+for _ in $(seq 1 300); do
+	[ "$(logn '^PUT /pgc-bucket/hs/part-')" -ge 1 ] && { hwrote=yes; break; }
+	sleep 0.1
+done
+kill -STOP "$SRV_PID"
+hs_n="$(q "SELECT count(*) FROM pg_stat_activity WHERE $WORKERS;")"
+q "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE $WORKERS;" >/dev/null
+hs_t0=$(date +%s)
+hs_left="$hs_n"
+for _ in $(seq 1 90); do
+	hs_left="$(q "SELECT count(*) FROM pg_stat_activity WHERE $WORKERS;")"
+	[ "$hs_left" = 0 ] && break
+	sleep 1
+done
+hs_dt=$(( $(date +%s) - hs_t0 ))
+kill -CONT "$SRV_PID"
+q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+   WHERE query LIKE '%parallel_export_parquet%' AND state = 'active'
+     AND pid <> pg_backend_pid()" >/dev/null
+wait "$hspid" 2>/dev/null || true
+echo "store silent: ${hs_n:-?} workers terminated, ${hs_left:-?} left after ${hs_dt}s"
+check "terminate: export workers exit within 75 s while the store is silent" \
+	"$(if [ "$hwrote" != yes ]; then echo "no upload seen"
+	   elif [ "${hs_n:-0}" -ge 1 ] && [ "$hs_left" = 0 ] && [ "$hs_dt" -le 75 ]; then echo bounded
+	   else echo "slow (${hs_n:-?} workers, ${hs_left:-?} left after ${hs_dt}s)"; fi)" "bounded"
 
 # ---- optional: a real S3 implementation (Garage) ----------------------------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then

@@ -6563,4 +6563,21 @@ suites_not_covered 44
 #     never         4332 + 0 = 4332
 #     dated         3139 + 1 = 3140
 #     4332 + 3140 == 7472
+#
+# #1727's review (jdatcmd): two more checks. os_wait passed no WL_TIMEOUT, so
+# WaitLatchOrSocket ignored its 5 s slice and a silent store never counted a quiet slice;
+# under proc_exit interrupts are held, so a worker SIGTERM ended stayed in its abort until
+# the store answered (all four alive at +92 s). "terminate: export workers exit within
+# 75 s while the store is silent" stops the fixture mid-upload and times the workers'
+# exit: red without WL_TIMEOUT (4 left after 91 s, both twins), 61 s with it; that
+# pre-fix wait dates it. And the cancel arm now cancels only once all four uploads are
+# registered on the server, "all four workers' uploads were open before the cancel": an
+# upload whose POST ?uploads was in flight is #1743's window, and it flaked the
+# open-upload check in CI. It is not a premise: a sink that never flushes a part (no
+# export opens a multipart upload, one line) reddens it, which dates it.
+#
+#     ledger rows   7472 + 2 = 7474
+#     never         4332 + 0 = 4332
+#     dated         3140 + 2 = 3142
+#     4332 + 3142 == 7474
 checks_never_observed_red 4332

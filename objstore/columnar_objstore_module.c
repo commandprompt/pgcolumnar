@@ -245,8 +245,15 @@ os_wait(PgColumnarObjHandle *h, uint32 sockEvents, int *quiet)
 {
 	int			rc;
 
+	/*
+	 * WL_TIMEOUT, or the slice is not a slice: without it WaitLatchOrSocket
+	 * ignores the timeout and waits for the socket or the latch alone, so a
+	 * silent peer never counts a quiet slice. Under proc_exit (a terminated
+	 * worker aborting its upload, #1727) interrupts are held and the latch
+	 * alone never ends the wait either.
+	 */
 	rc = WaitLatchOrSocket(MyLatch,
-						   WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | sockEvents,
+						   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH | sockEvents,
 						   h->fd, OS_WAIT_SLICE_MS, PG_WAIT_EXTENSION);
 	if (rc & WL_LATCH_SET)
 		ResetLatch(MyLatch);

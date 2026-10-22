@@ -27,6 +27,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -170,6 +171,15 @@ def _cancel_run(dsn, s3log, bucket, r):
             break
         time.sleep(0.1)
     r["cx wrote"] = wrote
+    # cancel only once all four workers' uploads are registered on the server; an upload
+    # whose POST ?uploads is still in flight is #1743's window, not this check's
+    cx_open = "0"
+    for _ in range(300):
+        cx_open = _open_uploads(bucket.parent, r"^pgc-bucket/cx/")
+        if int(cx_open) >= 4:
+            break
+        time.sleep(0.1)
+    r["cx all open"] = "yes" if int(cx_open) >= 4 else f"no ({cx_open} open)"
     with psycopg.connect(dsn, autocommit=True) as c:
         c.execute("SELECT pg_cancel_backend(pid) FROM pg_stat_activity "
                   "WHERE query LIKE '%parallel_export_parquet%' AND state = 'active' "
@@ -198,6 +208,63 @@ def _slot(worker_id, base):
     walked to the same free port before either bound it (#1727 review: 3 runs of 3 red)."""
     w = 0 if worker_id in (None, "master") else int(str(worker_id).lstrip("gw") or 0)
     return base + 100 * w
+
+
+WORKERS = "backend_type = 'pgcolumnar parallel_export worker'"
+
+
+def _silent_run(dsn, s3log, bucket, srv, r):
+    """The shell's silent-store arm (#1727 review): a 4-worker export, the fixture server
+    stopped once a worker has PUT a part, the workers terminated, and their exit timed.
+    Each wait slice times out, so the 60 s quiet limit ends a worker's abort; without
+    WL_TIMEOUT the review saw all four alive at +92 s. No upload seen is a red too."""
+    def run():
+        try:
+            with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+                conn.execute(PART)
+                conn.execute("SELECT pgcolumnar.parallel_export_parquet("
+                             f"'es_parbig'::regclass, 's3://{BUCKET}/hs', 4)").fetchall()
+        except psycopg.Error:
+            pass
+
+    shutil.rmtree(bucket / "hs", ignore_errors=True)
+    open(s3log, "w").close()
+    bg = threading.Thread(target=run)
+    bg.start()
+    wrote = "no"
+    for _ in range(300):
+        n = _logn(s3log, r"^PUT /pgc-bucket/hs/part-")
+        if isinstance(n, int) and n >= 1:
+            wrote = "yes"
+            break
+        time.sleep(0.1)
+    srv.send_signal(signal.SIGSTOP)
+    try:
+        n_workers = _row(dsn, f"SELECT count(*) FROM pg_stat_activity WHERE {WORKERS}")
+        _row(dsn, f"SELECT count(*) FROM (SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                  f"WHERE {WORKERS}) t")
+        t0 = time.monotonic()
+        left = n_workers
+        for _ in range(90):
+            left = _row(dsn, f"SELECT count(*) FROM pg_stat_activity WHERE {WORKERS}")
+            if left == "0":
+                break
+            time.sleep(1)
+        dt = int(time.monotonic() - t0)
+    finally:
+        srv.send_signal(signal.SIGCONT)
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute("SELECT pg_cancel_backend(pid) FROM pg_stat_activity "
+                  "WHERE query LIKE '%parallel_export_parquet%' AND state = 'active' "
+                  "AND pid <> pg_backend_pid()")
+    bg.join(600)
+    print(f"-- store silent: {n_workers} workers terminated, {left} left after {dt}s")
+    if wrote != "yes":
+        r["hs exit"] = "no upload seen"
+    elif n_workers.isdigit() and int(n_workers) >= 1 and left == "0" and dt <= 75:
+        r["hs exit"] = "bounded"
+    else:
+        r["hs exit"] = f"slow ({n_workers} workers, {left} left after {dt}s)"
 
 
 @pytest.fixture(scope="module")
@@ -348,6 +415,7 @@ def osw(pgc_cluster, worker_id):
             c.execute("INSERT INTO es_parbig SELECT g, md5(g::text)||md5((g+1)::text) "
                       "FROM generate_series(1,3000000) g")
         _cancel_run(dsn, s3log, bucket, r)
+        _silent_run(dsn, s3log, bucket, srv, r)
         yield r
     finally:
         if cluster is not None:
@@ -484,6 +552,10 @@ def test_a_worker_was_uploading_before_the_cancel(osw, expect):
     expect.text(osw["cx wrote"], "yes", "premise: a worker was uploading before the cancel")
 
 
+def test_all_four_uploads_were_open_before_the_cancel(osw, expect):
+    expect.text(osw["cx all open"], "yes", "all four workers' uploads were open before the cancel")
+
+
 def test_the_export_was_cancelled_not_completed(osw, expect):
     expect.text(osw["cx cancelled"], "cancelled", "premise: the export was cancelled, not completed")
 
@@ -503,3 +575,9 @@ def test_no_success_marker_remains_after_the_cancel(osw, expect):
 def test_no_upload_stays_open_after_the_cancel(osw, expect):
     # #1722: a worker the cancel terminates aborts its multipart upload on the way out
     expect.text(osw["cx open"], "0", "cancel: the server holds no open upload under the prefix")
+
+
+def test_terminated_workers_exit_while_the_store_is_silent(osw, expect):
+    # #1727 review: the exit callback's abort waits in slices that time out, so the 60 s
+    # quiet limit ends it; a silent store cannot hold a terminated worker
+    expect.text(osw["hs exit"], "bounded", "terminate: export workers exit within 75 s while the store is silent")
