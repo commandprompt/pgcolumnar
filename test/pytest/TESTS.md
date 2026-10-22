@@ -12188,7 +12188,7 @@ Every test makes one check under the shell's name, on a private database. Every 
 | `test_a_projected_column_round_trips` | projected column round-trips |
 | `test_read_parquet_fixture_exports_every_nested_row` | nested export rows |
 | `test_read_parquet_returns_the_generated_nested_rows` | nested round-trip: read_parquet == the generated rows |
-| `test_a_missing_column_definition_list_is_refused` | reject missing column definition list |
+| `test_a_missing_column_definition_list_is_refused` | premise: reject missing column definition list |
 | `test_fewer_declared_columns_than_the_file_is_refused` | reject fewer columns than file |
 | `test_an_incompatible_declared_type_is_refused` | reject incompatible declared type |
 | `test_a_file_that_is_not_parquet_is_refused` | reject non-parquet file |
