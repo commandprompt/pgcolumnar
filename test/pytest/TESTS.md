@@ -379,6 +379,7 @@ behaviour, the source of that number is named.
 - [331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload](#331-test_objstore_sink_writepy-exports-to-s3-go-as-one-put-or-a-completed-multipart-upload-read-back-as-the-generator-and-a-failed-export-leaves-no-key-and-no-open-upload)
 - [332. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable](#332-test_native_fetch_interruptpy-the-by-row-number-fetch-is-cancellable)
 - [333. test_objstore_module.py: the object-store module's packaging and loader, every refusal pinned](#333-test_objstore_modulepy-the-object-store-modules-packaging-and-loader-every-refusal-pinned)
+- [334. test_phase2.py: compression, projection, zone maps and chunk-group filtering](#334-test_phase2py-compression-projection-zone-maps-and-chunk-group-filtering)
 
 ## 1. How to read a test in here
 
@@ -12506,3 +12507,46 @@ Every test makes one check under the shell's name, from one module fixture that 
 | `test_broken_is_not_an_unhandled_scheme` | a broken module does NOT masquerade as an unhandled scheme |
 | `test_broken_is_not_a_module_never_installed` | nor as a module that was never installed |
 | `test_broken_keeps_the_loader_reason` | and the loader's own reason survives |
+
+## 334. test_phase2.py: compression, projection, zone maps and chunk-group filtering
+
+The twin of `test/phase2.sh`. A private database, built once by a module fixture in the shell's order: the phase 1 regression table, one table per codec, the too-small-to-compress fallback, nulls under lz4, projection, and 25000 sorted ints in three vectors whose zone maps are decoded from their bytes. Every expected value comes from the generator.
+
+### Every test
+
+Every test reads one value the fixture took and makes one check under the shell's name; the five per-codec tests are parametrized over the four codecs, named by the shell's own `$codec` template. A failed query is a query_error(), never text standing in for one.
+
+| test | what it holds |
+| --- | --- |
+| `test_count_star_reads_every_row` | count(*) |
+| `test_a_filtered_count_reads_the_matching_rows` | count where a<50 |
+| `test_order_by_limit_returns_the_first_three_rows` | order by a limit3 |
+| `test_a_column_with_no_nulls_reads_none` | no nulls t.b |
+| `test_a_codec_round_trips_every_row` (none, pglz, lz4, zstd) | {codec} count |
+| `test_a_codec_round_trips_the_ids` (each codec) | {codec} sum(id) |
+| `test_a_codec_round_trips_a_payload` (each codec) | {codec} payload ok |
+| `test_a_codec_round_trips_one_distinct_payload` (each codec) | {codec} distinct pl |
+| `test_the_codec_asked_for_is_the_block_codec_stored` (each codec) | {codec} block codec -- 0, 1, 2, 3 |
+| `test_a_value_too_small_to_compress_round_trips` | fallback value |
+| `test_a_value_too_small_to_compress_is_stored_with_codec_0` | fallback codec=0 |
+| `test_nulls_round_trip_under_lz4` | null rows |
+| `test_every_third_value_reads_null` | null count |
+| `test_a_null_reads_null` | null value |
+| `test_a_value_beside_nulls_reads_its_value` | nonnull val |
+| `test_projecting_a_reads_a` | project a |
+| `test_projecting_b_reads_b` | project b |
+| `test_projecting_c_reads_c` | project c |
+| `test_a_sum_over_one_projected_column` | project sum |
+| `test_projecting_two_columns_in_order` | project b,c |
+| `test_three_vectors_have_zone_maps` | vectors |
+| `test_every_zone_map_has_a_minimum_and_maximum` | minmax present |
+| `test_vector_0_minimum_is_1` | v0 min=1 |
+| `test_vector_0_maximum_is_10000` | v0 max=10000 |
+| `test_vector_2_maximum_is_25000` | v2 max=25000 |
+| `test_a_between_filter_returns_its_rows` | between count |
+| `test_a_range_filter_returns_its_bounds` | range min/max |
+| `test_a_point_lookup_returns_one_row` | point lookup |
+| `test_a_range_past_the_data_returns_none` | empty range |
+| `test_a_range_inside_the_last_vector_decodes_one_of_three` | range decodes 1 of 3 vectors |
+| `test_no_row_group_outlives_its_table` | orphan row groups |
+| `test_no_column_chunk_outlives_its_table` | orphan chunks |

@@ -12,7 +12,6 @@ decode_skip_interrupts
 harness_selftest
 native_cancel
 parquet_export
-phase2
 phase3
 phase4
 phase6

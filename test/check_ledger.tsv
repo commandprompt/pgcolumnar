@@ -5870,6 +5870,53 @@ pg_dump_roundtrip	pg_dump_roundtrip	plain: row count survives	15;16;17;18;19	nev
 pg_dump_roundtrip	pg_dump_roundtrip	plain: row data survives (checksum)	15;16;17;18;19	never	-
 pg_dump_roundtrip	pg_dump_roundtrip	plain: the projection declaration IS carried	15;16;17;18;19	2026-10-16	columnar_projection.c: drop_projection keeps the projection's declaration;pgcolumnar--1.0-alpha5.sql: pgcolumnar.projection_declaration no longer registered with pg_extension_config_dump
 pg_dump_roundtrip	pg_dump_roundtrip	the base table has a projection to preserve	15;16;17;18;19	never	-
+phase2	phase2	between count	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	count where a<50	15;16;17;18;19	never	-
+phase2	phase2	count(*)	15;16;17;18;19	never	-
+phase2	phase2	empty range	15;16;17;18;19	never	-
+phase2	phase2	fallback codec=0	15;16;17;18;19	2026-10-22	columnar_compression.c: zstd output kept when it is no smaller than its input
+phase2	phase2	fallback value	15;16;17;18;19	never	-
+phase2	phase2	lz4 block codec	15;16;17;18;19	2026-10-22	columnar_write_state.c: the session's pgcolumnar.compression ignored, every write uses the boot default zstd
+phase2	phase2	lz4 count	15;16;17;18;19	never	-
+phase2	phase2	lz4 distinct pl	15;16;17;18;19	never	-
+phase2	phase2	lz4 payload ok	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	lz4 sum(id)	15;16;17;18;19	never	-
+phase2	phase2	minmax present	15;16;17;18;19	never	-
+phase2	phase2	no nulls t.b	15;16;17;18;19	never	-
+phase2	phase2	none block codec	15;16;17;18;19	2026-10-22	columnar_write_state.c: the session's pgcolumnar.compression ignored, every write uses the boot default zstd
+phase2	phase2	none count	15;16;17;18;19	never	-
+phase2	phase2	none distinct pl	15;16;17;18;19	never	-
+phase2	phase2	none payload ok	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	none sum(id)	15;16;17;18;19	never	-
+phase2	phase2	nonnull val	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	null count	15;16;17;18;19	never	-
+phase2	phase2	null rows	15;16;17;18;19	never	-
+phase2	phase2	null value	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	order by a limit3	15;16;17;18;19	never	-
+phase2	phase2	orphan chunks	15;16;17;18;19	2026-10-22	columnar_metadata.c: a dropped table's column_chunk rows kept
+phase2	phase2	orphan row groups	15;16;17;18;19	2026-10-22	columnar_metadata.c: a dropped table's row_group rows kept
+phase2	phase2	pglz block codec	15;16;17;18;19	2026-10-22	columnar_write_state.c: the session's pgcolumnar.compression ignored, every write uses the boot default zstd
+phase2	phase2	pglz count	15;16;17;18;19	never	-
+phase2	phase2	pglz distinct pl	15;16;17;18;19	never	-
+phase2	phase2	pglz payload ok	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	pglz sum(id)	15;16;17;18;19	never	-
+phase2	phase2	point lookup	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	project a	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	project b	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	project b,c	15;16;17;18;19	never	-
+phase2	phase2	project c	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	project sum	15;16;17;18;19	never	-
+phase2	phase2	range decodes 1 of 3 vectors	15;16;17;18;19	2026-10-22	columnar_reader.c: the zone maps rule out no vector
+phase2	phase2	range min/max	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	v0 max=10000	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	v0 min=1	15;16;17;18;19	never	-
+phase2	phase2	v2 max=25000	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	vectors	15;16;17;18;19	never	-
+phase2	phase2	zstd block codec	15;16;17;18;19	2026-10-22	columnar_write_state.c: the block codec never applied, every chunk stored with codec 0
+phase2	phase2	zstd count	15;16;17;18;19	never	-
+phase2	phase2	zstd distinct pl	15;16;17;18;19	never	-
+phase2	phase2	zstd payload ok	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	zstd sum(id)	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
 preimage_rewrite	preimage_rewrite	...and still answers correctly with the fold enabled	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and the heap agrees it is unsatisfiable	15;16;17;18;19	never	-
