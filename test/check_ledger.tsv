@@ -4590,10 +4590,10 @@ native_parquet_schema	native_parquet_schema	type of c_time	15;16;17;18;19	never	
 native_parquet_schema	native_parquet_schema	type of c_ts	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_uuid	15;16;17;18;19	never	-
 native_parquet_stack	native_parquet_stack	a shallow valid schema chain still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema's guard trips on any nesting, not only on stack exhaustion
-native_parquet_stack	native_parquet_stack	backend survived read_parquet on the crash input	15;16;17;18;19	never	-
-native_parquet_stack	native_parquet_stack	backend survived the nested-struct footer	15;16;17;18;19	never	-
-native_parquet_stack	native_parquet_stack	backend survived the schema-chain footer	15;16;17;18;19	never	-
-native_parquet_stack	native_parquet_stack	backend survived the valid file	15;16;17;18;19	never	-
+native_parquet_stack	native_parquet_stack	backend survived read_parquet on the crash input	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip calls abort() where its stack guard would raise
+native_parquet_stack	native_parquet_stack	backend survived the nested-struct footer	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip calls abort() where its stack guard would raise
+native_parquet_stack	native_parquet_stack	backend survived the schema-chain footer	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema calls abort() where its stack guard would raise
+native_parquet_stack	native_parquet_stack	backend survived the valid file	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema calls abort() on entry, so any footer that parses crashes the backend
 native_parquet_stack	native_parquet_stack	nested-struct footer raises stack-depth, not SIGSEGV	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's check_stack_depth() removed, so a nested-struct footer is not bounded
 native_parquet_stack	native_parquet_stack	read_parquet rejects the nested-struct footer the same way	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's check_stack_depth() removed, so a nested-struct footer is not bounded
 native_parquet_stack	native_parquet_stack	schema-chain footer raises stack-depth, not SIGSEGV	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema's check_stack_depth() removed, so a schema chain is not bounded
