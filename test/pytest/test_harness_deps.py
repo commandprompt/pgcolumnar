@@ -523,7 +523,7 @@ def partition(directory=None):
         #
         # The closure IS load-bearing inside conftest, where a fixture can reach
         # a cluster through a sibling without importing anything of its own, and
-        # `test_the_classifier_follows_a_conftest_fixture_that_connects_indirectly`
+        # `test_harness_deps_classifier.py::test_the_classifier_follows_a_conftest_fixture_that_connects_indirectly`
         # kills it there.
         uses = any(kind in ("fixture", "test") and set(params) & roots
                    for kind, params, _body in defs.values())
@@ -816,8 +816,8 @@ def test_the_partition_accounts_for_every_file_in_the_corpus(expect):
     expect.num(len(free) + len(bound), len(files),
                f"every file lands in exactly one bucket: {len(free)}+{len(bound)}")
     expect.at_least(len(files), 10, "premise: the glob found the corpus")
-    expect.at_least(len(free), 1, "premise: the partition is not all cluster-bound")
-    expect.at_least(len(bound), 1, "premise: the partition is not all database-free")
+    expect.at_least(len(free), 1, "the partition is not all cluster-bound")
+    expect.at_least(len(bound), 1, "the partition is not all database-free")
     print("\n-- partition: %d database-free, %d cluster-bound, %d files"
           % (len(free), len(bound), len(files)))
 
@@ -827,8 +827,12 @@ def test_the_cluster_fixtures_are_read_off_conftest_rather_than_named_here(expec
     spells out are the driver and the module that provisions a server, so a third
     connecting fixture in conftest is covered without an edit here."""
     roots = cluster_fixtures(HERE / "conftest.py")
-    expect.at_least(len(roots), 2,
-                    f"conftest names fixtures that reach a cluster: {sorted(roots)}")
+    # THE SET, not a count of it (#1339 :782). `at_least(2)` passed a derivation that
+    # lost a fixture or invented one, and the name carried the list it was judging. A
+    # third connecting fixture still needs no edit to the CLASSIFIER; it reddens here
+    # by name, which is the reviewer seeing the derivation move.
+    expect.text(", ".join(sorted(roots)), "pgc_cluster, pgc_conn, pgc_own_db",
+                "conftest's cluster-reaching fixtures are derived exactly")
     print("\n-- cluster fixtures derived from conftest.py: %s" % sorted(roots))
 
 
@@ -1051,7 +1055,12 @@ def test_the_cluster_job_runs_the_other_half_and_derives_it(expect):
     # The control for pytest-guards' own assertion. That job proves its files need no
     # database by psycopg's ABSENCE, so this one has to state its presence or the pair
     # proves nothing about the split.
-    expect.at_least(job.count("pip show psycopg"), 1,
+    # A CODE LINE THAT RUNS IT AND CAN FAIL (#1339 :964). Counting the text passed a
+    # comment and `pip show psycopg || true`, neither of which asserts anything.
+    present = [l for l in _code_lines(job)
+               if re.search(r"\bpip show psycopg\b", l)
+               and not l.lstrip().startswith("!") and "||" not in l]
+    expect.at_least(len(present), 1,
                     "and asserts the driver IS present, which is what makes it the other half")
 
     # It must not list the corpus either way round: neither the files it runs nor the
@@ -1092,15 +1101,17 @@ def test_both_pytest_jobs_assert_how_many_tests_they_collected(expect):
         expect.at_least(nums.get(key, 0), 1,
                         f"{key} is named and positive, or the flag it feeds asserts nothing")
 
-    # BOTH jobs, not one. Arming half of them would leave the other able to collect
-    # nothing and pass, which is the state this closes.
-    expect.num(text.count("--pgc-expect-tests"), 2,
-               "both pytest jobs pass the flag")
-    expect.num(text.count("expected_tests.txt"), 2,
-               "and both read the number from the tracked file rather than stating it")
-    # An empty read would OMIT the flag and fail open, so the value is guarded in the job.
-    expect.num(text.count('test -n "$WANT"'), 2,
-               "and each guards the read, because an empty value would fail open")
+    # BOTH jobs, not one, and EACH ONE IN ITS OWN CODE (#1339 :1007). A count over the
+    # whole file passed with the guard job's flag moved into a comment, because the
+    # comment kept the total at two.
+    for job_name in ("pytest-guards", "pytest-cluster"):
+        code = "\n".join(_code_lines(_ci_job(text, job_name)))
+        expect.at_least(code.count("--pgc-expect-tests"), 1,
+                        f"the {job_name} job passes the flag")
+        expect.at_least(code.count("expected_tests.txt"), 1,
+                        f"the {job_name} job reads the number from the tracked file")
+        expect.at_least(code.count('test -n "$WANT"'), 1,
+                        f"the {job_name} job guards the read, because an empty value would fail open")
 
 
 # A TRACKED KEY-VALUE FILE MUST NOT REPEAT A KEY, and the arm above could not see one.
@@ -1213,7 +1224,7 @@ def test_the_job_installs_no_database_driver(expect):
     for line in ("pip install --quiet $PINS " + DRIVER + "[binary]==3.3.5",
                  "pip install --quiet -r test/pytest/requirements-test.txt"):
         expect.num(len(installs(job + "\n          " + line + "\n")), 1,
-                   f"premise: and that test sees `{line.split()[3]}` when it is there")
+                   f"control: and that test sees `{line.split()[3]}` when it is there")
     # NEGATED, in this job. `pip show psycopg` without the `!` asserts PRESENCE, which
     # is what the cluster job's line does, and a count could not tell them apart.
     absent = [l for l in _code_lines(job)

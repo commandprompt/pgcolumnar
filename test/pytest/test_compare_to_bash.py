@@ -472,7 +472,7 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
         added += len(got)
         absent += [n for n in got if n not in _joined(src)]
     expect.at_least(added, 40,
-                    "premise: the reader really does add names in this tree, so the "
+                    "the reader really does add names in this tree, so the "
                     "assertion below is not vacuous")
     expect.text(", ".join(absent) or "none", "none",
                 "every name the loop reader returns appears verbatim in the file it "
@@ -493,7 +493,7 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
     split = ('for label, sql in (("one two "\n' + '                   "three", "q"),):\n'
              '    expect.num(g, 1, label)\n')
     expect.text(", ".join(_loop_names(ast.parse(split))), "one two three",
-                "premise: the reader joins a wrapped name, which is why the relaxation "
+                "the reader joins a wrapped name, which is why the relaxation "
                 "is needed at all")
     expect.contains(
         split, "one two three",
@@ -507,7 +507,7 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
              'for label, sql in ((f"one {P} three", "q"),):\n'
              '    expect.num(g, 1, label)\n')
     expect.text(", ".join(_loop_names(ast.parse(built))), "one {} three",
-                "premise: an f-string name is read as a TEMPLATE, not refused")
+                "an f-string name is read as a TEMPLATE, not refused")
     expect.contains(
         _joined(built), "one {} three",
         "and collapsing the concatenation does NOT rescue it -- a template is "
@@ -568,7 +568,7 @@ def test_dropping_a_member_brings_the_divergence_back_named(expect):
     bash = ["c_int range", "c_vc range"]
     full = set(_matchable_names(_EXPAND_FIXTURE))
     expect.num(len([b for b in bash if b not in full]), 0,
-               "premise: with both members present, neither bash name is missing")
+               "with both members present, neither bash name is missing")
 
     thinned = set(_matchable_names(_EXPAND_FIXTURE.replace(
         '"c_vc": "c_vc > \'a\'"', '')))
@@ -627,6 +627,22 @@ def test_the_expansion_refuses_what_it_cannot_spell(expect):
     expect.num(len(_expanded_names(ast.parse(constant))), 0,
                "a name interpolating a module constant is refused, because 1e-6 "
                "renders as 1e-06 and bash carries neither")
+    # THE CONSTANT ALONE (#1339 :468). The fixture above also interpolates `col`, so the
+    # two-distinct-names rule refuses it too, and admitting constants to the gate
+    # (`e.id in columns or e.id in consts`) left that arm green. Here the constant is
+    # the only interpolation, so this rule is the only thing that can refuse it. A gate
+    # that admitted it then looks the constant up as a column and raises, which is read
+    # as a value so this arm reddens by name rather than erroring.
+    alone = ('FLOAT_RTOL = 1e-6\n'
+             '@pytest.mark.parametrize("col", ["c_int"])\n'
+             'def test_x(col, expect):\n'
+             '    expect.num(g, 1, f"within {FLOAT_RTOL} relative")\n')
+    try:
+        got = repr(_expanded_names(ast.parse(alone)))
+    except KeyError as exc:
+        got = f"raised KeyError {exc}"
+    expect.text(got, "[]",
+                "a name whose only interpolation is a module constant is refused")
 
     multi = ('@pytest.mark.parametrize("old", ["a"])\n'
              '@pytest.mark.parametrize("new", ["b"])\n'
@@ -1310,12 +1326,13 @@ def test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one(expect):
 
 
 def test_the_suite_local_helpers_are_known_and_excluded(expect):
-    """Three helpers are defined by ONE suite each, and the extractor does not read
-    them. That is a scope decision and it is asserted rather than left implicit.
+    """Three helpers are defined by one suite, `parallel_copy.sh`, and the extractor
+    does not read them. That is a scope decision and it is asserted rather than left
+    implicit.
 
     `compare_to_bash.py` grades a `test/<stem>.sh` against a
-    `test/pytest/test_<stem>.py`. No suite defining its own helper has a pytest
-    twin, so none is graded and the exclusion costs nothing TODAY.
+    `test/pytest/test_<stem>.py`. `parallel_copy.sh` has no pytest twin, so it is not
+    graded and the exclusion costs nothing TODAY.
     The day one of them is ported, this arm is what says the grader cannot see it.
     It said so for parquet_export_stats.sh (#1341), whose check_float went when the
     suite was ported: its two NaN-fixture checks and eight f4 bounds call `check`.
@@ -1671,18 +1688,14 @@ def test_the_ported_suites_in_this_tree_are_graded_one_for_one(expect):
     Only the pairs that reach zero today are listed. A pair with a real gap is not pinned to
     its gap: that would turn the gap into the expected state.
 
-    THE LIST IS HAND-WRITTEN FOR THAT REASON AND NOTHING ENFORCES IT, which is a
-    different thing from the reason being wrong. The comment below already says a new
-    port belongs here; no arm reddens when one does not arrive. Today the list happens
-    to equal the pairs that exist, so nothing has ever been silently ungraded -- but an
-    eighth complete pair omitted would leave this arm passing while it graded seven,
-    which is absent-from-the-list and no-gap-found producing the same green.
-
-    #1046 TRACKS MAKING THIS ASSERTION TWO-DIRECTIONAL, in the shape `SHELL_REFERENCES`
-    already uses: derive the pairs that EXIST and require the declared list to equal that
-    set. It is not a tidy-up -- it changes what happens to an INCOMPLETE port, which is
-    quietly absent today and would have to redden, so the issue records the design
-    question rather than settling it. Kept out of the PR that added the eighth pair.
+    THE LIST IS ENFORCED BOTH WAYS (#1046, landed). `COMPLETE` and `INCOMPLETE` are
+    module declarations, and `test_every_pair_in_the_tree_is_declared` requires their
+    union to equal the pairs that exist on disk, in both directions; the cardinality
+    premise below counts the same thing from this arm's side. A complete pair left
+    out of both reddens there -- measured: dropping `advisory_lock_class` from
+    `COMPLETE` fails both -- so absent-from-the-list and no-gap-found can no longer
+    produce the same green. An INCOMPLETE port is declared with its reason and
+    graded by its own arms, not by this loop.
     """
     from compare_to_bash import main
     import contextlib

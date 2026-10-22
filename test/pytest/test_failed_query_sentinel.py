@@ -184,9 +184,18 @@ def test_every_public_assertion_is_selected_or_excluded(expect):
                f"inputs {len(public)} == selected {len(selected)} + excluded {len(excluded)}")
     expect.num(len(residue), 0,
                f"no public method matches neither rule; residue: {residue}")
-    for name, reason in excluded:
-        expect.at_least(len(reason.split()), 3,
-                        f"{name} is excluded with a stated reason, not a missing entry")
+    # NO DEAD EXEMPTION (#1339 :186). The reason check this replaces could not fail:
+    # an exclusion IS a lookup in _LEFT_OPERAND_KIND, so every excluded method has the
+    # table's reason by construction. What can rot is the table itself -- a kind no
+    # public method takes any more, waiting to exempt the next assertion that happens
+    # to name its first parameter that way. Every kind must be in use.
+    used = {_params(fn)[0]
+            for n, fn in inspect.getmembers(pgc_vacuity.Expect, inspect.isfunction)
+            if not n.startswith("_") and _params(fn)}
+    dead = sorted(k for k in _LEFT_OPERAND_KIND if k not in used)
+    expect.text(", ".join(dead) or "none", "none",
+                "every exclusion kind is the first parameter of a public method, "
+                "so none is a dead exemption")
 
 
 def test_wrote_is_excluded_because_its_left_operand_is_a_cursor(expect):
@@ -324,7 +333,7 @@ def test_the_refusal_cannot_be_switched_off_from_the_corpus_it_polices(expect):
         # prefix, which is the point, and an arm ABOUT sentinels therefore cannot use
         # the assertion it is describing on one.
         expect.num(1 if a.split(".")[0] == original else 0, 1,
-                   f"premise: minted under the real prefix ({spelling!r} case)")
+                   f"minted under the real prefix ({spelling!r} case)")
         pgc_vacuity.QUERY_ERROR = spelling             # the corpus rewrites it after
         try:
             e.text(a, b, "a rewritten prefix")

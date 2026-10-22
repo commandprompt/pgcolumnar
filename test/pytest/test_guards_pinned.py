@@ -1,4 +1,11 @@
-"""Every refusal in the layer, pinned to its own message.
+"""The layer's guards, each pinned to its own message.
+
+NOT EVERY REFUSAL IN THE LAYER (#1339 :1). This file pins the guards the census
+below found deletable, 17 arms. `pgc_vacuity` raises VacuityError at more sites than
+that, and several are pinned where their subject lives rather than here -- the
+failed-query refusals in `test_failed_query_sentinel.py`, the collection-time
+refusals in `test_layer.py`. A refusal added to the layer is not covered by this
+file's existing; it needs an arm here or in the file of its subject.
 
 WHY THIS FILE EXISTS. @jdatcmd neutered each guard in turn and found 11 of 17
 deletable with `test_layer.py` still green. Repeating the census over the whole
@@ -370,7 +377,7 @@ def test_the_empty_plan_refusal_precedes_the_arms_it_protects(expect):
                       if "if not absent and not found:" in l), None)
     expect.text(f"{i_refusal is not None} {i_absent is not None} {i_present is not None}",
                 "True True True",
-                "premise: all three were found, so the ordering can mean something")
+                "all three were found, so the ordering can mean something")
     # TWO ARMS, NOT ONE FLAG (#1030). `int(a < b and a < c)` collapses two
     # comparisons into 0 or 1, so a failure says `got 0 want 1` and cannot name
     # WHICH ordering broke -- with all three indices in scope one line above. Two
