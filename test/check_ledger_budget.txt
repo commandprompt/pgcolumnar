@@ -6193,20 +6193,23 @@ suites_not_covered 64
 #     dated         2974 + 12 = 2986
 #     4203 + 2986 == 7189
 #
-# #1341, native_reclaim_reconcile seeded, with its twin (OffgridwithJD): 4203 -> 4211,
+# #1341, native_reclaim_reconcile seeded, with its twin (OffgridwithJD): 4203 -> 4210,
 # and suites_not_covered 65 -> 64. The suite had no rows. It enters with its 13
 # checks from five-major runs (all green on each of 15-19, shell and twin alike), after two
 # fixes. Every reconcile check counted only the injected stale row, so a reconcile that
 # dropped EVERY free row, leaking all reusable space, passed 11/11 on main. A plain compact
 # (which does not reuse) must now keep the legitimate free ranges the earlier rewrite left,
-# as count and bytes, with a premise that one exists. And "row count intact" compared two
+# as count and bytes, and "compact_rewrite recorded the free ranges it left" checks that
+# one exists. It is not a premise (jdatcmd's #1692 review): the ranges exist only because
+# pgcolumnar recorded them, and nofree (record_free_space drops its insert, one line)
+# reddens it alone. And "row count intact" compared two
 # readings with plain check: with the server stopped before it, main passed it on two
 # empty strings. It is check_num now. The reuse-cycle loop is unrolled so its two names are
-# literals. 5 are dated by two mutations of the reconcile, each reddening the same names
-# in both twins. 8 arrive never.
+# literals. 6 are dated by three mutations, each reddening the same names in both twins.
+# 7 arrive never.
 #
 #     ledger rows   7189 + 13 = 7202
-#     never         4203 + 8 = 4211
-#     dated         2986 + 5 = 2991
-#     4211 + 2991 == 7202
-checks_never_observed_red 4211
+#     never         4203 + 7 = 4210
+#     dated         2986 + 6 = 2992
+#     4210 + 2992 == 7202
+checks_never_observed_red 4210
