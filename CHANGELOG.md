@@ -408,6 +408,16 @@ true until the next version shipped.
   whose max was `03:00` was skipped for `ts > '07:15+00'` although its `02:30` row
   matched. That pair is no longer used to skip; the reverse pair and same-type
   comparisons still are (#1738). `test/native_skip.sh` and `test_native_skip.py`.
+- **A second cancel during a remote export's cleanup no longer reports "errstart
+  was not called".** When a `parallel_export_parquet` to `s3://` was cancelled
+  again while the first cancel's cleanup was still deleting its parts, the export
+  failed with `XX000: errstart was not called` instead of its own 57014. The
+  cleanup ran with the first cancel's error still on the error stack, and the
+  object-store module's best-effort catch, swallowing the second cancel, emptied
+  the whole stack. That cleanup, and the sink abort in the Parquet, Arrow and
+  `_SUCCESS` writers, now copies the error out first and re-throws it afterwards
+  (#1741). `test/objstore_export_double_cancel.sh` and
+  `test_objstore_export_double_cancel.py`.
 - **`export_parquet` no longer marks a `timestamp` column as a UTC instant.** Both
   `timestamp` and `timestamptz` were written as the converted type `TIMESTAMP_MICROS`,
   which the Parquet spec defines as adjusted to UTC. Every other reader (pyarrow,

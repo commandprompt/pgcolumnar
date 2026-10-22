@@ -34,6 +34,18 @@ extern void PgColumnarSinkFinish(PqSink *snk);
 extern void PgColumnarSinkAbort(PqSink *snk);
 
 /*
+ * From inside a PG_CATCH: run `cleanup`, then re-throw the error being handled
+ * (#1741). Cleanup that can raise (a cancel during a remote DELETE) must not run
+ * while that error is still on the error stack: the best-effort catch that
+ * swallows the inner error empties the whole stack, and the re-throw then
+ * reports "errstart was not called". Never returns.
+ */
+extern void PgColumnarCleanupAndRethrow(void (*cleanup) (void *arg), void *arg);
+
+/* PgColumnarSinkAbort through PgColumnarCleanupAndRethrow. Never returns. */
+extern void PgColumnarSinkAbortAndRethrow(PqSink *snk);
+
+/*
  * Dev fault injection: the sink fails (as ENOSPC would) once total bytes
  * written would exceed this. -1 (default) disables. It drives the SAME error
  * path a real short write takes, so the suite's failure arms exercise the

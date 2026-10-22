@@ -382,6 +382,7 @@ behaviour, the source of that number is named.
 - [334. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards](#334-test_decode_interruptspy-the-decode-paths-interrupt-checks-each-inside-the-loop-it-guards)
 - [335. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value](#335-test_decode_skip_interruptspy-the-thrift-and-avro-skip-loops-of-a-hostile-file-yield-to-a-cancel-per-skipped-value)
 - [336. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop](#336-test_native_cancelpy-a-scans-row-group-load-yields-to-statement_timeout-inside-the-decode-loop)
+- [337. test_objstore_export_double_cancel.py: a second cancel during a remote export's cleanup keeps the export's own error](#337-test_objstore_export_double_cancelpy-a-second-cancel-during-a-remote-exports-cleanup-keeps-the-exports-own-error)
 
 ## 1. How to read a test in here
 
@@ -12613,3 +12614,21 @@ Every test makes one check under the shell's name, in a private database, becaus
 | `test_the_load_outlasts_the_timeout` | premise: the load outlasts the timeout, so the timeout can fire during it |
 | `test_the_short_timeout_is_what_fired` | the short timeout is what fired |
 | `test_the_cancel_arrives_well_before_the_load_completes` | cancel arrives well before the load completes |
+
+## 337. test_objstore_export_double_cancel.py: a second cancel during a remote export's cleanup keeps the export's own error
+
+The pytest twin of `test/objstore_export_double_cancel.sh` (#1741), every check by the shell's name. A `parallel_export_parquet` to `s3://` is cancelled while its workers upload, and again while the dispatcher's cleanup DELETE is held in flight by the fixture server's `__delete_delay__` hook. The export must report its own cancel (57014), and the server log must not gain "errstart was not called": the cleanup used to run with the first cancel's error still on the error stack, and the module's best-effort catch emptied the whole stack when it swallowed the second cancel. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole scenario once, and makes one `expect` call by the shell's check name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_double_cancel_sigv4_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_a_worker_was_uploading_before_the_first_cancel` | premise: a worker was uploading before the first cancel |
+| `test_the_cleanup_was_deleting_when_the_second_cancel_landed` | premise: the first cancel's cleanup was deleting when the second cancel landed |
+| `test_the_export_reports_its_own_cancel` | double cancel: the export reports its own cancel (57014) |
+| `test_the_server_log_has_no_errstart_was_not_called` | double cancel: the server log has no 'errstart was not called' |
+| `test_no_completed_object_remains_at_the_prefix` | double cancel: no completed object remains at the prefix |
+| `test_the_server_survived` | double cancel: the server survived |

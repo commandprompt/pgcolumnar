@@ -25,6 +25,12 @@
 #   /hangup/<file>   close every connection without answering at all: on a fresh
 #                    connection that is the server's answer, not a race to retry.
 #
+# Hook file, read per request from --dir:
+#   __delete_delay__ holds a number of seconds; every DELETE is logged at once and
+#                    answered only after that long. The double-cancel suite uses it
+#                    to hold the dispatcher's cleanup DELETE in flight while a
+#                    second cancel lands (#1741).
+#
 # SigV4 verification mode (#393 M2): with --sigv4-key/--sigv4-secret/
 # --sigv4-region, every request must carry a valid AWS Signature Version 4
 # Authorization header. The signature is recomputed here with python's stdlib
@@ -490,6 +496,11 @@ class Handler(BaseHTTPRequestHandler):
         self._log_line()
         if not self._sigv4_check():
             return
+        try:
+            with open(os.path.join(self.server.rootdir, "__delete_delay__")) as fh:
+                time.sleep(float(fh.read().strip() or 0))
+        except (OSError, ValueError):
+            pass
         q = self._qdict()
         _, local = self._resolve()
         if "uploadId" in q:
