@@ -521,7 +521,7 @@ check "and it agrees with the real reader on a SHORT file, which is why it survi
 # So the population is its own check, over its own four buckets. A suite is
 # ACCOUNTED when its log carries evidence it counted its checks -- either
 # lib.sh's accounting line, or its own `checks run:` line, which is what
-# bench_guards and docs_style print from private counters. Runtime-observable in
+# bench_guards prints from private counters (docs_style did until #1341). Runtime-observable in
 # both cases, and derived rather than declared, so a suite that adopts either
 # mechanism leaves the debt bucket on its own.
 
@@ -656,6 +656,7 @@ check "the debt file is in the tree" \
 # that prints its own `checks run:` line. Measured on this tree: of the twelve
 # registered suites that never call `pgc_summary`, exactly two emit a tally of their own
 # -- `bench_guards` and `docs_style` -- and the other ten keep none. The two are the 2.
+# (#1341 moved docs_style onto lib.sh; the run prints whoever remains.)
 #
 # THE NAMES ARE PRINTED BY THE RUN, not counted here: a third suite adopting its own
 # mechanism appears without anyone editing a number.

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 92
+suites_not_covered 91
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5641,4 +5641,21 @@ suites_not_covered 92
 #     never         3949 + 42 = 3991
 #     dated         2581 + 49 = 2630
 #     3991 + 2630 == 6621
-checks_never_observed_red 3991
+#
+# #1341, docs_style seeded, with its twin (OffgridwithJD): 3991 -> 4008, and
+# suites_not_covered 92 -> 91. The suite kept a private tally and emitted no RESULT
+# records, so nothing could be seeded for it. It now records through lib.sh's check() and
+# pgc_summary, as wal_envelope.sh does, with no cluster. Four arms read text a reader never
+# sees: with the 1024 floor or the join key kept only in an HTML comment, a stale VERSION
+# citation beside a hidden right one, or the roadmap nav entry commented out with #, main
+# passed all 58 checks. Each arm now reads the page without its comments. The per-version
+# changelog checks put the version in their names and the META.json pair came from a loop,
+# so neither could be graded: three fixed names and two literal checks replace them. 36
+# are dated by documentation mutations, each reddening the same name in both twins. 17
+# arrive never: the premises, and the checker's own examined-count control.
+#
+#     ledger rows   6621 + 53 = 6674
+#     never         3991 + 17 = 4008
+#     dated         2630 + 36 = 2666
+#     4008 + 2666 == 6674
+checks_never_observed_red 4008

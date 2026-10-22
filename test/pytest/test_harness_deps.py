@@ -157,6 +157,10 @@ NO_CLUSTER = [
     # driver into a shared library and checks the curve in Python -- no connection, no
     # cluster, no driver -- and the classifier agrees.
     "test_hilbert_curve.py",
+    # #1341's twin of docs_style.sh. It reads the published pages, META.json and the
+    # tree's scripts as files, and asks git for the tags and the archive -- no
+    # connection, no cluster, no driver.
+    "test_docs_style.py",
     "test_parquet_level_width.py",
 ]
 

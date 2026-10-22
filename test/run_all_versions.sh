@@ -1245,7 +1245,7 @@ pgc_log_shows_any_accounting() {	# pgc_log_shows_any_accounting LOGFILE -> yes|n
 	# Did this suite count its checks AT RUNTIME, by any mechanism the log shows?
 	#
 	# Two exist in the tree. lib.sh's pgc_summary prints the accounting line, and
-	# 239 suites use it. bench_guards and docs_style keep private counters and
+	# 239 suites use it. bench_guards keeps private counters (docs_style did until #1341) and
 	# print their own `checks run: N`; they never source lib.sh, so the first
 	# reader cannot see them, and calling them unaccounted would be false.
 	#
@@ -1882,6 +1882,7 @@ pgc_tally_suite() {	# pgc_tally_suite NAME VERDICT LOGFILE
 	# suite that prints its own `checks run:` line. Measured on this tree: twelve
 	# registered suites never call `pgc_summary`, and of those exactly two --
 	# `bench_guards` and `docs_style` -- emit a tally of their own, which is the 2.
+	# (#1341 moved docs_style onto lib.sh, so today it is bench_guards alone.)
 	# The other ten keep no tally at all and are the real debt.
 	#
 	# THE NAMES ARE PRINTED, NOT COUNTED, so nothing here can go stale: the two are
@@ -1934,7 +1935,7 @@ pgc_tally_suite() {	# pgc_tally_suite NAME VERDICT LOGFILE
 		# their own `checks run:` instead. That is a statement about the ACCOUNTING
 		# LINE and nothing else: measured over all twelve of them, ten emit RESULT
 		# records perfectly well (audit 31, phase4 38, unique_conc 31, ...) and only
-		# bench_guards and docs_style emit none -- which is the pair the comment on
+		# bench_guards and docs_style emitted none (docs_style records since #1341) -- the pair the comment on
 		# pgc_log_shows_any_accounting already names, for the real reason: those two
 		# never source lib.sh at all.
 		echo "    $_acc_ran printed lib.sh's accounting line; these printed their own \`checks run:\` instead (a different accounting LINE, not a missing RESULT record):${_acc_own% }"

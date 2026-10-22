@@ -93,6 +93,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      # The docs_style twin compares each dated CHANGELOG section with its release tag
+      # (#1341). The default checkout fetches no tags, so without this its four changelog
+      # arms would decline here on every run. Depth 1, as in the suites job.
+      - name: fetch the release tags, for the changelog section comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
       - name: install pytest, pinned from requirements-test.txt, WITHOUT the driver
         run: |
           set -euo pipefail

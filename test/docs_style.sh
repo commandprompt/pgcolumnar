@@ -53,30 +53,22 @@
 # Written fresh for pgColumnar.
 
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 SRCDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-checks=0
-fail=0
-check() {
-	local name="$1" got="$2" want="$3"
-	checks=$((checks + 1))
-	if [ "$got" = "$want" ]; then
-		echo "PASS  $name"
-	else
-		echo "FAIL  $name: got [$got] want [$want]"
-		fail=1
-	fi
-}
+# lib.sh's check() AND pgc_summary, NOT A PRIVATE TALLY (#1341). This suite kept its
+# own counter and emitted no RESULT records, so no ledger row could ever be seeded for
+# it and its pytest twin had nothing to be compared with. It now records like every
+# other suite. Like wal_envelope.sh it needs no cluster, so pgc_setup is skipped and
+# the counters check() expects are provided here. PGC_MAJOR comes from the pg_config
+# the runner passes every suite, so a record names the major it ran on (#1121).
+PGC_MAJOR="$(pgc_major_of "${1:-}")"
+PGC_CHECKS=0
+PGC_FAIL=0
 
-# THIS SUITE KEEPS ITS OWN TALLY, not lib.sh's, and emits none of the machine
-# RESULT vocabulary. So it cannot report a `SKIP` OUTCOME: selftest 400 refuses
-# `echo "SKIP` in any file that calls `check`, because a skip there is a check
-# result a count and a record must see, and this suite has neither to put it in.
-#
-# A property this suite cannot compare is therefore a NOTE: printed for a reader,
-# counted as nothing, claiming no outcome. Where the reason is itself a fact about
-# the tree it is asserted with `check` instead -- see the no-baseline arm below --
-# so "this cannot be checked" is itself checked rather than asserted.
+# A property this suite cannot compare in a checkout without release tags is a NOTE,
+# printed for a reader and counted as nothing; see the changelog block below for why it
+# is not recorded unrunnable. note() is not lib.sh's: it is defined here.
 #
 # Reaching for lib.sh's helper of that name here is `command not found`: it prints
 # nothing, counts nothing and fails nothing while the suite reports PASSED.
@@ -86,6 +78,17 @@ note() {	# note TEXT
 }
 
 command -v python3 >/dev/null || { echo "FAIL  python3 not found"; exit 1; }
+
+# WHAT A READER SEES, NOT WHAT THE FILE HOLDS (#1341 port). Every arm below that asks
+# whether a page SAYS something read the raw file, so the sentence passed from inside
+# an HTML comment that no reader ever sees. Measured on main: the 1024-floor line moved
+# into `<!-- -->`, "join key" kept only in a comment, and a stale VERSION citation with
+# the right one hidden beside it each left the whole suite green. `_md` is the page as
+# rendered prose: the file with its HTML comments removed.
+_md() {	# _md FILE -> the file's text without <!-- --> comments
+	python3 -c 'import re, sys
+sys.stdout.write(re.sub(r"<!--.*?-->", "", open(sys.argv[1], encoding="utf-8").read(), flags=re.S))' "$1"
+}
 
 echo "== pgColumnar test: docs_style.sh =="
 
@@ -111,7 +114,9 @@ check "and it actually examined the documents" \
 # That case is also caught by "mkdocs build --strict" in docs.yml, which fails on a nav
 # entry pointing at nothing. Half a property here and half in a workflow is how the
 # missing half goes unnoticed, so both halves are stated here.
-nav_roadmap=$(grep -c "roadmap.md" "$SRCDIR/mkdocs.yml" || true)
+# A COMMENTED-OUT ENTRY IS NOT IN THE NAV. The raw grep counted `# - Roadmap: roadmap.md`,
+# so a nav entry disabled with `#` passed: measured on main.
+nav_roadmap=$(sed -E 's/(^|[[:space:]])#.*//' "$SRCDIR/mkdocs.yml" | grep -c "roadmap.md" || true)
 check "the roadmap is in the documentation nav" "$([ "$nav_roadmap" -ge 1 ] && echo yes || echo no)" "yes"
 check "and the page that nav entry points at exists" \
 	"$([ -f "$SRCDIR/docs/roadmap.md" ] && echo yes || echo no)" "yes"
@@ -132,7 +137,7 @@ check "no document carries a merge conflict marker" \
 # values and percentiles approximately". The section is found by its heading and
 # must open with the pg_partman paragraph its steps belong to.
 partman_open="$(awk '$0 == "## Manage time partitions with pg_partman" {f=1; next}
-	f && NF {print; exit}' "$SRCDIR/docs/how-to.md")"
+	f && NF {print; exit}' <(_md "$SRCDIR/docs/how-to.md"))"
 check "the how-to keeps its pg_partman section under its own heading" \
 	"$(printf '%s' "$partman_open" | grep -c '^pg_partman can create and drop columnar partitions')" "1"
 
@@ -149,7 +154,8 @@ _howto_rf() {
 	python3 - "$SRCDIR/docs/how-to.md" <<'PY'
 from pathlib import Path
 import sys
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
+import re
+text = re.sub(r"<!--.*?-->", "", Path(sys.argv[1]).read_text(encoding="utf-8"), flags=re.S)
 heading = "## Skip fact-table work under a star-schema join"
 start = text.find(heading)
 if start < 0:
@@ -168,7 +174,8 @@ _practices_jk() {
 	python3 - "$SRCDIR/docs/best-practices.md" <<'PY'
 from pathlib import Path
 import sys
-text = Path(sys.argv[1]).read_text(encoding="utf-8").lower()
+import re
+text = re.sub(r"<!--.*?-->", "", Path(sys.argv[1]).read_text(encoding="utf-8"), flags=re.S).lower()
 print("yes" if "join key" in text else "no")
 PY
 }
@@ -207,7 +214,8 @@ check "best-practices names clustering on the join key" \
 # reader got wrong: blank lines are absent inside a markdown table and arbitrary in
 # prose, while a heading is declared.
 _floor_line() {	# _floor_line FILE -- yes if one line names the setting and the floor
-	if grep -qE 'stripe_row_limit.*1024|1024.*stripe_row_limit' "$1"; then
+	# grep -c, not -q: an early-exit reader under pipefail turns a match into a failure
+	if [ "$(_md "$1" | grep -cE 'stripe_row_limit.*1024|1024.*stripe_row_limit')" -gt 0 ]; then
 		echo yes
 	else
 		echo no
@@ -220,7 +228,7 @@ _floor_same_section() {	# _floor_same_section FILE ADVICE -- yes if both are und
 			if (index(tolower($0), tolower(advice))) a[h] = 1
 			if (/stripe_row_limit/ && /1024/) f[h] = 1
 		}
-		END { for (k in a) if (k in f) { print "yes"; exit } print "no" }' "$1"
+		END { for (k in a) if (k in f) { print "yes"; exit } print "no" }' <(_md "$1")
 }
 check "configuration.md states the 1024 floor where it documents the setting" \
 	"$(_floor_line "$SRCDIR/docs/configuration.md")" "yes"
@@ -258,7 +266,7 @@ check "premise: at least one document cites the VERSION file" \
 
 _stale=""
 for _d in $_verdocs; do
-	grep -q "\`$_ver\`, recorded in \`VERSION\`" "$_d" || _stale="$_stale $(basename "$_d")"
+	[ "$(_md "$_d" | grep -c "\`$_ver\`, recorded in \`VERSION\`")" -gt 0 ] || _stale="$_stale $(basename "$_d")"
 done
 check "every document citing VERSION quotes the version VERSION holds" \
 	"$(printf '%s' "$_stale" | sed 's/^ //')" ""
@@ -328,14 +336,14 @@ check "premise: at least one document names the latest published pre-release" \
 # and yields no version is a file this rule cannot see, and it is named rather
 # than skipped.
 # shellcheck disable=SC2086
-_pubvers="$( { grep -rhoE 'latest published pre-release is `v[^`]*`' $_pubdocs 2>/dev/null
-               grep -rhoE '`v[^`]*` is the latest published pre-release' $_pubdocs 2>/dev/null
-             } | grep -oE '`v[^`]*`' | tr -d '`' | LC_ALL=C sort -u)"
+_pubvers="$(for _d in $_pubdocs; do _md "$_d"; done \
+	| grep -oE 'latest published pre-release is `v[^`]*`|`v[^`]*` is the latest published pre-release' \
+	| grep -oE '`v[^`]*`' | tr -d '`' | LC_ALL=C sort -u)"
 
 _pubunparsed=""
 for _d in $_pubdocs; do
-	grep -qE 'latest published pre-release is `v[^`]*`|`v[^`]*` is the latest published pre-release' \
-		"$_d" || _pubunparsed="$_pubunparsed $(basename "$_d")"
+	[ "$(_md "$_d" | grep -cE 'latest published pre-release is `v[^`]*`|`v[^`]*` is the latest published pre-release')" -gt 0 ] \
+		|| _pubunparsed="$_pubunparsed $(basename "$_d")"
 done
 check "every document making the claim states it in a form this rule can read" \
 	"$(printf '%s' "$_pubunparsed" | sed 's/^ //')" ""
@@ -484,7 +492,7 @@ _upg_sentences() {	# _upg_sentences FILE -> one sentence per line
 	# by period-space, which also protects a sentence ENDING in a number and
 	# merges it with the next one -- demonstrated by @OffgridwithJD with
 	# `The corpus held 1444. ` injected ahead of the claim.
-	sed -E 's/^([0-9]+)\. /\1.@LM@/' "$1" \
+	_md "$1" | sed -E 's/^([0-9]+)\. /\1.@LM@/' \
 		| tr '\n' ' ' \
 		| sed 's/\. /.\n/g' \
 		| sed 's/@LM@/ /g'
@@ -576,14 +584,19 @@ _pgxn_ver="$(printf '%s' "$_ver" | awk -F- '{
 check "premise: the PGXN form was derived from VERSION, not empty" \
 	"$([ -n "$_pgxn_ver" ] && echo yes || echo no)" "yes"
 
-for _mk in version provides.pgcolumnar.version; do
-	check "META.json $_mk is the version VERSION holds, in PGXN form" \
-		"$(python3 -c "
+_meta_get() {	# _meta_get DOTTED.KEY -> that value of META.json, or empty
+	python3 -c "
 import json,sys
 m=json.load(open(sys.argv[1]))
 for k in sys.argv[2].split('.'): m=m[k]
-print(m)" "$_meta" "$_mk" 2>/dev/null)" "$_pgxn_ver"
-done
+print(m)" "$_meta" "$1" 2>/dev/null
+}
+# TWO LITERAL CHECKS, not a loop: a name built from a loop variable is invisible to the
+# twin grader, which reads only literal names.
+check "META.json version is the version VERSION holds, in PGXN form" \
+	"$(_meta_get version)" "$_pgxn_ver"
+check "META.json provides.pgcolumnar.version is the version VERSION holds, in PGXN form" \
+	"$(_meta_get provides.pgcolumnar.version)" "$_pgxn_ver"
 
 # The defect that actually shipped. `git archive` rather than a filesystem test,
 # because what matters is whether the DISTRIBUTION contains it -- an export-ignore
@@ -724,18 +737,19 @@ fi
 
 _cl_seen=0
 _cl_usedrows=""
+_cl_nosec=""
+_cl_bad=""
+_cl_lost=""
+# THREE CHECKS WITH FIXED NAMES, each naming the versions it found wrong in its
+# reading. One check per version per property put the version in the NAME, which no
+# twin grader can read and which grows by two names every release (#1341 port).
 while read -r _cl_v; do
 	[ -n "$_cl_v" ] || continue
 	_cl_seen=$((_cl_seen + 1))
-	_cl_name="the $_cl_v section holds what v$_cl_v shipped, plus only what is recorded"
-	if [ -n "$_cl_why" ]; then
-		note "$_cl_name: not compared ($_cl_why)"
-		continue
-	fi
+	[ -z "$_cl_why" ] || continue
 	_cl_tagged="$(_cl_git show "v$_cl_v:CHANGELOG.md" | _cl_entries "$_cl_v" | LC_ALL=C sort)"
 	if [ -z "$_cl_tagged" ]; then
-		check "v$_cl_v carries a dated section of its own to compare against" \
-			"no section for $_cl_v at v$_cl_v" "a section for $_cl_v at v$_cl_v"
+		_cl_nosec="$_cl_nosec $_cl_v"
 		continue
 	fi
 	_cl_nowents="$(_cl_entries "$_cl_v" < "$SRCDIR/CHANGELOG.md" | LC_ALL=C sort)"
@@ -748,9 +762,25 @@ while read -r _cl_v; do
 	_cl_allowed="$(awk -F'\t' -v v="$_cl_v" '$1==v && $2 != "" {print $2}' "$_cl_allowfile" 2>/dev/null | LC_ALL=C sort)"
 	[ -n "$_cl_allowed" ] && _cl_usedrows="$_cl_usedrows$_cl_allowed
 "
-	check "$_cl_name" "$_cl_extra" "$_cl_allowed"
-	check "the $_cl_v section still holds every entry v$_cl_v shipped" "$_cl_gone" ""
+	[ "$_cl_extra" = "$_cl_allowed" ] \
+		|| _cl_bad="$_cl_bad $_cl_v: added [$(printf '%s' "$_cl_extra" | tr '\n' '|')] recorded [$(printf '%s' "$_cl_allowed" | tr '\n' '|')]"
+	[ -z "$_cl_gone" ] || _cl_lost="$_cl_lost $_cl_v: [$(printf '%s' "$_cl_gone" | tr '\n' '|')]"
 done <<CLEOF
+$(_cl_versions < "$SRCDIR/CHANGELOG.md")
+CLEOF
+# WITHOUT TAGS THESE ARE NOTES, as they always were: the nightly coverage job checks
+# out with no tags and counts any non-zero suite as failed, so recording them unrunnable
+# there would redden a job for a checkout's shape. Every job that runs this suite to
+# decide anything (ci suites, nightly suites) fetches the release tags.
+if [ -n "$_cl_why" ]; then
+	note "every dated changelog section has its own section at its release tag: not compared ($_cl_why)"
+	note "every dated changelog section holds what its tag shipped, plus only what is recorded: not compared ($_cl_why)"
+	note "every dated changelog section still holds every entry its tag shipped: not compared ($_cl_why)"
+else
+	check "every dated changelog section has its own section at its release tag" "${_cl_nosec# }" ""
+	check "every dated changelog section holds what its tag shipped, plus only what is recorded" "${_cl_bad# }" ""
+	check "every dated changelog section still holds every entry its tag shipped" "${_cl_lost# }" ""
+fi
 $(_cl_versions < "$SRCDIR/CHANGELOG.md")
 CLEOF
 
@@ -775,7 +805,7 @@ if [ -z "$_cl_why" ]; then
 	check "no recorded post-tag entry is stale, so the allowance cannot widen silently" \
 		"$_cl_stale" ""
 else
-	note "no recorded post-tag entry is stale: not compared ($_cl_why)"
+	note "no recorded post-tag entry is stale, so the allowance cannot widen silently: not compared ($_cl_why)"
 fi
 
 
@@ -788,7 +818,10 @@ fi
 #
 # The driver without the instruction is worse than either alone -- it makes the
 # badge lie and gives nobody the reason -- so the two are asserted together.
-check "premise: CHANGELOG.md still has the union merge driver" \
+# NOT A PREMISE: it is the same repository fact as the driver check above, and removing
+# that line from .gitattributes reddens both. A premise must not go red under a change
+# to what the suite checks (#1339), so this is an ordinary check.
+check "and CHANGELOG.md still has the union merge driver those instructions are about" \
 	"$(grep -c '^CHANGELOG\.md[[:space:]]\+merge=union$' "$SRCDIR/.gitattributes")" "1"
 check "and CONTEXT.md tells a contributor what a CONFLICTING badge means" \
 	"$(grep -c 'CONFLICTING badge on CHANGELOG.md means rebase locally' "$SRCDIR/CONTEXT.md")" "1"
@@ -822,10 +855,4 @@ check "no documented query tests pg_extension while listing databases" \
 	"$(printf '%s\n' "$_xdb_stmts" | grep 'pg_database' | grep -c 'pg_extension')" "0"
 
 
-echo "checks run: $checks"
-if [ "$fail" = 0 ]; then
-	echo "docs_style.sh: PASSED"
-	exit 0
-fi
-echo "docs_style.sh: FAILED"
-exit 1
+pgc_summary
