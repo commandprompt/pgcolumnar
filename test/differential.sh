@@ -91,6 +91,10 @@ for c in $ALL_COLS; do
 	diff_query "$c is null"   "SELECT id FROM %T WHERE $c IS NULL"
 	diff_query "$c not null"  "SELECT id FROM %T WHERE $c IS NOT NULL"
 done
+# c_ztext is never NULL by construction ('' on even rows, 'z'||g on odd), so its
+# "is null" arm above compares EMPTY with EMPTY and cannot fail (#1339). The empty
+# strings are what a null bitmap could confuse with NULL, so they are counted.
+check_num "c_ztext empty strings are not nulls" "$(q "SELECT count(*) FROM t_col WHERE c_ztext = ''")" "6000"
 
 # Ordered types with a min/max aggregate (uuid and bytea order under btree but
 # have no min/max aggregate; their ordering is covered by the range predicates).
@@ -119,6 +123,9 @@ diff_query "c_text range"  "SELECT id FROM %T WHERE c_text > 't5000'"
 
 # Equality predicates.
 diff_query "c_int eq"   "SELECT id FROM %T WHERE c_int = 600"
+# c_int = 600 needs g = 100, whose c_int is NULL, so "c_int eq" compares EMPTY with
+# EMPTY (#1339). 607 needs g = 101, which no null modulus touches.
+diff_query "c_int eq present" "SELECT id FROM %T WHERE c_int = 607"
 diff_query "c_vc eq"    "SELECT id FROM %T WHERE c_vc = 'v500'"
 diff_query "c_bool eq"  "SELECT id FROM %T WHERE c_bool = true"
 diff_query "c_uuid eq"  "SELECT id FROM %T WHERE c_uuid = md5('999')::uuid"
@@ -145,6 +152,11 @@ make_pair "id int, v text"
 diff_query "empty scan"  "SELECT * FROM %T"
 diff_query "empty count" "SELECT count(*) FROM %T"
 diff_query "empty agg"   "SELECT min(id), max(id), sum(id) FROM %T"
+# "empty scan" compares two empty results, so it cannot fail on its own (#1339): the
+# control is that the same query returns the row once one exists on both sides.
+psql_run "INSERT INTO t_heap VALUES (1, 'x'); INSERT INTO t_col VALUES (1, 'x');" >/dev/null
+diff_query "empty scan control: one row is visible to both" "SELECT * FROM %T"
+check_num "and the control really did put a row there" "$(q "SELECT count(*) FROM t_col")" "1"
 
 # Single row.
 make_pair "id int, v text"
@@ -180,6 +192,11 @@ done
 make_pair "id int, allnull int, v text"
 q "SELECT pgcolumnar.set_options('t_col', chunk_group_row_limit => 100);" >/dev/null
 load_pair "SELECT g, NULL::int, 'r'||g FROM generate_series(1,350) g"
+# Several groups, or the arms below are about one group (#1339: the twin's arm, here
+# too). pgcolumnar's own layout, so not a premise: the table's chunk_group_row_limit
+# ignored reddens it.
+check "the all-null column spans several chunk groups" \
+	"$([ "$(chunk_group_count)" -ge 4 ] && echo yes || echo "no ($(chunk_group_count) groups)")" "yes"
 diff_query "allnull column scan"  "SELECT * FROM %T"
 diff_query "allnull column count" "SELECT count(allnull) FROM %T"
 diff_query "allnull column isnull" "SELECT count(*) FROM %T WHERE allnull IS NULL"
@@ -193,6 +210,15 @@ load_pair "SELECT g, CASE WHEN g BETWEEN 101 AND 200 THEN NULL ELSE g END FROM g
 diff_query "allnull chunk scan"   "SELECT * FROM %T"
 diff_query "allnull chunk range"  "SELECT id FROM %T WHERE sometimes BETWEEN 150 AND 250"
 diff_query "allnull chunk isnull" "SELECT id FROM %T WHERE sometimes IS NULL"
+# THE CLAIM IS A WHOLE GROUP, so it is counted where the writer records it (#1339):
+# column 1's per-vector zone maps, one of which must hold nulls and no value. With
+# the table's chunk_group_row_limit ignored, the 400 rows land in one group, the
+# three arms above still agree, and this goes red.
+check_num "allnull chunk: exactly one chunk group of the column is entirely null" \
+	"$(q "SELECT count(*) FROM pgcolumnar.zone_map
+	      WHERE storage_id = pgcolumnar.get_storage_id('t_col')
+	        AND column_index = 1 AND vector_index >= 0
+	        AND value_count = 0 AND null_count > 0")" "1"
 
 # Empty string vs NULL must stay distinct.
 make_pair "id int, s text"
@@ -274,6 +300,23 @@ q "SELECT pgcolumnar.set_options('t_col', compression => 'none');" >/dev/null
 load_pair "SELECT g, (g%7)::bigint FROM generate_series(1,5000) g"
 diff_query "enc+nocompress scan" "SELECT * FROM %T"
 diff_query "enc+nocompress agg"  "SELECT count(*), sum(v), min(v), max(v) FROM %T"
+# "enc+" IS A CLAIM, and the two arms above hold just as well for a column the writer
+# stored plain (#1339): with every vector forced to encoding NONE, both stayed green.
+# column_chunk records each vector's chosen encoding (0 is NONE) and the block codec.
+check "enc+nocompress: the column is stored encoded, with no block codec" \
+	"$(q "SELECT CASE WHEN count(*) = 0 THEN 'no chunks'
+	                  WHEN bool_or(c.block_codec <> 0) THEN 'a block codec'
+	                  WHEN sum((SELECT count(*) FROM generate_series(0,
+	                          get_byte(c.encoding_descriptor, 2)
+	                          + get_byte(c.encoding_descriptor, 3) * 256
+	                          + get_byte(c.encoding_descriptor, 4) * 65536
+	                          + get_byte(c.encoding_descriptor, 5) * 16777216 - 1) i
+	                        WHERE get_byte(c.encoding_descriptor, 6 + i * 13) = 0)) > 0
+	                       THEN 'plain vectors'
+	                  ELSE 'encoded, no codec' END
+	      FROM pgcolumnar.column_chunk c
+	      WHERE c.storage_id = pgcolumnar.get_storage_id('t_col') AND c.column_index = 1")" \
+	"encoded, no codec"
 
 # ---------------------------------------------------------------------------
 # Part 4: compressed execution (I3)
@@ -348,8 +391,30 @@ diff_query "textbloom C absent" "SELECT count(*) FROM %T WHERE tc = 'zzzzzzzz'"
 # so both sides counted 0 and a bloom wrongly skipping the chunk could not show. Row 7's
 # value is present exactly once, the way "textbloom present" probes tk.
 diff_query "textbloom C eq"     "SELECT count(*) FROM %T WHERE tc = 'c' || ((7*40503)%50000)"
-# mismatched explicit COLLATE must still return correct results (not pushed)
-diff_query "textbloom collate-mismatch" "SELECT count(*) FROM %T WHERE tk = 'k100' COLLATE \"C\""
+# mismatched explicit COLLATE must still return correct results (not pushed). The
+# probe is a value that IS present (#1339): 'k100' is in no row, so a bloom wrongly
+# pushed under the mismatched collation returned 0, which is also the right answer
+# for an absent value, and the arm could not fail.
+present="$(q "SELECT tk FROM t_heap ORDER BY id LIMIT 1")"
+check_num "premise: the mismatched-collation probe value is present exactly once" \
+	"$(q "SELECT count(*) FROM t_heap WHERE tk = '$present'")" "1"
+diff_query "textbloom collate-mismatch" "SELECT count(*) FROM %T WHERE tk = '$present' COLLATE \"C\""
+check_num "textbloom collate-mismatch returns the row rather than skipping it" \
+	"$(q "SELECT count(*) FROM t_col WHERE tk = '$present' COLLATE \"C\"")" "1"
+# THE BLOOM ITSELF (#1339). Every arm above is a correctness comparison, and a scan
+# that never consulted the bloom answers all of them correctly. 'k50000' is absent
+# (the domain stops at k49999) and sorts inside every group's range, so min/max
+# cannot remove a group for it; only the bloom can. Groups removed with the bloom on
+# must exceed groups removed with it off.
+bloom_removed() {
+	q "SET max_parallel_workers_per_gather = 0; SET pgcolumnar.enable_bloom_filter = $1;
+	   EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM t_col WHERE tk = 'k50000';" \
+		| sed -n 's/.*Columnar Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' | head -1
+}
+b_on="$(bloom_removed on)"; b_off="$(bloom_removed off)"
+check "textbloom absent: the bloom removes chunk groups min/max alone cannot" \
+	"$(if ! pgc_is_number "$b_on" || ! pgc_is_number "$b_off"; then echo "no reading (on [$b_on] off [$b_off])";
+	   elif [ "$b_on" -gt "$b_off" ]; then echo more; else echo "not more (on $b_on, off $b_off)"; fi)" "more"
 
 # ---------------------------------------------------------------------------
 # Part 6: selective filter with several wide output columns
@@ -367,6 +432,10 @@ diff_query "wide point"    "SELECT id, a, b, c FROM %T WHERE sel = 12345"
 diff_query "wide range"    "SELECT id, a, b FROM %T WHERE sel BETWEEN 5000 AND 5100"
 diff_query "wide nomatch"  "SELECT id, a, b, c FROM %T WHERE sel = 999999"
 diff_query "wide most"     "SELECT id, a FROM %T WHERE sel > 100"
+# "wide nomatch" matches nothing on both sides and cannot fail on its own (#1339):
+# the same projection at a value that IS present must return its row.
+diff_query "wide nomatch control: a present value returns its row" "SELECT id, a, b, c FROM %T WHERE sel = 19999"
+check_num "and the control really did match one row" "$(q "SELECT count(*) FROM t_col WHERE sel = 19999")" "1"
 
 # ---------------------------------------------------------------------------
 # Part 7: covering count(*) from metadata (gap 28)

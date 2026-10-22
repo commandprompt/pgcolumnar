@@ -27,7 +27,12 @@ the three premise arms below are not decoration, they are what `watch_writes` wo
 have done.
 """
 
+import re
+
+import psycopg
 import pytest
+
+from pgc_vacuity import query_error
 
 # Exactly the suite's MATRIX_DEFS, in order. The types are the point, so they are written
 # out rather than generated: a generator would be a second place for the list to be wrong.
@@ -309,17 +314,10 @@ def test_sum_and_avg_agree_for_every_numeric_type(matrix, col, expect):
                     else f"relative {rel:.3e} (got {got!r} want {want!r})",
                     "within tolerance",
                     f"{col} sum/avg agrees on {what} within {FLOAT_RTOL} relative")
-    # AND THE CONTROL: the tolerance must not be so loose that it accepts anything. A
-    # decode error large enough to matter is orders of magnitude outside it, so the arm
-    # asserts the bound is tight enough to have a direction.
-    #
-    # This compares two module constants, so it cannot move at run time -- it is a
-    # drift guard against somebody loosening FLOAT_RTOL, and it fails only when the
-    # source changes. Which is exactly why its failure has to say what the constant
-    # became.
-    expect.text("tight" if FLOAT_RTOL < 1e-3 else f"FLOAT_RTOL is {FLOAT_RTOL}",
-                "tight",
-                f"{col} sum/avg tolerance is tight enough to fail on a real decode error")
+    # NO "TOLERANCE IS TIGHT" ARM (#1339). It compared FLOAT_RTOL with a literal, so it
+    # measured nothing about decoding and could not move at run time. A decode error is
+    # caught exactly, value by value, by "{col} project" above; the tolerance here only
+    # absorbs summation order.
 
 
 @pytest.mark.parametrize("col", sorted(RANGES))
@@ -363,10 +361,15 @@ def test_an_ordered_projection_agrees_in_order(matrix, expect):
     pass both arms while asserting nothing, which is `pgc_check_ordered_oracle`'s third
     assertion and the reason it exists.
     """
-    fwd, _ = matrix.both("SELECT id FROM %T ORDER BY id LIMIT 25")
-    rev, _ = matrix.both("SELECT id FROM %T ORDER BY id DESC LIMIT 25")
+    # THE ORACLE'S OWN PREMISES READ NO COLUMNAR TABLE, as pgc_check_ordered_oracle's
+    # do (#1339). Read through t_col, a scan that returned nothing reddened a "premise".
+    fwd, _ = matrix.both("SELECT g FROM generate_series(1,5) g ORDER BY g")
+    rev, _ = matrix.both("SELECT g FROM generate_series(1,5) g ORDER BY g DESC")
+    again, _ = matrix.both("SELECT g FROM generate_series(1,5) g ORDER BY g")
     expect.ordering_observable(fwd, rev,
                               "premise: the ordered oracle is order-sensitive")
+    expect.ordered_rows(again, fwd, "premise: the ordered oracle agrees with itself")
+    expect.row_set(rev, fwd, "control: the set oracle is order-blind by design")
 
     c, h = matrix.both("SELECT id, c_int, c_text FROM %T ORDER BY id LIMIT 25")
     expect.ordered_rows(c, h, "order limit head")
@@ -524,7 +527,9 @@ def test_a_column_that_is_entirely_null_agrees(pgc_conn, expect):
     p = _pair(pgc_conn, "id int, allnull int, v text",
               load="SELECT g, NULL::int, 'r'||g FROM generate_series(1,350) g",
               options="chunk_group_row_limit => 100")
-    expect.at_least(_groups(p), 4, "premise: the all-null column spans several chunk groups")
+    # NOT A PREMISE (#1339): the group count is the writer honouring the table's
+    # chunk_group_row_limit, and ignoring it reddens this.
+    expect.at_least(_groups(p), 4, "the all-null column spans several chunk groups")
     for label, sql in (("allnull column scan",   "SELECT * FROM %T"),
                        ("allnull column count",  "SELECT count(allnull) FROM %T"),
                        ("allnull column isnull", "SELECT count(*) FROM %T WHERE allnull IS NULL"),
@@ -546,13 +551,21 @@ def test_a_whole_chunk_group_that_is_null_agrees(pgc_conn, expect):
               load="SELECT g, CASE WHEN g BETWEEN 101 AND 200 THEN NULL ELSE g END "
                    "FROM generate_series(1,400) g",
               options="chunk_group_row_limit => 100")
-    expect.num(p.one("SELECT count(*) FROM t_col WHERE sometimes IS NULL"), 100,
-               "premise: exactly one hundred rows are null, so one whole group is")
+    expect.num(p.one("SELECT count(*) FROM t_heap WHERE sometimes IS NULL"), 100,
+               "premise: exactly one hundred rows are null")
     for label, sql in (("allnull chunk scan",   "SELECT * FROM %T"),
                        ("allnull chunk range",  "SELECT id FROM %T WHERE sometimes BETWEEN 150 AND 250"),
                        ("allnull chunk isnull", "SELECT id FROM %T WHERE sometimes IS NULL")):
         c, h = p.both(sql)
         expect.row_set(c, h, label)
+    # THE CLAIM IS A WHOLE GROUP (#1339): counted in column 1's per-vector zone maps,
+    # one of which must hold nulls and no value. With the table's chunk_group_row_limit
+    # ignored, every arm above still agreed and the old premise still read 100.
+    expect.num(p.one("SELECT count(*) FROM pgcolumnar.zone_map "
+                     "WHERE storage_id = pgcolumnar.get_storage_id('t_col') "
+                     "AND column_index = 1 AND vector_index >= 0 "
+                     "AND value_count = 0 AND null_count > 0"), 1,
+               "allnull chunk: exactly one chunk group of the column is entirely null")
 
 
 def test_the_empty_string_stays_distinct_from_null(pgc_conn, expect):
@@ -565,9 +578,9 @@ def test_the_empty_string_stays_distinct_from_null(pgc_conn, expect):
     p = _pair(pgc_conn, "id int, s text",
               load="SELECT g, CASE WHEN g%2=0 THEN '' WHEN g%3=0 THEN NULL ELSE 'x'||g END "
                    "FROM generate_series(1,300) g")
-    expect.at_least(p.one("SELECT count(*) FROM t_col WHERE s = ''"), 1,
+    expect.at_least(p.one("SELECT count(*) FROM t_heap WHERE s = ''"), 1,
                     "premise: there are empty strings to confuse")
-    expect.at_least(p.one("SELECT count(*) FROM t_col WHERE s IS NULL"), 1,
+    expect.at_least(p.one("SELECT count(*) FROM t_heap WHERE s IS NULL"), 1,
                     "premise: and nulls to confuse them with")
     for label, sql in (("empty-vs-null scan",    "SELECT * FROM %T"),
                        ("empty-vs-null empties", "SELECT count(*) FROM %T WHERE s = ''"),
@@ -632,9 +645,9 @@ def test_the_integer_encodings_round_trip(pgc_conn, expect):
               load="SELECT g, g::bigint*3, g%4, 42, ((g*2654435761)%1000000000)::bigint "
                    "FROM generate_series(1,10000) g",
               options=_ENC_OPTS)
-    expect.num(p.one("SELECT count(DISTINCT lowcard) FROM t_col"), 4,
+    expect.num(p.one("SELECT count(DISTINCT lowcard) FROM t_heap"), 4,
                "premise: the low-cardinality column really has four values")
-    expect.num(p.one("SELECT count(DISTINCT constv) FROM t_col"), 1,
+    expect.num(p.one("SELECT count(DISTINCT constv) FROM t_heap"), 1,
                "premise: and the constant column really has one")
     for label, sql in (
             ("enc whole-row",  "SELECT * FROM %T"),
@@ -667,9 +680,9 @@ def test_the_float_and_timestamp_encodings_round_trip(pgc_conn, expect):
                    "TIMESTAMP '2020-01-01' + make_interval(mins => g), "
                    "(100 + (g%7) * 0.25)::float8 FROM generate_series(1,10000) g",
               options=_ENC_OPTS)
-    expect.at_least(p.one("SELECT count(DISTINCT alt) FROM t_col"), 9000,
+    expect.at_least(p.one("SELECT count(DISTINCT alt) FROM t_heap"), 9000,
                     "premise: the random walk is high-cardinality, so a dictionary bails")
-    expect.num(p.one("SELECT count(DISTINCT fr) FROM t_col"), 7,
+    expect.num(p.one("SELECT count(DISTINCT fr) FROM t_heap"), 7,
                "premise: and the frame-of-reference column cycles through seven")
     for label, sql in (
             ("i4 whole-row", "SELECT * FROM %T"),
@@ -695,9 +708,9 @@ def test_the_dictionary_encoding_round_trips_including_varlena(pgc_conn, expect)
                    "('t' || (g%6))::varchar(16), g%5, md5(g::text) "
                    "FROM generate_series(1,10000) g",
               options=_ENC_OPTS)
-    expect.num(p.one("SELECT count(DISTINCT cat) FROM t_col"), 4,
+    expect.num(p.one("SELECT count(DISTINCT cat) FROM t_heap"), 4,
                "premise: the dictionary column has four values")
-    expect.at_least(p.one("SELECT count(DISTINCT hicard) FROM t_col"), 9000,
+    expect.at_least(p.one("SELECT count(DISTINCT hicard) FROM t_heap"), 9000,
                     "premise: and the high-cardinality one is not a candidate")
     for label, sql in (
             ("dict whole-row",  "SELECT * FROM %T"),
@@ -707,6 +720,39 @@ def test_the_dictionary_encoding_round_trips_including_varlena(pgc_conn, expect)
             ("dict text group", "SELECT cat, count(*) FROM %T GROUP BY cat")):
         c, h = p.both(sql)
         expect.row_set(c, h, label)
+
+
+# column 1's chunks: 'encoded, no codec' when every vector chose an encoding other than
+# NONE (0) and no block codec ran; otherwise what was found. The descriptor is a 6-byte
+# header whose last four bytes are the vector count, then 13 bytes per vector.
+_ENCODED_NO_CODEC = (
+    "SELECT CASE WHEN count(*) = 0 THEN 'no chunks' "
+    "WHEN bool_or(c.block_codec <> 0) THEN 'a block codec' "
+    "WHEN sum((SELECT count(*) FROM generate_series(0, "
+    "get_byte(c.encoding_descriptor, 2) + get_byte(c.encoding_descriptor, 3) * 256 "
+    "+ get_byte(c.encoding_descriptor, 4) * 65536 "
+    "+ get_byte(c.encoding_descriptor, 5) * 16777216 - 1) i "
+    "WHERE get_byte(c.encoding_descriptor, 6 + i * 13) = 0)) > 0 THEN 'plain vectors' "
+    "ELSE 'encoded, no codec' END "
+    "FROM pgcolumnar.column_chunk c "
+    "WHERE c.storage_id = pgcolumnar.get_storage_id('t_col') AND c.column_index = 1")
+
+
+def _bloom_removed(conn, on):
+    """-> chunk groups the scan removed for an absent text probe, with the bloom on or
+    off, as EXPLAIN ANALYZE reports them; or query_error() when there is no reading."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET max_parallel_workers_per_gather = 0")
+            cur.execute(f"SET pgcolumnar.enable_bloom_filter = {'on' if on else 'off'}")
+            cur.execute("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) "
+                        "SELECT id FROM t_col WHERE tk = 'k50000'")
+            plan = "\n".join(r[0] for r in cur.fetchall())
+            cur.execute("RESET pgcolumnar.enable_bloom_filter")
+    except psycopg.Error as exc:
+        return query_error(str(exc).splitlines()[0])
+    m = re.search(r"Columnar Chunk Groups Removed by Filter: (\d+)", plan)
+    return int(m.group(1)) if m else query_error(f"no removed-groups line in: {plan}")
 
 
 def test_an_uncompressed_table_still_round_trips(pgc_conn, expect):
@@ -720,6 +766,11 @@ def test_an_uncompressed_table_still_round_trips(pgc_conn, expect):
                        ("enc+nocompress agg",  "SELECT count(*), sum(v), min(v), max(v) FROM %T")):
         c, h = p.both(sql)
         expect.row_set(c, h, label)
+    # "enc+" IS A CLAIM, and the two arms above hold just as well for a column the
+    # writer stored plain (#1339): with every vector forced to encoding NONE, both
+    # stayed green. column_chunk records each vector's encoding (0 is NONE) and codec.
+    expect.text(p.one(_ENCODED_NO_CODEC), "encoded, no codec",
+                "enc+nocompress: the column is stored encoded, with no block codec")
 
 
 # ---------------------------------------------------------------------------
@@ -743,12 +794,14 @@ def test_aggregates_agree_with_nulls_and_deletes_present(pgc_conn, expect):
               load="SELECT g, g%6, g*2, ((g%100)-50)::smallint, "
                    "CASE WHEN g%9=0 THEN NULL ELSE g%13 END FROM generate_series(1,20000) g",
               options="chunk_group_row_limit => 1000, stripe_row_limit => 5000")
-    before = p.one("SELECT count(*) FROM t_col")
+    # The premise is the ORACLE's delete (#1339): the columnar delete is what the arms
+    # below compare, so a columnar count here made a product defect read as a premise.
+    before = p.one("SELECT count(*) FROM t_heap")
     pgc_conn.execute("DELETE FROM t_heap WHERE id % 50 = 0")
     pgc_conn.execute("DELETE FROM t_col  WHERE id % 50 = 0")
-    after = p.one("SELECT count(*) FROM t_col")
+    after = p.one("SELECT count(*) FROM t_heap")
     expect.num(before - after, 400, "premise: the delete removed four hundred rows")
-    expect.at_least(p.one("SELECT count(*) FROM t_col WHERE nv IS NULL"), 1,
+    expect.at_least(p.one("SELECT count(*) FROM t_heap WHERE nv IS NULL"), 1,
                     "premise: and there are nulls for the value stream to skip")
     for label, sql in (
             ("agg count",  "SELECT count(*), count(k), count(nv) FROM %T"),
@@ -789,7 +842,7 @@ def test_bloom_equality_agrees_on_numeric_and_uuid_keys(pgc_conn, expect):
     # the bloom is never the thing under test.
     spread = p.one(
         "SELECT min(width) FROM (SELECT max(k) - min(k) AS width FROM ("
-        "  SELECT k, ntile(20) OVER (ORDER BY id) AS grp FROM t_col) s GROUP BY grp) w")
+        "  SELECT k, ntile(20) OVER (ORDER BY id) AS grp FROM t_heap) s GROUP BY grp) w")
     expect.at_least(spread, 90000,
                     "premise: every chunk's key range spans the domain, so min/max cannot skip")
     for label, sql in (
@@ -859,6 +912,16 @@ def test_text_bloom_equality_agrees_including_a_mismatched_collation(pgc_conn, e
     # both sides returning 0, which is what the bash arm does today.
     expect.num(p.one(f"SELECT count(*) FROM t_col WHERE tk = '{present}' COLLATE \"C\""), 1,
                "textbloom collate-mismatch returns the row rather than skipping it")
+    # THE BLOOM ITSELF (#1339). Every arm above is a correctness comparison, and a scan
+    # that never consulted the bloom answers all of them correctly. 'k50000' is absent
+    # (the domain stops at k49999) and sorts inside every group's range, so min/max
+    # cannot remove a group for it; only the bloom can.
+    on, off = _bloom_removed(pgc_conn, True), _bloom_removed(pgc_conn, False)
+    expect.text("more" if isinstance(on, int) and isinstance(off, int) and on > off
+                else (query_error(f"no reading: on {on}, off {off}")
+                      if not (isinstance(on, int) and isinstance(off, int))
+                      else f"not more (on {on}, off {off})"),
+                "more", "textbloom absent: the bloom removes chunk groups min/max alone cannot")
 
 
 # ---------------------------------------------------------------------------
