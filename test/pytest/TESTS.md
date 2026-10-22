@@ -361,6 +361,7 @@ behaviour, the source of that number is named.
 - [313. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks](#313-test_native_parquet_hardeningpy-the-parquet-reader-refuses-values-that-do-not-fit-their-column-and-a-row-group-with-too-few-chunks)
 - [314. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend](#314-test_native_parquet_stackpy-a-crafted-parquet-footer-trips-the-recursion-guard-instead-of-crashing-the-backend)
 - [315. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time](#315-test_native_parquet_streamingpy-external-parquet-reads-stream-an-oversized-file-describes-itself-crafted-pages-are-refused-the-fdw-decodes-one-row-group-at-a-time)
+- [316. test_native_parquet_partition.py: Hive-style partition columns materialize and prune whole files, and a tree that does not match fails loudly](#316-test_native_parquet_partitionpy-hive-style-partition-columns-materialize-and-prune-whole-files-and-a-tree-that-does-not-match-fails-loudly)
 
 ## 1. How to read a test in here
 
@@ -11893,3 +11894,49 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_limit_10_decodes_one_row_group` | streaming: LIMIT 10 (inside group 0) decodes one row group |
 | `test_parquet_streaming_limit_1010_decodes_two_row_groups` | streaming: LIMIT 1010 (into group 1) decodes two row groups |
 | `test_parquet_streaming_rescan_under_a_nested_loop_is_correct` | streaming: rescan under a nested loop is correct |
+
+## 316. test_native_parquet_partition.py: Hive-style partition columns materialize and prune whole files, and a tree that does not match fails loudly
+
+The twin of `test/native_parquet_partition.sh`. pyarrow writes a four-file dt=/region= tree and a percent-encoded tree. The partition values must materialize as typed columns; a predicate on a partition column must drop whole files before they are opened (the EXPLAIN Files and Files Pruned counters); partition and file predicates must combine; a volatile clause must never decide a whole file; a tree that does not match the declaration must fail with its own guard's message; Hive encoding (percent escapes, the null marker) must decode, and an encoded NUL or an invalid byte must be refused.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The writer runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A pruning count is 'no reading' unless the plan's Files line shows the scan ran; a refusal reads as '<SQLSTATE> (its own message)' only when the primary message is the guard's own; every reading waits for the server; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_all_four_partitions_read` | all four partitions read |
+| `test_partition_values_materialize` | partition values materialize |
+| `test_a_partition_column_is_typed_not_text` | partition column is typed, not text |
+| `test_group_by_a_partition_column` | group by a partition column |
+| `test_one_partition_value_prunes_half_the_files` | one partition value prunes half the files |
+| `test_and_reads_the_other_half` | and reads the other half |
+| `test_both_partition_columns_prune_down_to_one_file` | both columns prune down to one file |
+| `test_a_pruned_scan_still_returns_the_right_rows` | pruned scan still returns the right rows |
+| `test_an_inequality_on_a_partition_column_prunes` | an inequality on a partition column prunes |
+| `test_in_on_a_partition_column_prunes` | IN on a partition column prunes |
+| `test_a_predicate_matching_everything_prunes_nothing` | a predicate matching everything prunes nothing |
+| `test_a_predicate_on_a_file_column_prunes_no_files` | a predicate on a file column prunes no files |
+| `test_a_pruned_files_row_groups_are_never_counted` | a pruned file's row groups are never counted |
+| `test_partition_prune_plus_row_group_skip` | partition prune plus row-group skip |
+| `test_row_groups_are_still_skipped_inside_the_surviving_files` | row groups are still skipped inside the surviving files |
+| `test_a_volatile_clause_prunes_nothing` | a volatile clause prunes nothing |
+| `test_a_volatile_clause_keeps_every_matching_partition_row` | a volatile clause keeps every matching partition row |
+| `test_a_stable_clause_still_prunes` | a stable clause still prunes |
+| `test_a_file_missing_a_declared_partition_component_errors` | a file missing a declared partition component errors |
+| `test_a_basename_that_looks_like_a_partition_component_is_unaffected` | a file whose basename looks like a partition component is unaffected |
+| `test_an_unknown_partition_column_errors` | an unknown partition column errors rather than being ignored |
+| `test_an_empty_partition_columns_option_is_rejected` | an empty partition_columns option is rejected |
+| `test_declaring_a_file_column_as_a_partition_column_errors` | declaring a file column as a partition column errors |
+| `test_the_backend_survives_the_bad_declarations` | backend survived the bad declarations |
+| `test_a_percent_encoded_partition_value_decodes` | a percent-encoded partition value decodes |
+| `test_the_encoded_value_is_queryable_as_itself` | the encoded value is queryable as itself |
+| `test_hive_default_partition_reads_as_null` | __HIVE_DEFAULT_PARTITION__ reads as null |
+| `test_a_null_partition_value_is_not_the_literal_marker` | a null partition value is not the literal marker |
+| `test_an_unencoded_value_is_unaffected` | an unencoded value is unaffected |
+| `test_all_three_encoded_partitions_still_read` | all three partitions still read |
+| `test_a_null_partition_value_prunes` | a null partition value prunes |
+| `test_an_encoded_null_byte_in_a_partition_value_is_rejected` | an encoded null byte in a partition value is rejected |
+| `test_a_byte_invalid_in_the_server_encoding_is_rejected` | a byte invalid in the server encoding is rejected |
+| `test_the_encoded_tree_reads_again_once_both_are_gone` | the tree reads again once both are gone |
+| `test_the_backend_survives_the_malformed_partition_values` | backend survived the malformed partition values |
