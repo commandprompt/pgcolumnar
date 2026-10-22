@@ -35,7 +35,8 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 # test_decoding is stock contrib, but it is not built by default in a source
 # install. A missing dependency is an environment defect rather than a pass.
 if [ ! -f "$("$PGC_PG_CONFIG" --pkglibdir)/test_decoding.so" ]; then
-	pgc_skip "test_decoding" "test_decoding.so is not in $("$PGC_PG_CONFIG" --pkglibdir); build contrib/test_decoding"
+	# The message is the check's name, so it is a literal: the twin records the same one.
+	pgc_skip "test_decoding" "test_decoding.so is not installed; build contrib/test_decoding"
 fi
 
 check "premise: the server is running at wal_level=logical" \
@@ -100,20 +101,30 @@ check "the slot carries pgcolumnar's internal catalog instead" \
 # it useless as a change stream: it does not carry the data and it does not even
 # carry a row count. Asserted by writing 100x the rows into a second columnar
 # table and showing the record count does not follow.
+#
+# THE SECOND SLOT GETS ITS OWN HEAP CONTROL. Without one, a slot that decoded
+# nothing passed both checks below: "no decodable change" reads 0 and "not 100x
+# the records" reads 0 < anything. Measured: with pgc_754b created after the
+# insert, the slot carried 0 records and every check passed.
 psql_run "CREATE TABLE col_big (id int PRIMARY KEY, v text) USING pgcolumnar;"
+psql_run "CREATE TABLE heap_big (id int PRIMARY KEY, v text) USING heap;"
 psql_run "SELECT pg_create_logical_replication_slot('pgc_754b', 'test_decoding');"
 psql_run "INSERT INTO col_big SELECT g, 'c' || g FROM generate_series(1, 5000) g;"
+psql_run "INSERT INTO heap_big SELECT g, 'h' || g FROM generate_series(1, 5000) g;"
 psql_run "CREATE TABLE decoded_big AS
           SELECT data FROM pg_logical_slot_get_changes('pgc_754b', NULL, NULL);"
 SMALL="$(d 'table pgcolumnar.')"
 BIG="$(q "SELECT count(*) FROM decoded_big WHERE data LIKE '%table pgcolumnar.%';")"
 check "premise: the 100x table really holds 100x the rows" \
 	"$(q 'SELECT count(*) FROM col_big;')" "5000"
+check_num "CONTROL: the second slot decodes the heap table's 5000 inserts" \
+	"$(q "SELECT count(*) FROM decoded_big WHERE data LIKE '%table public.heap_big: INSERT%';")" "5000"
 check_num "and it too emits no decodable change of its own" \
 	"$(q "SELECT count(*) FROM decoded_big WHERE data LIKE '%table public.col_big:%';")" "0"
 echo "-- internal pgcolumnar records: $SMALL for 50 rows, $BIG for 5000"
 check "100x the rows does not give 100x the internal records" \
-	"$([ "$BIG" -lt $(( SMALL * 10 )) ] && echo yes || echo "no ($SMALL then $BIG)")" "yes"
+	"$([ "${BIG:-0}" -gt 0 ] 2>/dev/null && [ "$BIG" -lt $(( SMALL * 10 )) ] 2>/dev/null && echo yes ||
+	   echo "no ($SMALL then $BIG; the second slot must carry some)")" "yes"
 
 psql_run "SELECT pg_drop_replication_slot('pgc_754');"
 psql_run "SELECT pg_drop_replication_slot('pgc_754b');"

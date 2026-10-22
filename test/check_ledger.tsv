@@ -2902,6 +2902,18 @@ local_open_race_free	local_open_race_free	the partition coordinator never stats 
 local_open_race_free	local_open_race_free	the partition coordinator opens O_NONBLOCK (a FIFO cannot block its open)	15;16;17;18;19	2026-10-21	the partition coordinator opens without O_NONBLOCK
 local_open_race_free	local_open_race_free	the race-free opener exists	15;16;17;18;19	never	-
 local_open_race_free	local_open_race_free	the racy stat-before-open helper is gone	15;16;17;18;19	2026-10-21	the racy PgColumnarRejectNonRegularFile helper comes back
+logical_decoding_source	logical_decoding_source	100x the rows does not give 100x the internal records	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	CONTROL: the heap table's 50 inserts ARE decoded	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	CONTROL: the second slot decodes the heap table's 5000 inserts	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	a columnar table emits no decodable change	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	although the rows are there	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	and it too emits no decodable change of its own	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	premise: both tables hold the same 50 rows	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	premise: the 100x table really holds 100x the rows	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	premise: the server is running at wal_level=logical	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	premise: the slot decoded something at all	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	premise: the slot exists and is logical	15;16;17;18;19	never	-
+logical_decoding_source	logical_decoding_source	the slot carries pgcolumnar's internal catalog instead	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	after a crash with compact committed, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with compact committed, the table is as compact left it, with the same rows	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	after a crash with compact uncommitted, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)

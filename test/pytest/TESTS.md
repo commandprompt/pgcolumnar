@@ -314,6 +314,7 @@ behaviour, the source of that number is named.
 - [266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping](#266-test_iceberg_name_mappingpy-an-iceberg-data-file-with-no-field-ids-binds-by-name-mapping)
 - [267. test_iceberg_objstore.py: Iceberg tables read over object storage](#267-test_iceberg_objstorepy-iceberg-tables-read-over-object-storage)
 - [268. test_iceberg_dv.py: Iceberg v3 deletion vectors apply, supersede, and refuse what they must](#268-test_iceberg_dvpy-iceberg-v3-deletion-vectors-apply-supersede-and-refuse-what-they-must)
+- [269. test_logical_decoding_source.py: a columnar table is not a logical decoding source](#269-test_logical_decoding_sourcepy-a-columnar-table-is-not-a-logical-decoding-source)
 
 ## 1. How to read a test in here
 
@@ -10434,3 +10435,27 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_a_run_container_overflowing_its_range_is_refused` | a run container overflowing its 16-bit range is refused (XX001) |
 | `test_an_aliased_duplicate_dv_is_refused` | an aliased duplicate DV (scheme vs no scheme) is refused (XX001) |
 | `test_the_backend_survives_the_audit_arms` | backend still up after the audit arms |
+
+## 269. test_logical_decoding_source.py: a columnar table is not a logical decoding source
+
+The twin of `test/logical_decoding_source.sh` (#754). Through test_decoding slots on a private cluster at `wal_level=logical`: a heap table's inserts decode and a columnar table's do not, although its rows are there; the slot carries pgcolumnar's own catalog writes instead; and those follow groups, not rows (5000 rows give fewer than 10x the records of 50). Each slot has a heap control written in the same window, so a dead slot cannot pass as an exclusion.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value (a failed query is a `query_error()` that fails its own check) from a module fixture on a private cluster. Without the test_decoding library both harnesses fail one check, the shell's `pgc_skip` name, and the twin's other tests decline MISSING_DEPENDENCY.
+
+| test | what it holds |
+| --- | --- |
+| `test_lds_test_decoding_is_installed` | test_decoding.so is not installed; build contrib/test_decoding |
+| `test_lds_server_runs_at_wal_level_logical` | premise: the server is running at wal_level=logical |
+| `test_lds_slot_exists_and_is_logical` | premise: the slot exists and is logical |
+| `test_lds_both_tables_hold_the_same_rows` | premise: both tables hold the same 50 rows |
+| `test_lds_slot_decoded_something` | premise: the slot decoded something at all |
+| `test_lds_heap_control_is_decoded` | CONTROL: the heap table's 50 inserts ARE decoded |
+| `test_lds_columnar_emits_no_change` | a columnar table emits no decodable change |
+| `test_lds_columnar_rows_are_there` | although the rows are there |
+| `test_lds_slot_carries_internal_catalog` | the slot carries pgcolumnar's internal catalog instead |
+| `test_lds_big_table_holds_its_rows` | premise: the 100x table really holds 100x the rows |
+| `test_lds_second_slot_heap_control_is_decoded` | CONTROL: the second slot decodes the heap table's 5000 inserts |
+| `test_lds_big_columnar_emits_no_change` | and it too emits no decodable change of its own |
+| `test_lds_internal_records_do_not_follow_rows` | 100x the rows does not give 100x the internal records |
