@@ -350,6 +350,7 @@ behaviour, the source of that number is named.
 - [302. test_native_lazy_slot.py: the index fetch decodes only the prefix the executor asks for, and never a stale one](#302-test_native_lazy_slotpy-the-index-fetch-decodes-only-the-prefix-the-executor-asks-for-and-never-a-stale-one)
 - [303. test_native_metadata_flush.py: a stripe flush opens each metadata table once, and the flush's writes read back correctly](#303-test_native_metadata_flushpy-a-stripe-flush-opens-each-metadata-table-once-and-the-flushs-writes-read-back-correctly)
 - [304. test_native_late_materialization.py: a row the qual rejects is not materialized, and the answers do not change](#304-test_native_late_materializationpy-a-row-the-qual-rejects-is-not-materialized-and-the-answers-do-not-change)
+- [305. test_native_reclaim_reconcile.py: a reuse op drops the free_space row that overlaps a live group, and only that row](#305-test_native_reclaim_reconcilepy-a-reuse-op-drops-the-free_space-row-that-overlaps-a-live-group-and-only-that-row)
 
 ## 1. How to read a test in here
 
@@ -11643,3 +11644,27 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_late_materialization_volatile_qual_refused` | a volatile qual is refused the two-pass path |
 | `test_late_materialization_volatile_matches_heap` | and the volatile query still matches the heap mirror |
 | `test_late_materialization_same_shape_uses_the_path` | the same shape without the volatile term does use it |
+
+## 305. test_native_reclaim_reconcile.py: a reuse op drops the free_space row that overlaps a live group, and only that row
+
+The twin of `test/native_reclaim_reconcile.sh` (Phase F reconcile). A free_space row synthesized over a live group, the post-crash state end-truncation can leave, is dropped by compact_rewrite, compact and truncate, the data still equals a heap mirror after each, the legitimate free ranges come through a plain compact unchanged, and reuse keeps the data right for two more cycles.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order, each statement in its own autocommit session as the shell's psql -c runs it. Readings are values: a failed query is a query_error(), so two failed reads never agree, and the row sets are compared as an md5 over the sorted rows.
+
+| test | what it holds |
+| --- | --- |
+| `test_rr_parity_before` | parity before |
+| `test_rr_stale_row_injected` | stale overlapping free row injected |
+| `test_rr_compact_rewrite_reconciled` | compact_rewrite reconciled the stale row |
+| `test_rr_data_intact_after_rewrite` | data intact after reconcile + rewrite |
+| `test_rr_row_count_intact` | row count intact |
+| `test_rr_a_legitimate_free_range_exists` | premise: a legitimate free range exists before the plain compact |
+| `test_rr_plain_compact_reconciled` | plain compact reconciled the stale row |
+| `test_rr_plain_compact_kept_the_legitimate_ranges` | plain compact kept the legitimate free ranges, which overlap no live group |
+| `test_rr_data_intact_after_compact` | data intact after compact reconcile |
+| `test_rr_truncate_reconciled` | truncate reconciled the stale row |
+| `test_rr_data_intact_after_truncate` | data intact after truncate reconcile |
+| `test_rr_parity_after_reuse_cycle_1` | parity after reuse cycle 1 |
+| `test_rr_parity_after_reuse_cycle_2` | parity after reuse cycle 2 |
