@@ -307,6 +307,7 @@ behaviour, the source of that number is named.
 - [259. test_parquet_nested_import.py: nested Parquet import round-trips arrays and composites](#259-test_parquet_nested_importpy-nested-parquet-import-round-trips-arrays-and-composites)
 - [260. test_parquet_count_bounds.py: file-declared Parquet counts are bounded before use](#260-test_parquet_count_boundspy-file-declared-parquet-counts-are-bounded-before-use)
 - [261. test_parallel_degree.py: identical data in heap and columnar is granted the same parallel degree](#261-test_parallel_degreepy-identical-data-in-heap-and-columnar-is-granted-the-same-parallel-degree)
+- [262. test_parallel_flush_optin.py: parallel_flush stays opt-in, and the dispatch metric cannot separate the shapes](#262-test_parallel_flush_optinpy-parallel_flush-stays-opt-in-and-the-dispatch-metric-cannot-separate-the-shapes)
 
 ## 1. How to read a test in here
 
@@ -10155,3 +10156,19 @@ Every reading must be a measurement: a failed query is a query_error(), and a pl
 | `test_degree_the_columnar_plan_is_parallel` | the columnar plan is parallel |
 | `test_degree_the_worker_cap_decides_neither_arm` | the worker cap is not what decides either arm |
 | `test_degree_identical_data_gets_the_same_workers` | identical data is granted the same parallel degree |
+
+## 262. test_parallel_flush_optin.py: parallel_flush stays opt-in, and the dispatch metric cannot separate the shapes
+
+The pytest twin of `test/parallel_flush_optin.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.parallel_flush` stays off by default (#445): a default flush dispatches serial; with it on, a wide-numeric flush dispatches parallel, workers produce its columns, and the stored chunks and rows equal the serial path's; and a random and a constant bigint table give the same dispatch metric, so no gate over that metric can separate them. The DEBUG1 lines are read as notices on the inserting session. On a private database.
+
+### Every test
+
+The ON check reads the split line ("N of M columns by K worker(s)") as well as the dispatch line, so a flush where no worker produced a column is not parallel. The eight wnum columns have eight different shapes, and the fingerprint adds the rows read back.
+
+| test | what it holds |
+| --- | --- |
+| `test_optin_parallel_flush_is_off_by_default` | parallel_flush is off by default |
+| `test_optin_a_default_flush_dispatches_serial` | a default flush dispatches serial |
+| `test_optin_the_guc_on_flushes_in_workers` | with the GUC on, a wide-numeric flush dispatches parallel (not a silent serial fall-back) |
+| `test_optin_stores_the_serial_paths_chunks` | opting in stores byte-identical chunks to the serial path |
+| `test_optin_the_dispatch_metric_cannot_separate_the_shapes` | the dispatch metric is byte-identical for a random and a constant column (the metric cannot separate opposite-cost shapes) |

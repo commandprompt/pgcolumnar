@@ -44,21 +44,52 @@ q() {
 # The dispatch line the flush emits once per stripe at DEBUG1. gucSql runs in the
 # same session before the insert, so a SET reaches the flush. Returns the tail of
 # the line: "rows=.. natts=.. bufbytes=.. valbytes=.. valcount=.. -> serial".
+#
+# The whole session's output is kept in $FLUSHLOG for split() below. dispatch runs
+# in a command substitution, so a variable set here would not survive it.
+FLUSHLOG="$PGC_WORKDIR/flush.log"
 dispatch() { # dispatch <gucSql> <insertSql>
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -c "SET client_min_messages=debug1;" -c "$1" -c "$2" 2>&1 |
-		grep -oE 'parallel_flush dispatch: .*-> (parallel|serial)' | tail -1 |
+		-d "$PGC_DB" -c "SET client_min_messages=debug1;" -c "$1" -c "$2" >"$FLUSHLOG" 2>&1
+	grep -oE 'parallel_flush dispatch: .*-> (parallel|serial)' "$FLUSHLOG" | tail -1 |
 		sed 's/^.*dispatch: //'
 }
 
-# LSN-independent storage fingerprint over the stored chunk metadata.
-fp() { # fp <table>
-	q "SELECT md5(string_agg(group_number || ':' || column_index || ':' || value_count || ':' || encode(encoding_descriptor, 'hex') || ':' || block_codec || ':' || page_length, '|' ORDER BY group_number, column_index)) FROM pgcolumnar.column_chunk WHERE storage_id = pgcolumnar.get_storage_id('$1')"
+# How the last dispatch()'s parallel flushes were really split. The dispatch line
+# prints "-> parallel" BEFORE any worker is registered, so with no worker ever
+# registered every column fell back to serial and the dispatch line still said
+# parallel: main's shell passed that. The split line counts the columns workers
+# produced. -> "workers" when every split line has at least one worker column,
+# else what was read.
+split() {
+	local lines
+	lines="$(grep -oE 'parallel_flush: [0-9]+ of [0-9]+ columns by [0-9]+ worker' "$FLUSHLOG")"
+	if [ -z "$lines" ]; then
+		echo "no split line"
+	elif grep -qE 'parallel_flush: 0 of ' <<<"$lines"; then
+		echo "serial fall-back:[$(tr '\n' ';' <<<"$lines")]"
+	else
+		echo workers
+	fi
 }
+
+# LSN-independent storage fingerprint over the stored chunk metadata, and the
+# rows read back. The rows catch bytes that change without changing a length.
+fp() { # fp <table>
+	q "SELECT (SELECT md5(string_agg(group_number || ':' || column_index || ':' || value_count || ':' || encode(encoding_descriptor, 'hex') || ':' || block_codec || ':' || page_length, '|' ORDER BY group_number, column_index)) FROM pgcolumnar.column_chunk WHERE storage_id = pgcolumnar.get_storage_id('$1'))
+	   || '/' || (SELECT md5(string_agg(t::text, '|' ORDER BY t.a)) FROM $1 t)"
+}
+
+# Eight columns of eight different shapes, so each column's chunk differs from its
+# neighbour's. With eight copies of g, a parallel assembly that stored each worker's
+# column under the next index wrote the same bytes, and main's shell passed it.
+WNUM="SELECT g, g % 7, ((g::bigint * 7919) % 65537)::int, g / 10, -g, g % 2, 0, (g * 31) % 1000 FROM generate_series(1,300000) g"
 
 # ---- 1. the default is OFF, and stays that way -----------------------------
 
-check_text "premise: parallel_flush is off by default" \
+# Not a premise (#1339, dated 2026-10-21): the boot default is pgcolumnar's own,
+# and setting it to true reddens this.
+check_text "parallel_flush is off by default" \
 	"$(q "SHOW pgcolumnar.parallel_flush")" "off"
 
 q "CREATE TABLE wnum (a int, b int, c int, d int, e int, f int, g int, h int) USING pgcolumnar;" >/dev/null
@@ -68,7 +99,7 @@ q "CREATE TABLE wnum (a int, b int, c int, d int, e int, f int, g int, h int) US
 # DefineCustomBoolVariable for pgcolumnar.parallel_flush) -> this line logs
 # "-> parallel" and the check goes RED. That red proves the default, not
 # incidental structure, keeps the machine off.
-d_default="$(dispatch "SELECT 1;" "INSERT INTO wnum SELECT g,g,g,g,g,g,g,g FROM generate_series(1,300000) g;")"
+d_default="$(dispatch "SELECT 1;" "INSERT INTO wnum $WNUM;")"
 check_text "a default flush dispatches serial" \
 	"$([ "${d_default##*-> }" = "serial" ] && echo serial || echo "parallel:[$d_default]")" \
 	"serial"
@@ -76,16 +107,19 @@ check_text "a default flush dispatches serial" \
 # ---- 2. opting in is byte-identical to serial ------------------------------
 
 q "TRUNCATE wnum;" >/dev/null
-d_on="$(dispatch "SET pgcolumnar.parallel_flush=on;" "INSERT INTO wnum SELECT g,g,g,g,g,g,g,g FROM generate_series(1,300000) g;")"
+d_on="$(dispatch "SET pgcolumnar.parallel_flush=on;" "INSERT INTO wnum $WNUM;")"
 # The identity below is vacuous if ON silently fell back to serial, so assert the
 # wide-numeric flush really took the worker path.
+# Both lines: the dispatch decision, and workers producing columns.
+s_on="$(split)"
 check_text "with the GUC on, a wide-numeric flush dispatches parallel (not a silent serial fall-back)" \
-	"$([ "${d_on##*-> }" = "parallel" ] && echo parallel || echo "serial:[$d_on]")" \
+	"$(if [ "${d_on##*-> }" != "parallel" ]; then echo "serial:[$d_on]"
+	   elif [ "$s_on" != workers ]; then echo "$s_on"; else echo parallel; fi)" \
 	"parallel"
 fp_on="$(fp wnum)"
 
 q "TRUNCATE wnum;" >/dev/null
-q "SET pgcolumnar.parallel_flush=off; INSERT INTO wnum SELECT g,g,g,g,g,g,g,g FROM generate_series(1,300000) g;" >/dev/null
+q "SET pgcolumnar.parallel_flush=off; INSERT INTO wnum $WNUM;" >/dev/null
 fp_off="$(fp wnum)"
 
 # REMOVAL PROOF: mutate flush_columns_parallel's assembly to reorder or alter a
