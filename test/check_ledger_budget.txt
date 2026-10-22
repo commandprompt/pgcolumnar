@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 96
+suites_not_covered 95
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5554,4 +5554,18 @@ suites_not_covered 96
 #     never         3936 + 2 = 3938
 #     dated         2377 + 12 = 2389
 #     3938 + 2389 == 6327
-checks_never_observed_red 3938
+#
+# #1341, iceberg_rest_scan seeded, with its twin (OffgridwithJD): 3938 -> 3939, and
+# suites_not_covered 96 -> 95. The suite had no rows. It enters with 9 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after one fix.
+# "backend still up after the REST read" read SELECT 1, which answers again after crash
+# recovery: with the backend aborting on the catalog's 404 and the probe 3s later, main
+# passed it. It now also reads the server log's count of killed backends, and the
+# not-found arm reads the catalog's own 404 message. 8 are dated by five mutations,
+# each reddening the same names in both twins. 1 arrives never: the premise.
+#
+#     ledger rows   6327 + 9 = 6336
+#     never         3938 + 1 = 3939
+#     dated         2389 + 8 = 2397
+#     3939 + 2397 == 6336
+checks_never_observed_red 3939

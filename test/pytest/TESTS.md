@@ -319,6 +319,7 @@ behaviour, the source of that number is named.
 - [271. test_logical_subscriber.py: columnar as a logical replication apply target](#271-test_logical_subscriberpy-columnar-as-a-logical-replication-apply-target)
 - [272. test_logical_decoding_cdc_recipe.py: the documented CDC recipe captures, transacts and decodes](#272-test_logical_decoding_cdc_recipepy-the-documented-cdc-recipe-captures-transacts-and-decodes)
 - [273. test_iceberg_rest.py: the Iceberg REST catalog resolves a table, keeps its token out of every log, and refuses what it must](#273-test_iceberg_restpy-the-iceberg-rest-catalog-resolves-a-table-keeps-its-token-out-of-every-log-and-refuses-what-it-must)
+- [274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table](#274-test_iceberg_rest_scanpy-the-iceberg-rest-catalog-reads-a-table-as-iceberg_scan-does-lists-and-refuses-an-unknown-table)
 
 ## 1. How to read a test in here
 
@@ -10627,3 +10628,23 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_an_unknown_rest_table_surfaces_a_clean_not_found` | an unknown table surfaces a clean not-found (42P01) |
 | `test_a_non_object_catalog_config_is_refused` | a non-object catalog config is refused, not walked (XX001) |
 | `test_the_backend_is_still_up_after_the_rest_refusals` | backend still up after the REST refusals |
+
+## 274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table
+
+The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, lists namespaces and tables, and refuses an unknown table with the catalog's own 404.
+
+### Every test
+
+Every test makes one check under the shell's name. The not-found reads as 42P01 only when the message is the catalog's 404, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_rest_scan_fixture_server_is_up` | premise: rest fixture server is up |
+| `test_the_catalog_reports_the_relocated_metadata_location` | the catalog reports the relocated metadata location |
+| `test_iceberg_rest_scan_returns_the_five_current_snapshot_rows` | iceberg_rest_scan returns the five current-snapshot rows |
+| `test_iceberg_rest_scan_matches_iceberg_scan_of_the_same_table` | iceberg_rest_scan matches iceberg_scan of the same table (same oracle) |
+| `test_iceberg_rest_scan_projects_and_reorders_by_field_id` | iceberg_rest_scan projects and reorders by field id (amount, id) |
+| `test_iceberg_rest_namespaces_lists_the_catalogs_namespaces` | iceberg_rest_namespaces lists the catalog's namespaces |
+| `test_iceberg_rest_tables_lists_a_namespaces_tables` | iceberg_rest_tables lists a namespace's tables |
+| `test_iceberg_rest_scan_of_an_unknown_table_is_a_clean_not_found` | iceberg_rest_scan of an unknown table is a clean not-found (42P01) |
+| `test_the_backend_is_still_up_after_the_rest_read` | backend still up after the REST read |
