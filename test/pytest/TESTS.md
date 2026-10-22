@@ -308,6 +308,7 @@ behaviour, the source of that number is named.
 - [260. test_parquet_count_bounds.py: file-declared Parquet counts are bounded before use](#260-test_parquet_count_boundspy-file-declared-parquet-counts-are-bounded-before-use)
 - [261. test_parallel_degree.py: identical data in heap and columnar is granted the same parallel degree](#261-test_parallel_degreepy-identical-data-in-heap-and-columnar-is-granted-the-same-parallel-degree)
 - [262. test_parallel_flush_optin.py: parallel_flush stays opt-in, and the dispatch metric cannot separate the shapes](#262-test_parallel_flush_optinpy-parallel_flush-stays-opt-in-and-the-dispatch-metric-cannot-separate-the-shapes)
+- [263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics](#263-test_parquet_export_statspy-the-parquet-files-we-export-carry-correct-per-row-group-statistics)
 
 ## 1. How to read a test in here
 
@@ -10172,3 +10173,83 @@ The ON check reads the split line ("N of M columns by K worker(s)") as well as t
 | `test_optin_the_guc_on_flushes_in_workers` | with the GUC on, a wide-numeric flush dispatches parallel (not a silent serial fall-back) |
 | `test_optin_stores_the_serial_paths_chunks` | opting in stores byte-identical chunks to the serial path |
 | `test_optin_the_dispatch_metric_cannot_separate_the_shapes` | the dispatch metric is byte-identical for a random and a constant column (the metric cannot separate opposite-cost shapes) |
+
+## 263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics
+
+The pytest twin of `test/parquet_export_stats.sh` (ported for #1341), every check by the shell's name: 162 tests, three of the functions parametrized over a literal table of the shell's names. A 196609-row table is exported in four row groups and `test/parquet_stats.py` reads the footer with no Parquet library. The bounds, null counts, float rules (#850), column orders and the FDW's row-group skipping on the exported file are asserted. On a private database; the exported files live in `server_dir`.
+
+### Every test
+
+The bound and null-count oracles read the heap built from the generator, not the exported file, so a fold the export applies to both its data and its statistics is red. Each absence check reads "N of M", where M is how many chunks or bounds it examined. The two pyarrow controls decline under their own names when pyarrow is absent.
+
+| test | what it holds |
+| --- | --- |
+| `test_export_stats_leaf_indexes_resolve` | premise: leaf indexes resolved for all ten columns |
+| `test_export_stats_file_is_one_we_wrote` | premise: the file under test is one we wrote |
+| `test_export_stats_footer_declares_four_row_groups` | premise: the footer declares 4 row groups |
+| `test_export_stats_footer_declares_ten_leaves` | premise: the footer declares 10 leaf columns |
+| `test_export_stats_parser_reaches_column_metadata` | premise: the parser reaches ColumnMetaData (num_values sums to the table) |
+| `test_export_stats_oracle_buckets_are_row_groups` | the oracle's buckets are the file's row groups |
+| `test_export_stats_buckets_hold_contiguous_ids` | each bucket holds its own contiguous id range |
+| `test_export_stats_oracle_holds_every_row` | the oracle holds every exported row |
+| `test_export_stats_exported_data_equals_the_heap` | the exported data equals the heap on the columns nothing folds |
+| `test_export_stats_every_chunk_carries_a_minimum` | every value-bearing skippable chunk carries a minimum |
+| `test_export_stats_every_chunk_carries_a_maximum` | every value-bearing skippable chunk carries a maximum |
+| `test_export_stats_no_chunk_is_one_sided` | no chunk carries exactly one bound |
+| `test_export_stats_buckets_account_for_every_chunk` | buckets account for every skippable-type chunk |
+| `test_export_stats_all_null_column_has_no_bounds` | the all-null column carries no bounds |
+| `test_export_stats_bounds_are_physical_width` | every bound is its physical width |
+| `test_export_stats_group_bound_equals_the_heap` | group G min(C) / max(C) equals the oracle: 56 tests, one per bound of id, i2, i8, f4, d, ts and nul in each of the four row groups, against the heap |
+| `test_export_stats_four_distinct_id_minima` | the four groups report four distinct id minima |
+| `test_export_stats_min_le_max` | min <= max in every chunk carrying both |
+| `test_export_stats_null_count_always_written` | null_count is written for every chunk, including where it is zero |
+| `test_export_stats_group_null_count_equals_the_heap` | group G null_count(C) equals the oracle: 20 tests, one per row group of nul, d, ts, alln and id, against the heap with infinities counted as nulls |
+| `test_export_stats_fixture_has_infinite_dates` | premise: the fixture's infinite dates are more than none |
+| `test_export_stats_fixture_has_infinite_timestamps` | premise: the fixture's infinite timestamps are more than none |
+| `test_export_stats_no_infinity_reaches_a_bound` | no date or timestamp bound is an infinity sentinel |
+| `test_export_stats_nan_column_keeps_its_bounds` | a float column holding a NaN still carries both bounds |
+| `test_export_stats_nan_column_minimum` | min(f8a) is the smallest non-NaN value |
+| `test_export_stats_nan_column_maximum` | max(f8a) is the largest non-NaN value |
+| `test_export_stats_all_nan_column_has_no_minimum` | an all-NaN column carries no minimum |
+| `test_export_stats_all_nan_column_has_no_maximum` | an all-NaN column carries no maximum |
+| `test_export_stats_nan_count_always_written` | nan_count is written for every float chunk |
+| `test_export_stats_nan_count_counts` | nan_count counts the NaNs |
+| `test_export_stats_no_nan_bound` | no float bound is a NaN bit pattern |
+| `test_export_stats_zero_maximum_is_positive` | a zero maximum is written as +0.0 |
+| `test_export_stats_zero_minimum_is_negative` | a zero minimum is written as -0.0 |
+| `test_export_stats_one_column_order_per_leaf` | the footer carries one ColumnOrder per leaf column |
+| `test_export_stats_column_orders_are_type_order` | every ColumnOrder is TYPE_ORDER |
+| `test_export_stats_no_deprecated_minimum` | no chunk carries the deprecated minimum (field 2) |
+| `test_export_stats_no_deprecated_maximum` | no chunk carries the deprecated maximum (field 1) |
+| `test_export_stats_byte_array_has_no_bounds` | the BYTE_ARRAY column carries no bounds |
+| `test_export_stats_boolean_has_no_bounds` | the BOOLEAN column carries no bounds |
+| `test_export_stats_fdw_reports_four_groups` | premise: the FDW reports 4 row groups |
+| `test_export_stats_unrestricted_scan_skips_nothing` | an unrestricted scan skips nothing |
+| `test_export_stats_one_group_predicate_skips_three` | a predicate confined to one group skips the other three |
+| `test_export_stats_bigint_predicate_skips` | a bigint predicate skips |
+| `test_export_stats_float_predicate_skips` | a float predicate skips |
+| `test_export_stats_date_predicate_skips` | a date predicate skips |
+| `test_export_stats_timestamp_predicate_skips` | a timestamp predicate skips |
+| `test_export_stats_matching_constant_type_skips` | control: the same column skips when the constant matches its type |
+| `test_export_stats_cross_type_constant_skips_nothing` | a cross-type constant skips nothing, on the identical predicate |
+| `test_export_stats_float_less_than_skips` | control: a float < predicate below every bound skips |
+| `test_export_stats_float_greater_equal_skips_nothing` | a float >= predicate above every bound still skips nothing |
+| `test_export_stats_quoted_bigint_literal_skips` | a quoted literal takes a bigint column's type and skips |
+| `test_export_stats_unquoted_bigint_literal_skips_nothing` | the same digits unquoted are an integer, and skip nothing |
+| `test_export_stats_wide_digits_skip_a_bigint` | digits too wide for an integer are a bigint, and skip |
+| `test_export_stats_decimal_literal_casts_the_column` | a decimal-point literal casts the column, not the constant |
+| `test_export_stats_quoted_literal_casts_the_constant` | control: the quoted form casts the constant to the column's type |
+| `test_export_stats_quoted_real_literal_skips` | a quoted literal takes a real column's type and skips |
+| `test_export_stats_unquoted_real_literal_skips_nothing` | the same literal unquoted is double precision, and skips nothing |
+| `test_export_stats_quoted_smallint_literal_skips` | a quoted literal takes a smallint column's type and skips |
+| `test_export_stats_unquoted_smallint_literal_skips_nothing` | the same digits unquoted are an integer, and skip nothing (int2) |
+| `test_export_stats_adorned_date_skips` | an adorned literal of the column's own type skips |
+| `test_export_stats_unadorned_date_skips` | the same date unadorned is unknown, takes the column's type and skips |
+| `test_export_stats_timestamp_adorned_date_skips_nothing` | the same date adorned as a timestamp does not skip |
+| `test_export_stats_adorned_literal_keeps_its_type` | an adorned literal keeps its own type, not the column's |
+| `test_export_stats_unadorned_literal_takes_the_column_type` | control: the unadorned form resolves to the column's type instead |
+| `test_export_stats_integer_digits_prune_every_group` | control: a digit string that fits an integer prunes every group |
+| `test_export_stats_int4_column_refuses_wide_digits` | digits too wide for an integer are a bigint, so an int4 column refuses |
+| `test_export_stats_fdw_result_equals_the_oracle` | the FDW result equals the oracle for [P]: 20 tests, one per predicate the skip checks use |
+| `test_export_stats_parser_finds_pyarrow_bounds` | control: the parser finds pyarrow's bounds |
+| `test_export_stats_parser_reports_deprecated_fields` | control: the parser reports the deprecated fields where they exist |

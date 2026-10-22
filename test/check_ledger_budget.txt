@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 106
+suites_not_covered 105
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5334,4 +5334,31 @@ suites_not_covered 106
 #     never         3821 + 0 = 3821
 #     dated         2101 + 5 = 2106
 #     3821 + 2106 == 5927
-checks_never_observed_red 3821
+#
+# #1341, parquet_export_stats seeded, with its twin (jdatcmd): 3651 -> 3680, and
+# suites_not_covered 124 -> 123. The suite had no rows. It enters with 162 checks from
+# five-major runs (162/162 on each of 15-19, shell and twin alike), after five fixes.
+# All 162 checks passed with five valid dates folded to null, because the bound and
+# null-count oracles read the exported file, which agreed with the fold, so they now
+# read the heap. The infinity-sentinel check tested PostgreSQL's sentinels, but a
+# bound is in Parquet's space, and it passed with -2147472692 in the file; it now
+# tests the heap's finite range. The zero-maximum check could not fail: an unquoted
+# -0.0 stores +0.0, so the fixture never measured a negative zero. Ten absence counts
+# read 0 when they examined nothing (no bounds written, or a leaf that did not
+# resolve); each now names how many chunks or bounds it read. And the NaN checks were
+# gated, so a lost fixture was one red instead of ten. Four oracle checks lost their
+# premise: prefix under #1339: infinities admitted by the writer make the file
+# unreadable to read_parquet, and all four go red. 133 are dated by twelve mutations,
+# each reddening the same names in both twins: a finite date folded, infinities
+# admitted, no bounds written, bounds not reset per group, NaN admitted, zeros written
+# as measured, nan_count and null_count written only when nonzero, column_orders
+# omitted, the reader's cross-type and float refusals removed, and col < const tested
+# against the maximum. 29 arrive never: eight premises, the four planner-typing
+# checks, the two pyarrow controls, seven null counts of columns no mutation touches,
+# and eight absence or skip checks no mutation reached.
+#
+#     ledger rows   5927 + 162 = 6089
+#     never         3821 + 29 = 3850
+#     dated         2106 + 133 = 2239
+#     3850 + 2239 == 6089
+checks_never_observed_red 3850

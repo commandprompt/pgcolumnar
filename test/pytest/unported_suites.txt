@@ -81,7 +81,6 @@ parallel_copy_dedup
 parallel_export_parquet
 parallel_vector_agg
 parquet_export
-parquet_export_stats
 phase2
 phase3
 phase4
