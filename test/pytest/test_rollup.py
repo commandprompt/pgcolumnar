@@ -8,7 +8,8 @@ points and the owner's decisions are on #1294.
 THE ORACLE is a full recompute of the same GROUP BY, every time. Exactness was
 fixed by the design so it cannot be loosened here: count, integer sum, min and
 max exact; avg of an integer column exact too (numeric partials); avg of
-float8 within a relative 1e-12. This file uses an integer avg, so it is exact.
+float8 within a relative 1e-12. This file uses both avgs, as the shell twin
+does, so a float avg kept in float4 partials is seen here too (#1339).
 
 Two things the shell twin found while the code was written, held here too: a
 lateral per-group subquery pulled up into a join read every row group (a TID
@@ -17,8 +18,10 @@ superuser bypassed the row-level security on the rollup catalogs, so an owner
 and a stranger are tested as ordinary roles.
 
 ON A PRIVATE DATABASE (`pgc_own_db`): the roles and pg_stat_reset. Independent
-of `test/rollup.sh`: its own table, 15-minute buckets, aggregates (count, sum,
-max, avg of an integer), zones, row counts and roles.
+of `test/rollup.sh`: its own table, 15-minute buckets, zones, row counts and
+roles. The aggregates are the same kinds as the shell's (count, sum, min, max,
+avg of an integer, avg of a float8), so a check of one name asserts one
+property in both twins (#1339).
 """
 
 import threading
@@ -29,8 +32,8 @@ import psycopg
 from pgc_vacuity import query_error
 
 ORIGIN = "2025-12-29 06:00:00+00"
-AGG_FUNCS = "{count,sum,max,avg}"
-AGG_COLS = "{*,reading,temp,reading}"
+AGG_FUNCS = "{count,sum,min,max,avg,avg}"
+AGG_COLS = "{*,reading,reading,temp,reading,temp}"
 
 
 def _one(conn, sql):
@@ -55,25 +58,41 @@ def _load(conn, lo, hi, start):
 
 
 RECOMPUTE = (f"SELECT date_bin('15 minutes', at, '{ORIGIN}') AS bucket, sensor, count(*) AS count,"
-             " sum(reading)::numeric AS sum_reading, max(temp) AS max_temp, avg(reading) AS avg_reading"
+             " sum(reading)::numeric AS sum_reading, min(reading) AS min_reading, max(temp) AS max_temp,"
+             " avg(reading) AS avg_reading, avg(temp) AS avg_temp"
              " FROM feed GROUP BY 1, 2")
 
 
 def _digest(conn, rel_sql):
-    # concat_ws over coalesce: a plain || turns a row with any NULL into NULL, and
-    # string_agg drops it, so NULL keys would be compared by their absence.
+    # The exact columns. concat_ws over coalesce: a plain || turns a row with any
+    # NULL into NULL, and string_agg drops it, so NULL keys would be compared by
+    # their absence. avg_temp is a float8 avg and is held apart, by _avg_gap.
     return _one(conn, "SELECT count(*) || '|' || md5(string_agg(concat_ws(',', coalesce(bucket::text, '~'),"
                       " coalesce(sensor::text, '~'), count, coalesce(sum_reading::text, '~'),"
-                      " coalesce(max_temp::text, '~'), coalesce(avg_reading::text, '~')), ';'"
+                      " coalesce(min_reading::text, '~'), coalesce(max_temp::text, '~'),"
+                      " coalesce(avg_reading::text, '~')), ';'"
                       f" ORDER BY bucket NULLS FIRST, sensor NULLS FIRST)) FROM ({rel_sql}) x")
 
 
-def _matches(conn, rollup="gauge_15m"):
-    return _digest(conn, f"SELECT * FROM {rollup}")
+def _avg_gap(conn, rollup, recompute):
+    # The float8 avg within a relative 1e-12 of the recompute's, on every key the
+    # recompute has. A NULL key joins through a sentinel no row holds, so NULL keys
+    # are compared too; an equality, not IS NOT DISTINCT FROM, keeps it a hash
+    # join (IS NOT DISTINCT FROM ran past the statement timeout).
+    return str(_one(conn, "SELECT coalesce(max(abs(r.avg_temp - o.avg_temp)"
+                          " / greatest(abs(o.avg_temp), 1e-300)), 0) < 1e-12"
+                          f" AND count(*) = (SELECT count(*) FROM ({recompute}) z)"
+                          f" FROM {rollup} r JOIN ({recompute}) o"
+                          " ON coalesce(r.bucket, '-infinity') = coalesce(o.bucket, '-infinity')"
+                          " AND coalesce(r.sensor, -1) = coalesce(o.sensor, -1)"))
 
 
-def _oracle(conn):
-    return _digest(conn, RECOMPUTE)
+def _matches(conn, rollup="gauge_15m", recompute=RECOMPUTE):
+    return f"{_digest(conn, f'SELECT * FROM {rollup}')}|{_avg_gap(conn, rollup, recompute)}"
+
+
+def _oracle(conn, recompute=RECOMPUTE):
+    return f"{_digest(conn, recompute)}|True"
 
 
 def _refresh(conn, rollup="gauge_15m"):
@@ -107,7 +126,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
                     f" '{{sensor}}', '{AGG_FUNCS}', '{AGG_COLS}')")
     expect.text(_one(conn, "SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute"
                            " WHERE attrelid = to_regclass('gauge_15m') AND attnum > 0 AND NOT attisdropped"),
-                "bucket,sensor,count,sum_reading,max_temp,avg_reading",
+                "bucket,sensor,count,sum_reading,min_reading,max_temp,avg_reading,avg_temp",
                 "the rollup table exists with the documented columns")
 
     expect.text(_refresh(conn), "24000", "the first refresh folds every row")
@@ -154,17 +173,22 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
                 "two refreshes started together fold the new rows once between them")
     expect.text(_matches(conn), _oracle(conn), "and after two refreshes started together the rollup equals a full recompute")
 
-    # Zones.
+    # Zones. One-hour buckets, not this file's 15 minutes: every zone offset is a
+    # whole number of 15 minutes, so an origin or bucket read in the session's zone
+    # (St John's is -3:30) moves no 15-minute bucket edge, and the arm could not
+    # fail. Measured (#1339): the origin cut to the hour in the creating session's
+    # zone left the 15-minute arm green.
+    hourly = RECOMPUTE.replace("'15 minutes'", "'1 hour'")
     for zone, name in (("UTC", "z_utc"), ("America/St_Johns", "z_stjohns")):
         with conn.cursor() as cur:
             cur.execute(f"SET TimeZone = '{zone}'")
-            cur.execute(f"SELECT pgcolumnar.create_rollup('{name}', 'feed', 'at', '15 minutes', '{ORIGIN}',"
+            cur.execute(f"SELECT pgcolumnar.create_rollup('{name}', 'feed', 'at', '1 hour', '{ORIGIN}',"
                         f" '{{sensor}}', '{AGG_FUNCS}', '{AGG_COLS}')")
             cur.execute(f"SELECT pgcolumnar.refresh_rollup('{name}')")
             cur.execute("SET TimeZone = 'UTC'")
-    expect.text(_matches(conn, "z_utc"), _matches(conn, "z_stjohns"),
+    expect.text(_digest(conn, "SELECT * FROM z_utc"), _digest(conn, "SELECT * FROM z_stjohns"),
                 "refreshes from sessions in different time zones build the same rollup")
-    expect.num(_one(conn, "SELECT count(*) FROM z_utc"), _one(conn, f"SELECT count(*) FROM ({RECOMPUTE}) z"),
+    expect.num(_one(conn, "SELECT count(*) FROM z_utc"), _one(conn, f"SELECT count(*) FROM ({hourly}) z"),
                "the zone rollups hold a row per key of the recompute")
     expect.at_least(_one(conn, "SELECT count(*) FROM z_utc"), 1, "and that is not zero")
 
@@ -207,7 +231,15 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
                 "pgcolumnar.vacuum gave the source's row groups new identities")
     vb = _matches(conn)
     expect.at_least(_one(conn, "SELECT count(*) FROM gauge_15m"), 1, "the rollup holds rows before the rewrite")
-    expect.text(f"{_refresh(conn)}|{_matches(conn)}", f"55000|{vb}",
+    # The SQLSTATE, whether the HINT names rebase_rollup, and the rollup: the name
+    # promises all three, and the HINT was read by no arm until #1339.
+    try:
+        _one(conn, "SELECT pgcolumnar.refresh_rollup('gauge_15m')")
+        refused, hint = "folded", None
+    except psycopg.Error as e:
+        refused, hint = e.sqlstate or "?", e.diag.message_hint
+    named = "rebase_rollup" if hint and "rebase_rollup" in hint else f"hint: {hint}"
+    expect.text(f"{refused}|{named}|{_matches(conn)}", f"55000|rebase_rollup|{vb}",
                 "a refresh after the source was rewritten is refused, naming rebase_rollup")
     # Not through _state: a SQLSTATE such as 42883 is all digits and would read as a count.
     try:
@@ -297,15 +329,15 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     expect.text(_refresh(conn, "holes_15m"), "1300", "the second refresh of the NULL-key rollup folded the append")
     holes_recompute = RECOMPUTE.replace("FROM feed", "FROM holes")
     nulls = f"SELECT count(*) FILTER (WHERE sensor IS NULL) || ' ' || count(*) FILTER (WHERE bucket IS NULL) FROM ({{}}) z"
-    expect.text(f"{_digest(conn, 'SELECT * FROM holes_15m')}|{_one(conn, nulls.format('SELECT * FROM holes_15m'))}",
-                f"{_digest(conn, holes_recompute)}|{_one(conn, nulls.format(holes_recompute))}",
+    expect.text(f"{_matches(conn, 'holes_15m', holes_recompute)}|{_one(conn, nulls.format('SELECT * FROM holes_15m'))}",
+                f"{_oracle(conn, holes_recompute)}|{_one(conn, nulls.format(holes_recompute))}",
                 "a rollup with NULL keys and NULL timestamps equals a full recompute")
     expect.at_least(_one(conn, f"SELECT count(*) FROM ({holes_recompute}) z WHERE sensor IS NULL OR bucket IS NULL"), 2,
                     "premise: and the fixture has NULL-key and NULL-bucket groups")
     with conn.cursor() as cur:
         cur.execute("DELETE FROM holes WHERE at IS NULL AND sensor = 1")
     _refresh(conn, "holes_15m")
-    expect.text(_digest(conn, "SELECT * FROM holes_15m"), _digest(conn, holes_recompute),
+    expect.text(_matches(conn, "holes_15m", holes_recompute), _oracle(conn, holes_recompute),
                 "after a delete of rows whose ts is NULL the NULL-bucket rollup equals a full recompute")
 
     # Retention keeps history: groups expire retires (pgcolumnar.retired_group,
@@ -383,8 +415,11 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
                 "a delete in buckets with no history, next to retired ones, folds: "
                 "those buckets equal a recompute and D keeps its history")
     before_layered = _one(conn, lq)
+    # Inside D, the bucket that holds retired history: KEPT's one row there. The
+    # delete was two buckets later, which holds no history, and was refused only
+    # because a refresh dirties a changed group's whole time range (#1339).
     with conn.cursor() as cur:
-        cur.execute(f"DELETE FROM layered WHERE at >= {h} + interval '2 hours' AND at < {h} + interval '3 hours'")
+        cur.execute(f"DELETE FROM layered WHERE at >= {h} + interval '40 min' AND at < {h} + interval '1 hour'")
     expect.text(f"{_refresh(conn, 'layered_hourly')}|{_one(conn, lq)}", f"0A000|{before_layered}",
                 "a delete in a bucket that holds retired history is refused, and the rollup is unchanged")
 
@@ -394,7 +429,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     rq = lq.replace("layered_hourly", "relayered_hourly")
     before_re = _one(conn, rq)
     with conn.cursor() as cur:
-        cur.execute(f"DELETE FROM relayered WHERE at >= {h} + interval '2 hours' AND at < {h} + interval '3 hours'")
+        cur.execute(f"DELETE FROM relayered WHERE at >= {h} + interval '40 min' AND at < {h} + interval '1 hour'")
     expect.text(f"{_refresh(conn, 'relayered_hourly')}|{_one(conn, rq)}", f"0A000|{before_re}",
                 "a delete in a bucket whose history the same refresh retires is refused, and the rollup is unchanged")
 

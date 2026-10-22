@@ -93,7 +93,7 @@ check "premise: the fixture has NULLs in the sort column" \
 	"$([ "$(q 'SELECT count(*) FROM c WHERE k IS NULL;')" -gt 0 ] && echo yes || echo no)" "yes"
 check "premise: and ties on it" \
 	"$([ "$(q 'SELECT count(*) FROM (SELECT k FROM c WHERE k IS NOT NULL GROUP BY k HAVING count(*) > 1) s;')" -gt 0 ] && echo yes || echo no)" "yes"
-check "premise: the columnar table is read by the columnar scan" \
+check "the columnar table is read by the columnar scan" \
 	"$(pgc_is_columnar_scan 'SELECT k FROM c ORDER BY k')" "yes"
 
 # ansp LABEL HEAP COLUMNAR QUERY-with-%T -- the columnar answer must equal the
@@ -382,7 +382,7 @@ psql_run "INSERT INTO t_enum_h SELECT * FROM t_enum;"
 psql_run "SELECT pgcolumnar.vacuum_sorted('t_enum', 'k');"
 check "an enum sort key is claimed" "$(sorts 'SELECT k FROM t_enum ORDER BY k')" "no"
 psql_run "ALTER TYPE enum_t ADD VALUE 'a' BEFORE 'b';"
-check "an enum ADD VALUE ... BEFORE does not renumber the values already stored" \
+check "an enum ADD VALUE ... BEFORE keeps the claim" \
 	"$(sorts 'SELECT k FROM t_enum ORDER BY k')" "no"
 ansp  "and the ordered answer still matches heap" t_enum_h t_enum \
 	'SELECT k, id FROM %T ORDER BY k, id'
@@ -399,8 +399,12 @@ ATC_SID="$(storage_id_of atc)"
 psql_run "ALTER TABLE atc ALTER COLUMN k TYPE text;"
 check "premise: a type change DID rewrite the storage" \
 	"$([ "$ATC_SID" = "$(storage_id_of atc)" ] && echo same || echo rewritten)" "rewritten"
+# Both halves of the name: the plan sorts, and the rewritten storage has no mark.
+# The plan alone could not see a mark carried across, because text is collatable
+# and condition 3 refuses it with or without one (#1339).
 check "REFUSE: integer order is not text order, and the rewrite dropped the mark" \
-	"$(sorts 'SELECT k FROM atc ORDER BY k')" "yes"
+	"$(sorts 'SELECT k FROM atc ORDER BY k')|$(q "SELECT coalesce(sorted_kind, '<NULL>') FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('atc');")" \
+	"yes|<NULL>"
 
 # --- an UPDATE lands outside the run, so the claim lapses -------------------
 
@@ -749,7 +753,7 @@ check_text "cached plan retracted by pgcolumnar.parallel_copy" \
 mk_sorted trunc
 TRUNC_SID="$(storage_id_of trunc)"
 check "the mark is set and numbering starts at 1 before the truncate" \
-	"$(q "SELECT (sorted_from = min(group_number))::text FROM pgcolumnar.row_group, pgcolumnar.storage WHERE pgcolumnar.storage.storage_id = pgcolumnar.get_storage_id('trunc') AND pgcolumnar.row_group.storage_id = pgcolumnar.storage.storage_id GROUP BY sorted_from;")" \
+	"$(q "SELECT (sorted_from = min(group_number) AND min(group_number) = 1)::text FROM pgcolumnar.row_group, pgcolumnar.storage WHERE pgcolumnar.storage.storage_id = pgcolumnar.get_storage_id('trunc') AND pgcolumnar.row_group.storage_id = pgcolumnar.storage.storage_id GROUP BY sorted_from;")" \
 	"true"
 psql_run "TRUNCATE trunc;"
 psql_run "INSERT INTO trunc SELECT * FROM h;"
