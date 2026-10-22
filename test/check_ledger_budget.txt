@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 42
+suites_not_covered 41
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6611,4 +6611,21 @@ suites_not_covered 42
 #     never         4332 + 22 = 4354
 #     dated         3145 + 8 = 3153
 #     4354 + 3153 == 7507
-checks_never_observed_red 4354
+#
+# #1341, phase2 seeded, with its twin (OffgridwithJD): 4354 -> 4379,
+# and suites_not_covered 42 -> 41. The suite had no rows. It enters with 47 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The codec loop round-tripped each codec and never read which one was stored, since the
+# native conversion dropped the 2.2 catalog's check and left $code computed for nothing:
+# with the session's setting ignored, or no block codec ever applied, all 42 passed. Each
+# codec now reads its block_codec (four checks). The filter checks held with the zone
+# maps ruling out nothing, because exact selection returns the same rows; a range inside
+# the last vector must now decode one of the three (one check).
+# 22 are dated by seven mutations of the write path, the compression fallback, the zone
+# maps and the drop cleanup, each reddening the same names in both twins. 25 arrive never.
+#
+#     ledger rows   7507 + 47 = 7554
+#     never         4354 + 25 = 4379
+#     dated         3153 + 22 = 3175
+#     4379 + 3175 == 7554
+checks_never_observed_red 4379
