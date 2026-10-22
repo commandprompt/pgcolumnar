@@ -12876,7 +12876,7 @@ The pytest twin of `test/parquet_timestamp_zone.sh` (#1706 item 2), every check 
 
 ## 344. test_parquet_skip_cross_type.py: Parquet row-group skipping uses a constant of another type in the operator family
 
-The pytest twin of `test/parquet_skip_cross_type.sh` (#1712), every check by the shell's name. Over a file of 200,000 ascending rows in 4 row groups, each arm reads the skip count from EXPLAIN (ANALYZE): an int4 constant on the int8 column (greater-than, equality, and on the left of the operator), and a float4 constant below every row on the float8 column; the answers are compared with the same query in the column's own type, and a float4 NaN constant must still find a NaN row its group's statistics leave out. Before #1712 a constant of another type skipped nothing. The files are written by `python3` with pyarrow, so no test imports pyarrow. On a private database.
+The pytest twin of `test/parquet_skip_cross_type.sh` (#1712), every check by the shell's name. Over a file of 200,000 ascending rows in 4 row groups, each arm reads the skip count from EXPLAIN (ANALYZE): an int4 constant on the int8 column (greater-than, equality, and on the left of the operator), and a float4 constant below every row on the float8 column; the answers are compared with the same query in the column's own type, and a float4 NaN constant must still find a NaN row its group's statistics leave out. A second file, a naive timestamp column whose first row group spans New York's 2024-03-10 spring-forward gap, is read in New York: a timestamptz constant must find the rows a heap copy finds, because converting wall-time statistics to instants does not keep their order across the gap, and a timestamp constant must still skip. Before #1712 a constant of another type skipped nothing. The files are written by `python3` with pyarrow, so no test imports pyarrow. On a private database.
 
 ### Every test
 
@@ -12891,3 +12891,10 @@ The pytest twin of `test/parquet_skip_cross_type.sh` (#1712), every check by the
 | `test_pxt_a_float4_constant_below_every_row_skips_all_groups` | a float4 constant below every row skips all 4 row groups of the float8 column -- negative, because a float4 misread as float8 is a tiny positive number |
 | `test_pxt_the_float4_constant_returns_the_float8_rows` | and returns the rows the float8 constant returns |
 | `test_pxt_a_float4_nan_still_finds_the_nan_row` | a float4 NaN constant still finds the float8 column's NaN row |
+| `test_pxt_the_gap_file_holds_two_row_groups` | premise: the gap file holds 2 row groups (pyarrow's own count) |
+| `test_pxt_the_heap_finds_row_one_for_each_gap_predicate` | premise: in New York the heap copy finds row 1 for ts > 07:15Z, ts >= 07:15Z and ts = 07:30Z |
+| `test_pxt_a_timestamptz_constant_after_a_gap_finds_the_heap_row_gt` | a timestamptz constant after a spring-forward gap finds the timestamp column's row the heap finds (>) |
+| `test_pxt_a_timestamptz_constant_after_a_gap_finds_the_heap_row_ge` | a timestamptz constant after a spring-forward gap finds the timestamp column's row the heap finds (>=) |
+| `test_pxt_a_timestamptz_equality_after_a_gap_finds_the_heap_row` | a timestamptz constant equal to a row's instant after a spring-forward gap finds that row, as the heap does |
+| `test_pxt_a_timestamp_constant_skips_one_gap_group` | control: a timestamp constant on the timestamp column skips 1 of the 2 row groups |
+| `test_pxt_the_timestamp_constant_returns_the_heap_rows` | and returns the rows the heap returns |

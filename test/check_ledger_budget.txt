@@ -7099,4 +7099,19 @@ suites_not_covered 27
 #     never         4541 + 3 = 4544
 #     dated         3464 + 0 = 3464
 #     4544 + 3464 == 8008
-checks_never_observed_red 4544
+#
+# #1712, parquet_skip_cross_type's spring-forward arms, with its twin (jdatcmd): 4544 -> 4548.
+# OffgridwithJD's review measured a timestamp column against a timestamptz constant: the
+# cross-type comparison converts each wall-time statistic to a session-zone instant, which
+# is not monotonic across a spring-forward gap, so in New York `ts > '2024-03-10 07:15+00'`
+# skipped the group holding 02:30 (07:30Z). The reader now refuses that pair. 7 checks are
+# added, green on each of 15-19 in shell and twin alike. 3 are dated by one mutation, the
+# guard deleted, which reddens the same three names in both twins: the >, >= and = arms
+# against the heap copy. The two premises, the same-type skip control and its answer
+# arrive never. suites_not_covered does not move.
+#
+#     ledger rows   8008 + 7 = 8015
+#     never         4544 + 4 = 4548
+#     dated         3464 + 3 = 3467
+#     4548 + 3467 == 8015
+checks_never_observed_red 4548

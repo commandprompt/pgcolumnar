@@ -4571,7 +4571,17 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 	 * path does (#1712). A bare integer literal is int4, so requiring the column's
 	 * own type left `WHERE id > 150000` on a bigint column skipping nothing. A
 	 * family with no such function, or no family, means no skip.
+	 *
+	 * Except a timestamp column against a timestamptz constant: the comparison
+	 * converts each statistic, a wall time, to an instant in the session zone,
+	 * which is not monotonic across a spring-forward gap. In New York a group
+	 * holding 02:00, 02:30 and 03:00 has max 07:00Z but a row at 07:30Z, so
+	 * `ts > '07:15+00'` would skip it (OffgridwithJD's review of #1737). Never
+	 * skip that pair. A timestamptz column and a timestamp constant is safe: the
+	 * statistics are instants, and only the one constant is converted.
 	 */
+	if (leaf->plan.typid == TIMESTAMPOID && con->consttype == TIMESTAMPTZOID)
+		return false;
 	if (con->consttype == leaf->plan.typid)
 		vsConst = &tce->cmp_proc_finfo;
 	else
