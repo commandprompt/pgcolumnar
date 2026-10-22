@@ -4553,6 +4553,26 @@ native_parquet_schema	native_parquet_schema	type of c_text	15;16;17;18;19	never	
 native_parquet_schema	native_parquet_schema	type of c_time	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_ts	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_uuid	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	import_parquet honours the unit	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	millis == micros	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	millis pushdown result == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	millis-scaled stats skip the non-matching group	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	millis-to-micros overflow raises 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	nanos == micros	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads NANOS as micros (no /1000)
+native_parquet_units	native_parquet_units	nanos read as bigint is exact	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	nanos sub-us truncates toward zero [frac]	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads NANOS as micros (no /1000)
+native_parquet_units	native_parquet_units	nanos sub-us truncates toward zero [neg]	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads NANOS as micros (no /1000)
+native_parquet_units	native_parquet_units	parquet_schema advises bigint for nanos (lossless)	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	parquet_schema advises time for TIME_MILLIS	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	parquet_schema advises timestamp for micros	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	parquet_schema advises timestamp for millis	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	read_parquet honours the unit	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	the millis file reads back exactly as written	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	time micros decodes to the right time	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	time millis decodes to the right time	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	ts_ms decodes to the right instant	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	ts_ns decodes to the right instant	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads NANOS as micros (no /1000)
+native_parquet_units	native_parquet_units	ts_us decodes to the right instant	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	and every live row is still there, once	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 0.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac <= 0.0
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 1.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac >= 1.0

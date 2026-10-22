@@ -18,7 +18,6 @@ native_parquet_partition
 native_parquet_projection
 native_parquet_stack
 native_parquet_streaming
-native_parquet_units
 native_read_parquet
 native_rewrite_conc
 objstore_addressing

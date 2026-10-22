@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 60
+suites_not_covered 59
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6252,4 +6252,21 @@ suites_not_covered 60
 #     never         4216 + 7 = 4223
 #     dated         2923 + 7 = 2930
 #     4223 + 2930 == 7153
-checks_never_observed_red 4223
+#
+# #1341, native_parquet_units seeded, with its twin (OffgridwithJD): 4223 -> 4230,
+# and suites_not_covered 60 -> 59. The suite had no rows. It enters with 20 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The pushdown oracle was the two-group millis file read back through read_parquet, the
+# reader under test: with every row after a page's first taking the next dictionary
+# entry, the scan and the mirror shifted alike and main passed 19/19. The oracle is now
+# the generator's hourly series, and a new check compares the whole file with it. The two
+# nanos truncation checks compared the file with a second file read the same way, so
+# with the server stopped both passed on two empty reads; they now want the toward-zero
+# microseconds as literals. 13 are dated by four mutations, each reddening the same
+# names in both twins. 7 arrive never.
+#
+#     ledger rows   7153 + 20 = 7173
+#     never         4223 + 7 = 4230
+#     dated         2930 + 13 = 2943
+#     4230 + 2943 == 7173
+checks_never_observed_red 4230
