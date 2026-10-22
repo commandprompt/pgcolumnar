@@ -96,12 +96,22 @@ psql_run "INSERT INTO src SELECT g, 'v'||g FROM generate_series(11,15) g;" >/dev
 for _ in $(seq 1 30); do [ "$(SUB 'SELECT count(*) FROM src')" = "15" ] && break; sleep 1; done
 check "insert-only: streamed INSERTs applied" "$(SUB 'SELECT count(*) FROM src')" "15"
 
+# An INSERT committed after the UPDATE: once it has arrived, the UPDATE before it in the
+# stream has been processed. A fixed sleep proved nothing. With the subscription disabled
+# before the UPDATE, or with streamed INSERTs failing, both checks below used to pass:
+# nothing had been applied, so nothing had been applied wrongly.
 psql_run "UPDATE src SET v = 'changed' WHERE id = 1;" >/dev/null 2>&1
-sleep 3
+psql_run "INSERT INTO src VALUES (16, 'after the update');" >/dev/null 2>&1
+for _ in $(seq 1 30); do [ "$(SUB 'SELECT count(*) FROM src WHERE id = 16')" = "1" ] && break; sleep 1; done
+SENTINEL="$(SUB 'SELECT count(*) FROM src WHERE id = 16')"
+after_sentinel() {	# reading -> the reading, or "no reading" when the sentinel never arrived
+	if [ "$SENTINEL" = "1" ]; then echo "$1"
+	else echo "no reading (the INSERT after the UPDATE never arrived: [$SENTINEL]; reading [$1])"; fi
+}
 check "insert-only: the UPDATE is skipped by design, not applied" \
-	"$(SUB "SELECT v FROM src WHERE id = 1")" "v1"
+	"$(after_sentinel "$(SUB "SELECT v FROM src WHERE id = 1")")" "v1"
 check "insert-only: no apply errors" \
-	"$(SUB "SELECT coalesce(sum(apply_error_count),0)::text FROM pg_stat_subscription_stats" | tail -1)" "0"
+	"$(after_sentinel "$(SUB "SELECT coalesce(sum(apply_error_count),0)::text FROM pg_stat_subscription_stats" | tail -1)")" "0"
 
 # ---- 2. the wedge: a publication carrying UPDATE ----------------------------
 # Asserted from the subscriber's log, because the failure happens in the apply worker and
@@ -112,7 +122,7 @@ psql_run "CREATE TABLE upd (id int PRIMARY KEY, v text);
 SUB "CREATE TABLE upd (id int PRIMARY KEY, v text) USING pgcolumnar;" >/dev/null 2>&1
 SUB "CREATE SUBSCRIPTION s_all CONNECTION 'host=127.0.0.1 port=$PGC_PORT user=postgres dbname=$PGC_DB' PUBLICATION p_all;" >/dev/null 2>&1
 for _ in $(seq 1 30); do [ "$(SUB 'SELECT count(*) FROM upd')" = "5" ] && break; sleep 1; done
-check "premise: the second subscription synced before the UPDATE" \
+check "the second subscription synced before the UPDATE" \
 	"$(SUB 'SELECT count(*) FROM upd')" "5"
 
 psql_run "UPDATE upd SET v = 'changed' WHERE id = 1;" >/dev/null 2>&1
@@ -125,12 +135,17 @@ log_has() { pgc_pg "grep -c '$1' '$SUB_LOG' 2>/dev/null || echo 0" | tail -1; }
 
 check "the error names logical replication, not row locking" \
 	"$([ "$(log_has 'logical replication cannot apply UPDATE or DELETE')" -ge 1 ] && echo yes || echo no)" "yes"
+# Absence counts only once the replication error is there: with no UPDATE sent, an
+# unreadable log, or a wedge that never happened, this used to pass.
 check "the error does NOT say only 'row locking is not supported'" \
-	"$([ "$(log_has 'row locking is not supported')" = 0 ] && echo yes || echo no)" "yes"
+	"$(if [ "$(log_has 'logical replication cannot apply UPDATE or DELETE')" -lt 1 ]; then
+		echo "no reading (the subscriber log holds no replication error)"
+	   elif [ "$(log_has 'row locking is not supported')" = 0 ]; then echo yes; else echo no; fi)" "yes"
 check "the hint names the insert-only publication" \
 	"$([ "$(log_has 'publish = ')" -ge 1 ] && echo yes || echo no)" "yes"
+# Read as "publisher -> subscriber": with no UPDATE sent, the subscriber's v1 used to pass.
 check "the wedge is real: the row is still unchanged on the subscriber" \
-	"$(SUB "SELECT v FROM upd WHERE id = 1")" "v1"
+	"$(q "SELECT v FROM upd WHERE id = 1") -> $(SUB "SELECT v FROM upd WHERE id = 1")" "changed -> v1"
 # Unbounded is the whole point, so assert the SECOND attempt rather than a counter that
 # may not have flushed. Core re-sends the same transaction about every 5 seconds.
 for _ in $(seq 1 20); do
@@ -152,13 +167,24 @@ psql_run "CREATE TABLE lk (id int primary key, v text) USING pgcolumnar;
 	INSERT INTO lk VALUES (1, 'a');" >/dev/null 2>&1
 check "premise: the lock fixture really is columnar" \
 	"$(q "SELECT amname FROM pg_class c JOIN pg_am a ON a.oid=c.relam WHERE c.relname='lk'")" "pgcolumnar"
-for lk in "FOR UPDATE" "FOR SHARE" "FOR NO KEY UPDATE"; do
-	out=$(psql_run "SELECT * FROM lk WHERE id = 1 $lk" 2>&1)
-	check "an ordinary SELECT ... $lk keeps the generic message" \
-		"$(grep -c 'row locking is not supported' <<<"$out")" "1"
-	check "an ordinary SELECT ... $lk is not told about replication" \
-		"$(grep -c 'logical replication cannot apply' <<<"$out")" "0"
-done
+# lk_said MODE -> the error an ordinary SELECT ... MODE raised. lk_replication MODE -> how
+# often it mentions replication, but only when it raised the generic message: a statement
+# that failed some other way (a missing table, a dead server) used to pass "is not told
+# about replication" because nothing was said at all. Unrolled so each check's name is a
+# literal the twin grader can read.
+lk_said() { psql_run "SELECT * FROM lk WHERE id = 1 $1" 2>&1; }
+lk_generic() { grep -c 'row locking is not supported' <<<"$(lk_said "$1")"; }
+lk_replication() {
+	local out; out="$(lk_said "$1")"
+	if grep -q 'row locking is not supported' <<<"$out"; then grep -c 'logical replication cannot apply' <<<"$out"
+	else echo "no reading (no generic error: $(head -1 <<<"$out"))"; fi
+}
+check "an ordinary SELECT ... FOR UPDATE keeps the generic message" "$(lk_generic 'FOR UPDATE')" "1"
+check "an ordinary SELECT ... FOR UPDATE is not told about replication" "$(lk_replication 'FOR UPDATE')" "0"
+check "an ordinary SELECT ... FOR SHARE keeps the generic message" "$(lk_generic 'FOR SHARE')" "1"
+check "an ordinary SELECT ... FOR SHARE is not told about replication" "$(lk_replication 'FOR SHARE')" "0"
+check "an ordinary SELECT ... FOR NO KEY UPDATE keeps the generic message" "$(lk_generic 'FOR NO KEY UPDATE')" "1"
+check "an ordinary SELECT ... FOR NO KEY UPDATE is not told about replication" "$(lk_replication 'FOR NO KEY UPDATE')" "0"
 
 SUB "DROP SUBSCRIPTION s_ins;" >/dev/null 2>&1
 SUB "DROP SUBSCRIPTION s_all;" >/dev/null 2>&1

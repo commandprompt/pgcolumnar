@@ -316,6 +316,7 @@ behaviour, the source of that number is named.
 - [268. test_iceberg_dv.py: Iceberg v3 deletion vectors apply, supersede, and refuse what they must](#268-test_iceberg_dvpy-iceberg-v3-deletion-vectors-apply-supersede-and-refuse-what-they-must)
 - [269. test_logical_decoding_source.py: a columnar table is not a logical decoding source](#269-test_logical_decoding_sourcepy-a-columnar-table-is-not-a-logical-decoding-source)
 - [270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must](#270-test_iceberg_deletespy-iceberg-position-and-equality-deletes-apply-scope-and-refuse-what-they-must)
+- [271. test_logical_subscriber.py: columnar as a logical replication apply target](#271-test_logical_subscriberpy-columnar-as-a-logical-replication-apply-target)
 
 ## 1. How to read a test in here
 
@@ -10520,3 +10521,34 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_the_backend_survives_the_delete_audit_arms` | backend still up after the audit arms |
 | `test_an_existing_entry_with_a_null_sequence_number_is_refused` | an EXISTING entry with a null sequence number is refused (XX001) |
 | `test_the_backend_survives_the_bad_sequence_refusal` | backend still up after the bad-sequence refusal |
+
+## 271. test_logical_subscriber.py: columnar as a logical replication apply target
+
+The twin of `test/logical_subscriber.sh` (#435). A heap publisher and a columnar subscriber, on two private clusters: an INSERT-only publication syncs and streams every row, a publication carrying UPDATE raises the extension's own error (naming logical replication and the insert-only way out) and the apply worker retries it forever, and an ordinary SELECT ... FOR UPDATE / SHARE / NO KEY UPDATE keeps the generic row-locking message.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value from a module fixture. The apply worker's error is read from the subscriber's server log. A reading that would pass on an absence (a skipped UPDATE, a message not said) is taken only once the event it depends on is observed: an INSERT after the UPDATE has arrived, the replication error is in the log, or the statement raised the generic error.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_publisher_has_logical_decoding_on` | premise: the publisher has logical decoding on |
+| `test_the_subscriber_cluster_answers` | premise: the subscriber cluster answers |
+| `test_the_subscriber_loaded_pgcolumnar` | premise: the subscriber loaded pgcolumnar |
+| `test_insert_only_initial_sync_copied_every_row` | insert-only: initial sync copied every row |
+| `test_insert_only_streamed_inserts_applied` | insert-only: streamed INSERTs applied |
+| `test_insert_only_the_update_is_skipped_by_design` | insert-only: the UPDATE is skipped by design, not applied |
+| `test_insert_only_no_apply_errors` | insert-only: no apply errors |
+| `test_the_second_subscription_synced_before_the_update` | the second subscription synced before the UPDATE |
+| `test_the_apply_error_names_logical_replication` | the error names logical replication, not row locking |
+| `test_the_apply_error_does_not_say_only_row_locking` | the error does NOT say only 'row locking is not supported' |
+| `test_the_apply_hint_names_the_insert_only_publication` | the hint names the insert-only publication |
+| `test_the_wedged_row_is_unchanged_on_the_subscriber` | the wedge is real: the row is still unchanged on the subscriber |
+| `test_the_apply_worker_retries_so_the_subscription_is_wedged` | it retries rather than giving up, so the subscription is wedged |
+| `test_the_lock_fixture_is_columnar` | premise: the lock fixture really is columnar |
+| `test_select_for_update_keeps_the_generic_message` | an ordinary SELECT ... FOR UPDATE keeps the generic message |
+| `test_select_for_update_is_not_told_about_replication` | an ordinary SELECT ... FOR UPDATE is not told about replication |
+| `test_select_for_share_keeps_the_generic_message` | an ordinary SELECT ... FOR SHARE keeps the generic message |
+| `test_select_for_share_is_not_told_about_replication` | an ordinary SELECT ... FOR SHARE is not told about replication |
+| `test_select_for_no_key_update_keeps_the_generic_message` | an ordinary SELECT ... FOR NO KEY UPDATE keeps the generic message |
+| `test_select_for_no_key_update_is_not_told_about_replication` | an ordinary SELECT ... FOR NO KEY UPDATE is not told about replication |
