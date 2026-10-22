@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 55
+suites_not_covered 54
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6389,4 +6389,22 @@ suites_not_covered 55
 #     never         4269 + 2 = 4271
 #     dated         3068 + 9 = 3077
 #     4271 + 3077 == 7348
-checks_never_observed_red 4271
+#
+# #1341, native_parquet_codecs seeded, with its twin (OffgridwithJD): 4271 -> 4278,
+# and suites_not_covered 55 -> 54. The suite had no rows. It enters with 14 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# Every codec was compared with c_none.parquet read back through read_parquet, the reader
+# under test: with one decoded byte flipped in every page over 4 KB, the same way for
+# every codec, main passed all nine checks. Each file now decodes to the generator's rows,
+# built in SQL. Each file's codec is read from its own metadata (a crafter that wrote every
+# file uncompressed passed main 9/9). And survival reads the server log's crash count: with
+# the crafted-size guard aborting and the probe 3 s late, main's bare SELECT 1 passed. 7
+# are dated by four mutations, each reddening the same names in both twins. 7 arrive
+# never: the four codec premises read pyarrow's metadata, not pgcolumnar, and the FDW counts
+# hold under each mutation.
+#
+#     ledger rows   7348 + 14 = 7362
+#     never         4271 + 7 = 4278
+#     dated         3077 + 7 = 3084
+#     4278 + 3084 == 7362
+checks_never_observed_red 4278

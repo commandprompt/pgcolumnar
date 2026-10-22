@@ -4400,6 +4400,20 @@ native_param_pushdown	native_param_pushdown	backend alive	15;16;17;18;19	never	-
 native_param_pushdown	native_param_pushdown	literal count is the expected value	15;16;17;18;19	never	-
 native_param_pushdown	native_param_pushdown	parameterized count matches the literal count	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
 native_param_pushdown	native_param_pushdown	the correlated arm rescans the columnar scan once per outer row	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	backend survived the crafted header	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: a page declaring a size past MaxAllocSize aborts instead of being refused
+native_parquet_codecs	native_parquet_codecs	crafted uncompressed size gives a clean decode error	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: a page declaring a size past MaxAllocSize aborts instead of being refused
+native_parquet_codecs	native_parquet_codecs	gzip FDW count	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	gzip decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_codecs	native_parquet_codecs	gzip sum matches the generator	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_codecs	native_parquet_codecs	lz4 FDW count	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	lz4 decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_codecs	native_parquet_codecs	premise: the gzip file is GZIP-compressed	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	premise: the lz4 file is LZ4-compressed	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	premise: the uncompressed file is UNCOMPRESSED	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	premise: the zstd file is ZSTD-compressed	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	uncompressed decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_codecs	native_parquet_codecs	zstd FDW count	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	zstd decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
 native_parquet_fieldid	native_parquet_fieldid	a duplicate field id in the file is refused (42702)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	a duplicate requested field id is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	a field_ids/column-count mismatch is refused (22023)	15;16;17;18;19	never	-
