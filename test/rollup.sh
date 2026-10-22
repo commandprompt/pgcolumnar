@@ -11,11 +11,14 @@
 #
 # The rollup is a table, one row per (bucket, group_by...) key, with columns
 # `bucket`, the group_by columns, then one per aggregate named `count`, or
-# <function>_<column> (sum_v, min_v, max_v, avg_f).
+# <function>_<column> (sum_v, min_v, max_v, avg_v, avg_f).
 #
 # THE ORACLE is a full recompute of the same GROUP BY over the source, every
 # time. Exactness is fixed by the design on #1294 so it cannot be loosened here:
-# count, integer sum, min and max exact; avg of float8 within a relative 1e-12.
+# count, integer sum, min and max exact; avg of an integer exact too (numeric
+# partials); avg of float8 within a relative 1e-12. The pytest twin checks the
+# same aggregate kinds, so a check of one name asserts one property in both
+# (#1339).
 #
 # A refresh is one statement and so one snapshot: rows committed while it runs
 # are neither folded nor recorded, and the next refresh takes them, exactly once
@@ -62,28 +65,34 @@ check_num "premise: the source holds every row" "$(q "SELECT count(*) FROM src;"
 
 # The oracle, and the rollup read the same way: exact columns hashed, avg kept apart.
 RECOMPUTE="SELECT date_bin('1 hour', ts, '$ORIGIN') AS bucket, dev, count(*) AS count,
-           sum(v)::numeric AS sum_v, min(v) AS min_v, max(v) AS max_v, avg(f) AS avg_f
+           sum(v)::numeric AS sum_v, min(v) AS min_v, max(v) AS max_v, avg(v) AS avg_v, avg(f) AS avg_f
            FROM src GROUP BY 1, 2"
 # concat_ws over coalesce: a plain || makes a row with any NULL into NULL, and
 # string_agg then drops it, so NULL keys would be compared by not being there.
 exact() { q "SELECT count(*) || '|' || md5(string_agg(concat_ws(',', coalesce(bucket::text, '~'),
              coalesce(dev::text, '~'), count, coalesce(sum_v::text, '~'), coalesce(min_v::text, '~'),
-             coalesce(max_v::text, '~')), ';' ORDER BY bucket NULLS FIRST, dev NULLS FIRST)) FROM ($1) x;"; }
-# the worst relative difference of avg_f between the rollup and the recompute
+             coalesce(max_v::text, '~'), coalesce(avg_v::text, '~')), ';' ORDER BY bucket NULLS FIRST, dev NULLS FIRST)) FROM ($1) x;"; }
+# avg_gap [ROLLUP [RECOMPUTE]] -> whether avg_f is within a relative 1e-12 of the
+# recompute's on every key the recompute has. A NULL key joins through a
+# sentinel no row holds, so NULL keys are compared too, and the join stays a
+# hash join (IS NOT DISTINCT FROM is not hashable).
 avg_gap() {
+	local r="${1:-r_hourly}" o="${2:-$RECOMPUTE}"
 	q "SELECT coalesce(max(abs(r.avg_f - o.avg_f) / greatest(abs(o.avg_f), 1e-300)), 0) < 1e-12
-	   AND count(*) = (SELECT count(*) FROM ($RECOMPUTE) z)
-	   FROM r_hourly r JOIN ($RECOMPUTE) o USING (bucket, dev);"
+	   AND count(*) = (SELECT count(*) FROM ($o) z)
+	   FROM $r r JOIN ($o) o ON coalesce(r.bucket, '-infinity') = coalesce(o.bucket, '-infinity')
+	                        AND coalesce(r.dev, -1) = coalesce(o.dev, -1);"
 }
-matches() { echo "$(exact "SELECT * FROM r_hourly")|$(avg_gap)"; }
-oracle() { echo "$(exact "$RECOMPUTE")|t"; }
+# matches [ROLLUP [RECOMPUTE]], oracle [RECOMPUTE]: the exact columns and the float avg
+matches() { echo "$(exact "SELECT * FROM ${1:-r_hourly}")|$(avg_gap "${1:-r_hourly}" "${2:-$RECOMPUTE}")"; }
+oracle() { echo "$(exact "${1:-$RECOMPUTE}")|t"; }
 
-AGGS="'{count,sum,min,max,avg}', '{*,v,v,v,f}'"
+AGGS="'{count,sum,min,max,avg,avg}', '{*,v,v,v,v,f}'"
 q "SELECT pgcolumnar.create_rollup('r_hourly', 'src', 'ts', '1 hour', '$ORIGIN', '{dev}', $AGGS);" >/dev/null
 check "the rollup table exists with the documented columns" \
 	"$(q "SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute
 	      WHERE attrelid = to_regclass('r_hourly') AND attnum > 0 AND NOT attisdropped;")" \
-	"bucket,dev,count,sum_v,min_v,max_v,avg_f"
+	"bucket,dev,count,sum_v,min_v,max_v,avg_v,avg_f"
 
 check_num "the first refresh folds every row" "$(q "SELECT pgcolumnar.refresh_rollup('r_hourly');")" "30000"
 check "and after the first refresh the rollup equals a full recompute" "$(matches)" "$(oracle)"
@@ -178,8 +187,13 @@ check "pgcolumnar.vacuum gave the source's row groups new identities" \
 	"$([ -n "$groups_after" ] && [ "$groups_after" != "$groups_before" ] && echo renumbered || echo "same: $groups_after")" "renumbered"
 vb="$(exact "SELECT * FROM r_hourly")"
 check_num "the rollup holds rows before the rewrite" "$(at_least "$(q "SELECT count(*) FROM r_hourly;")" 1)" "1"
+# The SQLSTATE, whether the HINT names rebase_rollup, and the rollup: the name
+# promises all three, and the HINT was read by no arm until #1339.
+rewritten_hint="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+	-X -At -v VERBOSITY=verbose -c "SELECT pgcolumnar.refresh_rollup('r_hourly');" 2>&1 | sed -n 's/^HINT: *//p' | head -1)"
 check "a refresh after the source was rewritten is refused, naming rebase_rollup" \
-	"$(sqlstate "SELECT pgcolumnar.refresh_rollup('r_hourly');")|$(exact "SELECT * FROM r_hourly")" "55000|$vb"
+	"$(sqlstate "SELECT pgcolumnar.refresh_rollup('r_hourly');")|$(grep -q rebase_rollup <<<"$rewritten_hint" && echo rebase_rollup || echo "hint: $rewritten_hint")|$(exact "SELECT * FROM r_hourly")" \
+	"55000|rebase_rollup|$vb"
 check_num "rebase_rollup records the source's current row groups" \
 	"$(at_least "$(q "SELECT pgcolumnar.rebase_rollup('r_hourly');")" 1)" "1"
 check "and leaves the rollup's rows alone" "$(exact "SELECT * FROM r_hourly")" "$vb"
@@ -248,27 +262,27 @@ check "each row group's TID range holds exactly that group's rows" \
 # NULL group keys and NULL timestamps: the fold matches keys with IS NOT DISTINCT
 # FROM, and a NULL ts is a NULL bucket. Measured right by @jdatcmd on #1319; an
 # = in place of IS NOT DISTINCT FROM would duplicate the NULL partials.
-q "CREATE TABLE nk (ts timestamptz, dev int, v bigint) USING pgcolumnar;
+q "CREATE TABLE nk (ts timestamptz, dev int, v bigint, f float8) USING pgcolumnar;
    SELECT pgcolumnar.set_options('nk', stripe_row_limit => 1000);
    INSERT INTO nk SELECT CASE WHEN g % 11 = 0 THEN NULL ELSE '2026-06-01'::timestamptz + g * interval '61 s' END,
-          CASE WHEN g % 7 = 0 THEN NULL ELSE g % 5 END, g FROM generate_series(1, 3000) g;" >/dev/null
-q "SELECT pgcolumnar.create_rollup('r_nk', 'nk', 'ts', '1 hour', '$ORIGIN', '{dev}', '{count,sum,min,max}', '{*,v,v,v}');
+          CASE WHEN g % 7 = 0 THEN NULL ELSE g % 5 END, g, g / 3.0 FROM generate_series(1, 3000) g;" >/dev/null
+q "SELECT pgcolumnar.create_rollup('r_nk', 'nk', 'ts', '1 hour', '$ORIGIN', '{dev}', $AGGS);
    SELECT pgcolumnar.refresh_rollup('r_nk');" >/dev/null
 q "INSERT INTO nk SELECT CASE WHEN g % 11 = 0 THEN NULL ELSE '2026-06-01'::timestamptz + g * interval '61 s' END,
-          CASE WHEN g % 7 = 0 THEN NULL ELSE g % 5 END, g FROM generate_series(3001, 4500) g;" >/dev/null
+          CASE WHEN g % 7 = 0 THEN NULL ELSE g % 5 END, g, g / 3.0 FROM generate_series(3001, 4500) g;" >/dev/null
 check_num "the second refresh of the NULL-key rollup folded the append" "$(q "SELECT pgcolumnar.refresh_rollup('r_nk');")" "1500"
 NKR="SELECT date_bin('1 hour', ts, '$ORIGIN') AS bucket, dev, count(*) AS count, sum(v)::numeric AS sum_v,
-     min(v) AS min_v, max(v) AS max_v FROM nk GROUP BY 1, 2"
+     min(v) AS min_v, max(v) AS max_v, avg(v) AS avg_v, avg(f) AS avg_f FROM nk GROUP BY 1, 2"
 check "a rollup with NULL keys and NULL timestamps equals a full recompute" \
-	"$(exact "SELECT * FROM r_nk")|$(q "SELECT count(*) FROM r_nk WHERE dev IS NULL;") $(q "SELECT count(*) FROM r_nk WHERE bucket IS NULL;")" \
-	"$(exact "$NKR")|$(q "SELECT count(*) FROM ($NKR) z WHERE dev IS NULL;") $(q "SELECT count(*) FROM ($NKR) z WHERE bucket IS NULL;")"
+	"$(matches r_nk "$NKR")|$(q "SELECT count(*) FROM r_nk WHERE dev IS NULL;") $(q "SELECT count(*) FROM r_nk WHERE bucket IS NULL;")" \
+	"$(oracle "$NKR")|$(q "SELECT count(*) FROM ($NKR) z WHERE dev IS NULL;") $(q "SELECT count(*) FROM ($NKR) z WHERE bucket IS NULL;")"
 check_num "premise: and the fixture has NULL-key and NULL-bucket groups" \
 	"$(at_least "$(q "SELECT count(*) FROM ($NKR) z WHERE dev IS NULL OR bucket IS NULL;")" 2)" "2"
 # A deleted row whose ts is NULL dirties the NULL bucket, which has no time range.
 q "DELETE FROM nk WHERE ts IS NULL AND dev = 2;" >/dev/null
 q "SELECT pgcolumnar.refresh_rollup('r_nk');" >/dev/null
 check "after a delete of rows whose ts is NULL the NULL-bucket rollup equals a full recompute" \
-	"$(exact "SELECT * FROM r_nk")" "$(exact "$NKR")"
+	"$(matches r_nk "$NKR")" "$(oracle "$NKR")"
 
 # Retention keeps history (owner's decision on #1294 point 2): groups that expire
 # retires are recorded in pgcolumnar.retired_group (#1314), and a refresh drops
@@ -428,8 +442,8 @@ check "a role that cannot read the source cannot create a rollup of it" \
 # serves a hot rollup better). A heap rollup folds and matches the same way.
 q "SELECT pgcolumnar.create_rollup('r_heap', 'src', 'ts', '1 hour', '$ORIGIN', '{dev}', $AGGS, 'heap');" >/dev/null
 check "a rollup kept in a heap table refreshes and equals a full recompute" \
-	"$(q "SELECT a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE c.oid = 'r_heap__partials'::regclass;")|$(q "SELECT pgcolumnar.refresh_rollup('r_heap') > 0;")|$(exact "SELECT * FROM r_heap")" \
-	"heap|t|$(exact "$RECOMPUTE")"
+	"$(q "SELECT a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE c.oid = 'r_heap__partials'::regclass;")|$(q "SELECT pgcolumnar.refresh_rollup('r_heap') > 0;")|$(matches r_heap)" \
+	"heap|t|$(oracle)"
 
 # REPEATABLE READ: the caller's snapshot would predate the refresh's lock, and a
 # refresh that waited for another would fold the same groups again.

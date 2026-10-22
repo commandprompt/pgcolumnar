@@ -144,8 +144,12 @@ def test_the_fixture_really_is_ordered(fx, expect):
                         "premise: and ties on it")
         cur.execute("EXPLAIN (COSTS OFF) SELECT k FROM c ORDER BY k")
         plan = "\n".join(r[0] for r in cur.fetchall())
-    expect.num(1 if "PgColumnarScan" in plan else 0, 1,
-               "premise: the columnar table is read by the columnar scan")
+    # The base scan's own property, as the shell's pgc_is_columnar_scan reads it.
+    # "PgColumnarScan" is also the name the vector nodes print, so it said yes for
+    # a plan with no columnar scan in it. And an arm, not a premise (#1339, #1236):
+    # an explain that drops the property reddens it in both twins.
+    expect.num(1 if "Columnar Projected Columns" in plan else 0, 1,
+               "the columnar table is read by the columnar scan")
 
 
 # ============================================================ CLAIM arms
@@ -426,9 +430,14 @@ def test_a_type_change_rewrite_drops_the_mark(fx, expect):
         after = _one(cur, "SELECT pgcolumnar.get_storage_id('atc')")
         expect.text("same" if before == after else "rewritten", "rewritten",
                     "premise: a type change DID rewrite the storage")
-        expect.num(1 if _plans_sort(cur, "SELECT k FROM atc ORDER BY k") else 0, 1,
-                   "REFUSE: integer order is not text order, and the rewrite dropped "
-                   "the mark")
+        # Both halves of the name: the plan sorts, and the rewritten storage has no
+        # mark. The plan alone could not see a mark carried across, because text is
+        # collatable and condition 3 refuses it with or without one (#1339).
+        expect.text(f"{'yes' if _plans_sort(cur, 'SELECT k FROM atc ORDER BY k') else 'no'}"
+                    f"|{_storage(cur, 'atc', 'coalesce(sorted_kind, ' + chr(39) + '<NULL>' + chr(39) + ')')}",
+                    "yes|<NULL>",
+                    "REFUSE: integer order is not text order, and the rewrite dropped "
+                    "the mark")
 
 
 # ============================ an UPDATE lands outside the run, so the claim lapses
@@ -718,8 +727,7 @@ def test_an_enum_add_value_before_does_not_renumber(fx, expect):
         cur.execute("ALTER TYPE enum_t ADD VALUE 'a' BEFORE 'b'")
     with fx.cursor() as cur:
         expect.num(1 if _plans_sort(cur, "SELECT k FROM t_enum ORDER BY k") else 0, 0,
-                   "an enum ADD VALUE ... BEFORE does not renumber the values already "
-                   "stored")
+                   "an enum ADD VALUE ... BEFORE keeps the claim")
         columnar = _rows(cur, "SELECT k, id FROM t_enum ORDER BY k, id")
         heap = _rows(cur, "SELECT k, id FROM t_enum_h ORDER BY k, id")
         expect.at_least(len(heap), 1, "premise: the enum oracle returns rows")
@@ -920,7 +928,7 @@ def test_truncate_restarts_numbering_in_a_new_storage(fx, expect):
         _mk_sorted(cur, "trunc")
         before = _one(cur, "SELECT pgcolumnar.get_storage_id('trunc')")
         expect.text(str(_one(cur,
-                    "SELECT (sorted_from = min(group_number))::text "
+                    "SELECT (sorted_from = min(group_number) AND min(group_number) = 1)::text "
                     "FROM pgcolumnar.row_group, pgcolumnar.storage "
                     "WHERE pgcolumnar.storage.storage_id = "
                     "pgcolumnar.get_storage_id('trunc') AND "
