@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 43
+suites_not_covered 42
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6593,4 +6593,22 @@ suites_not_covered 43
 #     never         4332 + 0 = 4332
 #     dated         3142 + 3 = 3145
 #     4332 + 3145 == 7477
-checks_never_observed_red 4332
+#
+# #1341, objstore_module seeded, with its twin (OffgridwithJD): 4332 -> 4354,
+# and suites_not_covered 43 -> 42. The suite had no rows. It enters with 30 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The remote-read checks took any of seven phrases, "is not supported" among them: with the
+# module no longer handling s3://, gs:// or (built with OpenSSL) https://, main passed 30/30.
+# Each URL's refusal is now pinned by SQLSTATE and message, the https one by whether the
+# module links libssl. "a local path still works" counted a columnar table, which never
+# reaches read_parquet's dispatch: with every local read_parquet refused, main passed 30/30.
+# It now reads back a file export_parquet wrote. 8 are dated by seven mutations, each the
+# same names in both twins. 22 arrive never. The unmovable-module skip gets no row: CI
+# emits none. Nor does the start guard's failure, now under a literal name the twin
+# reads every run (one extra test): green runs never record it.
+#
+#     ledger rows   7477 + 30 = 7507
+#     never         4332 + 22 = 4354
+#     dated         3145 + 8 = 3153
+#     4354 + 3153 == 7507
+checks_never_observed_red 4354

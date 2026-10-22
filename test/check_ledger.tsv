@@ -5161,6 +5161,36 @@ objstore_listing	objstore_listing	hidden (_SUCCESS) and non-parquet (notes.txt) 
 objstore_listing	objstore_listing	premise: fixture up	15;16;17;18;19	never	-
 objstore_listing	objstore_listing	read_parquet over a prefix reads every object under it (4 parts, recursive)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
 objstore_listing	objstore_listing	the prefix listing paged (more than one list-type=2 request)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_module	objstore_module	a broken module does NOT masquerade as an unhandled scheme	15;16;17;18;19	never	-
+objstore_module	objstore_module	a gs URL reports an object-storage error, not a missing file	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the module stops handling gs:// URLs
+objstore_module	objstore_module	a https URL reports an object-storage error, not a missing file	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a module built with OpenSSL stops handling https:// URLs
+objstore_module	objstore_module	a local path still works	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: every local read_parquet path is refused as a missing file
+objstore_module	objstore_module	a relative path is not mistaken for a URL	15;16;17;18;19	never	-
+objstore_module	objstore_module	a remote glob (*) is handled remotely (an object-storage error, not a local one)	15;16;17;18;19	never	-
+objstore_module	objstore_module	a remote glob (?) is handled remotely (an object-storage error, not a local one)	15;16;17;18;19	never	-
+objstore_module	objstore_module	a remote glob ([0-9]) is handled remotely (an object-storage error, not a local one)	15;16;17;18;19	never	-
+objstore_module	objstore_module	a s3 URL reports an object-storage error, not a missing file	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the module stops handling s3:// URLs
+objstore_module	objstore_module	and neither claims the module is missing	15;16;17;18;19	never	-
+objstore_module	objstore_module	and neither downgrades it to an unhandled scheme	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a missing object-store module is reported as an unhandled scheme
+objstore_module	objstore_module	and the * glob is NOT reported as a local filesystem miss	15;16;17;18;19	never	-
+objstore_module	objstore_module	and the ? glob is NOT reported as a local filesystem miss	15;16;17;18;19	never	-
+objstore_module	objstore_module	and the [0-9] glob is NOT reported as a local filesystem miss	15;16;17;18;19	never	-
+objstore_module	objstore_module	and the gs URL is NOT reported as a missing file	15;16;17;18;19	never	-
+objstore_module	objstore_module	and the https URL is NOT reported as a missing file	15;16;17;18;19	never	-
+objstore_module	objstore_module	and the loader's own reason survives	15;16;17;18;19	2026-10-22	columnar_objstore.c: a module that is present but fails to load is reported as not installed
+objstore_module	objstore_module	and the s3 URL is NOT reported as a missing file	15;16;17;18;19	never	-
+objstore_module	objstore_module	both reads name the missing module, identically	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a missing object-store module is reported as an unhandled scheme
+objstore_module	objstore_module	nor as a module that was never installed	15;16;17;18;19	2026-10-22	columnar_objstore.c: a module that is present but fails to load is reported as not installed
+objstore_module	objstore_module	positive control: it IS defined in the module, so nm really looked	15;16;17;18;19	never	-
+objstore_module	objstore_module	premise: and the real module is back afterwards	15;16;17;18;19	never	-
+objstore_module	objstore_module	premise: the module really is corrupt for this run, not merely intended to be	15;16;17;18;19	never	-
+objstore_module	objstore_module	premise: the module really was absent while those two reads ran	15;16;17;18;19	never	-
+objstore_module	objstore_module	premise: the real module was restored afterwards	15;16;17;18;19	never	-
+objstore_module	objstore_module	the main library is installed	15;16;17;18;19	never	-
+objstore_module	objstore_module	the module's entry point is NOT inside the preloaded library	15;16;17;18;19	never	-
+objstore_module	objstore_module	the object-store module is installed BESIDE it, not inside it	15;16;17;18;19	never	-
+objstore_module	objstore_module	with the module absent, neither read leaks the loader's own error	15;16;17;18;19	never	-
+objstore_module	objstore_module	with the module present, both reads report an unhandled scheme	15;16;17;18;19	never	-
 objstore_s3_read	objstore_s3_read	403 ordering premise: verified requests still reach 404 = 58P01	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a 404 on open is refused 28000 instead of 58P01
 objstore_s3_read	objstore_s3_read	403: tamper bucket surfaces 28000	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a 403 on open is read as an empty object
 objstore_s3_read	objstore_s3_read	A: count(*) over s3	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
