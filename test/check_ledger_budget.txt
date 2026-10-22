@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 79
+suites_not_covered 78
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5880,4 +5880,25 @@ suites_not_covered 79
 #     never         4072 + 40 = 4112
 #     dated         2758 + 11 = 2769
 #     4112 + 2769 == 6881
-checks_never_observed_red 4112
+#
+# #1341, native_fastdecode seeded, with its twin (OffgridwithJD): 4112 -> 4124, and
+# suites_not_covered 79 -> 78. The suite had no rows. It enters with 26 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after four fixes.
+# The per-vector skipping section set only stripe_row_limit, so each 8192-row group was
+# one vector (the default chunk group is 10000 rows) and no vector inside a group was ever
+# skipped: head read "Columnar Vectors Skipped: 0", and main passed 25/25 both with the
+# skip mask dropped and with the cursor advancing one value short after a jump, the desync
+# the section exists to catch. It now sets chunk_group_row_limit 1024 (eight vectors a
+# group), asserts a group holds several vectors (it counted the table's total before), and
+# requires the scan's own skipped-vectors counter to be positive. "negative zero preserved"
+# passed on two failed reads with the server stopped (check_text now), and the descriptor
+# checks passed on a query that matched no chunk (a count of none is no reading now).
+# The inlined decode returns what the call path returns, so switching it off is invisible
+# to every check, and nothing reports which path ran. 14 are dated by four mutations,
+# each reddening the same names in both twins. 12 arrive never.
+#
+#     ledger rows   6881 + 26 = 6907
+#     never         4112 + 12 = 4124
+#     dated         2769 + 14 = 2783
+#     4124 + 2783 == 6907
+checks_never_observed_red 4124

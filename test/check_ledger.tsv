@@ -3882,6 +3882,32 @@ native_exact_selection	native_exact_selection	the control decodes every column o
 native_exact_selection	native_exact_selection	the control returns every row	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection rules out every vector, matching rows or not
 native_exact_selection	native_exact_selection	the zero-match plan is a columnar custom scan	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_exact_selection	native_exact_selection	the zero-matching query returns nothing	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	NaN preserved	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	aggregate across ADD COLUMN matches heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode flips the low bit of an 8-byte value on row 7 of a group
+native_fastdecode	native_fastdecode	aggregate after deletes matches heap	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	aggregate under skipping matches heap	15;16;17;18;19	2026-10-22	columnar_reader.c: a skipped vector advances a byval column's cursor one value short, shifting every value after the jump
+native_fastdecode	native_fastdecode	aggregates over encoded columns match	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode flips the low bit of an 8-byte value on row 7 of a group
+native_fastdecode	native_fastdecode	all encodings decode identically to heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode flips the low bit of an 8-byte value on row 7 of a group
+native_fastdecode	native_fastdecode	boundary int/float bit patterns round-trip exactly	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode flips the low bit of an 8-byte value on row 7 of a group
+native_fastdecode	native_fastdecode	byval fixed columns carry non-baseline descriptors	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	encoded columns carry non-baseline descriptors	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	exact aggregates match heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode flips the low bit of an 8-byte value on row 7 of a group
+native_fastdecode	native_fastdecode	filtered by bigint matches heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode flips the low bit of an 8-byte value on row 7 of a group
+native_fastdecode	native_fastdecode	filtered by date matches heap	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	filtered by float matches heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode flips the low bit of an 8-byte value on row 7 of a group
+native_fastdecode	native_fastdecode	filtered by int matches heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode is applied to by-reference fixed types (uuid)
+native_fastdecode	native_fastdecode	full projection is byte-identical to heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode is applied to by-reference fixed types (uuid)
+native_fastdecode	native_fastdecode	grouped aggregate matches heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode flips the low bit of an 8-byte value on row 7 of a group
+native_fastdecode	native_fastdecode	many row groups written (widen runs per group)	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	narrow range with vector skipping matches heap	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	negative zero preserved	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	row count matches	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	scan across an ADD COLUMN boundary matches heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode flips the low bit of an 8-byte value on row 7 of a group
+native_fastdecode	native_fastdecode	scan after scattered deletes matches heap	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	scan is the columnar custom scan	15;16;17;18;19	never	-
+native_fastdecode	native_fastdecode	the narrow range skips whole vectors	15;16;17;18;19	2026-10-22	columnar_reader.c: the zone-map skip mask is dropped, so no vector is ever skipped
+native_fastdecode	native_fastdecode	two narrow ranges (non-adjacent vectors) match heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the inlined byval decode flips the low bit of an 8-byte value on row 7 of a group
+native_fastdecode	native_fastdecode	vecskip: a row group holds multiple vectors	15;16;17;18;19	never	-
 native_fetch_bigcap	native_fetch_bigcap	a narrow projection over a wide group is cached too (#433)	15;16;17;18;19	2026-10-16	the fetch cache reads its row group whole and drops an entry whose group exceeds the cap after every fetch, the #433 defect (columnar_reader.c)
 native_fetch_bigcap	native_fetch_bigcap	columns that fit are cached even when their group does not (#433)	15;16;17;18;19	2026-10-16	the fetch cache reads its row group whole and drops an entry whose group exceeds the cap after every fetch, the #433 defect (columnar_reader.c)
 native_fetch_bigcap	native_fetch_bigcap	every payload survived the round trip at full length	15;16;17;18;19	never	-
