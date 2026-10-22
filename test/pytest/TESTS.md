@@ -348,6 +348,7 @@ behaviour, the source of that number is named.
 - [300. test_native_reclaim_reconcile.py: a reuse op drops the free_space row that overlaps a live group, and only that row](#300-test_native_reclaim_reconcilepy-a-reuse-op-drops-the-free_space-row-that-overlaps-a-live-group-and-only-that-row)
 - [301. test_native_page_offset_bound.py: a corrupt page_offset is refused by the containment guard on both reads, and an intact table still reads](#301-test_native_page_offset_boundpy-a-corrupt-page_offset-is-refused-by-the-containment-guard-on-both-reads-and-an-intact-table-still-reads)
 - [302. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen](#302-test_native_param_pushdownpy-a-parameterized-qual-prunes-chunk-groups-and-a-correlated-one-is-never-frozen)
+- [303. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's](#303-test_native_sort_bypy-the-declared-sort_by-key-orders-the-rows-it-says-and-each-refusal-is-its-own-guards)
 
 ## 1. How to read a test in here
 
@@ -11516,3 +11517,36 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_param_pushdown_a_second_execution_counts_with_its_own_value` | a second execution in the same session counts with its own value |
 | `test_param_pushdown_a_second_execution_prunes_with_its_own_value` | and prunes with its own value too (18 of 20 removed) |
 | `test_param_pushdown_the_backend_is_alive` | backend alive |
+
+## 303. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's
+
+The twin of `test/native_sort_by.sh`. A 40,960-row table with 50 hosts cycled in insert order is sorted by its declared key (host, ts) with the zero-argument vacuum_sorted: heap parity holds before and after, group skipping on a host appears, the rows lie in (host, ts) order in scan order, and explicit columns lay them out the same way. The key round-trips and resets, and no key, a bad column, a dropped declared column and (PG18+) a virtual generated column are each refused by their own guard, with the backend still up.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A refusal reads as '<SQLSTATE> <phrase of the guard's message>', a failed reading is a `query_error()`, and every reading after a refusal first waits for the server, so a crash reds its own arm and the survival check. Before PostgreSQL 18 the virtual arm declines, as the shell records its skip.
+
+| test | what it holds |
+| --- | --- |
+| `test_nsb_row_count` | row count |
+| `test_nsb_the_plan_under_test_is_a_columnar_custom_scan` | the plan under test is a columnar custom scan |
+| `test_nsb_equality_parity_pre_sort` | equality parity (pre-sort) |
+| `test_nsb_the_scan_order_starts_unsorted` | premise: before sorting, the scan order does not follow (host, ts) |
+| `test_nsb_declared_sort_by_round_trips` | declared sort_by round-trips |
+| `test_nsb_row_count_after_sort` | row count after sort |
+| `test_nsb_full_table_parity_after_sort` | full-table parity after sort |
+| `test_nsb_equality_parity_post_sort` | equality parity (post-sort) |
+| `test_nsb_sorting_a_text_key_enables_group_skipping` | sorting a text key enables group skipping |
+| `test_nsb_the_scan_order_follows_the_declared_key` | the scan order follows the declared key (host, ts) |
+| `test_nsb_explicit_column_sort_parity` | explicit-column sort parity |
+| `test_nsb_explicit_columns_lay_the_rows_out_as_the_declared_key_does` | explicit columns lay the rows out as the declared key does |
+| `test_nsb_sort_by_cleared` | sort_by cleared |
+| `test_nsb_zero_arg_errors_when_no_key_declared` | zero-arg errors when no key declared |
+| `test_nsb_set_options_rejects_a_nonexistent_sort_by_column` | set_options rejects a nonexistent sort_by column |
+| `test_nsb_zero_arg_errors_on_a_dropped_declared_column` | zero-arg errors on a dropped declared column |
+| `test_nsb_empty_table_sorts_without_error` | empty table sorts without error |
+| `test_nsb_single_row_table_sorts_without_error` | single-row table sorts without error |
+| `test_nsb_single_row_parity` | single-row parity |
+| `test_nsb_set_options_rejects_a_virtual_generated_sort_by_column` | set_options rejects a virtual generated sort_by column |
+| `test_nsb_vacuum_sorted_rejects_an_explicit_virtual_generated_column` | vacuum_sorted rejects an explicit virtual generated column |
+| `test_nsb_backend_still_up_after_the_refusals` | backend still up after the refusals |

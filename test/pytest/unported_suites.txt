@@ -24,7 +24,6 @@ native_parquet_units
 native_read_parquet
 native_rewrite
 native_rewrite_conc
-native_sort_by
 native_vecdecode
 native_zonemap
 native_zonemap_narrow
