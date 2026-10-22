@@ -7,6 +7,5 @@
 #
 # The parity goal (#432) is this file empty.
 harness_selftest
-native_cancel
 parquet_export
 planner_choice_quality

@@ -386,6 +386,7 @@ behaviour, the source of that number is named.
 - [338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it](#338-test_cancel_decodepy-a-cancel-lands-inside-one-large-row-groups-decode-and-the-session-it-lands-in-survives-it)
 - [339. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards](#339-test_decode_interruptspy-the-decode-paths-interrupt-checks-each-inside-the-loop-it-guards)
 - [340. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value](#340-test_decode_skip_interruptspy-the-thrift-and-avro-skip-loops-of-a-hostile-file-yield-to-a-cancel-per-skipped-value)
+- [341. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop](#341-test_native_cancelpy-a-scans-row-group-load-yields-to-statement_timeout-inside-the-decode-loop)
 
 ## 1. How to read a test in here
 
@@ -12770,3 +12771,18 @@ Every test makes one check under the shell's name. The functional arm runs once 
 | `test_the_backend_survived_the_skip_bomb` | backend survived the Thrift skip-bomb footer |
 | `test_thrift_skip_checks_for_interrupts_before_its_switch` | PgColumnarThriftSkip checks for interrupts |
 | `test_av_skip_checks_for_interrupts_before_its_switch` | av_skip checks for interrupts per element (before the switch, not just per block) |
+
+## 341. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop
+
+The twin of `test/native_cancel.sh`. One row group, one vector, one column of 16M values, so the whole table decodes in one load whose only inner interrupt point is COLUMNAR_DECODE_INTERRUPT. A statement_timeout of a quarter of the server's own load time must fire with its own 57014 and land in the lower half of the window between the timeout and a full load.
+
+### Every test
+
+Every test makes one check under the shell's name, in a private database, because the row-group premise counts a catalog every test shares. Each timing is a fresh connection plus the statement, as the shell times a psql; the cancel is the quickest of three that raised the timeout's error. Unlike the shell's check_timing, the twin's timing check has no PGC_SKIP_TIMING switch.
+
+| test | what it holds |
+| --- | --- |
+| `test_one_row_group` | one row group |
+| `test_the_load_outlasts_the_timeout` | premise: the load outlasts the timeout, so the timeout can fire during it |
+| `test_the_short_timeout_is_what_fired` | the short timeout is what fired |
+| `test_the_cancel_arrives_well_before_the_load_completes` | cancel arrives well before the load completes |

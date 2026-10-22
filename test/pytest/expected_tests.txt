@@ -1010,6 +1010,8 @@ guard_tests 838
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 4170 -> 4174 for #1341's test_native_cancel.py, the twin of native_cancel.sh:
+# 4 checks in 4 tests, by collection over the cluster files.
 # cluster_tests 4165 -> 4170 for #1341's test_decode_skip_interrupts.py, the twin of decode_skip_interrupts.sh:
 # 5 checks in 5 tests, by collection over the cluster files.
 # cluster_tests 4154 -> 4165 for #1341's test_cancel_decode.py, the twin of cancel_decode.sh:
@@ -1191,4 +1193,4 @@ guard_tests 838
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 4170
+cluster_tests 4174

@@ -3692,6 +3692,10 @@ native_bloom	native_bloom	bloom rows written	15;16;17;18;19	2026-10-16	columnar_
 native_bloom	native_bloom	equality probe parity	15;16;17;18;19	2026-10-16	columnar_reader.c: the bloom answers absent for every value, so a matching group is pruned
 native_bloom	native_bloom	row count	15;16;17;18;19	never	-
 native_bloom	native_bloom	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
+native_cancel	native_cancel	cancel arrives well before the load completes	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT is a no-op
+native_cancel	native_cancel	one row group	15;16;17;18;19	never	-
+native_cancel	native_cancel	premise: the load outlasts the timeout, so the timeout can fire during it	15;16;17;18;19	never	-
+native_cancel	native_cancel	the short timeout is what fired	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT aborts the backend when a cancel is pending
 native_chunk_length_bound	native_chunk_length_bound	a sequential scan of the same poisoned chunk is refused (XX001)	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	an index fetch of a chunk whose page_length is 2^32 too large is refused (XX001)	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	backend survived the sequential refusal	15;16;17;18;19	never	-
