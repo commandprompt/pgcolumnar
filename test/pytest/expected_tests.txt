@@ -902,6 +902,16 @@ guard_tests 804
 # 29 checks in 29 tests, by collection over the cluster files.
 # cluster_tests 2960 -> 2994 for #1341's test_audit.py, the twin of audit.sh:
 # 34 checks in 34 tests, by collection over the cluster files.
+# cluster_tests 2994 -> 3006 for #1341's test_fuzz.py, the twin of fuzz.sh:
+# 12 checks in 12 tests, by collection over the cluster files.
+# cluster_tests 3006 -> 3016 for #1341's test_fuzz_avro.py, the twin of fuzz_avro.sh:
+# 8 checks in 10 tests, by collection over the cluster files.
+# cluster_tests 3016 -> 3024 for #1341's test_fuzz_listing.py, the twin of fuzz_listing.sh:
+# 8 checks in 8 tests, by collection over the cluster files.
+# cluster_tests 3024 -> 3031 for #1341's test_fuzz_arrow.py, the twin of fuzz_arrow.sh:
+# 7 checks in 7 tests, by collection over the cluster files.
+# cluster_tests 3031 -> 3038 for #1341's test_fuzz_parquet.py, the twin of fuzz_parquet.sh:
+# 7 checks in 7 tests, by collection over the cluster files.
 # cluster_tests 1108 -> 1140 for #1341's test_zonemap_estimate_sample.py, the twin of zonemap_estimate_sample.sh:
 # 32 tests, one per check, by collection over the cluster files.
 # cluster_tests 1140 -> 1146 for #1341's test_arrow_nested_import.py, the twin of arrow_nested_import.sh:
@@ -1063,4 +1073,4 @@ guard_tests 804
 # cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
-cluster_tests 2994
+cluster_tests 3038

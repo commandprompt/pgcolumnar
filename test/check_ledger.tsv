@@ -1434,6 +1434,48 @@ fsst_verdict_cache	fsst_verdict_cache	premise: the prose corpus KEEPS fsst, so t
 fsst_verdict_cache	fsst_verdict_cache	premise: the prose fixture loaded	15;16;17;18;19	never	-
 fsst_verdict_cache	fsst_verdict_cache	premise: the three changing-column loads all produced bytes to compare	15;16;17;18;19	never	-
 fsst_verdict_cache	fsst_verdict_cache	the cached load returns the same values as heap	15;16;17;18;19	2026-10-21	FSST decode writes symbol 1's bytes for symbol 0
+fuzz	fuzz	every iteration loaded all its rows	15;16;17;18;19	never	-
+fuzz	fuzz	every iteration's IS NULL count agrees with heap	15;16;17;18;19	never	-
+fuzz	fuzz	every iteration's compound filter agrees with heap	15;16;17;18;19	2026-10-22	columnar_reader.c: the > skip predicate also skips a group whose min is at most the constant
+fuzz	fuzz	every iteration's counts agree with heap	15;16;17;18;19	never	-
+fuzz	fuzz	every iteration's date range agrees with heap	15;16;17;18;19	never	-
+fuzz	fuzz	every iteration's equality lookup agrees with heap	15;16;17;18;19	never	-
+fuzz	fuzz	every iteration's integer range agrees with heap	15;16;17;18;19	never	-
+fuzz	fuzz	every iteration's min and max agree with heap	15;16;17;18;19	never	-
+fuzz	fuzz	every iteration's storage options read back as set	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options stores NULL for chunk_group_row_limit, so the table keeps the default
+fuzz	fuzz	every iteration's sums and averages agree with heap	15;16;17;18;19	never	-
+fuzz	fuzz	every iteration's whole rows agree with heap	15;16;17;18;19	never	-
+fuzz	fuzz	the run covered every iteration	15;16;17;18;19	never	-
+fuzz_arrow	fuzz_arrow	every mutant was generated and ran the import	15;16;17;18;19	never	-
+fuzz_arrow	fuzz_arrow	no mutant crashed the backend	15;16;17;18;19	2026-10-22	columnar_arrow.c: truncated IPC metadata crashes the backend instead of raising
+fuzz_arrow	fuzz_arrow	no mutant hung the decode	15;16;17;18;19	never	-
+fuzz_arrow	fuzz_arrow	no mutant tripped a sanitizer	15;16;17;18;19	never	-
+fuzz_arrow	fuzz_arrow	the corpus reached the decoder at all	15;16;17;18;19	never	-
+fuzz_arrow	fuzz_arrow	the importer accepts some pristine seed	15;16;17;18;19	never	-
+fuzz_arrow	fuzz_arrow	the seed corpus generator produced files	15;16;17;18;19	never	-
+fuzz_avro	fuzz_avro	control: the valid manifest reaches the decoder (2 entries)	15;16;17;18;19	never	-
+fuzz_avro	fuzz_avro	control: the valid manifest-list reaches the decoder (1 entry)	15;16;17;18;19	never	-
+fuzz_avro	fuzz_avro	every iteration wrote a fresh mutant	15;16;17;18;19	never	-
+fuzz_avro	fuzz_avro	every mutant ran (errors + clean == iters)	15;16;17;18;19	2026-10-22	columnar_avro.c: a file with bad magic loops forever instead of raising
+fuzz_avro	fuzz_avro	no mutant crashed the backend	15;16;17;18;19	2026-10-22	columnar_avro.c: a malformed Avro header crashes the backend instead of raising
+fuzz_avro	fuzz_avro	no mutant hung the decoder	15;16;17;18;19	2026-10-22	columnar_avro.c: a file with bad magic loops forever instead of raising
+fuzz_avro	fuzz_avro	no mutant tripped a sanitizer	15;16;17;18;19	never	-
+fuzz_avro	fuzz_avro	the corpus reached the decoder at all	15;16;17;18;19	never	-
+fuzz_listing	fuzz_listing	control: a valid listing reaches the parser and reads the object	15;16;17;18;19	never	-
+fuzz_listing	fuzz_listing	every iteration wrote a fresh mutant	15;16;17;18;19	never	-
+fuzz_listing	fuzz_listing	every mutant ran (errors + clean == iters)	15;16;17;18;19	2026-10-22	objstore/columnar_objstore_module.c: a non-advancing continuation token crashes the backend instead of raising
+fuzz_listing	fuzz_listing	no mutant crashed the backend	15;16;17;18;19	2026-10-22	objstore/columnar_objstore_module.c: a non-advancing continuation token crashes the backend instead of raising
+fuzz_listing	fuzz_listing	no mutant hung the parser	15;16;17;18;19	never	-
+fuzz_listing	fuzz_listing	no mutant tripped a sanitizer	15;16;17;18;19	never	-
+fuzz_listing	fuzz_listing	premise: fixture up	15;16;17;18;19	never	-
+fuzz_listing	fuzz_listing	the corpus reached the parser at all (some mutant errored or accepted)	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	every mutant was generated and ran its three statements	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	no mutant crashed the backend	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: unparseable Parquet metadata crashes the backend instead of raising
+fuzz_parquet	fuzz_parquet	no mutant hung the decode	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	no mutant tripped a sanitizer	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	the corpus reached the decoder at all	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	the reader renders some pristine seed's schema	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	the seed corpus generator produced files	15;16;17;18;19	never	-
 generated_columns	generated_columns	stored generated: aggregate matches	15;16;17;18;19	2026-10-21	the flush skips STORED generated columns too, which are materialized
 generated_columns	generated_columns	stored generated: chunk present for attr 2	15;16;17;18;19	2026-10-21	the flush skips STORED generated columns too, which are materialized
 generated_columns	generated_columns	stored generated: filtered scan matches	15;16;17;18;19	2026-10-21	the flush skips STORED generated columns too, which are materialized

@@ -55,7 +55,7 @@ check "control: the valid manifest-list reaches the decoder (1 entry)" \
 	"$(q "$RD_LIST")" "1"
 
 LOGPOS=0
-crashes=0; hangs=0; sanitizer=0; errors=0; clean=0
+crashes=0; hangs=0; sanitizer=0; errors=0; clean=0; fresh=0; fileerr=0
 log_since() {
 	local sz
 	sz=$(stat -c %s "$PGC_LOGFILE" 2>/dev/null || echo 0)
@@ -78,7 +78,12 @@ for ((i = 0; i < ITERS; i++)); do
 	s=$((SEED + i))
 	if (( i % 2 == 0 )); then base="$BASE"; RD="$RD_MANIFEST"
 	else base="$BASE_LIST"; RD="$RD_LIST"; fi
-	python3 "$CORPUS" "$base" "$s" "$MUT"; chmod 644 "$MUT" 2>/dev/null
+	# The mutant is removed first, so a generator that writes nothing leaves no file
+	# rather than the previous one: a stale file read as a clean accept or a decoder
+	# ERROR made every check below pass with no mutant ever generated.
+	rm -f "$MUT"
+	python3 "$CORPUS" "$base" "$s" "$MUT" 2>/dev/null; chmod 644 "$MUT" 2>/dev/null
+	[ -f "$MUT" ] && fresh=$((fresh + 1))
 	log_since
 	out="$(timeout 30 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
 		-U postgres -d "$PGC_DB" -v ON_ERROR_STOP=0 \
@@ -99,6 +104,8 @@ for ((i = 0; i < ITERS; i++)); do
 		crashes=$((crashes + 1)); echo "  FINDING [crash] seed=$s"; wait_for_cluster || true
 	elif grep -q '^ERROR:' <<<"$out"; then
 		errors=$((errors + 1))
+		# an ERROR opening the file never reached the decoder
+		grep -qE 'could not open|No such file|Permission denied' <<<"$out" && fileerr=$((fileerr + 1))
 	else
 		clean=$((clean + 1))
 	fi
@@ -109,7 +116,9 @@ check "no mutant crashed the backend" "$crashes" "0"
 check "no mutant hung the decoder" "$hangs" "0"
 check "no mutant tripped a sanitizer" "$sanitizer" "0"
 check "every mutant ran (errors + clean == iters)" "$((errors + clean))" "$ITERS"
+check "every iteration wrote a fresh mutant" "$fresh" "$ITERS"
+# Reached means decoded: a file the backend could not open never reached it.
 check "the corpus reached the decoder at all" \
-	"$([ "$((errors + clean))" -gt 0 ] && echo yes || echo no)" "yes"
+	"$([ "$((errors - fileerr + clean))" -gt 0 ] && echo yes || echo "no ($fileerr of $errors errors were opening the file)")" "yes"
 
 pgc_summary

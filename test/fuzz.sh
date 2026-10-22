@@ -23,7 +23,6 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 SEED="${PGC_SEED:-12345}"
 ITERS="${PGC_ITERS:-25}"
-RANDOM=$SEED
 echo "-- fuzz seed=$SEED iters=$ITERS  (reproduce a failure with PGC_SEED=$SEED)"
 
 # Uniform integer in [0, n).
@@ -43,8 +42,14 @@ echo "-- fuzz seed=$SEED iters=$ITERS  (reproduce a failure with PGC_SEED=$SEED)
 #
 # `$(( ))` is ARITHMETIC EXPANSION and runs in this shell, so the results below are
 # assigned rather than echoed and no subshell is entered at any call site.
-rnd() { _RND=$(( RANDOM % $1 )); }
-pick() { local n=$#; local i=$(( RANDOM % n )); shift "$i"; _PICK="$1"; }
+#
+# The draws come from this suite's own generator, not from $RANDOM: bash's RANDOM
+# changed algorithm in 5.1, so one seed drew different runs on different shells, and
+# the pytest twin could not draw the same run at all. A 31-bit LCG in arithmetic
+# expansion is the same sequence on every bash and in Python (#1341).
+_S=$(( SEED & 0x7fffffff ))
+rnd() { _S=$(( (_S * 1103515245 + 12345) & 0x7fffffff )); _RND=$(( (_S >> 16) % $1 )); }
+pick() { local n=$#; rnd "$n"; shift "$_RND"; _PICK="$1"; }
 # Pick one element of the argument list.
 
 CODECS="none pglz lz4 zstd"
@@ -53,6 +58,21 @@ CODECS="none pglz lz4 zstd"
 # parameters, codec, and predicate bounds.
 FUZZ_DEFS="id int, c_int int, c_num numeric(20,4), c_f8 double precision,
 	c_bool boolean, c_date date, c_ts timestamp, c_vc varchar(40), c_text text"
+
+# The check names are the property, not the iteration: each one is asserted once over
+# the whole run and names the iterations that broke it. Names that carried the
+# iteration's drawn parameters changed with the seed, so no ledger row or twin could
+# name them (#1341).
+bad_rows=""; bad_opts=""; its=0
+declare -A BAD
+KINDS="whole-row count minmax sumavg range-int range-date eq isnull compound"
+for k in $KINDS; do BAD[$k]=""; done
+cmp_kind() {	# kind tag query-template: record the iteration when columnar and heap differ
+	local hq hc
+	hq="$(pgc_set_hash "${3//%T/t_heap}")"; [ -z "$hq" ] && hq="HEAP_ERROR"
+	hc="$(pgc_set_hash "${3//%T/t_col}")"; [ -z "$hc" ] && hc="COL_ERROR"
+	[ "$hc" = "$hq" ] || BAD[$1]+="[$2: $hc vs $hq] "
+}
 
 for it in $(seq 1 "$ITERS"); do
 	rnd 5000; N=$(( 1 + _RND ))
@@ -76,6 +96,11 @@ for it in $(seq 1 "$ITERS"); do
 	q "SELECT pgcolumnar.set_options('t_col',
 		chunk_group_row_limit => $CG, stripe_row_limit => $SR,
 		compression => '$CODEC', compression_level => $LVL);" >/dev/null
+	# set_options' result was thrown away, so a call that failed or ignored an
+	# argument left the iteration on default storage and nothing said so.
+	got="$(q "SELECT chunk_group_row_limit || '/' || stripe_row_limit || '/' || compression
+		|| '/' || compression_level FROM pgcolumnar.options WHERE regclass = 't_col'::regclass;")"
+	[ "$got" = "$CG/$SR/$CODEC/$LVL" ] || bad_opts+="[$tag: read back '$got'] "
 
 	load_pair "SELECT
 		g,
@@ -89,17 +114,31 @@ for it in $(seq 1 "$ITERS"); do
 		CASE WHEN g%$NULLMOD=0 THEN NULL WHEN g%997=0 THEN repeat('q',3000) ELSE ('t'||g) END
 		FROM generate_series(1,$N) g"
 
-	check "$tag :: row count" "$(q 'SELECT count(*) FROM t_col;')" "$N"
-
-	diff_query "$tag :: whole-row"  "SELECT * FROM %T"
-	diff_query "$tag :: count"      "SELECT count(*), count(c_int), count(c_text) FROM %T"
-	diff_query "$tag :: minmax"     "SELECT min(c_int), max(c_int), min(c_vc), max(c_vc), min(c_date), max(c_date) FROM %T"
-	diff_query "$tag :: sumavg"     "SELECT sum(c_int), avg(c_num), sum(c_f8) FROM %T"
-	diff_query "$tag :: range int"  "SELECT id FROM %T WHERE c_int BETWEEN $LO AND $HI"
-	diff_query "$tag :: range date" "SELECT id FROM %T WHERE c_date >= DATE '2010-06-01'"
-	diff_query "$tag :: eq"         "SELECT id, c_vc FROM %T WHERE id = $EQ"
-	diff_query "$tag :: isnull"     "SELECT count(*) FROM %T WHERE c_text IS NULL"
-	diff_query "$tag :: compound"   "SELECT id FROM %T WHERE c_int > 0 AND c_bool AND c_num < 1000"
+	n="$(q 'SELECT count(*) FROM t_col;')"
+	[ "$n" = "$N" ] || bad_rows+="[$tag: $n rows] "
+	cmp_kind whole-row  "$tag" "SELECT * FROM %T"
+	cmp_kind count      "$tag" "SELECT count(*), count(c_int), count(c_text) FROM %T"
+	cmp_kind minmax     "$tag" "SELECT min(c_int), max(c_int), min(c_vc), max(c_vc), min(c_date), max(c_date) FROM %T"
+	cmp_kind sumavg     "$tag" "SELECT sum(c_int), avg(c_num), sum(c_f8) FROM %T"
+	cmp_kind range-int  "$tag" "SELECT id FROM %T WHERE c_int BETWEEN $LO AND $HI"
+	cmp_kind range-date "$tag" "SELECT id FROM %T WHERE c_date >= DATE '2010-06-01'"
+	cmp_kind eq         "$tag" "SELECT id, c_vc FROM %T WHERE id = $EQ"
+	cmp_kind isnull     "$tag" "SELECT count(*) FROM %T WHERE c_text IS NULL"
+	cmp_kind compound   "$tag" "SELECT id FROM %T WHERE c_int > 0 AND c_bool AND c_num < 1000"
+	its=$((its + 1))
 done
+
+check "the run covered every iteration" "$its" "$ITERS"
+check "every iteration's storage options read back as set" "${bad_opts:-none}" "none"
+check "every iteration loaded all its rows" "${bad_rows:-none}" "none"
+check "every iteration's whole rows agree with heap" "${BAD[whole-row]:-none}" "none"
+check "every iteration's counts agree with heap" "${BAD[count]:-none}" "none"
+check "every iteration's min and max agree with heap" "${BAD[minmax]:-none}" "none"
+check "every iteration's sums and averages agree with heap" "${BAD[sumavg]:-none}" "none"
+check "every iteration's integer range agrees with heap" "${BAD[range-int]:-none}" "none"
+check "every iteration's date range agrees with heap" "${BAD[range-date]:-none}" "none"
+check "every iteration's equality lookup agrees with heap" "${BAD[eq]:-none}" "none"
+check "every iteration's IS NULL count agrees with heap" "${BAD[isnull]:-none}" "none"
+check "every iteration's compound filter agrees with heap" "${BAD[compound]:-none}" "none"
 
 pgc_summary

@@ -326,6 +326,11 @@ behaviour, the source of that number is named.
 - [278. test_bench_guards.py: the benchmark's own guards refuse what they must, and the report asks them](#278-test_bench_guardspy-the-benchmarks-own-guards-refuse-what-they-must-and-the-report-asks-them)
 - [279. test_docs_style.py: the documentation's measurable rules and the facts it states](#279-test_docs_stylepy-the-documentations-measurable-rules-and-the-facts-it-states)
 - [280. test_audit.py: the bug-audit regressions hold, and each refusal is its own guard's](#280-test_auditpy-the-bug-audit-regressions-hold-and-each-refusal-is-its-own-guards)
+- [281. test_fuzz.py: randomized differential runs against a heap oracle](#281-test_fuzzpy-randomized-differential-runs-against-a-heap-oracle)
+- [282. test_fuzz_avro.py: the Avro manifest decoder survives malformed input](#282-test_fuzz_avropy-the-avro-manifest-decoder-survives-malformed-input)
+- [283. test_fuzz_listing.py: the ListObjectsV2 listing parser survives malformed input](#283-test_fuzz_listingpy-the-listobjectsv2-listing-parser-survives-malformed-input)
+- [284. test_fuzz_arrow.py: the Arrow IPC decoder survives malformed input](#284-test_fuzz_arrowpy-the-arrow-ipc-decoder-survives-malformed-input)
+- [285. test_fuzz_parquet.py: the Parquet decoder survives malformed input](#285-test_fuzz_parquetpy-the-parquet-decoder-survives-malformed-input)
 
 ## 1. How to read a test in here
 
@@ -10944,3 +10949,102 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 | `test_audit_add_column_mid_transaction_keeps_a_later_update` | add-column mid-transaction keeps a later UPDATE |
 | `test_audit_same_statement_duplicate_is_rejected` | same-statement duplicate is rejected, not spun on |
 | `test_audit_same_statement_duplicate_inserted_nothing` | same-statement duplicate inserted nothing |
+
+## 281. test_fuzz.py: randomized differential runs against a heap oracle
+
+The twin of `test/fuzz.sh`. Each iteration draws a row count, null density, chunk-group and stripe limits, a codec and level and filter bounds from the shell's own 31-bit LCG, transcribed here so one seed is one run in both harnesses; loads heap from the generator and columnar from heap; and compares a battery of queries by the shell's order-blind set hash.
+
+### Every test
+
+Every test makes one check under the shell's name. Each property is asserted once over the run and a failure names the iterations that broke it; the storage options must read back as set, and the run must cover every iteration.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fuzz_run_covered_every_iteration` | the run covered every iteration |
+| `test_every_fuzz_iterations_storage_options_read_back` | every iteration's storage options read back as set |
+| `test_every_fuzz_iteration_loaded_all_its_rows` | every iteration loaded all its rows |
+| `test_every_fuzz_iterations_whole_rows_agree` | every iteration's whole rows agree with heap |
+| `test_every_fuzz_iterations_counts_agree` | every iteration's counts agree with heap |
+| `test_every_fuzz_iterations_min_and_max_agree` | every iteration's min and max agree with heap |
+| `test_every_fuzz_iterations_sums_and_averages_agree` | every iteration's sums and averages agree with heap |
+| `test_every_fuzz_iterations_integer_range_agrees` | every iteration's integer range agrees with heap |
+| `test_every_fuzz_iterations_date_range_agrees` | every iteration's date range agrees with heap |
+| `test_every_fuzz_iterations_equality_lookup_agrees` | every iteration's equality lookup agrees with heap |
+| `test_every_fuzz_iterations_is_null_count_agrees` | every iteration's IS NULL count agrees with heap |
+| `test_every_fuzz_iterations_compound_filter_agrees` | every iteration's compound filter agrees with heap |
+
+## 282. test_fuzz_avro.py: the Avro manifest decoder survives malformed input
+
+The twin of `test/fuzz_avro.sh`. Each iteration writes one mutant of the committed manifest or manifest list with `test/avro_corpus.py`, a pure function of one integer seed, and reads it; outcomes are classified from the server log first and the client's error second, as the shell classifies them.
+
+### Every test
+
+Every test makes one check under the shell's name, over counts the module fixture gathers in one run. Two extra tests mirror the shell's pgc_skip names.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_valid_manifest_reaches_the_avro_decoder` | control: the valid manifest reaches the decoder (2 entries) |
+| `test_the_valid_manifest_list_reaches_the_avro_decoder` | control: the valid manifest-list reaches the decoder (1 entry) |
+| `test_no_avro_mutant_crashed_the_backend` | no mutant crashed the backend |
+| `test_no_avro_mutant_hung_the_decoder` | no mutant hung the decoder |
+| `test_no_avro_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
+| `test_every_avro_mutant_ran` | every mutant ran (errors + clean == iters) |
+| `test_every_avro_iteration_wrote_a_fresh_mutant` | every iteration wrote a fresh mutant |
+| `test_the_avro_corpus_reached_the_decoder` | the corpus reached the decoder at all |
+| `test_the_avro_manifest_fixtures_are_present` | premise: the committed manifest-list fixture is not empty |
+| `test_python_can_hash_the_avro_corpus_seeds` | premise: hashlib digests as the corpus expects, so its mutants are the shell's |
+
+## 283. test_fuzz_listing.py: the ListObjectsV2 listing parser survives malformed input
+
+The twin of `test/fuzz_listing.sh`. A private cluster runs with AWS_* in its environment; the SigV4 fixture server serves each mutant from `test/listing_corpus.py` verbatim as the listing, so it reaches the C parser as a hostile endpoint's response would.
+
+### Every test
+
+Every test makes one check under the shell's name, over counts the module fixture gathers in one run, and declines under the shell's pgc_skip name without pyarrow.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_listing_fixture_is_up` | premise: fixture up |
+| `test_a_valid_listing_reaches_the_parser` | control: a valid listing reaches the parser and reads the object |
+| `test_no_listing_mutant_crashed_the_backend` | no mutant crashed the backend |
+| `test_no_listing_mutant_hung_the_parser` | no mutant hung the parser |
+| `test_no_listing_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
+| `test_every_listing_mutant_ran` | every mutant ran (errors + clean == iters) |
+| `test_every_listing_iteration_wrote_a_fresh_mutant` | every iteration wrote a fresh mutant |
+| `test_the_listing_corpus_reached_the_parser` | the corpus reached the parser at all (some mutant errored or accepted) |
+
+## 284. test_fuzz_arrow.py: the Arrow IPC decoder survives malformed input
+
+The twin of `test/fuzz_arrow.sh`. Seeds from `test/arrow_corpus.py` are kept only when `import_arrow` accepts them pristine; each iteration mutates one with `test/arrow_mutate.py` and imports it, classified from the server log first and the client's error second.
+
+### Every test
+
+Every test makes one check under the shell's name, over counts the module fixture gathers in one run, and declines under the shell's pgc_skip name without pyarrow.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_arrow_seed_corpus_generator_produced_files` | the seed corpus generator produced files |
+| `test_the_arrow_importer_accepts_some_pristine_seed` | the importer accepts some pristine seed |
+| `test_no_arrow_mutant_crashed_the_backend` | no mutant crashed the backend |
+| `test_no_arrow_mutant_hung_the_decode` | no mutant hung the decode |
+| `test_no_arrow_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
+| `test_every_arrow_mutant_was_generated_and_imported` | every mutant was generated and ran the import |
+| `test_the_arrow_corpus_reached_the_decoder` | the corpus reached the decoder at all |
+
+## 285. test_fuzz_parquet.py: the Parquet decoder survives malformed input
+
+The twin of `test/fuzz_parquet.sh`. Seeds from `test/parquet_corpus.py` are kept only when `parquet_schema` renders their column list; each iteration mutates one with `test/parquet_mutate.py` and feeds it to parquet_schema, read_parquet and import_parquet, classified from the server log first and the client's error second.
+
+### Every test
+
+Every test makes one check under the shell's name, over counts the module fixture gathers in one run, and declines under the shell's pgc_skip name without pyarrow.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_parquet_seed_corpus_generator_produced_files` | the seed corpus generator produced files |
+| `test_the_parquet_reader_renders_some_pristine_seeds_schema` | the reader renders some pristine seed's schema |
+| `test_no_parquet_mutant_crashed_the_backend` | no mutant crashed the backend |
+| `test_no_parquet_mutant_hung_the_decode` | no mutant hung the decode |
+| `test_no_parquet_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
+| `test_every_parquet_mutant_was_generated_and_ran_its_statements` | every mutant was generated and ran its three statements |
+| `test_the_parquet_corpus_reached_the_decoder` | the corpus reached the decoder at all |

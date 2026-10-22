@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 90
+suites_not_covered 85
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5677,4 +5677,73 @@ suites_not_covered 90
 #     never         4008 + 10 = 4018
 #     dated         2666 + 25 = 2691
 #     4018 + 2691 == 6709
-checks_never_observed_red 4018
+# #1341, fuzz seeded, with its twin (OffgridwithJD): 4018 -> 4028, and
+# suites_not_covered 90 -> 89. The suite had no rows. It enters with its 12
+# checks from five-major runs, green on each of 15-19 in the shell and the twin alike.
+# The shell drew its runs from bash's $RANDOM, which changed algorithm in 5.1, and
+# named each check after its iteration, so the names moved with the seed and no twin
+# could draw the same run. It now draws from its own 31-bit LCG, the twin transcribes
+# it, and each property is asserted once over the run. set_options' result was
+# thrown away: with the chunk-group limit dropped, main passed 250/250. Its options
+# now read back, which optdrop reddens, and gtmin reddens the compound filter.
+# 2 are dated, each mutation reddening the same names in both twins. 10 arrive never.
+#
+#     ledger rows   6709 + 12 = 6721
+#     never         4018 + 10 = 4028
+#     dated         2691 + 2 = 2693
+#     4028 + 2693 == 6721
+#
+# #1341, fuzz_avro seeded, with its twin (OffgridwithJD): 4028 -> 4033, and
+# suites_not_covered 89 -> 88. The suite had no rows. It enters with its 8
+# checks from five-major runs, green on each of 15-19 in the shell and the twin alike.
+# A generator that wrote nothing left the previous file in place, read as an
+# ERROR or a clean accept, and main passed 7/7. The mutant is now removed before it
+# is generated and every iteration must write one, and a file the backend could
+# not open does not count as reaching the decoder.
+# 3 are dated, each mutation reddening the same names in both twins. 5 arrive never.
+#
+#     ledger rows   6721 + 8 = 6729
+#     never         4028 + 5 = 4033
+#     dated         2693 + 3 = 2696
+#     4033 + 2696 == 6729
+#
+# #1341, fuzz_listing seeded, with its twin (OffgridwithJD): 4033 -> 4039, and
+# suites_not_covered 88 -> 87. The suite had no rows. It enters with its 8
+# checks from five-major runs, green on each of 15-19 in the shell and the twin alike.
+# With no override the fixture serves the real listing, so a generator that wrote
+# nothing read as a clean accept 40 times out of 40 and main passed 7/7. The override
+# is now removed before each mutant is generated, and every iteration must write one.
+# 2 are dated, each mutation reddening the same names in both twins. 6 arrive never.
+#
+#     ledger rows   6729 + 8 = 6737
+#     never         4033 + 6 = 4039
+#     dated         2696 + 2 = 2698
+#     4039 + 2698 == 6737
+#
+# #1341, fuzz_arrow seeded, with its twin (OffgridwithJD): 4039 -> 4045, and
+# suites_not_covered 87 -> 86. The suite had no rows. It enters with its 7
+# checks from five-major runs, green on each of 15-19 in the shell and the twin alike.
+# A mutate that failed was skipped, so a corpus run that generated half its mutants
+# passed on main, 4/4. Every mutant must now be generated and imported, and an empty
+# or wholly rejected seed corpus is a named check rather than an unnamed FAIL.
+# 1 are dated, each mutation reddening the same names in both twins. 6 arrive never.
+#
+#     ledger rows   6737 + 7 = 6744
+#     never         4039 + 6 = 4045
+#     dated         2698 + 1 = 2699
+#     4045 + 2699 == 6744
+#
+# #1341, fuzz_parquet seeded, with its twin (OffgridwithJD): 4045 -> 4051, and
+# suites_not_covered 86 -> 85. The suite had no rows. It enters with its 7
+# checks from five-major runs, green on each of 15-19 in the shell and the twin alike.
+# A mutate that failed was skipped, so a corpus run that generated half its mutants
+# passed on main, 4/4. Every mutant must now be generated and run through its three
+# statements, and an empty or unrenderable seed corpus is a named check rather than
+# an unnamed FAIL.
+# 1 are dated, each mutation reddening the same names in both twins. 6 arrive never.
+#
+#     ledger rows   6744 + 7 = 6751
+#     never         4045 + 6 = 4051
+#     dated         2699 + 1 = 2700
+#     4051 + 2700 == 6751
+checks_never_observed_red 4051
