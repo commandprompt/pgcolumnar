@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 77
+suites_not_covered 76
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5920,4 +5920,25 @@ suites_not_covered 77
 #     never         4124 + 4 = 4128
 #     dated         2783 + 3 = 2786
 #     4128 + 2786 == 6914
-checks_never_observed_red 4128
+#
+# #1341, native_fold_skipguard seeded, with its twin (OffgridwithJD): 4128 -> 4129,
+# and suites_not_covered 77 -> 76. The suite had no rows. It enters with 6 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# "and the scalar arm agrees" compared the scalar arm with the fold's own reading, so two
+# failed readings agreed: with the server stopped before the reads, both returned the same
+# connection error and main passed it. It now wants the arithmetic oracle, and a wrong fold
+# no longer reddens it for the fold's fault. And two "premise:" checks read pgcolumnar's own
+# behaviour: a decoder that never skips (decodeall) reddens "the fold arm decodes only the
+# vector it needs" and a fold that refuses every shape (nofold) reddens "the query reaches
+# the batch fold", so both lost the prefix (#1339). 5 are dated by four mutations, each
+# the same names in both twins. 1 arrives never: the scalar arm's oracle check, which
+# only the harness mutation reaches. The #512 fallback itself (guardoff) and a fold that
+# reads its holes (noskiphonour) leave the suite green on a non-assert build, as its header
+# says: the fallback is unreachable while decode and the fold share one mask, and fold
+# correctness over a hole is native_vecdecode's poison check.
+#
+#     ledger rows   6914 + 6 = 6920
+#     never         4128 + 1 = 4129
+#     dated         2786 + 5 = 2791
+#     4129 + 2791 == 6920
+checks_never_observed_red 4129

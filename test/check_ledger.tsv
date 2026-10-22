@@ -3993,6 +3993,12 @@ native_fetch_sort_context	native_fetch_sort_context	premise: the columnar side i
 native_fetch_sort_context	native_fetch_sort_context	three-key merge cond with a filter (#720)	15;16;17;18;19	2026-10-22	columnar_tableam.c: the deferred decode builds its needed-column set in the caller's context and bms_free's it there (#720 reverted, first half)
 native_fetch_sort_context	native_fetch_sort_context	two-key merge join count is right (#720)	15;16;17;18;19	2026-10-22	columnar_tableam.c: the deferred decode builds its needed-column set in the caller's context and bms_free's it there (#720 reverted, first half)
 native_fetch_sort_context	native_fetch_sort_context	two-key merge join sum(id) is right (#720)	15;16;17;18;19	2026-10-22	columnar_tableam.c: the deferred decode builds its needed-column set in the caller's context and bms_free's it there (#720 reverted, first half)
+native_fold_skipguard	native_fold_skipguard	and reports the 58 it skipped, on its own plan (#542)	15;16;17;18;19	2026-10-22	columnar_reader.c: the fold path stops counting the vectors decode skipped (#542 regression)
+native_fold_skipguard	native_fold_skipguard	and the scalar arm agrees	15;16;17;18;19	never	-
+native_fold_skipguard	native_fold_skipguard	so decoded plus skipped is the group's vectors, on the FOLD arm	15;16;17;18;19	2026-10-22	columnar_reader.c: the fold path stops counting the vectors decode skipped (#542 regression)
+native_fold_skipguard	native_fold_skipguard	the fold answers correctly while decode skips 58 of 59 vectors	15;16;17;18;19	2026-10-22	columnar_vector.c: the fold consults the next vector's skip flag, so it skips the vector holding the matches
+native_fold_skipguard	native_fold_skipguard	the fold arm decodes only the vector it needs	15;16;17;18;19	2026-10-22	columnar_reader.c: decode never skips a ruled-out vector, so the fold decodes all 59
+native_fold_skipguard	native_fold_skipguard	the query reaches the batch fold	15;16;17;18;19	2026-10-22	columnar_vector.c: pgcolumnar_batch_shape_eligible refuses every shape, so the query never reaches the batch fold
 native_gap	native_gap	baseline parity	15;16;17;18;19	never	-
 native_gap	native_gap	baseline row count	15;16;17;18;19	never	-
 native_gap	native_gap	gap was physically materialized	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData does not fill a gap beyond EOF (6a165821 reverted), so the write lands short of its block and errors;columnar_vacuum.c: debug_advance_reserved_offset advances nothing, so no gap is made

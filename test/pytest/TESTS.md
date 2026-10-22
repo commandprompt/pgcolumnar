@@ -339,6 +339,7 @@ behaviour, the source of that number is named.
 - [291. test_native_encoding.py: native cascade encoding engages, picks ALP and FSST, and round-trips on every codec](#291-test_native_encodingpy-native-cascade-encoding-engages-picks-alp-and-fsst-and-round-trips-on-every-codec)
 - [292. test_native_fastdecode.py: the inlined byval decode returns what the call path returns, through every encoding and a vector jump](#292-test_native_fastdecodepy-the-inlined-byval-decode-returns-what-the-call-path-returns-through-every-encoding-and-a-vector-jump)
 - [293. test_native_fetch_sort_context.py: a merge join over sorted, index-fetched columnar rows decodes outside the sort's context](#293-test_native_fetch_sort_contextpy-a-merge-join-over-sorted-index-fetched-columnar-rows-decodes-outside-the-sorts-context)
+- [294. test_native_fold_skipguard.py: the batch fold is reachable for a shape that skips vectors, and accounts for the skipping](#294-test_native_fold_skipguardpy-the-batch-fold-is-reachable-for-a-shape-that-skips-vectors-and-accounts-for-the-skipping)
 
 ## 1. How to read a test in here
 
@@ -11307,3 +11308,20 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_nfsc_a_three_key_merge_cond_with_a_filter_is_right` | three-key merge cond with a filter (#720) |
 | `test_nfsc_a_single_int_key_is_still_right` | control: single int key still right |
 | `test_nfsc_a_single_text_key_is_still_right` | control: single text key still right |
+
+## 294. test_native_fold_skipguard.py: the batch fold is reachable for a shape that skips vectors, and accounts for the skipping
+
+The twin of `test/native_fold_skipguard.sh`. 60,000 rows in one group of 59 1024-row vectors and a range inside one of them: the fold arm's own plan must report exactly 1 vector decoded and 58 skipped (#542), the query must reach the batch fold, and both the fold and the scalar arm must return the arithmetic answer.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order, each arm run in one session after the shell's SET statements. The plan's counters are read from the fold arm itself. A failed reading is a `query_error()`, and the scalar arm is compared with the arithmetic oracle rather than with the fold, so two failures never agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fold_arm_decodes_only_the_vector_it_needs` | the fold arm decodes only the vector it needs |
+| `test_the_fold_arm_reports_the_vectors_it_skipped` | and reports the 58 it skipped, on its own plan (#542) |
+| `test_decoded_plus_skipped_is_the_groups_vectors` | so decoded plus skipped is the group's vectors, on the FOLD arm |
+| `test_the_query_reaches_the_batch_fold` | the query reaches the batch fold |
+| `test_the_fold_answers_correctly_while_decode_skips` | the fold answers correctly while decode skips 58 of 59 vectors |
+| `test_the_scalar_arm_agrees_with_the_oracle` | and the scalar arm agrees |
