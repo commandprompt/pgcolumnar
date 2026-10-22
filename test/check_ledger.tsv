@@ -644,6 +644,17 @@ bloom_sizing	bloom_sizing	premise: those values really are distinct	15;16;17;18;
 bloom_sizing	bloom_sizing	premise: zone maps alone skip nothing on this fixture	15;16;17;18;19	never	-
 bloom_sizing	bloom_sizing	results are identical with the filter and without it	15;16;17;18;19	2026-10-20	columnar_bloom.c: the build sets only the first of k bits, so a present value probes absent
 bloom_sizing	bloom_sizing	the filter still skips groups it can prove empty (#467)	15;16;17;18;19	2026-10-20	columnar_bloom.c: the probe answers may-be-present for every value, so nothing is skipped
+cancel_decode	cancel_decode	a scan of many small groups is cancelled	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
+cancel_decode	cancel_decode	a scan of one large group is cancelled	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
+cancel_decode	cancel_decode	cancel latency does not grow with row group size	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
+cancel_decode	cancel_decode	no backend crashed while the scans were cancelled	15;16;17;18;19	2026-10-22	columnar_reader.c: a flag the group load sets around its decode, left set by a cancel, so the next load in that backend calls abort()
+cancel_decode	cancel_decode	the cancel arrives within a generous absolute bound	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
+cancel_decode	cancel_decode	the cancelled predicate returns its true answer when allowed to finish	15;16;17;18;19	2026-10-22	columnar_reader.c: a flag the group load sets around its decode, left set by a cancel, so the next load in that backend calls abort()
+cancel_decode	cancel_decode	the many-group table has many groups	15;16;17;18;19	never	-
+cancel_decode	cancel_decode	the one-group table has exactly one group	15;16;17;18;19	never	-
+cancel_decode	cancel_decode	the scan outlasts the timeout, so a cancel is possible	15;16;17;18;19	never	-
+cancel_decode	cancel_decode	the session is usable after the cancel	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
+cancel_decode	cancel_decode	the table still reads correctly after the cancel	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
 capability_sweep	capability_sweep	and no member of the population is this very file	15;16;17;18;19	2026-09-23	the self-exclusion removed from pgc_cap_population, so the sweep enters its own population
 capability_sweep	capability_sweep	and pyarrow.parquet with it	15;16;17;18;19	2026-09-23	the shim's pyarrow.py emptied, so both runs are the present run
 capability_sweep	capability_sweep	no suite loses a check without recording a skip or a refusal	15;16;17;18;19	2026-10-12	a check_skip block removed from a suite so its arms vanish with no skip and no fail;the pyarrow decline reason stops naming the capability, so no skip counts as declined
