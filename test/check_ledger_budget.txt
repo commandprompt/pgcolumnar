@@ -5987,4 +5987,14 @@ suites_not_covered 74
 #     never         4137 + 8 - 13 = 4132
 #     dated         2798 + 6 + 13 = 2817
 #     4132 + 2817 == 6949
+#
+# #1339, approx_aggregates gains one arm (jdatcmd): 4132 -> 4132, unchanged. "a tdigest stored in
+# a columnar table comes back byte for byte" is dated by a reader that returns each long
+# value as the previous long value read: main's suite passed every tdigest check under it,
+# and only the hll arm went red. suites_not_covered does not move.
+#
+#     ledger rows   6949 + 1 = 6950
+#     never         4132 + 0 = 4132
+#     dated         2817 + 1 = 2818
+#     4132 + 2818 == 6950
 checks_never_observed_red 4132

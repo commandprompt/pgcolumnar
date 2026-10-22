@@ -284,6 +284,7 @@ analyze_stats	analyze_stats	the sampled tuples carry a valid item pointer	15;16;
 analyze_stats	analyze_stats	the server survived ANALYZE	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	without the fetch penalty an unclustered ORDER BY takes the index (#355 premise)	15;16;17;18;19	never	-
 analyze_stats	analyze_stats	without the penalty a selective scattered condition takes the index (#362 premise)	15;16;17;18;19	never	-
+approx_aggregates	approx_aggregates	a tdigest stored in a columnar table comes back byte for byte	15;16;17;18;19	2026-10-22	columnar_reader.c: a long value (over 512 bytes) reads as the previous long value read, so each stored digest comes back as another day's
 approx_aggregates	approx_aggregates	an hll stored in a columnar table comes back byte for byte	15;16;17;18;19	2026-10-13	the custom scan off by default, and the access-method scan skips every row whose row number ends in 999
 approx_aggregates	approx_aggregates	and the union of the stored sketches counts what one sketch over all rows counts	15;16;17;18;19	2026-10-13	the custom scan off by default, and the access-method scan skips every row whose row number ends in 999
 approx_aggregates	approx_aggregates	hll over a columnar table builds the same sketch, byte for byte, as over heap	15;16;17;18;19	2026-10-13	the custom scan off by default, and the access-method scan skips every row whose row number ends in 999

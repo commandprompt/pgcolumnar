@@ -6946,11 +6946,11 @@ Removal proofs, each red in both twins: the prototype's zone handling; `CREATE T
 
 Port of `approx_aggregates.sh` (#1296 phase 2). Phase 0 on #1296 decided that approximate distinct counts and percentiles come from the `hll` and `tdigest` extensions for 1.0, so this pair is the tested compatibility statement for them; docs/how-to.md names the versions.
 
-Independent of the shell suite: its own generator (other multipliers, the same 200,000 rows and 50,000 devices, because the check names state them), its own SQL. `compare_to_bash` grades the pair 14 literal matches, 0 missing.
+Independent of the shell suite: its own generator (other multipliers, the same 200,000 rows and 50,000 devices, because the check names state them), its own SQL. `compare_to_bash` grades the pair 15 literal matches, 0 missing.
 
 THE HEAP MIRROR IS WRITTEN FROM THE GENERATOR, never copied from the columnar table. The shell suite first built it by `CREATE TABLE ... AS SELECT * FROM ax`, which reads through the scan under test: with a mutation dropping one row in a thousand, every equality stayed green on all five majors. Writing both sides from the generator turned seven checks red under the same mutation.
 
-The bounds against the exact answer are premises, as pg_partman's are: they state the extension's own error, and a change here that broke them would break the equalities first.
+The bounds against the exact answer are premises, as pg_partman's are: they state the extension's own error, and a change here that broke them would break the equalities first. That holds for the stored tdigest only since #1339 added "a tdigest stored in a columnar table comes back byte for byte": before it, nothing compared the stored digests, and a reader returning each long value as the previous one passed every tdigest check. The digests are built once into a heap table and stored from there, because a tdigest depends on the order its inputs arrive in.
 
 hll 2.19 does not build against PostgreSQL 19, so `test_hll_over_columnar` is `UNSUPPORTED_MAJOR` there and listed in `expected_unrunnable.txt`. CI installs both extensions from PGDG for 15 to 18.
 
