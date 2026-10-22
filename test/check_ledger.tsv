@@ -4805,6 +4805,12 @@ native_zonemap	native_zonemap	whole-chunk sum(id) matches heap	15;16;17;18;19	ne
 native_zonemap	native_zonemap	whole-chunk value+null = group rows	15;16;17;18;19	never	-
 native_zonemap	native_zonemap	whole-chunk zone rows	15;16;17;18;19	never	-
 native_zonemap	native_zonemap	zone maps cleaned on drop	15;16;17;18;19	never	-
+native_zonemap_narrow	native_zonemap_narrow	a pruning predicate still prunes on the wide table	15;16;17;18;19	2026-10-22	columnar_reader.c: group skipping excludes every group
+native_zonemap_narrow	native_zonemap_narrow	and on the narrow table	15;16;17;18;19	2026-10-22	columnar_reader.c: group skipping reads the predicate column's zone map but never excludes a group
+native_zonemap_narrow	native_zonemap_narrow	narrow scan result is correct	15;16;17;18;19	2026-10-22	columnar_reader.c: group skipping excludes every group
+native_zonemap_narrow	native_zonemap_narrow	the zone map removes the nine groups c1 > 19000 cannot match, on the wide table	15;16;17;18;19	2026-10-22	columnar_reader.c: group skipping reads the predicate column's zone map but never excludes a group
+native_zonemap_narrow	native_zonemap_narrow	wide scan result is correct	15;16;17;18;19	2026-10-22	columnar_reader.c: group skipping excludes every group
+native_zonemap_narrow	native_zonemap_narrow	zone_map reads scale with predicates, not table width (wide ~= narrow)	15;16;17;18;19	2026-10-22	columnar_reader.c: every attribute's zone map is read up front (#314 reverted)
 native_zonemap_session	native_zonemap_session	a second predicate column still resolves zone_map once	15;16;17;18;19	2026-10-22	columnar_metadata.c: the session opens zone_map afresh on every probe (#744 reverted inside the session)
 native_zonemap_session	native_zonemap_session	and each of them opened exactly once	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
 native_zonemap_session	native_zonemap_session	and each of them probed exactly its own groups	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)

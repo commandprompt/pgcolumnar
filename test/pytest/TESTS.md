@@ -357,6 +357,7 @@ behaviour, the source of that number is named.
 - [309. test_native_rewrite.py: compact_rewrite reclaims partially-deleted groups online, and vacuum's rewrite keeps every row reachable](#309-test_native_rewritepy-compact_rewrite-reclaims-partially-deleted-groups-online-and-vacuums-rewrite-keeps-every-row-reachable)
 - [310. test_native_zonemap.py: zone-map rows carry exact counts, sums and the right bounds, by value](#310-test_native_zonemappy-zone-map-rows-carry-exact-counts-sums-and-the-right-bounds-by-value)
 - [311. test_native_zonemap_session.py: a scan resolves zone_map once, and each scan holds its own session](#311-test_native_zonemap_sessionpy-a-scan-resolves-zone_map-once-and-each-scan-holds-its-own-session)
+- [312. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes](#312-test_native_zonemap_narrowpy-group-skipping-reads-only-the-predicate-columns-zone-maps-and-still-prunes)
 
 ## 1. How to read a test in here
 
@@ -11840,3 +11841,20 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_native_zonemap_session_each_scan_opened_once` | and each of them opened exactly once |
 | `test_native_zonemap_session_each_scan_probed_its_own_groups` | and each of them probed exactly its own groups |
 | `test_native_zonemap_session_scan_after_abort_answers` | the scan after the subtransaction abort returns the right answer |
+
+## 312. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes
+
+The twin of `test/native_zonemap_narrow.sh`. A one-predicate scan of a 30-column table reads about as many pgcolumnar.zone_map tuples as the same scan of a 2-column table (pg_stat_all_tables.idx_tup_fetch, flushed with pg_stat_force_next_flush); both answer correctly; and c1 > 19000 removes nine of the ten groups on each table, read from the scan's own counter.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Each reading opens its own connection, as the shell's psql calls do, and returns a failure as a `query_error()`, so two failed reads never agree and an unread count is never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_zone_map_reads_scale_with_predicates_not_table_width` | zone_map reads scale with predicates, not table width (wide ~= narrow) |
+| `test_the_wide_scan_result_is_correct` | wide scan result is correct |
+| `test_the_narrow_scan_result_is_correct` | narrow scan result is correct |
+| `test_a_pruning_predicate_still_prunes_on_the_wide_table` | a pruning predicate still prunes on the wide table |
+| `test_the_zone_map_removes_nine_groups_on_the_wide_table` | the zone map removes the nine groups c1 > 19000 cannot match, on the wide table |
+| `test_the_zone_map_removes_nine_groups_on_the_narrow_table` | and on the narrow table |
