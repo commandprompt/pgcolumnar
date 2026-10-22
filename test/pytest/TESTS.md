@@ -381,6 +381,7 @@ behaviour, the source of that number is named.
 - [333. test_objstore_module.py: the object-store module's packaging and loader, every refusal pinned](#333-test_objstore_modulepy-the-object-store-modules-packaging-and-loader-every-refusal-pinned)
 - [334. test_phase2.py: compression, projection, zone maps and chunk-group filtering](#334-test_phase2py-compression-projection-zone-maps-and-chunk-group-filtering)
 - [335. test_phase3.py: read-your-writes, DELETE, UPDATE, rollback, savepoints and temporary tables](#335-test_phase3py-read-your-writes-delete-update-rollback-savepoints-and-temporary-tables)
+- [336. test_phase4.py: btree and hash index reads through the index fetch, and refusals by SQLSTATE](#336-test_phase4py-btree-and-hash-index-reads-through-the-index-fetch-and-refusals-by-sqlstate)
 
 ## 1. How to read a test in here
 
@@ -12599,3 +12600,53 @@ Every test reads one value the fixture took and makes one check under the shell'
 | `test_only_the_undeleted_rows_survive` | durable odd only |
 | `test_drop_removes_the_delete_vector_rows` | delete_vector cleaned |
 | `test_drop_removes_the_row_group_rows` | row group cleaned |
+
+## 336. test_phase4.py: btree and hash index reads through the index fetch, and refusals by SQLSTATE
+
+The twin of `test/phase4.sh`. On a private database it builds btree and hash indexes over columnar tables and reads them back, deletes and updates under an index, refuses unique, primary-key, NOT NULL and CHECK violations, converts a heap table to columnar and back, and plans a plain index scan for a covering query with pgcolumnar.enable_index_only_scan off. Every index read runs with seqscan, the columnar custom scan and the index-only scan off, so it goes through pgcolumnar_index_fetch_tuple; the plan checks assert that plan under the same settings.
+
+### Every test
+
+Every test makes one check under the shell's name, from readings a module fixture takes in the shell's order. A refusal is the SQLSTATE the statement failed with (23505, 23502, 23514); a lost connection carries none and is a query_error, never a match. A failed query is a query_error, never text.
+
+| test | what it holds |
+| --- | --- |
+| `test_btree_plan_is_index_scan` | btree plan is index scan |
+| `test_btree_point` | btree point |
+| `test_btree_range_count` | btree range count |
+| `test_btree_range_first` | btree range first |
+| `test_btree_miss` | btree miss |
+| `test_hash_plan_is_index_scan` | hash plan is index scan |
+| `test_hash_point` | hash point |
+| `test_hash_point2` | hash point2 |
+| `test_hash_miss` | hash miss |
+| `test_uq_initial` | uq initial |
+| `test_uq_cross_statement_duplicate_refused` | uq cross-stmt dup |
+| `test_uq_within_statement_duplicate_refused` | uq within-stmt dup |
+| `test_uq_unchanged` | uq unchanged |
+| `test_uq_new_row` | uq new row |
+| `test_uq_final_count` | uq final count |
+| `test_uq2_duplicate_refused` | uq2 dup |
+| `test_uq2_count` | uq2 count |
+| `test_not_null_refused` | not null reject |
+| `test_check_refused` | check reject |
+| `test_ck_unchanged` | ck unchanged |
+| `test_deleted_range_plan_is_index_scan` | deleted range plan is index scan |
+| `test_deleted_point` | deleted point |
+| `test_deleted_range` | deleted range |
+| `test_survivors_around` | survivors around |
+| `test_neighbor_present` | neighbor present |
+| `test_updated_old_gone` | updated old gone |
+| `test_updated_new_found` | updated new found |
+| `test_conv_starts_heap` | conv starts heap |
+| `test_conv_now_columnar` | conv now columnar |
+| `test_conv_col_count` | conv col count |
+| `test_conv_col_value` | conv col value |
+| `test_conv_col_sum` | conv col sum |
+| `test_conv_back_heap` | conv back heap |
+| `test_conv_heap_count` | conv heap count |
+| `test_conv_heap_value` | conv heap value |
+| `test_conv_heap_sum` | conv heap sum |
+| `test_ios_off_plain_index_scan` | IOS off: plain index scan |
+| `test_covering_value` | covering value |
+| `test_full_table_scan_available` | full-table scan available |

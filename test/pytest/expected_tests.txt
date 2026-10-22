@@ -1007,6 +1007,8 @@ guard_tests 809
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 4072 -> 4111 for #1341's test_phase4.py, the twin of phase4.sh:
+# 39 checks in 39 tests, by collection over the cluster files.
 # cluster_tests 4035 -> 4072 for #1341's test_phase3.py, the twin of phase3.sh:
 # 37 checks in 37 tests, by collection over the cluster files.
 # cluster_tests 3988 -> 4035 for #1341's test_phase2.py, the twin of phase2.sh:
@@ -1180,4 +1182,4 @@ guard_tests 809
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 4072
+cluster_tests 4111

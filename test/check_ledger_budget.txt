@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 34
+suites_not_covered 33
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6804,4 +6804,21 @@ suites_not_covered 34
 #     never         4434 + 31 = 4465
 #     dated         3329 + 6 = 3335
 #     4465 + 3335 == 7800
-checks_never_observed_red 4465
+#
+# #1341, phase4 seeded, with its twin (OffgridwithJD): 4465 -> 4492,
+# and suites_not_covered 34 -> 33. The suite had no rows. It enters with 39 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after these fixes.
+# A refusal passed on any failure: a unique check raising XX000 instead of 23505 passed both
+# duplicate arms (dirtyerr, 38/38 on main), and a backend that died on the duplicate passed
+# as rejected (bufcrash). Each refusal now asserts its SQLSTATE. The point reads ran with only
+# enable_seqscan off, so they planned the columnar custom scan and never reached the index
+# fetch: an index fetch handing back the next row's values passed every hash and btree point
+# read (fetchshift, 37/38). They now read under the plan checks' settings, and a new check
+# asserts the delete-vector reads plan a plain index scan. 12 are dated by four mutations,
+# each the same names in both twins. 27 arrive never.
+#
+#     ledger rows   7800 + 39 = 7839
+#     never         4465 + 27 = 4492
+#     dated         3335 + 12 = 3347
+#     4492 + 3347 == 7839
+checks_never_observed_red 4492
