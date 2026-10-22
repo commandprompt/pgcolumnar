@@ -6,7 +6,6 @@
 # in that file. A port PR removes its own line, so two ports never conflict here.
 #
 # The parity goal (#432) is this file empty.
-decode_skip_interrupts
 harness_selftest
 native_cancel
 parallel

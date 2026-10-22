@@ -380,6 +380,7 @@ behaviour, the source of that number is named.
 - [332. test_phase6.py: vectorized aggregates and scans against a heap oracle, not only against themselves](#332-test_phase6py-vectorized-aggregates-and-scans-against-a-heap-oracle-not-only-against-themselves)
 - [333. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it](#333-test_cancel_decodepy-a-cancel-lands-inside-one-large-row-groups-decode-and-the-session-it-lands-in-survives-it)
 - [334. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards](#334-test_decode_interruptspy-the-decode-paths-interrupt-checks-each-inside-the-loop-it-guards)
+- [335. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value](#335-test_decode_skip_interruptspy-the-thrift-and-avro-skip-loops-of-a-hostile-file-yield-to-a-cancel-per-skipped-value)
 
 ## 1. How to read a test in here
 
@@ -12555,3 +12556,19 @@ Every test makes one check under the shell's name; the per-decoder pair is param
 | `test_the_stride_is_not_too_large` | the stride is not so large that a check never lands |
 | `test_the_group_load_checks_per_column_chunk` | the group load checks for interrupts per column chunk |
 | `test_the_row_loop_checks_for_interrupts` | the row loop checks for interrupts |
+
+## 335. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value
+
+The twin of `test/decode_skip_interrupts.sh`. It writes the shell's Thrift skip-bomb footer (256 lists of 4.3e9 zero-byte bools in one unrecognised struct) and wants a 1 s statement_timeout to cancel parquet_schema() over it, by the timeout's own 57014, within 3 s, with no backend killed. av_skip's window is too small for a timeout to resolve, so both skip functions are also held by shape: an interrupt check before the switch, in the source with its comments blanked.
+
+### Every test
+
+Every test makes one check under the shell's name. The functional arm runs once in a module fixture on the shared cluster; the statement runs in a daemon thread abandoned after 30 s, as the shell's KILL abandons psql, and survival waits for SELECT 1 before reading the server log's crash count. The shape tests read src/ with `re`.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_thrift_skip_bomb_is_cancelled_by_the_timeout` | Thrift skip-bomb footer is cancellable, not an uninterruptible hang |
+| `test_the_cancel_lands_inside_the_skip_loop` | the cancel lands within 3 s of the statement's start under a 1 s timeout |
+| `test_the_backend_survived_the_skip_bomb` | backend survived the Thrift skip-bomb footer |
+| `test_thrift_skip_checks_for_interrupts_before_its_switch` | PgColumnarThriftSkip checks for interrupts |
+| `test_av_skip_checks_for_interrupts_before_its_switch` | av_skip checks for interrupts per element (before the switch, not just per block) |
