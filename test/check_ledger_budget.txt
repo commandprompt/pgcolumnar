@@ -5957,4 +5957,22 @@ suites_not_covered 75
 #     never         4129 + 8 = 4137
 #     dated         2791 + 7 = 2798
 #     4137 + 2798 == 6935
-checks_never_observed_red 4137
+#
+# #1706 item 2, parquet_timestamp_zone seeded, with its twin (jdatcmd): 4137 -> 4140. A new
+# suite, so suites_not_covered does not move: it is registered and covered in the same change.
+# It enters with 16 checks from five-major runs (all green on each of 15-19, shell and twin
+# alike). 13 are dated by seven mutations, each reddening the same names in both twins: the
+# reader ignoring isAdjustedToUTC (6), not converting an adjusted column read into
+# timestamp (2), skipping a converted column's row groups on their converted statistics
+# (the spring-forward group, 1), main's exporter before #1707 (the round trip, 1), the
+# conversion pinned to New York instead of the session zone (the Tokyo pair, 2), a legacy
+# TIMESTAMP_MICROS column read as naive (the legacy pair, 2), and the zone offset taken at
+# the wall time read as UTC (the fall-back hour, with the two gap checks, 1 new). The two
+# premises and the adjusted-into-timestamptz control arrive never. iceberg_fdw's two new
+# mixed-kind hour() checks add no rows: that suite is not yet seeded.
+#
+#     ledger rows   6935 + 16 = 6951
+#     never         4137 + 3 = 4140
+#     dated         2798 + 13 = 2811
+#     4140 + 2811 == 6951
+checks_never_observed_red 4140

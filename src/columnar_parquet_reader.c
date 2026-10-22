@@ -76,6 +76,8 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
+#include "utils/datetime.h"
+#include "pgtime.h"
 #include "utils/varlena.h"
 #include "utils/tuplestore.h"
 #include "utils/typcache.h"
@@ -137,6 +139,7 @@ typedef struct PqSchemaCol
 	int			converted_type;	/* -1 if none */
 	int			time_unit;		/* PQ_TU_* for a TIME/TIMESTAMP column */
 	bool		is_timestamp;	/* the unit belongs to TIMESTAMP, not TIME */
+	bool		adjusted_utc;	/* TIMESTAMP isAdjustedToUTC: an instant, not a wall time */
 	int			type_length;	/* FIXED_LEN_BYTE_ARRAY length */
 	int			scale;			/* DECIMAL scale (0 if none) */
 	int			precision;		/* DECIMAL precision (0 if none) */
@@ -416,8 +419,12 @@ parse_logical_type(TCReader *r, PqSchemaCol *sc)
 						PgColumnarThriftField(r, &uft, &ufid, &uLast);
 					}
 				}
+				else if (ifid == 1 && isTs &&
+						 (ift == TC_BOOL_TRUE || ift == TC_BOOL_FALSE))
+					/* isAdjustedToUTC: compact protocol carries a bool in its type */
+					sc->adjusted_utc = (ift == TC_BOOL_TRUE);
 				else
-					PgColumnarThriftSkip(r, ift);	/* isAdjustedToUTC and anything later */
+					PgColumnarThriftSkip(r, ift);	/* anything later */
 			}
 		}
 		else
@@ -436,6 +443,8 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 	sc->converted_type = -1;
 	sc->time_unit = PQ_TU_NONE;
 	sc->is_timestamp = false;
+	/* the legacy TIMESTAMP_* converted types are defined as UTC-adjusted */
+	sc->adjusted_utc = true;
 	sc->type_length = 0;
 	sc->scale = 0;
 	sc->precision = 0;
@@ -875,7 +884,20 @@ typedef struct PqColPlan
 	int			type_length;	/* FIXED_LEN_BYTE_ARRAY width, for uuid/decimal */
 	int			dec_scale;		/* DECIMAL scale, when the target is numeric */
 	bool		is_decimal;		/* the bytes are a DECIMAL unscaled integer */
+	int			ts_shift;		/* PQ_TS_*: a cast between wall time and instant */
 } PqColPlan;
+
+/*
+ * A Parquet timestamp read into the OTHER PostgreSQL timestamp type is converted
+ * as PostgreSQL's own cast would, in the session zone (#1706): a naive (not
+ * UTC-adjusted) wall time into timestamptz, and an adjusted instant into
+ * timestamp. The same-kind reads are left as they are.
+ */
+#define PQ_TS_NONE			0
+#define PQ_TS_WALL_TO_INSTANT	1
+#define PQ_TS_INSTANT_TO_WALL	2
+
+static bool pq_ts_shift(int shift, Timestamp in, Timestamp *out);
 
 /*
  * Convert a stored TIME/TIMESTAMP value to the microseconds PostgreSQL stores,
@@ -1176,7 +1198,9 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 
 					if (!pq_scale_to_usecs(plan->time_unit, v, &us) ||
 						pg_sub_s64_overflow(us, PG_TO_UNIX_USECS, &t) ||
-						!IS_VALID_TIMESTAMP((Timestamp) t))
+						!IS_VALID_TIMESTAMP((Timestamp) t) ||
+						(plan->ts_shift != PQ_TS_NONE &&
+						 !pq_ts_shift(plan->ts_shift, (Timestamp) t, (Timestamp *) &t)))
 						return pq_value_out_of_range(strict, ok,
 													 ERRCODE_DATETIME_FIELD_OVERFLOW,
 													 tn, v);
@@ -2276,6 +2300,47 @@ pq_plan_bind_schema(PqColPlan *plan, const PqSchemaCol *sc)
 	plan->dec_scale = sc->scale;
 	plan->is_decimal = (plan->typid == NUMERICOID &&
 						sc->converted_type == PQ_CT_DECIMAL);
+	plan->ts_shift = PQ_TS_NONE;
+	if (sc->is_timestamp && !sc->adjusted_utc && plan->typid == TIMESTAMPTZOID)
+		plan->ts_shift = PQ_TS_WALL_TO_INSTANT;
+	else if (sc->is_timestamp && sc->adjusted_utc && plan->typid == TIMESTAMPOID)
+		plan->ts_shift = PQ_TS_INSTANT_TO_WALL;
+}
+
+/*
+ * The two casts, from the primitives PostgreSQL's timestamp_timestamptz and
+ * timestamptz_timestamp use, so they behave the same on every major (PG19 renamed
+ * the exported helper, and PG15-18 export no timestamptz -> timestamp one).
+ * false when the result is out of range.
+ */
+static bool
+pq_ts_shift(int shift, Timestamp in, Timestamp *out)
+{
+	struct pg_tm tm;
+	fsec_t		fsec;
+	int			tz;
+
+	if (TIMESTAMP_NOT_FINITE(in))
+	{
+		*out = in;
+		return true;
+	}
+	if (shift == PQ_TS_WALL_TO_INSTANT)
+	{
+		if (timestamp2tm(in, NULL, &tm, &fsec, NULL, NULL) != 0)
+			return false;
+		tz = DetermineTimeZoneOffset(&tm, session_timezone);
+		if (tm2timestamp(&tm, fsec, &tz, out) != 0)
+			return false;
+	}
+	else
+	{
+		if (timestamp2tm(in, &tz, &tm, &fsec, NULL, NULL) != 0)
+			return false;
+		if (tm2timestamp(&tm, fsec, NULL, out) != 0)
+			return false;
+	}
+	return IS_VALID_TIMESTAMP(*out);
 }
 
 /*
@@ -4485,6 +4550,12 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 		phys != PQ_FLOAT && phys != PQ_DOUBLE)
 		return false;
 	if (con->consttype != leaf->plan.typid || con->constisnull)
+		return false;
+	/*
+	 * A wall time is not monotonic in its instant across a spring-forward gap, so
+	 * converted statistics need not bound the converted rows (#1706): never skip.
+	 */
+	if (leaf->plan.ts_shift != PQ_TS_NONE)
 		return false;
 
 	tce = lookup_type_cache(leaf->plan.typid, TYPECACHE_CMP_PROC_FINFO);
