@@ -16,7 +16,8 @@ of killed backends not to have moved since setup. A phantom-row count is any cou
 above the file's true one, not only the one the crafter declares.
 
 ON A PRIVATE DATABASE. The shell skips whole without pyarrow, so every test declines by
-the shell's skip name first. The crafted files live in `server_dir`.
+the shell's skip name first, and only then asks for the fixture, whose crafter needs
+pyarrow. The crafted files live in `server_dir`.
 """
 import pathlib
 import re
@@ -79,11 +80,6 @@ def _leak(reading, true_rows):
 
 @pytest.fixture(scope="module")
 def pcb(pgc_cluster, server_dir):
-    try:
-        import pyarrow.parquet  # noqa: F401  the crafter needs it; tests decline without
-    except ImportError:
-        yield None
-        return
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
         a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
         a.execute(f"CREATE DATABASE {DB}")
@@ -123,107 +119,124 @@ def _int(v):
     return int(v) if isinstance(v, str) and v.isdigit() else v
 
 
-def test_the_crafter_produced_the_files(pcb, expect):
+def test_the_crafter_produced_the_files(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(pcb["crafted"], "yes", "premise: the crafter produced the seven files")
 
 
-def test_the_server_is_up_before_any_malformed_file(pcb, expect):
+def test_the_server_is_up_before_any_malformed_file(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(pcb["up before"], "1", "premise: the server is up before any malformed file is read")
 
 
-def test_an_honest_file_imports_its_rows(pcb, expect):
+def test_an_honest_file_imports_its_rows(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.num(_int(pcb["honest"]), 8, "an honest file imports its rows")
 
 
-def test_the_server_is_up_after_the_honest_import(pcb, expect):
+def test_the_server_is_up_after_the_honest_import(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(pcb["up honest"], "1", "the server is still up after the honest import")
 
 
-def test_a_wrapping_num_values_is_rejected(pcb, expect):
+def test_a_wrapping_num_values_is_rejected(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(_rejected(pcb["bignv"]), "rejected", "num_values 2^62 is rejected, not imported")
 
 
-def test_the_backend_survives_the_wrapping_num_values(pcb, expect):
+def test_the_backend_survives_the_wrapping_num_values(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(pcb["up bignv"], "1", "and the backend is still up (it did not wrap-allocate and crash)")
 
 
-def test_num_rows_past_the_values_is_rejected(pcb, expect):
+def test_num_rows_past_the_values_is_rejected(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(_rejected(pcb["bignr"]), "rejected",
                 "num_rows past the chunk's values is rejected, not emitted as phantom rows")
 
 
-def test_num_rows_past_the_values_returns_no_phantom_rows(pcb, expect):
+def test_num_rows_past_the_values_returns_no_phantom_rows(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(_leak(pcb["bignr"], 8), "ok", "and it did not silently return more rows than the file holds")
 
 
-def test_a_huge_num_rows_is_rejected(pcb, expect):
+def test_a_huge_num_rows_is_rejected(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(_rejected(pcb["hugenr"]), "rejected",
                 "a huge num_rows is rejected rather than walking off the allocation")
 
 
-def test_the_backend_survives_the_huge_num_rows(pcb, expect):
+def test_the_backend_survives_the_huge_num_rows(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(pcb["up hugenr"], "1", "and the backend survived it")
 
 
-def test_the_num_values_rejection_names_num_values(pcb, expect):
+def test_the_num_values_rejection_names_num_values(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.num(1 if "num_values" in pcb["bignv"] else 0, 1,
                "the num_values rejection names num_values in its detail")
 
 
-def test_the_num_rows_rejection_names_num_rows(pcb, expect):
+def test_the_num_rows_rejection_names_num_rows(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.num(1 if "num_rows" in pcb["bignr"] else 0, 1, "the num_rows rejection names num_rows in its detail")
 
 
-def test_an_honest_list_imports_one_row(pcb, expect):
+def test_an_honest_list_imports_one_row(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.num(_int(pcb["list honest"]), 1, "an honest one-record list imports one row")
 
 
-def test_a_valid_three_record_list_imports_three_rows(pcb, expect):
+def test_a_valid_three_record_list_imports_three_rows(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.num(_int(pcb["list valid3"]), 3, "a valid three-record list imports three rows (not over-rejected)")
 
 
-def test_num_rows_past_a_lists_records_is_rejected(pcb, expect):
+def test_num_rows_past_a_lists_records_is_rejected(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(_rejected(pcb["list bad"]), "rejected",
                 "num_rows past a list's record count is rejected, not emitted as phantom rows")
 
 
-def test_num_rows_past_a_lists_records_returns_no_phantom_rows(pcb, expect):
+def test_num_rows_past_a_lists_records_returns_no_phantom_rows(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(_leak(pcb["list bad"], 1), "ok", "and it did not silently return more rows than the file's records")
 
 
-def test_the_backend_survives_the_list_over_read(pcb, expect):
+def test_the_backend_survives_the_list_over_read(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet count-bounds suite needs it") is None:
         return
+    pcb = request.getfixturevalue("pcb")  # after the decline: the crafter needs pyarrow
     expect.text(pcb["up list"], "1", "and the backend survived the list over-read")
