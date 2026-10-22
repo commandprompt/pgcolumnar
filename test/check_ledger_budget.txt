@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 71
+suites_not_covered 70
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6037,4 +6037,21 @@ suites_not_covered 71
 #     never         4146 + 2 = 4148
 #     dated         2820 + 12 = 2832
 #     4148 + 2832 == 6980
-checks_never_observed_red 4148
+#
+# #1341, native_reclaim_reconcile seeded, with its twin (OffgridwithJD): 4148 -> 4156,
+# and suites_not_covered 71 -> 70. The suite had no rows. It enters with its 13
+# checks from five-major runs (all green on each of 15-19, shell and twin alike), after two
+# fixes. Every reconcile check counted only the injected stale row, so a reconcile that
+# dropped EVERY free row, leaking all reusable space, passed 11/11 on main. A plain compact
+# (which does not reuse) must now keep the legitimate free ranges the earlier rewrite left,
+# as count and bytes, with a premise that one exists. And "row count intact" compared two
+# readings with plain check: with the server stopped before it, main passed it on two
+# empty strings. It is check_num now. The reuse-cycle loop is unrolled so its two names are
+# literals. 5 are dated by two mutations of the reconcile, each reddening the same names
+# in both twins. 8 arrive never.
+#
+#     ledger rows   6980 + 13 = 6993
+#     never         4148 + 8 = 4156
+#     dated         2832 + 5 = 2837
+#     4156 + 2837 == 6993
+checks_never_observed_red 4156
