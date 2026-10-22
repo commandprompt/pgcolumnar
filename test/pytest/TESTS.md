@@ -349,6 +349,7 @@ behaviour, the source of that number is named.
 - [301. test_native_page_offset_bound.py: a corrupt page_offset is refused by the containment guard on both reads, and an intact table still reads](#301-test_native_page_offset_boundpy-a-corrupt-page_offset-is-refused-by-the-containment-guard-on-both-reads-and-an-intact-table-still-reads)
 - [302. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen](#302-test_native_param_pushdownpy-a-parameterized-qual-prunes-chunk-groups-and-a-correlated-one-is-never-frozen)
 - [303. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's](#303-test_native_sort_bypy-the-declared-sort_by-key-orders-the-rows-it-says-and-each-refusal-is-its-own-guards)
+- [304. test_native_rewrite.py: compact_rewrite reclaims partially-deleted groups online, and vacuum's rewrite keeps every row reachable](#304-test_native_rewritepy-compact_rewrite-reclaims-partially-deleted-groups-online-and-vacuums-rewrite-keeps-every-row-reachable)
 
 ## 1. How to read a test in here
 
@@ -11550,3 +11551,34 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_nsb_set_options_rejects_a_virtual_generated_sort_by_column` | set_options rejects a virtual generated sort_by column |
 | `test_nsb_vacuum_sorted_rejects_an_explicit_virtual_generated_column` | vacuum_sorted rejects an explicit virtual generated column |
 | `test_nsb_backend_still_up_after_the_refusals` | backend still up after the refusals |
+
+## 304. test_native_rewrite.py: compact_rewrite reclaims partially-deleted groups online, and vacuum's rewrite keeps every row reachable
+
+The twin of `test/native_rewrite.sh` (Phase F3b). compact_rewrite rewrites groups past the deleted-fraction threshold, and only those, into fresh groups with fresh row numbers under ShareUpdateExclusiveLock, with results equal to a heap mirror written from the generator; index scans and point lookups stay right; group numbers are never reused; and pgcolumnar.vacuum rewrites into fresh storage with every row reachable, through the index as well.
+
+### Every test
+
+Every test makes one check under the shell's name, from one module fixture that takes every reading in the shell's order on a private schema. Readings are values: a failed query is a query_error(), so two failed reads never agree, counts are compared as numbers, and the duplicate must be refused with 23505 by n_id_uq itself. The index after vacuum is read over a narrow range, because over the whole table stale entries still land on every row once.
+
+| test | what it holds |
+| --- | --- |
+| `test_row_count_after_delete` | row count after delete |
+| `test_there_are_deleted_rows_to_reclaim` | there are deleted rows to reclaim |
+| `test_parity_after_delete` | parity after delete |
+| `test_rewrote_some_groups` | rewrote some groups |
+| `test_dead_row_space_reclaimed` | dead-row space reclaimed |
+| `test_parity_after_rewrite` | parity after rewrite |
+| `test_row_count_after_rewrite` | row count after rewrite |
+| `test_a_second_rewrite_with_nothing_deleted_rewrites_no_group` | a second rewrite with nothing deleted rewrites no group |
+| `test_a_group_deleted_below_the_threshold_is_not_rewritten` | a group deleted below the threshold is not rewritten |
+| `test_index_scan_returns_each_live_row_once` | index scan returns each live row once |
+| `test_live_id_present_via_index` | live id present via index |
+| `test_deleted_id_absent_via_index` | deleted id absent via index |
+| `test_unique_constraint_still_enforced` | unique constraint still enforced |
+| `test_compact_rewrite_holds_share_update_exclusive_lock` | compact_rewrite holds ShareUpdateExclusiveLock |
+| `test_compact_rewrite_holds_no_access_exclusive_lock` | compact_rewrite holds no AccessExclusiveLock |
+| `test_a_rewrite_plus_later_writes_reuse_no_group_number` | a rewrite plus later writes reuse no group number |
+| `test_group_numbers_issued_after_a_rewrite_are_past_every_earlier_one` | group numbers issued after a rewrite are past every earlier one |
+| `test_vacuum_rewrites_into_a_fresh_storage_id` | vacuum rewrites into a fresh storage id |
+| `test_every_live_row_still_reads_back_after_rewrite_and_vacuum` | every live row still reads back after rewrite and vacuum |
+| `test_an_index_range_read_after_vacuum_returns_the_rows_asked_for` | an index range read after vacuum returns the rows asked for |
