@@ -360,6 +360,7 @@ behaviour, the source of that number is named.
 - [312. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows](#312-test_native_parquet_projectionpy-a-projected-parquet-scan-decodes-only-the-columns-it-references-and-reads-the-generators-rows)
 - [313. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks](#313-test_native_parquet_hardeningpy-the-parquet-reader-refuses-values-that-do-not-fit-their-column-and-a-row-group-with-too-few-chunks)
 - [314. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend](#314-test_native_parquet_stackpy-a-crafted-parquet-footer-trips-the-recursion-guard-instead-of-crashing-the-backend)
+- [315. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time](#315-test_native_parquet_streamingpy-external-parquet-reads-stream-an-oversized-file-describes-itself-crafted-pages-are-refused-the-fdw-decodes-one-row-group-at-a-time)
 
 ## 1. How to read a test in here
 
@@ -11860,3 +11861,35 @@ Every test makes one check under the shell's name. Each parquet_schema or read_p
 | `test_backend_survived_the_valid_file` | backend survived the valid file |
 | `test_read_parquet_rejects_the_nested_struct_footer` | read_parquet rejects the nested-struct footer the same way |
 | `test_backend_survived_read_parquet_on_the_crash_input` | backend survived read_parquet on the crash input |
+
+## 315. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time
+
+The twin of `test/native_parquet_streaming.sh`. `test/craft_parquet_streaming.py`, now shared by both harnesses, writes a 1600MB sparse file carrying a small file's footer (over the old 1GB palloc ceiling), six crafted files that each break one thing the page loop must not trust, an all-null column, and a four-row-group file for the FDW's Row Groups Decoded counter. The footer path reads the oversized file; each crafted page area is refused by the page loop's own decode refusal; the backend survives; and a LIMIT decodes only the row groups it needs.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The crafter runs as a subprocess, so the module imports no pyarrow; every test declines under the shell's skip name before it asks for the fixture, and on a box that cannot build the sparse file under the shell's other skip name. Every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved since its section began. One extra test mirrors 'crafted files were built', which the shell records only when the crafter fails.
+
+| test | what it holds |
+| --- | --- |
+| `test_parquet_streaming_crafted_files_were_built` | crafted files were built |
+| `test_parquet_streaming_schema_reads_a_file_over_the_palloc_ceiling` | parquet_schema reads a file over the 1GB palloc ceiling |
+| `test_parquet_streaming_schema_reports_the_oversized_files_columns` | parquet_schema reports the columns of the oversized file |
+| `test_parquet_streaming_value_read_of_the_sparse_file_fails_cleanly` | value read of the sparse file fails cleanly |
+| `test_parquet_streaming_backend_survived_the_failed_read` | backend survived the failed read |
+| `test_parquet_streaming_schema_still_reads_a_normal_file` | parquet_schema still reads a normal file |
+| `test_parquet_streaming_read_parquet_still_reads_a_normal_file` | read_parquet still reads a normal file |
+| `test_parquet_streaming_zero_filled_page_area_is_rejected` | zero-filled page area is rejected, not walked byte by byte |
+| `test_parquet_streaming_page_size_past_eof_is_rejected` | page size past end of file is rejected by the size bound |
+| `test_parquet_streaming_negative_page_offset_is_rejected` | negative page offset is rejected by the offset check |
+| `test_parquet_streaming_unparseable_page_header_is_rejected` | unparseable page header is rejected |
+| `test_parquet_streaming_second_dictionary_page_is_rejected` | a second dictionary page in a chunk is rejected |
+| `test_parquet_streaming_v2_level_lengths_past_the_page_are_rejected` | v2 level lengths past the page are rejected |
+| `test_parquet_streaming_all_null_column_still_reads` | all-null column (empty dictionary page) still reads |
+| `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
+| `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |
+| `test_parquet_streaming_full_scan_content_is_correct` | streaming: full scan content is correct |
+| `test_parquet_streaming_full_scan_decodes_all_four_row_groups` | streaming: a full scan decodes all four row groups |
+| `test_parquet_streaming_limit_10_decodes_one_row_group` | streaming: LIMIT 10 (inside group 0) decodes one row group |
+| `test_parquet_streaming_limit_1010_decodes_two_row_groups` | streaming: LIMIT 1010 (into group 1) decodes two row groups |
+| `test_parquet_streaming_rescan_under_a_nested_loop_is_correct` | streaming: rescan under a nested loop is correct |

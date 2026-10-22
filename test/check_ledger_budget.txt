@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 56
+suites_not_covered 55
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6331,4 +6331,21 @@ suites_not_covered 56
 #     never         4234 + 0 = 4234
 #     dated         2974 + 8 = 2982
 #     4234 + 2982 == 7216
-checks_never_observed_red 4234
+#
+# #1341, native_parquet_streaming seeded, with its twin (OffgridwithJD): 4234 -> 4249,
+# and suites_not_covered 56 -> 55. The suite had no rows. It enters with 20 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after one fix measured
+# on main's shell on PG17: survival was a bare SELECT 1, so with the second-dictionary refusal
+# turned into abort() 'backend survived the crafted page areas' passed, and the crash also
+# failed the v2 arm read during recovery. Survival now reads the server log's count of killed
+# backends since its section began, and every reading waits for the server first. As hardening,
+# the two refusals that accepted any ERROR now want the page loop's own decode refusal; no
+# mutant here separated them. The v2 level guard stays unisolated, as the suite's header
+# argues. 5 are dated by five mutations, each the same names in both twins. 15 arrive
+# never.
+#
+#     ledger rows   7216 + 20 = 7236
+#     never         4234 + 15 = 4249
+#     dated         2982 + 5 = 2987
+#     4249 + 2987 == 7236
+checks_never_observed_red 4249
