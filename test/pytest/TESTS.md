@@ -336,6 +336,7 @@ behaviour, the source of that number is named.
 - [288. test_native_cluster.py: Z-order clustering reorders storage, tightens the zone maps, and refuses what it cannot cluster on](#288-test_native_clusterpy-z-order-clustering-reorders-storage-tightens-the-zone-maps-and-refuses-what-it-cannot-cluster-on)
 - [289. test_native_exact_selection.py: exact selection rules out vectors no zone map can, and loses no row on a bound](#289-test_native_exact_selectionpy-exact-selection-rules-out-vectors-no-zone-map-can-and-loses-no-row-on-a-bound)
 - [290. test_native_ctas.py: CREATE TABLE AS into a columnar table works with a parallel source plan, and a committed table's first write still serializes](#290-test_native_ctaspy-create-table-as-into-a-columnar-table-works-with-a-parallel-source-plan-and-a-committed-tables-first-write-still-serializes)
+- [291. test_native_encoding.py: native cascade encoding engages, picks ALP and FSST, and round-trips on every codec](#291-test_native_encodingpy-native-cascade-encoding-engages-picks-alp-and-fsst-and-round-trips-on-every-codec)
 
 ## 1. How to read a test in here
 
@@ -11187,3 +11188,65 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_ctas_race_produced_one_storage_row` | and they produced one storage row, not two |
 | `test_ctas_race_every_row_present` | and every row from both writers is present |
 | `test_ctas_backend_still_up_after_the_race` | backend still up after the concurrent first writes |
+
+## 291. test_native_encoding.py: native cascade encoding engages, picks ALP and FSST, and round-trips on every codec
+
+The twin of `test/native_encoding.sh`. Each block codec (none, pglz, lz4, zstd) round-trips rows, values, nulls, a filtered scan and an aggregate against a heap mirror built from the same generator, and its constant column's vectors are stored encoded, read from the descriptor's encoding type; ALP is chosen for a two-decimal float and FSST for shared-substring text, with one shared FSST table per FSST chunk; sampled selection returns what exhaustive selection returns and costs little ratio on a misleading head or short runs; and a chunk too small to sample is still encoded.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()` and counts are read as numbers, so two failed reads never agree; each catalog count reads bad/total, so an empty catalog cannot pass as none bad.
+
+| test | what it holds |
+| --- | --- |
+| `test_none_holds_every_row` | [none] row count |
+| `test_none_round_trips_every_column` | [none] all columns round-trip |
+| `test_none_round_trips_the_nulls` | [none] nulls round-trip |
+| `test_none_filtered_scan_agrees` | [none] filtered scan |
+| `test_none_aggregate_agrees` | [none] aggregate over encoded column |
+| `test_none_carries_no_baseline_descriptor` | [none] no baseline descriptors remain |
+| `test_none_constant_column_is_small` | [none] constant column encoded small |
+| `test_none_constant_column_is_encoded_not_raw` | [none] the constant column's vectors are encoded, not stored raw |
+| `test_none_uses_no_block_codec` | [none] no block codec used |
+| `test_pglz_holds_every_row` | [pglz] row count |
+| `test_pglz_round_trips_every_column` | [pglz] all columns round-trip |
+| `test_pglz_round_trips_the_nulls` | [pglz] nulls round-trip |
+| `test_pglz_filtered_scan_agrees` | [pglz] filtered scan |
+| `test_pglz_aggregate_agrees` | [pglz] aggregate over encoded column |
+| `test_pglz_carries_no_baseline_descriptor` | [pglz] no baseline descriptors remain |
+| `test_pglz_constant_column_is_small` | [pglz] constant column encoded small |
+| `test_pglz_constant_column_is_encoded_not_raw` | [pglz] the constant column's vectors are encoded, not stored raw |
+| `test_lz4_holds_every_row` | [lz4] row count |
+| `test_lz4_round_trips_every_column` | [lz4] all columns round-trip |
+| `test_lz4_round_trips_the_nulls` | [lz4] nulls round-trip |
+| `test_lz4_filtered_scan_agrees` | [lz4] filtered scan |
+| `test_lz4_aggregate_agrees` | [lz4] aggregate over encoded column |
+| `test_lz4_carries_no_baseline_descriptor` | [lz4] no baseline descriptors remain |
+| `test_lz4_constant_column_is_small` | [lz4] constant column encoded small |
+| `test_lz4_constant_column_is_encoded_not_raw` | [lz4] the constant column's vectors are encoded, not stored raw |
+| `test_zstd_holds_every_row` | [zstd] row count |
+| `test_zstd_round_trips_every_column` | [zstd] all columns round-trip |
+| `test_zstd_round_trips_the_nulls` | [zstd] nulls round-trip |
+| `test_zstd_filtered_scan_agrees` | [zstd] filtered scan |
+| `test_zstd_aggregate_agrees` | [zstd] aggregate over encoded column |
+| `test_zstd_carries_no_baseline_descriptor` | [zstd] no baseline descriptors remain |
+| `test_zstd_constant_column_is_small` | [zstd] constant column encoded small |
+| `test_zstd_constant_column_is_encoded_not_raw` | [zstd] the constant column's vectors are encoded, not stored raw |
+| `test_alp_column_round_trips_exactly` | alp column round-trips exactly |
+| `test_alp_special_values_round_trip` | alp special values round-trip |
+| `test_alp_is_chosen_for_the_decimal_column` | alp chosen for the decimal column |
+| `test_fsst_column_round_trips_exactly` | fsst column round-trips exactly |
+| `test_fsst_filtered_scan_round_trips` | fsst filtered scan round-trips |
+| `test_fsst_is_chosen_for_the_shared_substring_column` | fsst chosen for the shared-substring column |
+| `test_fsst_shrinks_the_url_column` | fsst shrinks the url column |
+| `test_fsst_stores_one_shared_table_per_chunk` | fsst stores one shared table per chunk (E3b) |
+| `test_sampling_on_matches_the_heap_oracle` | sampling on == heap oracle |
+| `test_sampling_off_matches_the_heap_oracle` | sampling off == heap oracle |
+| `test_sampling_changes_nothing_a_query_sees` | sampling changes nothing a query can see |
+| `test_a_misleading_head_costs_little_ratio` | a misleading column head does not cost much ratio |
+| `test_a_misleading_head_reads_back_exactly` | misleading-head column still reads back exactly |
+| `test_a_run_length_column_is_not_misjudged` | a run-length column is not misjudged by the sample |
+| `test_a_run_length_column_reads_back_exactly` | run-length column reads back exactly |
+| `test_a_sample_below_the_floor_still_encodes` | a sample setting below the floor still encodes |
+| `test_a_chunk_smaller_than_the_sample_window_is_encoded` | a chunk smaller than the sample window still encodes |
+| `test_a_chunk_smaller_than_the_sample_window_reads_back` | a chunk smaller than the sample window reads back exactly |
