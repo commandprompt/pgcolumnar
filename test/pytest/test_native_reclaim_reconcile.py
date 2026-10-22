@@ -145,7 +145,7 @@ def test_rr_row_count_intact(rr, expect):
 
 def test_rr_a_legitimate_free_range_exists(rr, expect):
     expect.text(_legit_present(rr["legit before"]), "yes",
-                "premise: a legitimate free range exists before the plain compact")
+                "compact_rewrite recorded the free ranges it left")
 
 
 def test_rr_plain_compact_reconciled(rr, expect):

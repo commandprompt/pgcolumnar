@@ -11462,7 +11462,7 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_rr_compact_rewrite_reconciled` | compact_rewrite reconciled the stale row |
 | `test_rr_data_intact_after_rewrite` | data intact after reconcile + rewrite |
 | `test_rr_row_count_intact` | row count intact |
-| `test_rr_a_legitimate_free_range_exists` | premise: a legitimate free range exists before the plain compact |
+| `test_rr_a_legitimate_free_range_exists` | compact_rewrite recorded the free ranges it left |
 | `test_rr_plain_compact_reconciled` | plain compact reconciled the stale row |
 | `test_rr_plain_compact_kept_the_legitimate_ranges` | plain compact kept the legitimate free ranges, which overlap no live group |
 | `test_rr_data_intact_after_compact` | data intact after compact reconcile |

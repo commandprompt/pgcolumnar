@@ -77,7 +77,9 @@ legit() { q "SELECT count(*) || '|' || coalesce(sum(byte_length), 0) FROM pgcolu
             WHERE storage_id = $sid AND freed_xid <> 1;"; }
 inject
 legit_before="$(legit)"
-check "premise: a legitimate free range exists before the plain compact" \
+# Not a premise: the ranges exist only because compact_rewrite recorded them, and a
+# record_free_space that drops its insert (one line) leaks them all and reddens this.
+check "compact_rewrite recorded the free ranges it left" \
 	"$(case "$legit_before" in ''|0\|*) echo "no ($legit_before)" ;; *) echo yes ;; esac)" "yes"
 psql_run "SELECT pgcolumnar.compact('n');"
 check "plain compact reconciled the stale row" "$(stalerows)" "0"

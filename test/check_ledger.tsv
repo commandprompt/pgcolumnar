@@ -4544,6 +4544,7 @@ native_reclaim	native_reclaim	reused-block data matches heap mirror	15;16;17;18;
 native_reclaim	native_reclaim	row count correct after cycle	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	ten row groups, every one half deleted	15;16;17;18;19	2026-10-14	the write state ignores stripe_row_limit
 native_reclaim_reconcile	native_reclaim_reconcile	compact_rewrite reconciled the stale row	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList never drops a free row, overlapping or not
+native_reclaim_reconcile	native_reclaim_reconcile	compact_rewrite recorded the free ranges it left	15;16;17;18;19	2026-10-22	columnar_metadata.c: record_free_space drops its insert, so every freed range leaks
 native_reclaim_reconcile	native_reclaim_reconcile	data intact after compact reconcile	15;16;17;18;19	never	-
 native_reclaim_reconcile	native_reclaim_reconcile	data intact after reconcile + rewrite	15;16;17;18;19	never	-
 native_reclaim_reconcile	native_reclaim_reconcile	data intact after truncate reconcile	15;16;17;18;19	never	-
@@ -4552,7 +4553,6 @@ native_reclaim_reconcile	native_reclaim_reconcile	parity after reuse cycle 2	15;
 native_reclaim_reconcile	native_reclaim_reconcile	parity before	15;16;17;18;19	never	-
 native_reclaim_reconcile	native_reclaim_reconcile	plain compact kept the legitimate free ranges, which overlap no live group	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList drops every free row, not only those overlapping a live group
 native_reclaim_reconcile	native_reclaim_reconcile	plain compact reconciled the stale row	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList never drops a free row, overlapping or not
-native_reclaim_reconcile	native_reclaim_reconcile	premise: a legitimate free range exists before the plain compact	15;16;17;18;19	never	-
 native_reclaim_reconcile	native_reclaim_reconcile	row count intact	15;16;17;18;19	never	-
 native_reclaim_reconcile	native_reclaim_reconcile	stale overlapping free row injected	15;16;17;18;19	never	-
 native_reclaim_reconcile	native_reclaim_reconcile	truncate reconciled the stale row	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList never drops a free row, overlapping or not
