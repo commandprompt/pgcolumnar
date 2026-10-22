@@ -245,6 +245,24 @@ EXPLAIN (ANALYZE, COSTS OFF) SELECT id FROM events_parquet WHERE ts >= '2026-01-
 --     Files: 4
 ```
 
+**Timestamps and time zones.** A Parquet timestamp column holds either instants
+(UTC-adjusted) or wall times with no zone. Read into the matching type
+(`timestamptz` for instants, `timestamp` for wall times), a value comes back
+unchanged. Read into the other type, it is converted as PostgreSQL's own cast
+converts it, in the session's `TimeZone`:
+
+- a wall time read into `timestamptz` is taken as local time in that zone, like
+  `'2024-06-01 12:00'::timestamp::timestamptz`;
+- an instant read into `timestamp` becomes the local wall time, like
+  `'2024-06-01 12:00+00'::timestamptz::timestamp`.
+
+A foreign-table scan does not skip row groups of a column read this way, because
+the conversion does not keep order across a daylight-saving change. For the same
+reason the Iceberg foreign table does not prune files on a `year()`, `month()`,
+`day()` or `hour()` partition of such a column. A column marked only with the
+older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS` type, with no `isAdjustedToUTC`
+flag, holds instants: the Parquet format defines it so.
+
 The `path` may also be an object-storage URL. Every read and export function, and
 both foreign-data wrappers, accept an `s3://`, `http://`, or `https://` URL where
 they accept a local path.
