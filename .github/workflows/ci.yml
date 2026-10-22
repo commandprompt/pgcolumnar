@@ -185,7 +185,7 @@ jobs:
       - name: fetch the release tags, for the fixture-blob comparisons
         run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
 
-      - name: Add the PGDG repository and install PostgreSQL ${{ matrix.pg }} with its headers
+      - name: Add the PGDG repository and refresh the package lists
         run: |
           set -euo pipefail
           sudo install -d /usr/share/postgresql-common/pgdg
@@ -200,12 +200,34 @@ jobs:
             https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           .github/scripts/apt-retry.sh 100 3 update
-          .github/scripts/apt-retry.sh 200 3 install -y --no-install-recommends \
+
+      # SEEDED FROM THE BUILD JOB'S CACHE, READ-ONLY. This job downloaded ~110 MB per
+      # run, ~91 MB of it the LLVM toolchain postgresql-server-dev-N depends on, and that
+      # download is what stalls (#386). On 2026-10-22 all three 200-second attempts of
+      # #1740's retry stalled on azure.archive.ubuntu.com in most PRs' cluster jobs, while
+      # the build jobs in the same runs fetched 0 B from their cache.
+      #
+      # It derives no key of its own, so there is no second copy of the build job's key
+      # to go stale: it restores the newest archive under the build job's prefix and
+      # never saves. apt still resolves the versions, uses a deb from the archive only
+      # when it is the version it wants, and downloads the rest. A miss, or a stale
+      # archive, degrades to the full download this job made before.
+      - name: Restore the build job's PostgreSQL ${{ matrix.pg }} packages, if any
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: apt-pgdev-codecs-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+          restore-keys: |
+            apt-pgdev-codecs-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install PostgreSQL ${{ matrix.pg }} with its headers
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/apt-archives/partial"
+          .github/scripts/apt-retry.sh 200 3 \
+            -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} postgresql-${{ matrix.pg }}-partman postgresql-${{ matrix.pg }}-hll postgresql-${{ matrix.pg }}-tdigest \
             liblz4-dev libzstd-dev zlib1g-dev
-          # NOT cached, deliberately. The suites job caches because it runs a matrix for
-          # an hour; a second copy of that cache-key derivation is a thing that goes
-          # stale silently, and this job is minutes long.
 
       # ASSERTED, not assumed. A missing pg_config would otherwise surface as a
       # confusing failure inside conftest's build rather than here.
