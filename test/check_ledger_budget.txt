@@ -6156,22 +6156,25 @@ suites_not_covered 64
 #     dated         2872 + 5 = 2877
 #     4204 + 2877 == 7081
 #
-# #1341, native_zonemap_session seeded, with its twin (OffgridwithJD): 4204 -> 4205,
+# #1341, native_zonemap_session seeded, with its twin (OffgridwithJD): 4204 -> 4204,
 # and suites_not_covered 65 -> 64. The suite had no rows. It enters with 13 checks
 # from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
 # "nested columnar scans each hold their own handle" compared only the join's count, which
 # a shared handle still answers correctly: with one static session shared across scans,
 # the first implementation's defect, main passed it. It is now the witness, each scan
 # reporting its own groups opened once, and the count is a check of its own. The three scans
-# around the aborted one must also each probe exactly their own groups. Two premises that
+# around the aborted one must also each probe exactly their own groups. Three premises that
 # a one-line pgcolumnar change reddens lost the prefix (#1339), and a new check holds zs2
-# to more than one group, which a writer ignoring stripe_row_limit fails. 12 are dated by six
-# mutations, each reddening the same names in both twins. 1 arrives never: the fixture
-# premise. The re-resolved index oid columnar_metadata.c documents is not counted by any
-# witness here: with it restored the suite stays 13/13, stated rather than claimed.
+# to more than one group, which a writer ignoring stripe_row_limit fails. The third is
+# "the fixture has more than one chunk group" (jdatcmd's #1698 review): it reads the
+# writer's row_group catalog, and optx100 (a writer that multiplies stripe_row_limit by
+# 100) reddens it. All 13 are dated by seven mutations, each reddening the same names in
+# both twins; none arrives never. The re-resolved index oid columnar_metadata.c documents
+# is not counted by any witness here: with it restored the suite stays 13/13, stated
+# rather than claimed.
 #
 #     ledger rows   7081 + 13 = 7094
-#     never         4204 + 1 = 4205
-#     dated         2877 + 12 = 2889
-#     4205 + 2889 == 7094
-checks_never_observed_red 4205
+#     never         4204 + 0 = 4204
+#     dated         2877 + 13 = 2890
+#     4204 + 2890 == 7094
+checks_never_observed_red 4204

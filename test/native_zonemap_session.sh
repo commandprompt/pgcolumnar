@@ -64,10 +64,12 @@ psql_run "DROP TABLE IF EXISTS zs;
 	SELECT pgcolumnar.set_options('zs', stripe_row_limit => 10000);
 	INSERT INTO zs SELECT g, g, g FROM generate_series(1, $ROWS) g;" >/dev/null 2>&1
 
-# The group count comes FROM THE DATA, never from rows/stripe_row_limit.
+# The group count comes FROM THE DATA, never from rows/stripe_row_limit. Not a
+# premise: it reads the writer's own row_group catalog, and a writer that reads the
+# stripe_row_limit option wrong (one line) reddens it, as zs2's check below.
 groups=$(q "SELECT count(*) FROM pgcolumnar.row_group
             WHERE storage_id = pgcolumnar.get_storage_id('zs');")
-check "premise: the fixture really has more than one chunk group" \
+check "the fixture has more than one chunk group" \
 	"$([ "${groups:-0}" -gt 1 ] && echo yes || echo no)" "yes"
 
 witness() {	# witness "<where clause>" -> "probes=N opens=M"
