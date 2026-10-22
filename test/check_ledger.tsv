@@ -3986,6 +3986,13 @@ native_fetch_projection	native_fetch_projection	premise: there is a needed-set m
 native_fetch_projection	native_fetch_projection	the all-covering projection reconstructs every row	15;16;17;18;19	never	-
 native_fetch_projection	native_fetch_projection	the projection reads every row to start with	15;16;17;18;19	never	-
 native_fetch_projection	native_fetch_projection	the wide fixture has 41 columns	15;16;17;18;19	never	-
+native_fetch_sort_context	native_fetch_sort_context	control: single int key still right	15;16;17;18;19	never	-
+native_fetch_sort_context	native_fetch_sort_context	control: single text key still right	15;16;17;18;19	never	-
+native_fetch_sort_context	native_fetch_sort_context	premise: plan is a merge join	15;16;17;18;19	never	-
+native_fetch_sort_context	native_fetch_sort_context	premise: the columnar side is an index scan under a sort	15;16;17;18;19	never	-
+native_fetch_sort_context	native_fetch_sort_context	three-key merge cond with a filter (#720)	15;16;17;18;19	2026-10-22	columnar_tableam.c: the deferred decode builds its needed-column set in the caller's context and bms_free's it there (#720 reverted, first half)
+native_fetch_sort_context	native_fetch_sort_context	two-key merge join count is right (#720)	15;16;17;18;19	2026-10-22	columnar_tableam.c: the deferred decode builds its needed-column set in the caller's context and bms_free's it there (#720 reverted, first half)
+native_fetch_sort_context	native_fetch_sort_context	two-key merge join sum(id) is right (#720)	15;16;17;18;19	2026-10-22	columnar_tableam.c: the deferred decode builds its needed-column set in the caller's context and bms_free's it there (#720 reverted, first half)
 native_gap	native_gap	baseline parity	15;16;17;18;19	never	-
 native_gap	native_gap	baseline row count	15;16;17;18;19	never	-
 native_gap	native_gap	gap was physically materialized	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData does not fill a gap beyond EOF (6a165821 reverted), so the write lands short of its block and errors;columnar_vacuum.c: debug_advance_reserved_offset advances nothing, so no gap is made

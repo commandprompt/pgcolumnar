@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 78
+suites_not_covered 77
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5901,4 +5901,23 @@ suites_not_covered 78
 #     never         4112 + 12 = 4124
 #     dated         2769 + 14 = 2783
 #     4124 + 2783 == 6907
-checks_never_observed_red 4124
+#
+# #1341, native_fetch_sort_context seeded, with its twin (OffgridwithJD): 4124 -> 4128,
+# and suites_not_covered 78 -> 77. The suite had no rows. It enters with 7 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after one fix.
+# The premise "the columnar side is an index scan under a sort" only grepped for "Index
+# Scan using f_id": it never looked for the Sort the bug needs, and the prefix also matched
+# an index on (id, v). With such an index and index-only scans off, the merge join reads
+# pre-ordered rows with no Sort, so tuplesort's bump context is never entered: with the
+# #720 fix half-reverted (bmsfree) main passed 7/7. The premise now wants a Sort (an
+# Incremental Sort on 18+) directly over the Index Scan using f_id on f, and reddens there
+# in both twins. Each half of #720 reverted (bmsfree, vercheck) and a decode one column
+# short (shortprefix) redden the three #720 arms, the same names in both twins, on 17
+# and on 18. 3 are dated by three mutations. 4 arrive never: the two premises and
+# the two single-key controls, which no measured mutation reaches.
+#
+#     ledger rows   6907 + 7 = 6914
+#     never         4124 + 4 = 4128
+#     dated         2783 + 3 = 2786
+#     4128 + 2786 == 6914
+checks_never_observed_red 4128

@@ -63,8 +63,16 @@ jv() { q "$FORCE $1" | tail -1; }
 PLAN="$(q "$FORCE EXPLAIN (COSTS OFF) SELECT count(*) FROM h JOIN f ON f.id=h.id AND f.v=h.v;")"
 check "premise: plan is a merge join" \
 	"$(grep -qi 'Merge Join' <<<"$PLAN" && echo yes || echo no)" yes
+# The Sort is what the bug needs: tuplesort materialises the deferred slot in its own
+# (bump, on 17+) context. Without a Sort directly over the f_id index scan the path
+# under test never runs, and the #720 arms below pass on a reverted fix: with an
+# index on (id, v) the merge join reads pre-ordered rows and needs no Sort, and the
+# old grep (any "Index Scan using f_id") passed it, 7/7 with the fix half-reverted.
+# So a Sort (an Incremental Sort on 18+, where the index already orders id) must sit
+# directly over THIS index (f_id, matched whole) on f.
 check "premise: the columnar side is an index scan under a sort" \
-	"$(grep -qi 'Index Scan using f_id' <<<"$PLAN" && echo yes || echo no)" yes
+	"$(n=$(grep -A3 -E '^[[:space:]]*->[[:space:]]+(Incremental )?Sort$' <<<"$PLAN" |
+		grep -cE 'Index Scan using f_id on f( |$)'); [ "${n:-0}" -gt 0 ] && echo yes || echo no)" yes
 
 # The regression: a two-key merge cond, leading by-value int + by-reference text.
 # All 2000 rows of h match f, so the count is 2000 and the id-sum is 2001000.
