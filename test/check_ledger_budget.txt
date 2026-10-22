@@ -5957,4 +5957,20 @@ suites_not_covered 75
 #     never         4129 + 8 = 4137
 #     dated         2791 + 7 = 2798
 #     4137 + 2798 == 6935
-checks_never_observed_red 4137
+#
+# #1339, rewrite_storage_oid's other rewriting forms (jdatcmd): 4137 -> 4138. The suite
+# rewrote with one ALTER form only, a type change to bigint, plus a matview, CREATE TABLE
+# AS and REFRESH. Nine checks, one per form: ADD COLUMN with a volatile default, a type
+# change to varchar(20), SET ACCESS METHOD heap and back, SET UNLOGGED, SET UNLOGGED then
+# SET LOGGED, VACUUM FULL, CLUSTER USING an index, TRUNCATE and SELECT INTO. Each reads
+# that the server survived (the log's crash count), what each statement did, the storage
+# row against the table's OID, the row count and a digest of every value against the
+# generator; a form that must rewrite also reads that it rewrote and what it changed.
+# 8 are dated by product mutations, each reddening the same names in both twins. 1
+# arrives never: TRUNCATE writes its new storage row under the live table's OID.
+#
+#     ledger rows   6935 + 9 = 6944
+#     never         4137 + 1 = 4138
+#     dated         2798 + 8 = 2806
+#     4138 + 2806 == 6944
+checks_never_observed_red 4138
