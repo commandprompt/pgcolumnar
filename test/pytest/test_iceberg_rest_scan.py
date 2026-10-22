@@ -190,6 +190,14 @@ def irs(pgc_cluster):
                                  f"FROM pgcolumnar.iceberg_rest_tables('{cat}','db') AS t")
         r["unknown"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','db','nosuch') AS t(id bigint)",
                                 "the REST catalog has no such table", " by the catalog's 404")
+        # The catalog serves only "db": a namespace it does not have must reach it as
+        # that namespace and come back as its 404, so a client that ignored its
+        # namespace argument can no longer pass.
+        r["list other ns"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{cat}','nosuchns')",
+                                      "the REST catalog has no such table list", " by the catalog's 404")
+        r["scan other ns"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','nosuchns','events') "
+                                           f"AS t(id bigint)",
+                                      "the REST catalog has no such table", " by the catalog's 404")
         r["survived"] = _survived(dsn, log, before)
         yield r
     finally:
@@ -268,6 +276,16 @@ def test_iceberg_rest_scan_of_an_unknown_table_is_a_clean_not_found(irs, expect)
     expect.text(irs["unknown"], "42P01 by the catalog's 404",
                 "iceberg_rest_scan of an unknown table is a clean not-found (42P01)")
 
+
+
+def test_iceberg_rest_tables_of_an_absent_namespace_is_the_catalogs_404(irs, expect):
+    expect.text(irs["list other ns"], "42P01 by the catalog's 404",
+                "iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404")
+
+
+def test_iceberg_rest_scan_in_an_absent_namespace_is_the_catalogs_404(irs, expect):
+    expect.text(irs["scan other ns"], "42P01 by the catalog's 404",
+                "iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404")
 
 def test_the_backend_is_still_up_after_the_rest_read(irs, expect):
     if _declined(irs, expect):

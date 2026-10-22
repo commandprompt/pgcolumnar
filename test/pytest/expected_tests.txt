@@ -910,6 +910,7 @@ guard_tests 804
 # 8 checks in 8 tests, by collection over the cluster files.
 # cluster_tests 3024 -> 3031 for #1341's test_fuzz_arrow.py, the twin of fuzz_arrow.sh:
 # 7 checks in 7 tests, by collection over the cluster files.
+# cluster_tests 3038 -> 3040 for #1341's test_iceberg_rest_scan.py: two namespace checks, by collection.
 # cluster_tests 3031 -> 3038 for #1341's test_fuzz_parquet.py, the twin of fuzz_parquet.sh:
 # 7 checks in 7 tests, by collection over the cluster files.
 # cluster_tests 1108 -> 1140 for #1341's test_zonemap_estimate_sample.py, the twin of zonemap_estimate_sample.sh:
@@ -1073,4 +1074,4 @@ guard_tests 804
 # cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
-cluster_tests 3038
+cluster_tests 3040

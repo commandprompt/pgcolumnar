@@ -5746,4 +5746,15 @@ suites_not_covered 85
 #     never         4045 + 6 = 4051
 #     dated         2699 + 1 = 2700
 #     4051 + 2700 == 6751
+# #1341, iceberg_rest_scan's namespace argument is tested (OffgridwithJD): 4051 -> 4051.
+# The REST fixture listed "events" for any namespace it was asked about, and every check
+# asked for "db", so a client that ignored its namespace argument passed all 9: with
+# loadTable or the table list always asking for "db", main's shell and twin were 9/9.
+# The fixture now 404s a namespace it does not serve, and two checks ask for one; each
+# is dated by the mutation it catches, the same name red in both twins.
+#
+#     ledger rows   6751 + 2 = 6753
+#     never         4051 + 0 = 4051
+#     dated         2700 + 2 = 2702
+#     4051 + 2702 == 6753
 checks_never_observed_red 4051

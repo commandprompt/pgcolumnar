@@ -115,7 +115,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if rest == "namespaces":
-            self._send_json(200, {"namespaces": [["db"]]})
+            self._send_json(200, {"namespaces": [[ARGS.namespace]]})
             return
 
         parts = rest.split("/")
@@ -123,8 +123,14 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) >= 3 and parts[0] == "namespaces" and parts[2] == "tables":
             ns = urllib.parse.unquote(parts[1])
             if len(parts) == 3:
+                # Only the namespace this catalog serves has tables. Echoing any
+                # namespace back let a client that ignored its namespace argument
+                # list "events" anyway.
+                if ns.replace("\x1f", ".") != ARGS.namespace:
+                    self._not_found("no such namespace %s" % ns)
+                    return
                 self._send_json(200, {"identifiers": [
-                    {"namespace": [ns], "name": "events"}]})
+                    {"namespace": [ns], "name": ARGS.table}]})
                 return
             table = urllib.parse.unquote(parts[3])
             self._load_table(ns, table)

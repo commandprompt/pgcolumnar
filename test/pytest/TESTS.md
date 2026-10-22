@@ -10642,7 +10642,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 ## 274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table
 
-The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, lists namespaces and tables, and refuses an unknown table with the catalog's own 404.
+The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails.
 
 ### Every test
 
@@ -10658,6 +10658,8 @@ Every test makes one check under the shell's name. The not-found reads as 42P01 
 | `test_iceberg_rest_namespaces_lists_the_catalogs_namespaces` | iceberg_rest_namespaces lists the catalog's namespaces |
 | `test_iceberg_rest_tables_lists_a_namespaces_tables` | iceberg_rest_tables lists a namespace's tables |
 | `test_iceberg_rest_scan_of_an_unknown_table_is_a_clean_not_found` | iceberg_rest_scan of an unknown table is a clean not-found (42P01) |
+| `test_iceberg_rest_tables_of_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404 |
+| `test_iceberg_rest_scan_in_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404 |
 | `test_the_backend_is_still_up_after_the_rest_read` | backend still up after the REST read |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does

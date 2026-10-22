@@ -3133,10 +3133,12 @@ iceberg_rest	iceberg_rest	the token value never appears in the catalog request l
 iceberg_rest_scan	iceberg_rest_scan	backend still up after the REST read	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the backend aborts on a catalog 404 (abort() before the 42P01 refusal)
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_namespaces lists the catalog's namespaces	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: iceberg_rest_namespaces drops the catalog's last namespace
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan matches iceberg_scan of the same table (same oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
+iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-22	columnar_iceberg_rest.c: loadTable always asks for namespace db, whatever namespace it was given
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan of an unknown table is a clean not-found (42P01)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 404 is not mapped to 42P01
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan projects and reorders by field id (amount, id)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan returns the five current-snapshot rows	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_tables lists a namespace's tables	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
+iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-22	columnar_iceberg_rest.c: iceberg_rest_tables always asks for namespace db, whatever namespace it was given
 iceberg_rest_scan	iceberg_rest_scan	premise: rest fixture server is up	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	the catalog reports the relocated metadata location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_server	iceberg_rest_server	a catalog_uri option on the USER MAPPING is rejected (HV00D)	15;16;17;18;19	never	-
