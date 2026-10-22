@@ -191,8 +191,16 @@ def _cancel_run(dsn, s3log, bucket, r):
     r["cx marker"] = "present" if (bucket / "cx" / "_SUCCESS").exists() else "absent"
 
 
+def _slot(worker_id, base):
+    """-> `base` offset by this xdist worker's index. Under `pytest -n 2` (load
+    distribution) both workers build this module's fixture, and with one fixed slot both
+    walked to the same free port before either bound it (#1727 review: 3 runs of 3 red)."""
+    w = 0 if worker_id in (None, "master") else int(str(worker_id).lstrip("gw") or 0)
+    return base + 100 * w
+
+
 @pytest.fixture(scope="module")
-def osw(pgc_cluster):
+def osw(pgc_cluster, worker_id):
     from pgc_cluster import Cluster, pick_port
 
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-objsink-"))
@@ -205,7 +213,7 @@ def osw(pgc_cluster):
     cluster = None
     datadir = work / "data"
     try:
-        s3_port = pick_port(30)
+        s3_port = pick_port(_slot(worker_id, 30))
         out = work / "sink_server.out"
         s3log = str(work / "sink.log")
         srv = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
@@ -220,7 +228,7 @@ def osw(pgc_cluster):
 
         datadir.mkdir()
         log = str(work / "server.log")
-        cluster = Cluster(pgc_cluster.pg_config, "objsink", datadir, pick_port(31))
+        cluster = Cluster(pgc_cluster.pg_config, "objsink", datadir, pick_port(_slot(worker_id, 31)))
         cluster.initdb()
         with open(datadir / "postgresql.conf", "a") as fh:
             fh.write("\npgcolumnar.objstore_allowed_endpoints='127.0.0.1'\nmax_worker_processes=16\n")
