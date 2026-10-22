@@ -5093,6 +5093,21 @@ objstore_crlf	objstore_crlf	a CR/LF in the URL path is rejected before the reque
 objstore_crlf	objstore_crlf	backend alive	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	backend alive after the REST attempt	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	no injected line reached the listener (no request splitting)	15;16;17;18;19	2026-10-14	the request-line guard on the URL path removed
+objstore_listing	objstore_listing	FDW over a prefix == read_parquet over the prefix	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	Hive over a remote prefix stamps the partition column	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last key of every page is dropped
+objstore_listing	objstore_listing	a LIST that returns HTTP 500 is refused, not read as an empty prefix	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a non-2xx LIST read as an empty, untruncated page
+objstore_listing	objstore_listing	a non-advancing continuation token is refused, not an infinite paging loop	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the non-advancing continuation token refusal removed
+objstore_listing	objstore_listing	a partition predicate prunes a remote file (Files Pruned = 1)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last key of every page is dropped
+objstore_listing	objstore_listing	a truncated page with no keys is refused, not looped	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the truncated-page-with-no-keys refusal removed
+objstore_listing	objstore_listing	an exact-key read issues no ListObjectsV2	15;16;17;18;19	never	-
+objstore_listing	objstore_listing	and the request log recorded the exact-key read	15;16;17;18;19	never	-
+objstore_listing	objstore_listing	backend still up after the listing refusals	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the non-advancing token refusal (the backend crashes)
+objstore_listing	objstore_listing	exact-key read returns its rows	15;16;17;18;19	never	-
+objstore_listing	objstore_listing	glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	premise: fixture up	15;16;17;18;19	never	-
+objstore_listing	objstore_listing	read_parquet over a prefix reads every object under it (4 parts, recursive)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	the prefix listing paged (more than one list-type=2 request)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
 parallel	parallel	par count	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
 parallel	parallel	par filtered scan	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
 parallel	parallel	par no-filter	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)

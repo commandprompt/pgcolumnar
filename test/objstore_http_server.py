@@ -222,6 +222,18 @@ class Handler(BaseHTTPRequestHandler):
         # Fuzz hook: if <rootdir>/__listing_override__ exists, its raw bytes are
         # returned verbatim as the listing body, so a harness can feed the C
         # parser arbitrary (malformed) XML and check the backend survives.
+        #
+        # Status hook: if <rootdir>/__listing_status__ exists, its content is an
+        # HTTP status every listing is answered with, an empty body, so a harness
+        # can prove a failed LIST is refused rather than read as an empty prefix.
+        status = os.path.join(self.server.rootdir, "__listing_status__")
+        if os.path.exists(status):
+            with open(status) as f:
+                code = int(f.read().strip())
+            self.send_response(code)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         override = os.path.join(self.server.rootdir, "__listing_override__")
         if os.path.exists(override):
             with open(override, "rb") as f:
