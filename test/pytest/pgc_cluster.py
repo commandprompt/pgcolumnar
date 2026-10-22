@@ -92,22 +92,56 @@ def port_is_free(port, host="127.0.0.1"):
     return True
 
 
-def pick_port(slot, floor=None, is_free=port_is_free):
-    """A free port in the AUX band for this worker slot.
+# THE PORT DEPENDS ON THE WORKER AS WELL AS THE SLOT (#1742). A module fixture that
+# starts its own server (an S3 fixture, a private cluster) asks for a fixed slot,
+# and under `-n` a module's tests are split across workers, so every worker runs
+# that fixture. When the start depended on the slot only, two workers probed the
+# same free port at the same moment, and the second bind failed with "Address
+# already in use" (#1635, #1714, #1721). Each worker now starts in its own block of
+# WORKER_STRIDE ports, and a slot is an offset inside that block. Slot 0 is the
+# worker's own cluster (make_cluster); fixtures use 1 and up.
+#
+# 96, not 64 (#1749 review): main's twins already ask for slots 32 to 35 and the
+# stack up to 41, and a block of 64 ports holds slots 0 to 31. 96 holds 0 to 47, and
+# the AUX band's 2000 ports still give 20 workers, more than any -n here. The guard
+# test_every_literal_fixture_slot_fits_a_workers_block keeps the two from drifting.
+WORKER_STRIDE = 96
+
+
+def worker_slot(worker_id=None):
+    """The xdist worker's number: 3 for `gw3`, and 0 outside xdist.
+
+    Read from PYTEST_XDIST_WORKER when no id is given, which xdist sets in every
+    worker, so a fixture calling pick_port needs no argument to be worker-aware.
+    """
+    if worker_id is None:
+        worker_id = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker_id in (None, "", "master"):
+        return 0
+    digits = str(worker_id).lstrip("gw")
+    return int(digits) if digits.isdigit() else 0
+
+
+def pick_port(slot, floor=None, is_free=port_is_free, worker_id=None):
+    """A free port in the AUX band for this slot of this worker.
 
     Walks on collision instead of trusting the band, because the band only makes
     a collision unlikely and this harness has already been broken once by a port
     that something else was holding.
     """
+    if not 0 <= slot * 2 < WORKER_STRIDE:
+        raise ValueError(f"slot {slot} does not fit in a worker's block of "
+                         f"{WORKER_STRIDE} ports")
     lo, hi = aux_band(floor if floor is not None else read_ephemeral_floor())
     span = hi - lo
-    start = slot * 2
+    start = worker_slot(worker_id) * WORKER_STRIDE + slot * 2
     for step in range(span):
         port = lo + ((start + step) % span)
         if is_free(port):
             return port
     raise RuntimeError(
-        f"no free port in the AUX band [{lo}, {hi}) for worker slot {slot}")
+        f"no free port in the AUX band [{lo}, {hi}) for slot {slot} of worker "
+        f"{worker_slot(worker_id)}")
 
 
 class Cluster:
@@ -781,8 +815,8 @@ def make_cluster(pg_config, worker_id):
     inside `stop()`; failing to stop it must not mask the original error, so the
     cleanup is itself guarded.
     """
-    slot = 0 if worker_id in (None, "master") else int(str(worker_id).lstrip("gw") or 0)
-    port = pick_port(slot)
+    slot = worker_slot(worker_id)
+    port = pick_port(0, worker_id=worker_id)
     root = pathlib.Path(tempfile.mkdtemp(prefix=f"pgc-pytest-{slot}-"))
     cluster = None
     try:

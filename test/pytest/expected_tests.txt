@@ -326,7 +326,11 @@
 # which needs no cluster: 3 tests, by collection over NO_CLUSTER.
 # guard_tests 804 -> 806 for #1613's test_a_refused_comparison_is_counted_and_named in
 # test_check_records.py, serial and xdist, by collection over NO_CLUSTER.
-guard_tests 839
+# guard_tests 839 -> 840 for #1742's test_two_workers_taking_a_fixture_port_do_not_collide in
+# test_runshape.py, by collection over NO_CLUSTER.
+# guard_tests 840 -> 842 for #1749's review: every literal fixture slot fits a worker's block,
+# and the corpus's highest slot gets a port, in test_runshape.py, by collection over NO_CLUSTER.
+guard_tests 842
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

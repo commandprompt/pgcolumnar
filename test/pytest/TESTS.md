@@ -1694,6 +1694,20 @@ This closes the part of `guard-as-teardown-fixture-still-reports-passed`
 close the family: a guard anyone adds later in a teardown is still a guard that cannot
 fail its test, and nothing refuses that shape in general.
 
+### Two workers must not get one fixture port
+
+A twin that starts its own S3 or HTTP fixture server takes the port from
+`pick_port(slot)` in a module fixture. Under `-n`, a module's tests are split across
+workers, so every worker runs that fixture. When the port depended on the slot only,
+two workers probed the same free port and the second bind failed with `Address
+already in use` (#1742). CI runs the cluster files serially, so only `-n` runs met it.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_two_workers_taking_a_fixture_port_do_not_collide` | an inner `-n 2` run where each worker takes `pick_port(27)`, waits for the other, then binds it: two workers, two ports, inner run green | with the port independent of the worker (main before #1742), both workers get one port and the second bind fails |
+| `test_every_literal_fixture_slot_fits_a_workers_block` | every literal `pick_port(<n>)` in the corpus fits a worker's block of WORKER_STRIDE ports, naming any file that asks for more |
+| `test_the_highest_slot_in_the_corpus_gets_a_port` | the corpus's highest slot gets a port inside the AUX band, so the stride and the corpus cannot drift apart |
+
 ## 11. test_zonemap_boundaries.py: exact boundaries
 
 ### `test_exact_zonemap_boundaries`
