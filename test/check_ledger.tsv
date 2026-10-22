@@ -4008,6 +4008,19 @@ native_fetch_sort_context	native_fetch_sort_context	premise: the columnar side i
 native_fetch_sort_context	native_fetch_sort_context	three-key merge cond with a filter (#720)	15;16;17;18;19	2026-10-22	columnar_tableam.c: the deferred decode builds its needed-column set in the caller's context and bms_free's it there (#720 reverted, first half)
 native_fetch_sort_context	native_fetch_sort_context	two-key merge join count is right (#720)	15;16;17;18;19	2026-10-22	columnar_tableam.c: the deferred decode builds its needed-column set in the caller's context and bms_free's it there (#720 reverted, first half)
 native_fetch_sort_context	native_fetch_sort_context	two-key merge join sum(id) is right (#720)	15;16;17;18;19	2026-10-22	columnar_tableam.c: the deferred decode builds its needed-column set in the caller's context and bms_free's it there (#720 reverted, first half)
+native_fold_deferral	native_fold_deferral	EXPLAIN group total == stats() group count	15;16;17;18;19	2026-10-22	columnar_vector.c: the fold counts each group twice in its total
+native_fold_deferral	native_fold_deferral	adaptive: eager groups load more than survivors alone (work measured, not assumed)	15;16;17;18;19	never	-
+native_fold_deferral	native_fold_deferral	adaptive: only the optimistic first group deferred at 99% survival	15;16;17;18;19	2026-10-22	columnar_vector.c: the fold never defers, so the payload is always loaded eagerly
+native_fold_deferral	native_fold_deferral	deferred fold == heap mirror (selective)	15;16;17;18;19	2026-10-22	columnar_vector.c: a deferred group's first survivor is never folded
+native_fold_deferral	native_fold_deferral	deferred fold == row path (selective)	15;16;17;18;19	2026-10-22	columnar_vector.c: a deferred group's first survivor is never folded
+native_fold_deferral	native_fold_deferral	deferred: every group deferred at 1% survival	15;16;17;18;19	2026-10-22	columnar_vector.c: the fold never defers, so the payload is always loaded eagerly
+native_fold_deferral	native_fold_deferral	deferred: loads == survivors x payload width (the identity)	15;16;17;18;19	2026-10-22	columnar_vector.c: a deferred group's first survivor is never folded
+native_fold_deferral	native_fold_deferral	fold == heap mirror (high survival)	15;16;17;18;19	2026-10-22	columnar_vector.c: a deferred group's first survivor is never folded
+native_fold_deferral	native_fold_deferral	premise: the predicate has survivors (the identity is not 0 == 0)	15;16;17;18;19	never	-
+native_fold_deferral	native_fold_deferral	premise: the selective predicate is genuinely selective (<= 2%)	15;16;17;18;19	never	-
+native_fold_deferral	native_fold_deferral	the fixture spans several groups	15;16;17;18;19	2026-10-22	columnar_write_state.c: the writer ignores a table's stripe_row_limit
+native_fold_deferral	native_fold_deferral	the loads counter exists under ANALYZE	15;16;17;18;19	never	-
+native_fold_deferral	native_fold_deferral	the selective query takes the fold (ANALYZE, post-#602)	15;16;17;18;19	2026-10-22	columnar_vector.c: the Columnar Batch Fold ANALYZE line reports no
 native_fold_skipguard	native_fold_skipguard	and reports the 58 it skipped, on its own plan (#542)	15;16;17;18;19	2026-10-22	columnar_reader.c: the fold path stops counting the vectors decode skipped (#542 regression)
 native_fold_skipguard	native_fold_skipguard	and the scalar arm agrees	15;16;17;18;19	never	-
 native_fold_skipguard	native_fold_skipguard	so decoded plus skipped is the group's vectors, on the FOLD arm	15;16;17;18;19	2026-10-22	columnar_reader.c: the fold path stops counting the vectors decode skipped (#542 regression)
