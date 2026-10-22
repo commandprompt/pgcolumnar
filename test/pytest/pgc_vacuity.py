@@ -973,7 +973,12 @@ class Expect:
                 f"{name}: outcomes() with no expectation asserts nothing."
             )
         self._record(name)
-        result.assert_outcomes(**want)
+        # pytest's own failure is a bare dict comparison; name the check, or a red
+        # outcomes() is the one assertion in the corpus that does not say what failed.
+        try:
+            result.assert_outcomes(**want)
+        except AssertionError as exc:
+            raise AssertionError(f"{name}: {exc}") from None
 
     @_resolving
     def run_failed(self, result, name):

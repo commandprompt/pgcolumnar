@@ -843,7 +843,9 @@ def _hand_rolled_inequalities(source, filename="<probe>"):
                          and isinstance(target.value, ast.Name)
                          and target.value.id in ("expect", "e"))
             if is_expect:
-                for arg in node.args:
+                # Keyword values too (#1339 :837): `expect.num(got=int(a != b), ...)`
+                # is the same collapse, and reading only positional arguments missed it.
+                for arg in list(node.args) + [k.value for k in node.keywords]:
                     if (isinstance(arg, ast.Call)
                             and isinstance(arg.func, ast.Name)
                             and arg.func.id == "int"
@@ -869,6 +871,12 @@ def test_the_inequality_scan_finds_a_planted_offence(expect):
         "def test_y(expect):\n"
         "    expect.at_least(int(a != b), 1, 'moved')\n")), 1,
         "and finds it through at_least too")
+    # PASSED BY KEYWORD (#1339 :837). The scan read positional arguments only, so
+    # `got=int(a != b)` was invisible to it and to the population arm below.
+    expect.num(len(_hand_rolled_inequalities(
+        "def test_k(expect):\n"
+        "    expect.num(got=int(a != b), want=1, name='moved')\n")), 1,
+        "and finds it when passed by keyword")
     # THE INVERTED SPELLING, which is the one the manual count missed. The third site
     # wrote `int(stated == disk) == 0` -- the same assertion with the comparison
     # flipped -- so a scan that looked only for `!=` would have left it in place and
@@ -1019,7 +1027,7 @@ def test_a_conftest_cannot_switch_off_the_order_collapse_scan(pytester, expect):
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.run_failed(plain, "premise: the collapse is refused when nobody rebinds")
+    expect.run_failed(plain, "the collapse is refused when nobody rebinds")
     plain.stderr.fnmatch_lines(["*order-killed*"])
 
     pytester.makeconftest(_rebind("_sorted_ordered_sites"))
@@ -1043,7 +1051,7 @@ def test_a_conftest_cannot_switch_off_the_broad_except_scan(pytester, expect):
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.run_failed(plain, "premise: the broad except is refused")
+    expect.run_failed(plain, "the broad except is refused")
     plain.stderr.fnmatch_lines(["*catches Exception broadly*"])
 
     pytester.makeconftest(_rebind("_broad_except_sites"))
@@ -1073,7 +1081,7 @@ def test_a_conftest_cannot_switch_off_the_raises_scan(pytester, expect):
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.run_failed(plain, "premise: an unpinned compound raises block is refused")
+    expect.run_failed(plain, "an unpinned compound raises block is refused")
     plain.stderr.fnmatch_lines(["*not pinned*"])
 
     pytester.makeconftest(_rebind("_raises_sites"))
@@ -1104,7 +1112,7 @@ def test_a_conftest_cannot_stub_an_expect_method_so_a_false_claim_passes(pyteste
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.outcomes(plain, "premise: a false claim fails when nobody stubs",
+    expect.outcomes(plain, "a false claim fails when nobody stubs",
                     failed=1, passed=0)
 
     import pgc_vacuity
@@ -1172,7 +1180,7 @@ def test_the_refusal_names_the_binding_that_changed(pytester, expect):
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.outcomes(plain, "premise: an honest test passes", passed=1, failed=0)
+    expect.outcomes(plain, "an honest test passes", passed=1, failed=0)
 
     pytester.makeconftest(_rebind("_broad_except_sites"))
     hatched = pytester.runpytest("-p", "pgc_vacuity")
