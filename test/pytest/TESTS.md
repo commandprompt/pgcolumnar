@@ -311,6 +311,7 @@ behaviour, the source of that number is named.
 - [263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics](#263-test_parquet_export_statspy-the-parquet-files-we-export-carry-correct-per-row-group-statistics)
 - [264. test_catalog_filter_reads.py: stats() and sort_status() read a table's storage id once](#264-test_catalog_filter_readspy-stats-and-sort_status-read-a-tables-storage-id-once)
 - [265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging](#265-test_iceberg_malformedpy-the-iceberg-reader-refuses-crafted-metadata-cleanly-never-crashing-or-hanging)
+- [266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping](#266-test_iceberg_name_mappingpy-an-iceberg-data-file-with-no-field-ids-binds-by-name-mapping)
 
 ## 1. How to read a test in here
 
@@ -10329,3 +10330,36 @@ One module fixture copies the fixtures into `server_dir`, builds the FIFOs there
 | `test_a_resolvable_current_schema_id_reads_amount` | control: a resolvable current-schema-id reads the correct amount column |
 | `test_a_legacy_only_schema_table_still_reads` | control: a legacy-only-schema table still reads (5 rows) |
 | `test_the_legacy_table_binds_amount` | control: the legacy table binds amount correctly (10..50) |
+
+## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping
+
+The twin of `test/iceberg_name_mapping.sh` (#388). An id-less data file (an imported dataset) is read by binding its columns by name through `schema.name-mapping.default`: every row against the fixture's own rows, a renamed schema column, an alias, projection, refusals (no mapping, a duplicate name, a field id beyond int32, one name over the cap) by SQLSTATE, null-fill for unmapped and later-added columns, and the cap's opening allocation by a source read with comments blanked out.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value from a module fixture on a private database. A refusal reads as its SQLSTATE. A survival check also wants the server log's count of killed backends unchanged since its section began, and waits out crash recovery before the next section reads.
+
+| test | what it holds |
+| --- | --- |
+| `test_name_mapping_data_file_carries_no_field_ids` | premise: the data file carries no field ids |
+| `test_name_mapping_reads_an_id_less_file` | an id-less data file reads by name mapping (all 5 rows) |
+| `test_name_mapping_values_are_correct` | the mapped values are correct |
+| `test_name_mapping_renamed_schema_column` | a renamed schema column still reads via the mapping name |
+| `test_name_mapping_alias_resolves` | an alias name in the mapping resolves the file column |
+| `test_name_mapping_under_projection` | name mapping applies under column projection (id, amount) |
+| `test_name_mapping_backend_up_after_reads` | backend still up after the name-mapping reads |
+| `test_name_mapping_no_mapping_is_refused` | an id-less file with no name mapping is refused (22023) |
+| `test_name_mapping_refusal_names_the_property` | ...and the refusal names schema.name-mapping.default |
+| `test_name_mapping_duplicate_name_is_refused` | a duplicate name in the mapping is refused (XX001) |
+| `test_name_mapping_big_field_id_is_refused` | a mapping field-id beyond int32 is refused (XX001) |
+| `test_name_mapping_backend_up_after_refusals` | backend still up after the name-mapping refusals |
+| `test_name_mapping_unmapped_column_reads_null` | a projected column absent from the mapping reads null, not an error |
+| `test_name_mapping_unmapped_null_mapped_real` | the unmapped column is null and the mapped columns are real |
+| `test_name_mapping_added_column_reads_null` | a column added after the file was written reads null (schema evolution) |
+| `test_name_mapping_evolved_columns_are_real` | ...and its other columns still carry real data |
+| `test_name_mapping_backend_up_after_null_fill` | backend still up after the null-fill reads |
+| `test_name_mapping_at_the_cap_is_accepted` | a mapping with exactly the cap in names is accepted |
+| `test_name_mapping_over_the_cap_is_refused` | one name over the cap is refused |
+| `test_name_mapping_cap_refusal_names_the_cap` | ...and the refusal names the cap |
+| `test_name_mapping_opening_capacity_is_bounded` | the opening capacity is bounded by the cap, not by the declared count |
+| `test_name_mapping_backend_up_after_cap` | backend still up after the cap reads |

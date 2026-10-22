@@ -1030,6 +1030,8 @@ guard_tests 476
 # 162 tests, one per check, by collection over the cluster files.
 # cluster_tests 2677 -> 2710 for #1341's test_iceberg_malformed.py, the twin of iceberg_malformed.sh:
 # 31 checks in 33 tests, by collection over the cluster files.
+# cluster_tests 2710 -> 2732 for #1341's test_iceberg_name_mapping.py, the twin of iceberg_name_mapping.sh:
+# 22 checks in 22 tests, by collection over the cluster files.
 # cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
 # 7 tests, one per check, by collection over the cluster files.
-cluster_tests 2710
+cluster_tests 2732
