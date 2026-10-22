@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 47
+suites_not_covered 46
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6544,4 +6544,22 @@ suites_not_covered 47
 #     never         4310 + 10 = 4320
 #     dated         3170 + 10 = 3180
 #     4320 + 3180 == 7500
-checks_never_observed_red 4320
+#
+# #1341, native_read_parquet seeded, with its twin (OffgridwithJD): 4320 -> 4324,
+# and suites_not_covered 47 -> 46. The suite had no rows. It enters with 15 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The round trips compared read_parquet with the source table, which the columnar scan
+# reads both to write the file and as the oracle: with the writer storing int4 777 as 778,
+# main passed 12/12. Every round trip now hashes the generator's own rows. The refusals
+# counted any psql failure: with the scalar physical-type guard removed, main passed
+# 12/12; each refusal now requires its SQLSTATE and its own message, and a survival check
+# reads the crash count. read_parquet's own pg_read_server_files gate was never tested:
+# with it removed, main passed 12/12; a role holding USAGE but not the role is now refused
+# by it, beside a member that reads every row. 11 are dated by five mutations, each
+# reddening the same names in both twins. 4 arrive never.
+#
+#     ledger rows   7500 + 15 = 7515
+#     never         4320 + 4 = 4324
+#     dated         3180 + 11 = 3191
+#     4324 + 3191 == 7515
+checks_never_observed_red 4324

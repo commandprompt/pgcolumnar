@@ -368,6 +368,7 @@ behaviour, the source of that number is named.
 - [320. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time](#320-test_native_parquet_streamingpy-external-parquet-reads-stream-an-oversized-file-describes-itself-crafted-pages-are-refused-the-fdw-decodes-one-row-group-at-a-time)
 - [321. test_native_parquet_partition.py: Hive-style partition columns materialize and prune whole files, and a tree that does not match fails loudly](#321-test_native_parquet_partitionpy-hive-style-partition-columns-materialize-and-prune-whole-files-and-a-tree-that-does-not-match-fails-loudly)
 - [322. test_native_parquet_fdw.py: the Parquet FDW reads an exported file as a foreign table, prunes what it can, and refuses each misuse by its own guard](#322-test_native_parquet_fdwpy-the-parquet-fdw-reads-an-exported-file-as-a-foreign-table-prunes-what-it-can-and-refuses-each-misuse-by-its-own-guard)
+- [323. test_native_read_parquet.py: read_parquet returns the rows that were written, refuses what it must, and keeps its file gate](#323-test_native_read_parquetpy-read_parquet-returns-the-rows-that-were-written-refuses-what-it-must-and-keeps-its-file-gate)
 
 ## 1. How to read a test in here
 
@@ -12170,3 +12171,29 @@ Every test makes one check under the shell's name, on a private database with it
 | `test_a_scan_of_a_non_parquet_file_errors` | scan of non-parquet file errors (XX001) |
 | `test_a_scan_with_an_incompatible_declared_type_errors` | scan with incompatible declared type errors (42804) |
 | `test_the_backend_is_still_up_after_the_fdw_refusals` | backend still up after the refusals |
+
+## 323. test_native_read_parquet.py: read_parquet returns the rows that were written, refuses what it must, and keeps its file gate
+
+The twin of `test/native_read_parquet.sh`. A columnar table of eleven scalar types (with an all-NULL row) and one of int[], text[] and a composite are exported; read_parquet reads each file back as the generator's rows, a projection keeps its column, and import_parquet of the same file agrees. A missing column list, too few columns, an incompatible type and a non-Parquet file are each refused with their own SQLSTATE and message; a role without pg_read_server_files is refused by read_parquet's own gate, and a member reads every row.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Every reading waits for the server first and returns a failure as a `query_error()`, so a crash fails only its own reading and the survival check, and two failed reads never agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_read_parquet_fixture_exports_every_scalar_row` | scalar export rows |
+| `test_read_parquet_returns_the_generated_scalar_rows` | scalar round-trip: read_parquet == the generated rows |
+| `test_read_parquet_counts_every_scalar_row` | scalar read_parquet row count |
+| `test_a_projected_column_round_trips` | projected column round-trips |
+| `test_read_parquet_fixture_exports_every_nested_row` | nested export rows |
+| `test_read_parquet_returns_the_generated_nested_rows` | nested round-trip: read_parquet == the generated rows |
+| `test_a_missing_column_definition_list_is_refused` | reject missing column definition list |
+| `test_fewer_declared_columns_than_the_file_is_refused` | reject fewer columns than file |
+| `test_an_incompatible_declared_type_is_refused` | reject incompatible declared type |
+| `test_a_file_that_is_not_parquet_is_refused` | reject non-parquet file |
+| `test_read_parquet_keeps_its_own_file_gate` | a role without pg_read_server_files is refused by read_parquet's own gate |
+| `test_a_pg_read_server_files_member_reads_every_row` | and a member of pg_read_server_files reads every row |
+| `test_the_backend_is_still_up_after_the_read_parquet_refusals` | backend still up after the refusals |
+| `test_import_parquet_loads_every_row` | import parity rows |
+| `test_read_parquet_agrees_with_import_parquet` | read_parquet == import_parquet |
