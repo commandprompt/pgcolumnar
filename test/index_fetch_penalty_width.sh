@@ -88,10 +88,12 @@ check "premise: both prefixes decode well under the fetch cache cap, so the over
 	   || echo "OVER (n=$(( ${WN:-0} * R )) w=$(( ${WW:-0} * R )) cap=$CAP)")" "under"
 
 # The check below reads a plan flip. If the penalty never moves a plan there is
-# nothing to order and the whole suite would pass vacuously.
+# nothing to order and the whole suite would pass vacuously. NOT A PREMISE (#1339):
+# it reads pgcolumnar's own costing, so the penalty switched off in the source
+# reddens it.
 PEN_ON="$(plan_of "SET pgcolumnar.enable_index_fetch_penalty=on;  EXPLAIN (COSTS OFF) SELECT c1,c2 FROM ifw_w WHERE scat BETWEEN 1 AND 400")"
 PEN_OFF="$(plan_of "SET pgcolumnar.enable_index_fetch_penalty=off; EXPLAIN (COSTS OFF) SELECT c1,c2 FROM ifw_w WHERE scat BETWEEN 1 AND 400")"
-check "premise: the penalty is what moves this plan (index without it, not with it)" \
+check "the penalty is what moves this plan (index without it, not with it)" \
 	"$(grep -q 'Index Scan' <<<"$PEN_OFF" && ! grep -q 'Index Scan' <<<"$PEN_ON" && echo yes \
 	   || echo "no (off=$(grep -m1 -oE 'Index Scan|Custom Scan' <<<"$PEN_OFF") on=$(grep -m1 -oE 'Index Scan|Custom Scan' <<<"$PEN_ON"))")" "yes"
 
@@ -100,7 +102,10 @@ check "premise: the penalty is what moves this plan (index without it, not with 
 # fetch. Ladder rather than a bisection so a failure prints where it turned over.
 flip_rows() {
 	local t="$1" k last=0
-	for k in 20 40 60 80 100 150 200 300 400 600 900; do
+	# FOUR RUNGS BELOW 20, as the twin's (#1339): the wide table flips between 5 and 7
+	# rows, so a ladder starting at 20 read FW = 0 and the ordering arm passed for
+	# the wrong reason. Measured, penalty on: ifw_w fetches by index at 1, 2, 5, 10.
+	for k in 1 2 5 10 20 40 60 80 100 150 200 300 400 600 900; do
 		if grep -q 'Index Scan' <<<"$(plan_of "SET pgcolumnar.enable_index_fetch_penalty=on;
 			EXPLAIN (COSTS OFF) SELECT c1,c2 FROM $t WHERE scat BETWEEN 1 AND $k")"; then
 			last="$(q1 "SELECT count(*) FROM $t WHERE scat BETWEEN 1 AND $k")"
@@ -114,8 +119,13 @@ FN="$(flip_rows ifw_n)"
 FW="$(flip_rows ifw_w)"
 echo "-- last row count still fetched by index:  narrow prefix ${WN}B = $FN rows,  wide prefix ${WW}B = $FW rows"
 
-check "premise: the narrow table does fetch by index somewhere on the ladder" \
+# NOT PREMISES (#1339): both read pgcolumnar's costing. And BOTH SIDES, as the twin
+# has them: "wide <= narrow" holds for a wide count of 0, which an over-charged width
+# weight produces as surely as the #803 under-charge it guards against.
+check "the narrow table does fetch by index somewhere on the ladder" \
 	"$([ "${FN:-0}" -gt 0 ] && echo yes || echo "no -- nothing to order")" "yes"
+check "and the wide table fetches by index somewhere on it too" \
+	"$([ "${FW:-0}" -gt 0 ] && echo yes || echo "no -- the wide table never fetches by index")" "yes"
 
 # A wider decoded prefix makes every row-group decode dearer, so the wide table must
 # abandon per-row fetches no later than the narrow one. Priced by column COUNT the two

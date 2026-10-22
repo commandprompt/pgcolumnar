@@ -24,6 +24,7 @@ Independent of `test/format_downgrade.sh`: its own tables, row counts and keys, 
 it restores the prefix by snapshot where the shell suite reinstalls.
 """
 
+import hashlib
 import os
 import pathlib
 import shutil
@@ -211,7 +212,16 @@ def test_an_alpha4_binary_refuses_what_this_build_wrote(pgc_cluster, expect):
             got = c.execute("SELECT count(*), sum(k) FROM kept").fetchone()
         expect.text(f"{got[0]}|{got[1]}", f"{ROWS}|{FULL_SUM}",
                     "the old build still reads a table this build only read")
-        expect.text(fetch("kept"), "ok", "and fetches from it by index")
+        # THE VALUE, NOT ONLY "IT RAN" (#1339). The defect #1137 measured was a fetch
+        # that SUCCEEDS and returns NULL for a row holding a value, so reading only the
+        # SQLSTATE passed it. Compared with the generator, not with a read.
+        with psycopg.connect(dsn, autocommit=True) as c:
+            for st in ("SET pgcolumnar.enable_custom_scan = off", "SET enable_seqscan = off",
+                       "SET enable_bitmapscan = off"):
+                c.execute(st)
+            row = c.execute("SELECT coalesce(body, '<NULL>') FROM kept WHERE k = 777").fetchone()
+        expect.text(row[0] if row else "no row", hashlib.md5(b"2331").hexdigest() * 5,
+                    "and fetches from it by index")
         expect.text(_sqlstate(dsn, ["SELECT count(body) FROM grown"]), "0A000",
                     "the old build refuses a table this build appended to, on a scan")
         expect.text(fetch("grown"), "0A000", "the old build refuses a table this build appended to, on an index fetch")

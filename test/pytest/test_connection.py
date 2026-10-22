@@ -46,6 +46,15 @@ def test_the_extension_is_installed_and_columnar(pgc_conn, expect):
         row = cur.fetchone()
     expect.rows([row[0]] if row else [], [want],
                 f"the loaded extension is this tree's {want}")
+    # AND COLUMNAR (#1339): the name says so, and the version alone does not. A table
+    # created USING pgcolumnar must carry that access method.
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE amprobe (id int) USING pgcolumnar")
+        cur.execute("SELECT a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam "
+                    "WHERE c.oid = 'amprobe'::regclass")
+        am = cur.fetchone()
+    expect.text(am[0] if am else "no access method", "pgcolumnar",
+                "and a table created USING pgcolumnar is a columnar table")
 
 
 def test_a_columnar_table_round_trips_with_real_types(pgc_conn, expect):
@@ -108,8 +117,10 @@ def test_the_provider_name_does_not_identify_a_scan(pgc_conn, expect):
 
     # The premise: the vectorized aggregate must actually have engaged, or the rest
     # of this test is about an ordinary plan and proves nothing.
+    # Not a premise (#1339): pgcolumnar's planner engages it, and a source change that
+    # stops it planning the ungrouped aggregate reddens this.
     expect.plan_marker(plan, "Columnar Vectorized Aggregates",
-                       name="premise: the vector aggregate engaged")
+                       name="the vector aggregate engaged")
     # The provider still matches, which is the trap.
     expect.plan_node(plan, provider="PgColumnarScan",
                      name="the provider matches even with no scan node")
@@ -125,7 +136,15 @@ def test_each_test_gets_its_own_schema(pgc_conn, expect):
         path = cur.fetchone()[0]
         cur.execute("SELECT current_schema()")
         schema = cur.fetchone()[0]
-    expect.text(schema.startswith("pgc_test_"), True, "the schema is test-private")
+    # PRIVATE MEANS NOTHING OF ANOTHER TEST'S IS THERE (#1339). The name prefix alone held
+    # for one schema every test shared, and the tests above this one create t and vp.
+    with pgc_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pg_class c JOIN pg_namespace n "
+                    "ON n.oid = c.relnamespace WHERE n.nspname = current_schema()")
+        others = cur.fetchone()[0]
+    expect.text("pgc_test_ and empty" if schema.startswith("pgc_test_") and others == 0
+                else f"{schema} holding {others} relations", "pgc_test_ and empty",
+                "the schema is test-private")
     expect.text(path.split(",")[0].strip().startswith("pgc_test_"), True,
                 "and it is first on the search path")
 
@@ -208,6 +227,12 @@ def test_the_worker_owns_its_own_cluster(pgc_cluster, expect):
                     "the invariant the old constant broke")
     expect.text(pgc_cluster.is_ours(), True,
                 "and the server answering there runs from our datadir")
+    # AND THE DATADIR IS THIS WORKER'S (#1339). Ports and is_ours() hold for a cluster
+    # two workers shared; make_cluster roots each worker's tree at pgc-pytest-<slot>-.
+    slot = 0 if wid in (None, "master") else int(str(wid).lstrip("gw") or 0)
+    expect.text("yes" if pgc_cluster.datadir.parent.name.startswith(f"pgc-pytest-{slot}-")
+                else f"no ({pgc_cluster.datadir})", "yes",
+                f"and its data directory was made for worker {wid}")
 
 
 def test_the_cluster_refuses_a_foreign_server(pgc_cluster, expect):

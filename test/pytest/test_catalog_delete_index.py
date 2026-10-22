@@ -441,8 +441,9 @@ def test_vacuum_reads_less_of_row_group_than_reading_it_whole(pgc_own_db, expect
         cur.execute("INSERT INTO vac_small SELECT g FROM generate_series(1,3000) g")
         cur.execute("DELETE FROM vac_small WHERE k % 3 = 0")
 
-        cur.execute("SELECT count(*) FROM vac_small")
-        expect.at_least(cur.fetchone()[0], 1, "premise: the vacuumed table holds rows")
+        # NO "the vacuumed table holds rows" premise (#1339). It had no shell twin, and it
+        # read a columnar count under a premise label. That the vacuum had work to do is
+        # "premise: the vacuum walked this table's groups" below, which both twins hold.
         cur.execute(
             "SELECT pg_relation_size('pgcolumnar.row_group') / 8192"
         )

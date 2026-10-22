@@ -6790,4 +6790,21 @@ suites_not_covered 34
 #     never         4477 + 2 = 4479
 #     dated         3247 + 10 = 3257
 #     4479 + 3257 == 7736
-checks_never_observed_red 4479
+# #1339, index_fetch_penalty_crossover's estimate and index path, and index_am_support's
+# rows and plan (OffgridwithJD): 4479 -> 4483.
+# "premise: the 50000-row estimate is exact" read the planner's estimate, which comes
+# from pgcolumnar's ANALYZE sample: with that sample's first int4 column halved, it
+# went red. It loses the prefix and is dated by that mutation. "both paths return the
+# same aggregate" now checks both sums against the generator, and a new check says the
+# forced path really fetched by index: with the index path left unforced, main passed
+# 7/7 and this branch reds that check (a harness mutation, so it arrives never).
+# index_am_support compared counts: with an index fetch returning the next row, main
+# passed btree, gist and spgist. It now compares md5 of the ids, and four checks say
+# each method answered through its own index (never: no product mutation moves a plan
+# off the index under these settings).
+#
+#     ledger rows   7736 + 5 = 7741
+#     never         4479 + 4 = 4483
+#     dated         3257 + 1 = 3258
+#     4483 + 3258 == 7741
+checks_never_observed_red 4483
