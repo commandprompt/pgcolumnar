@@ -44,7 +44,6 @@ objstore_s3_read
 objstore_sink_write
 objstore_stash_recovery
 objstore_tls_read
-parallel_export_parquet
 parquet_export
 phase2
 phase3

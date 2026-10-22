@@ -10,8 +10,9 @@
 # (one file per partition), across 1/2/4 workers; that each worker wrote its own
 # file and the files partition the source; empty input; and the error cases.
 #
-# Oracle = pgc_set_hash, which is order-independent, so file and row ordering do
-# not matter. The read-back uses pgcolumnar.read_parquet, so no pyarrow.
+# Oracle = pgc_set_hash over the generator that fills each table, never over the
+# table being exported. It is order-independent, so file and row ordering do not
+# matter. The read-back uses pgcolumnar.read_parquet, so no pyarrow.
 #
 # Usage:  test/parallel_export_parquet.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -33,17 +34,48 @@ nfiles() { ls "$1"/*.parquet 2>/dev/null | wc -l | tr -d ' '; }
 # and renames at completion, so *.parquet appears only when a part is DONE.
 anyfiles() { find "$1" -type f 2>/dev/null | wc -l | tr -d ' '; }
 
-# run a query, echo stdout+stderr (capture-then-grep, so pipefail cannot hide it)
-err_of() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -Atc "$1" 2>&1 || true
+# THE BACKEND MUST NOT HAVE DIED, not merely answer now. `SELECT 1` answers again
+# after crash recovery, so "still up" also requires the server log's count of
+# backends killed by a signal not to have moved since setup. Measured: with one
+# backend killed by SIGSEGV before the last check, the old `SELECT 1` check passed.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
+CRASHES_AT_START="$(crashes)"
+
+# refusal_of SQL PATTERN -> "refused" when the statement failed with an ERROR whose
+# message matches PATTERN, and what happened instead otherwise. It reads psql's exit
+# status: grepping the output for "error" also matched a dead server's
+# "psql: error: connection ... failed", so both refusals passed with the server gone,
+# and any error at all stood for the refusal named.
+refusal_of() {
+	local out rc
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -Atc "$1" 2>&1)"
+	rc=$?
+	if [ "$rc" -eq 0 ]; then echo "accepted"
+	elif [ "$rc" -ne 1 ]; then echo "no reading (psql exit $rc: $(head -1 <<<"$out"))"
+	elif grep -qE "^ERROR: .*$2" <<<"$out"; then echo "refused"
+	else echo "another error: $(grep -m1 '^ERROR:' <<<"$out")"; fi
 }
 
-expect_error() {
-	local label="$1" sql="$2" out
-	out="$(err_of "$sql")"
-	check "$label" "$(grep -qi "ERROR" <<<"$out" && echo error || echo ok)" error
-}
+# ---- the oracles: the generator, not the table under test -------------------
+# Every source hash and count below is computed from the generator that fills the
+# table, never read back from the columnar table being exported. Measured: with
+# tuple_insert dropping the row whose id is 1, the table, its serial export and
+# every parallel export agreed with each other, and all 54 checks passed.
+GEN_COL="SELECT g, g%1000, g::float8/7, 'r'||g FROM generate_series(1,80000) g"
+GEN_PART="SELECT g, g%600, g::float8/7, 'r'||g FROM generate_series(1,80000) g"
+GEN_TX_COMMITTED="SELECT g, g, g::float8/7, 'c'||g FROM generate_series(1,20000) g"
 
 # ---- single columnar table: split by row-group ranges -----------------------
 # A small stripe_row_limit gives many row groups (80000/5000 = 16), so W up to 4
@@ -51,10 +83,9 @@ expect_error() {
 psql_run "DROP TABLE IF EXISTS t_col;
           CREATE TABLE t_col ($COLS) USING pgcolumnar;
           SELECT pgcolumnar.set_options('t_col'::regclass, stripe_row_limit => 5000);
-          INSERT INTO t_col SELECT g, g%1000, g::float8/7, 'r'||g
-                            FROM generate_series(1,80000) g;" >/dev/null
-SRC="$(pgc_set_hash "SELECT * FROM t_col")"
-NSRC="$(q "SELECT count(*) FROM t_col")"
+          INSERT INTO t_col $GEN_COL;" >/dev/null
+SRC="$(pgc_set_hash "$GEN_COL")"
+NSRC=80000
 
 # serial export is a second oracle
 SER="$PGC_WORKDIR/serial.parquet"
@@ -62,22 +93,43 @@ q "SELECT pgcolumnar.export_parquet('t_col'::regclass, '$SER')" >/dev/null
 SER_HASH="$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$SER') AS t($RB)")"
 check "serial export read-back == source" "$SER_HASH" "$SRC"
 
-for W in 1 2 4; do
-	D="$PGC_WORKDIR/st_$W"
-	n="$(q "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$D', $W)")"
-	check "single($W): rows returned == source count" "$n" "$NSRC"
-	rb="$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$D') AS t($RB)")"
-	check "single($W): read-back == source" "$rb" "$SRC"
-	check "single($W): read-back == serial export" "$rb" "$SER_HASH"
-	check "single($W): wrote exactly $W files (distinct per worker)" "$(nfiles "$D")" "$W"
-	# #394: a completed export writes a _SUCCESS marker. nfiles==W above already
+# export_single W: export t_col with W workers and take every reading. The checks
+# are written out per W below, so every check name is literal.
+export_single() {
+	local d="$PGC_WORKDIR/st_$1"
+	ES_N="$(q "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$d', $1)")"
+	ES_RB="$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$d') AS t($RB)")"
+	ES_FILES="$(nfiles "$d")"
+	# #394: a completed export writes a _SUCCESS marker. The file count already
 	# proves it is not counted as a part, and read-back==source proves read_parquet
 	# ignores it; here assert it is present and empty.
-	check "single($W): a _SUCCESS completion marker is written" \
-		"$([ -f "$D/_SUCCESS" ] && echo yes || echo no)" yes
-	check "single($W): the _SUCCESS marker is empty" \
-		"$([ -f "$D/_SUCCESS" ] && [ ! -s "$D/_SUCCESS" ] && echo empty || echo no)" empty
-done
+	ES_SUCCESS="$([ -f "$d/_SUCCESS" ] && echo yes || echo no)"
+	ES_SUCCESS_EMPTY="$([ -f "$d/_SUCCESS" ] && [ ! -s "$d/_SUCCESS" ] && echo empty || echo no)"
+}
+
+export_single 1
+check_num "single(1): rows returned == source count" "$ES_N" "$NSRC"
+check "single(1): read-back == source" "$ES_RB" "$SRC"
+check "single(1): read-back == serial export" "$ES_RB" "$SER_HASH"
+check_num "single(1): wrote exactly 1 files (distinct per worker)" "$ES_FILES" 1
+check "single(1): a _SUCCESS completion marker is written" "$ES_SUCCESS" yes
+check "single(1): the _SUCCESS marker is empty" "$ES_SUCCESS_EMPTY" empty
+
+export_single 2
+check_num "single(2): rows returned == source count" "$ES_N" "$NSRC"
+check "single(2): read-back == source" "$ES_RB" "$SRC"
+check "single(2): read-back == serial export" "$ES_RB" "$SER_HASH"
+check_num "single(2): wrote exactly 2 files (distinct per worker)" "$ES_FILES" 2
+check "single(2): a _SUCCESS completion marker is written" "$ES_SUCCESS" yes
+check "single(2): the _SUCCESS marker is empty" "$ES_SUCCESS_EMPTY" empty
+
+export_single 4
+check_num "single(4): rows returned == source count" "$ES_N" "$NSRC"
+check "single(4): read-back == source" "$ES_RB" "$SRC"
+check "single(4): read-back == serial export" "$ES_RB" "$SER_HASH"
+check_num "single(4): wrote exactly 4 files (distinct per worker)" "$ES_FILES" 4
+check "single(4): a _SUCCESS completion marker is written" "$ES_SUCCESS" yes
+check "single(4): the _SUCCESS marker is empty" "$ES_SUCCESS_EMPTY" empty
 
 # ---- partitioned columnar table: one file per partition ---------------------
 # k = g%600 -> t_p3 (750..) gets no rows, so one partition is empty.
@@ -87,27 +139,41 @@ psql_run "DROP TABLE IF EXISTS t_part CASCADE;
           CREATE TABLE t_p1 PARTITION OF t_part FOR VALUES FROM (250) TO (500) USING pgcolumnar;
           CREATE TABLE t_p2 PARTITION OF t_part FOR VALUES FROM (500) TO (750) USING pgcolumnar;
           CREATE TABLE t_p3 PARTITION OF t_part FOR VALUES FROM (750) TO (2000) USING pgcolumnar;
-          INSERT INTO t_part SELECT g, g%600, g::float8/7, 'r'||g
-                             FROM generate_series(1,80000) g;" >/dev/null
-PSRC="$(pgc_set_hash "SELECT * FROM t_part")"
-NPART="$(q "SELECT count(*) FROM t_part")"
-for W in 1 2 4; do
-	D="$PGC_WORKDIR/pt_$W"
-	n="$(q "SELECT pgcolumnar.parallel_export_parquet('t_part'::regclass, '$D', $W)")"
-	check "part($W): rows returned == source count" "$n" "$NPART"
-	check "part($W): read-back == source" \
-		"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$D') AS t($RB)")" "$PSRC"
-	check "part($W): one file per partition (4, incl the empty one)" "$(nfiles "$D")" "4"
-done
+          INSERT INTO t_part $GEN_PART;" >/dev/null
+PSRC="$(pgc_set_hash "$GEN_PART")"
+NPART=80000
+
+export_part() {	# export_part W: as export_single, for the partitioned table
+	local d="$PGC_WORKDIR/pt_$1"
+	EP_N="$(q "SELECT pgcolumnar.parallel_export_parquet('t_part'::regclass, '$d', $1)")"
+	EP_RB="$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$d') AS t($RB)")"
+	EP_FILES="$(nfiles "$d")"
+}
+
+export_part 1
+check_num "part(1): rows returned == source count" "$EP_N" "$NPART"
+check "part(1): read-back == source" "$EP_RB" "$PSRC"
+check_num "part(1): one file per partition (4, incl the empty one)" "$EP_FILES" 4
+
+export_part 2
+check_num "part(2): rows returned == source count" "$EP_N" "$NPART"
+check "part(2): read-back == source" "$EP_RB" "$PSRC"
+check_num "part(2): one file per partition (4, incl the empty one)" "$EP_FILES" 4
+
+export_part 4
+check_num "part(4): rows returned == source count" "$EP_N" "$NPART"
+check "part(4): read-back == source" "$EP_RB" "$PSRC"
+check_num "part(4): one file per partition (4, incl the empty one)" "$EP_FILES" 4
 
 # ---- empty input: a valid zero-row file, read-back is the empty set ---------
+# pgc_set_hash returns EMPTY for a genuinely empty result, and a unique
+# QUERY_ERROR.<n> for a failed one.
 psql_run "DROP TABLE IF EXISTS t_empty; CREATE TABLE t_empty ($COLS) USING pgcolumnar;" >/dev/null
 DE="$PGC_WORKDIR/empty"
 ne="$(q "SELECT pgcolumnar.parallel_export_parquet('t_empty'::regclass, '$DE', 2)")"
-check "empty: rows returned == 0" "$ne" 0
+check_num "empty: rows returned == 0" "$ne" 0
 check "empty: read-back is the empty set" \
-	"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$DE') AS t($RB)")" \
-	"$(pgc_set_hash "SELECT * FROM t_empty")"
+	"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$DE') AS t($RB)")" EMPTY
 
 # ---- consistency: export INSIDE a transaction with uncommitted rows ---------
 # All workers import ONE exported snapshot, so the export is the committed image
@@ -117,21 +183,21 @@ check "empty: read-back is the empty set" \
 psql_run "DROP TABLE IF EXISTS t_tx;
           CREATE TABLE t_tx ($COLS) USING pgcolumnar;
           SELECT pgcolumnar.set_options('t_tx'::regclass, stripe_row_limit => 3000);
-          INSERT INTO t_tx SELECT g, g, g::float8/7, 'c'||g FROM generate_series(1,20000) g;" >/dev/null
-NC="$(q "SELECT count(*) FROM t_tx")"		# committed rows
+          INSERT INTO t_tx $GEN_TX_COMMITTED;" >/dev/null
+NC=20000		# committed rows, from the generator
 DTX="$PGC_WORKDIR/tx"
 # one psql session, one transaction: uncommitted INSERT, then export, then commit
 psql_run "BEGIN;
           INSERT INTO t_tx SELECT g, g, g::float8/7, 'u'||g FROM generate_series(100001,100500) g;
           SELECT pgcolumnar.parallel_export_parquet('t_tx'::regclass, '$DTX', 4);
           COMMIT;" >/dev/null
-check "in-txn export: read-back count == committed count (no duplication)" \
+check_num "in-txn export: read-back count == committed count (no duplication)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('$DTX') AS t($RB)")" "$NC"
-check "in-txn export: no duplicate ids in the read-back" \
+check_num "in-txn export: no duplicate ids in the read-back" \
 	"$(q "SELECT count(DISTINCT id) FROM pgcolumnar.read_parquet('$DTX') AS t($RB)")" "$NC"
 check "in-txn export: read-back == committed rows (uncommitted rows absent)" \
 	"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$DTX') AS t($RB)")" \
-	"$(pgc_set_hash "SELECT id,k,v,txt FROM t_tx WHERE txt LIKE 'c%'")"
+	"$(pgc_set_hash "$GEN_TX_COMMITTED")"
 
 # ---- item 2: a cancelled/failed export leaves a clean directory --------------
 # On failure the dispatcher removes the *.parquet it wrote, so read_parquet cannot
@@ -296,12 +362,26 @@ SQLEOF
 )"
 	rc=$?
 	if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then SQLSTATE_LAST=HANG; return; fi
+	# "none" needs psql to have run the statement: a dead server prints
+	# "psql: error: ..." and exits 2, which used to read as "none", so the
+	# accepted-boundary check passed with the server gone.
 	if grep -q '^ERROR:' <<<"$SQLSTATE_LAST_OUT"; then
 		SQLSTATE_LAST="$(printf '%s\n' "$SQLSTATE_LAST_OUT" |
 			sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\):.*/\1/p' | head -1)"
-	else
+	elif [ "$rc" -eq 0 ]; then
 		SQLSTATE_LAST=none
+	else
+		SQLSTATE_LAST="no reading (psql exit $rc: $(head -1 <<<"$SQLSTATE_LAST_OUT"))"
 	fi
+}
+
+# not_created DIR -> "absent" when DIR does not exist AND the statement just run by
+# run_sqlstate reached the server; with the server gone nothing could create DIR,
+# and "absent" was a pass that measured nothing.
+not_created() {
+	if [ -e "$1" ]; then echo created
+	elif [ "$SQLSTATE_LAST" = none ] || [[ "$SQLSTATE_LAST" =~ ^[0-9A-Z]{5}$ ]]; then echo absent
+	else echo "no reading (the statement did not run: $SQLSTATE_LAST)"; fi
 }
 
 # -- accepted boundary: one byte under the limit must still export ------------
@@ -310,7 +390,7 @@ PEXPORT_DIR_OK="$LP_PATH"
 check_num "accepted boundary: the destination is exactly MAXPGPATH-40 bytes" \
 	"${#PEXPORT_DIR_OK}" "$PEXPORT_LEN_OK"
 run_sqlstate "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PEXPORT_DIR_OK', 2)"
-check "accepted boundary: a ${PEXPORT_LEN_OK}-byte destination still exports" "$SQLSTATE_LAST" none
+check "accepted boundary: a 984-byte destination still exports" "$SQLSTATE_LAST" none
 check_num "accepted boundary: it wrote both part files" "$(nfiles "$PEXPORT_DIR_OK")" 2
 check "accepted boundary: it wrote a _SUCCESS marker" \
 	"$([ -f "$PEXPORT_DIR_OK/_SUCCESS" ] && echo yes || echo no)" yes
@@ -321,10 +401,10 @@ PEXPORT_DIR_OVER="$LP_PATH"
 check_num "rejected boundary: the destination is exactly MAXPGPATH-39 bytes" \
 	"${#PEXPORT_DIR_OVER}" "$PEXPORT_LEN_OVER"
 run_sqlstate "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PEXPORT_DIR_OVER', 2)"
-check "rejected boundary: a ${PEXPORT_LEN_OVER}-byte destination raises 54000" \
+check "rejected boundary: a 985-byte destination raises 54000" \
 	"$SQLSTATE_LAST" "$PEXPORT_TOO_LONG_SQLSTATE"
 check "rejected boundary: the destination was not created" \
-	"$([ -e "$PEXPORT_DIR_OVER" ] && echo created || echo absent)" absent
+	"$(not_created "$PEXPORT_DIR_OVER")" absent
 
 # -- the window the part-name-only probe left open ----------------------------
 # dir + 30 overruns the cleanup scan's MAXPGPATH buffer here, while
@@ -334,21 +414,25 @@ PEXPORT_DIR_WINDOW="$LP_PATH"
 check_num "cleanup-scan window: the destination is exactly MAXPGPATH-30 bytes" \
 	"${#PEXPORT_DIR_WINDOW}" "$PEXPORT_LEN_WINDOW"
 run_sqlstate "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PEXPORT_DIR_WINDOW', 2)"
-check "cleanup-scan window: a ${PEXPORT_LEN_WINDOW}-byte destination raises 54000" \
+check "cleanup-scan window: a 994-byte destination raises 54000" \
 	"$SQLSTATE_LAST" "$PEXPORT_TOO_LONG_SQLSTATE"
 check "cleanup-scan window: and it is OUR message, not another 54000" \
 	"$(grep -qi 'destination is too long' <<<"$SQLSTATE_LAST_OUT" && echo ours || echo other)" ours
 check "cleanup-scan window: the destination was not created" \
-	"$([ -e "$PEXPORT_DIR_WINDOW" ] && echo created || echo absent)" absent
+	"$(not_created "$PEXPORT_DIR_WINDOW")" absent
 
 # ---- error cases ------------------------------------------------------------
+# Each refusal is matched by its own message. With the non-columnar branch removed,
+# a heap target still failed, on another error, and the old check passed.
 # st_1 was written above, so it is non-empty
-expect_error "reject a non-empty output directory" \
-	"SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PGC_WORKDIR/st_1', 2)"
+check "reject a non-empty output directory" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '$PGC_WORKDIR/st_1', 2)" \
+		'output directory ".*" is not empty')" refused
 psql_run "DROP TABLE IF EXISTS t_heap2; CREATE TABLE t_heap2 ($COLS);" >/dev/null
-expect_error "reject a non-columnar target" \
-	"SELECT pgcolumnar.parallel_export_parquet('t_heap2'::regclass, '$PGC_WORKDIR/heaptgt', 2)"
+check "reject a non-columnar target" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('t_heap2'::regclass, '$PGC_WORKDIR/heaptgt', 2)" \
+		'is not a columnar table or a partitioned table with columnar partitions')" refused
 
-check "server still up after the exports" "$(q "SELECT 1")" 1
+check "server still up after the exports" "$(survived "$CRASHES_AT_START")" 1
 
 pgc_summary
