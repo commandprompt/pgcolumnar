@@ -6805,7 +6805,7 @@ suites_not_covered 33
 #     dated         3329 + 6 = 3335
 #     4465 + 3335 == 7800
 #
-# #1341, phase4 seeded, with its twin (OffgridwithJD): 4465 -> 4492,
+# #1341, phase4 seeded, with its twin (OffgridwithJD): 4465 -> 4490,
 # and suites_not_covered 34 -> 33. The suite had no rows. It enters with 39 checks
 # from five-major runs (all green on each of 15-19, shell and twin alike), after these fixes.
 # A refusal passed on any failure: a unique check raising XX000 instead of 23505 passed both
@@ -6814,11 +6814,15 @@ suites_not_covered 33
 # enable_seqscan off, so they planned the columnar custom scan and never reached the index
 # fetch: an index fetch handing back the next row's values passed every hash and btree point
 # read (fetchshift, 37/38). They now read under the plan checks' settings, and a new check
-# asserts the delete-vector reads plan a plain index scan. 12 are dated by four mutations,
-# each the same names in both twins. 27 arrive never.
+# asserts the delete-vector reads plan a plain index scan. 14 are dated by five mutations,
+# each the same names in both twins. "uq unchanged" was first dated by bufcrash, but only as
+# a crash's collateral (a read during recovery, jdatcmd's #1723 review); dirtyskip (the index
+# fetch returns nothing to a dirty snapshot, so the unique check never sees the existing
+# row) keeps the server up and reddens it on its own, and dates "uq final count" and "uq2
+# count" too. 25 arrive never.
 #
 #     ledger rows   7800 + 39 = 7839
-#     never         4465 + 27 = 4492
-#     dated         3335 + 12 = 3347
-#     4492 + 3347 == 7839
-checks_never_observed_red 4492
+#     never         4465 + 25 = 4490
+#     dated         3335 + 14 = 3349
+#     4490 + 3349 == 7839
+checks_never_observed_red 4490
