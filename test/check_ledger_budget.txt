@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 63
+suites_not_covered 62
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6234,4 +6234,23 @@ suites_not_covered 63
 #     never         4210 + 2 = 4212
 #     dated         2992 + 10 = 3002
 #     4212 + 3002 == 7214
-checks_never_observed_red 4212
+#
+# #1341, native_param_pushdown seeded, with its twin (OffgridwithJD): 4212 -> 4216, and
+# suites_not_covered 63 -> 62. The suite had no rows. It enters with 10 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# With the PARAM_EXEC guard removed (freezeexec) the correlated arm still answered 3002:
+# Begin freezes before any outer row sets the param, and "ts >= <its initial value>"
+# prunes nothing. The arm now reads the scan's Usable Skip Predicates and asks the upper
+# bound too, where that frozen value prunes every group. Every arm ran one execution per
+# session, so a value frozen once and reused (staleparam) passed; two executions in one
+# session now each count and prune with their own value. And survival was a bare
+# SELECT 1, green on main with a backend SIGKILLed; it now reads the crash count.
+# 6 are dated by four mutations, each reddening the same names in both twins. 4
+# arrive never: the literal count, the rescan premise, the lower-bound correlated answer
+# and survival (red only under the harness kill).
+#
+#     ledger rows   7214 + 10 = 7224
+#     never         4212 + 4 = 4216
+#     dated         3002 + 6 = 3008
+#     4216 + 3008 == 7224
+checks_never_observed_red 4216
