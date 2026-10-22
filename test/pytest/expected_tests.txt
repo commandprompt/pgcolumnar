@@ -306,7 +306,9 @@
 # guard_tests 465 -> 467 for #1339's test_residual_is_counted.py :143: the new
 # test_the_tally_function_records_every_suite_that_ran_or_skipped and
 # test_every_comm_in_the_runner_pins_its_collation, by collection over NO_CLUSTER.
-guard_tests 467
+# guard_tests 467 -> 474 for #1341's test_parquet_level_width.py, the twin of parquet_level_width.sh,
+# which needs no cluster: 7 tests, by collection over NO_CLUSTER.
+guard_tests 474
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

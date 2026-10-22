@@ -3902,6 +3902,13 @@ parallel_scan_cost	parallel_scan_cost	premise: the serial plan has no Gather	15;
 parallel_scan_cost	parallel_scan_cost	premise: the serial plan is a columnar scan	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	premise: the table holds every inserted row	15;16;17;18;19	never	-
 parallel_scan_cost	parallel_scan_cost	the leader-participation branch changes the divisor	15;16;17;18;19	never	-
+parquet_level_width	parquet_level_width	a non-positive maximum returns before shifting at all	15;16;17;18;19	2026-10-21	columnar_parquet_format.h: pq_bits_for's non-positive guard is commented out
+parquet_level_width	parquet_level_width	and both callers reach the shared one	15;16;17;18;19	never	-
+parquet_level_width	parquet_level_width	and no signed 1 << remains in it	15;16;17;18;19	2026-10-21	columnar_parquet_format.h: pq_bits_for shifts a signed 1
+parquet_level_width	parquet_level_width	no local copy of the helper survives in the writer or the reader	15;16;17;18;19	2026-10-21	columnar_parquet.c: a local bits_for copy reappears in the writer
+parquet_level_width	parquet_level_width	the loop is bounded below 32 shifts	15;16;17;18;19	2026-10-21	columnar_parquet_format.h: pq_bits_for's loop loses its b < 31 bound
+parquet_level_width	parquet_level_width	the shared level-width helper exists	15;16;17;18;19	never	-
+parquet_level_width	parquet_level_width	the shift is unsigned	15;16;17;18;19	2026-10-21	columnar_parquet_format.h: pq_bits_for shifts a signed 1
 partition_lifecycle	partition_lifecycle	a NULL cutoff is refused, in both overloads	15;16;17;18;19	2026-10-13	partition_drop_plan without its NULL-cutoff check, in both overloads
 partition_lifecycle	partition_lifecycle	a call that would create more than 1000 partitions is refused before any DDL	15;16;17;18;19	2026-10-12	partition_create_ahead without the 1000-partition bound
 partition_lifecycle	partition_lifecycle	a cutoff before every partition plans nothing	15;16;17;18;19	2026-10-13	the cutoff filter removed: every partition planned
