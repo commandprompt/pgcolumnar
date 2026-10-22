@@ -364,6 +364,7 @@ behaviour, the source of that number is named.
 - [316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly](#316-test_native_parquet_unitspy-time-and-timestamp-units-decode-to-the-right-instant-and-their-stats-skip-correctly)
 - [317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows](#317-test_native_parquet_projectionpy-a-projected-parquet-scan-decodes-only-the-columns-it-references-and-reads-the-generators-rows)
 - [318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks](#318-test_native_parquet_hardeningpy-the-parquet-reader-refuses-values-that-do-not-fit-their-column-and-a-row-group-with-too-few-chunks)
+- [319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend](#319-test_native_parquet_stackpy-a-crafted-parquet-footer-trips-the-recursion-guard-instead-of-crashing-the-backend)
 
 ## 1. How to read a test in here
 
@@ -12038,3 +12039,22 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
 | `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
 | `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
+
+## 319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend
+
+The twin of `test/native_parquet_stack.sh`. Two hand-crafted footers (no writer makes them, so no pyarrow) each drive one of the footer parser's two recursions 20000 deep: a run of Thrift struct openers through `PgColumnarThriftSkip`, and a linear schema chain through `walk_schema`. Under a pinned `max_stack_depth` each must raise 54001 rather than SIGSEGV, a shallow valid chain must still describe its one column, and `read_parquet` must refuse the crash input the same way `parquet_schema` does.
+
+### Every test
+
+Every test makes one check under the shell's name. Each parquet_schema or read_parquet call runs on its own connection with max_stack_depth pinned, and a failed or unreachable reading is a `query_error()`, so a crash shows as the survival check reading something other than 1 rather than as an unnamed error.
+
+| test | what it holds |
+| --- | --- |
+| `test_nested_struct_footer_raises_stack_depth` | nested-struct footer raises stack-depth, not SIGSEGV |
+| `test_backend_survived_the_nested_struct_footer` | backend survived the nested-struct footer |
+| `test_schema_chain_footer_raises_stack_depth` | schema-chain footer raises stack-depth, not SIGSEGV |
+| `test_backend_survived_the_schema_chain_footer` | backend survived the schema-chain footer |
+| `test_a_shallow_valid_schema_chain_still_reads` | a shallow valid schema chain still reads |
+| `test_backend_survived_the_valid_file` | backend survived the valid file |
+| `test_read_parquet_rejects_the_nested_struct_footer` | read_parquet rejects the nested-struct footer the same way |
+| `test_backend_survived_read_parquet_on_the_crash_input` | backend survived read_parquet on the crash input |
