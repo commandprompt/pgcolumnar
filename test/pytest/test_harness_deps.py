@@ -162,6 +162,7 @@ NO_CLUSTER = [
     # connection, no cluster, no driver.
     "test_docs_style.py",
     "test_parquet_level_width.py",
+    "test_decode_interrupts.py",
     "test_native_fetch_interrupt.py",
 ]
 

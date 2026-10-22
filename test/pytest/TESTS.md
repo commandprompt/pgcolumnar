@@ -384,6 +384,7 @@ behaviour, the source of that number is named.
 - [336. test_phase4.py: btree and hash index reads through the index fetch, and refusals by SQLSTATE](#336-test_phase4py-btree-and-hash-index-reads-through-the-index-fetch-and-refusals-by-sqlstate)
 - [337. test_phase6.py: vectorized aggregates and scans against a heap oracle, not only against themselves](#337-test_phase6py-vectorized-aggregates-and-scans-against-a-heap-oracle-not-only-against-themselves)
 - [338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it](#338-test_cancel_decodepy-a-cancel-lands-inside-one-large-row-groups-decode-and-the-session-it-lands-in-survives-it)
+- [339. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards](#339-test_decode_interruptspy-the-decode-paths-interrupt-checks-each-inside-the-loop-it-guards)
 
 ## 1. How to read a test in here
 
@@ -12728,3 +12729,27 @@ Every test makes one check under the shell's name, reading what a module fixture
 | `test_the_table_still_reads_correctly_after_the_cancel` | the table still reads correctly after the cancel |
 | `test_the_cancelled_predicate_returns_its_true_answer` | the cancelled predicate returns its true answer when allowed to finish |
 | `test_no_backend_crashed_while_the_scans_were_cancelled` | no backend crashed while the scans were cancelled |
+
+## 339. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards
+
+The twin of `test/decode_interrupts.sh`. A source-shape suite: a cancel cannot tell the decoders' interrupt checks apart at any scale CI can carry, so both twins read `src/columnar_encoding.c` and `src/columnar_reader.c`, with comments blanked, and require each check inside the loop it guards. It needs no cluster and is listed in NO_CLUSTER.
+
+### Every test
+
+Every test makes one check under the shell's name; the per-decoder pair is parametrized over the shell's own `$f` loop, so each runs once per decoder. A check counts only inside the braces of a for, while or foreach body, or of the loop whose header the arm names, walked character by character over the comment-blanked file.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_decode_interrupt_macro_exists` | the decode interrupt macro exists |
+| `test_the_macro_calls_check_for_interrupts` | the macro calls CHECK_FOR_INTERRUPTS |
+| `test_a_decoder_was_found` | `$f was found`, once for each of the nine decoders |
+| `test_a_decoder_checks_inside_a_loop` | `$f checks for interrupts`, once for each of the nine decoders, inside a loop body |
+| `test_decode_rle_inner_loop_was_found` | decode_rle's inner value loop was found |
+| `test_decode_rle_checks_in_its_value_loop` | decode_rle checks inside its value loop, not only around it |
+| `test_decode_fsst_shared_decode_loop_was_found` | decode_fsst_shared's decode loop was found |
+| `test_decode_fsst_shared_checks_in_its_decode_loop` | decode_fsst_shared checks inside its decode loop, not only in the table parse |
+| `test_the_stride_is_defined` | the stride is defined |
+| `test_the_stride_is_a_power_of_two` | the stride is a power of two |
+| `test_the_stride_is_not_too_large` | the stride is not so large that a check never lands |
+| `test_the_group_load_checks_per_column_chunk` | the group load checks for interrupts per column chunk |
+| `test_the_row_loop_checks_for_interrupts` | the row loop checks for interrupts |

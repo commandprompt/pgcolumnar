@@ -214,6 +214,7 @@ COMPLETE = ["advisory_lock_class",
             "column_extent",
             "corruption",
             "debug_hook_privilege",
+            "decode_interrupts",
             "differential",
             "encode_post_codec",
             "entry_point_privilege",
@@ -1421,8 +1422,8 @@ def test_the_suite_local_helpers_are_known_and_excluded(expect):
     adds one again reddens this arm, which is what says the grader cannot see it.
 
     The population is `check_<something>`, which is not the same as "starts with
-    check": `checks_in` in `decode_interrupts.sh` is a COUNTING utility returning a
-    number of interrupt checks in a function body, and records nothing. It was in
+    check": `checks_in`, which `decode_interrupts.sh` had until #1341, was a COUNTING
+    utility returning a number of interrupt checks in a function body, and recorded nothing. It was in
     this list until the arm printed it and the definition was read.
     """
     root = HERE.parent
