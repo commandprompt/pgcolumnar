@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 45
+suites_not_covered 44
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6581,4 +6581,19 @@ suites_not_covered 45
 #     never         4324 + 4 = 4328
 #     dated         3191 + 11 = 3202
 #     4328 + 3202 == 7530
-checks_never_observed_red 4328
+#
+# #1341, native_rewrite_conc seeded, with its twin (OffgridwithJD): 4328 -> 4330,
+# and suites_not_covered 45 -> 44. The suite had no rows. It enters with 11 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# Nothing tested that the online rewrite does not block: with compact_rewrite under
+# AccessExclusiveLock (ael) the workers simply waited and main passed 5/5. A compact_rewrite
+# now holds its lock mid-verb (pgcolumnar.maintenance_hold_ms) while a reader and a writer,
+# each with a 3 s lock_timeout, must finish. And the race was assumed, not shown: a new check
+# requires the compactor to have moved rows while the workers wrote. 9 are dated by four
+# mutations, each the same names in both twins (noconflict on 3 of 3 runs). 2 arrive never.
+#
+#     ledger rows   7530 + 11 = 7541
+#     never         4328 + 2 = 4330
+#     dated         3202 + 9 = 3211
+#     4330 + 3211 == 7541
+checks_never_observed_red 4330
