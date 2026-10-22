@@ -317,7 +317,9 @@
 # guard_tests 474 -> 476 for #1339's test_mutation_ledger.py :525 and :1002: the new
 # test_the_prior_ceiling_is_resolved_rather_than_assumed and
 # test_a_ledger_row_must_name_a_real_major, by collection over NO_CLUSTER.
-guard_tests 804
+# guard_tests 804 -> 808 for #1341's test_capability_decline.py: duckdb joins the declinable
+# capabilities, held by four new tests, by collection over NO_CLUSTER.
+guard_tests 808
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1094,4 +1096,6 @@ guard_tests 804
 # cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
-cluster_tests 3222
+# cluster_tests 3222 -> 3236 for #1341's test_parquet_export.py, the twin of parquet_export.sh:
+# 14 tests, one per check, by collection over the cluster files.
+cluster_tests 3236
