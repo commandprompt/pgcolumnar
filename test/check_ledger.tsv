@@ -4756,7 +4756,7 @@ native_varlena_bound	native_varlena_bound	backend survived the corrupt minimum	1
 native_varlena_bound	native_varlena_bound	backend survived the external-tagged minimum	15;16;17;18;19	never	-
 native_varlena_bound	native_varlena_bound	the txt column has a whole-chunk zone map to corrupt	15;16;17;18;19	never	-
 native_varlena_bound	native_varlena_bound	with the minimum restored, the range read is clean	15;16;17;18;19	never	-
-native_vecdecode	native_vecdecode	EXPLAIN reports Columnar Vectors Decoded	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	EXPLAIN reports Columnar Vectors Decoded	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_vecdecode	native_vecdecode	a nullable aggregate reaches the fold	15;16;17;18;19	2026-10-22	columnar_vector.c: pgcolumnar_batch_shape_eligible refuses every shape, so no aggregate reaches the batch fold
 native_vecdecode	native_vecdecode	a range matching no row at all is still correct	15;16;17;18;19	never	-
 native_vecdecode	native_vecdecode	a ruled-out vector is not decoded	15;16;17;18;19	2026-10-22	columnar_reader.c: the zone maps never build a skip mask, so no vector is ruled out
@@ -4764,26 +4764,26 @@ native_vecdecode	native_vecdecode	aggregate over a range spanning many skipped v
 native_vecdecode	native_vecdecode	aggregate over a skipping range matches heap	15;16;17;18;19	never	-
 native_vecdecode	native_vecdecode	and EVERY ruled-out vector is: decoded plus skipped is the group's vectors	15;16;17;18;19	2026-10-22	columnar_reader.c: decode ignores the skip mask and decodes every vector
 native_vecdecode	native_vecdecode	and it agrees with heap after many leading skipped vectors	15;16;17;18;19	never	-
-native_vecdecode	native_vecdecode	and it is not stuck at zero when a full scan decodes everything	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	and it is not stuck at zero when a full scan decodes everything	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_vecdecode	native_vecdecode	boundary range parity, a range starting exactly on a vector edge	15;16;17;18;19	never	-
-native_vecdecode	native_vecdecode	control: and the same counter reads every vector when nothing is skipped	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	control: and the same counter reads every vector when nothing is skipped	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_vecdecode	native_vecdecode	cross-vector parity of a nullable column, nulls included	15;16;17;18;19	never	-
 native_vecdecode	native_vecdecode	cross-vector range parity	15;16;17;18;19	never	-
 native_vecdecode	native_vecdecode	narrow range parity with heap	15;16;17;18;19	never	-
-native_vecdecode	native_vecdecode	premise: no whole group is pruned on the narrow query	15;16;17;18;19	never	-
-native_vecdecode	native_vecdecode	premise: one row group, so every difference is per-vector	15;16;17;18;19	never	-
-native_vecdecode	native_vecdecode	premise: the narrow plan is a columnar custom scan	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	no whole group is pruned on the narrow query	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_vecdecode	native_vecdecode	one row group, so every difference is per-vector	15;16;17;18;19	2026-10-22	columnar_write_state.c: the writer divides the table's stripe_row_limit by 100
 native_vecdecode	native_vecdecode	premise: the nullable column has nulls inside the ranges read below	15;16;17;18;19	never	-
-native_vecdecode	native_vecdecode	premise: the wide plan is a columnar custom scan	15;16;17;18;19	never	-
-native_vecdecode	native_vecdecode	premise: the wide range skips none, so the arms really differ	15;16;17;18;19	never	-
 native_vecdecode	native_vecdecode	the FOLD ARM really decodes only the vectors it needs	15;16;17;18;19	2026-10-22	columnar_reader.c: the zone maps never build a skip mask, so no vector is ruled out
 native_vecdecode	native_vecdecode	the aggregate really reaches the batch fold	15;16;17;18;19	2026-10-22	columnar_vector.c: pgcolumnar_batch_shape_eligible refuses every shape, so no aggregate reaches the batch fold
 native_vecdecode	native_vecdecode	the deep range reaches the fold too	15;16;17;18;19	2026-10-22	columnar_vector.c: pgcolumnar_batch_shape_eligible refuses every shape, so no aggregate reaches the batch fold
 native_vecdecode	native_vecdecode	the fold answers correctly over a range that skips vectors	15;16;17;18;19	never	-
 native_vecdecode	native_vecdecode	the fold answers count and sum of a nullable column over a skipping range	15;16;17;18;19	2026-10-22	columnar_vector.c: the fold ignores the validity bitmap, so a null row is read as a present value
 native_vecdecode	native_vecdecode	the fold does not count rows from a vector it never decoded	15;16;17;18;19	2026-10-22	columnar_vector.c: the fold ignores the skip mask and reads a skipped vector's hole as values (the hole zero-filled so the read is deterministic)
+native_vecdecode	native_vecdecode	the narrow plan is a columnar custom scan	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_vecdecode	native_vecdecode	the narrow range skips vectors	15;16;17;18;19	2026-10-22	columnar_reader.c: the zone maps never build a skip mask, so no vector is ruled out
 native_vecdecode	native_vecdecode	the poison-accepting range reaches the fold	15;16;17;18;19	2026-10-22	columnar_vector.c: pgcolumnar_batch_shape_eligible refuses every shape, so no aggregate reaches the batch fold
+native_vecdecode	native_vecdecode	the wide plan is a columnar custom scan	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_vecdecode	native_vecdecode	the wide range skips none, so the arms really differ	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_vecskip	native_vecskip	and the aggregate skips the same seven vectors	15;16;17;18;19	2026-10-16	columnar_reader.c: no vector skip at all (zone-map rule off, refine_skipvec and qual_skipvec return at once)
 native_vecskip	native_vecskip	cross-vector range parity	15;16;17;18;19	never	-
 native_vecskip	native_vecskip	empty range parity	15;16;17;18;19	never	-

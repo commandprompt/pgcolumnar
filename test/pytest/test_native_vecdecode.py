@@ -188,19 +188,19 @@ def _n(x):
 
 
 def test_vecdecode_narrow_plan_is_the_custom_scan(vd, expect):
-    expect.text(vd["narrow custom"], "yes", "premise: the narrow plan is a columnar custom scan")
+    expect.text(vd["narrow custom"], "yes", "the narrow plan is a columnar custom scan")
 
 
 def test_vecdecode_wide_plan_is_the_custom_scan(vd, expect):
-    expect.text(vd["wide custom"], "yes", "premise: the wide plan is a columnar custom scan")
+    expect.text(vd["wide custom"], "yes", "the wide plan is a columnar custom scan")
 
 
 def test_vecdecode_one_row_group(vd, expect):
-    expect.text(vd["groups"], "1", "premise: one row group, so every difference is per-vector")
+    expect.text(vd["groups"], "1", "one row group, so every difference is per-vector")
 
 
 def test_vecdecode_no_whole_group_pruned(vd, expect):
-    expect.text(vd["pruned"], "0", "premise: no whole group is pruned on the narrow query")
+    expect.text(vd["pruned"], "0", "no whole group is pruned on the narrow query")
 
 
 def test_vecdecode_narrow_range_skips_vectors(vd, expect):
@@ -208,7 +208,7 @@ def test_vecdecode_narrow_range_skips_vectors(vd, expect):
 
 
 def test_vecdecode_wide_range_skips_none(vd, expect):
-    expect.text(vd["wide skips"], "0", "premise: the wide range skips none, so the arms really differ")
+    expect.text(vd["wide skips"], "0", "the wide range skips none, so the arms really differ")
 
 
 def test_vecdecode_explain_reports_vectors_decoded(vd, expect):
