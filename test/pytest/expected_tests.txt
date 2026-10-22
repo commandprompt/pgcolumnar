@@ -1096,4 +1096,8 @@ guard_tests 804
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
 # cluster_tests 3222 -> 3240 for #1706: test_parquet_timestamp_zone.py, the twin of parquet_timestamp_zone.sh
 # (16 tests, one per check), and two mixed-kind hour() arms in test_iceberg_fdw.py, by collection.
-cluster_tests 3240
+# cluster_tests 3240 -> 3249 for #1712's test_parquet_skip_cross_type.py, the twin of parquet_skip_cross_type.sh:
+# 9 tests, one per check, by collection over the cluster files.
+# cluster_tests 3249 -> 3252 for #1712's three soundness arms in test_parquet_export_stats.py
+# (parametrized), by collection over the cluster files.
+cluster_tests 3252

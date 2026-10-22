@@ -5975,4 +5975,29 @@ suites_not_covered 75
 #     never         4137 + 3 = 4140
 #     dated         2798 + 13 = 2811
 #     4140 + 2811 == 6951
-checks_never_observed_red 4140
+#
+# #1712, parquet_skip_cross_type seeded, with its twin (jdatcmd): 4140 -> 4143. A new suite,
+# so suites_not_covered does not move: it is registered and covered in the same change. It
+# enters with 9 checks from five-major runs (all green on each of 15-19, shell and twin
+# alike). 6 are dated by three mutations, each reddening the same names in both twins: the
+# comparison function called with the constant first (4), the column type's own function
+# used for a constant of another type (the negative float4 arm, 1), and the NaN check
+# reading the constant as the column's type (1). The premise and the two answer controls
+# arrive never.
+#
+#     ledger rows   6951 + 9 = 6960
+#     never         4140 + 3 = 4143
+#     dated         2811 + 6 = 2817
+#     4143 + 2817 == 6960
+#
+# #1712, parquet_export_stats follows the new rule (jdatcmd): 4143 -> 4146. Six arms measured
+# the refusal of a cross-type constant (it skipped nothing); each is renamed for what it now
+# asserts, the skip its same-type twin gets, and keeps its row's history. Three soundness
+# arms are added for the predicates that had none, [i8 < 5::int], [i8 < 5] and [f4 < 0.4],
+# and arrive never, like the other oracle arms. suites_not_covered does not move.
+#
+#     ledger rows   6960 + 3 = 6963
+#     never         4143 + 3 = 4146
+#     dated         2817 + 0 = 2817
+#     4146 + 2817 == 6963
+checks_never_observed_red 4146

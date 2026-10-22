@@ -34,6 +34,7 @@
 
 #include "fmgr.h"
 #include "funcapi.h"
+#include "access/nbtree.h"
 #include "access/htup_details.h"
 #include "common/int.h"
 #include "access/relation.h"
@@ -4534,9 +4535,11 @@ pqfdw_top_for_attno(ImpTop *tops, int ntops, int attno0)
  */
 static bool
 pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
-							bool varLeft, Const *con)
+							bool varLeft, Const *con, Oid opfamily)
 {
 	TypeCacheEntry *tce;
+	FmgrInfo	cross;
+	FmgrInfo   *vsConst;
 	const uint8 *p;
 	bool		ok;
 	Datum		minD;
@@ -4549,7 +4552,7 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 	if (phys != PQ_INT32 && phys != PQ_INT64 &&
 		phys != PQ_FLOAT && phys != PQ_DOUBLE)
 		return false;
-	if (con->consttype != leaf->plan.typid || con->constisnull)
+	if (con->constisnull)
 		return false;
 	/*
 	 * A wall time is not monotonic in its instant across a spring-forward gap, so
@@ -4561,6 +4564,27 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 	tce = lookup_type_cache(leaf->plan.typid, TYPECACHE_CMP_PROC_FINFO);
 	if (!OidIsValid(tce->cmp_proc_finfo.fn_oid))
 		return false;
+
+	/*
+	 * The statistics are compared with the constant through the operator family's
+	 * comparison function for (column type, constant type), as the native zone-map
+	 * path does (#1712). A bare integer literal is int4, so requiring the column's
+	 * own type left `WHERE id > 150000` on a bigint column skipping nothing. A
+	 * family with no such function, or no family, means no skip.
+	 */
+	if (con->consttype == leaf->plan.typid)
+		vsConst = &tce->cmp_proc_finfo;
+	else
+	{
+		Oid			proc = OidIsValid(opfamily)
+			? get_opfamily_proc(opfamily, leaf->plan.typid, con->consttype, BTORDER_PROC)
+			: InvalidOid;
+
+		if (!OidIsValid(proc))
+			return false;
+		fmgr_info(proc, &cross);
+		vsConst = &cross;
+	}
 
 	p = ch->stat_min;
 	minD = plain_value_to_datum(&leaf->plan, &p, p + ch->stat_min_len, false, &ok);
@@ -4628,9 +4652,12 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 			? (float8) DatumGetFloat4(minD) : DatumGetFloat8(minD);
 		float8		hi = (phys == PQ_FLOAT)
 			? (float8) DatumGetFloat4(maxD) : DatumGetFloat8(maxD);
-		float8		c = (phys == PQ_FLOAT)
+		/* the constant is read by ITS type, which may not be the column's */
+		float8		c = (con->consttype == FLOAT4OID)
 			? (float8) DatumGetFloat4(con->constvalue)
-			: DatumGetFloat8(con->constvalue);
+			: (con->consttype == FLOAT8OID)
+			? DatumGetFloat8(con->constvalue)
+			: 0.0;
 
 		if (isnan(lo) || isnan(hi))
 			return false;
@@ -4641,22 +4668,29 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 			return false;
 	}
 
+	/*
+	 * The column's value is always the FIRST argument: a cross-type comparison
+	 * function is defined for (column type, constant type) only.
+	 */
+#define PQ_VS(a) \
+	DatumGetInt32(FunctionCall2Coll(vsConst, InvalidOid, (a), con->constvalue))
+
 	switch (strategy)
 	{
 		case BTLessStrategyNumber:	/* col < const: skip if min >= const */
-			return PQ_CMP(minD, con->constvalue) >= 0;
+			return PQ_VS(minD) >= 0;
 		case BTLessEqualStrategyNumber: /* col <= const: skip if min > const */
-			return PQ_CMP(minD, con->constvalue) > 0;
+			return PQ_VS(minD) > 0;
 		case BTEqualStrategyNumber: /* col = const: skip if const outside [min,max] */
-			return PQ_CMP(con->constvalue, minD) < 0 ||
-				PQ_CMP(con->constvalue, maxD) > 0;
+			return PQ_VS(minD) > 0 || PQ_VS(maxD) < 0;
 		case BTGreaterEqualStrategyNumber:	/* col >= const: skip if max < const */
-			return PQ_CMP(maxD, con->constvalue) < 0;
+			return PQ_VS(maxD) < 0;
 		case BTGreaterStrategyNumber:	/* col > const: skip if max <= const */
-			return PQ_CMP(maxD, con->constvalue) <= 0;
+			return PQ_VS(maxD) <= 0;
 		default:
 			return false;
 	}
+#undef PQ_VS
 #undef PQ_CMP
 }
 
@@ -4701,6 +4735,7 @@ pqfdw_compute_skip(ForeignScanState *node, PqFile *pf,
 			List	   *interp;
 			ListCell   *ic;
 			int			strategy = 0;
+			Oid			opfamily = InvalidOid;
 
 			if (!IsA(op, OpExpr) || list_length(op->args) != 2)
 				continue;
@@ -4741,6 +4776,7 @@ pqfdw_compute_skip(ForeignScanState *node, PqFile *pf,
 				if (s >= BTLessStrategyNumber && s <= BTGreaterStrategyNumber)
 				{
 					strategy = s;
+					opfamily = o->opfamily_id;
 					break;
 				}
 			}
@@ -4749,7 +4785,7 @@ pqfdw_compute_skip(ForeignScanState *node, PqFile *pf,
 
 			if (pqfdw_clause_excludes_group(&leaves[top->firstLeaf],
 											&pf->rgs[rg].chunks[top->firstLeaf],
-											strategy, varLeft, con))
+											strategy, varLeft, con, opfamily))
 			{
 				skipGroup[rg] = true;
 				break;

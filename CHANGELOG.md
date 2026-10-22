@@ -413,6 +413,13 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+- **Parquet row-group skipping now uses a constant of another integer or float
+  type.** A bare integer literal is `int4`, so `WHERE id > 150000` on a `bigint`
+  column of a Parquet foreign table read every row group; only `150000::int8`
+  skipped. The check now compares through the operator family's cross-type
+  comparison, as the native columnar scan already did. Answers were always correct;
+  this only reads less (#1712). `test/parquet_skip_cross_type.sh` and
+  `test_parquet_skip_cross_type.py`.
 - **`export_parquet` no longer marks a `timestamp` column as a UTC instant.** Both
   `timestamp` and `timestamptz` were written as the converted type `TIMESTAMP_MICROS`,
   which the Parquet spec defines as adjusted to UTC. Every other reader (pyarrow,
