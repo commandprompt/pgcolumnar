@@ -3652,6 +3652,19 @@ native_chunk_length_bound	native_chunk_length_bound	backend survived the sequent
 native_chunk_length_bound	native_chunk_length_bound	backend survived the truncated-length fetch	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	premise: a point lookup uses the index, not a sequential columnar scan	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	that fetch returns the row	15;16;17;18;19	2026-10-16	the index fetch treated a flushed row as not live, so the lookup returned no row (mutation, #1339)
+native_cluster	native_cluster	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the unsupported-type refusal aborts the backend instead of raising
+native_cluster	native_cluster	box parity (post-cluster)	15;16;17;18;19	never	-
+native_cluster	native_cluster	box parity (pre-cluster)	15;16;17;18;19	never	-
+native_cluster	native_cluster	clustering increases 2D skipping	15;16;17;18;19	2026-10-22	columnar_vacuum.c: cluster_verb never rewrites, so every cluster() is a no-op
+native_cluster	native_cluster	clustering skips most groups	15;16;17;18;19	2026-10-22	columnar_vacuum.c: cluster_verb never rewrites, so every cluster() is a no-op
+native_cluster	native_cluster	full-table parity after cluster	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the eager curve rewrite drops the first sorted row it writes back
+native_cluster	native_cluster	missing column errors cleanly	15;16;17;18;19	2026-10-22	columnar_vacuum.c: cluster_verb_validate drops its missing-column guard
+native_cluster	native_cluster	row count	15;16;17;18;19	never	-
+native_cluster	native_cluster	row count after cluster	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the eager curve rewrite drops the first sorted row it writes back
+native_cluster	native_cluster	single-column cluster parity	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the eager curve rewrite drops the first sorted row it writes back
+native_cluster	native_cluster	single-column clustering lets an id range skip most groups	15;16;17;18;19	2026-10-22	columnar_vacuum.c: cluster_verb rewrites only when given more than one column, so a single-column cluster() does nothing
+native_cluster	native_cluster	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
+native_cluster	native_cluster	unsupported type errors cleanly	15;16;17;18;19	2026-10-22	columnar_vacuum.c: cluster_verb_validate drops its unsupported-type guard, so a later guard refuses text in other words
 native_compact	native_compact	and still reads all of them after the delete and the compact	15;16;17;18;19	never	-
 native_compact	native_compact	and the group count drops to five	15;16;17;18;19	2026-10-22	columnar_metadata.c: compact retires none of the groups it finds fully deleted
 native_compact	native_compact	and the group count stays at six while that snapshot lives	15;16;17;18;19	2026-10-22	columnar_metadata.c: a delete newer than the oldest-xmin horizon counts toward a group being fully deleted

@@ -116,8 +116,6 @@ hilbert_locality	box $box: Hilbert reads fewer groups than Z-order
 int8_agg_int128	premise: its values are NOT low-cardinality, so the fold is not answered from runs
 logical_decoding_cdc_recipe	premise: and it is the whole block, not a fragment
 logical_subscriber	it retries rather than giving up, so the subscription is wedged
-native_cluster	clustering increases 2D skipping
-native_cluster	clustering skips most groups
 native_fetch_bigcap	premise: fetching one row touched a measurable number of buffers
 native_fetch_bigcap	premise: fetching ten rows touched a measurable number of buffers
 native_fetch_bigcap	premise: the wide column is the one over the cap, so this arm is #359's

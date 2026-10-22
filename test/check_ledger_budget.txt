@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 83
+suites_not_covered 82
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5796,4 +5796,20 @@ suites_not_covered 83
 #     never         4058 + 7 = 4065
 #     dated         2714 + 6 = 2720
 #     4065 + 2720 == 6785
-checks_never_observed_red 4065
+# #1341, native_cluster seeded, with its twin (OffgridwithJD): 4065 -> 4069, and
+# suites_not_covered 83 -> 82. The suite had no rows. It enters with 13 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after three fixes. The
+# two refusal checks accepted any failure of psql, a crash included: with the unsupported-type
+# guard removed, with its refusal replaced by abort(), and with the missing-column guard
+# removed, main passed 11/11 each. Each now requires its guard's own SQLSTATE and words, and a
+# new check reads the server log's crash count. Single-column clustering was checked only by
+# parity, which held with cluster(n, id) doing nothing (main 11/11): an id range now has to
+# skip more groups after it than after the (x, y) clustering scattered id. And an unread skip
+# count no longer defaults to 0. Seven mutations date checks, each red by the same names in
+# both twins. 9 are dated. 4 arrive never.
+#
+#     ledger rows   6785 + 13 = 6798
+#     never         4065 + 4 = 4069
+#     dated         2720 + 9 = 2729
+#     4069 + 2729 == 6798
+checks_never_observed_red 4069
