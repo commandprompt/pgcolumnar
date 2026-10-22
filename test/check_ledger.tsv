@@ -4413,6 +4413,26 @@ native_parquet_codecs	native_parquet_codecs	premise: the zstd file is ZSTD-compr
 native_parquet_codecs	native_parquet_codecs	uncompressed decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
 native_parquet_codecs	native_parquet_codecs	zstd FDW count	15;16;17;18;19	never	-
 native_parquet_codecs	native_parquet_codecs	zstd decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_fdw	native_parquet_fdw	EXPLAIN shows Foreign Scan	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	a one-column query reads one of the eleven columns	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: projection pushdown ignored, every column decoded
+native_parquet_fdw	native_parquet_fdw	a selective predicate skips the three row groups it cannot match	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: row-group skipping never skips a group
+native_parquet_fdw	native_parquet_fdw	and the skipped scan still returns every matching row	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: every row group skipped once any qual is pushable
+native_parquet_fdw	native_parquet_fdw	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scan's missing-path refusal removed (the backend crashes)
+native_parquet_fdw	native_parquet_fdw	fdw row count	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	full scan: fdw == source	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	nested export rows	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	nested full scan: fdw == source	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	nested-loop self-join (rescan): fdw == source	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: every row group skipped once any qual is pushable
+native_parquet_fdw	native_parquet_fdw	predicate: fdw == source	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: every row group skipped once any qual is pushable
+native_parquet_fdw	native_parquet_fdw	projection: fdw == source	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	reject empty path option (HV00D)	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	reject invalid table option (HV00D)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the option validator accepts an unknown option
+native_parquet_fdw	native_parquet_fdw	scalar export rows	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	scan of non-parquet file errors (XX001)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the short-file refusal removed, so the bad-magic guard refuses instead
+native_parquet_fdw	native_parquet_fdw	scan with incompatible declared type errors (42804)	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	scan without path option errors (HV00J)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scan's missing-path refusal removed (the backend crashes)
+native_parquet_fdw	native_parquet_fdw	skip export rows	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	the skip file has four row groups	15;16;17;18;19	2026-10-22	columnar_parquet.c: the exporter writes 131072-row groups instead of 65536
 native_parquet_fieldid	native_parquet_fieldid	a duplicate field id in the file is refused (42702)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	a duplicate requested field id is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	a field_ids/column-count mismatch is refused (22023)	15;16;17;18;19	never	-
