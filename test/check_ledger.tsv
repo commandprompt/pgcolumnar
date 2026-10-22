@@ -4472,6 +4472,23 @@ native_parquet_multifile	native_parquet_multifile	predicate skips the two non-ma
 native_parquet_multifile	native_parquet_multifile	read_parquet(directory) == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
 native_parquet_multifile	native_parquet_multifile	schema-mismatched file in directory errors	15;16;17;18;19	never	-
 native_parquet_multifile	native_parquet_multifile	tree read order follows the sorted full path	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked directory's files are not sorted;columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_projection	native_parquet_projection	after a dropped column, one column reads 1	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed matches the needed set by target index, not by attribute number
+native_parquet_projection	native_parquet_projection	after a dropped column, projection [d] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed matches the needed set by target index, not by attribute number
+native_parquet_projection	native_parquet_projection	count(*) decodes nothing, survives corruption	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	count(*) reads 0	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	good-column values are still correct	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	one column reads 1	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	projection [*] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a BYTE_ARRAY text longer than 2 bytes decodes without its last byte (shared with read_parquet)
+native_parquet_projection	native_parquet_projection	projection [a, d] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the last target column is never decoded, even when referenced
+native_parquet_projection	native_parquet_projection	projection [a] == oracle	15;16;17;18;19	never	-
+native_parquet_projection	native_parquet_projection	projection [b, c, d] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a BYTE_ARRAY text longer than 2 bytes decodes without its last byte (shared with read_parquet)
+native_parquet_projection	native_parquet_projection	projection [c] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a BYTE_ARRAY text longer than 2 bytes decodes without its last byte (shared with read_parquet)
+native_parquet_projection	native_parquet_projection	qual on unselected column == oracle	15;16;17;18;19	never	-
+native_parquet_projection	native_parquet_projection	select star reads 4	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the last target column is never decoded, even when referenced
+native_parquet_projection	native_parquet_projection	selected 1 + qual 1 reads 2	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	selecting the corrupt column does error	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the last target column is never decoded, even when referenced
+native_parquet_projection	native_parquet_projection	selecting the good column skips the corrupt one	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	two columns read 2	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the last target column is never decoded, even when referenced
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: predicate skips 3 of 4 groups	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: INT64 statistics are not decoded, so an INT64-backed DECIMAL never skips;columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: skipping did not drop rows	15;16;17;18;19	never	-
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: unfiltered scan skips nothing	15;16;17;18;19	never	-

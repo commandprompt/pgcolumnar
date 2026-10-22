@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 53
+suites_not_covered 52
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6424,4 +6424,21 @@ suites_not_covered 53
 #     never         4278 + 7 = 4285
 #     dated         3084 + 13 = 3097
 #     4285 + 3097 == 7382
-checks_never_observed_red 4285
+#
+# #1341, native_parquet_projection seeded, with its twin (OffgridwithJD): 4285 -> 4287,
+# and suites_not_covered 53 -> 52. The suite had no rows. It enters with 17 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The oracle h was read_parquet of the same file, and read_parquet shares the scan's
+# decoders: with a text decoder dropping a byte, or an INT64 decoder off by one, main passed
+# 15/15. h is now built in SQL from the crafter's generator. And no table had a dropped
+# column, so a projection matching the needed set by target index rather than attribute
+# number passed 15/15; ftd drops a column ahead of the others and must still read exactly
+# the column asked for. 15 are dated by five mutations, each reddening the same names in
+# both twins. 2 arrive never: projection [a] and the unselected-qual hash, which no
+# mutation reached.
+#
+#     ledger rows   7382 + 17 = 7399
+#     never         4285 + 2 = 4287
+#     dated         3097 + 15 = 3112
+#     4287 + 3112 == 7399
+checks_never_observed_red 4287
