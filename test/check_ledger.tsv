@@ -5791,12 +5791,12 @@ phase4	phase4	survivors around	15;16;17;18;19	2026-10-22	columnar_tableam.c: an 
 phase4	phase4	updated new found	15;16;17;18;19	never	-
 phase4	phase4	updated old gone	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch ignores the delete vector
 phase4	phase4	uq cross-stmt dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a duplicate of a flushed unique key is refused with an internal error (XX000) not 23505
-phase4	phase4	uq final count	15;16;17;18;19	never	-
+phase4	phase4	uq final count	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_index_fetch_tuple returns nothing to a dirty snapshot, so a unique check never sees the existing row
 phase4	phase4	uq initial	15;16;17;18;19	never	-
 phase4	phase4	uq new row	15;16;17;18;19	never	-
-phase4	phase4	uq unchanged	15;16;17;18;19	2026-10-22	columnar_tableam.c: a unique check that finds a buffered row calls abort()
+phase4	phase4	uq unchanged	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_index_fetch_tuple returns nothing to a dirty snapshot, so a unique check never sees the existing row
 phase4	phase4	uq within-stmt dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a unique check that finds a buffered row calls abort()
-phase4	phase4	uq2 count	15;16;17;18;19	never	-
+phase4	phase4	uq2 count	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_index_fetch_tuple returns nothing to a dirty snapshot, so a unique check never sees the existing row
 phase4	phase4	uq2 dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a duplicate of a flushed unique key is refused with an internal error (XX000) not 23505
 preimage_rewrite	preimage_rewrite	...and prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
 preimage_rewrite	preimage_rewrite	...and still answers correctly with the fold enabled	15;16;17;18;19	never	-
