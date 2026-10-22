@@ -31,6 +31,8 @@ SQLSTATE, NEVER MESSAGE TEXT, for the reason the bash header gives: a grep for
 aclcheck_error produces 42501.
 """
 
+import re
+
 import pytest
 
 # The row GROUP is the stripe, so stripe_row_limit decides how many groups a
@@ -281,24 +283,55 @@ def test_the_refusal_fixture_and_its_roles_are_this_runs(surface, expect, pgc_cl
                 "is not the schema check")
 
 
+def _s1(cluster, role, args, old, new):
+    """-> (the SQLSTATE the established verb raises, the one the new verb raises)."""
+    return (_sqlstate(cluster, role, f"SELECT pgcolumnar.{old}({args});"),
+            _sqlstate(cluster, role, f"SELECT pgcolumnar.{new}({args});"))
+
+
+# bash S1's loop: four inputs against each of the two verb pairs, ONE CHECK PER TEST.
+# The three checks of an input used to share a test, and the layer's assertions
+# raise, so when the first went red the comparison after it was never evaluated and
+# the twin reported fewer reds than the shell for the same run (#1339 :301).
+@pytest.mark.parametrize("what,role,args,want", S1_CASES,
+                         ids=[c[0].replace(" ", "-") for c in S1_CASES])
+@pytest.mark.parametrize("old,new", S1_PAIRS, ids=[p[0] for p in S1_PAIRS])
+def test_each_established_verb_refuses_the_input(
+        surface, expect, pgc_cluster, what, role, args, want, old, new):
+    """The established verb's own refusal: pgcolumnar code, so not a premise."""
+    s_old, _ = _s1(pgc_cluster, role, args, old, new)
+    expect.text(s_old, want,
+                f"{old} on {what} raises {want} (the probe reads the right state)")
+
+
 @pytest.mark.parametrize("what,role,args,want", S1_CASES,
                          ids=[c[0].replace(" ", "-") for c in S1_CASES])
 @pytest.mark.parametrize("old,new", S1_PAIRS, ids=[p[0] for p in S1_PAIRS])
 def test_each_new_verb_refuses_what_its_sibling_refuses(
         surface, expect, pgc_cluster, what, role, args, want, old, new):
-    """bash S1's loop: four inputs against each of the two verb pairs.
-
-    COMPARED AGAINST THE SIBLING, not only against a literal. A change to
-    `cluster()`'s refusal that is not made to `cluster_hilbert()`'s reddens the
-    third arm even when both of the first two still pass their own literal.
-    """
-    s_old = _sqlstate(pgc_cluster, role, f"SELECT pgcolumnar.{old}({args});")
-    s_new = _sqlstate(pgc_cluster, role, f"SELECT pgcolumnar.{new}({args});")
-
-    expect.text(s_old, want,
-                f"premise: {old} on {what} raises {want} (the probe reads the right state)")
+    """COMPARED AGAINST THE SIBLING, not only against a literal: see the next test."""
+    _, s_new = _s1(pgc_cluster, role, args, old, new)
     expect.text(s_new, want, f"{new} on {what} raises {want}")
-    expect.text(s_new, s_old,
+
+
+@pytest.mark.parametrize("what,role,args,want", S1_CASES,
+                         ids=[c[0].replace(" ", "-") for c in S1_CASES])
+@pytest.mark.parametrize("old,new", S1_PAIRS, ids=[p[0] for p in S1_PAIRS])
+def test_each_new_verbs_state_is_the_one_its_sibling_raises(
+        surface, expect, pgc_cluster, what, role, args, want, old, new):
+    """A change to `cluster()`'s refusal that is not made to `cluster_hilbert()`'s
+    reddens this arm even when both literal arms still pass.
+
+    "THE ONE {old} RAISES", so it has to be a raised SQLSTATE. Two verbs that both
+    ran clean, or both went unreachable, used to agree here under a name that says
+    two refusals were compared (#1339 :301): with the shared column cap removed,
+    cluster and cluster_hilbert both returned noerror on nine columns and this
+    passed.
+    """
+    s_old, s_new = _s1(pgc_cluster, role, args, old, new)
+    cmp = s_new if re.fullmatch(r"[0-9A-Z]{5}", str(s_old)) else \
+        f"no comparison: {old} raised nothing ({s_old})"
+    expect.text(cmp, s_old,
                 f"and {new}'s state on {what} is the one {old} raises on the identical input")
 
 
@@ -428,7 +461,7 @@ def _verb(cluster, expect, what, sql):
     than the verb.
     """
     expect.text(_sqlstate(cluster, "postgres", sql), NOERROR,
-                f"premise: {what} ran without raising")
+                f"{what} ran without raising")
 
 
 def _is_columnar_scan(conn, sql):
@@ -633,18 +666,18 @@ def test_the_three_fixtures_and_the_owner_role_are_measurable(s3, expect, pgc_cl
                 "the only route it has")
     for table in ("s3lex", "s3zo", "s3hi"):
         expect.text(st[table]["state"], NOERROR,
-                    f"premise: {st[table]['what']} ran without raising")
+                    f"{st[table]['what']} ran without raising")
 
 
 def test_each_verb_moved_its_own_table_from_its_own_baseline(s3, expect):
     """Without these, "different from each other" is satisfied by insert order."""
     conn, st = s3
     expect.text(st["s3lex"]["moved"], "moved",
-                "premise: vacuum_sorted moved s3lex from its own baseline")
+                "vacuum_sorted moved s3lex from its own baseline")
     expect.text(st["s3zo"]["moved"], "moved",
-                "premise: cluster moved s3zo from its own baseline")
+                "cluster moved s3zo from its own baseline")
     expect.text(st["s3hi"]["moved"], "moved",
-                "premise: cluster_hilbert moved s3hi from its own baseline")
+                "cluster_hilbert moved s3hi from its own baseline")
     expect.text(_is_columnar_scan(conn, "SELECT * FROM s3hi"), "yes",
                 "premise: the plan being digested for s3hi is the columnar custom "
                 "scan too")
@@ -805,9 +838,9 @@ def test_the_gate_is_closed_on_an_already_hilbert_table(s4a, expect):
                "premise: set_options took on s4a, so it is 20 groups and 'nothing "
                "changed' cannot be true because there was nothing there")
     expect.text(st["ran"], NOERROR,
-                "premise: cluster_hilbert('s4a','a','b') ran without raising")
+                "cluster_hilbert('s4a','a','b') ran without raising")
     expect.num(st["appended0"], 0,
-               "premise: the eager rewrite left no appended tail on s4a")
+               "the eager rewrite left no appended tail on s4a")
     expect.num(st["ret1"], 0,
                "(a) recluster_hilbert on an already-hilbert table with the same key "
                "reclusters 0 groups")
@@ -832,6 +865,18 @@ def test_the_gated_call_left_the_layout_byte_identical(s4a, expect):
                 "(a) and the physical layout is byte-identical")
 
 
+def test_s4a_carries_an_appended_tail_for_the_gate(s4a, expect):
+    conn, st = s4a
+    expect.text("decayed" if (st["appended_tail"] or 0) > 0 else "clean", "decayed",
+                "premise: s4a now carries an appended tail for the gate to let through")
+
+
+# (a2), ONE CHECK PER TEST (#1339 :854). These seven shared a test, and the layer's
+# assertions raise, so once the first went red the rest were never evaluated: with
+# recluster_hilbert a no-op, the shell named "(a2) and it folded the appended tail
+# back in" and the twin did not.
+
+
 def test_the_same_call_does_work_once_a_tail_is_appended(s4a, expect):
     """THE POSITIVE CONTROL, ON THE SAME TABLE AND THROUGH THE SAME CALL.
 
@@ -842,24 +887,41 @@ def test_the_same_call_does_work_once_a_tail_is_appended(s4a, expect):
     skips it is a gate that disables the daemon.
     """
     conn, st = s4a
-    expect.text("decayed" if (st["appended_tail"] or 0) > 0 else "clean", "decayed",
-                "premise: s4a now carries an appended tail for the gate to let through")
     # `(x or 0) > 0` maps BOTH None and 0 to "no": a verb that returned no count and
     # a verb that returned zero are different failures and this said neither.
     expect.text("yes" if (st["ret2"] or 0) > 0 else f"no (returned {st['ret2']!r})", "yes",
                 "(a2) THE SAME CALL ON THE SAME TABLE does work once a tail is "
                 "appended, so the 0 above was a gate and not a dead verb (>0)")
+
+
+def test_the_a2_rewrite_moved_the_layout(s4a, expect):
+    conn, st = s4a
     expect.text(_changed(st["phys2"], st["phys2_after"]), "moved",
                 "(a2) and that rewrite moved the layout")
+
+
+def test_the_a2_rewrite_folded_the_appended_tail_back_in(s4a, expect):
+    conn, st = s4a
     expect.num(_appended(conn, "s4a"), 0,
                "(a2) and it folded the appended tail back in")
+
+
+def test_after_the_a2_rewrite_it_is_still_hilbert_on_the_same_key(s4a, expect):
+    conn, st = s4a
     expect.text(f"{_skind(conn, 's4a')}/{_skey(conn, 's4a')}", "hilbert/{a,b}",
                 "(a2) and it is still a hilbert table on the same key")
+
+
+def test_the_a2_rewrite_lost_no_row(s4a, expect):
+    conn, st = s4a
     expect.num(_scalar(conn, "SELECT count(*) FROM s4a"), S4_ROWS + S4_TAIL,
                "(a2) and no row was lost")
+
+
+def test_the_a2_rewrite_kept_the_same_rows_only_reordered(s4a, expect):
+    conn, st = s4a
     expect.text(_set(conn, "s4a"), st["set2"],
                 "(a2) and the rows are the same rows, only reordered")
-
 
 def test_the_gate_closes_again_on_the_refolded_table(s4a, expect):
     conn, st = s4a
@@ -904,9 +966,9 @@ def test_the_gate_opens_for_a_zorder_table_over_the_same_columns(s4b, expect):
     expect.num(st["groups"], S4_GROUPS,
                "premise: set_options took on s4b, so it is 20 groups and 'nothing "
                "changed' cannot be true because there was nothing there")
-    expect.text(st["ran"], NOERROR, "premise: cluster('s4b','a','b') ran without raising")
+    expect.text(st["ran"], NOERROR, "cluster('s4b','a','b') ran without raising")
     expect.text(st["kind_before"], "zorder/{a,b}",
-                "premise: s4b is a zorder table over exactly (a,b)")
+                "s4b is a zorder table over exactly (a,b)")
     expect.text("yes" if (st["ret"] or 0) > 0 else f"no (returned {st['ret']!r})", "yes",
                 "(b) recluster_hilbert on a zorder table over the same columns does "
                 "real work (>0)")
@@ -941,7 +1003,7 @@ def test_plain_recluster_is_a_noop_on_a_hilbert_table(s4c, expect):
                "premise: set_options took on s4c, so it is 20 groups and 'nothing "
                "changed' cannot be true because there was nothing there")
     expect.text(st["ran"], NOERROR,
-                "premise: cluster_hilbert('s4c','a','b') ran without raising")
+                "cluster_hilbert('s4c','a','b') ran without raising")
     expect.num(st["ret"], 0,
                "(c) plain recluster on a hilbert table with a matching key reclusters "
                "0 groups")
@@ -996,7 +1058,7 @@ def test_a_different_key_rewrites_in_both_directions(s4d, expect):
                    f"premise: set_options took on {t}, so it is 20 groups and "
                    "'nothing changed' cannot be true because there was nothing there")
         expect.text(st[t]["ran"], NOERROR,
-                    f"premise: cluster_hilbert('{t}','a','b') ran without raising")
+                    f"cluster_hilbert('{t}','a','b') ran without raising")
     expect.text(st["seq1"], st["seq2"],
                 "premise: the two (d) twins are byte-identical before either is "
                 "reclustered on the new key")
@@ -1105,14 +1167,14 @@ def test_over_one_column_both_curves_are_the_identity(s5, expect):
                 "premise: the plan being digested for s5hi is the columnar custom "
                 "scan too")
     expect.text(st["s5hi"]["ran"], NOERROR,
-                "premise: cluster_hilbert('s5hi','a') ran without raising")
+                "cluster_hilbert('s5hi','a') ran without raising")
     expect.text(st["s5zo"]["ran"], NOERROR,
-                "premise: cluster('s5zo','a') ran without raising")
+                "cluster('s5zo','a') ran without raising")
 
     expect.text(_changed(st["s5hi"]["before"], _seq(conn, "s5hi")), "moved",
-                "premise: cluster_hilbert changed s5hi's order from its own baseline")
+                "cluster_hilbert changed s5hi's order from its own baseline")
     expect.text(_changed(st["s5zo"]["before"], _seq(conn, "s5zo")), "moved",
-                "premise: cluster changed s5zo's order from its own baseline")
+                "cluster changed s5zo's order from its own baseline")
     expect.num(_scalar(conn, "SELECT count(*) FROM s5hi"), S4_ROWS,
                "premise: and s5hi still holds every row it started with")
     expect.num(_scalar(conn, "SELECT count(*) FROM s5zo"), S4_ROWS,
@@ -1174,9 +1236,9 @@ def test_vacuum_sorted_leaves_a_hilbert_table_alone(s6, expect):
                "premise: set_options took on s6t, so it is 20 groups and 'nothing "
                "changed' cannot be true because there was nothing there")
     expect.text(st["t_clustered"], NOERROR,
-                "premise: cluster_hilbert('s6t','a','b') ran without raising")
+                "cluster_hilbert('s6t','a','b') ran without raising")
     expect.text(st["t_kind_before"], "hilbert",
-                "premise: s6t is a hilbert table before vacuum_sorted touches it")
+                "s6t is a hilbert table before vacuum_sorted touches it")
     expect.text(st["scan_ok"], "yes",
                 "premise: the plan being digested for s6t is the columnar custom "
                 "scan too")
@@ -1207,7 +1269,7 @@ def test_vacuum_sorted_still_works_on_a_table_with_no_recorded_kind(s6, expect):
                "premise: set_options took on s6c, so it is 20 groups and 'nothing "
                "changed' cannot be true because there was nothing there")
     expect.text(st["c_vacuumed"], NOERROR,
-                "premise: vacuum_sorted('s6c','a') on a table with no recorded kind "
+                "vacuum_sorted('s6c','a') on a table with no recorded kind "
                 "ran without raising")
     expect.text(_changed(st["c_seq"], _seq(conn, "s6c")), "moved",
                 "control: vacuum_sorted still REORDERS a table with no recorded kind")
@@ -1359,18 +1421,26 @@ def s7(hc, pgc_cluster):
         "pgcolumnar.autovacuum_compact_threshold",
         "pgcolumnar.autovacuum_recluster_threshold"))
 
+    # av_zd: a ZORDER table left decayed for the daemon (#1339 :1362). Every table the
+    # daemon handled here used to be a hilbert one, so a daemon that reclustered
+    # everything on the hilbert curve passed the whole section.
     for t, verb in (("av_hi", "cluster_hilbert"), ("av_ref", "cluster_hilbert"),
-                    ("av_zo", "cluster")):
+                    ("av_zo", "cluster"), ("av_zd", "cluster")):
         st[t] = {"groups": _mk7(hc, t)}
         st[t]["ran"] = _sqlstate(pgc_cluster, "postgres",
                                  f"SELECT pgcolumnar.{verb}('{t}','a','b');")
-    for t in ("av_hi", "av_ref", "av_zo"):
+    for t in ("av_hi", "av_ref", "av_zo", "av_zd"):
         hc.execute(f"INSERT INTO {t} SELECT (g*2654435761)::bigint % 1000, g,"
                    f" md5(g::text) FROM generate_series(1,{S7_TAIL}) g")
 
     st["hi_decayed"] = (f"{_skind(hc, 'av_hi')}/"
                         f"{'decayed' if (_appended(hc, 'av_hi') or 0) > 0 else 'clean'}")
     st["hi_key"] = _skey(hc, "av_hi")
+    st["zd_decayed"] = (f"{_skind(hc, 'av_zd')}/"
+                        f"{'decayed' if (_appended(hc, 'av_zd') or 0) > 0 else 'clean'}")
+    st["zd_due"] = _scalar(hc, "SELECT recluster_due::text || '/' ||"
+                               " compact_rewrite_due::text FROM"
+                               " pgcolumnar.maintenance_due('av_zd')")
     st["due"] = _scalar(hc, "SELECT recluster_due::text || '/' ||"
                             " compact_rewrite_due::text FROM"
                             " pgcolumnar.maintenance_due('av_hi')")
@@ -1403,12 +1473,14 @@ def s7(hc, pgc_cluster):
     # unless the number is printed. Raised by @jdatcmd, who could not run this half
     # and said so rather than offering an opinion about it.
     st["after"] = _appended(hc, "av_hi")
+    st["zd_after"] = _appended(hc, "av_zd")
     st["polls"] = 0
     for _ in range(S7_POLLS):
         time.sleep(S7_NAP)
         st["polls"] += 1
         st["after"] = _appended(hc, "av_hi")
-        if st["after"] == 0:
+        st["zd_after"] = _appended(hc, "av_zd")
+        if st["after"] == 0 and st["zd_after"] == 0:
             break
     print(f"-- the daemon folded av_hi's tail after {st['polls']} poll(s) "
           f"of {S7_POLLS} at {S7_NAP}s")
@@ -1437,6 +1509,7 @@ def s7(hc, pgc_cluster):
     st["ref_seq_after"] = _seq(hc, "av_ref")
     st["ref_app_after"] = _appended(hc, "av_ref")
     st["rows"] = _scalar(hc, "SELECT count(*) FROM av_hi")
+    st["zd_kind_key"] = f"{_skind(hc, 'av_zd')}/{_skey(hc, 'av_zd')}"
     st["hi_set_after"] = _set(hc, "av_hi")
 
     hc.execute("ALTER SYSTEM SET pgcolumnar.autovacuum = off")
@@ -1449,7 +1522,7 @@ def s7(hc, pgc_cluster):
                 "pgcolumnar.autovacuum_recluster_threshold"):
         hc.execute(f"ALTER SYSTEM RESET {guc}")
     hc.execute("SELECT pg_reload_conf()")
-    hc.execute("DROP TABLE IF EXISTS av_hi, av_ref, av_zo")
+    hc.execute("DROP TABLE IF EXISTS av_hi, av_ref, av_zo, av_zd")
 
 
 def test_the_daemon_fixtures_are_built_with_the_daemon_off(s7, expect):
@@ -1463,45 +1536,68 @@ def test_the_daemon_fixtures_are_built_with_the_daemon_off(s7, expect):
     expect.text(st["gucs"], "2s/0.2/0.05",
                 "premise: and the naptime and both thresholds are the values this "
                 "fixture set, read back from the server rather than assumed")
-    for t in ("av_hi", "av_ref", "av_zo"):
+    for t in ("av_hi", "av_ref", "av_zo", "av_zd"):
         expect.num(st[t]["groups"], S4_GROUPS,
                    f"premise: set_options took on {t}, so it is 20 groups")
     expect.text(st["av_hi"]["ran"], NOERROR,
-                "premise: cluster_hilbert('av_hi','a','b') ran without raising")
+                "cluster_hilbert('av_hi','a','b') ran without raising")
     expect.text(st["av_ref"]["ran"], NOERROR,
-                "premise: cluster_hilbert('av_ref','a','b') ran without raising")
+                "cluster_hilbert('av_ref','a','b') ran without raising")
     expect.text(st["av_zo"]["ran"], NOERROR,
-                "premise: cluster('av_zo','a','b') ran without raising")
+                "cluster('av_zo','a','b') ran without raising")
+    expect.text(st["av_zd"]["ran"], NOERROR,
+                "cluster('av_zd','a','b') ran without raising")
     expect.text(st["hi_decayed"], "hilbert/decayed",
-                "premise: av_hi is a hilbert table with appended decay for the daemon "
+                "av_hi is a hilbert table with appended decay for the daemon "
                 "to find")
     expect.text(st["hi_key"], "{a,b}",
-                "premise: and the key the daemon will read off it is the one it was "
+                "and the key the daemon will read off it is the one it was "
                 "clustered by")
     # BOTH halves of the dispatch, so the recluster is its only reason to touch
     # av_hi: a compact_rewrite that folded the tail and relabelled the table
     # zorder would pass the arm below and redden THE RULING, and a reader would
     # attribute both to the recluster path.
     expect.text(st["due"], "true/false",
-                "premise: the daemon agrees a recluster is due, and that a compaction "
+                "the daemon agrees a recluster is due, and that a compaction "
                 "is NOT")
     expect.text(st["scan_ok"], "yes",
                 "premise: the plan being digested for av_hi is the columnar custom "
                 "scan too")
 
 
+def test_the_zorder_table_is_decayed_and_due_for_the_daemon(s7, expect):
+    conn, st = s7
+    expect.text(st["zd_decayed"], "zorder/decayed",
+                "av_zd is a zorder table with appended decay for the daemon to find")
+    expect.text(st["zd_due"], "true/false",
+                "and the daemon agrees av_zd's recluster is due, and that a compaction is NOT")
+
+
+def test_the_daemon_reclusters_a_decayed_zorder_table_on_its_own_curve(s7, expect):
+    """THE OTHER HALF OF THE DISPATCH (#1339 :1362). A daemon that sent every table to
+    recluster_hilbert folded av_zd's tail just as well, so the curve and key are what
+    tell the two apart."""
+    conn, st = s7
+    expect.num(st["zd_after"], 0,
+               "the daemon reclustered the decayed zorder table av_zd too (its appended "
+               "tail folded to 0)")
+    expect.text(st["zd_kind_key"], "zorder/{a,b}",
+                "and it kept av_zd on the zorder curve and its key: a non-hilbert table is "
+                "not converted")
+
+
 def test_the_two_hand_driven_references_are_built_and_folded(s7, expect):
     conn, st = s7
     expect.text(st["ref_ran"], NOERROR,
-                "premise: recluster_hilbert('av_ref','a','b') ran without raising")
+                "recluster_hilbert('av_ref','a','b') ran without raising")
     expect.text(st["zo_ran"], NOERROR,
-                "premise: recluster('av_zo','a','b') ran without raising")
+                "recluster('av_zo','a','b') ran without raising")
     expect.num(st["ref_folded"], 0,
-               "premise: the hand-driven hilbert reference folded its tail back in")
+               "the hand-driven hilbert reference folded its tail back in")
     expect.num(st["zo_folded"], 0,
-               "premise: the hand-driven zorder control folded its tail back in")
+               "the hand-driven zorder control folded its tail back in")
     expect.text(st["pre"], "different",
-                "premise: av_hi does NOT yet match the hilbert reference, so matching "
+                "av_hi does NOT yet match the hilbert reference, so matching "
                 "it later is a change")
 
 
@@ -1518,7 +1614,7 @@ def test_the_two_references_are_two_different_layouts(s7, expect):
             f"av_zo=[{st['zo_folded']}]), so the two layouts are not the two rewrites")
         return
     expect.text(st["refs_differ"], "different",
-                "premise: the two references really are two different layouts, so the "
+                "the two references really are two different layouts, so the "
                 "arm below discriminates")
 
 
@@ -1644,7 +1740,10 @@ def test_the_install_script_and_the_catalog_agree_on_the_symbol_set(s8, expect):
     expect.text("yes" if len(st["src"]) >= 20
                 else f"no ({len(st['src'])} symbols declared)", "yes",
                 "premise: the install script declares MODULE_PATHNAME symbols at all")
-    expect.text("same" if st["src"] == st["cat"] else "differs", "same",
+    # THE TWO LISTS ARE COMPARED, NOT A TOKEN ABOUT THEM (#1339 cross-file 7): "same"
+    # was also what two empty lists produced, and a failure now names the symbols
+    # that differ rather than saying "differs".
+    expect.text(" ".join(st["cat"]), " ".join(st["src"]),
                 "the catalog and the install script still agree on the symbol set")
 
 

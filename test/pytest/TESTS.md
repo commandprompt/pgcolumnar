@@ -4461,10 +4461,11 @@ surface of `pgcolumnar.cluster_hilbert` and `recluster_hilbert`, the recorded
 `sorted_kind`, the self-gate and the daemon. `test/hilbert_curve.sh` pins the CURVE itself
 in C and neither file re-tests the other; this port keeps that division.
 
-**45 collected tests, 184 checks, over the bash suite's eight arms.** Graded one-for-one:
-`compare_to_bash.py` reports **0 MISSING** both as the tool ships (124 bash checks) and
-with #1044's widened extractor (133), the difference being the suite's nine
-`check_unrunnable` sites, all of which are twinned.
+**69 collected tests, 191 checks, over the bash suite's eight arms.** Graded one-for-one:
+`compare_to_bash.py` reports **0 MISSING** (127 bash checks: 117 literal, 10 template),
+and the suite's `check_unrunnable` sites are all twinned. #1339's batch split S1 into one
+check per test, so a red premise no longer hides the comparison after it, and added the
+daemon arm on a decayed zorder table.
 
 ### Where the port asserts something the original gets for free
 
@@ -4516,7 +4517,9 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_the_two_digests_are_the_instruments_this_file_thinks_they_are` | the ordered oracle is order-sensitive and the set oracle is not; invisible to the parity tool because the bash names live in `lib.sh` |
 | `test_parallelism_is_off_so_a_scan_order_is_a_fact_about_the_layout` | a digest is about the layout and not about scheduling |
 | `test_the_refusal_fixture_and_its_roles_are_this_runs` | the fixture holds rows, the role owns nothing, can open a session, and holds EXECUTE and schema USAGE -- so a 42501 can only be the owner check |
-| `test_each_new_verb_refuses_what_its_sibling_refuses` | four inputs x two verb pairs, each new verb's SQLSTATE compared against the established verb's on the identical input |
+| `test_each_established_verb_refuses_the_input` | four inputs x two verb pairs: the established verb's own refusal, one check per test |
+| `test_each_new_verb_refuses_what_its_sibling_refuses` | the new verb's refusal against the literal |
+| `test_each_new_verbs_state_is_the_one_its_sibling_raises` | and against the established verb's on the identical input; it compares only a raised SQLSTATE, so two verbs that both ran clean do not agree (#1339) |
 | `test_the_probe_can_report_both_success_and_an_unreachable_session` | the probe can say noerror, and can say it never reached the server |
 | `test_the_reorder_fixture_is_measurable_before_anything_moves` | 20 groups, the set matches the heap mirror, the order digest is stable, the plan is the columnar scan |
 | `test_cluster_hilbert_reorders_without_changing_the_row_set` | same rows, different order -- neither half stands alone |
@@ -4528,7 +4531,13 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_the_three_kinds_stand_for_three_physical_orders` | the eager verb's curve defence, UNRUN unless both legs moved |
 | `test_the_gate_is_closed_on_an_already_hilbert_table` | (a) 0 groups, kind untouched |
 | `test_the_gated_call_left_the_layout_byte_identical` | UNRUN unless the return really was 0 |
+| `test_s4a_carries_an_appended_tail_for_the_gate` | premise: the tail is there |
 | `test_the_same_call_does_work_once_a_tail_is_appended` | the positive control: the fifth direction, and what the daemon depends on |
+| `test_the_a2_rewrite_moved_the_layout` | (a2), one check per test (#1339) |
+| `test_the_a2_rewrite_folded_the_appended_tail_back_in` | (a2) |
+| `test_after_the_a2_rewrite_it_is_still_hilbert_on_the_same_key` | (a2) |
+| `test_the_a2_rewrite_lost_no_row` | (a2) |
+| `test_the_a2_rewrite_kept_the_same_rows_only_reordered` | (a2) |
 | `test_the_gate_closes_again_on_the_refolded_table` | (a3) |
 | `test_the_refolded_layout_is_byte_identical_again` | (a3), gated the same way |
 | `test_the_gate_opens_for_a_zorder_table_over_the_same_columns` | (b), with the label asserted WITH the bytes |
@@ -4540,6 +4549,8 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_vacuum_sorted_leaves_a_hilbert_table_alone` | S6, the reading of the ruling this suite pins |
 | `test_vacuum_sorted_still_works_on_a_table_with_no_recorded_kind` | the removal proof: it must not no-op on everything |
 | `test_the_daemon_fixtures_are_built_with_the_daemon_off` | the launcher is up, the daemon is off, and the thresholds took |
+| `test_the_zorder_table_is_decayed_and_due_for_the_daemon` | av_zd, a zorder table left decayed for the daemon |
+| `test_the_daemon_reclusters_a_decayed_zorder_table_on_its_own_curve` | the other half of the dispatch: folded, and still zorder on its key (#1339) |
 | `test_the_two_hand_driven_references_are_built_and_folded` | both references folded, and av_hi does not yet match |
 | `test_the_two_references_are_two_different_layouts` | UNRUN unless both folded |
 | `test_the_daemon_reclustered_the_decayed_hilbert_table` | THE RULING through the daemon, with its own log line naming the dispatch |
