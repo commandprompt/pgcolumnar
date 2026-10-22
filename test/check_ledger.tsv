@@ -4812,7 +4812,7 @@ native_zonemap_session	native_zonemap_session	and the short circuit means it add
 native_zonemap_session	native_zonemap_session	every scan around an aborted one reports its own session (#744)	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
 native_zonemap_session	native_zonemap_session	nested columnar scans each hold their own handle	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
 native_zonemap_session	native_zonemap_session	nested columnar scans return the right answer	15;16;17;18;19	2026-10-22	columnar_reader.c: every chunk group is ruled out
-native_zonemap_session	native_zonemap_session	premise: the fixture really has more than one chunk group	15;16;17;18;19	never	-
+native_zonemap_session	native_zonemap_session	the fixture has more than one chunk group	15;16;17;18;19	2026-10-22	columnar_write_state.c: the writer multiplies the table's stripe_row_limit by 100
 native_zonemap_session	native_zonemap_session	the middle scan really did error inside the subtransaction	15;16;17;18;19	2026-10-22	columnar_reader.c: every chunk group is ruled out
 native_zonemap_session	native_zonemap_session	the scan after the subtransaction abort returns the right answer	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
 native_zonemap_session	native_zonemap_session	the scan really probed the zone maps, once per group	15;16;17;18;19	2026-10-22	columnar_reader.c: every zone-map fetch is made twice

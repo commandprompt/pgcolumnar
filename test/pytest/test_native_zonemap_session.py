@@ -181,7 +181,7 @@ def _own_groups(r):
 
 
 def test_native_zonemap_session_fixture_has_several_groups(zs, expect):
-    expect.text(_more_than_one(zs["groups"]), "yes", "premise: the fixture really has more than one chunk group")
+    expect.text(_more_than_one(zs["groups"]), "yes", "the fixture has more than one chunk group")
 
 
 def test_native_zonemap_session_scan_probes_once_per_group(zs, expect):

@@ -11827,7 +11827,7 @@ Every test makes one check under the shell's name, on a private database built o
 
 | test | what it holds |
 | --- | --- |
-| `test_native_zonemap_session_fixture_has_several_groups` | premise: the fixture really has more than one chunk group |
+| `test_native_zonemap_session_fixture_has_several_groups` | the fixture has more than one chunk group |
 | `test_native_zonemap_session_scan_probes_once_per_group` | the scan really probed the zone maps, once per group |
 | `test_native_zonemap_session_scan_resolves_zone_map_once` | the scan resolves zone_map ONCE, not once per group (#744) |
 | `test_native_zonemap_session_second_column_still_opens_once` | a second predicate column still resolves zone_map once |
