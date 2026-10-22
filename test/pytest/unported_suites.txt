@@ -21,7 +21,6 @@ harness_selftest
 hilbert_curve
 iceberg_deletes
 iceberg_dv
-iceberg_malformed
 iceberg_name_mapping
 iceberg_objstore
 iceberg_rest

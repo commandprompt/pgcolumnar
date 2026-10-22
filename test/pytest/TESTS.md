@@ -310,6 +310,7 @@ behaviour, the source of that number is named.
 - [262. test_parallel_flush_optin.py: parallel_flush stays opt-in, and the dispatch metric cannot separate the shapes](#262-test_parallel_flush_optinpy-parallel_flush-stays-opt-in-and-the-dispatch-metric-cannot-separate-the-shapes)
 - [263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics](#263-test_parquet_export_statspy-the-parquet-files-we-export-carry-correct-per-row-group-statistics)
 - [264. test_catalog_filter_reads.py: stats() and sort_status() read a table's storage id once](#264-test_catalog_filter_readspy-stats-and-sort_status-read-a-tables-storage-id-once)
+- [265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging](#265-test_iceberg_malformedpy-the-iceberg-reader-refuses-crafted-metadata-cleanly-never-crashing-or-hanging)
 
 ## 1. How to read a test in here
 
@@ -10270,3 +10271,47 @@ The pytest twin of `test/catalog_filter_reads.sh` (#1637), every check by the sh
 | `test_stats_reports_only_the_tables_groups` | control: stats() reports t's 3 row groups and no other table's |
 | `test_sort_status_reads_the_storage_id_once` | sort_status() reads the storage id once, not once per catalog row |
 | `test_sort_status_counts_only_the_tables_groups` | control: sort_status() counts t's 3 row groups and no other table's |
+
+## 265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging
+
+The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, and a dangling current-schema-id. Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
+
+### Every test
+
+One module fixture copies the fixtures into `server_dir`, builds the FIFOs there, and records every reading from a private database. A FIFO read runs in a thread with a 5s deadline. Each survival reading compares the server log's crash count with the one taken just before its arm, and waits out a crash recovery. The first two tests mirror the shell's two skip names.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_malformed_iceberg_fixtures_are_present` | premise: the committed malformed fixtures are not empty |
+| `test_python_reads_the_malformed_metadata` | premise: the dangling-schema metadata parses as JSON |
+| `test_an_array_valued_fields_element_is_refused` | an array-valued schema fields element is refused, not crashed (XX001) |
+| `test_the_backend_survives_the_malformed_schema` | backend still up after the malformed-schema refusal |
+| `test_a_well_formed_field_object_still_decodes` | control: a well-formed field object still decodes (0 entries) |
+| `test_the_lister_refuses_a_null_data_file_path` | a NULL data-file path is refused in iceberg_data_files (XX001, not a crash) |
+| `test_the_backend_survives_the_lister_refusal` | backend still up after the lister refusal |
+| `test_the_scan_refuses_a_null_data_file_path` | a NULL data-file path is refused in iceberg_scan (XX001, not a crash) |
+| `test_the_backend_survives_the_scan_refusal` | backend still up after the scan refusal |
+| `test_a_present_file_path_lists_one_data_file` | control: a present file_path lists one data file |
+| `test_a_null_manifest_path_is_refused` | a NULL manifest_path is refused, not a crash (XX001) |
+| `test_the_backend_survives_the_null_manifest_path` | backend still up after the null-manifest_path refusal |
+| `test_iceberg_current_snapshot_refuses_a_fifo` | iceberg_current_snapshot on a FIFO is refused, not a hang (XX001) |
+| `test_iceberg_data_files_refuses_a_fifo` | iceberg_data_files on a FIFO is refused, not a hang (XX001) |
+| `test_iceberg_scan_refuses_a_fifo` | iceberg_scan on a FIFO is refused, not a hang (XX001) |
+| `test_read_avro_manifest_refuses_a_fifo_as_iceberg_input` | read_avro_manifest on a FIFO is refused, not a hang (XX001) |
+| `test_read_manifest_list_refuses_a_fifo` | read_manifest_list on a FIFO is refused, not a hang (XX001) |
+| `test_read_parquet_refuses_a_fifo_beside_iceberg` | read_parquet on a FIFO is refused, not a hang (XX001) |
+| `test_the_backend_survives_the_fifo_refusals` | backend still up after the FIFO refusals |
+| `test_a_manifest_list_that_is_a_fifo_is_refused` | a manifest-list that is a FIFO is refused, not a hang (XX001) |
+| `test_the_backend_survives_the_manifest_list_fifo` | backend still up after the manifest-list FIFO refusal |
+| `test_a_null_manifest_list_sequence_number_reads_null` | a null manifest-list sequence_number decodes as NULL, not 0 |
+| `test_a_present_manifest_list_sequence_number_reads_its_value` | control: a present manifest-list sequence_number decodes to its value |
+| `test_a_null_min_sequence_number_reads_null` | a null manifest-list min_sequence_number decodes as NULL, not 0 (#686) |
+| `test_a_present_min_sequence_number_reads_its_value` | control: a present min_sequence_number decodes to its value (#686) |
+| `test_the_scan_refuses_a_null_sequence_an_added_entry_inherits` | iceberg_scan refuses a null manifest seq an ADDED entry must inherit (XX001, not a silent wrong row) |
+| `test_the_backend_survives_the_null_sequence_refusal` | backend still up after the null-sequence refusal |
+| `test_a_concrete_manifest_sequence_scans_every_row` | control: a concrete manifest seq scans all 5 rows (seq-3 delete is older than seq-5 data) |
+| `test_a_dangling_current_schema_id_is_refused` | a dangling current-schema-id is refused (XX001), not silently stale-read |
+| `test_the_backend_survives_the_dangling_schema_refusal` | backend still up after the dangling-schema refusal |
+| `test_a_resolvable_current_schema_id_reads_amount` | control: a resolvable current-schema-id reads the correct amount column |
+| `test_a_legacy_only_schema_table_still_reads` | control: a legacy-only-schema table still reads (5 rows) |
+| `test_the_legacy_table_binds_amount` | control: the legacy table binds amount correctly (10..50) |

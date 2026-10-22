@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 105
+suites_not_covered 104
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5374,4 +5374,22 @@ suites_not_covered 105
 #     never         3850 + 3 = 3853
 #     dated         2239 + 4 = 2243
 #     3853 + 2243 == 6096
-checks_never_observed_red 3853
+# #1341, iceberg_malformed seeded, with its twin (OffgridwithJD): 3853 -> 3868,
+# and suites_not_covered 105 -> 104. The suite had no rows. It enters with 31
+# checks from five-major runs (all green on each of 15-19, shell and twin alike), after
+# two fixes measured on PG17 at origin/main. Every refusal arm read only XX001, which
+# later parse steps also raise: with the regular-file guard removed, a FIFO opened
+# O_NONBLOCK reads as an empty file and four of the seven FIFO arms still passed. Each
+# arm now also names its refusal's message. And every "backend still up" check was a
+# bare SELECT 1, which answers again after crash recovery: with a NULL path segfaulting
+# the backend and the probe 3s later, both survival checks passed. They now read the
+# server log's crash count since their own arm, and wait out a recovery. 16 are dated
+# by seven mutations, each reddening the same names in both twins; 15 arrive never.
+# The array-valued "fields" arm stays never: on a build without asserts the schema
+# walker still refuses through av_schema_err, so dropping the object check passes all 31.
+#
+#     ledger rows   6096 + 31 = 6127
+#     never         3853 + 15 = 3868
+#     dated         2243 + 16 = 2259
+#     3868 + 2259 == 6127
+checks_never_observed_red 3868

@@ -5,8 +5,10 @@
 # whoever authored the table, and is called by an honest pg_read_server_files
 # role that named only the trusted metadata pointer. A crafted manifest must be
 # REFUSED cleanly, never crash the backend. Each arm has a control so a vacuous
-# pass is visible, and a "backend still up" probe after every refusal proves the
-# refusal was an error, not a segfault. Fixtures are hand-crafted
+# pass is visible, each refusal names its own message (the SQLSTATE alone is
+# shared with later parse errors), and a "backend still up" probe after every
+# refusal reads the server log's crash count, so a segfault followed by crash
+# recovery does not pass as a refusal. Fixtures are hand-crafted
 # (test/fixtures/iceberg/warehouse_malformed) because no writer emits these
 # shapes; see gen_malformed_fixture.py.
 #
@@ -16,31 +18,69 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
-sqlstate_of() {
+# refusal SQL REGEX LABEL -> "<SQLSTATE> (LABEL)" when SQL raised an error whose message
+# matches REGEX, "<SQLSTATE>: <message>" for any other error, or "no error". Every
+# arm here refuses with XX001, and so do later parse steps: a FIFO read as an empty
+# file failed a parse with the same XX001, so the SQLSTATE alone passed with the
+# guard removed. The arm now names the refusal it wants.
+refusal_of() {	# stdin: psql output -> the refusal reading
+	local re="$1" label="$2" line state msg
+	local out; out="$(cat)"
+	line="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): /\1|/p' <<<"$out" | head -1)"
+	if [ -z "$line" ]; then
+		grep -qE 'server closed the connection|connection to server' <<<"$out" \
+			&& echo "no refusal: the connection was lost" || echo "no error"
+		return
+	fi
+	state="${line%%|*}"; msg="${line#*|}"
+	if grep -qE -- "$re" <<<"$msg"; then echo "$state ($label)"; else echo "$state: $msg"; fi
+}
+refusal() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | refusal_of "$2" "$3"
+\\set VERBOSITY verbose
 $1;
 SQLEOF
 }
 
 # Run one statement under a HARD wall-clock cap. A cancel-resistant open (a FIFO)
 # cannot be ended by statement_timeout, so the external `timeout` is the only
-# reliable detector. Prints the 5-char SQLSTATE the backend raised, or the
-# literal HANG when psql was KILLed by the cap (exit 124/137). No SQL-level
+# reliable detector. Prints the refusal reading as refusal() does, or the literal
+# HANG when psql was KILLed by the cap (exit 124/137). No SQL-level
 # statement_timeout is set, so a merely-slow legit path is never a false HANG.
 FIFO_CAP=5
-sqlstate_or_hang() {
+FIFO_RE='is not a regular file'
+refusal_or_hang() {
 	local out rc
 	out="$(timeout -s KILL "$FIFO_CAP" env PATH="$PGC_BINDIR:$PATH" psql \
 		-h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF
-\\set VERBOSITY sqlstate
+\\set VERBOSITY verbose
 $1;
 SQLEOF
 )"
 	rc=$?
 	if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo HANG; return; fi
-	printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
+	printf '%s\n' "$out" | refusal_of "$FIFO_RE" "not a regular file"
+}
+
+# Backends killed by a signal, from the server log: a number, or nothing when the
+# log can't be read. A fresh connection answers again after crash recovery, so
+# "SELECT 1" alone passed after a backend segfaulted on a NULL path, once the probe
+# came 3s later. Every survival check also requires that this count has not moved
+# since just before its own arm ran; when it has, the check waits out the crash
+# recovery, so the arms after it are not collateral.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since BEFORE
+	local _up _now _i
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"; return; fi
+	if [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1; return; fi
+	for _i in $(seq 1 60); do [ "$(q 'SELECT 1' 2>/dev/null)" = 1 ] && break; sleep 0.5; done
+	echo "no ([$_up], $(( _now - $1 )) backend crashes)"
 }
 
 # Release a backend that is blocked in open(2) on a FIFO (main only): opening the
@@ -70,10 +110,12 @@ chmod -R u+rwX "$DEST"
 #     backend (an object-container Assert / OOB heap read). It must now be a
 #     clean malformed-schema error, and the control must still decode.
 # =========================================================================
-check "an array-valued schema \"fields\" element is refused, not crashed (XX001)" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.read_avro_manifest('$DEST/arrayfield/evil.avro')")" \
-	"XX001"
-check "backend still up after the malformed-schema refusal" "$(q 'SELECT 1')" "1"
+B="$(crashes)"
+check "an array-valued schema fields element is refused, not crashed (XX001)" \
+	"$(refusal "SELECT * FROM pgcolumnar.read_avro_manifest('$DEST/arrayfield/evil.avro')" \
+		'unsupported or malformed Avro schema in manifest' "malformed schema")" \
+	"XX001 (malformed schema)"
+check "backend still up after the malformed-schema refusal" "$(survived "$B")" "1"
 check "control: a well-formed field object still decodes (0 entries)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$DEST/arrayfield/good.avro')")" \
 	"0"
@@ -84,12 +126,16 @@ check "control: a well-formed field object still decodes (0 entries)" \
 #     be a clean DATA_CORRUPTED refusal; the control (file_path present) reads.
 # =========================================================================
 NP="$DEST/nullpath/db/t/metadata/t.metadata.json"
+B="$(crashes)"
 check "a NULL data-file path is refused in iceberg_data_files (XX001, not a crash)" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$NP')")" "XX001"
-check "backend still up after the lister refusal" "$(q 'SELECT 1')" "1"
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_data_files('$NP')" \
+		'has no data file path' "no data file path")" "XX001 (no data file path)"
+check "backend still up after the lister refusal" "$(survived "$B")" "1"
+B="$(crashes)"
 check "a NULL data-file path is refused in iceberg_scan (XX001, not a crash)" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_scan('$NP') AS t(id bigint)")" "XX001"
-check "backend still up after the scan refusal" "$(q 'SELECT 1')" "1"
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$NP') AS t(id bigint)" \
+		'has no data file path' "no data file path")" "XX001 (no data file path)"
+check "backend still up after the scan refusal" "$(survived "$B")" "1"
 check "control: a present file_path lists one data file" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$DEST/nullpath_ctl/db/t/metadata/t.metadata.json')")" \
 	"1"
@@ -101,9 +147,11 @@ check "control: a present file_path lists one data file" \
 #     author-controlled, so this is reachable. Refuse it as DATA_CORRUPTED.
 # =========================================================================
 NMP="$DEST/nullmanifestpath/db/t/metadata/t.metadata.json"
+B="$(crashes)"
 check "a NULL manifest_path is refused, not a crash (XX001)" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$NMP')")" "XX001"
-check "backend still up after the null-manifest_path refusal" "$(q 'SELECT 1')" "1"
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_data_files('$NMP')" \
+		'a manifest path in .* is null' "null manifest path")" "XX001 (null manifest path)"
+check "backend still up after the null-manifest_path refusal" "$(survived "$B")" "1"
 
 # =========================================================================
 # #1  a non-regular file (FIFO) named on any Iceberg-reachable open must be
@@ -113,31 +161,32 @@ check "backend still up after the null-manifest_path refusal" "$(q 'SELECT 1')" 
 FIFODIR="$PGC_WORKDIR/fifo"; mkdir -p "$FIFODIR"
 FIFO="$FIFODIR/x"; mkfifo "$FIFO"
 
+B="$(crashes)"
 # Site A -- ice_slurp_text, FIFO as the metadata argument (three entry points)
 check "iceberg_current_snapshot on a FIFO is refused, not a hang (XX001)" \
-	"$(sqlstate_or_hang "SELECT * FROM pgcolumnar.iceberg_current_snapshot('$FIFO')")" \
-	"XX001"; fifo_release "$FIFO"
+	"$(refusal_or_hang "SELECT * FROM pgcolumnar.iceberg_current_snapshot('$FIFO')")" \
+	"XX001 (not a regular file)"; fifo_release "$FIFO"
 check "iceberg_data_files on a FIFO is refused, not a hang (XX001)" \
-	"$(sqlstate_or_hang "SELECT * FROM pgcolumnar.iceberg_data_files('$FIFO')")" \
-	"XX001"; fifo_release "$FIFO"
+	"$(refusal_or_hang "SELECT * FROM pgcolumnar.iceberg_data_files('$FIFO')")" \
+	"XX001 (not a regular file)"; fifo_release "$FIFO"
 check "iceberg_scan on a FIFO is refused, not a hang (XX001)" \
-	"$(sqlstate_or_hang "SELECT * FROM pgcolumnar.iceberg_scan('$FIFO') AS t(id bigint)")" \
-	"XX001"; fifo_release "$FIFO"
+	"$(refusal_or_hang "SELECT * FROM pgcolumnar.iceberg_scan('$FIFO') AS t(id bigint)")" \
+	"XX001 (not a regular file)"; fifo_release "$FIFO"
 
 # Site C -- av_slurp_file, FIFO as the argument (both entry points)
 check "read_avro_manifest on a FIFO is refused, not a hang (XX001)" \
-	"$(sqlstate_or_hang "SELECT * FROM pgcolumnar.read_avro_manifest('$FIFO')")" \
-	"XX001"; fifo_release "$FIFO"
+	"$(refusal_or_hang "SELECT * FROM pgcolumnar.read_avro_manifest('$FIFO')")" \
+	"XX001 (not a regular file)"; fifo_release "$FIFO"
 check "read_manifest_list on a FIFO is refused, not a hang (XX001)" \
-	"$(sqlstate_or_hang "SELECT * FROM pgcolumnar.read_manifest_list('$FIFO')")" \
-	"XX001"; fifo_release "$FIFO"
+	"$(refusal_or_hang "SELECT * FROM pgcolumnar.read_manifest_list('$FIFO')")" \
+	"XX001 (not a regular file)"; fifo_release "$FIFO"
 
 # Site D -- pq_source_open_cfg via the single-file parquet API (sibling)
 check "read_parquet on a FIFO is refused, not a hang (XX001)" \
-	"$(sqlstate_or_hang "SELECT * FROM pgcolumnar.read_parquet('$FIFO') AS t(id bigint)")" \
-	"XX001"; fifo_release "$FIFO"
+	"$(refusal_or_hang "SELECT * FROM pgcolumnar.read_parquet('$FIFO') AS t(id bigint)")" \
+	"XX001 (not a regular file)"; fifo_release "$FIFO"
 
-check "backend still up after the FIFO refusals" "$(q 'SELECT 1')" "1"
+check "backend still up after the FIFO refusals" "$(survived "$B")" "1"
 
 # Site B -- ice_slurp_bin, FIFO named as the manifest-list INSIDE metadata.json.
 # realpath() on the FIFO succeeds and passes ice_open_path's containment, so only
@@ -153,10 +202,11 @@ cat > "$MDJSON" <<JSON
    "schema-id":0,"manifest-list":"file://$MLROOT/db/t/metadata/ml.avro",
    "summary":{"operation":"append"}}]}
 JSON
+B="$(crashes)"
 check "a manifest-list that is a FIFO is refused, not a hang (XX001)" \
-	"$(sqlstate_or_hang "SELECT * FROM pgcolumnar.iceberg_data_files('$MDJSON')")" \
-	"XX001"; fifo_release "$MLFIFO"
-check "backend still up after the manifest-list FIFO refusal" "$(q 'SELECT 1')" "1"
+	"$(refusal_or_hang "SELECT * FROM pgcolumnar.iceberg_data_files('$MDJSON')")" \
+	"XX001 (not a regular file)"; fifo_release "$MLFIFO"
+check "backend still up after the manifest-list FIFO refusal" "$(survived "$B")" "1"
 
 # =========================================================================
 # #4  a manifest_file.sequence_number that is the union's NULL branch decoded
@@ -182,10 +232,12 @@ check "control: a present min_sequence_number decodes to its value (#686)" \
 
 NS="$DEST/nullseq/db/t/metadata/t.metadata.json"
 NSC="$DEST/nullseq_ctl/db/t/metadata/t.metadata.json"
+B="$(crashes)"
 check "iceberg_scan refuses a null manifest seq an ADDED entry must inherit (XX001, not a silent wrong row)" \
-	"$(sqlstate_of "SELECT count(*) FROM pgcolumnar.iceberg_scan('$NS') AS t(id bigint, region text, amount int)")" \
-	"XX001"
-check "backend still up after the null-sequence refusal" "$(q 'SELECT 1')" "1"
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$NS') AS t(id bigint, region text, amount int)" \
+		'has a null sequence number that an added entry' "null sequence to inherit")" \
+	"XX001 (null sequence to inherit)"
+check "backend still up after the null-sequence refusal" "$(survived "$B")" "1"
 check "control: a concrete manifest seq scans all 5 rows (seq-3 delete is older than seq-5 data)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$NSC') AS t(id bigint, region text, amount int)")" \
 	"5"
@@ -197,10 +249,12 @@ check "control: a concrete manifest seq scans all 5 rows (seq-3 delete is older 
 #     schema and misprojects every row). Asymmetric with ice_current_snapshot.
 # =========================================================================
 DS="$DEST/danglingschema/db/t/metadata/t.metadata.json"
+B="$(crashes)"
 check "a dangling current-schema-id is refused (XX001), not silently stale-read" \
-	"$(sqlstate_of "SELECT amount FROM pgcolumnar.iceberg_scan('$DS') AS t(amount int)")" \
-	"XX001"
-check "backend still up after the dangling-schema refusal" "$(q 'SELECT 1')" "1"
+	"$(refusal "SELECT amount FROM pgcolumnar.iceberg_scan('$DS') AS t(amount int)" \
+		'is not present in the schemas array' "dangling schema id")" \
+	"XX001 (dangling schema id)"
+check "backend still up after the dangling-schema refusal" "$(survived "$B")" "1"
 # control: the SAME data with a RESOLVABLE current-schema-id reads the correct
 # column (amount = field id 3 = 10..50). Proves only the dangling id flips it.
 DSC="$DEST/danglingschema_ctl/db/t/metadata/t.metadata.json"
