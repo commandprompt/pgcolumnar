@@ -12,7 +12,6 @@ decode_skip_interrupts
 harness_selftest
 native_cancel
 native_fetch_interrupt
-native_page_offset_bound
 native_param_pushdown
 native_parquet_codecs
 native_parquet_fdw

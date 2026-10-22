@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 70
+suites_not_covered 69
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6057,4 +6057,26 @@ suites_not_covered 70
 #     never         4148 + 7 = 4155
 #     dated         2832 + 6 = 2838
 #     4155 + 2838 == 6993
-checks_never_observed_red 4155
+#
+# #1341, native_page_offset_bound seeded, with its twin (OffgridwithJD): 4155 -> 4157, and
+# suites_not_covered 70 -> 69. The suite had no rows. It enters with 12 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# Every refusal arm counted any psql failure as refused: with the whole-group guard
+# removed the backend segfaulted and the arm still passed, and with the projected
+# guard removed a later XX001 passed it. Each now wants XX001 with the guard's own
+# message. Survival was a bare SELECT 1, which answers again after crash recovery:
+# with the probe 4s late, main passed both whole-group survival arms with the backend
+# killed. It now also reads the server log's crash count. And nothing read an intact
+# table, so a guard over-applied to refuse every chunk (overall) or a legal chunk
+# ending exactly at its group end (offby1) passed all 10: two controls now read rows
+# behind an OFFSET 0 fence, which an aggregate over an intact table would not decode.
+# 10 are dated by four mutations, each reddening the same names in both twins. With
+# the whole-group guard removed, whether the read segfaults or fails decoding depends
+# on where it lands; its three refusal checks are red either way. 2 arrive never:
+# the two projected survival arms, which no mutation crashes.
+#
+#     ledger rows   6993 + 12 = 7005
+#     never         4155 + 2 = 4157
+#     dated         2838 + 10 = 2848
+#     4157 + 2848 == 7005
+checks_never_observed_red 4157
