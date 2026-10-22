@@ -334,6 +334,7 @@ behaviour, the source of that number is named.
 - [286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead](#286-test_native_compactpy-online-compaction-retires-only-what-every-snapshot-agrees-is-dead)
 - [287. test_native_agg_deletes.py: metadata aggregates over a table with deletes answer right and stay cheap](#287-test_native_agg_deletespy-metadata-aggregates-over-a-table-with-deletes-answer-right-and-stay-cheap)
 - [288. test_native_cluster.py: Z-order clustering reorders storage, tightens the zone maps, and refuses what it cannot cluster on](#288-test_native_clusterpy-z-order-clustering-reorders-storage-tightens-the-zone-maps-and-refuses-what-it-cannot-cluster-on)
+- [289. test_native_exact_selection.py: exact selection rules out vectors no zone map can, and loses no row on a bound](#289-test_native_exact_selectionpy-exact-selection-rules-out-vectors-no-zone-map-can-and-loses-no-row-on-a-bound)
 
 ## 1. How to read a test in here
 
@@ -11131,3 +11132,31 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 | `test_native_cluster_unsupported_type_is_refused` | unsupported type errors cleanly |
 | `test_native_cluster_missing_column_is_refused` | missing column errors cleanly |
 | `test_native_cluster_backend_survives_the_refusals` | backend still up after the refusals |
+
+## 289. test_native_exact_selection.py: exact selection rules out vectors no zone map can, and loses no row on a bound
+
+The twin of `test/native_exact_selection.sh`. On a 32-vector table where z holds only multiples of ten, z BETWEEN 51 AND 59 is ruled out by value in every vector, by no zone map, decoding only the qual column; the all-matching control decodes every column and rules out nothing; the equality form is pruned whole by bloom; and selective, partial, on-bound and all-matching queries return what a heap mirror built from the generator returns.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()`, so two failed reads never agree, and a counter that cannot be read is a failed reading, never a number.
+
+| test | what it holds |
+| --- | --- |
+| `test_nes_the_zero_match_plan_is_a_columnar_custom_scan` | the zero-match plan is a columnar custom scan |
+| `test_nes_one_row_group` | one row group, so every count below is one group's |
+| `test_nes_the_predicate_matches_no_row` | premise: the predicate really matches no row |
+| `test_nes_the_control_matches_every_row` | and the control matches every row |
+| `test_nes_zone_maps_rule_out_nothing` | ZONE MAPS RULE OUT NOTHING, which is what makes this 1b-ii |
+| `test_nes_no_whole_row_group_is_pruned` | no whole row group is pruned either |
+| `test_nes_explain_reports_vector_decodes` | EXPLAIN reports Columnar Vector Decodes |
+| `test_nes_the_control_decodes_every_column_of_every_vector` | the control decodes every column of every vector |
+| `test_nes_exact_selection_rules_out_every_vector` | exact selection rules out every vector, none of them by zone map |
+| `test_nes_a_zero_matching_predicate_decodes_only_the_qual_column` | a zero-matching predicate decodes the qual column and no payload column |
+| `test_nes_the_control_rules_out_no_vector_by_value` | and the control rules out no vector by value |
+| `test_nes_the_zero_matching_query_returns_nothing` | the zero-matching query returns nothing |
+| `test_nes_the_equality_form_is_pruned_by_bloom` | the EQUALITY form is pruned by bloom and reaches no decode |
+| `test_nes_a_selective_matching_predicate_returns_the_right_rows` | a selective matching predicate still returns the right rows |
+| `test_nes_a_partially_matching_range_returns_the_right_rows` | and a partially matching range does too |
+| `test_nes_a_range_matching_only_on_its_bounds_returns_them` | a range whose only matches lie on its bounds still returns them |
+| `test_nes_the_control_returns_every_row` | the control returns every row |
