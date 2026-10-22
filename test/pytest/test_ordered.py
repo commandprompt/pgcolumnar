@@ -160,7 +160,7 @@ def test_a_conftest_cannot_switch_off_the_order_collapse_guard(pytester, expect)
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.run_failed(plain, "premise: the collapse is refused when nobody rebinds")
+    expect.run_failed(plain, "the collapse is refused when nobody rebinds")
     plain.stderr.fnmatch_lines(["*order-killed*"])
 
     pytester.makeconftest(

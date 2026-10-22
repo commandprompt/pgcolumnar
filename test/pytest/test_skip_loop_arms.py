@@ -140,8 +140,9 @@ def test_the_mismatch_names_the_loop_that_drifted_and_not_the_clean_one(tmp_path
     body = AGREE.replace("_n", "_a") + "\n" + DRIFTED.replace("_n", "_b")
     counts, bad = _sweep(tmp_path / "t", expect, two=body)
 
-    # The premise, or the pin below is pinning one of one rather than one of two.
-    expect.num(counts.get("compared", 0), 2, "premise: BOTH loops were compared")
+    # Without this, the pin below is pinning one of one rather than one of two. It
+    # reads the tool's own counter, so a change to the tool can redden it: an arm.
+    expect.num(counts.get("compared", 0), 2, "BOTH loops were compared")
 
     drift_line = next(i + 1 for i, l in enumerate(body.splitlines())
                       if l.lstrip().startswith("for _b in"))
