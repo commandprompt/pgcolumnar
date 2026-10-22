@@ -6534,8 +6534,11 @@ suites_not_covered 47
 # bad-magic guard refused instead and main passed. Each arm now wants its own guard's
 # SQLSTATE and message, and a survival check reads the server log's count of killed
 # backends. The oracle is a heap table written from the generator, and the self-join counts
-# are check_num, since two failed reads agreed. 10 are dated by seven mutations, each the
-# same names in both twins. 10 arrive never.
+# are check_num, since two failed reads agreed. The skipped scan's row count read a plain
+# int4 constant, a cross-type comparison that skips nothing (#1712), so it came from a full
+# scan (jdatcmd's #1711 review); it now runs the plan's own int8 query, and skipshift (each
+# group's skip decision moved to the next group, still 3 skipped) dates it. 10 are dated by
+# eight mutations, each the same names in both twins. 10 arrive never.
 #
 #     ledger rows   7480 + 20 = 7500
 #     never         4310 + 10 = 4320

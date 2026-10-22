@@ -130,8 +130,11 @@ SKP="$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) 
 check "the skip file has four row groups" "$(explain_field "$SKP" 'Row Groups')" "4"
 check "a selective predicate skips the three row groups it cannot match" \
 	"$(explain_field "$SKP" 'Row Groups Skipped')" "3"
+# The same query the plan above measured, int8 constant and all: a plain 196608 is an
+# int4 constant, a cross-type comparison that skips nothing (#1712), so the count was
+# read from a full scan and stayed right whatever skipping did (#1711 review).
 check_num "and the skipped scan still returns every matching row" \
-	"$(q "SELECT count(*) FROM fsk WHERE id > 196608")" "3392"
+	"$(q "SELECT count(*) FROM fsk WHERE id > 196608::int8")" "3392"
 
 # ---- nested foreign table (int[], text[], composite) ------------------------
 psql_run "CREATE TYPE fdw_npc AS (x int, y text);"
