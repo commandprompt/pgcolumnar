@@ -13,7 +13,6 @@ harness_selftest
 native_agg_deletes
 native_cancel
 native_cluster
-native_compact
 native_ctas
 native_encoding
 native_exact_selection
