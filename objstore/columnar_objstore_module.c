@@ -2002,8 +2002,8 @@ os_flush_part(PgColumnarObjSink *s)
 						s->h->url, resp.status)));
 	/* The part's ETag is the server's word for its bytes; CompleteMultipart
 	 * validates the list against it on a real S3, so echo it verbatim (already
-	 * quoted by the server). The fixture ignores it and concatenates by part
-	 * number, so both are satisfied. */
+	 * quoted by the server). The fixture checks it the same way and assembles
+	 * the listed parts, so both are satisfied. */
 	etag = resp.etag[0] ? resp.etag : "\"\"";
 	appendStringInfo(&s->completeXml,
 					 "<Part><PartNumber>%d</PartNumber><ETag>%s</ETag></Part>",

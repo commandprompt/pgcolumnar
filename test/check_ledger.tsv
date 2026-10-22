@@ -5175,6 +5175,41 @@ objstore_s3_read	objstore_s3_read	premise: signed run logged requests	15;16;17;1
 objstore_s3_read	objstore_s3_read	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 objstore_s3_read	objstore_s3_read	region: AWS_DEFAULT_REGION is the fallback	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION is never consulted
 objstore_s3_read	objstore_s3_read	region: AWS_REGION outranks AWS_DEFAULT_REGION	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_sink_write	objstore_sink_write	allow-list: an unlisted endpoint refuses 42501 before any write	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	and completed it exactly once (POST with uploadId, no partNumber)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: CompleteMultipartUpload is never sent and read as done
+objstore_sink_write	objstore_sink_write	arrow export to s3:// also round-trips	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
+objstore_sink_write	objstore_sink_write	cancel: no _SUCCESS marker at the prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	cancel: no completed object remains at the prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	cancel: the dispatcher issued DELETE over the known keys	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	inject: every upload started was aborted (no billable orphan)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a failed export never aborts its multipart upload
+objstore_sink_write	objstore_sink_write	inject: mid-upload failure surfaces as disk-full (53100)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	inject: the key does not exist	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no multipart, the growing object is PUT to the final key as it grows
+objstore_sink_write	objstore_sink_write	inject: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
+objstore_sink_write	objstore_sink_write	large export to s3:// succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	large round trip: s3 read-back == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last part is left out of the CompleteMultipartUpload list
+objstore_sink_write	objstore_sink_write	parallel export to an s3:// prefix succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel remote: a _SUCCESS marker object exists at the prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel remote: the marker went to the prefix as a PUT	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: a re-run into the same prefix succeeds (overwrite)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: every worker PUT went to the prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: one object per worker was written (4)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: the union of the per-worker objects == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
+objstore_sink_write	objstore_sink_write	part failure: a refused part fails the export (58030)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a part upload the server refused is read as stored
+objstore_sink_write	objstore_sink_write	part failure: the key does not exist	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no multipart, the growing object is PUT to the final key as it grows
+objstore_sink_write	objstore_sink_write	part failure: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
+objstore_sink_write	objstore_sink_write	premise: a worker was uploading before the cancel	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: the export was cancelled, not completed	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: the fault landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: the large export took the multipart protocol	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: the part failure landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	shrink: _SUCCESS certifies the reconciled prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	shrink: parts 0002/0003 from the larger run are gone	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	shrink: the 4-worker run wrote 4 parts + marker	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	small export to s3:// succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	small object went as ONE plain PUT (no multipart)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	small round trip: s3 read-back == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
 objstore_stash_recovery	objstore_stash_recovery	and the installed module is still the one that was there, not the debris	15;16;17;18;19	2026-10-22	objstore_module.sh start guard with no debris branch: every stash restored over the installed module
 objstore_stash_recovery	objstore_stash_recovery	and the module left installed is still valid	15;16;17;18;19	never	-
 objstore_stash_recovery	objstore_stash_recovery	and the stash is cleared	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
