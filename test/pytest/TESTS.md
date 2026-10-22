@@ -303,6 +303,7 @@ behaviour, the source of that number is named.
 - [255. test_encode_invariants.py: encoding invariants for the #155 bulk-load optimisations](#255-test_encode_invariantspy-encoding-invariants-for-the-155-bulk-load-optimisations)
 - [256. test_read_stream.py: reads through a read stream return what the synchronous path returns](#256-test_read_streampy-reads-through-a-read-stream-return-what-the-synchronous-path-returns)
 - [257. test_parquet_level_width.py: the Parquet level-width helper is single-sourced, unsigned and bounded](#257-test_parquet_level_widthpy-the-parquet-level-width-helper-is-single-sourced-unsigned-and-bounded)
+- [258. test_parquet_nested.py: Parquet nested export writes lists and groups that read back as the generator's values](#258-test_parquet_nestedpy-parquet-nested-export-writes-lists-and-groups-that-read-back-as-the-generators-values)
 
 ## 1. How to read a test in here
 
@@ -10077,3 +10078,18 @@ The pytest twin of `test/parquet_level_width.sh` (ported for #1341), every check
 | `test_no_signed_shift_remains` | and no signed 1 << remains in it -- read only over a body that was found |
 | `test_the_loop_is_bounded` | the loop is bounded below 32 shifts |
 | `test_a_non_positive_maximum_returns_first` | a non-positive maximum returns before shifting at all |
+
+## 258. test_parquet_nested.py: Parquet nested export writes lists and groups that read back as the generator's values
+
+The pytest twin of `test/parquet_nested.sh` (ported for #1341), every check by the shell's name. A columnar table with int[], text[] and composite columns, NULL arrays, empty arrays, NULL elements and NULL composites among them, is exported to Parquet; pyarrow reads it back as list/list/struct with every row equal to the generator's. A 70,000-row table spans several row groups and round-trips whole, and a multi-dimensional array is refused. Every test declines by the shell's skip name without pyarrow. On a private database, with the files in `server_dir`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_nested_parquet_export_writes_every_row` | nested Parquet export rows written |
+| `test_the_parquet_fields_are_list_list_struct` | nested Parquet field types |
+| `test_every_parquet_value_matches_the_generator` | nested Parquet values match expectation -- every id 1..5000 once, then each row equals the generator's; an empty file used to match |
+| `test_the_multi_row_group_export_writes_every_row` | np2 export rows |
+| `test_the_multi_row_group_values_match` | np2 values match |
+| `test_a_multidimensional_array_is_refused_for_parquet` | reject multi-dim array -- the multi-dimensional refusal itself; any error used to count |
