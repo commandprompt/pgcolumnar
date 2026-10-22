@@ -371,6 +371,7 @@ behaviour, the source of that number is named.
 - [323. test_native_read_parquet.py: read_parquet returns the rows that were written, refuses what it must, and keeps its file gate](#323-test_native_read_parquetpy-read_parquet-returns-the-rows-that-were-written-refuses-what-it-must-and-keeps-its-file-gate)
 - [324. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused](#324-test_objstore_listingpy-a-remote-prefix-or-glob-is-listed-page-by-page-an-exact-key-is-not-listed-and-a-listing-that-cannot-advance-or-fails-is-refused)
 - [325. test_native_rewrite_conc.py: The online rewrite runs alongside writers without losing a row, and without blocking them](#325-test_native_rewrite_concpy-the-online-rewrite-runs-alongside-writers-without-losing-a-row-and-without-blocking-them)
+- [326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received](#326-test_objstore_addressingpy-gs-and-s3-virtual-host-addressing-checked-by-the-request-path-the-server-received)
 
 ## 1. How to read a test in here
 
@@ -12247,3 +12248,30 @@ Every test makes one check under the shell's name, on a private database. The wo
 | `test_a_writer_inserts_while_the_rewrite_holds_its_lock` | a writer with a 3 s lock_timeout inserts while the rewrite holds its lock |
 | `test_the_rewrite_still_held_its_lock_when_both_had_finished` | and the rewrite still held its lock when both had finished |
 | `test_the_held_rewrite_itself_completed` | the held rewrite itself completed |
+
+## 326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received
+
+The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, and a key with a space, '+' and '=' under both addressings. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
+
+### Every test
+
+Every test makes one check under the shell's name. Each addressing check reads the request paths the fixture logged for that read, not only the answer, since the fixture serves the same object either way. Refusals are a SQLSTATE plus the phrase that names the cause; a failed read is a query_error, never text. The first test mirrors the shell's two pgc_skip names: it declines without pyarrow, or UNAVAILABLE_ENDPOINT where pgc-bucket.s3.local does not resolve, and the rest decline with it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_server_is_up` | premise: fixture up |
+| `test_an_s3_path_style_read` | s3:// path-style read |
+| `test_path_style_puts_the_bucket_in_the_request_path` | path-style put the bucket in the request path |
+| `test_a_key_needing_encoding_reads_back_path_style` | a key with a space, '+' and '=' reads back (path-style) |
+| `test_the_path_style_request_path_is_the_key_encoded_once` | and its path-style request path is the key URI-encoded once |
+| `test_a_gs_read_round_trips` | gs:// read round-trips (scheme handled, HMAC creds reused) |
+| `test_a_gs_write_round_trips` | gs:// write round-trips |
+| `test_the_gs_written_object_reads_back` | gs:// read-back of the written object |
+| `test_a_virtual_host_read_equals_the_path_style_read` | virtual-host read == path-style read (same object, different addressing) |
+| `test_virtual_host_puts_the_key_alone_in_the_path` | virtual-host put the KEY ALONE in the path (no bucket segment) |
+| `test_a_key_needing_encoding_reads_back_virtual_host` | a key with a space, '+' and '=' reads back (virtual-host) |
+| `test_the_virtual_host_request_path_is_the_key_alone_encoded_once` | and its virtual-host request path is the key alone, URI-encoded once |
+| `test_addressing_path_puts_the_bucket_back_in_the_path` | removal proof: with addressing=path the bucket is back in the path |
+| `test_the_request_path_carries_the_bucket_again` | and the request path carried the bucket again |
+| `test_s3_with_no_endpoint_demands_one` | s3:// with no endpoint demands one (names AWS_ENDPOINT_URL) |
+| `test_gs_with_no_endpoint_goes_to_storage_googleapis_com` | gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name) |

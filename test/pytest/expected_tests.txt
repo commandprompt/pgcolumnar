@@ -1005,6 +1005,8 @@ guard_tests 806
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 3813 -> 3829 for #1341's test_objstore_addressing.py, the twin of objstore_addressing.sh:
+# 16 checks in 16 tests, by collection over the cluster files.
 # cluster_tests 3802 -> 3813 for #1341's test_native_rewrite_conc.py, the twin of native_rewrite_conc.sh:
 # 11 checks in 11 tests, by collection over the cluster files.
 # cluster_tests 3787 -> 3802 for #1341's test_objstore_listing.py, the twin of objstore_listing.sh:
@@ -1156,4 +1158,4 @@ guard_tests 806
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 3813
+cluster_tests 3829

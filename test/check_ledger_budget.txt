@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 44
+suites_not_covered 43
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6596,4 +6596,20 @@ suites_not_covered 44
 #     never         4328 + 2 = 4330
 #     dated         3202 + 9 = 3211
 #     4330 + 3211 == 7541
-checks_never_observed_red 4330
+#
+# #1341, objstore_addressing seeded, with its twin (OffgridwithJD): 4330 -> 4335,
+# and suites_not_covered 44 -> 43. The suite had no rows. It enters with 16 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The gs:// no-endpoint check passed whenever the message did not name AWS_ENDPOINT_URL, so a
+# mistyped default host (gswrongdef) passed 12/12; it now requires the allow-list refusal naming
+# storage.googleapis.com:443. No key needed URI-encoding, so a space sent as '+' (plusspace) or
+# '+'/'=' left bare (plusraw) passed 12/12; a key "dir sp/a+b=c.parquet" is now read under both
+# addressings and its request path checked in the fixture's log. 11 are dated by seven
+# mutations, each the same names in both twins. 5 arrive never. Neither pgc_skip name
+# (pyarrow, the virtual-host name) gets a row: CI emits neither.
+#
+#     ledger rows   7541 + 16 = 7557
+#     never         4330 + 5 = 4335
+#     dated         3211 + 11 = 3222
+#     4335 + 3222 == 7557
+checks_never_observed_red 4335
