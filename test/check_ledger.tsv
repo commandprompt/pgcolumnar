@@ -5759,6 +5759,45 @@ phase3	phase3	update key new	15;16;17;18;19	never	-
 phase3	phase3	update key total	15;16;17;18;19	never	-
 phase3	phase3	update one row	15;16;17;18;19	never	-
 phase3	phase3	update value	15;16;17;18;19	never	-
+phase4	phase4	IOS off: plain index scan	15;16;17;18;19	never	-
+phase4	phase4	btree miss	15;16;17;18;19	never	-
+phase4	phase4	btree plan is index scan	15;16;17;18;19	never	-
+phase4	phase4	btree point	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch hands back the next live row's values
+phase4	phase4	btree range count	15;16;17;18;19	never	-
+phase4	phase4	btree range first	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch hands back the next live row's values
+phase4	phase4	check reject	15;16;17;18;19	never	-
+phase4	phase4	ck unchanged	15;16;17;18;19	never	-
+phase4	phase4	conv back heap	15;16;17;18;19	never	-
+phase4	phase4	conv col count	15;16;17;18;19	never	-
+phase4	phase4	conv col sum	15;16;17;18;19	never	-
+phase4	phase4	conv col value	15;16;17;18;19	never	-
+phase4	phase4	conv heap count	15;16;17;18;19	never	-
+phase4	phase4	conv heap sum	15;16;17;18;19	never	-
+phase4	phase4	conv heap value	15;16;17;18;19	never	-
+phase4	phase4	conv now columnar	15;16;17;18;19	never	-
+phase4	phase4	conv starts heap	15;16;17;18;19	never	-
+phase4	phase4	covering value	15;16;17;18;19	never	-
+phase4	phase4	deleted point	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch ignores the delete vector
+phase4	phase4	deleted range	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch ignores the delete vector
+phase4	phase4	deleted range plan is index scan	15;16;17;18;19	never	-
+phase4	phase4	full-table scan available	15;16;17;18;19	never	-
+phase4	phase4	hash miss	15;16;17;18;19	never	-
+phase4	phase4	hash plan is index scan	15;16;17;18;19	never	-
+phase4	phase4	hash point	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch hands back the next live row's values
+phase4	phase4	hash point2	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch hands back the next live row's values
+phase4	phase4	neighbor present	15;16;17;18;19	never	-
+phase4	phase4	not null reject	15;16;17;18;19	never	-
+phase4	phase4	survivors around	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch ignores the delete vector
+phase4	phase4	updated new found	15;16;17;18;19	never	-
+phase4	phase4	updated old gone	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch ignores the delete vector
+phase4	phase4	uq cross-stmt dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a duplicate of a flushed unique key is refused with an internal error (XX000) not 23505
+phase4	phase4	uq final count	15;16;17;18;19	never	-
+phase4	phase4	uq initial	15;16;17;18;19	never	-
+phase4	phase4	uq new row	15;16;17;18;19	never	-
+phase4	phase4	uq unchanged	15;16;17;18;19	2026-10-22	columnar_tableam.c: a unique check that finds a buffered row calls abort()
+phase4	phase4	uq within-stmt dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a unique check that finds a buffered row calls abort()
+phase4	phase4	uq2 count	15;16;17;18;19	never	-
+phase4	phase4	uq2 dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a duplicate of a flushed unique key is refused with an internal error (XX000) not 23505
 preimage_rewrite	preimage_rewrite	...and prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
 preimage_rewrite	preimage_rewrite	...and still answers correctly with the fold enabled	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and the heap agrees it is unsatisfiable	15;16;17;18;19	never	-
