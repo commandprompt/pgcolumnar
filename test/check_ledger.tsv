@@ -4812,6 +4812,17 @@ native_rewrite	native_rewrite	row count after rewrite	15;16;17;18;19	2026-10-22	
 native_rewrite	native_rewrite	there are deleted rows to reclaim	15;16;17;18;19	never	-
 native_rewrite	native_rewrite	unique constraint still enforced	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
 native_rewrite	native_rewrite	vacuum rewrites into a fresh storage id	15;16;17;18;19	never	-
+native_rewrite_conc	native_rewrite_conc	a compact_rewrite holds its lock on t_col mid-verb	15;16;17;18;19	2026-10-22	columnar_vacuum.c: compact_rewrite no longer honours pgcolumnar.maintenance_hold_ms
+native_rewrite_conc	native_rewrite_conc	a reader with a 3 s lock_timeout finishes while the rewrite holds its lock	15;16;17;18;19	2026-10-22	columnar_vacuum.c: compact_rewrite opens the table with AccessExclusiveLock instead of ShareUpdateExclusiveLock
+native_rewrite_conc	native_rewrite_conc	a writer with a 3 s lock_timeout inserts while the rewrite holds its lock	15;16;17;18;19	2026-10-22	columnar_vacuum.c: compact_rewrite opens the table with AccessExclusiveLock instead of ShareUpdateExclusiveLock
+native_rewrite_conc	native_rewrite_conc	all workers succeeded (retried past serialization failures)	15;16;17;18;19	2026-10-22	columnar_metadata.c: every delete flush is refused as a concurrent compaction (over-apply)
+native_rewrite_conc	native_rewrite_conc	and the rewrite still held its lock when both had finished	15;16;17;18;19	2026-10-22	columnar_vacuum.c: compact_rewrite no longer honours pgcolumnar.maintenance_hold_ms
+native_rewrite_conc	native_rewrite_conc	conc-rewrite count/sum	15;16;17;18;19	2026-10-22	columnar_metadata.c: the F3b conflict check never raises, so a delete racing a committed rewrite lands on the retired group
+native_rewrite_conc	native_rewrite_conc	conc-rewrite range	15;16;17;18;19	2026-10-22	columnar_metadata.c: the F3b conflict check never raises, so a delete racing a committed rewrite lands on the retired group
+native_rewrite_conc	native_rewrite_conc	conc-rewrite whole-row	15;16;17;18;19	2026-10-22	columnar_metadata.c: the F3b conflict check never raises, so a delete racing a committed rewrite lands on the retired group
+native_rewrite_conc	native_rewrite_conc	row count sane	15;16;17;18;19	never	-
+native_rewrite_conc	native_rewrite_conc	the compactor rewrote groups while the workers were writing	15;16;17;18;19	2026-10-22	columnar_metadata.c: every delete flush is refused as a concurrent compaction (over-apply)
+native_rewrite_conc	native_rewrite_conc	the held rewrite itself completed	15;16;17;18;19	never	-
 native_roundtrip	native_roundtrip	native aggregate (sum over a scanned column)	15;16;17;18;19	2026-10-17	columnar_reader.c: the native reader never loads the last row group
 native_roundtrip	native_roundtrip	native count with filter	15;16;17;18;19	2026-10-17	columnar_reader.c: the native reader never loads the last row group
 native_roundtrip	native_roundtrip	native filtered scan	15;16;17;18;19	2026-10-17	columnar_reader.c: a null by-reference column reads back as a present empty value;columnar_reader.c: zone-map pruning skips the groups that can match and keeps the ones that cannot

@@ -365,6 +365,7 @@ behaviour, the source of that number is named.
 - [317. test_native_parquet_fdw.py: the Parquet FDW reads an exported file as a foreign table, prunes what it can, and refuses each misuse by its own guard](#317-test_native_parquet_fdwpy-the-parquet-fdw-reads-an-exported-file-as-a-foreign-table-prunes-what-it-can-and-refuses-each-misuse-by-its-own-guard)
 - [318. test_native_read_parquet.py: read_parquet returns the rows that were written, refuses what it must, and keeps its file gate](#318-test_native_read_parquetpy-read_parquet-returns-the-rows-that-were-written-refuses-what-it-must-and-keeps-its-file-gate)
 - [319. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused](#319-test_objstore_listingpy-a-remote-prefix-or-glob-is-listed-page-by-page-an-exact-key-is-not-listed-and-a-listing-that-cannot-advance-or-fails-is-refused)
+- [320. test_native_rewrite_conc.py: The online rewrite runs alongside writers without losing a row, and without blocking them](#320-test_native_rewrite_concpy-the-online-rewrite-runs-alongside-writers-without-losing-a-row-and-without-blocking-them)
 
 ## 1. How to read a test in here
 
@@ -12026,3 +12027,25 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_truncated_page_with_no_keys_is_refused` | a truncated page with no keys is refused, not looped |
 | `test_a_list_that_fails_is_refused_not_read_as_empty` | a LIST that returns HTTP 500 is refused, not read as an empty prefix |
 | `test_the_backend_is_still_up_after_the_listing_refusals` | backend still up after the listing refusals |
+
+## 320. test_native_rewrite_conc.py: The online rewrite runs alongside writers without losing a row, and without blocking them
+
+The twin of `test/native_rewrite_conc.sh`. Six workers insert, delete and update disjoint ranges of a columnar table and its heap oracle while a compactor loops compact_rewrite and compact. A delete that races a rewrite of its group is refused with a serialization failure and retried, so the two tables must end equal. A compact_rewrite held mid-verb must then let a reader and a writer through.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The workers and the compactor run as threads, each statement retried as the shell's runsql retries it. The oracle comparisons hash both tables, and a failed read is a value no other read shares. The held rewrite runs in its own thread; the reader and the writer each set a 3 s lock_timeout, and the lock is checked to be still held after both finish.
+
+| test | what it holds |
+| --- | --- |
+| `test_all_rewrite_workers_succeeded` | all workers succeeded (retried past serialization failures) |
+| `test_the_compactor_rewrote_groups_while_the_workers_were_writing` | the compactor rewrote groups while the workers were writing |
+| `test_conc_rewrite_whole_row` | conc-rewrite whole-row |
+| `test_conc_rewrite_count_sum` | conc-rewrite count/sum |
+| `test_conc_rewrite_range` | conc-rewrite range |
+| `test_row_count_sane` | row count sane |
+| `test_a_compact_rewrite_holds_its_lock_mid_verb` | a compact_rewrite holds its lock on t_col mid-verb |
+| `test_a_reader_finishes_while_the_rewrite_holds_its_lock` | a reader with a 3 s lock_timeout finishes while the rewrite holds its lock |
+| `test_a_writer_inserts_while_the_rewrite_holds_its_lock` | a writer with a 3 s lock_timeout inserts while the rewrite holds its lock |
+| `test_the_rewrite_still_held_its_lock_when_both_had_finished` | and the rewrite still held its lock when both had finished |
+| `test_the_held_rewrite_itself_completed` | the held rewrite itself completed |
