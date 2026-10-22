@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 57
+suites_not_covered 56
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6306,4 +6306,21 @@ suites_not_covered 57
 #     never         4232 + 2 = 4234
 #     dated         2958 + 16 = 2974
 #     4234 + 2974 == 7208
-checks_never_observed_red 4234
+#
+# #1341, native_parquet_stack seeded, with its twin (OffgridwithJD): 4234 -> 4238,
+# and suites_not_covered 57 -> 56. The suite had no rows. It enters with 8
+# checks from five-major runs (all green on each of 15-19, shell and twin alike). The footer
+# parser has two independent unbounded recursions, PgColumnarThriftSkip and walk_schema,
+# each guarded by check_stack_depth(); the fixture pins max_stack_depth so a ~20 KB crafted
+# footer trips the guard without overflowing the real C stack, so removing a guard fails the
+# check by a wrong SQLSTATE rather than by crashing. The two refusal checks pin 54001, not
+# any error, and read_parquet is held to the same refusal. 4 are dated: the nested-struct
+# and read_parquet refusals by removing the thrift guard, the schema-chain refusal by removing
+# the walk guard, and the valid-file control by a guard that trips on any nesting. 4 arrive
+# never: the four survival checks, which no mutation crashes at the pinned depth.
+#
+#     ledger rows   7208 + 8 = 7216
+#     never         4234 + 4 = 4238
+#     dated         2974 + 4 = 2978
+#     4238 + 2978 == 7216
+checks_never_observed_red 4238
