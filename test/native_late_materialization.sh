@@ -42,7 +42,7 @@ NEEDLE=zqx
 # vector keeps a survivor. That last part is deliberate: it isolates 1a's per-row
 # materialization from #452 phase 2, which skips a vector's payload DECODE only
 # when NO row in it passes. With a survivor in each vector phase 2 rules none out
-# (the "nothing pruned at the vector level" premise below), so what this suite
+# (the "nothing pruned at the vector level" check below), so what this suite
 # measures is 1a alone. Phase 2's own vector skipping is proven in
 # test/native_decode_gating.sh.
 GEN="SELECT g AS id,
@@ -87,13 +87,16 @@ scalar() {
 
 # ---- premises, so a green run cannot mean something else --------------------
 
-n_rows=$(scalar "SELECT count(*) FROM n;")
-check_num "premise: the fixture loaded every row" "$n_rows" "$ROWS"
+# The two fixture premises read the heap mirror h, which pgcolumnar does not write,
+# so no pgcolumnar change can redden them. The comparison with n is not a premise:
+# a writer that drops one row (one line in pgcolumnar_tuple_insert) reddens it.
+h_rows=$(scalar "SELECT count(*) FROM h;")
+check_num "premise: the fixture loaded every row" "$h_rows" "$ROWS"
 
 n_match=$(scalar "SELECT count(*) FROM n WHERE k LIKE '%${NEEDLE}%';")
 h_match=$(scalar "SELECT count(*) FROM h WHERE k LIKE '%${NEEDLE}%';")
-check_num "premise: the needle is selective, not most of the table" "$n_match" "20"
-check_num "premise: heap agrees on how many rows match" "$h_match" "$n_match"
+check_num "premise: the needle is selective, not most of the table" "$h_match" "20"
+check_num "heap agrees on how many rows match" "$h_match" "$n_match"
 
 # The scalar columnar custom scan reports "Columnar Projected Columns"; no other
 # node reports it. Without this the counters below would be read off a node that

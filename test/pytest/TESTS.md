@@ -11433,7 +11433,7 @@ Every test makes one check under the shell's name, on a private database built o
 | --- | --- |
 | `test_late_materialization_fixture_loaded_every_row` | premise: the fixture loaded every row |
 | `test_late_materialization_needle_is_selective` | premise: the needle is selective, not most of the table |
-| `test_late_materialization_heap_agrees_on_matches` | premise: heap agrees on how many rows match |
+| `test_late_materialization_heap_agrees_on_matches` | heap agrees on how many rows match |
 | `test_late_materialization_query_runs_on_the_custom_scan` | the query runs on the columnar custom scan |
 | `test_late_materialization_nothing_pruned_at_group_level` | nothing was pruned at the group level |
 | `test_late_materialization_nothing_pruned_at_vector_level` | nothing was pruned at the vector level |
