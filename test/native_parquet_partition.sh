@@ -48,28 +48,75 @@ psql_run "CREATE SERVER pq FOREIGN DATA WRAPPER pgcolumnar_parquet;"
 psql_run "CREATE FOREIGN TABLE ev (id int, v text, dt date, region text)
           SERVER pq OPTIONS (path '$ROOT', partition_columns 'dt,region');"
 
-files_for() {  # files_for WHERE -> files actually read
+wait_up() { local _i; for _i in $(seq 1 60); do [ "$(q 'SELECT 1' 2>/dev/null)" = 1 ] && return; sleep 0.5; done; }
+
+# explain WHERE -> the EXPLAIN ANALYZE of a count over ev under WHERE, or nothing on failure
+explain() {
+	wait_up
 	q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
-	   SELECT count(*) FROM ev WHERE $1" \
-		| grep -E '^\s*Files:' | grep -oE '[0-9]+' | head -1
+	   SELECT count(*) FROM ${2:-ev} WHERE $1"
 }
-pruned_for() {  # pruned_for WHERE -> files dropped before opening
-	local out
-	out="$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
-	          SELECT count(*) FROM ev WHERE $1" \
-		| grep 'Files Pruned' | grep -oE '[0-9]+' | head -1)"
-	[ -z "$out" ] && out=0
-	echo "$out"
+# files_for WHERE [TABLE] -> files actually read, or "no reading" when the plan has no
+# Files line (a failed EXPLAIN printed nothing, which used to read as an empty count)
+files_for() {
+	local out; out="$(explain "$1" "${2:-ev}")"
+	grep -qE '^\s*Files:' <<<"$out" || { echo "no reading (no Files line)"; return; }
+	grep -E '^\s*Files:' <<<"$out" | grep -oE '[0-9]+' | head -1
 }
-errs() {
-	local out
-	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
-		-U postgres -d "$PGC_DB" -At -c "$1" 2>&1)"
-	case "$out" in
-		*ERROR*) echo OK ;;
-		*) echo "NO ERROR" ;;
-	esac
+# pruned_for WHERE [TABLE] -> files dropped before opening. EXPLAIN prints "Files Pruned"
+# only when it is above 0, so a missing line is 0 ONLY when the plan's Files line shows
+# the scan ran. It used to default to 0 on any failure, so with the server stopped the
+# four "prunes nothing" checks passed on no reading at all.
+pruned_for() {
+	local out; out="$(explain "$1" "${2:-ev}")"
+	grep -qE '^\s*Files:' <<<"$out" || { echo "no reading (no Files line)"; return; }
+	local n; n="$(grep 'Files Pruned' <<<"$out" | grep -oE '[0-9]+' | head -1)"
+	echo "${n:-0}"
 }
+
+# refusal SQL REGEX LABEL -> "<SQLSTATE> (LABEL)" when SQL raised an error whose message
+# matches REGEX, "<SQLSTATE>: <message>" for any other error, "no refusal: the connection
+# was lost" on a crash, or "no error". The old errs() took ANY error: with the
+# unknown-column guard removed, a later guard's error stood in and main passed 35/35,
+# and with the explicit encoded-NUL guard removed, the encoding check's error did.
+refusal_of() {	# stdin: psql output -> the refusal reading
+	local re="$1" label="$2" line state msg
+	local out; out="$(cat)"
+	line="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): /\1|/p' <<<"$out" | head -1)"
+	if [ -z "$line" ]; then
+		grep -qE 'server closed the connection|connection to server' <<<"$out" \
+			&& echo "no refusal: the connection was lost" || echo "no error"
+		return
+	fi
+	state="${line%%|*}"; msg="${line#*|}"
+	if grep -qE -- "$re" <<<"$msg"; then echo "$state ($label)"; else echo "$state: $msg"; fi
+}
+refusal() {
+	wait_up
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | refusal_of "$2" "$3"
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+}
+
+# Backends killed by a signal, from the server log: a number, or nothing when the log
+# can't be read. A bare "SELECT 1" answers again once crash recovery is over: with the
+# unknown-column refusal turned into abort(), the old survival check passed.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since BEFORE
+	local _up _now
+	wait_up
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"; return; fi
+	if [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1; return; fi
+	echo "no ([$_up], $(( _now - $1 )) backend crashes)"
+}
+CRASHES_BEFORE="$(crashes)"
 
 # ---- the values are real columns -------------------------------------------
 check "all four partitions read" "$(q 'SELECT count(*) FROM ev;')" "4000"
@@ -101,6 +148,7 @@ check "a predicate on a file column prunes no files" "$(pruned_for 'id < 10')" "
 
 # The point of pruning is that the file is never opened, so its row groups must
 # not appear in the row-group counter either.
+wait_up
 groups_all="$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM ev" \
 	| grep -E '^\s*Row Groups:' | grep -oE '[0-9]+' | head -1)"
 groups_one="$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
@@ -149,12 +197,13 @@ check "a stable clause still prunes" \
 mkdir -p "$ROOT/dt=2026-01-03"
 cp "$ROOT/dt=2026-01-01/region=eu/part.parquet" "$ROOT/dt=2026-01-03/loose.parquet"
 check "a file missing a declared partition component errors" \
-	"$(errs 'SELECT count(*) FROM ev;')" "OK"
+	"$(refusal 'SELECT count(*) FROM ev' 'has no "region=" directory component' 'its own message')" "HV004 (its own message)"
 rm -rf "$ROOT/dt=2026-01-03"
 
 # Only components between the root and the file are partition components, so a
 # file named like one does not set a column from its own basename.
 cp "$ROOT/dt=2026-01-01/region=eu/part.parquet" "$ROOT/dt=2026-01-01/region=eu/dt=1999-01-01.parquet"
+wait_up
 check "a file whose basename looks like a partition component is unaffected" \
 	"$(q "SELECT count(*) FROM ev WHERE dt = DATE '1999-01-01';")" "0"
 rm -f "$ROOT/dt=2026-01-01/region=eu/dt=1999-01-01.parquet"
@@ -162,20 +211,20 @@ rm -f "$ROOT/dt=2026-01-01/region=eu/dt=1999-01-01.parquet"
 psql_run "CREATE FOREIGN TABLE ev_bad (id int, v text, dt date, region text)
           SERVER pq OPTIONS (path '$ROOT', partition_columns 'dt,nosuch');"
 check "an unknown partition column errors rather than being ignored" \
-	"$(errs 'SELECT count(*) FROM ev_bad;')" "OK"
+	"$(refusal 'SELECT count(*) FROM ev_bad' '"nosuch" named in "partition_columns" does not exist' 'its own message')" "42703 (its own message)"
 
 check "an empty partition_columns option is rejected" \
-	"$(errs "CREATE FOREIGN TABLE ev_empty (id int) SERVER pq
-	         OPTIONS (path '$ROOT', partition_columns '');")" "OK"
+	"$(refusal "CREATE FOREIGN TABLE ev_empty (id int) SERVER pq
+	         OPTIONS (path '$ROOT', partition_columns '')" '"partition_columns" option cannot be empty' 'its own message')" "HV00D (its own message)"
 
-# A declared partition column is not bound against the file's leaves, so the
-# file's own column count still has to match what is left. Declaring a column
-# that the file DOES carry as a partition column must therefore fail.
+# Declaring a column the file DOES carry as a partition column must fail. Measured:
+# what refuses it is the missing-component guard (no "v=" directory on the path),
+# which runs before the file's leaves are bound, so this check names that message.
 psql_run "CREATE FOREIGN TABLE ev_dup (id int, v text, dt date, region text)
           SERVER pq OPTIONS (path '$ROOT', partition_columns 'dt,region,v');"
 check "declaring a file column as a partition column errors" \
-	"$(errs 'SELECT count(*) FROM ev_dup;')" "OK"
-check "backend survived the bad declarations" "$(q 'SELECT 1;')" "1"
+	"$(refusal 'SELECT count(*) FROM ev_dup' 'has no "v=" directory component' 'its own message')" "HV004 (its own message)"
+check "backend survived the bad declarations" "$(survived "$CRASHES_BEFORE")" "1"
 
 # ---- Hive value encoding ---------------------------------------------------
 #
@@ -215,10 +264,7 @@ check "all three partitions still read" "$(q 'SELECT count(*) FROM ev_enc;')" "3
 
 # A null partition value prunes like any other: IS NOT NULL excludes exactly the
 # file whose directory carries the marker.
-check "a null partition value prunes" \
-	"$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
-	      SELECT count(*) FROM ev_enc WHERE region IS NOT NULL" \
-		| grep 'Files Pruned' | grep -oE '[0-9]+' | head -1)" "1"
+check "a null partition value prunes" "$(pruned_for "region IS NOT NULL" ev_enc)" "1"
 
 # Percent-encoding can carry any byte, and the value becomes a PostgreSQL text
 # datum, so two byte sequences have to be refused rather than passed through.
@@ -229,15 +275,17 @@ mkdir -p "$ENC/region=a%00b" "$ENC/region=a%FFb"
 cp "$ENC/region=plain/part.parquet" "$ENC/region=a%00b/part.parquet"
 cp "$ENC/region=plain/part.parquet" "$ENC/region=a%FFb/part.parquet"
 # The NUL case is caught by the encoding validation as well as by the explicit
-# check, so this asserts the pair rather than either one; removing the explicit
-# check leaves it passing, which was verified rather than assumed.
+# check. Any error used to pass, so with the explicit check removed the encoding
+# check's error stood in and main passed 35/35. The check now wants the explicit
+# check's own message, so it fails when that guard is gone.
 check "an encoded null byte in a partition value is rejected" \
-	"$(errs 'SELECT count(*) FROM ev_enc;')" "OK"
+	"$(refusal 'SELECT count(*) FROM ev_enc' 'contains an encoded null byte' 'its own message')" "HV004 (its own message)"
 rm -rf "$ENC/region=a%00b"
 check "a byte invalid in the server encoding is rejected" \
-	"$(errs 'SELECT count(*) FROM ev_enc;')" "OK"
+	"$(refusal 'SELECT count(*) FROM ev_enc' 'invalid byte sequence for encoding' 'its own message')" "22021 (its own message)"
 rm -rf "$ENC/region=a%FFb"
+wait_up
 check "the tree reads again once both are gone" "$(q 'SELECT count(*) FROM ev_enc;')" "300"
-check "backend survived the malformed partition values" "$(q 'SELECT 1;')" "1"
+check "backend survived the malformed partition values" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

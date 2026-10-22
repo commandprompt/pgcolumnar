@@ -4490,6 +4490,41 @@ native_parquet_multifile	native_parquet_multifile	predicate skips the two non-ma
 native_parquet_multifile	native_parquet_multifile	read_parquet(directory) == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
 native_parquet_multifile	native_parquet_multifile	schema-mismatched file in directory errors	15;16;17;18;19	never	-
 native_parquet_multifile	native_parquet_multifile	tree read order follows the sorted full path	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked directory's files are not sorted;columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_partition	native_parquet_partition	IN on a partition column prunes	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	__HIVE_DEFAULT_PARTITION__ reads as null	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	a byte invalid in the server encoding is rejected	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	a file missing a declared partition component errors	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	a file whose basename looks like a partition component is unaffected	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	a null partition value is not the literal marker	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	a null partition value prunes	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	a percent-encoded partition value decodes	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	a predicate matching everything prunes nothing	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	a predicate on a file column prunes no files	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	a pruned file's row groups are never counted	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	a stable clause still prunes	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	a volatile clause keeps every matching partition row	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	a volatile clause prunes nothing	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the volatile-clause guard on partition pruning removed
+native_parquet_partition	native_parquet_partition	all four partitions read	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	all three partitions still read	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	an empty partition_columns option is rejected	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	an encoded null byte in a partition value is rejected	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the explicit encoded-NUL guard removed, so the encoding check's 22021 stands in
+native_parquet_partition	native_parquet_partition	an inequality on a partition column prunes	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	an unencoded value is unaffected	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	an unknown partition column errors rather than being ignored	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the unknown-partition-column guard removed, so a later column-count error stands in
+native_parquet_partition	native_parquet_partition	and reads the other half	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	backend survived the bad declarations	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the unknown-partition-column refusal becomes abort()
+native_parquet_partition	native_parquet_partition	backend survived the malformed partition values	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the unknown-partition-column refusal becomes abort()
+native_parquet_partition	native_parquet_partition	both columns prune down to one file	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	declaring a file column as a partition column errors	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	group by a partition column	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	one partition value prunes half the files	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	partition column is typed, not text	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	partition prune plus row-group skip	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	partition values materialize	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	pruned scan still returns the right rows	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	row groups are still skipped inside the surviving files	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	the encoded value is queryable as itself	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	the tree reads again once both are gone	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
 native_parquet_projection	native_parquet_projection	after a dropped column, one column reads 1	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed matches the needed set by target index, not by attribute number
 native_parquet_projection	native_parquet_projection	after a dropped column, projection [d] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed matches the needed set by target index, not by attribute number
 native_parquet_projection	native_parquet_projection	count(*) decodes nothing, survives corruption	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all

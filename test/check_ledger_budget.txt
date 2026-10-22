@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 49
+suites_not_covered 48
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6503,4 +6503,22 @@ suites_not_covered 49
 #     never         4289 + 15 = 4304
 #     dated         3136 + 5 = 3141
 #     4304 + 3141 == 7445
-checks_never_observed_red 4304
+#
+# #1341, native_parquet_partition seeded, with its twin (OffgridwithJD): 4304 -> 4310,
+# and suites_not_covered 49 -> 48. The suite had no rows. It enters with 35 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The pruning reader defaulted to 0 on any failure, so with the server stopped the three
+# 'prunes nothing' checks passed on no reading; 'Files Pruned' prints only above 0, so a
+# missing line now counts as 0 only beside the plan's Files line. The refusals took any
+# error: with the unknown-column guard removed (nocolcheck) a later 42804 stood in, and with
+# the explicit encoded-NUL guard removed (nonul) the encoding check's 22021 did, main 35/35
+# each; every refusal now wants its own message. And survival was a bare SELECT 1, which
+# an abort() in the unknown-column refusal passed with the probe 5 s late; it now reads the
+# server log's crash count. 29 are dated by six mutations, each the same names in both
+# twins. 6 arrive never.
+#
+#     ledger rows   7445 + 35 = 7480
+#     never         4304 + 6 = 4310
+#     dated         3141 + 29 = 3170
+#     4310 + 3170 == 7480
+checks_never_observed_red 4310
