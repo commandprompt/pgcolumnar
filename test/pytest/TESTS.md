@@ -306,6 +306,7 @@ behaviour, the source of that number is named.
 - [258. test_parquet_nested.py: Parquet nested export writes lists and groups that read back as the generator's values](#258-test_parquet_nestedpy-parquet-nested-export-writes-lists-and-groups-that-read-back-as-the-generators-values)
 - [259. test_parquet_nested_import.py: nested Parquet import round-trips arrays and composites](#259-test_parquet_nested_importpy-nested-parquet-import-round-trips-arrays-and-composites)
 - [260. test_parquet_count_bounds.py: file-declared Parquet counts are bounded before use](#260-test_parquet_count_boundspy-file-declared-parquet-counts-are-bounded-before-use)
+- [261. test_parallel_degree.py: identical data in heap and columnar is granted the same parallel degree](#261-test_parallel_degreepy-identical-data-in-heap-and-columnar-is-granted-the-same-parallel-degree)
 
 ## 1. How to read a test in here
 
@@ -10137,3 +10138,20 @@ The pytest twin of `test/parquet_count_bounds.sh` (ported for #1341), every chec
 | `test_num_rows_past_a_lists_records_is_rejected` | num_rows past a list's record count is rejected, not emitted as phantom rows |
 | `test_num_rows_past_a_lists_records_returns_no_phantom_rows` | and it did not silently return more rows than the file's records -- any count above 1 |
 | `test_the_backend_survives_the_list_over_read` | and the backend survived the list over-read |
+
+## 261. test_parallel_degree.py: identical data in heap and columnar is granted the same parallel degree
+
+The pytest twin of `test/parallel_degree.sh` (ported for #1341), every check by the shell's name. The planner sizes a parallel scan from relpages on a log3 ladder; columnar relpages count compressed pages, so the custom scan sizes itself from an uncompressed estimate instead (#451). The same 400,000 rows go into a heap and a columnar table, and both plans must ask for the same number of workers. On a private database, with the planner settings set on it.
+
+### Every test
+
+Every reading must be a measurement: a failed query is a query_error(), and a plan with no Workers Planned line is not a count of 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_degree_heap_and_columnar_hold_the_same_rows` | both tables hold the same rows |
+| `test_degree_columnar_is_smaller_on_disk` | premise: the columnar table really is smaller on disk |
+| `test_degree_the_heap_plan_is_parallel` | premise: the heap plan is parallel |
+| `test_degree_the_columnar_plan_is_parallel` | the columnar plan is parallel |
+| `test_degree_the_worker_cap_decides_neither_arm` | the worker cap is not what decides either arm |
+| `test_degree_identical_data_gets_the_same_workers` | identical data is granted the same parallel degree |

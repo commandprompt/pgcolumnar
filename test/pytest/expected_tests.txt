@@ -1019,4 +1019,6 @@ guard_tests 474
 # 7 tests, one per check, by collection over the cluster files.
 # cluster_tests 2480 -> 2497 for #1341's test_parquet_count_bounds.py, the twin of parquet_count_bounds.sh:
 # 17 tests, one per check, by collection over the cluster files.
-cluster_tests 2497
+# cluster_tests 2497 -> 2503 for #1341's test_parallel_degree.py, the twin of parallel_degree.sh:
+# 6 tests, one per check, by collection over the cluster files.
+cluster_tests 2503
