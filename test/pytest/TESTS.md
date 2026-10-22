@@ -3048,6 +3048,20 @@ the run observed.
 
 The shell twin is the last section of `test/selftest/410-a-check-must-have-been-red.sh`.
 
+### A row's majors, and the prior a ceiling is compared against (#1339)
+
+Two arms the shell twin, part 410, had and this file did not. A ledger row naming a
+major that is not one, or none, is an integrity failure: the major decides where a
+check exists. And the ceiling comparison reads a PRIOR that every route to must decide
+on: an absolute budget path resolves against its repository, a budget the prior lacks
+is a note, `--against auto` without a base ref or upstream refuses, an unresolvable base
+ref says what to fetch, and a resolvable one is named and a raise against it refused.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_ledger_row_must_name_a_real_major` | a row naming `eighteen`, or no major, is refused with rc 2; the control with `18` reads clean |
+| `test_the_prior_ceiling_is_resolved_rather_than_assumed` | the five prior-resolution outcomes above, each with its own message and status |
+
 ## 24. test_loop_coverage_premise.py: a loop that never ran asserted nothing
 
 **Why this file exists.** `assert-inside-a-loop-over-zero-rows` in VACUITY_MODES.md 3.5
