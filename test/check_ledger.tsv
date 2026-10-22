@@ -4378,6 +4378,18 @@ native_metadata_flush	native_metadata_flush	every column reads back correct (sum
 native_metadata_flush	native_metadata_flush	narrow (3 col) and wide (20 col) flush open the same number of metadata relations	15;16;17;18;19	2026-10-22	columnar_metadata.c: open_columnar_table never reuses a session's open relation (#445 reverted), so each metadata row opens its catalog again
 native_metadata_flush	native_metadata_flush	the flush emits the metadata-open witness	15;16;17;18;19	2026-10-22	columnar_write_state.c: the flush never begins a metadata session, so it neither batches nor emits the witness
 native_metadata_flush	native_metadata_flush	the wide table's row count survives the batched flush	15;16;17;18;19	never	-
+native_page_offset_bound	native_page_offset_bound	alive after projected overrun	15;16;17;18;19	never	-
+native_page_offset_bound	native_page_offset_bound	alive after projected page_offset=-1	15;16;17;18;19	never	-
+native_page_offset_bound	native_page_offset_bound	alive after whole-group overrun	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	alive after whole-group page_offset=-1	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	alive after whole-group wrap	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	an intact table reads every row and value with projection off	15;16;17;18;19	2026-10-22	columnar_reader.c: both containment guards refuse a chunk ending exactly at its group end
+native_page_offset_bound	native_page_offset_bound	an intact table's projected read returns every id	15;16;17;18;19	2026-10-22	columnar_reader.c: both containment guards refuse every chunk
+native_page_offset_bound	native_page_offset_bound	projected page_offset overrun is refused by the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the projected read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	projected page_offset=-1 hits the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the projected read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	whole-group page_offset overrun is refused by the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	whole-group page_offset=-1 hits the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	whole-group page_offset=0 is refused by the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
 native_parquet_flba	native_parquet_flba	FDW scan == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL keeps its null	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL reads	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an INT32 or INT64 DECIMAL is widened byte-reversed;columnar_parquet_reader.c: pq_decimal_to_numeric reads a narrower-than-16-byte negative DECIMAL as its unsigned magnitude

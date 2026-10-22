@@ -351,6 +351,7 @@ behaviour, the source of that number is named.
 - [303. test_native_metadata_flush.py: a stripe flush opens each metadata table once, and the flush's writes read back correctly](#303-test_native_metadata_flushpy-a-stripe-flush-opens-each-metadata-table-once-and-the-flushs-writes-read-back-correctly)
 - [304. test_native_late_materialization.py: a row the qual rejects is not materialized, and the answers do not change](#304-test_native_late_materializationpy-a-row-the-qual-rejects-is-not-materialized-and-the-answers-do-not-change)
 - [305. test_native_reclaim_reconcile.py: a reuse op drops the free_space row that overlaps a live group, and only that row](#305-test_native_reclaim_reconcilepy-a-reuse-op-drops-the-free_space-row-that-overlaps-a-live-group-and-only-that-row)
+- [306. test_native_page_offset_bound.py: a corrupt page_offset is refused by the containment guard on both reads, and an intact table still reads](#306-test_native_page_offset_boundpy-a-corrupt-page_offset-is-refused-by-the-containment-guard-on-both-reads-and-an-intact-table-still-reads)
 
 ## 1. How to read a test in here
 
@@ -11668,3 +11669,26 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_rr_data_intact_after_truncate` | data intact after truncate reconcile |
 | `test_rr_parity_after_reuse_cycle_1` | parity after reuse cycle 1 |
 | `test_rr_parity_after_reuse_cycle_2` | parity after reuse cycle 2 |
+
+## 306. test_native_page_offset_bound.py: a corrupt page_offset is refused by the containment guard on both reads, and an intact table still reads
+
+The twin of `test/native_page_offset_bound.sh`. A 20000-row table is corrupted one column_chunk.page_offset at a time (past the group, to 0 so the subtraction wraps, and to -1 so it arrives near UINT64_MAX), and read through the whole-group read (column projection off) and the projected read; each read must be refused by the chunk containment guard, the backend must survive, and an intact table must still read every row on both paths.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A refusal reads as "XX001 (containment guard)" only when the primary message is the guard's; survival also reads the server log's count of backends killed by a signal since the arm began; a failed reading is a `query_error()`.
+
+| test | what it holds |
+| --- | --- |
+| `test_an_intact_table_reads_every_row_with_projection_off` | an intact table reads every row and value with projection off |
+| `test_an_intact_tables_projected_read_returns_every_id` | an intact table's projected read returns every id |
+| `test_a_projected_page_offset_overrun_is_refused_by_the_guard` | projected page_offset overrun is refused by the containment guard |
+| `test_the_backend_survives_the_projected_overrun` | alive after projected overrun |
+| `test_a_whole_group_page_offset_overrun_is_refused_by_the_guard` | whole-group page_offset overrun is refused by the containment guard |
+| `test_the_backend_survives_the_whole_group_overrun` | alive after whole-group overrun |
+| `test_a_whole_group_page_offset_of_zero_is_refused_by_the_guard` | whole-group page_offset=0 is refused by the containment guard |
+| `test_the_backend_survives_the_whole_group_wrap` | alive after whole-group wrap |
+| `test_a_whole_group_page_offset_of_minus_one_hits_the_guard` | whole-group page_offset=-1 hits the containment guard |
+| `test_the_backend_survives_the_whole_group_minus_one` | alive after whole-group page_offset=-1 |
+| `test_a_projected_page_offset_of_minus_one_hits_the_guard` | projected page_offset=-1 hits the containment guard |
+| `test_the_backend_survives_the_projected_minus_one` | alive after projected page_offset=-1 |
