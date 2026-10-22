@@ -367,6 +367,7 @@ behaviour, the source of that number is named.
 - [319. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused](#319-test_objstore_listingpy-a-remote-prefix-or-glob-is-listed-page-by-page-an-exact-key-is-not-listed-and-a-listing-that-cannot-advance-or-fails-is-refused)
 - [320. test_native_rewrite_conc.py: The online rewrite runs alongside writers without losing a row, and without blocking them](#320-test_native_rewrite_concpy-the-online-rewrite-runs-alongside-writers-without-losing-a-row-and-without-blocking-them)
 - [321. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received](#321-test_objstore_addressingpy-gs-and-s3-virtual-host-addressing-checked-by-the-request-path-the-server-received)
+- [322. test_objstore_stash_recovery.py: recovery from a stash an interrupted objstore_module run left](#322-test_objstore_stash_recoverypy-recovery-from-a-stash-an-interrupted-objstore_module-run-left)
 
 ## 1. How to read a test in here
 
@@ -12077,3 +12078,33 @@ Every test makes one check under the shell's name. Each addressing check reads t
 | `test_the_request_path_carries_the_bucket_again` | and the request path carried the bucket again |
 | `test_s3_with_no_endpoint_demands_one` | s3:// with no endpoint demands one (names AWS_ENDPOINT_URL) |
 | `test_gs_with_no_endpoint_goes_to_storage_googleapis_com` | gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name) |
+
+## 322. test_objstore_stash_recovery.py: recovery from a stash an interrupted objstore_module run left
+
+The twin of `test/objstore_stash_recovery.sh`. It runs `test/objstore_module.sh` as a subprocess against three arrangements of pkglibdir, each from a pristine copy of the module: a different valid module left at `.probe` beside a good one, the only copy at `.probe` with nothing installed, and a 19-byte stand-in installed with the real module at `.away`. It asserts on the suite's exit status and on what it left behind. The installed module is shared, so this file must not run beside others that load it.
+
+### Every test
+
+Every test reads one observation the module fixture took, and makes one check under the shell's name. If no valid module is installed, each test is unrunnable as `stash recovery`, the shell's skip.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_session_build_installed_a_valid_module` | the build or install failed, so nothing below measures the guard |
+| `test_debris_premise_installed_module_valid` | premise: the installed module is valid before this slice arranges anything |
+| `test_debris_premise_stash_in_place` | premise: a debris stash really is in place for the run below |
+| `test_debris_premise_stash_is_a_different_valid_module` | premise: and the debris is a valid module that differs from the installed one |
+| `test_debris_suite_completes` | the suite runs to completion with debris beside a valid module |
+| `test_debris_not_restored_over_the_module` | and the installed module is still the one that was there, not the debris |
+| `test_debris_gone` | the debris is gone afterwards |
+| `test_debris_module_still_valid` | and the module left installed is still valid |
+| `test_only_copy_premise_nothing_installed` | premise: nothing is installed at the module's path for this slice |
+| `test_only_copy_premise_stash_is_real` | premise: and the stash beside it is the real module |
+| `test_only_copy_suite_completes` | the suite recovers the only surviving copy and runs to completion |
+| `test_only_copy_reinstalled` | the module is installed again afterwards, and valid |
+| `test_only_copy_stash_not_left` | and the stash is not left behind for the next run to trip on |
+| `test_stand_in_premise_installed` | premise: a 19-byte stand-in really is installed as the module |
+| `test_stand_in_premise_not_a_module` | premise: which is not a module |
+| `test_stand_in_premise_stash_is_real` | premise: and the real module is the thing parked at the stash |
+| `test_stand_in_suite_completes` | the suite replaces the stand-in with the real module and completes |
+| `test_stand_in_real_module_survived` | the real module survived, rather than being deleted with the stash |
+| `test_stand_in_stash_cleared` | and the stash is cleared |

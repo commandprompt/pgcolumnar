@@ -107,23 +107,51 @@ fi
 SAFE="$(mktemp /tmp/pgc-objstore-safe.XXXXXX)"
 cp -p "$MOD" "$SAFE"
 
+# EVERY SLICE STARTS FROM THE PRISTINE COPY (#1341), not from whatever the slice
+# before it left. Chained, a presence-only guard that deleted the only copy in the
+# second slice left nothing to move in the third, so the third slice reported its
+# own premise rather than the defect it exists for, and which arm caught what
+# depended on the order the slices were written in.
+arrange_pristine() {
+	rm -f "$MOD.probe" "$MOD.away"
+	cp -p "$SAFE" "$MOD"
+}
+
 # ---- debris beside a good installation must not stop the suite ----------------
 #
 # The PG17 case, exactly: a stash left by an interrupted run, and a valid module
 # reinstalled beside it by the next `make install`.
+#
+# THE DEBRIS IS A DIFFERENT MODULE, NOT A COPY (#1341). On PG17 the stash was a
+# STALE build and the installed module a fresh one, which is why restoring the
+# stash was the wrong advice. A byte-identical copy cannot show that: a guard with
+# no debris branch at all, restoring every stash over the installed module, passed
+# every check here, because restoring the copy changed nothing. Trailing bytes keep
+# it a valid module to nm and to dlopen while making it a different file.
+#
+# The check this replaces, "and it did not stop at the start guard", counted the
+# words 'interrupted mid-move' in the suite's output. That was the refusal's text
+# before #393's fix and nothing has printed it since, so it read 0 whatever the
+# guard did: with the guard turned back into a refusal, every other check in this
+# slice went red and it stayed green. Whether the suite stopped is the exit status
+# above it, so it is not replaced by another count of words.
+arrange_pristine
 check "premise: the installed module is valid before this slice arranges anything" \
 	"$(mod_is_valid "$MOD" && echo yes || echo no)" "yes"
 
 cp -p "$MOD" "$MOD.probe"
+printf 'stale' >> "$MOD.probe"
 check "premise: a debris stash really is in place for the run below" \
 	"$([ -e "$MOD.probe" ] && echo yes || echo no)" "yes"
+check "premise: and the debris is a valid module that differs from the installed one" \
+	"$(mod_is_valid "$MOD.probe" && ! cmp -s "$MOD.probe" "$MOD" && echo yes || echo no)" "yes"
 
 out="$(PGC_SKIP_BUILD=1 PGC_PORT="$(pgc_pick_port)" bash "$SUITE" "$PG_CONFIG" 2>&1)"
 rc=$?
 
 check_num "the suite runs to completion with debris beside a valid module" "$rc" "0"
-check_num "and it did not stop at the start guard" \
-	"$(grep -c 'interrupted mid-move' <<<"$out")" "0"
+check "and the installed module is still the one that was there, not the debris" \
+	"$(cmp -s "$MOD" "$SAFE" && echo same || echo replaced)" "same"
 check "the debris is gone afterwards" \
 	"$([ -e "$MOD.probe" ] && echo present || echo absent)" "absent"
 check "and the module left installed is still valid" \
@@ -134,11 +162,18 @@ check "and the module left installed is still valid" \
 # The interrupted state itself: the module moved aside and nothing put back. The
 # suite must not proceed past this by treating the stash as debris -- there is no
 # module to fall back on -- and it must not leave the box needing a human either.
-mv "$MOD" "$MOD.away"
+#
+# AT .probe, NOT .away (#1341). The guard walks both names, and the third slice
+# below already parks the real module at .away. With both restore slices at .away,
+# a guard that walked .away alone passed every check here, while the interrupt
+# objstore_module.sh's own restore_module comment describes -- the real module at
+# .probe and nothing at its path -- went unrecovered.
+arrange_pristine
+mv "$MOD" "$MOD.probe"
 check "premise: nothing is installed at the module's path for this slice" \
 	"$([ -e "$MOD" ] && echo present || echo absent)" "absent"
 check "premise: and the stash beside it is the real module" \
-	"$(mod_is_valid "$MOD.away" && echo yes || echo no)" "yes"
+	"$(mod_is_valid "$MOD.probe" && echo yes || echo no)" "yes"
 
 out="$(PGC_SKIP_BUILD=1 PGC_PORT="$(pgc_pick_port)" bash "$SUITE" "$PG_CONFIG" 2>&1)"
 rc=$?
@@ -147,7 +182,7 @@ check_num "the suite recovers the only surviving copy and runs to completion" "$
 check "the module is installed again afterwards, and valid" \
 	"$(mod_is_valid "$MOD" && echo yes || echo no)" "yes"
 check "and the stash is not left behind for the next run to trip on" \
-	"$([ -e "$MOD.away" ] && echo present || echo absent)" "absent"
+	"$([ -e "$MOD.probe" ] && echo present || echo absent)" "absent"
 
 # ---- a stand-in installed over the real module is the destructive case --------
 #
@@ -156,6 +191,7 @@ check "and the stash is not left behind for the next run to trip on" \
 # rule written on presence alone deletes .away here and destroys the installation,
 # and it looks correct in every other arrangement. This is the arm that says the
 # discriminator has to be validity.
+arrange_pristine
 mv "$MOD" "$MOD.away"
 printf 'not a shared object' > "$MOD"
 check_num "premise: a 19-byte stand-in really is installed as the module" \

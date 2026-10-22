@@ -5134,6 +5134,24 @@ objstore_listing	objstore_listing	hidden (_SUCCESS) and non-parquet (notes.txt) 
 objstore_listing	objstore_listing	premise: fixture up	15;16;17;18;19	never	-
 objstore_listing	objstore_listing	read_parquet over a prefix reads every object under it (4 parts, recursive)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
 objstore_listing	objstore_listing	the prefix listing paged (more than one list-type=2 request)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_stash_recovery	objstore_stash_recovery	and the installed module is still the one that was there, not the debris	15;16;17;18;19	2026-10-22	objstore_module.sh start guard with no debris branch: every stash restored over the installed module
+objstore_stash_recovery	objstore_stash_recovery	and the module left installed is still valid	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	and the stash is cleared	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
+objstore_stash_recovery	objstore_stash_recovery	and the stash is not left behind for the next run to trip on	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
+objstore_stash_recovery	objstore_stash_recovery	premise: a 19-byte stand-in really is installed as the module	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: a debris stash really is in place for the run below	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: and the debris is a valid module that differs from the installed one	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: and the real module is the thing parked at the stash	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: and the stash beside it is the real module	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: nothing is installed at the module's path for this slice	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: the installed module is valid before this slice arranges anything	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: which is not a module	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	the debris is gone afterwards	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
+objstore_stash_recovery	objstore_stash_recovery	the module is installed again afterwards, and valid	15;16;17;18;19	2026-10-22	objstore_module.sh start guard decides on presence alone: every stash is debris and is deleted
+objstore_stash_recovery	objstore_stash_recovery	the real module survived, rather than being deleted with the stash	15;16;17;18;19	2026-10-22	objstore_module.sh start guard decides on presence alone: every stash is debris and is deleted
+objstore_stash_recovery	objstore_stash_recovery	the suite recovers the only surviving copy and runs to completion	15;16;17;18;19	2026-10-22	objstore_module.sh start guard walks .away only, so a .probe that is the only copy is never restored
+objstore_stash_recovery	objstore_stash_recovery	the suite replaces the stand-in with the real module and completes	15;16;17;18;19	2026-10-22	objstore_module.sh start guard decides on presence alone: every stash is debris and is deleted
+objstore_stash_recovery	objstore_stash_recovery	the suite runs to completion with debris beside a valid module	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
 parallel_am_scan	parallel_am_scan	a parallel index build indexes every row of the table	15;16;17;18;19	never	-
 parallel_am_scan	parallel_am_scan	a parallel table-AM scan returns the same row count as serial	15;16;17;18;19	never	-
 parallel_am_scan	parallel_am_scan	premise: ANALYZE printed a rows= line per launched worker	15;16;17;18;19	never	-

@@ -401,7 +401,13 @@ pgc_setup() {
 	esac
 
 	echo "-- initdb"
-	pgc_pg "initdb -D '$PGC_PGDATA' -A trust" >/dev/null 2>&1
+	# -U postgres, because every psql below connects as postgres (#1341). initdb's
+	# default superuser is whoever runs it, which is postgres only under the
+	# runuser above; a non-root run -- the pytest-cluster job, which chowns
+	# pkglibdir precisely so that it can stay non-root, driving a shell suite as
+	# test_objstore_stash_recovery.py does -- got a cluster with no postgres role,
+	# and every start attempt "failed". pgc_cluster.initdb has always passed it.
+	pgc_pg "initdb -D '$PGC_PGDATA' -A trust -U postgres" >/dev/null 2>&1
 	{
 		echo "port=$PGC_PORT"
 		echo "listen_addresses='127.0.0.1'"
