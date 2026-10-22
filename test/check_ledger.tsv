@@ -6589,9 +6589,11 @@ reader_buffer_reuse	reader_buffer_reuse	reads after DROP COLUMN match	15;16;17;1
 reader_buffer_reuse	reader_buffer_reuse	the full scan matches a heap mirror exactly	15;16;17;18;19	2026-10-21	columnar_reader.c: when the group buffer is reused rather than grown, a projected read does not refresh it, so it decodes the previous group's bytes
 reader_buffer_reuse	reader_buffer_reuse	the full scan with column projection off (a whole-group read) matches a heap mirror	15;16;17;18;19	2026-10-21	columnar_reader.c: when the group buffer is reused rather than grown, the whole-group read stops 64 bytes short, so the group's last 64 bytes are the previous group's
 recluster_extent	recluster_extent	a group numbered below the run is not counted as ordered	15;16;17;18;19	2026-10-20	the online recluster records no extent at all;the run claims every group, below and above the rewrite (#342)
+recluster_extent	recluster_extent	a row deleted during the rewrite stays deleted	15;16;17;18;19	2026-10-22	columnar_vacuum.c: pgcolumnar_recluster_online reads under its listing snapshot, so a row deleted before its read is written back
 recluster_extent	recluster_extent	an uncontended rewrite claims the whole relation	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
 recluster_extent	recluster_extent	an uncontended rewrite counts every row as sorted	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
-recluster_extent	recluster_extent	every row is present afterwards	15;16;17;18;19	never	-
+recluster_extent	recluster_extent	every row is present afterwards	15;16;17;18;19	2026-10-22	columnar_vacuum.c: pgcolumnar_recluster_online reads every row its read snapshot sees, not only the groups it listed and retires (#1633)
+recluster_extent	recluster_extent	no row was rewritten and also kept	15;16;17;18;19	2026-10-22	columnar_vacuum.c: pgcolumnar_recluster_online reads every row its read snapshot sees, not only the groups it listed and retires (#1633)
 recluster_extent	recluster_extent	noproj: a full recluster claims every row	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
 recluster_extent	recluster_extent	noproj: a full recluster leaves nothing appended	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
 recluster_extent	recluster_extent	premise: the concurrent insert was not in the rewrite's work set	15;16;17;18;19	never	-

@@ -45,9 +45,10 @@ check "the table loaded" "$(raw 'SELECT count(*) FROM t;')" "$BASE"
 
 # ------------------------------------------------------- the concurrent case
 
-# Start the online rewrite, then insert from a second session while it runs.
-# pgcolumnar.maintenance_hold_ms (dev/test) holds the rewrite after it has fixed
-# its work set and before it reads, so the insert lands inside the rewrite by
+# Start the online rewrite, then insert and delete from a second session while it runs.
+DELETED=1000
+# pgcolumnar.maintenance_hold_ms (dev/test) holds the rewrite after it has listed
+# its work set and before it locks those groups and reads, so the insert lands inside the rewrite by
 # construction rather than by scheduling luck: a two-second sleep lost the race
 # on a loaded CI runner.
 PGOPTIONS='-c pgcolumnar.maintenance_hold_ms=5000' \
@@ -67,7 +68,13 @@ for _ in $(seq 1 120); do
 	sleep 0.5
 done
 raw "INSERT INTO t SELECT g, ((g::bigint * 7919) % 100000)::int, 'v' || g FROM generate_series($((BASE + 1)), $((BASE + 50000))) g;" >/dev/null
-# Asked again after the insert has committed: the rewrite must still be running.
+# And a DELETE in the same window (#1633). The hold sits between the rewrite's
+# group listing and its read snapshot, so these rows are in its work set but are
+# already gone when it reads: a rewrite that read under the listing's snapshot
+# would write them back.
+raw "DELETE FROM t WHERE id <= $DELETED;" >/dev/null
+# Asked again after the insert and the delete have committed: the rewrite must
+# still be running.
 RECL_AFTER="$(recl_count "")"
 
 wait $RECL_PID
@@ -92,7 +99,15 @@ check "the rewrite reported groups reclustered" \
 check "premise: the concurrent insert was not in the rewrite's work set" \
 	"$RETIRED" "$((BASE / 20000))"
 
-check "every row is present afterwards" "$(raw 'SELECT count(*) FROM t;')" "$((BASE + 50000))"
+check "every row is present afterwards" "$(raw 'SELECT count(*) FROM t;')" "$((BASE + 50000 - DELETED))"
+# #1633: the rewrite listed its groups, then read under a later snapshot, and
+# retired only the groups it listed. A row inserted in between sat in a group it
+# did not list: it was rewritten AND kept. The total above can hide that against
+# a lost row, so the duplicates are counted on their own.
+check "no row was rewritten and also kept" \
+	"$(raw 'SELECT count(*) - count(DISTINCT id) FROM t;')" "0"
+check "a row deleted during the rewrite stays deleted" \
+	"$(raw "SELECT count(*) FROM t WHERE id <= $DELETED;")" "0"
 
 SORTED="$(ss sorted_rows)"
 APPENDED="$(ss appended_rows)"
@@ -223,6 +238,6 @@ raw "SELECT pgcolumnar.recluster('t', 'id', 'k');" >/dev/null
 check "an uncontended rewrite claims the whole relation" \
 	"$(ss appended_rows)" "0"
 check "an uncontended rewrite counts every row as sorted" \
-	"$(ss sorted_rows)" "$((BASE + 50000))"
+	"$(ss sorted_rows)" "$((BASE + 50000 - DELETED))"
 
 pgc_summary

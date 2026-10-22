@@ -123,7 +123,7 @@ answer.
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
 | `pgcolumnar.bulk_parallel_writer` | boolean | `off` | Internal. Set by `pgcolumnar.parallel_copy` loader workers so they skip the storage-row creation lock when the row already exists committed, which is what lets several atomic writers load one table at once. Marked `GUC_NOT_IN_SAMPLE`; leave it alone. Setting it by hand is safe but pointless: the skip only fires when the storage row is already committed, which is exactly when the lock guards nothing. |
-| `pgcolumnar.maintenance_hold_ms` | integer | `0` | Internal, for tests. A maintenance verb holds `ShareUpdateExclusiveLock` this many milliseconds, interruptibly, so a test can observe the daemon yield to a stronger lock. `recluster` also waits, after it has fixed the rows it will rewrite, so a test can write while it runs. `0` disables it. Range 0 to 600000. Leave it at `0`. |
+| `pgcolumnar.maintenance_hold_ms` | integer | `0` | Internal, for tests. A maintenance verb holds `ShareUpdateExclusiveLock` this many milliseconds, interruptibly, so a test can observe the daemon yield to a stronger lock. `recluster` also waits, after it has listed the groups it will rewrite and before it locks them, so a test can write while it runs. `0` disables it. Range 0 to 600000. Leave it at `0`. |
 | `pgcolumnar.sink_fail_after` | integer | `-1` | Internal, for tests. A fault-injection point that fails an export write after this many bytes, by the path a full disk takes. `-1` disables it. Range -1 to INT_MAX. Leave it at `-1`. |
 
 ## Per-table storage options

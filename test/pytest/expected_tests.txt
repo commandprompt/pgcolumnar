@@ -1170,6 +1170,8 @@ guard_tests 838
 # 5 tests, one per check, by collection over the cluster files.
 # cluster_tests 2508 -> 2670 for #1341's test_parquet_export_stats.py, the twin of parquet_export_stats.sh:
 # 162 tests, one per check, by collection over the cluster files.
+# cluster_tests 4174 -> 4176 for #1633's two new checks in test_recluster_extent.py:
+# no row rewritten and also kept, and a row deleted during the rewrite stays deleted.
 # cluster_tests 3072 -> 3085 for #1341's test_native_cluster.py, the twin of native_cluster.sh:
 # 13 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 3059 -> 3072 for #1341's test_native_agg_deletes.py, the twin of native_agg_deletes.sh:
@@ -1193,4 +1195,4 @@ guard_tests 838
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 4174
+cluster_tests 4176
