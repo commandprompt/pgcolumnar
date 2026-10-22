@@ -11848,7 +11848,7 @@ The twin of `test/native_parquet_stack.sh`. Two hand-crafted footers (no writer 
 
 ### Every test
 
-Every test makes one check under the shell's name. Each parquet_schema or read_parquet call runs on its own connection with max_stack_depth pinned, and a failed or unreachable reading is a `query_error()`, so a crash shows as the survival check reading something other than 1 rather than as an unnamed error.
+Every test makes one check under the shell's name. Each parquet_schema or read_parquet call runs on its own connection with max_stack_depth pinned, and a failed or unreachable reading is a `query_error()`, so a crash shows as the survival check reading something other than 1 rather than as an unnamed error. Each survival test runs its own trigger with a crash baseline taken just before it, waits for the server, and wants SELECT 1 and an unchanged count of `terminated by signal` in the server log, since a bare SELECT 1 answers again once crash recovery is over (#1708 review).
 
 | test | what it holds |
 | --- | --- |

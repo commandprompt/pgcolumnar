@@ -6307,7 +6307,7 @@ suites_not_covered 56
 #     dated         2958 + 16 = 2974
 #     4234 + 2974 == 7208
 #
-# #1341, native_parquet_stack seeded, with its twin (OffgridwithJD): 4234 -> 4238,
+# #1341, native_parquet_stack seeded, with its twin (OffgridwithJD): 4234 -> 4234,
 # and suites_not_covered 57 -> 56. The suite had no rows. It enters with 8
 # checks from five-major runs (all green on each of 15-19, shell and twin alike). The footer
 # parser has two independent unbounded recursions, PgColumnarThriftSkip and walk_schema,
@@ -6316,11 +6316,19 @@ suites_not_covered 56
 # check by a wrong SQLSTATE rather than by crashing. The two refusal checks pin 54001, not
 # any error, and read_parquet is held to the same refusal. 4 are dated: the nested-struct
 # and read_parquet refusals by removing the thrift guard, the schema-chain refusal by removing
-# the walk guard, and the valid-file control by a guard that trips on any nesting. 4 arrive
-# never: the four survival checks, which no mutation crashes at the pinned depth.
+# the walk guard, and the valid-file control by a guard that trips on any nesting. The four
+# survival checks were a bare SELECT 1, which answers again once crash recovery is over, and
+# the twin's read_parquet survival test never read the file (jdatcmd's #1708 review). Each
+# arm now takes a crash baseline right before its trigger, every reading waits for the
+# server, and survival wants SELECT 1 and an unchanged count of "terminated by signal" in the
+# server log, so a crash fails only its own arm. An abort() at each input's decode site dates
+# them: thriftabort (PgColumnarThriftSkip aborts where its guard would raise) the
+# nested-struct and read_parquet survivals, walkabort (the same in walk_schema) the
+# schema-chain survival, validabort (walk_schema aborts on entry) the valid-file survival.
+# All 8 are dated; none arrives never.
 #
 #     ledger rows   7208 + 8 = 7216
-#     never         4234 + 4 = 4238
-#     dated         2974 + 4 = 2978
-#     4238 + 2978 == 7216
-checks_never_observed_red 4238
+#     never         4234 + 0 = 4234
+#     dated         2974 + 8 = 2982
+#     4234 + 2982 == 7216
+checks_never_observed_red 4234

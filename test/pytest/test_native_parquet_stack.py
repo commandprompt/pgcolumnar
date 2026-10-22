@@ -11,6 +11,7 @@ wrong SQLSTATE rather than by crashing. The footers are hand-crafted (no writer 
 them), so no pyarrow: struct and the compact-protocol bytes build them directly.
 """
 import struct
+import time
 
 import psycopg
 
@@ -63,11 +64,57 @@ def _sqlstate(dsn, fn, path):
     caught in-session, so only a real crash drops the connection, which the next
     survival check sees. A failed connection is a value, never an exception, so two
     failures cannot agree as a bare string."""
+    _wait_up(dsn)
     try:
         with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
             conn.execute("SET max_stack_depth = '100kB'")
             try:
                 conn.execute(f"SELECT count(*) FROM pgcolumnar.{fn}('{path}')")
+                return "NOERR"
+            except psycopg.Error as exc:
+                return exc.sqlstate or query_error(str(exc).splitlines()[0])
+    except psycopg.Error as exc:
+        return query_error(f"server unreachable: {str(exc).splitlines()[0]}")
+
+
+def _wait_up(dsn):
+    """Wait up to 30 s for the server, so a backend that crashed in one arm fails that
+    arm, not every reading made during its crash recovery."""
+    for _ in range(60):
+        if _alive(dsn) == "1":
+            return
+        time.sleep(0.5)
+
+
+def _crashes(cluster):
+    try:
+        return (cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
+    except OSError as exc:
+        return query_error(f"crash count unreadable: {exc}")
+
+
+def _survived(dsn, cluster, before):
+    """-> "1" when the server answers and no backend died since `before`. A bare SELECT 1
+    answers again once crash recovery is over (#1708 review), so the log is read too."""
+    _wait_up(dsn)
+    up, now = _alive(dsn), _crashes(cluster)
+    if not isinstance(before, int) or not isinstance(now, int):
+        return query_error(f"crash count unreadable: {before} / {now}")
+    if up == "1" and now == before:
+        return "1"
+    return f"no ([{up if up == '1' else ''}], {now - before} backend crashes)"
+
+
+def _read_parquet_state(dsn, path):
+    """-> the SQLSTATE read_parquet raises on `path` under a pinned stack depth, 'NOERR',
+    or a query_error() if the server could not be reached. count(*) over a one-int
+    projection reaches the footer walk."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute("SET max_stack_depth = '100kB'")
+            try:
+                conn.execute(f"SELECT count(*) FROM pgcolumnar.read_parquet('{path}') AS t(c int)")
                 return "NOERR"
             except psycopg.Error as exc:
                 return exc.sqlstate or query_error(str(exc).splitlines()[0])
@@ -84,6 +131,7 @@ def _alive(dsn):
 
 
 def _count(dsn, sql):
+    _wait_up(dsn)
     try:
         with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
             return str(conn.execute(sql).fetchone()[0])
@@ -100,8 +148,9 @@ def test_nested_struct_footer_raises_stack_depth(pgc_cluster, server_dir, expect
 
 def test_backend_survived_the_nested_struct_footer(pgc_cluster, server_dir, expect):
     _write(server_dir)
+    before = _crashes(pgc_cluster)
     _sqlstate(pgc_cluster.dsn(), "parquet_schema", server_dir / "stack_nested.parquet")
-    expect.text(_alive(pgc_cluster.dsn()), "1", "backend survived the nested-struct footer")
+    expect.text(_survived(pgc_cluster.dsn(), pgc_cluster, before), "1", "backend survived the nested-struct footer")
 
 
 def test_schema_chain_footer_raises_stack_depth(pgc_cluster, server_dir, expect):
@@ -112,8 +161,9 @@ def test_schema_chain_footer_raises_stack_depth(pgc_cluster, server_dir, expect)
 
 def test_backend_survived_the_schema_chain_footer(pgc_cluster, server_dir, expect):
     _write(server_dir)
+    before = _crashes(pgc_cluster)
     _sqlstate(pgc_cluster.dsn(), "parquet_schema", server_dir / "stack_walk.parquet")
-    expect.text(_alive(pgc_cluster.dsn()), "1", "backend survived the schema-chain footer")
+    expect.text(_survived(pgc_cluster.dsn(), pgc_cluster, before), "1", "backend survived the schema-chain footer")
 
 
 def test_a_shallow_valid_schema_chain_still_reads(pgc_cluster, server_dir, expect):
@@ -125,28 +175,24 @@ def test_a_shallow_valid_schema_chain_still_reads(pgc_cluster, server_dir, expec
 
 def test_backend_survived_the_valid_file(pgc_cluster, server_dir, expect):
     _write(server_dir)
+    before = _crashes(pgc_cluster)
     _count(pgc_cluster.dsn(), f"SELECT count(*) FROM pgcolumnar.parquet_schema('{server_dir}/stack_walk_ok.parquet')")
-    expect.text(_alive(pgc_cluster.dsn()), "1", "backend survived the valid file")
+    expect.text(_survived(pgc_cluster.dsn(), pgc_cluster, before), "1", "backend survived the valid file")
 
 
 def test_read_parquet_rejects_the_nested_struct_footer(pgc_cluster, server_dir, expect):
     _write(server_dir)
     # read_parquet reaches the same footer walk; it must refuse the crash input, not
-    # become a way around the guard. count(*) over a one-int projection reaches the walk.
-    try:
-        with psycopg.connect(pgc_cluster.dsn(), autocommit=True, connect_timeout=10) as conn:
-            conn.execute("SET max_stack_depth = '100kB'")
-            try:
-                conn.execute("SELECT count(*) FROM pgcolumnar.read_parquet"
-                             f"('{server_dir}/stack_nested.parquet') AS t(c int)")
-                st = "NOERR"
-            except psycopg.Error as exc:
-                st = exc.sqlstate or query_error(str(exc).splitlines()[0])
-    except psycopg.Error as exc:
-        st = query_error(f"server unreachable: {str(exc).splitlines()[0]}")
+    # become a way around the guard.
+    st = _read_parquet_state(pgc_cluster.dsn(), server_dir / "stack_nested.parquet")
     expect.text(st, "54001", "read_parquet rejects the nested-struct footer the same way")
 
 
 def test_backend_survived_read_parquet_on_the_crash_input(pgc_cluster, server_dir, expect):
     _write(server_dir)
-    expect.text(_alive(pgc_cluster.dsn()), "1", "backend survived read_parquet on the crash input")
+    # the trigger itself, as the other three survival tests do (#1708 review: this test
+    # never read the file, so a crash in read_parquet could not reach it)
+    before = _crashes(pgc_cluster)
+    _read_parquet_state(pgc_cluster.dsn(), server_dir / "stack_nested.parquet")
+    expect.text(_survived(pgc_cluster.dsn(), pgc_cluster, before), "1",
+                "backend survived read_parquet on the crash input")

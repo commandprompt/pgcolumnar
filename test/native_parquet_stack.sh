@@ -101,10 +101,31 @@ open(f"{W}/stack_walk.parquet",   "wb").write(walk_chain(20000))
 open(f"{W}/stack_walk_ok.parquet", "wb").write(walk_chain(2))
 PY
 
+# Survival reads the server log, not a bare SELECT 1, which answers again once crash
+# recovery is over (jdatcmd's #1708 review: with an abort() in the Thrift guard and a 3 s
+# delay, both survival checks after the aborts passed). Each arm takes its own baseline
+# right before its trigger, and every reading first waits for the server, so a crash
+# fails only its own arm and its own survival check (the pattern of #1701 and #1705).
+wait_up() { local _i; for _i in $(seq 1 60); do [ "$(q 'SELECT 1' 2>/dev/null)" = 1 ] && return; sleep 0.5; done; }
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since BEFORE
+	local _up _now
+	wait_up
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"; return; fi
+	if [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1; return; fi
+	echo "no ([$_up], $(( _now - $1 )) backend crashes)"
+}
+
 # sqlstate QUERY -> the SQLSTATE of the error it raises, or 'NOERR'. A DO block so
 # the error is caught in-session and the connection is never actually torn down by
-# a controlled error (only a real crash would drop it, which the next check sees).
+# a controlled error (only a real crash would drop it, which the survival check sees).
 sqlstate() {
+	wait_up
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -At -c "SET max_stack_depth='100kB';
 		DO \$\$ BEGIN PERFORM count(*) FROM pgcolumnar.parquet_schema('$1');
@@ -117,31 +138,37 @@ sqlstate() {
 # 54001 is statement_too_complex, what check_stack_depth raises. Pinning it rather
 # than accepting any error means an unrelated failure cannot pass this: before the
 # guard, this input did not raise 54001, it SIGSEGV'd.
+B="$(crashes)"
 check "nested-struct footer raises stack-depth, not SIGSEGV" \
 	"$(sqlstate "$W/stack_nested.parquet")" "54001"
-check "backend survived the nested-struct footer" "$(q 'SELECT 1;')" "1"
+check "backend survived the nested-struct footer" "$(survived "$B")" "1"
 
 # --- vector 2: nested schema tree (the one a single guard misses) -------------
+B="$(crashes)"
 check "schema-chain footer raises stack-depth, not SIGSEGV" \
 	"$(sqlstate "$W/stack_walk.parquet")" "54001"
-check "backend survived the schema-chain footer" "$(q 'SELECT 1;')" "1"
+check "backend survived the schema-chain footer" "$(survived "$B")" "1"
 
 # --- the guard must not reject valid nesting ----------------------------------
 # The same walk_schema path, one level deep, must still describe the file. If the
 # guard were keyed on nesting rather than on stack exhaustion this would fail.
+B="$(crashes)"
+wait_up
 check "a shallow valid schema chain still reads" \
 	"$(q "SELECT count(*) FROM pgcolumnar.parquet_schema('$W/stack_walk_ok.parquet');")" "1"
-check "backend survived the valid file" "$(q 'SELECT 1;')" "1"
+check "backend survived the valid file" "$(survived "$B")" "1"
 
 # --- the same parser backs read_parquet, so the guard covers it too -----------
 # read_parquet reaches the identical footer walk. It must reject the crash input
 # the same way rather than becoming a way around the guard.
+B="$(crashes)"
+wait_up
 check "read_parquet rejects the nested-struct footer the same way" \
 	"$(errs_state="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -At -c "SET max_stack_depth='100kB';
 		DO \$\$ BEGIN PERFORM count(*) FROM pgcolumnar.read_parquet('$W/stack_nested.parquet') AS t(c int);
 		EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'SQLSTATE=%', SQLSTATE; END \$\$;" 2>&1 \
 		| grep -m1 -oE 'SQLSTATE=[0-9A-Z]+' | sed 's/SQLSTATE=//')"; echo "$errs_state")" "54001"
-check "backend survived read_parquet on the crash input" "$(q 'SELECT 1;')" "1"
+check "backend survived read_parquet on the crash input" "$(survived "$B")" "1"
 
 pgc_summary
