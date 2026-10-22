@@ -418,6 +418,13 @@ true until the next version shipped.
   `_SUCCESS` writers, now copies the error out first and re-throws it afterwards
   (#1741). `test/objstore_export_double_cancel.sh` and
   `test_objstore_export_double_cancel.py`.
+- **A second cancel during a parallel flush's error cleanup no longer leaks the
+  workers' output segments.** With `pgcolumnar.parallel_flush` on, a cancel during
+  the flush terminates the workers and frees the shared memory segments they
+  published. A second cancel landing while the cleanup waited for a worker to exit
+  ended the cleanup early: the segments stayed pinned until the server restarted, and
+  the second cancel was reported instead of the first. The cleanup now finishes
+  whatever arrives, in the time a single cancel already took (#1745).
 - **`export_parquet` no longer marks a `timestamp` column as a UTC instant.** Both
   `timestamp` and `timestamptz` were written as the converted type `TIMESTAMP_MICROS`,
   which the Parquet spec defines as adjusted to UTC. Every other reader (pyarrow,

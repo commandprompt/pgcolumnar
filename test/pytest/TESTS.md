@@ -10297,6 +10297,12 @@ The ON check reads the split line ("N of M columns by K worker(s)") as well as t
 | `test_optin_the_guc_on_flushes_in_workers` | with the GUC on, a wide-numeric flush dispatches parallel (not a silent serial fall-back) |
 | `test_optin_stores_the_serial_paths_chunks` | opting in stores byte-identical chunks to the serial path |
 | `test_optin_the_dispatch_metric_cannot_separate_the_shapes` | the dispatch metric is byte-identical for a random and a constant column (the metric cannot separate opposite-cost shapes) |
+| `test_double_cancel_a_worker_is_still_encoding` | premise: a flush worker is still encoding when the second cancel lands |
+| `test_double_cancel_the_cheap_workers_published` | premise: the cheap workers published their segments before the second cancel |
+| `test_double_cancel_reports_the_first_cancel` | a twice-cancelled parallel flush reports the first cancel |
+| `test_double_cancel_leaves_no_segment_pinned` | a twice-cancelled parallel flush leaves no worker segment pinned |
+
+Arm 4 (#1745) runs on a private cluster with `dynamic_shared_memory_type = mmap`, so the workers' output segments are files in that cluster's own `pg_dynshmem` and can be counted from SQL. A 2s `statement_timeout` cancels a parallel flush while one worker still encodes a zstd-19 text column, and `pg_cancel_backend` cancels it again 1.5s later, inside the error cleanup's wait. No new segment may survive, and the error reported must be the first cancel's.
 
 ## 263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics
 

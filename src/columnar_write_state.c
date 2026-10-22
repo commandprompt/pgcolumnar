@@ -2557,9 +2557,11 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 		memcpy(obase, &count, sizeof(uint32));
 		if (recbuf.len > 0)
 			memcpy(obase + sizeof(uint32), recbuf.data, recbuf.len);
-		dsm_pin_segment(outseg);
-		me->outHandle = dsm_segment_handle(outseg);
+		/* the handle first: the dispatcher's error cleanup frees what it names */
 		me->outLen = (uint32) (sizeof(uint32) + recbuf.len);
+		me->outHandle = dsm_segment_handle(outseg);
+		pg_write_barrier();
+		dsm_pin_segment(outseg);
 		dsm_detach(outseg);		/* pinned: persists for the backend to attach */
 
 		table_close(rel, AccessShareLock);
@@ -2612,16 +2614,35 @@ pflush_error_cleanup(int code, Datum arg)
 	PflushCleanup *cl = (PflushCleanup *) DatumGetPointer(arg);
 	int			i;
 
+	/*
+	 * NOTHING HERE MAY BE CUT SHORT (#1745). This runs inside the error being
+	 * handled, and WaitForBackgroundWorkerShutdown checks for interrupts: a
+	 * second cancel landing in the wait raised out of this function before the
+	 * loop below, leaving every published output segment pinned until
+	 * postmaster restart, and reported the second cancel in place of the first.
+	 * The wait is as long as a single cancel's already is -- a terminated worker
+	 * exits at its next interrupt check, after the column it is encoding -- so
+	 * holding interrupts adds no latency; it only stops a second cancel (or a
+	 * terminate, which still fires once this returns) from abandoning it.
+	 */
+	HOLD_INTERRUPTS();
 	for (i = 0; i < cl->nstarted; i++)
 		if (cl->handles[i] != NULL)
-		{
 			TerminateBackgroundWorker(cl->handles[i]);
+	for (i = 0; i < cl->nstarted; i++)
+		if (cl->handles[i] != NULL)
 			WaitForBackgroundWorkerShutdown(cl->handles[i]);
-		}
+	RESUME_INTERRUPTS();
 
+	/*
+	 * Every worker has exited, so a valid outHandle is a segment it published,
+	 * whatever state it reached after: the worker records the handle BEFORE
+	 * pinning, so one that died in between left an unpinned segment that is
+	 * already gone (dsm_attach returns NULL), and one that died after pinning
+	 * but before writing DONE is still freed here.
+	 */
 	for (i = 0; i < cl->nworkers; i++)
-		if (pg_atomic_read_u32(&cl->slots[i].state) == PFLUSH_DONE &&
-			cl->slots[i].outHandle != DSM_HANDLE_INVALID)
+		if (cl->slots[i].outHandle != DSM_HANDLE_INVALID)
 		{
 			dsm_segment *s = dsm_attach(cl->slots[i].outHandle);
 

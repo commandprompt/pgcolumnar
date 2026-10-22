@@ -6979,4 +6979,20 @@ suites_not_covered 28
 #     never         4538 + 5 = 4543
 #     dated         3412 + 2 = 3414
 #     4543 + 3414 == 7957
-checks_never_observed_red 4543
+#
+# #1745, a second cancel during the parallel flush's error cleanup, in
+# parallel_flush_optin (OffgridwithJD): 4543 -> 4545. pflush_error_cleanup waited for
+# its terminated workers with interrupts live, so a second cancel landing in that wait
+# left before the loop that unpins the workers' published output segments: they stayed
+# pinned until postmaster restart, and the second cancel was reported in place of the
+# first. Arm 4 cancels a parallel flush by statement_timeout, then by
+# pg_cancel_backend while one worker still encodes, and counts the new files in
+# pg_dynshmem (the suite's cluster now runs dynamic_shared_memory_type = mmap). The two
+# checks are dated by the cleanup without HOLD_INTERRUPTS, which reddens the same names
+# in both twins (main's code reddens them on PG15-19). The two premises arrive never.
+#
+#     ledger rows   7957 + 4 = 7961
+#     never         4543 + 2 = 4545
+#     dated         3414 + 2 = 3416
+#     4545 + 3416 == 7961
+checks_never_observed_red 4545
