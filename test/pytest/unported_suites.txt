@@ -25,7 +25,6 @@ native_read_parquet
 native_rewrite_conc
 native_vecdecode
 native_zonemap_narrow
-native_zonemap_session
 objstore_addressing
 objstore_http_read
 objstore_listing

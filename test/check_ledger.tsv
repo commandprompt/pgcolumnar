@@ -4805,6 +4805,19 @@ native_zonemap	native_zonemap	whole-chunk sum(id) matches heap	15;16;17;18;19	ne
 native_zonemap	native_zonemap	whole-chunk value+null = group rows	15;16;17;18;19	never	-
 native_zonemap	native_zonemap	whole-chunk zone rows	15;16;17;18;19	never	-
 native_zonemap	native_zonemap	zone maps cleaned on drop	15;16;17;18;19	never	-
+native_zonemap_session	native_zonemap_session	a second predicate column still resolves zone_map once	15;16;17;18;19	2026-10-22	columnar_metadata.c: the session opens zone_map afresh on every probe (#744 reverted inside the session)
+native_zonemap_session	native_zonemap_session	and each of them opened exactly once	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
+native_zonemap_session	native_zonemap_session	and each of them probed exactly its own groups	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
+native_zonemap_session	native_zonemap_session	and the short circuit means it adds one probe, not one per group	15;16;17;18;19	2026-10-22	columnar_reader.c: every zone-map fetch is made twice
+native_zonemap_session	native_zonemap_session	every scan around an aborted one reports its own session (#744)	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
+native_zonemap_session	native_zonemap_session	nested columnar scans each hold their own handle	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
+native_zonemap_session	native_zonemap_session	nested columnar scans return the right answer	15;16;17;18;19	2026-10-22	columnar_reader.c: every chunk group is ruled out
+native_zonemap_session	native_zonemap_session	premise: the fixture really has more than one chunk group	15;16;17;18;19	never	-
+native_zonemap_session	native_zonemap_session	the middle scan really did error inside the subtransaction	15;16;17;18;19	2026-10-22	columnar_reader.c: every chunk group is ruled out
+native_zonemap_session	native_zonemap_session	the scan after the subtransaction abort returns the right answer	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
+native_zonemap_session	native_zonemap_session	the scan really probed the zone maps, once per group	15;16;17;18;19	2026-10-22	columnar_reader.c: every zone-map fetch is made twice
+native_zonemap_session	native_zonemap_session	the scan resolves zone_map ONCE, not once per group (#744)	15;16;17;18;19	2026-10-22	columnar_metadata.c: the session opens zone_map afresh on every probe (#744 reverted inside the session)
+native_zonemap_session	native_zonemap_session	zs2 has more than one chunk group	15;16;17;18;19	2026-10-22	columnar_write_state.c: the writer ignores the table's stripe_row_limit
 nologin_workers	nologin_workers	a NOLOGIN role's parallel flush encodes every column in a worker	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
 nologin_workers	nologin_workers	a NOLOGIN role's parallel_copy loads every row	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
 nologin_workers	nologin_workers	a NOLOGIN role's parallel_export_parquet exports every row	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller

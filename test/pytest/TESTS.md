@@ -356,6 +356,7 @@ behaviour, the source of that number is named.
 - [308. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's](#308-test_native_sort_bypy-the-declared-sort_by-key-orders-the-rows-it-says-and-each-refusal-is-its-own-guards)
 - [309. test_native_rewrite.py: compact_rewrite reclaims partially-deleted groups online, and vacuum's rewrite keeps every row reachable](#309-test_native_rewritepy-compact_rewrite-reclaims-partially-deleted-groups-online-and-vacuums-rewrite-keeps-every-row-reachable)
 - [310. test_native_zonemap.py: zone-map rows carry exact counts, sums and the right bounds, by value](#310-test_native_zonemappy-zone-map-rows-carry-exact-counts-sums-and-the-right-bounds-by-value)
+- [311. test_native_zonemap_session.py: a scan resolves zone_map once, and each scan holds its own session](#311-test_native_zonemap_sessionpy-a-scan-resolves-zone_map-once-and-each-scan-holds-its-own-session)
 
 ## 1. How to read a test in here
 
@@ -11815,3 +11816,27 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_zonemap_sum_null_for_other_columns` | sum null for non-int4 columns |
 | `test_zonemap_whole_chunk_sum_of_id_matches_heap` | whole-chunk sum(id) matches heap |
 | `test_zonemap_zone_maps_go_with_the_table` | zone maps cleaned on drop |
+
+## 311. test_native_zonemap_session.py: a scan resolves zone_map once, and each scan holds its own session
+
+The twin of `test/native_zonemap_session.sh`. The witness is the DEBUG1 line each scan's zone-map session emits when it closes, `probes=N opens=M`: over 40 chunk groups a scan probes once per group and opens zone_map once, a second predicate column adds one probe and no open, the two scans of a join each report their own groups, and the scans around one that errors inside a subtransaction each open for themselves and probe only their own groups.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each reading returns a failure as a `query_error()`, and the statements around the aborted scan run one by one, continuing past the error as psql does with ON_ERROR_STOP=0.
+
+| test | what it holds |
+| --- | --- |
+| `test_native_zonemap_session_fixture_has_several_groups` | premise: the fixture really has more than one chunk group |
+| `test_native_zonemap_session_scan_probes_once_per_group` | the scan really probed the zone maps, once per group |
+| `test_native_zonemap_session_scan_resolves_zone_map_once` | the scan resolves zone_map ONCE, not once per group (#744) |
+| `test_native_zonemap_session_second_column_still_opens_once` | a second predicate column still resolves zone_map once |
+| `test_native_zonemap_session_short_circuit_adds_one_probe` | and the short circuit means it adds one probe, not one per group |
+| `test_native_zonemap_session_zs2_has_several_groups` | zs2 has more than one chunk group |
+| `test_native_zonemap_session_nested_scans_answer` | nested columnar scans return the right answer |
+| `test_native_zonemap_session_nested_scans_hold_their_own_handle` | nested columnar scans each hold their own handle |
+| `test_native_zonemap_session_middle_scan_errored` | the middle scan really did error inside the subtransaction |
+| `test_native_zonemap_session_every_scan_reports_its_own_session` | every scan around an aborted one reports its own session (#744) |
+| `test_native_zonemap_session_each_scan_opened_once` | and each of them opened exactly once |
+| `test_native_zonemap_session_each_scan_probed_its_own_groups` | and each of them probed exactly its own groups |
+| `test_native_zonemap_session_scan_after_abort_answers` | the scan after the subtransaction abort returns the right answer |
