@@ -484,4 +484,48 @@ for arm in "cd|cidr|'10.0.40.7'" "vc|varchar|'012345'"; do
 		"$(gt0 "$(skipped "SELECT id FROM nb WHERE $col = $val")")" "yes"
 done
 
+# ---- a timestamp column against a timestamptz constant (#1738) ----------------
+# The cross-type ordering proc for (timestamp, timestamptz) turns each group's
+# min/max wall time into an instant in the session zone, and across a
+# spring-forward gap that is not order-preserving. In New York on 2024-03-10 the
+# nonexistent 02:30 is read as standard time, 07:30Z, while 03:00 is 07:00Z. A
+# group whose max is 03:00 therefore looked wholly below 07:15Z although its 02:30
+# row is above it; a group whose min is 02:30 looked wholly above 07:15Z although
+# its 03:00 row is below. Four chunk groups of 2048 (two vectors each): early March (the controls' skip
+# target), the gap hour with max 03:00, 02:30..03:30 with min 02:30, and the
+# fall-back hour, whose repeated wall times keep the conversion monotonic.
+# Every psql below runs in New York, through the environment.
+export PGOPTIONS="-c timezone=America/New_York"
+psql_run "CREATE TABLE hz (id int, ts timestamp, tz timestamptz);"
+psql_run "CREATE TABLE nz (id int, ts timestamp, tz timestamptz) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('nz', stripe_row_limit => 2048, chunk_group_row_limit => 1024);"
+NZ_GEN="SELECT g, v, v::timestamptz FROM (SELECT g, CASE
+    WHEN g <= 2048 THEN '2024-03-01 00:00'::timestamp + g * interval '1 minute'
+    WHEN g <= 4096 THEN '2024-03-10 01:00'::timestamp + ((g - 2049) % 121) * interval '1 minute'
+    WHEN g <= 6144 THEN '2024-03-10 02:30'::timestamp + ((g - 4097) % 61) * interval '1 minute'
+    ELSE '2024-11-03 00:00'::timestamp + ((g - 6145) % 181) * interval '1 minute' END AS v
+  FROM generate_series(1, 8192) g) x"
+psql_run "INSERT INTO hz $NZ_GEN;"
+psql_run "INSERT INTO nz $NZ_GEN;"
+for arm in ">|'2024-03-10 07:15+00'" ">=|'2024-03-10 07:30+00'" "=|'2024-03-10 07:30+00'" \
+	"<|'2024-03-10 07:15+00'" "<=|'2024-03-10 07:14+00'"; do
+	op=${arm%%|*}; val=${arm#*|}
+	check "premise: heap finds rows for ts $op a timestamptz across the gap (#1738)" \
+		"$(gt0 "$(q "SELECT count(*) FROM hz WHERE ts $op $val::timestamptz")")" "yes"
+	check "ts $op a timestamptz constant across a spring-forward gap returns heap's rows (#1738)" \
+		"$(pgc_set_hash "SELECT id FROM nz WHERE ts $op $val::timestamptz")" \
+		"$(pgc_set_hash "SELECT id FROM hz WHERE ts $op $val::timestamptz")"
+done
+check "across the fall-back hour, ts > a timestamptz constant returns heap's rows (#1738)" \
+	"$(pgc_set_hash "SELECT id FROM nz WHERE ts > '2024-11-03 05:30+00'::timestamptz")" \
+	"$(pgc_set_hash "SELECT id FROM hz WHERE ts > '2024-11-03 05:30+00'::timestamptz")"
+check "the reverse pair, tz > a timestamp constant in the gap, returns heap's rows (#1738)" \
+	"$(pgc_set_hash "SELECT id FROM nz WHERE tz > '2024-03-10 02:30'::timestamp")" \
+	"$(pgc_set_hash "SELECT id FROM hz WHERE tz > '2024-03-10 02:30'::timestamp")"
+check "a timestamp column against a timestamp constant still skips groups (#1738)" \
+	"$(gt0 "$(skipped "SELECT id FROM nz WHERE ts > '2024-03-05'::timestamp")")" "yes"
+check "the reverse pair, tz against a timestamp constant, still skips groups (#1738)" \
+	"$(gt0 "$(skipped "SELECT id FROM nz WHERE tz > '2024-03-05'::timestamp")")" "yes"
+unset PGOPTIONS
+
 pgc_summary

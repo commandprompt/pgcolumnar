@@ -512,3 +512,73 @@ def test_a_partition_takes_the_columnar_custom_scan(part, expect):
 def test_a_partition_prunes_row_groups(part, expect):
     expect.at_least(_removed(part, "SELECT id FROM ptp WHERE id BETWEEN 5000 AND 5100"), 1,
                     "and it prunes row groups (#436)")
+
+
+# ---- a timestamp column against a timestamptz constant (#1738) ----------------------
+TZ_GEN = """SELECT g, v, v::timestamptz FROM (SELECT g, CASE
+    WHEN g <= 2048 THEN '2024-03-01 00:00'::timestamp + g * interval '1 minute'
+    WHEN g <= 4096 THEN '2024-03-10 01:00'::timestamp + ((g - 2049) % 121) * interval '1 minute'
+    WHEN g <= 6144 THEN '2024-03-10 02:30'::timestamp + ((g - 4097) % 61) * interval '1 minute'
+    ELSE '2024-11-03 00:00'::timestamp + ((g - 6145) % 181) * interval '1 minute' END AS v
+  FROM generate_series(1, 8192) g) x"""
+
+GAP_ARMS = [(">", "'2024-03-10 07:15+00'"), (">=", "'2024-03-10 07:30+00'"), ("=", "'2024-03-10 07:30+00'"),
+            ("<", "'2024-03-10 07:15+00'"), ("<=", "'2024-03-10 07:14+00'")]
+
+
+@pytest.fixture(scope="module")
+def zone(pgc_cluster):
+    """The cross-type proc for (timestamp, timestamptz) turns a group's min/max wall
+    time into an instant in the session zone, and across a spring-forward gap that is
+    not order-preserving: in New York 02:30 on 2024-03-10 is 07:30Z, 03:00 is 07:00Z.
+    Four chunk groups of 2048 (two vectors each): early March, the gap hour with max 03:00, 02:30..03:30 with
+    min 02:30, and the fall-back hour (#1738)."""
+    c = _schema_conn(pgc_cluster, "pgc_nsk_zone")
+    try:
+        c.execute("SET timezone = 'America/New_York'")
+        c.execute("CREATE TABLE hz (id int, ts timestamp, tz timestamptz)")
+        c.execute("CREATE TABLE nz (id int, ts timestamp, tz timestamptz) USING pgcolumnar")
+        c.execute("SELECT pgcolumnar.set_options('nz', stripe_row_limit => 2048, chunk_group_row_limit => 1024)")
+        _try(c.execute, f"INSERT INTO hz {TZ_GEN}")
+        _try(c.execute, f"INSERT INTO nz {TZ_GEN}")
+        yield c
+    finally:
+        _drop(c, "pgc_nsk_zone")
+
+
+@pytest.mark.parametrize("op,val", GAP_ARMS, ids=[o for o, _ in GAP_ARMS])
+def test_heap_finds_rows_across_the_gap(zone, expect, op, val):
+    n = _num(_try(_one, zone, f"SELECT count(*) FROM hz WHERE ts {op} {val}::timestamptz"), "heap rows")
+    expect.text("yes" if isinstance(n, int) and n > 0 else f"no ({n})", "yes",
+                f"premise: heap finds rows for ts {op} a timestamptz across the gap (#1738)")
+
+
+@pytest.mark.parametrize("op,val", GAP_ARMS, ids=[o for o, _ in GAP_ARMS])
+def test_a_timestamptz_constant_across_the_gap_returns_heaps_rows(zone, expect, op, val):
+    expect.row_set(_rowsv(_try(_rows, zone, f"SELECT id FROM nz WHERE ts {op} {val}::timestamptz")),
+                   _rowsv(_try(_rows, zone, f"SELECT id FROM hz WHERE ts {op} {val}::timestamptz")),
+                   f"ts {op} a timestamptz constant across a spring-forward gap returns heap's rows (#1738)")
+
+
+def test_across_the_fall_back_hour_returns_heaps_rows(zone, expect):
+    w = "ts > '2024-11-03 05:30+00'::timestamptz"
+    expect.row_set(_rowsv(_try(_rows, zone, f"SELECT id FROM nz WHERE {w}")),
+                   _rowsv(_try(_rows, zone, f"SELECT id FROM hz WHERE {w}")),
+                   "across the fall-back hour, ts > a timestamptz constant returns heap's rows (#1738)")
+
+
+def test_the_reverse_pair_in_the_gap_returns_heaps_rows(zone, expect):
+    w = "tz > '2024-03-10 02:30'::timestamp"
+    expect.row_set(_rowsv(_try(_rows, zone, f"SELECT id FROM nz WHERE {w}")),
+                   _rowsv(_try(_rows, zone, f"SELECT id FROM hz WHERE {w}")),
+                   "the reverse pair, tz > a timestamp constant in the gap, returns heap's rows (#1738)")
+
+
+def test_a_same_type_constant_still_skips(zone, expect):
+    expect.at_least(_removed(zone, "SELECT id FROM nz WHERE ts > '2024-03-05'::timestamp"), 1,
+                    "a timestamp column against a timestamp constant still skips groups (#1738)")
+
+
+def test_the_reverse_pair_still_skips(zone, expect):
+    expect.at_least(_removed(zone, "SELECT id FROM nz WHERE tz > '2024-03-05'::timestamp"), 1,
+                    "the reverse pair, tz against a timestamp constant, still skips groups (#1738)")

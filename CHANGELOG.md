@@ -400,6 +400,14 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+- **A `timestamp` column compared with a `timestamptz` constant no longer loses
+  rows across a spring-forward gap.** The zone maps compared each chunk group's
+  min/max through the cross-type ordering proc, which reads a wall time as an
+  instant in the session zone, and that is not order-preserving inside the gap:
+  in New York on 2024-03-10, `02:30` is 07:30Z but `03:00` is 07:00Z, so a group
+  whose max was `03:00` was skipped for `ts > '07:15+00'` although its `02:30` row
+  matched. That pair is no longer used to skip; the reverse pair and same-type
+  comparisons still are (#1738). `test/native_skip.sh` and `test_native_skip.py`.
 - **`export_parquet` no longer marks a `timestamp` column as a UTC instant.** Both
   `timestamp` and `timestamptz` were written as the converted type `TIMESTAMP_MICROS`,
   which the Parquet spec defines as adjusted to UTC. Every other reader (pyarrow,
