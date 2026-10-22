@@ -5993,6 +5993,49 @@ phase4	phase4	uq unchanged	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolum
 phase4	phase4	uq within-stmt dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a unique check that finds a buffered row calls abort()
 phase4	phase4	uq2 count	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_index_fetch_tuple returns nothing to a dirty snapshot, so a unique check never sees the existing row
 phase4	phase4	uq2 dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a duplicate of a flushed unique key is refused with an internal error (XX000) not 23505
+phase6	phase6	avg filtered	15;16;17;18;19	never	-
+phase6	phase6	avg(a) ignores nulls	15;16;17;18;19	never	-
+phase6	phase6	avg(bigint)->numeric	15;16;17;18;19	never	-
+phase6	phase6	avg(float8)	15;16;17;18;19	2026-10-22	columnar_encoding.c: the float decode (ALP and Gorilla) flips a high mantissa bit of each vector's first value
+phase6	phase6	avg(id)	15;16;17;18;19	never	-
+phase6	phase6	count after delete	15;16;17;18;19	never	-
+phase6	phase6	count distinct	15;16;17;18;19	never	-
+phase6	phase6	count empty result	15;16;17;18;19	never	-
+phase6	phase6	count filtered	15;16;17;18;19	never	-
+phase6	phase6	count(*)	15;16;17;18;19	never	-
+phase6	phase6	count(*) with nulls	15;16;17;18;19	never	-
+phase6	phase6	count(a) skips nulls	15;16;17;18;19	never	-
+phase6	phase6	count(code) nulls	15;16;17;18;19	never	-
+phase6	phase6	count(id)	15;16;17;18;19	never	-
+phase6	phase6	filter excludes nulls	15;16;17;18;19	never	-
+phase6	phase6	filter other col	15;16;17;18;19	never	-
+phase6	phase6	filtered projected scan	15;16;17;18;19	never	-
+phase6	phase6	filtered scan exact count	15;16;17;18;19	never	-
+phase6	phase6	filtered scan exact value	15;16;17;18;19	never	-
+phase6	phase6	full table scan	15;16;17;18;19	2026-10-22	columnar_encoding.c: an uncompressed varlena decode turns the first 'w' byte of each vector into 'W'
+phase6	phase6	group by (fallback)	15;16;17;18;19	never	-
+phase6	phase6	min empty is null	15;16;17;18;19	never	-
+phase6	phase6	min(id),max(id)	15;16;17;18;19	never	-
+phase6	phase6	min/max filtered	15;16;17;18;19	never	-
+phase6	phase6	min/max text	15;16;17;18;19	2026-10-22	columnar_encoding.c: an uncompressed varlena decode turns the first 'w' byte of each vector into 'W'
+phase6	phase6	min/max(a) with nulls	15;16;17;18;19	never	-
+phase6	phase6	min/max(txt) nulls	15;16;17;18;19	never	-
+phase6	phase6	multi-predicate	15;16;17;18;19	never	-
+phase6	phase6	ordered-set agg	15;16;17;18;19	never	-
+phase6	phase6	row count	15;16;17;18;19	never	-
+phase6	phase6	scan after delete	15;16;17;18;19	never	-
+phase6	phase6	several at once	15;16;17;18;19	never	-
+phase6	phase6	string agg (fallback)	15;16;17;18;19	never	-
+phase6	phase6	sum after delete	15;16;17;18;19	never	-
+phase6	phase6	sum empty is null	15;16;17;18;19	never	-
+phase6	phase6	sum filtered	15;16;17;18;19	never	-
+phase6	phase6	sum(a) ignores nulls	15;16;17;18;19	never	-
+phase6	phase6	sum(bigint)->numeric	15;16;17;18;19	never	-
+phase6	phase6	sum(float8)	15;16;17;18;19	2026-10-22	columnar_encoding.c: the float decode (ALP and Gorilla) flips a high mantissa bit of each vector's first value
+phase6	phase6	sum(id)	15;16;17;18;19	never	-
+phase6	phase6	sum(numeric)	15;16;17;18;19	2026-10-22	columnar_encoding.c: an uncompressed varlena decode turns the first 'w' byte of each vector into 'W'
+phase6	phase6	sum(smallint)	15;16;17;18;19	never	-
+phase6	phase6	vectors formed	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
 preimage_rewrite	preimage_rewrite	...and still answers correctly with the fold enabled	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and the heap agrees it is unsatisfiable	15;16;17;18;19	never	-
