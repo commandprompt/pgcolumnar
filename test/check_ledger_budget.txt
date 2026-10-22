@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 43
+suites_not_covered 42
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6612,4 +6612,23 @@ suites_not_covered 43
 #     never         4330 + 5 = 4335
 #     dated         3211 + 11 = 3222
 #     4335 + 3222 == 7557
-checks_never_observed_red 4335
+#
+# #1341, objstore_stash_recovery seeded, with its twin (OffgridwithJD): 4335 -> 4344,
+# and suites_not_covered 43 -> 42. The suite had no rows. It enters with 18 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# "and it did not stop at the start guard" counted 'interrupted mid-move', the refusal's
+# text before #393's fix, which nothing prints any more: with the guard turned back into a
+# refusal, eight checks went red and it stayed green. The debris was a byte-identical copy,
+# so a guard that restored every stash over the installed module passed 17/17; the debris
+# is now a different valid module and the installed one is compared with the pristine copy.
+# Both restore slices parked the module at .away, so a guard that walked .away alone passed
+# 17/17; the only-copy slice now parks it at .probe. Each slice also starts from the
+# pristine copy, so one slice's damage no longer reddens the next one's premises.
+# 9 are dated by four mutations of objstore_module.sh's guard, each reddening the same
+# names in both twins. 9 arrive never.
+#
+#     ledger rows   7557 + 18 = 7575
+#     never         4335 + 9 = 4344
+#     dated         3222 + 9 = 3231
+#     4344 + 3231 == 7575
+checks_never_observed_red 4344
