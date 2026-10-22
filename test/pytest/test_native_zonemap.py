@@ -72,10 +72,20 @@ def _zq(sid, expr):
     return f"SELECT {expr} FROM pgcolumnar.zone_map WHERE storage_id = {sid}"
 
 
+def _zint(dsn, sid, expr):
+    """-> a zone-map reading for storage `sid`, or sid's own failure when it could not be
+    read. A query over `storage_id = NULL` matches no row, and a count of bad rows over no
+    rows is the 0 nine checks want (#1697 review); the shell's empty $SID is a syntax
+    error there, so each of its checks fails."""
+    return _int(dsn, _zq(sid, expr)) if isinstance(sid, int) else sid
+
+
 def _bounds_match(dsn, sid, kind, side):
     """-> how many zone rows of id (0), k (1) and v (3) hold the heap's own bound for
     their group and vector; kind "vector" (18 rows) or "chunk" (9 rows), as the shell's
     bounds_match."""
+    if not isinstance(sid, int):
+        return sid
     vfilter = "vector_index = -1" if kind == "chunk" else "vector_index >= 0"
     p = side[:3]
     return _int(dsn, f"""
@@ -113,39 +123,38 @@ def zm(pgc_cluster):
             conn.execute(f"INSERT INTO n {GEN}")
             conn.execute(ZM_LE)
         sid = _int(dsn, "SELECT pgcolumnar.get_storage_id('n')")
-        sid = sid if isinstance(sid, int) else "NULL"
         r = {
             "rows": _int(dsn, "SELECT count(*) FROM n"),
             "hash n": _one(dsn, HASH.format("SELECT id, k, label, v FROM n")),
             "hash h": _one(dsn, HASH.format("SELECT id, k, label, v FROM h")),
-            "chunk rows": _int(dsn, _zq(sid, "count(*) FILTER (WHERE vector_index = -1)")),
-            "vector rows": _int(dsn, _zq(sid, "count(*) FILTER (WHERE vector_index >= 0)")),
-            "chunk cover": _int(dsn, _zq(sid, "count(*) FILTER (WHERE vector_index = -1 "
-                                                   "AND value_count + null_count <> 2048)")),
-            "vector cover": _int(dsn, _zq(sid, "count(*) FILTER (WHERE vector_index >= 0 "
-                                                    "AND value_count + null_count <> 1024)")),
-            "v values": _int(dsn, _zq(sid, "sum(value_count) FILTER (WHERE vector_index = -1 "
-                                                "AND column_index = 3)")),
+            "chunk rows": _zint(dsn, sid, "count(*) FILTER (WHERE vector_index = -1)"),
+            "vector rows": _zint(dsn, sid, "count(*) FILTER (WHERE vector_index >= 0)"),
+            "chunk cover": _zint(dsn, sid, "count(*) FILTER (WHERE vector_index = -1 "
+                                                "AND value_count + null_count <> 2048)"),
+            "vector cover": _zint(dsn, sid, "count(*) FILTER (WHERE vector_index >= 0 "
+                                                 "AND value_count + null_count <> 1024)"),
+            "v values": _zint(dsn, sid, "sum(value_count) FILTER (WHERE vector_index = -1 "
+                                             "AND column_index = 3)"),
             "h v values": _int(dsn, "SELECT count(v) FROM h"),
-            "v nulls": _int(dsn, _zq(sid, "sum(null_count) FILTER (WHERE vector_index = -1 "
-                                               "AND column_index = 3)")),
+            "v nulls": _zint(dsn, sid, "sum(null_count) FILTER (WHERE vector_index = -1 "
+                                            "AND column_index = 3)"),
             "h v nulls": _int(dsn, "SELECT count(*) - count(v) FROM h"),
-            "id values": _int(dsn, _zq(sid, "sum(value_count) FILTER (WHERE vector_index = -1 "
-                                                 "AND column_index = 0)")),
-            "id nulls": _int(dsn, _zq(sid, "sum(null_count) FILTER (WHERE vector_index = -1 "
-                                                "AND column_index = 0)")),
-            "k folds": _int(dsn, _zq(sid, """count(*) FILTER (WHERE column_index = 1 AND vector_index = -1
+            "id values": _zint(dsn, sid, "sum(value_count) FILTER (WHERE vector_index = -1 "
+                                              "AND column_index = 0)"),
+            "id nulls": _zint(dsn, sid, "sum(null_count) FILTER (WHERE vector_index = -1 "
+                                             "AND column_index = 0)"),
+            "k folds": _zint(dsn, sid, """count(*) FILTER (WHERE column_index = 1 AND vector_index = -1
                 AND value_count <> (SELECT sum(z2.value_count)
                                     FROM pgcolumnar.zone_map z2
                                     WHERE z2.storage_id = pgcolumnar.zone_map.storage_id
                                       AND z2.group_number = pgcolumnar.zone_map.group_number
-                                      AND z2.column_index = 1 AND z2.vector_index >= 0))""")),
-            "minmax missing": _int(dsn, _zq(sid, "count(*) FILTER (WHERE minimum IS NULL "
-                                                      "OR maximum IS NULL)")),
-            "id width": _int(dsn, _zq(sid, "count(*) FILTER (WHERE column_index = 0 "
-                                                "AND octet_length(minimum) <> 4)")),
-            "k width": _int(dsn, _zq(sid, "count(*) FILTER (WHERE column_index = 1 "
-                                               "AND octet_length(maximum) <> 8)")),
+                                      AND z2.column_index = 1 AND z2.vector_index >= 0))"""),
+            "minmax missing": _zint(dsn, sid, "count(*) FILTER (WHERE minimum IS NULL "
+                                                   "OR maximum IS NULL)"),
+            "id width": _zint(dsn, sid, "count(*) FILTER (WHERE column_index = 0 "
+                                             "AND octet_length(minimum) <> 4)"),
+            "k width": _zint(dsn, sid, "count(*) FILTER (WHERE column_index = 1 "
+                                            "AND octet_length(maximum) <> 8)"),
             "v not ascending": _one(dsn, """SELECT count(*) > 0 FROM (
                 SELECT (id - 1) / 1024 AS vec, min(v) AS mn,
                        (array_agg(v ORDER BY id) FILTER (WHERE v IS NOT NULL))[1] AS first
@@ -154,18 +163,18 @@ def zm(pgc_cluster):
             "vector max": _bounds_match(dsn, sid, "vector", "maximum"),
             "chunk min": _bounds_match(dsn, sid, "chunk", "minimum"),
             "chunk max": _bounds_match(dsn, sid, "chunk", "maximum"),
-            "int4 sums": _int(dsn, _zq(sid, "count(*) FILTER (WHERE column_index IN (0,3) "
-                                                 "AND value_count > 0 AND sum IS NULL)")),
-            "other sums": _int(dsn, _zq(sid, "count(*) FILTER (WHERE column_index IN (1,2) "
-                                                  "AND sum IS NOT NULL)")),
-            "id sum": _int(dsn, _zq(sid, "sum(sum) FILTER (WHERE column_index = 0 "
-                                              "AND vector_index = -1)")),
+            "int4 sums": _zint(dsn, sid, "count(*) FILTER (WHERE column_index IN (0,3) "
+                                              "AND value_count > 0 AND sum IS NULL)"),
+            "other sums": _zint(dsn, sid, "count(*) FILTER (WHERE column_index IN (1,2) "
+                                               "AND sum IS NOT NULL)"),
+            "id sum": _zint(dsn, sid, "sum(sum) FILTER (WHERE column_index = 0 "
+                                           "AND vector_index = -1)"),
             "h id sum": _int(dsn, "SELECT sum(id) FROM h"),
         }
         try:
             with psycopg.connect(dsn, autocommit=True) as conn:
                 conn.execute("DROP TABLE n")
-            r["after drop"] = _int(dsn, f"SELECT count(*) FROM pgcolumnar.zone_map WHERE storage_id = {sid}")
+            r["after drop"] = _zint(dsn, sid, "count(*)")
         except psycopg.Error as exc:
             r["after drop"] = _failed(exc)
         yield r
