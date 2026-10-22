@@ -323,6 +323,7 @@ COMPLETE = ["advisory_lock_class",
             "parallel_am_scan",
             "parallel_scan_cost",
             "partition_lifecycle",
+            "phase6",
             "partition_rows",
             "phase4",
             "partman_columnar",
@@ -1176,16 +1177,21 @@ def test_the_extractor_reads_every_recorder_lib_sh_defines(expect):
     # well-formed"` -- so the extractor reads their shape as a template from
     # `parallel_copy.sh` itself while the 12 labels the suite supplies go unread. The
     # behaviour list is the one that matters for the queue: `sorted_pathkeys.sh`
-    # defines `ans` and `ansp` and loses 19 of its 113 names, and `phase6.sh` loses 39
-    # of 43. Filed rather than fixed here: this change is about the recorders `lib.sh`
-    # shares, and widening both populations at once would make the removal proof
-    # unreadable.
+    # defines `ans` and `ansp` and loses 19 of its 113 names. (`phase6.sh` was listed
+    # here as losing 39 of 43; its `eq_on_off` is read now, and test_phase6.py grades
+    # all 43, #1341.) Filed rather than fixed here: this change is about the recorders
+    # `lib.sh` shares, and widening both populations at once would make the removal
+    # proof unreadable.
+    direct_call = re.compile(r'\bpgc_record\s+[A-Z]')
     direct = sorted(sh.name[:-3] for sh in HERE.parent.glob("*.sh")
                     if sh.name != "lib.sh"
-                    and re.search(r'\bpgc_record\s+[A-Z]', _strip_comments(sh.read_text())))
-    expect.at_least(len(direct), 1,
-                    "premise: some suite does call pgc_record directly, so this is "
-                    "not vacuous")
+                    and direct_call.search(_strip_comments(sh.read_text())))
+    # The corpus no longer has a suite that calls pgc_record directly (phase6.sh was
+    # the last, #1341), so the arm below cannot lean on one being there. A planted
+    # line proves the detector still finds such a call, wherever the corpus stands.
+    planted = 'pgc_record PASS "$suite" "$part" "a planted name"\n'
+    expect.num(1 if direct_call.search(_strip_comments(planted)) else 0, 1,
+               "control: the detector finds a planted direct pgc_record call")
     twinned = sorted(d for d in direct if (HERE / f"test_{d}.py").exists())
     expect.text(", ".join(twinned) or "none", "none",
                 "no suite calling pgc_record directly has a twin, so excluding the "

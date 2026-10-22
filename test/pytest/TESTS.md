@@ -377,6 +377,7 @@ behaviour, the source of that number is named.
 - [329. test_phase2.py: compression, projection, zone maps and chunk-group filtering](#329-test_phase2py-compression-projection-zone-maps-and-chunk-group-filtering)
 - [330. test_phase3.py: read-your-writes, DELETE, UPDATE, rollback, savepoints and temporary tables](#330-test_phase3py-read-your-writes-delete-update-rollback-savepoints-and-temporary-tables)
 - [331. test_phase4.py: btree and hash index reads through the index fetch, and refusals by SQLSTATE](#331-test_phase4py-btree-and-hash-index-reads-through-the-index-fetch-and-refusals-by-sqlstate)
+- [332. test_phase6.py: vectorized aggregates and scans against a heap oracle, not only against themselves](#332-test_phase6py-vectorized-aggregates-and-scans-against-a-heap-oracle-not-only-against-themselves)
 
 ## 1. How to read a test in here
 
@@ -12452,3 +12453,57 @@ Every test makes one check under the shell's name, from readings a module fixtur
 | `test_ios_off_plain_index_scan` | IOS off: plain index scan |
 | `test_covering_value` | covering value |
 | `test_full_table_scan_available` | full-table scan available |
+
+## 332. test_phase6.py: vectorized aggregates and scans against a heap oracle, not only against themselves
+
+The twin of `test/phase6.sh`. On a private database a 50,000-row columnar table (five chunk groups) and a 30,000-row table with NULLs in independent patterns are read by aggregates, filtered aggregates, fallback aggregates and row scans, before and after a DELETE. Each query runs with pgcolumnar.enable_vectorization on, with it off, and against schema `oracle`, heap tables of the same names filled by the same generator and the same DELETE; all three must agree, and equal the known value where the shell names one.
+
+### Every test
+
+Every test makes one check under the shell's name, from readings a module fixture takes in the shell's order. Values are read in PostgreSQL's text format, columns joined by "|" as psql -qAt prints them; a failed query is a query_error, never text. The shell's timing block records no check and is not ported.
+
+| test | what it holds |
+| --- | --- |
+| `test_t_row_count` | row count |
+| `test_vectors_formed` | vectors formed |
+| `test_t_count_star` | count(*) |
+| `test_count_id` | count(id) |
+| `test_sum_id` | sum(id) |
+| `test_sum_smallint` | sum(smallint) |
+| `test_avg_id` | avg(id) |
+| `test_min_id_max_id` | min(id),max(id) |
+| `test_min_max_text` | min/max text |
+| `test_several_at_once` | several at once |
+| `test_count_filtered` | count filtered |
+| `test_sum_filtered` | sum filtered |
+| `test_avg_filtered` | avg filtered |
+| `test_min_max_filtered` | min/max filtered |
+| `test_filter_other_col` | filter other col |
+| `test_multi_predicate` | multi-predicate |
+| `test_full_table_scan` | full table scan |
+| `test_filtered_projected_scan` | filtered projected scan |
+| `test_filtered_scan_exact_value` | filtered scan exact value |
+| `test_filtered_scan_exact_count` | filtered scan exact count |
+| `test_count_with_nulls` | count(*) with nulls |
+| `test_count_a_skips_nulls` | count(a) skips nulls |
+| `test_sum_a_ignores_nulls` | sum(a) ignores nulls |
+| `test_avg_a_ignores_nulls` | avg(a) ignores nulls |
+| `test_min_max_a_with_nulls` | min/max(a) with nulls |
+| `test_min_max_txt_nulls` | min/max(txt) nulls |
+| `test_count_code_nulls` | count(code) nulls |
+| `test_filter_excludes_nulls` | filter excludes nulls |
+| `test_count_empty_result` | count empty result |
+| `test_sum_empty_is_null` | sum empty is null |
+| `test_min_empty_is_null` | min empty is null |
+| `test_sum_bigint_numeric` | sum(bigint)->numeric |
+| `test_avg_bigint_numeric` | avg(bigint)->numeric |
+| `test_sum_numeric` | sum(numeric) |
+| `test_avg_float8` | avg(float8) |
+| `test_sum_float8` | sum(float8) |
+| `test_ordered_set_agg` | ordered-set agg |
+| `test_string_agg_fallback` | string agg (fallback) |
+| `test_group_by_fallback` | group by (fallback) |
+| `test_count_distinct` | count distinct |
+| `test_count_after_delete` | count after delete |
+| `test_sum_after_delete` | sum after delete |
+| `test_scan_after_delete` | scan after delete |

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 39
+suites_not_covered 38
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6670,4 +6670,20 @@ suites_not_covered 39
 #     never         4410 + 25 = 4435
 #     dated         3181 + 14 = 3195
 #     4435 + 3195 == 7630
-checks_never_observed_red 4435
+#
+# #1341, phase6 seeded, with its twin (OffgridwithJD): 4435 -> 4473,
+# and suites_not_covered 39 -> 38. The suite had no rows. It enters with 43 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after this fix.
+# Every aggregate and scan check compared vectorization on with vectorization off, and
+# both read the same columnar decode. 21 of its 39 queries plan the same either way, so
+# those compared a path with itself. A float decode that changed one value per vector
+# passed 43/43 (floatbit), and a text decode that changed one byte per vector reddened
+# only min/max text (textw). Each query is now also run against a heap oracle built by
+# the same generator. 5 are dated by two mutations, each the same names in both
+# twins. 38 arrive never.
+#
+#     ledger rows   7630 + 43 = 7673
+#     never         4435 + 38 = 4473
+#     dated         3195 + 5 = 3200
+#     4473 + 3200 == 7673
+checks_never_observed_red 4473
