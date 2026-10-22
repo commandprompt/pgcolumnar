@@ -7,7 +7,6 @@
 #
 # The parity goal (#432) is this file empty.
 audit
-bench_guards
 cancel_decode
 decode_interrupts
 decode_skip_interrupts

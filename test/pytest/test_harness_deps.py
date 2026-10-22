@@ -62,6 +62,9 @@ JOB_COMMENT = "# The pytest harness's own guards"
 # that must agree fail loudly whichever of them is wrong. It is the shape
 # selftest 350 already uses for TESTS.md, for the same reason.
 NO_CLUSTER = [
+    # #1341: bench_guards.sh's twin. It runs each bench runner's guard block and
+    # bench/cb_guards.sh through bash, with a stand-in pg_config: no cluster, no driver.
+    "test_bench_guards.py",
     "test_build_refusal.py",
     "test_docs_cover_the_corpus.py",
     "test_guards_pinned.py",
