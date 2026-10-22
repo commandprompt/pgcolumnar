@@ -4348,14 +4348,14 @@ native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC
 native_join_vector_agg	native_join_vector_agg	unique join uses vectorized agg when GUC on	15;16;17;18;19	2026-09-12	drop JOINREL fold
 native_late_materialization	native_late_materialization	a rejected row does not materialize its payload columns	15;16;17;18;19	2026-10-22	columnar_reader.c: a row the qual rejects is skipped but never counted
 native_late_materialization	native_late_materialization	a volatile qual is refused the two-pass path	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
-native_late_materialization	native_late_materialization	and the answers are the same with it off	15;16;17;18;19	never	-
-native_late_materialization	native_late_materialization	and the volatile query still matches the heap mirror	15;16;17;18;19	never	-
+native_late_materialization	native_late_materialization	and the answers are the same with it off	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_tuple_insert drops the row whose id is 7
+native_late_materialization	native_late_materialization	and the volatile query still matches the heap mirror	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_tuple_insert drops the row whose id is 7
+native_late_materialization	native_late_materialization	heap agrees on how many rows match	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_tuple_insert drops the row whose id is 7
 native_late_materialization	native_late_materialization	nothing was pruned at the group level	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_late_materialization	native_late_materialization	nothing was pruned at the vector level	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
-native_late_materialization	native_late_materialization	premise: heap agrees on how many rows match	15;16;17;18;19	never	-
 native_late_materialization	native_late_materialization	premise: the fixture loaded every row	15;16;17;18;19	never	-
 native_late_materialization	native_late_materialization	premise: the needle is selective, not most of the table	15;16;17;18;19	never	-
-native_late_materialization	native_late_materialization	the executor still reports the rows the scan filtered	15;16;17;18;19	never	-
+native_late_materialization	native_late_materialization	the executor still reports the rows the scan filtered	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_tuple_insert drops the row whose id is 7
 native_late_materialization	native_late_materialization	the query runs on the columnar custom scan	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_late_materialization	native_late_materialization	the rows are identical to the heap mirror	15;16;17;18;19	2026-10-22	columnar_reader.c: the late-materialization path rejects a row the qual accepts
 native_late_materialization	native_late_materialization	the same shape without the volatile term does use it	15;16;17;18;19	2026-10-22	columnar_reader.c: a row the qual rejects is skipped but never counted

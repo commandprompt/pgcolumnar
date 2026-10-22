@@ -103,7 +103,7 @@ def nlm(pgc_cluster):
             c.execute("ANALYZE h")
             c.execute("ANALYZE n")
         r = {
-            "rows": _int(_one(dsn, "SELECT count(*) FROM n")),
+            "rows": _int(_one(dsn, "SELECT count(*) FROM h")),
             "n match": _int(_one(dsn, f"SELECT count(*) FROM n WHERE k LIKE '%{NEEDLE}%'")),
             "h match": _int(_one(dsn, f"SELECT count(*) FROM h WHERE k LIKE '%{NEEDLE}%'")),
             "proj": _counter(dsn, "Columnar Projected Columns", Q),
@@ -136,11 +136,11 @@ def test_late_materialization_fixture_loaded_every_row(nlm, expect):
 
 
 def test_late_materialization_needle_is_selective(nlm, expect):
-    expect.num(nlm["n match"], 20, "premise: the needle is selective, not most of the table")
+    expect.num(nlm["h match"], 20, "premise: the needle is selective, not most of the table")
 
 
 def test_late_materialization_heap_agrees_on_matches(nlm, expect):
-    expect.num(nlm["h match"], nlm["n match"], "premise: heap agrees on how many rows match")
+    expect.num(nlm["h match"], nlm["n match"], "heap agrees on how many rows match")
 
 
 def test_late_materialization_query_runs_on_the_custom_scan(nlm, expect):
