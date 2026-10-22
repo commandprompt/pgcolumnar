@@ -1228,7 +1228,7 @@ pgc_accounted_among() {	# pgc_accounted_among NAMEFILE WIDEFILE -> names
 #
 # A STATIC RULE CANNOT DO THIS JOB, and two attempts got it wrong in different
 # directions before this reader existed. "Does this suite record?" is a RUNTIME
-# property: `audit.sh` defines its own `check()` whose body calls `pgc_record`, so a
+# property: `phase2.sh` defines its own `check()` whose body calls `pgc_record`, so a
 # rule keyed on defining a local check() misses it; `objstore_stash_recovery.sh`
 # uses lib.sh's check() directly, so the string `pgc_record` never appears in the
 # file at all and a rule keyed on that misses it too. And a third, excluding files

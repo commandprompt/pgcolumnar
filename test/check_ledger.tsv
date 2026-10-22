@@ -395,6 +395,41 @@ arrow_nested_import	arrow_nested_import	import rows	15;16;17;18;19	2026-10-20	ex
 arrow_nested_import	arrow_nested_import	nested import round-trips (arrays + composite)	15;16;17;18;19	2026-10-20	export: the final partial record batch never written;import: a NULL List element read as a value;import: a NULL Struct's validity bit ignored;import: an empty List read as a NULL array
 arrow_nested_import	arrow_nested_import	premise: the delete left 3999 live rows in the source	15;16;17;18;19	never	-
 arrow_nested_import	arrow_nested_import	round-trips after delete	15;16;17;18;19	2026-10-20	export: deleted rows exported too;export: the final partial record batch never written;import: a NULL List element read as a value;import: a NULL Struct's validity bit ignored;import: an empty List read as a NULL array
+audit	audit	add-column aggregate	15;16;17;18;19	2026-10-22	columnar_reader.c: a column added after the data reads NULL instead of its missing value
+audit	audit	add-column const default	15;16;17;18;19	2026-10-22	columnar_reader.c: a column added after the data reads NULL instead of its missing value
+audit	audit	add-column index scan	15;16;17;18;19	2026-10-22	columnar_reader.c: a column added after the data reads NULL instead of its missing value
+audit	audit	add-column mid-transaction keeps a later UPDATE	15;16;17;18;19	2026-10-22	columnar_write_state.c: a write buffer opened before ADD COLUMN in the transaction is reused
+audit	audit	add-column mid-transaction keeps the inserted value	15;16;17;18;19	2026-10-22	columnar_reader.c: a column added after the data reads NULL instead of its missing value
+audit	audit	add-column mixed rows	15;16;17;18;19	2026-10-22	columnar_reader.c: a column added after the data reads NULL instead of its missing value
+audit	audit	add-column nullable is null	15;16;17;18;19	never	-
+audit	audit	add-column projected only	15;16;17;18;19	2026-10-22	columnar_reader.c: a column added after the data reads NULL instead of its missing value
+audit	audit	add-column text default	15;16;17;18;19	2026-10-22	columnar_reader.c: a column added after the data reads NULL instead of its missing value
+audit	audit	add-column without a default keeps the inserted value	15;16;17;18;19	2026-10-22	columnar_write_state.c: a write buffer opened before ADD COLUMN in the transaction is reused
+audit	audit	collation pushdown == no-pushdown	15;16;17;18;19	2026-10-22	columnar_customscan.c: a predicate under another collation is pushed into chunk-group skipping
+audit	audit	collation result correct	15;16;17;18;19	2026-10-22	columnar_customscan.c: a predicate under another collation is pushed into chunk-group skipping
+audit	audit	create index no relation leak	15;16;17;18;19	2026-10-22	columnar_tableam.c: index_build_range_scan does not end the scan a build participant was handed
+audit	audit	create index rows indexed once	15;16;17;18;19	2026-10-22	columnar_tableam.c: every build participant reads through a private full-table reader
+audit	audit	nothing was recorded for the heap table	15;16;17;18;19	never	-
+audit	audit	nothing was recorded for the partitioned parent	17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options accepts relkind p as columnar
+audit	audit	premise: the SQLSTATE probe reads a known code	15;16;17;18;19	never	-
+audit	audit	premise: the add-column lookup reads ac_c_idx	15;16;17;18;19	never	-
+audit	audit	premise: this major really lets a partitioned parent carry the AM	17;18;19	never	-
+audit	audit	reject chunk_group_row_limit 0	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options drops its chunk_group_row_limit < 100 guard
+audit	audit	reject compression_level 99	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options drops its compression_level 1..22 guard
+audit	audit	reject set_options on a heap table	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options raises division_by_zero at entry, before any guard
+audit	audit	reject set_options on a partitioned parent	17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options accepts relkind p as columnar
+audit	audit	reject stripe_row_limit 5	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options drops its stripe_row_limit < 1000 guard
+audit	audit	same-collation still pushes	15;16;17;18;19	never	-
+audit	audit	same-statement duplicate inserted nothing	15;16;17;18;19	never	-
+audit	audit	same-statement duplicate is rejected, not spun on	15;16;17;18;19	never	-
+audit	audit	set_options on a non-columnar relation raises 42809, not P0001	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options raises division_by_zero at entry, before any guard
+audit	audit	the indexed-once count reads idxleak_a_idx	15;16;17;18;19	2026-10-22	columnar_tableam.c: a parallel index build participant raises an error
+audit	audit	the parallel CREATE INDEX completed	15;16;17;18;19	2026-10-22	columnar_tableam.c: a parallel index build participant raises an error
+audit	audit	the partition itself is still accepted	17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options raises division_by_zero at entry, before any guard
+audit	audit	the partitioned-parent arm	15;16	never	-
+audit	audit	the refusal says the relation is not columnar	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options raises division_by_zero at entry, before any guard
+audit	audit	the same call on a columnar table is recorded	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: set_options raises division_by_zero at entry, before any guard
+audit	audit	valid options delete works	15;16;17;18;19	never	-
 autovacuum	autovacuum	OFF-again: a new deleted table is left alone after disabling	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the launcher runs its passes with pgcolumnar.autovacuum off
 autovacuum	autovacuum	OFF: the daemon did not touch the table (dead rows unchanged)	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the launcher runs its passes with pgcolumnar.autovacuum off
 autovacuum	autovacuum	ON: the daemon compacted the deleted-heavy table (dead rows now 0)	15;16;17;18;19	2026-10-20	columnar_autovacuum.c: the maintenance launcher is never registered
