@@ -11144,7 +11144,7 @@ Every test makes one check under the shell's name, on a private database built o
 | test | what it holds |
 | --- | --- |
 | `test_nes_the_zero_match_plan_is_a_columnar_custom_scan` | the zero-match plan is a columnar custom scan |
-| `test_nes_one_row_group` | premise: one row group, so every count below is one group's |
+| `test_nes_one_row_group` | one row group, so every count below is one group's |
 | `test_nes_the_predicate_matches_no_row` | premise: the predicate really matches no row |
 | `test_nes_the_control_matches_every_row` | and the control matches every row |
 | `test_nes_zone_maps_rule_out_nothing` | ZONE MAPS RULE OUT NOTHING, which is what makes this 1b-ii |

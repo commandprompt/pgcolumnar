@@ -110,7 +110,7 @@ def nes(pgc_cluster):
             "scan": _has(zero, "Columnar Projected Columns"),
             "groups": _value(dsn, "SELECT count(*) FROM pgcolumnar.row_group "
                                   "WHERE storage_id = pgcolumnar.get_storage_id('n')"),
-            "zero rows": _value(dsn, "SELECT count(*) FROM n WHERE z BETWEEN 51 AND 59"),
+            "zero rows": _value(dsn, "SELECT count(*) FROM h WHERE z BETWEEN 51 AND 59"),
             "all rows": _value(dsn, "SELECT count(*) FROM n WHERE z >= 0"),
             "zone maps": zonemaps,
             "groups pruned": _counter(zero, "Columnar Chunk Groups Removed by Filter"),
@@ -141,7 +141,7 @@ def test_nes_the_zero_match_plan_is_a_columnar_custom_scan(nes, expect):
 
 
 def test_nes_one_row_group(nes, expect):
-    expect.text(nes["groups"], "1", "premise: one row group, so every count below is one group's")
+    expect.text(nes["groups"], "1", "one row group, so every count below is one group's")
 
 
 def test_nes_the_predicate_matches_no_row(nes, expect):

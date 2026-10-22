@@ -67,15 +67,18 @@ ALLQ="SELECT * FROM n WHERE z >= 0"
 PLAN_ZERO="$(explain_of "$ZEROQ")"
 PLAN_ALL="$(explain_of "$ALLQ")"
 
-# ---- premises --------------------------------------------------------------
+# ---- the ground --------------------------------------------------------------
 
 check "the zero-match plan is a columnar custom scan" \
 	"$(has_line "$PLAN_ZERO" 'Columnar Projected Columns')" "yes"
-check "premise: one row group, so every count below is one group's" \
+check "one row group, so every count below is one group's" \
 	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('n');")" \
 	"1"
+# The fixture premise reads the heap mirror h, which pgcolumnar does not write; the
+# row-group count reads the writer's catalog, so a writer that reads stripe_row_limit
+# wrong (one line) reddens it, and it is not a premise.
 check "premise: the predicate really matches no row" \
-	"$(q 'SELECT count(*) FROM n WHERE z BETWEEN 51 AND 59;')" "0"
+	"$(q 'SELECT count(*) FROM h WHERE z BETWEEN 51 AND 59;')" "0"
 check "and the control matches every row" \
 	"$(q 'SELECT count(*) FROM n WHERE z >= 0;')" "$ROWS"
 

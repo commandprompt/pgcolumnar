@@ -3809,7 +3809,7 @@ native_exact_selection	native_exact_selection	and the control matches every row	
 native_exact_selection	native_exact_selection	and the control rules out no vector by value	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection rules out every vector, matching rows or not
 native_exact_selection	native_exact_selection	exact selection rules out every vector, none of them by zone map	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection never rules a vector out
 native_exact_selection	native_exact_selection	no whole row group is pruned either	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
-native_exact_selection	native_exact_selection	premise: one row group, so every count below is one group's	15;16;17;18;19	never	-
+native_exact_selection	native_exact_selection	one row group, so every count below is one group's	15;16;17;18;19	2026-10-22	columnar_write_state.c: the writer divides the table's stripe_row_limit by 100
 native_exact_selection	native_exact_selection	premise: the predicate really matches no row	15;16;17;18;19	never	-
 native_exact_selection	native_exact_selection	the EQUALITY form is pruned by bloom and reaches no decode	15;16;17;18;19	2026-10-22	columnar_reader.c: a bloom filter never prunes a chunk group
 native_exact_selection	native_exact_selection	the control decodes every column of every vector	15;16;17;18;19	2026-10-22	columnar_reader.c: exact selection rules out every vector, matching rows or not
