@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 28
+suites_not_covered 27
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -7039,4 +7039,21 @@ suites_not_covered 28
 #     never         4545 - 25 = 4520
 #     dated         3418 + 25 = 3443
 #     4520 + 3443 == 7963
-checks_never_observed_red 4520
+# #1657 follow-up, stats() and sort_status() refuse before they read the storage id
+# (OffgridwithJD): 4520 -> 4535, and suites_not_covered 28 -> 27. get_storage_id
+# checks SELECT with GetUserId(), which inside these SECURITY DEFINER functions is the
+# definer, so it passes for anyone and says "not a columnar table" for a heap table.
+# Only the explicit caller check refuses, and only while it runs first. With the two
+# lines swapped ("sidfirst"), both privilege suites stayed 13/13 in shell and twin on
+# main, because on their columnar table the caller check still refused afterwards.
+# Each suite gains a heap table no test role may read: refusing it for privilege is
+# dated by sidfirst, red by the same name in both twins, and the superuser control
+# ("not a columnar table") arrives never. sort_status_privilege already had its rows
+# and gains these 2. stats_privilege had none, so it enters whole with its 15 checks
+# from five-major runs (all green on 15-19, shell and twin alike): 1 dated, 14 never.
+#
+#     ledger rows   7963 + 17 = 7980
+#     never         4520 + 15 = 4535
+#     dated         3443 + 2 = 3445
+#     4535 + 3445 == 7980
+checks_never_observed_red 4535
