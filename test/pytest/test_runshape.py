@@ -3,6 +3,9 @@
 Each is measured in VACUITY_MODES.md and each is worth more than the per-assertion
 guards, because a single occurrence silently removes many tests at once.
 """
+import pathlib
+import re
+
 
 
 def test_layer_fails_when_a_collected_test_never_reports(pytester, expect):
@@ -338,3 +341,114 @@ def test_a_guard_in_a_teardown_would_report_a_pass_which_is_why_it_is_not_there(
     result = pytester.runpytest("-p", "pgc_vacuity")
     expect.outcomes(result, "a teardown refusal leaves the test reported as passed",
                     passed=1, failed=0, errors=1)
+
+
+def test_two_workers_taking_a_fixture_port_do_not_collide(pytester, monkeypatch, expect):
+    """Two xdist workers asking `pick_port` for the same slot get different ports (#1742).
+
+    A twin that starts its own S3 or HTTP fixture server takes its port from
+    `pick_port(slot)` in a module fixture. Under `-n 2` a module's tests are split
+    across workers, so each worker runs that fixture. On main the port depended on
+    the slot only: both workers probed the same free port and the second bind failed
+    with `Address already in use` (#1635, #1714, #1721). CI ran the cluster files
+    serially, so only the guard job and developers met it.
+
+    The inner tests take their port, wait until both workers have one, and only then
+    bind it, so the probe-then-bind race happens every run rather than by chance. A
+    subprocess, because xdist's workers are.
+    """
+    import pathlib
+    here = pathlib.Path(__file__).resolve().parent
+    meet = pytester.path / "meet"
+    meet.mkdir()
+    monkeypatch.setenv("PYTHONPATH", f"{pytester.path}:{here}")
+    monkeypatch.setenv("PGC_PORT_MEET", str(meet))
+    pytester.makepyfile(test_ports="""
+        import os, pathlib, socket, time
+        from pgc_cluster import pick_port
+
+        MEET = pathlib.Path(os.environ["PGC_PORT_MEET"])
+
+        def _wait_for(suffix, n):
+            for _ in range(600):
+                if len(list(MEET.glob("*" + suffix))) >= n:
+                    return
+                time.sleep(0.05)
+
+        def _take(expect, me):
+            port = pick_port(27)
+            (MEET / (me + ".pick")).write_text(
+                os.environ.get("PYTEST_XDIST_WORKER", "none") + " " + str(port))
+            _wait_for(".pick", 2)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind(("127.0.0.1", port))
+                    s.listen()
+                    got = "bound"
+                except OSError as e:
+                    got = "bind failed: " + str(e)
+                (MEET / (me + ".tried")).write_text(got)
+                _wait_for(".tried", 2)
+            expect.text(got, "bound", "this worker alone holds port " + str(port))
+
+        def test_first(expect):
+            _take(expect, "first")
+
+        def test_second(expect):
+            _take(expect, "second")
+        """)
+    result = pytester.runpytest_subprocess("-p", "pgc_vacuity", "-p", "no:cacheprovider",
+                                           "-n", "2")
+    picks = sorted(p.read_text().split() for p in meet.glob("*.pick"))
+    workers = sorted({w for w, _ in picks})
+    ports = sorted({port for _, port in picks})
+    # The premise: the race is only measured if the two picks ran on two workers.
+    expect.text(" ".join(workers), "gw0 gw1",
+                "premise: the two inner tests ran on two different workers")
+    expect.num(len(ports), 2, "the two workers were given two different ports")
+    out = result.stdout.str()
+    expect.text("green" if result.ret == 0 else f"exit {result.ret}: "
+                f"{[l for l in out.splitlines() if 'bind failed' in l or 'FAILED' in l][:4]!r}",
+                "green", "and each worker bound its own port, so the inner run is green")
+
+
+# ---- every slot the corpus asks for fits a worker's block (#1742 review) ----------
+#
+# A slot that does not fit raises at fixture time, on the cluster job, as every test
+# of that file erroring. These two read the corpus instead, so the next twin that asks
+# for a slot past the block fails here, in the guard job, by name. Measured before
+# the stride was raised: main's twins ask for slots 32 to 35, and a 64-port block
+# holds 0 to 31.
+_SLOT_CALL = re.compile(r"\bpick_port\(\s*(\d+)\s*[,)]")
+
+
+def _corpus_slots():
+    here = pathlib.Path(__file__).resolve().parent
+    found = {}
+    for f in sorted(here.glob("*.py")):
+        for m in _SLOT_CALL.finditer(f.read_text()):
+            found.setdefault(int(m.group(1)), []).append(f.name)
+    return found
+
+
+def test_every_literal_fixture_slot_fits_a_workers_block(expect):
+    from pgc_cluster import WORKER_STRIDE
+    slots = _corpus_slots()
+    expect.at_least(len(slots), 5, "premise: the corpus scan found the fixture slots in use")
+    too_big = sorted(f"{s} ({', '.join(sorted(set(files)))})" for s, files in slots.items()
+                     if not s * 2 < WORKER_STRIDE)
+    expect.text(", ".join(too_big) or "none", "none",
+                "every literal pick_port slot fits a worker's block of ports")
+
+
+def test_the_highest_slot_in_the_corpus_gets_a_port(expect):
+    from pgc_cluster import aux_band, pick_port
+    top = max(_corpus_slots())
+    lo, hi = aux_band(32768)
+    try:
+        port = pick_port(top, floor=32768, is_free=lambda p: True, worker_id="gw3")
+        reading = "in the band" if lo <= port < hi else f"outside the band: {port}"
+    except ValueError as exc:
+        reading = f"refused: {exc}"
+    expect.text(reading, "in the band",
+                f"the highest slot the corpus uses ({top}) gets a port in the AUX band")
