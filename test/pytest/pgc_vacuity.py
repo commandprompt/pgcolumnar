@@ -242,7 +242,10 @@ RECORD_VERDICTS = ("PASS", "FAIL", "UNRUN", "DECLINED")
 # through cannot_run and ends the run INCOMPLETE. Closed, so "optional" cannot grow
 # by one call site at a time. PGC_REQUIRE (comma-separated) names capabilities that
 # must be present here, as CI does, and turns a decline of them into a failure.
-DECLINABLE_CAPABILITIES = ("pyarrow",)
+# duckdb joined on the owner's decision on #1341 (2026-10-21): the one reader of an
+# exported Parquet file that is not pyarrow, pinned in requirements-test.txt and
+# required in CI by PGC_REQUIRE.
+DECLINABLE_CAPABILITIES = ("pyarrow", "duckdb")
 
 
 class VacuityError(AssertionError):

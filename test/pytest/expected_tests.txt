@@ -330,7 +330,9 @@
 # test_runshape.py, by collection over NO_CLUSTER.
 # guard_tests 840 -> 842 for #1749's review: every literal fixture slot fits a worker's block,
 # and the corpus's highest slot gets a port, in test_runshape.py, by collection over NO_CLUSTER.
-guard_tests 842
+# guard_tests 842 -> 846 for #1341's test_capability_decline.py: duckdb joins the declinable
+# capabilities, held by four new tests, by collection over NO_CLUSTER.
+guard_tests 846
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1222,4 +1224,6 @@ guard_tests 842
 # (parametrized), by collection over the cluster files.
 # cluster_tests 4261 -> 4268 for #1712's seven spring-forward arms in test_parquet_skip_cross_type.py,
 # one per check, by collection over the cluster files.
-cluster_tests 4268
+# cluster_tests 4268 -> 4282 for #1341's test_parquet_export.py, the twin of parquet_export.sh:
+# 14 tests, one per check, by collection over the cluster files.
+cluster_tests 4282

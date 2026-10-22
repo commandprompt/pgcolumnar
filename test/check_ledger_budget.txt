@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 27
+suites_not_covered 26
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -7114,4 +7114,9 @@ suites_not_covered 27
 #     never         4544 + 4 = 4548
 #     dated         3464 + 3 = 3467
 #     4548 + 3467 == 8015
+#
+#     ledger rows   8015 + 14 = 8029
+#     never         4548 + 0 = 4548
+#     dated         3467 + 14 = 3481
+#     4548 + 3481 == 8029
 checks_never_observed_red 4548
