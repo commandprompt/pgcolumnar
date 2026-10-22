@@ -4346,6 +4346,16 @@ native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses vectorized agg when GUC on	15;16;17;18;19	2026-09-12	drop JOINREL fold
+native_lazy_slot	native_lazy_slot	SELECT * through the index matches heap	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert stores c40 off by one in a wide bigint table, so lz_c holds a wrong value
+native_lazy_slot	native_lazy_slot	a range of rows sums the same as heap	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert stores c40 off by one in a wide bigint table, so lz_c holds a wrong value
+native_lazy_slot	native_lazy_slot	a row fetched before it is flushed reads correctly	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_slot_decode_upto decodes one column fewer than the prefix asked for
+native_lazy_slot	native_lazy_slot	a unique violation is still detected through the fetch path	15;16;17;18;19	never	-
+native_lazy_slot	native_lazy_slot	a wide table is not in a different class from a narrow one	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_slot_decode_upto decodes the whole row whatever prefix was asked for
+native_lazy_slot	native_lazy_slot	an ORDER BY over index-fetched rows matches heap	15;16;17;18;19	2026-10-22	columnar_tableam.c: the index fetch no longer clears the slot, so a new row keeps the previous row's decoded prefix
+native_lazy_slot	native_lazy_slot	copying index-fetched rows into a heap table keeps every column	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert stores c40 off by one in a wide bigint table, so lz_c holds a wrong value
+native_lazy_slot	native_lazy_slot	count(*) through the index matches heap	15;16;17;18;19	never	-
+native_lazy_slot	native_lazy_slot	single-row index fetches match heap for every column position	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert stores c40 off by one in a wide bigint table, so lz_c holds a wrong value
+native_lazy_slot	native_lazy_slot	the fetch really is an index scan	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	FDW scan == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL keeps its null	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL reads	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an INT32 or INT64 DECIMAL is widened byte-reversed;columnar_parquet_reader.c: pq_decimal_to_numeric reads a narrower-than-16-byte negative DECIMAL as its unsigned magnitude

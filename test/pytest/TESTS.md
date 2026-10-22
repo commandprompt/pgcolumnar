@@ -347,6 +347,7 @@ behaviour, the source of that number is named.
 - [299. test_parallel_vector_agg.py: the parallel vectorized aggregates fold every row group once](#299-test_parallel_vector_aggpy-the-parallel-vectorized-aggregates-fold-every-row-group-once)
 - [300. test_parallel_export_parquet.py: parallel Parquet export equals serial export equals the source](#300-test_parallel_export_parquetpy-parallel-parquet-export-equals-serial-export-equals-the-source)
 - [301. test_native_fold_deferral.py: the batch fold defers payload until a row passes its keys, and the work is measured](#301-test_native_fold_deferralpy-the-batch-fold-defers-payload-until-a-row-passes-its-keys-and-the-work-is-measured)
+- [302. test_native_lazy_slot.py: the index fetch decodes only the prefix the executor asks for, and never a stale one](#302-test_native_lazy_slotpy-the-index-fetch-decodes-only-the-prefix-the-executor-asks-for-and-never-a-stale-one)
 
 ## 1. How to read a test in here
 
@@ -11575,3 +11576,24 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_fold_deferral_every_group_deferred_at_one_percent` | deferred: every group deferred at 1% survival |
 | `test_fold_deferral_only_the_first_group_defers_at_high_survival` | adaptive: only the optimistic first group deferred at 99% survival |
 | `test_fold_deferral_eager_groups_load_more_than_survivors` | adaptive: eager groups load more than survivors alone (work measured, not assumed) |
+
+## 302. test_native_lazy_slot.py: the index fetch decodes only the prefix the executor asks for, and never a stale one
+
+The twin of `test/native_lazy_slot.sh` (#157). Through an index scan with the custom scan off, values match a heap table built from the generator for every column position and for count(*); a row still in the write buffer reads correctly; sorting, CREATE TABLE AS and a unique check still get the whole row; and a 41-column table is not in a different class from a 3-column one for the same 2000 one-column fetches.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. The heap mirror is written from the generator, not copied through the reader under test. Readings are values: a failed query is a query_error() that every comparison refuses by name, so two failed reads never agree, and a timing whose statement failed is no reading rather than a fast one.
+
+| test | what it holds |
+| --- | --- |
+| `test_lazy_slot_the_fetch_is_an_index_scan` | the fetch really is an index scan |
+| `test_lazy_slot_every_column_position_matches_heap` | single-row index fetches match heap for every column position |
+| `test_lazy_slot_select_star_matches_heap` | SELECT * through the index matches heap |
+| `test_lazy_slot_a_range_sums_the_same_as_heap` | a range of rows sums the same as heap |
+| `test_lazy_slot_count_star_matches_heap` | count(*) through the index matches heap |
+| `test_lazy_slot_a_buffered_row_reads_correctly` | a row fetched before it is flushed reads correctly |
+| `test_lazy_slot_an_order_by_matches_heap` | an ORDER BY over index-fetched rows matches heap |
+| `test_lazy_slot_a_copy_keeps_every_column` | copying index-fetched rows into a heap table keeps every column |
+| `test_lazy_slot_a_unique_violation_is_detected` | a unique violation is still detected through the fetch path |
+| `test_lazy_slot_a_wide_table_is_not_in_another_class` | a wide table is not in a different class from a narrow one |
