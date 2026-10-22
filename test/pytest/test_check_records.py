@@ -26,6 +26,8 @@ incremented by one line and read by one (`pytest_runtest_call`), and ZERO
 per-assertion records anywhere.
 """
 
+import pytest
+
 import pgc_vacuity
 
 
@@ -466,6 +468,11 @@ def test_a_recording_method_takes_exactly_one_record_per_call(expect, monkeypatc
 
     plan = [{"Plan": {"Node Type": "Custom Scan", "Custom Plan Provider": "PgColumnarScan",
                       "Columnar Batch Fold": "yes"}}]
+    class _WriteCur:
+        # a one-row INSERT, as psycopg reports it
+        rowcount = 1
+        statusmessage = "INSERT 0 1"
+
     calls = [
         ("num", lambda x: x.num(1, 1, "num")),
         ("text", lambda x: x.text("a", "a", "text")),
@@ -473,7 +480,8 @@ def test_a_recording_method_takes_exactly_one_record_per_call(expect, monkeypatc
         ("ordered_rows", lambda x: x.ordered_rows(["a", "b"], ["a", "b"], "ordered_rows")),
         ("at_least", lambda x: x.at_least(5, 1, "at_least")),
         ("differ", lambda x: x.differ("x", "y", "differ")),
-        ("rows", lambda x: x.row_set(["a"], ["a"], "row_set -- delegates to rows")),
+        ("row_set", lambda x: x.row_set(["a"], ["a"], "row_set -- delegates to rows")),
+        ("wrote", lambda x: x.wrote(_WriteCur(), 1, "wrote -- delegates to num")),
         ("hash", lambda x: x.hash("0123456789abcdef" * 2,
                                 "".join(["0123456789abcdef", "0123456789abcdef"]), "hash")),
         ("contains", lambda x: x.contains("a b c", "b", "contains")),
@@ -589,6 +597,72 @@ def test_the_total_separates_records_from_passes_and_from_tests(pytester, expect
     expect.outcomes(result, "two tests, both passing", passed=2, failed=0)
     result.stdout.fnmatch_lines(["*checks run: 5*"])
     result.stdout.fnmatch_lines(["*accounting: 4 pass + 1 fail + 0 unrun = 5*"])
+
+
+_REFUSAL_FIXTURE = """
+    import pytest
+    from pgc_vacuity import VacuityError
+
+    def test_refused(expect):
+        expect.num("ERROR: the reading failed", 3, "a refused count")
+
+    def test_rowset_refused(expect):
+        # row_set refuses a failed query itself, before it delegates to rows
+        expect.row_set([("QUERY_ERROR.1.the read failed",)], [(1,)], "a refused row set")
+
+    class _DdlCursor:
+        rowcount = -1
+        statusmessage = "CREATE TABLE"
+
+    def test_wrote_refused(expect):
+        # wrote refuses a cursor with no row count (-1, as after DDL)
+        expect.wrote(_DdlCursor(), 0, "a refused write")
+
+    def test_failed(expect):
+        expect.num(2, 3, "a failed count")
+
+    def test_passed(expect):
+        expect.num(1, 1, "a passing count")
+
+    def test_a_guard_proven_by_catching_its_refusal(expect):
+        with pytest.raises(VacuityError):
+            expect.num("x", 3, "refused on purpose and caught")
+        expect.num(1, 1, "after the caught refusal")
+    """
+
+
+@pytest.mark.parametrize("workers", [None, "2"], ids=["serial", "xdist"])
+def test_a_refused_comparison_is_counted_and_named(pytester, expect, workers):
+    """A REFUSAL IS COUNTED AND NAMED, AND STILL MARKS NOTHING (#1613).
+
+    A comparison refused by a VacuityError takes no record, as the pinned rule
+    says. Before #1613 the accounting line therefore left it out: a twin under a
+    mutant printed fewer failures than the shell's FAILs, sometimes `0 fail`, and a
+    runner reading the red set by name had to parse VacuityError text. Now the line
+    adds `N refused` to its total, and each refusal prints `REFUSED  <name>:
+    <reason>`, so shell FAIL names = twin FAIL names + REFUSED names.
+
+    Only a refusal that FAILED ITS TEST is reported. The layer's own guard tests
+    raise refusals on purpose inside pytest.raises and pass; counting those would
+    print a refusal for a passing test. And under xdist the refusals cross the
+    worker boundary on the report, as the records do.
+    """
+    pytester.makepyfile(_REFUSAL_FIXTURE)
+    args = ["-p", "pgc_vacuity"] + (["-p", "xdist", "-n", workers] if workers else [])
+    result = pytester.runpytest(*args)
+    out = result.stdout.str()
+    expect.outcomes(result, "the three refused tests and the failed one fail; the other two pass",
+                    passed=2, failed=4)
+    expect.contains(out, "accounting: 2 pass + 1 fail + 0 unrun + 3 refused = 6",
+                    "the accounting line counts the refusal into its total")
+    expect.contains(out, "REFUSED  a refused count: num() needs numbers on both sides",
+                    "each refusal prints its check name on its own line")
+    expect.contains(out, "REFUSED  a refused row set: ",
+                    "a refused row_set is named, though it refuses before delegating to rows")
+    expect.contains(out, "REFUSED  a refused write: ",
+                    "a refused wrote is named, though it raises its refusals directly")
+    expect.contains(out, "refused on purpose and caught",
+                    "a refusal its test caught is not reported", absent=True)
 
 
 def test_a_record_lost_in_transport_is_refused(pytester, expect):

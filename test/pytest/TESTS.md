@@ -3392,6 +3392,7 @@ code runs in the reverse of call order, so `trylast` made the injector run *befo
 the layer attached anything, the inner run passed, and the arm read exactly like a
 reconciliation that does not fire.
 
+A REFUSED COMPARISON IS COUNTED AND NAMED, AND STILL MARKS NOTHING (#1613). `test_a_refused_comparison_is_counted_and_named`, serial and under `-n 2`: a refusal that failed its test prints `REFUSED  <name>: <reason>` and joins the accounting line as `N refused`, so the twin's FAIL names plus its REFUSED names equal the shell's FAIL names. A refusal its test caught on purpose (the layer's own guard tests do this) is not reported; dropping that identity test is caught by the same arm. The fixture refuses through `num`, through `row_set` (which refuses a failed query itself, before delegating to `rows`) and through `wrote` (which raises its refusals directly); both of the latter are wrapped by `_resolving` since OffgridwithJD's review of #1735.
 
 ## 27. test_skip_loop_arms.py: a skipped arm records under its own name
 

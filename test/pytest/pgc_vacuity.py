@@ -28,6 +28,7 @@ import subprocess
 import sys
 
 import functools
+import inspect
 import itertools
 
 import pytest
@@ -333,6 +334,8 @@ def _resolving(method):
     anyone adds one after.
     """
 
+    signature = inspect.signature(method)
+
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
         taken = len(self._records)
@@ -343,6 +346,16 @@ def _resolving(method):
                 rec = self._records[taken]
                 rec.verdict = "FAIL"
                 rec.reason = str(exc)
+            elif isinstance(exc, VacuityError):
+                # A REFUSAL STILL MARKS NOTHING, but it is noted beside the records
+                # with its check's name (#1613). Whether it is REPORTED is decided
+                # by the test's outcome, in pytest_runtest_makereport: a guard test
+                # that catches a refusal on purpose must not print one.
+                try:
+                    name = signature.bind(self, *args, **kwargs).arguments.get("name")
+                except TypeError:
+                    name = None
+                self._refusals.append((exc, name or f"(an unnamed {method.__name__})"))
             raise
 
     wrapper._pgc_resolves_verdict = True
@@ -355,6 +368,7 @@ class Expect:
     def __init__(self, nodeid):
         self.nodeid = nodeid
         self._records = []
+        self._refusals = []    # (VacuityError, check name): never records (#1613)
         self.unrunnable = None
         self.declined = None
 
@@ -455,6 +469,7 @@ class Expect:
         if got != want:
             raise AssertionError(f"{name}: got {got!r} want {want!r}")
 
+    @_resolving
     def row_set(self, got, want, name, *, allow_empty=None):
         """Compare two result sets as SETS, order deliberately ignored.
 
@@ -606,6 +621,7 @@ class Expect:
                 )
         self.num(got, want, name)
 
+    @_resolving
     def wrote(self, cur, want, name):
         """Assert how many rows a write actually wrote, and acknowledge a zero.
 
@@ -1400,6 +1416,7 @@ class _RecordCollector:
         self.records = []      # (nodeid, verdict, name)
         self.offences = []
         self.declined = []     # (nodeid, name, reason): the capability is in reason
+        self.refused = []      # (nodeid, name, reason): refusals that failed a test (#1613)
 
     def pytest_runtest_logreport(self, report):
         if report.when != "call":
@@ -1411,6 +1428,8 @@ class _RecordCollector:
                 held = value
             elif key == "pgc_declined":
                 self.declined.extend((report.nodeid, n, r) for n, r in value)
+            elif key == "pgc_refused":
+                self.refused.extend((report.nodeid, n, r) for n, r in value)
             elif key == "pgc_records":
                 arrived = list(value)
         if held is None and arrived is None:
@@ -1464,7 +1483,22 @@ def pytest_runtest_makereport(item, call):
                 report.user_properties.append(
                     ("pgc_declined", [(r.name, r.reason) for r in rec.records
                                       if r.verdict == "DECLINED"]))
+            # THE REFUSAL THAT FAILED THIS TEST, by identity (#1613). A refusal the
+            # test caught did not fail it, so it is not the excinfo and is not sent.
+            failed_by = call.excinfo.value if call.excinfo is not None else None
+            refused = [(name, _refusal_reason(name, exc)) for exc, name in rec._refusals
+                       if exc is failed_by]
+            if refused:
+                report.user_properties.append(("pgc_refused", refused[:1]))
     return report
+
+
+def _refusal_reason(name, exc):
+    """-> the refusal's first line without the leading `<name>: ` it usually carries,
+    so the printed line names the check once."""
+    text = (str(exc).splitlines() or [""])[0]
+    prefix = f"{name}: "
+    return text[len(prefix):] if text.startswith(prefix) else text
 
 
 def pytest_terminal_summary(terminalreporter):
@@ -1495,7 +1529,7 @@ def pytest_terminal_summary(terminalreporter):
         terminalreporter.write_line(f"checks unrunnable: {len(collector.items)}")
 
     records = getattr(terminalreporter.config, "pgc_records", None)
-    if records is None or not records.records:
+    if records is None or not (records.records or records.refused):
         return
     tally = {v: 0 for v in RECORD_VERDICTS}
     for _nodeid, verdict, _name in records.records:
@@ -1505,14 +1539,23 @@ def pytest_terminal_summary(terminalreporter):
         terminalreporter.write_line("")
         for nodeid, nm, why in records.declined:
             terminalreporter.write_line(f"DECLINED  {nodeid}: {why}: {nm}")
+    # REFUSED, in the shape of the shell's FAIL line (#1613): the shell records a
+    # comparison that measured nothing as a FAIL, so its FAIL names equal the twin's
+    # FAIL names plus these. The refusal itself is still not a record.
+    if records.refused:
+        terminalreporter.write_line("")
+        for _nodeid, nm, why in records.refused:
+            terminalreporter.write_line(f"REFUSED  {nm}: {why}")
     terminalreporter.write_line(f"checks run: {len(records.records)}")
-    # DECLINED joins the line only when present, so a run with no declines prints the
-    # line every reader and guard already parses, byte for byte.
+    # DECLINED and REFUSED join the line only when present, so a run with neither
+    # prints the line every reader and guard already parses, byte for byte.
     shown = [v for v in RECORD_VERDICTS if v != "DECLINED" or tally[v]]
+    parts = [f"{tally[v]} {v.lower()}" for v in shown]
+    if records.refused:
+        parts.append(f"{len(records.refused)} refused")
     terminalreporter.write_line(
-        "accounting: "
-        + " + ".join(f"{tally[v]} {v.lower()}" for v in shown)
-        + f" = {sum(tally.values())}"
+        "accounting: " + " + ".join(parts)
+        + f" = {sum(tally.values()) + len(records.refused)}"
     )
 
 
