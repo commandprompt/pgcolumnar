@@ -58,6 +58,9 @@ WAREHOUSES = {
     "mz":  ("warehouse_temporal_xt", "bymonth_tz", "id bigint, tt timestamptz"),
     "dz":  ("warehouse_temporal_xt", "byday_tz",   "id bigint, tt timestamptz"),
     "hz":  ("warehouse_temporal_xt", "byhour_tz",  "id bigint, tt timestamptz"),
+    # the same two hour() tables declared as the OTHER timestamp type (#1706)
+    "hw":  ("warehouse_temporal",   "byhour",     "id bigint, ts timestamptz"),
+    "hn":  ("warehouse_temporal_xt", "byhour_tz",  "id bigint, tt timestamp"),
 }
 
 
@@ -645,6 +648,51 @@ def test_a_year_on_date_equality_prunes_to_one_file(ice, expect):
                "year()-on-date equality prunes to one file (Files Pruned: 2)")
     expect.text(_ids(conn, "yd", "dt = DATE '2021-06-01'"), "2",
                 "year()-on-date equality returns id 2")
+
+
+# ------------------------------- a temporal transform read into the OTHER timestamp type
+#
+# The reader converts a naive (timestamp) source read into timestamptz, and a
+# timestamptz source read into timestamp, as PostgreSQL's casts do in the session zone
+# (#1706). The writer computed each partition cell in the source's own kind, so a cell
+# does not bound the converted rows and the FDW must not prune on it. In New York,
+# byhour's naive 2021-03-01 00:00, 01:00, 05:00 are 05:00Z, 06:00Z and 10:00Z; byhour_tz's
+# 00:00Z, 01:00Z, 05:00Z are the wall times 2021-02-28 19:00, 20:00 and 2021-03-01 00:00.
+# Measured before the guard: the FDW returned no rows where iceberg_scan returned two.
+
+def _in_new_york(conn, read):
+    """-> read(), with the shared connection's zone set to New York for that read only."""
+    with conn.cursor() as cur:
+        cur.execute("SET TimeZone = 'America/New_York'")
+    try:
+        return read()
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("RESET TimeZone")
+
+
+def test_an_hour_partition_over_a_naive_source_read_as_timestamptz_keeps_its_rows(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "hw"):
+        return
+    where = "ts >= TIMESTAMPTZ '2021-03-01 06:00:00+00'"
+    got, want = _in_new_york(conn, lambda: (
+        _ids(conn, "hw", where),
+        _scan_ids(conn, meta["hw"], "id bigint, ts timestamptz", where)))
+    expect.text(got, want,
+                "hour() on a naive source read as timestamptz in New York matches iceberg_scan")
+
+
+def test_an_hour_partition_over_a_timestamptz_source_read_as_timestamp_keeps_its_rows(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "hn"):
+        return
+    where = "tt <= TIMESTAMP '2021-02-28 20:00:00'"
+    got, want = _in_new_york(conn, lambda: (
+        _ids(conn, "hn", where),
+        _scan_ids(conn, meta["hn"], "id bigint, tt timestamp", where)))
+    expect.text(got, want,
+                "hour() on a timestamptz source read as timestamp in New York matches iceberg_scan")
 
 
 # ------------------------------------------------------------------- option validation

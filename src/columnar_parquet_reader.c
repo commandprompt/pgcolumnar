@@ -34,6 +34,7 @@
 
 #include "fmgr.h"
 #include "funcapi.h"
+#include "access/nbtree.h"
 #include "access/htup_details.h"
 #include "common/int.h"
 #include "access/relation.h"
@@ -76,6 +77,8 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
+#include "utils/datetime.h"
+#include "pgtime.h"
 #include "utils/varlena.h"
 #include "utils/tuplestore.h"
 #include "utils/typcache.h"
@@ -137,6 +140,7 @@ typedef struct PqSchemaCol
 	int			converted_type;	/* -1 if none */
 	int			time_unit;		/* PQ_TU_* for a TIME/TIMESTAMP column */
 	bool		is_timestamp;	/* the unit belongs to TIMESTAMP, not TIME */
+	bool		adjusted_utc;	/* TIMESTAMP isAdjustedToUTC: an instant, not a wall time */
 	int			type_length;	/* FIXED_LEN_BYTE_ARRAY length */
 	int			scale;			/* DECIMAL scale (0 if none) */
 	int			precision;		/* DECIMAL precision (0 if none) */
@@ -416,8 +420,12 @@ parse_logical_type(TCReader *r, PqSchemaCol *sc)
 						PgColumnarThriftField(r, &uft, &ufid, &uLast);
 					}
 				}
+				else if (ifid == 1 && isTs &&
+						 (ift == TC_BOOL_TRUE || ift == TC_BOOL_FALSE))
+					/* isAdjustedToUTC: compact protocol carries a bool in its type */
+					sc->adjusted_utc = (ift == TC_BOOL_TRUE);
 				else
-					PgColumnarThriftSkip(r, ift);	/* isAdjustedToUTC and anything later */
+					PgColumnarThriftSkip(r, ift);	/* anything later */
 			}
 		}
 		else
@@ -436,6 +444,8 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 	sc->converted_type = -1;
 	sc->time_unit = PQ_TU_NONE;
 	sc->is_timestamp = false;
+	/* the legacy TIMESTAMP_* converted types are defined as UTC-adjusted */
+	sc->adjusted_utc = true;
 	sc->type_length = 0;
 	sc->scale = 0;
 	sc->precision = 0;
@@ -875,7 +885,20 @@ typedef struct PqColPlan
 	int			type_length;	/* FIXED_LEN_BYTE_ARRAY width, for uuid/decimal */
 	int			dec_scale;		/* DECIMAL scale, when the target is numeric */
 	bool		is_decimal;		/* the bytes are a DECIMAL unscaled integer */
+	int			ts_shift;		/* PQ_TS_*: a cast between wall time and instant */
 } PqColPlan;
+
+/*
+ * A Parquet timestamp read into the OTHER PostgreSQL timestamp type is converted
+ * as PostgreSQL's own cast would, in the session zone (#1706): a naive (not
+ * UTC-adjusted) wall time into timestamptz, and an adjusted instant into
+ * timestamp. The same-kind reads are left as they are.
+ */
+#define PQ_TS_NONE			0
+#define PQ_TS_WALL_TO_INSTANT	1
+#define PQ_TS_INSTANT_TO_WALL	2
+
+static bool pq_ts_shift(int shift, Timestamp in, Timestamp *out);
 
 /*
  * Convert a stored TIME/TIMESTAMP value to the microseconds PostgreSQL stores,
@@ -1176,7 +1199,9 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 
 					if (!pq_scale_to_usecs(plan->time_unit, v, &us) ||
 						pg_sub_s64_overflow(us, PG_TO_UNIX_USECS, &t) ||
-						!IS_VALID_TIMESTAMP((Timestamp) t))
+						!IS_VALID_TIMESTAMP((Timestamp) t) ||
+						(plan->ts_shift != PQ_TS_NONE &&
+						 !pq_ts_shift(plan->ts_shift, (Timestamp) t, (Timestamp *) &t)))
 						return pq_value_out_of_range(strict, ok,
 													 ERRCODE_DATETIME_FIELD_OVERFLOW,
 													 tn, v);
@@ -2276,6 +2301,47 @@ pq_plan_bind_schema(PqColPlan *plan, const PqSchemaCol *sc)
 	plan->dec_scale = sc->scale;
 	plan->is_decimal = (plan->typid == NUMERICOID &&
 						sc->converted_type == PQ_CT_DECIMAL);
+	plan->ts_shift = PQ_TS_NONE;
+	if (sc->is_timestamp && !sc->adjusted_utc && plan->typid == TIMESTAMPTZOID)
+		plan->ts_shift = PQ_TS_WALL_TO_INSTANT;
+	else if (sc->is_timestamp && sc->adjusted_utc && plan->typid == TIMESTAMPOID)
+		plan->ts_shift = PQ_TS_INSTANT_TO_WALL;
+}
+
+/*
+ * The two casts, from the primitives PostgreSQL's timestamp_timestamptz and
+ * timestamptz_timestamp use, so they behave the same on every major (PG19 renamed
+ * the exported helper, and PG15-18 export no timestamptz -> timestamp one).
+ * false when the result is out of range.
+ */
+static bool
+pq_ts_shift(int shift, Timestamp in, Timestamp *out)
+{
+	struct pg_tm tm;
+	fsec_t		fsec;
+	int			tz;
+
+	if (TIMESTAMP_NOT_FINITE(in))
+	{
+		*out = in;
+		return true;
+	}
+	if (shift == PQ_TS_WALL_TO_INSTANT)
+	{
+		if (timestamp2tm(in, NULL, &tm, &fsec, NULL, NULL) != 0)
+			return false;
+		tz = DetermineTimeZoneOffset(&tm, session_timezone);
+		if (tm2timestamp(&tm, fsec, &tz, out) != 0)
+			return false;
+	}
+	else
+	{
+		if (timestamp2tm(in, &tz, &tm, &fsec, NULL, NULL) != 0)
+			return false;
+		if (tm2timestamp(&tm, fsec, NULL, out) != 0)
+			return false;
+	}
+	return IS_VALID_TIMESTAMP(*out);
 }
 
 /*
@@ -4469,9 +4535,11 @@ pqfdw_top_for_attno(ImpTop *tops, int ntops, int attno0)
  */
 static bool
 pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
-							bool varLeft, Const *con)
+							bool varLeft, Const *con, Oid opfamily)
 {
 	TypeCacheEntry *tce;
+	FmgrInfo	cross;
+	FmgrInfo   *vsConst;
 	const uint8 *p;
 	bool		ok;
 	Datum		minD;
@@ -4484,12 +4552,49 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 	if (phys != PQ_INT32 && phys != PQ_INT64 &&
 		phys != PQ_FLOAT && phys != PQ_DOUBLE)
 		return false;
-	if (con->consttype != leaf->plan.typid || con->constisnull)
+	if (con->constisnull)
+		return false;
+	/*
+	 * A wall time is not monotonic in its instant across a spring-forward gap, so
+	 * converted statistics need not bound the converted rows (#1706): never skip.
+	 */
+	if (leaf->plan.ts_shift != PQ_TS_NONE)
 		return false;
 
 	tce = lookup_type_cache(leaf->plan.typid, TYPECACHE_CMP_PROC_FINFO);
 	if (!OidIsValid(tce->cmp_proc_finfo.fn_oid))
 		return false;
+
+	/*
+	 * The statistics are compared with the constant through the operator family's
+	 * comparison function for (column type, constant type), as the native zone-map
+	 * path does (#1712). A bare integer literal is int4, so requiring the column's
+	 * own type left `WHERE id > 150000` on a bigint column skipping nothing. A
+	 * family with no such function, or no family, means no skip.
+	 *
+	 * Except a timestamp column against a timestamptz constant: the comparison
+	 * converts each statistic, a wall time, to an instant in the session zone,
+	 * which is not monotonic across a spring-forward gap. In New York a group
+	 * holding 02:00, 02:30 and 03:00 has max 07:00Z but a row at 07:30Z, so
+	 * `ts > '07:15+00'` would skip it (OffgridwithJD's review of #1737). Never
+	 * skip that pair. A timestamptz column and a timestamp constant is safe: the
+	 * statistics are instants, and only the one constant is converted.
+	 */
+	if (leaf->plan.typid == TIMESTAMPOID && con->consttype == TIMESTAMPTZOID)
+		return false;
+	if (con->consttype == leaf->plan.typid)
+		vsConst = &tce->cmp_proc_finfo;
+	else
+	{
+		Oid			proc = OidIsValid(opfamily)
+			? get_opfamily_proc(opfamily, leaf->plan.typid, con->consttype, BTORDER_PROC)
+			: InvalidOid;
+
+		if (!OidIsValid(proc))
+			return false;
+		fmgr_info(proc, &cross);
+		vsConst = &cross;
+	}
 
 	p = ch->stat_min;
 	minD = plain_value_to_datum(&leaf->plan, &p, p + ch->stat_min_len, false, &ok);
@@ -4557,9 +4662,12 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 			? (float8) DatumGetFloat4(minD) : DatumGetFloat8(minD);
 		float8		hi = (phys == PQ_FLOAT)
 			? (float8) DatumGetFloat4(maxD) : DatumGetFloat8(maxD);
-		float8		c = (phys == PQ_FLOAT)
+		/* the constant is read by ITS type, which may not be the column's */
+		float8		c = (con->consttype == FLOAT4OID)
 			? (float8) DatumGetFloat4(con->constvalue)
-			: DatumGetFloat8(con->constvalue);
+			: (con->consttype == FLOAT8OID)
+			? DatumGetFloat8(con->constvalue)
+			: 0.0;
 
 		if (isnan(lo) || isnan(hi))
 			return false;
@@ -4570,22 +4678,29 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 			return false;
 	}
 
+	/*
+	 * The column's value is always the FIRST argument: a cross-type comparison
+	 * function is defined for (column type, constant type) only.
+	 */
+#define PQ_VS(a) \
+	DatumGetInt32(FunctionCall2Coll(vsConst, InvalidOid, (a), con->constvalue))
+
 	switch (strategy)
 	{
 		case BTLessStrategyNumber:	/* col < const: skip if min >= const */
-			return PQ_CMP(minD, con->constvalue) >= 0;
+			return PQ_VS(minD) >= 0;
 		case BTLessEqualStrategyNumber: /* col <= const: skip if min > const */
-			return PQ_CMP(minD, con->constvalue) > 0;
+			return PQ_VS(minD) > 0;
 		case BTEqualStrategyNumber: /* col = const: skip if const outside [min,max] */
-			return PQ_CMP(con->constvalue, minD) < 0 ||
-				PQ_CMP(con->constvalue, maxD) > 0;
+			return PQ_VS(minD) > 0 || PQ_VS(maxD) < 0;
 		case BTGreaterEqualStrategyNumber:	/* col >= const: skip if max < const */
-			return PQ_CMP(maxD, con->constvalue) < 0;
+			return PQ_VS(maxD) < 0;
 		case BTGreaterStrategyNumber:	/* col > const: skip if max <= const */
-			return PQ_CMP(maxD, con->constvalue) <= 0;
+			return PQ_VS(maxD) <= 0;
 		default:
 			return false;
 	}
+#undef PQ_VS
 #undef PQ_CMP
 }
 
@@ -4630,6 +4745,7 @@ pqfdw_compute_skip(ForeignScanState *node, PqFile *pf,
 			List	   *interp;
 			ListCell   *ic;
 			int			strategy = 0;
+			Oid			opfamily = InvalidOid;
 
 			if (!IsA(op, OpExpr) || list_length(op->args) != 2)
 				continue;
@@ -4670,6 +4786,7 @@ pqfdw_compute_skip(ForeignScanState *node, PqFile *pf,
 				if (s >= BTLessStrategyNumber && s <= BTGreaterStrategyNumber)
 				{
 					strategy = s;
+					opfamily = o->opfamily_id;
 					break;
 				}
 			}
@@ -4678,7 +4795,7 @@ pqfdw_compute_skip(ForeignScanState *node, PqFile *pf,
 
 			if (pqfdw_clause_excludes_group(&leaves[top->firstLeaf],
 											&pf->rgs[rg].chunks[top->firstLeaf],
-											strategy, varLeft, con))
+											strategy, varLeft, con, opfamily))
 			{
 				skipGroup[rg] = true;
 				break;

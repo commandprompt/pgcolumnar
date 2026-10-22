@@ -353,6 +353,31 @@ if ftmpx yd byyear_d "dt date" && ftmpx mo bymonth_d "dt date" \
 		"$(oraclex hz "tt >= TIMESTAMPTZ '2021-03-01 01:00:00+00'")"
 fi
 
+# ---- a temporal transform read into the OTHER timestamp type (#1706) ---------
+# The reader converts a naive (timestamp) source read into timestamptz, and a
+# timestamptz source read into timestamp, as PostgreSQL's casts do in the session
+# zone. The writer computed each partition cell in the source's own kind, so a
+# cell does not bound the converted rows, and the FDW must not prune on it.
+# In New York, byhour's naive 2021-03-01 00:00, 01:00, 05:00 are 05:00Z, 06:00Z
+# and 10:00Z; byhour_tz's 00:00Z, 01:00Z, 05:00Z are the wall times 2021-02-28
+# 19:00, 20:00 and 2021-03-01 00:00. Each FDW read is compared with iceberg_scan
+# under the same declaration and zone, and check_text refuses two empty readings.
+qny() { PGOPTIONS="-c TimeZone=America/New_York" q "$1"; }
+if [ -n "${MD_th:-}" ] && ftmpx hn byhour_tz "tt timestamp"; then
+	q "CREATE FOREIGN TABLE hw (id bigint, ts timestamptz)
+	   SERVER ice OPTIONS (metadata_path '$MD_th')" >/dev/null
+	check_text "hour() on a naive source read as timestamptz in New York matches iceberg_scan" \
+		"$(qny "SELECT string_agg(id::text, ',' ORDER BY id) FROM hw WHERE ts >= TIMESTAMPTZ '2021-03-01 06:00:00+00'")" \
+		"$(qny "SELECT string_agg(id::text, ',' ORDER BY id)
+		        FROM pgcolumnar.iceberg_scan('$MD_th') AS t(id bigint, ts timestamptz)
+		        WHERE ts >= TIMESTAMPTZ '2021-03-01 06:00:00+00'")"
+	check_text "hour() on a timestamptz source read as timestamp in New York matches iceberg_scan" \
+		"$(qny "SELECT string_agg(id::text, ',' ORDER BY id) FROM hn WHERE tt <= TIMESTAMP '2021-02-28 20:00:00'")" \
+		"$(qny "SELECT string_agg(id::text, ',' ORDER BY id)
+		        FROM pgcolumnar.iceberg_scan('$MD_hn') AS t(id bigint, tt timestamp)
+		        WHERE tt <= TIMESTAMP '2021-02-28 20:00:00'")"
+fi
+
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1

@@ -144,6 +144,9 @@ SOUND = [
     ("id < -1", "the FDW result equals the oracle for [id < -1]"),
     ("id < -5000000000", "the FDW result equals the oracle for [id < -5000000000]"),
     ("alln IS NULL", "the FDW result equals the oracle for [alln IS NULL]"),
+    ("i8 < 5::int", "the FDW result equals the oracle for [i8 < 5::int]"),
+    ("i8 < 5", "the FDW result equals the oracle for [i8 < 5]"),
+    ("f4 < 0.4", "the FDW result equals the oracle for [f4 < 0.4]"),
 ]
 
 
@@ -745,9 +748,10 @@ def test_export_stats_matching_constant_type_skips(es, expect):
                "control: the same column skips when the constant matches its type")
 
 
-def test_export_stats_cross_type_constant_skips_nothing(es, expect):
-    expect.num(es["skipped"]["WHERE i8 < 5::int"], 0,
-               "a cross-type constant skips nothing, on the identical predicate")
+def test_export_stats_cross_type_constant_skips_like_the_matching_one(es, expect):
+    # Since #1712 a constant of another type in the family skips (was: nothing).
+    expect.num(es["skipped"]["WHERE i8 < 5::int"], NGROUPS,
+               "a cross-type constant skips as the matching one does, on the identical predicate")
 
 
 def test_export_stats_float_less_than_skips(es, expect):
@@ -765,9 +769,9 @@ def test_export_stats_quoted_bigint_literal_skips(es, expect):
                "a quoted literal takes a bigint column's type and skips")
 
 
-def test_export_stats_unquoted_bigint_literal_skips_nothing(es, expect):
-    expect.num(es["skipped"]["WHERE i8 < 5"], 0,
-               "the same digits unquoted are an integer, and skip nothing")
+def test_export_stats_unquoted_bigint_literal_skips_as_well(es, expect):
+    expect.num(es["skipped"]["WHERE i8 < 5"], NGROUPS,
+               "the same digits unquoted are an integer, and skip as well")
 
 
 def test_export_stats_wide_digits_skip_a_bigint(es, expect):
@@ -790,9 +794,9 @@ def test_export_stats_quoted_real_literal_skips(es, expect):
                "a quoted literal takes a real column's type and skips")
 
 
-def test_export_stats_unquoted_real_literal_skips_nothing(es, expect):
-    expect.num(es["skipped"]["WHERE f4 < 0.4"], 0,
-               "the same literal unquoted is double precision, and skips nothing")
+def test_export_stats_unquoted_real_literal_skips_as_well(es, expect):
+    expect.num(es["skipped"]["WHERE f4 < 0.4"], NGROUPS,
+               "the same literal unquoted is double precision, and skips as well")
 
 
 def test_export_stats_quoted_smallint_literal_skips(es, expect):
@@ -800,9 +804,9 @@ def test_export_stats_quoted_smallint_literal_skips(es, expect):
                "a quoted literal takes a smallint column's type and skips")
 
 
-def test_export_stats_unquoted_smallint_literal_skips_nothing(es, expect):
-    expect.num(es["skipped"]["WHERE i2 < 500"], 0,
-               "the same digits unquoted are an integer, and skip nothing (int2)")
+def test_export_stats_unquoted_smallint_literal_skips_as_well(es, expect):
+    expect.num(es["skipped"]["WHERE i2 < 500"], 1,
+               "the same digits unquoted are an integer, and skip as well (int2)")
 
 
 def test_export_stats_adorned_date_skips(es, expect):
@@ -815,9 +819,9 @@ def test_export_stats_unadorned_date_skips(es, expect):
                "the same date unadorned is unknown, takes the column's type and skips")
 
 
-def test_export_stats_timestamp_adorned_date_skips_nothing(es, expect):
-    expect.num(es["skipped"]["WHERE d < TIMESTAMP '2000-01-05 00:00:00'"], 0,
-               "the same date adorned as a timestamp does not skip")
+def test_export_stats_timestamp_adorned_date_skips_as_well(es, expect):
+    expect.num(es["skipped"]["WHERE d < TIMESTAMP '2000-01-05 00:00:00'"], 3,
+               "the same date adorned as a timestamp skips as well")
 
 
 def test_export_stats_adorned_literal_keeps_its_type(es, expect):
@@ -835,9 +839,9 @@ def test_export_stats_integer_digits_prune_every_group(es, expect):
                "control: a digit string that fits an integer prunes every group")
 
 
-def test_export_stats_int4_column_refuses_wide_digits(es, expect):
-    expect.num(es["skipped"]["WHERE id < -5000000000"], 0,
-               "digits too wide for an integer are a bigint, so an int4 column refuses")
+def test_export_stats_int4_column_skips_wide_digits(es, expect):
+    expect.num(es["skipped"]["WHERE id < -5000000000"], NGROUPS,
+               "digits too wide for an integer are a bigint, and an int4 column skips as well")
 
 
 @pytest.mark.parametrize("pred,name", SOUND)

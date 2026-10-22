@@ -341,6 +341,8 @@ behaviour, the source of that number is named.
 - [293. test_native_fetch_sort_context.py: a merge join over sorted, index-fetched columnar rows decodes outside the sort's context](#293-test_native_fetch_sort_contextpy-a-merge-join-over-sorted-index-fetched-columnar-rows-decodes-outside-the-sorts-context)
 - [294. test_native_fold_skipguard.py: the batch fold is reachable for a shape that skips vectors, and accounts for the skipping](#294-test_native_fold_skipguardpy-the-batch-fold-is-reachable-for-a-shape-that-skips-vectors-and-accounts-for-the-skipping)
 - [295. test_native_fetch_group_memo.py: the by-row-number fetch resolves its row group from a memo, and the memo never serves a group it should not](#295-test_native_fetch_group_memopy-the-by-row-number-fetch-resolves-its-row-group-from-a-memo-and-the-memo-never-serves-a-group-it-should-not)
+- [296. test_parquet_timestamp_zone.py: a Parquet timestamp read into the other timestamp type follows PostgreSQL's casts](#296-test_parquet_timestamp_zonepy-a-parquet-timestamp-read-into-the-other-timestamp-type-follows-postgresqls-casts)
+- [297. test_parquet_skip_cross_type.py: Parquet row-group skipping uses a constant of another type in the operator family](#297-test_parquet_skip_cross_typepy-parquet-row-group-skipping-uses-a-constant-of-another-type-in-the-operator-family)
 
 ## 1. How to read a test in here
 
@@ -4394,6 +4396,8 @@ carry are `pgc_skip`'s refusal names, which are structural and declared in
 | `test_the_year_table_reads_whole_and_keeps_the_boundary_file` | the boundary case stated alone |
 | `test_a_year_equality_prunes_to_one_file` | an equality narrows to the constant's own bucket |
 | `test_a_year_on_date_equality_prunes_to_one_file` | the same on a date column |
+| `test_an_hour_partition_over_a_naive_source_read_as_timestamptz_keeps_its_rows` | #1706: `byhour` (a naive source) declared `timestamptz` in New York returns `iceberg_scan`'s rows; its hour cells are wall times, so the FDW must not prune on them |
+| `test_an_hour_partition_over_a_timestamptz_source_read_as_timestamp_keeps_its_rows` | #1706: the reverse, `byhour_tz` declared `timestamp` |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 
@@ -10282,26 +10286,26 @@ The bound and null-count oracles read the heap built from the generator, not the
 | `test_export_stats_date_predicate_skips` | a date predicate skips |
 | `test_export_stats_timestamp_predicate_skips` | a timestamp predicate skips |
 | `test_export_stats_matching_constant_type_skips` | control: the same column skips when the constant matches its type |
-| `test_export_stats_cross_type_constant_skips_nothing` | a cross-type constant skips nothing, on the identical predicate |
+| `test_export_stats_cross_type_constant_skips_like_the_matching_one` | a cross-type constant skips as the matching one does, on the identical predicate (since #1712; it skipped nothing) |
 | `test_export_stats_float_less_than_skips` | control: a float < predicate below every bound skips |
 | `test_export_stats_float_greater_equal_skips_nothing` | a float >= predicate above every bound still skips nothing |
 | `test_export_stats_quoted_bigint_literal_skips` | a quoted literal takes a bigint column's type and skips |
-| `test_export_stats_unquoted_bigint_literal_skips_nothing` | the same digits unquoted are an integer, and skip nothing |
+| `test_export_stats_unquoted_bigint_literal_skips_as_well` | the same digits unquoted are an integer, and skip as well |
 | `test_export_stats_wide_digits_skip_a_bigint` | digits too wide for an integer are a bigint, and skip |
 | `test_export_stats_decimal_literal_casts_the_column` | a decimal-point literal casts the column, not the constant |
 | `test_export_stats_quoted_literal_casts_the_constant` | control: the quoted form casts the constant to the column's type |
 | `test_export_stats_quoted_real_literal_skips` | a quoted literal takes a real column's type and skips |
-| `test_export_stats_unquoted_real_literal_skips_nothing` | the same literal unquoted is double precision, and skips nothing |
+| `test_export_stats_unquoted_real_literal_skips_as_well` | the same literal unquoted is double precision, and skips as well |
 | `test_export_stats_quoted_smallint_literal_skips` | a quoted literal takes a smallint column's type and skips |
-| `test_export_stats_unquoted_smallint_literal_skips_nothing` | the same digits unquoted are an integer, and skip nothing (int2) |
+| `test_export_stats_unquoted_smallint_literal_skips_as_well` | the same digits unquoted are an integer, and skip as well (int2) |
 | `test_export_stats_adorned_date_skips` | an adorned literal of the column's own type skips |
 | `test_export_stats_unadorned_date_skips` | the same date unadorned is unknown, takes the column's type and skips |
-| `test_export_stats_timestamp_adorned_date_skips_nothing` | the same date adorned as a timestamp does not skip |
+| `test_export_stats_timestamp_adorned_date_skips_as_well` | the same date adorned as a timestamp skips as well |
 | `test_export_stats_adorned_literal_keeps_its_type` | an adorned literal keeps its own type, not the column's |
 | `test_export_stats_unadorned_literal_takes_the_column_type` | control: the unadorned form resolves to the column's type instead |
 | `test_export_stats_integer_digits_prune_every_group` | control: a digit string that fits an integer prunes every group |
-| `test_export_stats_int4_column_refuses_wide_digits` | digits too wide for an integer are a bigint, so an int4 column refuses |
-| `test_export_stats_fdw_result_equals_the_oracle` | the FDW result equals the oracle for [P]: 20 tests, one per predicate the skip checks use |
+| `test_export_stats_int4_column_skips_wide_digits` | digits too wide for an integer are a bigint, and an int4 column skips as well |
+| `test_export_stats_fdw_result_equals_the_oracle` | the FDW result equals the oracle for [P]: 23 tests, one per predicate the skip checks use |
 | `test_export_stats_parser_finds_pyarrow_bounds` | control: the parser finds pyarrow's bounds |
 | `test_export_stats_parser_reports_deprecated_fields` | control: the parser reports the deprecated fields where they exist |
 
@@ -11352,3 +11356,53 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_fgm_delete_visible_to_the_next_fetch` | a DELETE is visible to the very next fetch (delete vectors uncached) |
 | `test_fgm_same_transaction_truncate_then_fetch` | same-transaction TRUNCATE then fetch sees only the new rows |
 | `test_fgm_backend_alive` | backend alive |
+
+## 296. test_parquet_timestamp_zone.py: a Parquet timestamp read into the other timestamp type follows PostgreSQL's casts
+
+The pytest twin of `test/parquet_timestamp_zone.sh` (#1706 item 2), every check by the shell's name. In a New York session: a naive Parquet timestamp read into `timestamptz` is its wall time in the session zone, and a UTC-adjusted one read into `timestamp` is the session-zone wall time of its instant, each equal to PostgreSQL's own cast; the same-kind reads are controls; an export and import round trip keeps both types (with #1707's exporter); and a row group spanning the 2024-03-10 spring-forward gap is not skipped on its converted min and max, which need not bound its converted rows. The naive file is read again in Tokyo, so a reader that hard-codes a zone fails; the repeated hour of the 2024-11-03 fall-back resolves as the cast resolves it; and `test/fixtures/parquet/legacy_timestamp_micros.parquet`, written by pgcolumnar's own exporter before #1707 with only the `TIMESTAMP_MICROS` converted type, reads as the instant the Parquet spec defines it to be. The files are written by `python3` with pyarrow, so no test imports pyarrow: each declines by the shell's skip name, then asks for the fixture. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_ptz_pyarrow_wrote_one_naive_and_one_adjusted_file` | premise: pyarrow wrote the naive file without isAdjustedToUTC and the other with it |
+| `test_ptz_a_naive_file_into_timestamptz_is_its_session_wall_time` | a naive file read into timestamptz is its wall time in the session zone |
+| `test_ptz_the_naive_read_equals_the_cast_from_timestamp` | and that is what PostgreSQL's cast from timestamp gives |
+| `test_ptz_an_adjusted_file_into_timestamp_is_the_session_wall_time` | an adjusted file read into timestamp is the session-zone wall time of its instant |
+| `test_ptz_the_adjusted_read_equals_the_cast_from_timestamptz` | and that is what PostgreSQL's cast from timestamptz gives |
+| `test_ptz_a_naive_file_into_timestamp_keeps_its_wall_time` | control: a naive file read into timestamp keeps its wall time |
+| `test_ptz_an_adjusted_file_into_timestamptz_keeps_its_instant` | control: an adjusted file read into timestamptz keeps its instant |
+| `test_ptz_an_export_import_round_trip_keeps_both_types` | an export and import round trip keeps timestamp and timestamptz in a non-UTC session |
+| `test_ptz_the_gap_wall_times_become_their_instants` | the gap file's wall times become, sorted, the instants 07:00Z, 07:00Z and 07:30Z |
+| `test_ptz_a_gap_spanning_group_is_not_skipped` | a row group spanning a spring-forward gap is not skipped on its converted min and max |
+| `test_ptz_the_legacy_fixture_carries_only_the_converted_type` | premise: the legacy fixture carries the TIMESTAMP_MICROS converted type and no logical type |
+| `test_ptz_a_naive_file_in_tokyo_is_its_wall_time_there` | a naive file read into timestamptz in Tokyo is its wall time there, as the cast gives |
+| `test_ptz_the_tokyo_reading_differs_from_new_york` | and the Tokyo reading is a different instant from the New York one |
+| `test_ptz_a_fall_back_wall_time_is_what_the_cast_gives` | a naive wall time in the fall-back hour read into timestamptz is what the cast gives |
+| `test_ptz_a_legacy_file_into_timestamp_is_the_session_wall_time` | a legacy TIMESTAMP_MICROS file read into timestamp is the session-zone wall time of its instant |
+| `test_ptz_a_legacy_file_into_timestamptz_keeps_its_instant` | a legacy TIMESTAMP_MICROS file read into timestamptz keeps its instant |
+
+## 297. test_parquet_skip_cross_type.py: Parquet row-group skipping uses a constant of another type in the operator family
+
+The pytest twin of `test/parquet_skip_cross_type.sh` (#1712), every check by the shell's name. Over a file of 200,000 ascending rows in 4 row groups, each arm reads the skip count from EXPLAIN (ANALYZE): an int4 constant on the int8 column (greater-than, equality, and on the left of the operator), and a float4 constant below every row on the float8 column; the answers are compared with the same query in the column's own type, and a float4 NaN constant must still find a NaN row its group's statistics leave out. A second file, a naive timestamp column whose first row group spans New York's 2024-03-10 spring-forward gap, is read in New York: a timestamptz constant must find the rows a heap copy finds, because converting wall-time statistics to instants does not keep their order across the gap, and a timestamp constant must still skip. Before #1712 a constant of another type skipped nothing. The files are written by `python3` with pyarrow, so no test imports pyarrow. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_pxt_the_file_holds_four_row_groups` | premise: the file holds 4 row groups (pyarrow's own count) |
+| `test_pxt_an_int8_constant_skips_three_groups` | control: an int8 constant on the int8 column skips 3 of the 4 row groups |
+| `test_pxt_an_int4_constant_skips_three_groups` | an int4 constant on the int8 column skips 3 of the 4 row groups |
+| `test_pxt_the_int4_constant_returns_the_int8_rows` | and returns the rows the int8 constant returns |
+| `test_pxt_an_int4_equality_skips_three_groups` | an int4 constant in an equality on the int8 column skips 3 of the 4 row groups |
+| `test_pxt_a_constant_on_the_left_is_compared_the_same_way` | a constant on the left of the operator is compared the same way |
+| `test_pxt_a_float4_constant_below_every_row_skips_all_groups` | a float4 constant below every row skips all 4 row groups of the float8 column -- negative, because a float4 misread as float8 is a tiny positive number |
+| `test_pxt_the_float4_constant_returns_the_float8_rows` | and returns the rows the float8 constant returns |
+| `test_pxt_a_float4_nan_still_finds_the_nan_row` | a float4 NaN constant still finds the float8 column's NaN row |
+| `test_pxt_the_gap_file_holds_two_row_groups` | premise: the gap file holds 2 row groups (pyarrow's own count) |
+| `test_pxt_the_heap_finds_row_one_for_each_gap_predicate` | premise: in New York the heap copy finds row 1 for ts > 07:15Z, ts >= 07:15Z and ts = 07:30Z |
+| `test_pxt_a_timestamptz_constant_after_a_gap_finds_the_heap_row_gt` | a timestamptz constant after a spring-forward gap finds the timestamp column's row the heap finds (>) |
+| `test_pxt_a_timestamptz_constant_after_a_gap_finds_the_heap_row_ge` | a timestamptz constant after a spring-forward gap finds the timestamp column's row the heap finds (>=) |
+| `test_pxt_a_timestamptz_equality_after_a_gap_finds_the_heap_row` | a timestamptz constant equal to a row's instant after a spring-forward gap finds that row, as the heap does |
+| `test_pxt_a_timestamp_constant_skips_one_gap_group` | control: a timestamp constant on the timestamp column skips 1 of the 2 row groups |
+| `test_pxt_the_timestamp_constant_returns_the_heap_rows` | and returns the rows the heap returns |
