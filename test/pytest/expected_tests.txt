@@ -1210,4 +1210,6 @@ guard_tests 839
 # 54 tests, one per check, by collection over the cluster files.
 # cluster_tests 4225 -> 4226 for #1753's arm 5 in test_parallel_flush_optin.py (folded into #1746):
 # one structural test, by collection over the cluster files.
-cluster_tests 4231
+# cluster_tests 4231 -> 4249 for #1706: test_parquet_timestamp_zone.py, the twin of parquet_timestamp_zone.sh
+# (16 tests, one per check), and two mixed-kind hour() arms in test_iceberg_fdw.py, by collection.
+cluster_tests 4249

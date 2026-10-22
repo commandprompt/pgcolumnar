@@ -1117,6 +1117,50 @@ ice_field_id_by_name(JsonbContainer *fieldsc, uint32 nf, const char *nm)
 }
 
 /*
+ * Whether the current-schema field named `nm` is a timestamp of the OTHER kind
+ * than the PostgreSQL column `typid` (timestamp vs timestamptz, any unit). The
+ * reader converts such a column's rows as PostgreSQL's casts do, in the session
+ * zone (#1706), but the writer computed its temporal partition cells in the
+ * source's own kind, so those cells do not bound the converted rows.
+ */
+static bool
+ice_field_timestamp_kind_differs(JsonbContainer *fieldsc, uint32 nf,
+								 const char *nm, Oid typid)
+{
+	uint32		j;
+
+	if (typid != TIMESTAMPOID && typid != TIMESTAMPTZOID)
+		return false;
+	for (j = 0; j < nf; j++)
+	{
+		JsonbValue *sf = getIthJsonbValueFromContainer(fieldsc, j);
+		JsonbValue *v;
+		bool		src_tz;
+
+		if (sf == NULL || sf->type != jbvBinary)
+			continue;
+		v = ice_field(sf->val.binary.data, "name");
+		if (v == NULL || v->type != jbvString ||
+			(int) strlen(nm) != v->val.string.len ||
+			strncmp(nm, v->val.string.val, v->val.string.len) != 0)
+			continue;
+		v = ice_field(sf->val.binary.data, "type");
+		if (v == NULL || v->type != jbvString)
+			return false;
+		if (v->val.string.len >= 11 &&
+			strncmp(v->val.string.val, "timestamptz", 11) == 0)
+			src_tz = true;
+		else if (v->val.string.len >= 9 &&
+				 strncmp(v->val.string.val, "timestamp", 9) == 0)
+			src_tz = false;
+		else
+			return false;
+		return src_tz != (typid == TIMESTAMPTZOID);
+	}
+	return false;
+}
+
+/*
  * Map the current partition spec's IDENTITY fields to foreign-table columns, for
  * FDW pruning. On return *out_attno[k] is the 1-based attno of the table column
  * an identity partition field at partition-tuple position k maps to (0 when the
@@ -1581,7 +1625,10 @@ PgColumnarIcebergDayMap(const char *path, const PgColumnarObjStoreConfig *cfg,
  * default spec's partition-cell positions and 1-based source attnos for the
  * fields carrying that transform. The FDW routes each mapped field by its source
  * column type: the coarse temporal compiler handles the timestamp cases, the
- * exact day() compiler handles a day() on a date.
+ * exact day() compiler handles a day() on a date. A field whose source is a
+ * timestamp of the other kind than its column (timestamp vs timestamptz) is left
+ * out, so nothing prunes on it: its cells are in the source's kind, its rows are
+ * converted in the session zone (#1706).
  */
 void
 PgColumnarIcebergTemporalMap(const char *path, const PgColumnarObjStoreConfig *cfg,
@@ -1676,6 +1723,11 @@ PgColumnarIcebergTemporalMap(const char *path, const PgColumnarObjStoreConfig *c
 				continue;
 			if (ice_field_id_by_name(fieldsc, nf, NameStr(att->attname)) == srcid)
 			{
+				/* the cells are in the source's kind, the rows in the column's */
+				if (ice_field_timestamp_kind_differs(fieldsc, nf,
+													 NameStr(att->attname),
+													 att->atttypid))
+					break;
 				pos[cnt] = (int) k;
 				attno[cnt] = a + 1;
 				cnt++;

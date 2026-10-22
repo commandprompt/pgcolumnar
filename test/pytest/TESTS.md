@@ -388,6 +388,7 @@ behaviour, the source of that number is named.
 - [340. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value](#340-test_decode_skip_interruptspy-the-thrift-and-avro-skip-loops-of-a-hostile-file-yield-to-a-cancel-per-skipped-value)
 - [341. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop](#341-test_native_cancelpy-a-scans-row-group-load-yields-to-statement_timeout-inside-the-decode-loop)
 - [342. test_objstore_export_double_cancel.py: a second cancel during a remote export's cleanup keeps the export's own error](#342-test_objstore_export_double_cancelpy-a-second-cancel-during-a-remote-exports-cleanup-keeps-the-exports-own-error)
+- [343. test_parquet_timestamp_zone.py: a Parquet timestamp read into the other timestamp type follows PostgreSQL's casts](#343-test_parquet_timestamp_zonepy-a-parquet-timestamp-read-into-the-other-timestamp-type-follows-postgresqls-casts)
 
 ## 1. How to read a test in here
 
@@ -4445,6 +4446,8 @@ carry are `pgc_skip`'s refusal names, which are structural and declared in
 | `test_the_year_table_reads_whole_and_keeps_the_boundary_file` | the boundary case stated alone |
 | `test_a_year_equality_prunes_to_one_file` | an equality narrows to the constant's own bucket |
 | `test_a_year_on_date_equality_prunes_to_one_file` | the same on a date column |
+| `test_an_hour_partition_over_a_naive_source_read_as_timestamptz_keeps_its_rows` | #1706: `byhour` (a naive source) declared `timestamptz` in New York returns `iceberg_scan`'s rows; its hour cells are wall times, so the FDW must not prune on them |
+| `test_an_hour_partition_over_a_timestamptz_source_read_as_timestamp_keeps_its_rows` | #1706: the reverse, `byhour_tz` declared `timestamp` |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 
@@ -12845,3 +12848,27 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | `test_no_completed_object_remains_at_the_prefix` | double cancel: no completed object remains at the prefix |
 | `test_the_server_survived` | double cancel: the server survived |
 
+## 343. test_parquet_timestamp_zone.py: a Parquet timestamp read into the other timestamp type follows PostgreSQL's casts
+
+The pytest twin of `test/parquet_timestamp_zone.sh` (#1706 item 2), every check by the shell's name. In a New York session: a naive Parquet timestamp read into `timestamptz` is its wall time in the session zone, and a UTC-adjusted one read into `timestamp` is the session-zone wall time of its instant, each equal to PostgreSQL's own cast; the same-kind reads are controls; an export and import round trip keeps both types (with #1707's exporter); and a row group spanning the 2024-03-10 spring-forward gap is not skipped on its converted min and max, which need not bound its converted rows. The naive file is read again in Tokyo, so a reader that hard-codes a zone fails; the repeated hour of the 2024-11-03 fall-back resolves as the cast resolves it; and `test/fixtures/parquet/legacy_timestamp_micros.parquet`, written by pgcolumnar's own exporter before #1707 with only the `TIMESTAMP_MICROS` converted type, reads as the instant the Parquet spec defines it to be. The files are written by `python3` with pyarrow, so no test imports pyarrow: each declines by the shell's skip name, then asks for the fixture. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_ptz_pyarrow_wrote_one_naive_and_one_adjusted_file` | premise: pyarrow wrote the naive file without isAdjustedToUTC and the other with it |
+| `test_ptz_a_naive_file_into_timestamptz_is_its_session_wall_time` | a naive file read into timestamptz is its wall time in the session zone |
+| `test_ptz_the_naive_read_equals_the_cast_from_timestamp` | and that is what PostgreSQL's cast from timestamp gives |
+| `test_ptz_an_adjusted_file_into_timestamp_is_the_session_wall_time` | an adjusted file read into timestamp is the session-zone wall time of its instant |
+| `test_ptz_the_adjusted_read_equals_the_cast_from_timestamptz` | and that is what PostgreSQL's cast from timestamptz gives |
+| `test_ptz_a_naive_file_into_timestamp_keeps_its_wall_time` | control: a naive file read into timestamp keeps its wall time |
+| `test_ptz_an_adjusted_file_into_timestamptz_keeps_its_instant` | control: an adjusted file read into timestamptz keeps its instant |
+| `test_ptz_an_export_import_round_trip_keeps_both_types` | an export and import round trip keeps timestamp and timestamptz in a non-UTC session |
+| `test_ptz_the_gap_wall_times_become_their_instants` | the gap file's wall times become, sorted, the instants 07:00Z, 07:00Z and 07:30Z |
+| `test_ptz_a_gap_spanning_group_is_not_skipped` | a row group spanning a spring-forward gap is not skipped on its converted min and max |
+| `test_ptz_the_legacy_fixture_carries_only_the_converted_type` | premise: the legacy fixture carries the TIMESTAMP_MICROS converted type and no logical type |
+| `test_ptz_a_naive_file_in_tokyo_is_its_wall_time_there` | a naive file read into timestamptz in Tokyo is its wall time there, as the cast gives |
+| `test_ptz_the_tokyo_reading_differs_from_new_york` | and the Tokyo reading is a different instant from the New York one |
+| `test_ptz_a_fall_back_wall_time_is_what_the_cast_gives` | a naive wall time in the fall-back hour read into timestamptz is what the cast gives |
+| `test_ptz_a_legacy_file_into_timestamp_is_the_session_wall_time` | a legacy TIMESTAMP_MICROS file read into timestamp is the session-zone wall time of its instant |
+| `test_ptz_a_legacy_file_into_timestamptz_keeps_its_instant` | a legacy TIMESTAMP_MICROS file read into timestamptz keeps its instant |

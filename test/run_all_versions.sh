@@ -261,6 +261,7 @@ SUITES=(
 	parquet_level_width
 	parquet_nested
 	parquet_nested_import
+	parquet_timestamp_zone
 	partition_lifecycle
 	partition_rows
 	partman_columnar
