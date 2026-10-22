@@ -49,16 +49,12 @@ pq.write_table(pa.table({"t": pa.array([9223372036854776], pa.int64()).cast(pa.t
 # Nanos truncation. pq_scale_to_usecs divides by 1000 with C semantics (toward
 # zero), which the code comment reasons about but the round-number cases above do
 # not exercise: they are exact multiples of 1000 and non-negative. Write a value
-# with sub-microsecond digits, and a pre-epoch (negative) one, as nanos; write the
-# toward-zero-truncated microseconds directly as the reference. Reading the two as
-# timestamp must agree, which pins the rounding direction.
-def trunc_us(ns):                       # toward zero, unlike Python's floor //
-    return -(-ns // 1000) if ns < 0 else ns // 1000
+# with sub-microsecond digits, and a pre-epoch (negative) one, as nanos. The checks
+# below compare each with its toward-zero microseconds as a LITERAL: a reference
+# file read back through the same reader agreed with it on two failed reads.
 for tag, ns in [("frac", 1784851200_123_456_789), ("neg", -1784851200_123_456_789)]:
     pq.write_table(pa.table({"t": pa.array([ns], pa.int64()).cast(pa.timestamp('ns'))}),
                    f"{W}/tsns_{tag}.parquet", version="2.6")
-    pq.write_table(pa.table({"t": pa.array([trunc_us(ns)], pa.int64()).cast(pa.timestamp('us'))}),
-                   f"{W}/tsus_{tag}.parquet", version="1.0")
 
 # Row-group skipping over a unit-scaled column: two groups of millis timestamps
 # with disjoint ranges. The FDW decodes each group's min/max through the same
@@ -84,10 +80,9 @@ psql_run "CREATE FOREIGN TABLE ftime_ms (t time) SERVER pq OPTIONS (path '$W/tim
 # ---- the same instant, whatever the unit -----------------------------------
 # Before the unit was honoured, millis read 1000x small (1970-01-21 15:47:31.2)
 # and nanos declared as timestamp read 1000x large, both silently.
-for u in ms us ns; do
-	check "ts_$u decodes to the right instant" \
-		"$(q "SELECT t::text FROM fts_$u;")" "2026-07-24 00:00:00"
-done
+check "ts_ms decodes to the right instant" "$(q "SELECT t::text FROM fts_ms;")" "2026-07-24 00:00:00"
+check "ts_us decodes to the right instant" "$(q "SELECT t::text FROM fts_us;")" "2026-07-24 00:00:00"
+check "ts_ns decodes to the right instant" "$(q "SELECT t::text FROM fts_ns;")" "2026-07-24 00:00:00"
 
 check "time micros decodes to the right time" \
 	"$(q 'SELECT t::text FROM ftime;')" "01:02:03.000004"
@@ -150,15 +145,17 @@ check "nanos == micros" \
 	"$(pgc_set_hash 'SELECT t FROM fts_ns')" "$(pgc_set_hash 'SELECT t FROM fts_us')"
 
 # ---- nanos truncation direction (toward zero) ------------------------------
-# The nanos value carries sub-microsecond digits the micros reference cannot, so
-# equality holds only if the reader truncates toward zero exactly as the reference
-# was computed. The negative case is the one that distinguishes toward-zero from
-# floor.
-for tag in frac neg; do
-	check "nanos sub-us truncates toward zero [$tag]" \
-		"$(q "SELECT t::text FROM pgcolumnar.read_parquet('$W/tsns_$tag.parquet') AS t(t timestamp);")" \
-		"$(q "SELECT t::text FROM pgcolumnar.read_parquet('$W/tsus_$tag.parquet') AS t(t timestamp);")"
-done
+# The nanos value carries sub-microsecond digits, so the reading equals its
+# toward-zero microseconds only if the reader truncates that way. The negative case
+# is the one that distinguishes toward-zero from floor. The want is a literal, and
+# check_text refuses an empty reading: comparing with a second file read through the
+# same reader passed both checks with the server stopped (two empty reads agree).
+check_text "nanos sub-us truncates toward zero [frac]" \
+	"$(q "SELECT t::text FROM pgcolumnar.read_parquet('$W/tsns_frac.parquet') AS t(t timestamp);")" \
+	"2026-07-24 00:00:00.123456"
+check_text "nanos sub-us truncates toward zero [neg]" \
+	"$(q "SELECT t::text FROM pgcolumnar.read_parquet('$W/tsns_neg.parquet') AS t(t timestamp);")" \
+	"1913-06-10 23:59:59.876544"
 
 # ---- pushdown over a unit-scaled column ------------------------------------
 # The predicate falls entirely in the second group's range, so the first group's
@@ -173,9 +170,17 @@ skipped_ms() {
 # 2025-06-01 is inside group 1 only.
 check "millis-scaled stats skip the non-matching group" \
 	"$(skipped_ms "t >= timestamp '2025-06-01'")" "1"
-# correctness: the skip must not drop a matching row (oracle = a heap mirror)
-psql_run "CREATE TABLE hmsg (t timestamp);"
-psql_run "INSERT INTO hmsg SELECT t FROM pgcolumnar.read_parquet('$W/ms_groups.parquet') AS t(t timestamp);"
+# correctness: the skip must not drop a matching row. The oracle is the GENERATOR,
+# the same hourly series the fixture wrote, not the file read back through
+# read_parquet: that mirror shared the reader under test, so a decode that shifted
+# every row after a page's first to the next dictionary entry agreed with itself and
+# passed (dictshift, 19/19 on main).
+psql_run "CREATE TABLE hmsg AS
+	SELECT timestamp '2024-01-01' + g * interval '1 hour' AS t FROM generate_series(0, 999) g
+	UNION ALL
+	SELECT timestamp '2025-07-01' + g * interval '1 hour' FROM generate_series(0, 999) g;"
+check "the millis file reads back exactly as written" \
+	"$(pgc_set_hash "SELECT t FROM fmsg")" "$(pgc_set_hash "SELECT t FROM hmsg")"
 check "millis pushdown result == oracle" \
 	"$(pgc_set_hash "SELECT t FROM fmsg WHERE t >= timestamp '2025-06-01'")" \
 	"$(pgc_set_hash "SELECT t FROM hmsg WHERE t >= timestamp '2025-06-01'")"

@@ -1005,6 +1005,8 @@ guard_tests 806
 # 27 tests, one per check, by collection over the cluster files.
 # cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
 # 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 3633 -> 3653 for #1341's test_native_parquet_units.py, the twin of native_parquet_units.sh:
+# 20 checks in 20 tests, by collection over the cluster files.
 # cluster_tests 3619 -> 3633 for #1341's test_native_parquet_codecs.py, the twin of native_parquet_codecs.sh:
 # 14 checks in 14 tests, by collection over the cluster files.
 # cluster_tests 3608 -> 3619 for #1341's test_native_parquet_fieldid.py, the twin of native_parquet_fieldid.sh:
@@ -1136,4 +1138,4 @@ guard_tests 806
 # 29 tests, one per check, by collection over the cluster files.
 # cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
 # 54 tests, one per check, by collection over the cluster files.
-cluster_tests 3633
+cluster_tests 3653

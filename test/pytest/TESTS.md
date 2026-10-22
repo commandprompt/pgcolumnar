@@ -361,6 +361,7 @@ behaviour, the source of that number is named.
 - [313. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values](#313-test_native_vecdecodepy-decode-honours-the-skip-vector-and-the-fold-reads-neither-holes-nor-nulls-as-values)
 - [314. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard](#314-test_native_parquet_fieldidpy-read_parquet-binds-output-columns-by-parquet-field-id-and-refuses-each-misuse-by-its-own-guard)
 - [315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused](#315-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-and-a-crafted-page-size-is-refused)
+- [316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly](#316-test_native_parquet_unitspy-time-and-timestamp-units-decode-to-the-right-instant-and-their-stats-skip-correctly)
 
 ## 1. How to read a test in here
 
@@ -11947,3 +11948,34 @@ Every test makes one check under the shell's name, on a private database. Each t
 | `test_the_gzip_sum_matches_the_generator` | gzip sum matches the generator |
 | `test_a_crafted_uncompressed_size_is_a_clean_decode_error` | crafted uncompressed size gives a clean decode error |
 | `test_the_backend_survives_the_crafted_header` | backend survived the crafted header |
+
+## 316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly
+
+The twin of `test/native_parquet_units.sh`. pyarrow writes one instant as TIMESTAMP millis, micros and nanos, a time as TIME micros and millis, a millis value whose conversion overflows, two nanos values with sub-microsecond digits (one pre-epoch), and a two-group millis file; each reads back to the right value through the FDW, read_parquet and import_parquet, parquet_schema advises the lossless type, the overflow raises 22008, and the millis stats skip the group a predicate cannot match.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database, and declines first under the shell's pyarrow skip name. Each reading returns a failure as a `query_error()`, so two failed reads never agree. The truncation checks want literals and the two-group file is compared with the generator's series, so no oracle is read through the reader under test.
+
+| test | what it holds |
+| --- | --- |
+| `test_ts_ms_decodes_to_the_right_instant` | ts_ms decodes to the right instant |
+| `test_ts_us_decodes_to_the_right_instant` | ts_us decodes to the right instant |
+| `test_ts_ns_decodes_to_the_right_instant` | ts_ns decodes to the right instant |
+| `test_time_micros_decodes_to_the_right_time` | time micros decodes to the right time |
+| `test_time_millis_decodes_to_the_right_time` | time millis decodes to the right time |
+| `test_parquet_schema_advises_time_for_time_millis` | parquet_schema advises time for TIME_MILLIS |
+| `test_parquet_schema_advises_timestamp_for_millis` | parquet_schema advises timestamp for millis |
+| `test_parquet_schema_advises_timestamp_for_micros` | parquet_schema advises timestamp for micros |
+| `test_parquet_schema_advises_bigint_for_nanos` | parquet_schema advises bigint for nanos (lossless) |
+| `test_nanos_read_as_bigint_is_exact` | nanos read as bigint is exact |
+| `test_millis_to_micros_overflow_raises_22008` | millis-to-micros overflow raises 22008 |
+| `test_read_parquet_honours_the_unit` | read_parquet honours the unit |
+| `test_import_parquet_honours_the_unit` | import_parquet honours the unit |
+| `test_millis_equals_micros` | millis == micros |
+| `test_nanos_equals_micros` | nanos == micros |
+| `test_nanos_sub_us_truncates_toward_zero_frac` | nanos sub-us truncates toward zero [frac] |
+| `test_nanos_sub_us_truncates_toward_zero_neg` | nanos sub-us truncates toward zero [neg] |
+| `test_millis_scaled_stats_skip_the_non_matching_group` | millis-scaled stats skip the non-matching group |
+| `test_the_millis_file_reads_back_exactly_as_written` | the millis file reads back exactly as written |
+| `test_millis_pushdown_result_equals_the_oracle` | millis pushdown result == oracle |
