@@ -1011,10 +1011,13 @@ differential	differential	agg sum	15;16;17;18;19	never	-
 differential	differential	allnull chunk isnull	15;16;17;18;19	never	-
 differential	differential	allnull chunk range	15;16;17;18;19	never	-
 differential	differential	allnull chunk scan	15;16;17;18;19	never	-
+differential	differential	allnull chunk: exactly one chunk group of the column is entirely null	15;16;17;18;19	2026-10-22	columnar_write_state.c: a table's chunk_group_row_limit option is ignored (biggroups)
 differential	differential	allnull column count	15;16;17;18;19	never	-
 differential	differential	allnull column isnull	15;16;17;18;19	never	-
 differential	differential	allnull column minmax	15;16;17;18;19	never	-
 differential	differential	allnull column scan	15;16;17;18;19	never	-
+differential	differential	and the control really did match one row	15;16;17;18;19	2026-10-22	columnar_reader.c: the row reader returns no rows (noscan)
+differential	differential	and the control really did put a row there	15;16;17;18;19	never	-
 differential	differential	bloom absent correct	15;16;17;18;19	never	-
 differential	differential	bloom k present	15;16;17;18;19	never	-
 differential	differential	bloom k range	15;16;17;18;19	never	-
@@ -1067,6 +1070,7 @@ differential	differential	c_f8 range	15;16;17;18;19	never	-
 differential	differential	c_f8 sum/avg	15;16;17;18;19	never	-
 differential	differential	c_int count	15;16;17;18;19	never	-
 differential	differential	c_int eq	15;16;17;18;19	never	-
+differential	differential	c_int eq present	15;16;17;18;19	2026-10-22	columnar_reader.c: the row reader returns no rows (noscan)
 differential	differential	c_int is null	15;16;17;18;19	never	-
 differential	differential	c_int min/max	15;16;17;18;19	never	-
 differential	differential	c_int not null	15;16;17;18;19	never	-
@@ -1128,6 +1132,7 @@ differential	differential	c_vc not null	15;16;17;18;19	never	-
 differential	differential	c_vc project	15;16;17;18;19	never	-
 differential	differential	c_vc range	15;16;17;18;19	never	-
 differential	differential	c_ztext count	15;16;17;18;19	never	-
+differential	differential	c_ztext empty strings are not nulls	15;16;17;18;19	2026-10-22	columnar_reader.c: the row reader returns no rows (noscan)
 differential	differential	c_ztext is null	15;16;17;18;19	never	-
 differential	differential	c_ztext min/max	15;16;17;18;19	never	-
 differential	differential	c_ztext not null	15;16;17;18;19	never	-
@@ -1163,6 +1168,7 @@ differential	differential	dict whole-row	15;16;17;18;19	never	-
 differential	differential	empty agg	15;16;17;18;19	never	-
 differential	differential	empty count	15;16;17;18;19	never	-
 differential	differential	empty scan	15;16;17;18;19	never	-
+differential	differential	empty scan control: one row is visible to both	15;16;17;18;19	2026-10-22	columnar_reader.c: the row reader returns no rows (noscan)
 differential	differential	empty-vs-null empties	15;16;17;18;19	never	-
 differential	differential	empty-vs-null nulls	15;16;17;18;19	never	-
 differential	differential	empty-vs-null scan	15;16;17;18;19	never	-
@@ -1173,6 +1179,7 @@ differential	differential	enc seq range	15;16;17;18;19	never	-
 differential	differential	enc whole-row	15;16;17;18;19	never	-
 differential	differential	enc+nocompress agg	15;16;17;18;19	never	-
 differential	differential	enc+nocompress scan	15;16;17;18;19	never	-
+differential	differential	enc+nocompress: the column is stored encoded, with no block codec	15;16;17;18;19	2026-10-22	columnar_encoding.c: every vector is stored with encoding NONE (forcenone)
 differential	differential	i4 float agg	15;16;17;18;19	never	-
 differential	differential	i4 ts minmax	15;16;17;18;19	never	-
 differential	differential	i4 ts range	15;16;17;18;19	never	-
@@ -1183,6 +1190,7 @@ differential	differential	matrix stripes>=2	15;16;17;18;19	never	-
 differential	differential	matrix whole-row	15;16;17;18;19	never	-
 differential	differential	order limit head	15;16;17;18;19	never	-
 differential	differential	order limit tail	15;16;17;18;19	never	-
+differential	differential	premise: the mismatched-collation probe value is present exactly once	15;16;17;18;19	never	-
 differential	differential	premise: the ordered oracle agrees with itself	15;16;17;18;19	never	-
 differential	differential	premise: the ordered oracle is order-sensitive	15;16;17;18;19	never	-
 differential	differential	single count	15;16;17;18;19	never	-
@@ -1202,10 +1210,14 @@ differential	differential	stripe boundary N=2001 stripes	15;16;17;18;19	never	-
 differential	differential	textbloom C absent	15;16;17;18;19	never	-
 differential	differential	textbloom C eq	15;16;17;18;19	2026-10-16	the reader's bloom check skipping every chunk under the C collation (mutation, #1339)
 differential	differential	textbloom absent	15;16;17;18;19	never	-
+differential	differential	textbloom absent: the bloom removes chunk groups min/max alone cannot	15;16;17;18;19	2026-10-22	columnar_reader.c: the bloom filter is never consulted (bloommaybe)
 differential	differential	textbloom collate-mismatch	15;16;17;18;19	never	-
+differential	differential	textbloom collate-mismatch returns the row rather than skipping it	15;16;17;18;19	2026-10-22	columnar_reader.c: the row reader returns no rows (noscan)
 differential	differential	textbloom present	15;16;17;18;19	never	-
+differential	differential	the all-null column spans several chunk groups	15;16;17;18;19	2026-10-22	columnar_write_state.c: a table's chunk_group_row_limit option is ignored (biggroups)
 differential	differential	wide most	15;16;17;18;19	never	-
 differential	differential	wide nomatch	15;16;17;18;19	never	-
+differential	differential	wide nomatch control: a present value returns its row	15;16;17;18;19	2026-10-22	columnar_reader.c: the row reader returns no rows (noscan)
 differential	differential	wide point	15;16;17;18;19	never	-
 differential	differential	wide range	15;16;17;18;19	never	-
 differential	differential	wide row proj	15;16;17;18;19	never	-
