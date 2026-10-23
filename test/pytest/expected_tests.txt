@@ -1096,4 +1096,6 @@ guard_tests 804
 # cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
 # cluster_tests 3222 -> 3239 for #1341's test_parallel_copy_dedup.py, the twin of parallel_copy_dedup.sh:
 # 17 tests, one per check, by collection over the cluster files.
-cluster_tests 3239
+# cluster_tests 3239 -> 3320 for #1341's test_parallel_copy.py, the twin of parallel_copy.sh:
+# 81 tests, one per check, by collection over the cluster files.
+cluster_tests 3320

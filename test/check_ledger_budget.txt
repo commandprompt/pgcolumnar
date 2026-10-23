@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 73
+suites_not_covered 72
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6019,4 +6019,31 @@ suites_not_covered 73
 #     never         4132 + 4 = 4136
 #     dated         2818 + 13 = 2831
 #     4136 + 2831 == 6967
-checks_never_observed_red 4136
+#
+# #1341, parallel_copy seeded, with its twin (jdatcmd): 3853 -> 3885, and
+# suites_not_covered 105 -> 104. The suite had no rows. It enters with 81 checks from
+# five-major runs (81/81 on each of 15-19, shell and twin alike), after three fixes.
+# Five survival checks read "SELECT 1", which answers after crash recovery: with a
+# backend killed by SIGSEGV before each, all five passed; they now also need the
+# server log's count of killed backends unmoved. Two failure checks took any message
+# with "failed" in it, and every worker failure reads "worker N failed: ...": with
+# the loader's message dropped they passed; they now need the loader's own cause.
+# The nine reconstruct checks compared the per-range loads with a single columnar
+# COPY of the same file, which shares the COPY path's defects: with multi_insert
+# dropping the row whose id is 1, all nine passed; they now compare with the
+# generator that wrote the file. Names built from loop variables are literal. 49 are
+# dated by ten product mutations and the crash edit, each reddening the same names in
+# both twins: the loader's message dropped, a row dropped by multi_insert, the
+# max_prepared_transactions guard removed, bulk_parallel_writer booting on, the FIFO
+# opener blocking, a split offset on the newline, a split degraded to one range,
+# workers < 1 accepted, the S_ISREG refusal removed, and the key-type restriction
+# removed. 32 arrive never: the leak, empty-target and rows-returned checks of loads
+# no mutation reached, the refusals of a bad key, an unsorted file, a DEFAULT
+# partition, a heap target and a missing file, the generated-column load, the
+# partitioned FIFO refusal, the stripe-overlap check, and the one-worker split.
+#
+#     ledger rows   6967 + 81 = 7048
+#     never         4136 + 32 = 4168
+#     dated         2831 + 49 = 2880
+#     4168 + 2880 == 7048
+checks_never_observed_red 4168

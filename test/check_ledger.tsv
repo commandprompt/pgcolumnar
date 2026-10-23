@@ -4736,6 +4736,87 @@ parallel_am_scan	parallel_am_scan	premise: the serial plan is not a columnar cus
 parallel_am_scan	parallel_am_scan	premise: the table holds every inserted row	15;16;17;18;19	never	-
 parallel_am_scan	parallel_am_scan	premise: with the custom scan off the serial plan is a Seq Scan	15;16;17;18;19	never	-
 parallel_am_scan	parallel_am_scan	workers share the table-AM scan, it is not a single claimer	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	1 row / 4 workers (edge smoke): offsets well-formed and newline-aligned	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	1 row / 4 workers (edge smoke): per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	5 rows / 8 workers (empty ranges): per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	5 rows / 8 workers: offsets well-formed and newline-aligned	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	5000 rows / 16: offsets well-formed and newline-aligned	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	5000 rows / 16: per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	5000 rows / 16: split is real (interior offsets distinct, ranges non-empty)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the splitter degrades to one range (every interior offset is the file size)
+parallel_copy	parallel_copy	5000 rows / 1: offsets well-formed and newline-aligned	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	5000 rows / 1: per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	5000 rows / 2: offsets well-formed and newline-aligned	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	5000 rows / 2: per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	5000 rows / 2: split is real (interior offsets distinct, ranges non-empty)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the splitter degrades to one range (every interior offset is the file size)
+parallel_copy	parallel_copy	5000 rows / 3: offsets well-formed and newline-aligned	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	5000 rows / 3: per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	5000 rows / 3: split is real (interior offsets distinct, ranges non-empty)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the splitter degrades to one range (every interior offset is the file size)
+parallel_copy	parallel_copy	5000 rows / 8: offsets well-formed and newline-aligned	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	5000 rows / 8: per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	5000 rows / 8: split is real (interior offsets distinct, ranges non-empty)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the splitter degrades to one range (every interior offset is the file size)
+parallel_copy	parallel_copy	DEFAULT partition target is rejected	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	atomic: a bad partition-key value is rejected	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	atomic: a loader failure fails the whole load	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: a failed loader records no message, so the load reports 'loader exited without reporting a result'
+parallel_copy	parallel_copy	atomic: bad-key load leaves the target empty	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	atomic: loader-failure leaves the target empty (siblings rolled back)	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	atomic: no prepared-transaction leak after bad-key	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	atomic: no prepared-transaction leak after loader failure	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	atomic: server still up after a failed load	15;16;17;18;19	2026-10-22	test/parallel_copy.sh: a backend killed by SIGSEGV, and the server recovered, before each survival check
+parallel_copy	parallel_copy	backend still up after the parallel_copy FIFO refusal	15;16;17;18;19	2026-10-22	test/parallel_copy.sh: a backend killed by SIGSEGV, and the server recovered, before each survival check
+parallel_copy	parallel_copy	backend still up after the partitioned-coordinator FIFO refusal	15;16;17;18;19	2026-10-22	test/parallel_copy.sh: a backend killed by SIGSEGV, and the server recovered, before each survival check
+parallel_copy	parallel_copy	bulk_parallel_writer GUC defaults off (core write path unchanged)	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.bulk_parallel_writer boots on
+parallel_copy	parallel_copy	file_split_offsets: a directory is rejected (not an 8-exabyte file)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the single-file opener's S_ISREG refusal removed
+parallel_copy	parallel_copy	guard rejects before loading anything	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	key not in column 1 (generated col before it): rows = 3000	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	key not in column 1: result == oracle	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	long lines >64kB / 4 workers: offsets well-formed and newline-aligned	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	long lines >64kB / 4 workers: per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	long lines >64kB / 4 workers: split is real (interior offsets distinct, ranges non-empty)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the splitter degrades to one range (every interior offset is the file size)
+parallel_copy	parallel_copy	max_prepared_transactions guard fires	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the max_prepared_transactions guard removed
+parallel_copy	parallel_copy	missing file: errors, not crashes	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	missing file: nothing loaded	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	missing file: server still up (no worker crash)	15;16;17;18;19	2026-10-22	test/parallel_copy.sh: a backend killed by SIGSEGV, and the server recovered, before each survival check
+parallel_copy	parallel_copy	no trailing newline / 4 workers: offsets well-formed and newline-aligned	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	no trailing newline / 4 workers: per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	non-columnar target is rejected	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy on a FIFO is refused, not a hang (42809)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the single-file opener drops O_NONBLOCK, so a FIFO blocks open(2) (#686);columnar_parallel_copy.c: the single-file opener's S_ISREG refusal removed
+parallel_copy	parallel_copy	parallel_copy on a FIFO via the partitioned coordinator is refused, not a hang (42809)	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(partitioned, 1 workers): no prepared-transaction leak	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(partitioned, 1 workers): result == single-COPY oracle	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	parallel_copy(partitioned, 1 workers): rows returned = 5000	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(partitioned, 2 workers): no prepared-transaction leak	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(partitioned, 2 workers): result == single-COPY oracle	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	parallel_copy(partitioned, 2 workers): rows returned = 5000	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(partitioned, 4 workers): no prepared-transaction leak	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(partitioned, 4 workers): result == single-COPY oracle	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	parallel_copy(partitioned, 4 workers): rows returned = 5000	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(single table, 1 workers): no prepared-transaction leak	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(single table, 1 workers): result == single-COPY oracle	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	parallel_copy(single table, 1 workers): rows returned = 5000	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(single table, 2 workers): no prepared-transaction leak	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(single table, 2 workers): result == single-COPY oracle	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	parallel_copy(single table, 2 workers): rows returned = 5000	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	parallel_copy(single table, 4 workers): no prepared-transaction leak	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy(single table, 4 workers): result == single-COPY oracle	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	parallel_copy(single table, 4 workers): rows returned = 5000	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	signed keys straddling 0: no prepared-transaction leak	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	signed keys straddling 0: result == oracle (no misbucketing/deadlock)	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	signed keys straddling 0: rows returned = 500	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	single table: a bad row fails the whole load	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: a failed loader records no message, so the load reports 'loader exited without reporting a result'
+parallel_copy	parallel_copy	single table: failed load leaves the target empty	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	single table: no prepared-transaction leak after failure	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	single-COPY heap and columnar agree	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	text partition key is rejected (not a crash)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the numeric or date/time partition-key restriction removed
+parallel_copy	parallel_copy	text partition key: server still up (no crash)	15;16;17;18;19	2026-10-22	test/parallel_copy.sh: a backend killed by SIGSEGV, and the server recovered, before each survival check
+parallel_copy	parallel_copy	unsorted input is rejected	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	unsorted rejection loads nothing	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	witness: >4 distinct stripe ids (each worker reserved several stripes)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	witness: no prepared-transaction leak	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	witness: no stripe byte-range overlaps another (no on-disk collision)	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	witness: parallel_copy(single table, 4 workers, 40000 rows) loads every row	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	witness: result == single-COPY oracle	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	witness: stripe rowcounts sum to every input row (complete coverage)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
+parallel_copy	parallel_copy	workers < 1 is rejected	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: file_split_offsets accepts workers < 1
 parallel_copy_dedup	parallel_copy_dedup	a changed file at the same path is loaded, not skipped (#403 item 7)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: pcopy_fingerprint_file hashes only the first 256 KiB read (break after the first pg_cryptohash_update);columnar_parallel_copy.c: the refused load commits its ranges anyway (pcopy_finish_prepared(gid, true) in place of the rollback)
 parallel_copy_dedup	parallel_copy_dedup	and each of those loads reported its rows	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: dedup always on, whatever the caller passed (dedup = true)
 parallel_copy_dedup	parallel_copy_dedup	and reports 0 rather than claiming it loaded them	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the refused load reports the rows it discarded (total_rows summed, not 0)

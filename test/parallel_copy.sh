@@ -51,17 +51,37 @@ offsets_of() {	# path workers -> space-separated offsets
 	q "SELECT array_to_string(pgcolumnar.file_split_offsets('$1', $2), ' ')"
 }
 
-# ---- structural checks: boundaries land after a newline, cover the file -------
+# A backend that died does not pass as one that survived. A fresh connection answers
+# again after crash recovery, so "SELECT 1" alone passed with a backend killed by
+# SIGSEGV right before each of this suite's five survival checks (measured on PG17,
+# #1341). survived() also requires the server log's count of killed backends to be
+# unmoved since the suite began, and fails when that count cannot be read.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
+CRASHES_BEFORE="$(crashes)"
 
-check_structure() {	# path workers label
-	local f="$1" w="$2" label="$3"
+# ---- structural checks: boundaries land after a newline, cover the file -------
+# Each helper below echoes one reading; the check, with its literal name, is at the
+# call site.
+
+structure_of() {	# path workers -> 1 when the offsets are well-formed and aligned
+	local f="$1" w="$2"
 	local size off arr ok prev i b
 	size=$(stat -c %s "$f")
 	read -r -a arr <<<"$(offsets_of "$f" "$w")"
 	ok=1
 	if [ "${#arr[@]}" != "$((w + 1))" ]; then
-		check "$label: offsets well-formed and newline-aligned" \
-			"got ${#arr[@]} offsets" "want $((w + 1))"
+		echo "got ${#arr[@]} offsets, want $((w + 1))"
 		return
 	fi
 	[ "${arr[0]}" = "0" ] || ok=0
@@ -77,13 +97,17 @@ check_structure() {	# path workers label
 			[ "$b" = "0a" ] || ok=0
 		fi
 	done
-	check "$label: offsets well-formed and newline-aligned" "$ok" 1
+	echo "$ok"
 }
 
 # ---- end-to-end: per-range loads reconstruct the whole file -------------------
+# The oracle is the generator that wrote the file, not a single columnar COPY of it.
+# A single COPY into pgcolumnar shares every defect of pgcolumnar's COPY path with
+# the per-range loads: with multi_insert dropping the row whose id is 1, both lost
+# the same row and all nine reconstruct checks passed (measured on PG17, #1341).
 
-check_reconstruct() {	# path workers label
-	local f="$1" w="$2" label="$3"
+split_load_hash() {	# path workers -> set hash of the per-range loads
+	local f="$1" w="$2"
 	local arr i off len rf
 	read -r -a arr <<<"$(offsets_of "$f" "$w")"
 	psql_run "DROP TABLE IF EXISTS t_split;
@@ -96,23 +120,19 @@ check_reconstruct() {	# path workers label
 		[ "$(id -u)" = "0" ] && chown postgres "$rf"
 		psql_run "\copy t_split FROM '$rf' WITH (FORMAT text)" >/dev/null
 	done
-	# t_col holds the single-COPY load of the same file -> oracle for this file
-	local h_whole h_split
-	h_whole="$(pgc_set_hash "SELECT * FROM t_col")"
-	h_split="$(pgc_set_hash "SELECT * FROM t_split")"
-	check "$label: per-range loads reconstruct the whole file" "$h_split" "$h_whole"
+	pgc_set_hash "SELECT * FROM t_split"
 }
 
 # ---- the split must actually split -------------------------------------------
-# check_structure and check_reconstruct both pass on a splitter degraded to a
+# structure_of and split_load_hash both pass on a splitter degraded to a
 # single range ({0, size, size, ..., size}): the offsets are ascending and
 # newline-aligned, and one range covering the whole file reconstructs it. That is
 # not hypothetical -- a bare-CR file and phase 5's "fall back to a single COPY"
 # path both produce exactly that shape. So when the file has far more records than
 # workers, assert every range is non-empty: the W-1 interior offsets must be
 # strictly increasing and strictly inside (0, size). A degraded split fails here.
-check_split_happened() {	# path workers label
-	local f="$1" w="$2" label="$3"
+split_real_of() {	# path workers -> 1 when every range is non-empty
+	local f="$1" w="$2"
 	local size arr ok prev i off
 	size=$(stat -c %s "$f")
 	read -r -a arr <<<"$(offsets_of "$f" "$w")"
@@ -123,11 +143,12 @@ check_split_happened() {	# path workers label
 		{ [ "$off" -gt "$prev" ] && [ "$off" -lt "$size" ]; } 2>/dev/null || ok=0
 		prev=$off
 	done
-	check "$label: split is real (interior offsets distinct, ranges non-empty)" "$ok" 1
+	echo "$ok"
 }
 
 # ---- the main file: 5000 rows -----------------------------------------------
 
+GEN_F="SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1, 5000) g"
 make_pair "id int, txt text"
 F=$(make_file 5000)
 psql_run "\copy t_heap FROM '$F' WITH (FORMAT text)" >/dev/null
@@ -135,55 +156,76 @@ psql_run "\copy t_col  FROM '$F' WITH (FORMAT text)" >/dev/null
 check "single-COPY heap and columnar agree" \
 	"$(pgc_set_hash "SELECT * FROM t_col")" "$(pgc_set_hash "SELECT * FROM t_heap")"
 
-for W in 1 2 3 8 16; do
-	check_structure "$F" "$W" "5000 rows / $W"
-	check_reconstruct "$F" "$W" "5000 rows / $W"
-	# 5000 rows >> W, so every range must be non-empty: catches a degraded split.
-	[ "$W" -ge 2 ] && check_split_happened "$F" "$W" "5000 rows / $W"
-done
+# 5000 rows >> W, so every range must be non-empty: the split-is-real checks catch a
+# degraded split (W=1 has no interior offset, so it has none).
+check "5000 rows / 1: offsets well-formed and newline-aligned" "$(structure_of "$F" 1)" 1
+check "5000 rows / 1: per-range loads reconstruct the whole file" \
+	"$(split_load_hash "$F" 1)" "$(pgc_set_hash "$GEN_F")"
+check "5000 rows / 2: offsets well-formed and newline-aligned" "$(structure_of "$F" 2)" 1
+check "5000 rows / 2: per-range loads reconstruct the whole file" \
+	"$(split_load_hash "$F" 2)" "$(pgc_set_hash "$GEN_F")"
+check "5000 rows / 2: split is real (interior offsets distinct, ranges non-empty)" \
+	"$(split_real_of "$F" 2)" 1
+check "5000 rows / 3: offsets well-formed and newline-aligned" "$(structure_of "$F" 3)" 1
+check "5000 rows / 3: per-range loads reconstruct the whole file" \
+	"$(split_load_hash "$F" 3)" "$(pgc_set_hash "$GEN_F")"
+check "5000 rows / 3: split is real (interior offsets distinct, ranges non-empty)" \
+	"$(split_real_of "$F" 3)" 1
+check "5000 rows / 8: offsets well-formed and newline-aligned" "$(structure_of "$F" 8)" 1
+check "5000 rows / 8: per-range loads reconstruct the whole file" \
+	"$(split_load_hash "$F" 8)" "$(pgc_set_hash "$GEN_F")"
+check "5000 rows / 8: split is real (interior offsets distinct, ranges non-empty)" \
+	"$(split_real_of "$F" 8)" 1
+check "5000 rows / 16: offsets well-formed and newline-aligned" "$(structure_of "$F" 16)" 1
+check "5000 rows / 16: per-range loads reconstruct the whole file" \
+	"$(split_load_hash "$F" 16)" "$(pgc_set_hash "$GEN_F")"
+check "5000 rows / 16: split is real (interior offsets distinct, ranges non-empty)" \
+	"$(split_real_of "$F" 16)" 1
 
 # a line longer than the 64 kB scan chunk: the boundary for a mid-file split lands
 # only after crossing a read-chunk boundary, exercising the multi-chunk read (the
 # only part of the scan with carried-over state).
 F_BIG="$DATADIR/biglines.txt"
-psql_run "COPY (SELECT g AS id, 'h'||g||'_'||repeat('x', 70000) AS txt
-                FROM generate_series(1, 20) g)
-          TO '$F_BIG' WITH (FORMAT text);" >/dev/null
+GEN_BIG="SELECT g AS id, 'h'||g||'_'||repeat('x', 70000) AS txt FROM generate_series(1, 20) g"
+psql_run "COPY ($GEN_BIG) TO '$F_BIG' WITH (FORMAT text);" >/dev/null
 [ "$(id -u)" = "0" ] && chown postgres "$F_BIG"
-psql_run "TRUNCATE t_col;" >/dev/null
-psql_run "\copy t_col FROM '$F_BIG' WITH (FORMAT text)" >/dev/null
-check_structure "$F_BIG" 4 "long lines >64kB / 4 workers"
-check_reconstruct "$F_BIG" 4 "long lines >64kB / 4 workers"
-check_split_happened "$F_BIG" 4 "long lines >64kB / 4 workers"
+check "long lines >64kB / 4 workers: offsets well-formed and newline-aligned" \
+	"$(structure_of "$F_BIG" 4)" 1
+check "long lines >64kB / 4 workers: per-range loads reconstruct the whole file" \
+	"$(split_load_hash "$F_BIG" 4)" "$(pgc_set_hash "$GEN_BIG")"
+check "long lines >64kB / 4 workers: split is real (interior offsets distinct, ranges non-empty)" \
+	"$(split_real_of "$F_BIG" 4)" 1
 
 # more workers than rows: extra ranges must be empty, load still exact
 F_TINY=$(make_file 5)
-psql_run "TRUNCATE t_col;" >/dev/null
-psql_run "\copy t_col FROM '$F_TINY' WITH (FORMAT text)" >/dev/null
-check_structure "$F_TINY" 8 "5 rows / 8 workers"
-check_reconstruct "$F_TINY" 8 "5 rows / 8 workers (empty ranges)"
+check "5 rows / 8 workers: offsets well-formed and newline-aligned" "$(structure_of "$F_TINY" 8)" 1
+check "5 rows / 8 workers (empty ranges): per-range loads reconstruct the whole file" \
+	"$(split_load_hash "$F_TINY" 8)" \
+	"$(pgc_set_hash "SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1, 5) g")"
 
 # single row: an edge smoke test only. With one record and 4 workers the correct
 # result is {0, size, size, size} -- the degenerate single-range shape -- so this
 # case cannot distinguish a working splitter from a degraded one (that is what
-# check_split_happened on the 5000-row file is for); it just confirms one record
+# the split-is-real checks on the 5000-row file are for); it just confirms one record
 # does not crash or drop.
 F_ONE=$(make_file 1)
-psql_run "TRUNCATE t_col;" >/dev/null
-psql_run "\copy t_col FROM '$F_ONE' WITH (FORMAT text)" >/dev/null
-check_structure "$F_ONE" 4 "1 row / 4 workers (edge smoke)"
-check_reconstruct "$F_ONE" 4 "1 row / 4 workers (edge smoke)"
+check "1 row / 4 workers (edge smoke): offsets well-formed and newline-aligned" \
+	"$(structure_of "$F_ONE" 4)" 1
+check "1 row / 4 workers (edge smoke): per-range loads reconstruct the whole file" \
+	"$(split_load_hash "$F_ONE" 4)" \
+	"$(pgc_set_hash "SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1, 1) g")"
 
 # file with no trailing newline: last range must still run to EOF
 F_NONL="$DATADIR/nonl.txt"
-psql_run "COPY (SELECT g, 'r'||g FROM generate_series(1,1000) g) TO '$F_NONL' WITH (FORMAT text);" >/dev/null
+GEN_NONL="SELECT g AS id, 'r'||g AS txt FROM generate_series(1,1000) g"
+psql_run "COPY ($GEN_NONL) TO '$F_NONL' WITH (FORMAT text);" >/dev/null
 # strip the trailing newline
 truncate -s -1 "$F_NONL"
 [ "$(id -u)" = "0" ] && chown postgres "$F_NONL"
-psql_run "TRUNCATE t_col;" >/dev/null
-psql_run "\copy t_col FROM '$F_NONL' WITH (FORMAT text)" >/dev/null
-check_structure "$F_NONL" 4 "no trailing newline / 4 workers"
-check_reconstruct "$F_NONL" 4 "no trailing newline / 4 workers"
+check "no trailing newline / 4 workers: offsets well-formed and newline-aligned" \
+	"$(structure_of "$F_NONL" 4)" 1
+check "no trailing newline / 4 workers: per-range loads reconstruct the whole file" \
+	"$(split_load_hash "$F_NONL" 4)" "$(pgc_set_hash "$GEN_NONL")"
 
 # workers < 1 is rejected (capture stderr into a var first: q() hides stderr, and
 # a `psql | grep` pipeline would trip set -o pipefail on psql's error exit).
@@ -221,15 +263,27 @@ mkpart() {	# name nparts  -> range-partitioned columnar table over id in [1,5000
 	psql_run "$ddl" >/dev/null
 }
 
-for W in 1 2 4; do
-	mkpart t_pcp 4
-	check "parallel_copy(partitioned, $W workers): rows returned = 5000" \
-		"$(q "SELECT pgcolumnar.parallel_copy('t_pcp'::regclass, '$F', $W)")" 5000
-	check "parallel_copy(partitioned, $W workers): result == single-COPY oracle" \
-		"$(pgc_set_hash "SELECT * FROM t_pcp")" "$(pgc_set_hash "SELECT * FROM t_heap")"
-	check "parallel_copy(partitioned, $W workers): no prepared-transaction leak" \
-		"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
-done
+mkpart t_pcp 4
+check "parallel_copy(partitioned, 1 workers): rows returned = 5000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_pcp'::regclass, '$F', 1)")" 5000
+check "parallel_copy(partitioned, 1 workers): result == single-COPY oracle" \
+	"$(pgc_set_hash "SELECT * FROM t_pcp")" "$(pgc_set_hash "SELECT * FROM t_heap")"
+check "parallel_copy(partitioned, 1 workers): no prepared-transaction leak" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
+mkpart t_pcp 4
+check "parallel_copy(partitioned, 2 workers): rows returned = 5000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_pcp'::regclass, '$F', 2)")" 5000
+check "parallel_copy(partitioned, 2 workers): result == single-COPY oracle" \
+	"$(pgc_set_hash "SELECT * FROM t_pcp")" "$(pgc_set_hash "SELECT * FROM t_heap")"
+check "parallel_copy(partitioned, 2 workers): no prepared-transaction leak" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
+mkpart t_pcp 4
+check "parallel_copy(partitioned, 4 workers): rows returned = 5000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_pcp'::regclass, '$F', 4)")" 5000
+check "parallel_copy(partitioned, 4 workers): result == single-COPY oracle" \
+	"$(pgc_set_hash "SELECT * FROM t_pcp")" "$(pgc_set_hash "SELECT * FROM t_heap")"
+check "parallel_copy(partitioned, 4 workers): no prepared-transaction leak" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
 
 # ---- signed keys straddling 0 with an unbounded first partition --------------
 # Regression for the bucket miscompare that ignored MINVALUE/MAXVALUE bound kinds:
@@ -266,7 +320,7 @@ psql_run "DROP TABLE IF EXISTS t_txtkey CASCADE;
 tk_err="$(err_of "SELECT pgcolumnar.parallel_copy('t_txtkey'::regclass, '$F', 2)")"
 check "text partition key is rejected (not a crash)" \
 	"$(grep -qi "numeric or date/time" <<<"$tk_err" && echo ok || echo no)" ok
-check "text partition key: server still up (no crash)" "$(q "SELECT 1")" 1
+check "text partition key: server still up (no crash)" "$(survived "$CRASHES_BEFORE")" 1
 
 # ---- key NOT in column 1, with a generated column before it -------------------
 # COPY's default column list skips generated columns, so the splitter's key-field
@@ -313,13 +367,16 @@ psql_run "DROP TABLE IF EXISTS t_gap CASCADE;
           CREATE TABLE t_gap_a PARTITION OF t_gap FOR VALUES FROM (MINVALUE) TO (2000) USING pgcolumnar;
           CREATE TABLE t_gap_b PARTITION OF t_gap FOR VALUES FROM (3000) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
 gap_err="$(err_of "SELECT pgcolumnar.parallel_copy('t_gap'::regclass, '$F', 4)")"
+# The loader's own error, not any message with "failed" in it: every worker failure
+# reads "worker N failed: <cause>", so with the loader's message dropped the old
+# pattern still matched "failed: loader exited without reporting a result" (#1341).
 check "atomic: a loader failure fails the whole load" \
-	"$(grep -qiE 'no partition of relation|failed' <<<"$gap_err" && echo ok || echo no)" ok
+	"$(grep -qi 'failed: no partition of relation' <<<"$gap_err" && echo ok || echo no)" ok
 check "atomic: loader-failure leaves the target empty (siblings rolled back)" \
 	"$(q "SELECT count(*) FROM t_gap")" 0
 check "atomic: no prepared-transaction leak after loader failure" \
 	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
-check "atomic: server still up after a failed load" "$(q "SELECT 1")" 1
+check "atomic: server still up after a failed load" "$(survived "$CRASHES_BEFORE")" 1
 
 # ---- input must be sorted by the partition key -------------------------------
 F_SHUF="$DATADIR/shuf.txt"
@@ -353,7 +410,7 @@ mkpart t_pcp 4
 mf_err="$(err_of "SELECT pgcolumnar.parallel_copy('t_pcp'::regclass, '$DATADIR/nope.txt', 2)")"
 check "missing file: errors, not crashes" \
 	"$(grep -qiE "could not (open|stat)|no such file|not a regular file" <<<"$mf_err" && echo ok || echo no)" ok
-check "missing file: server still up (no worker crash)" "$(q "SELECT 1")" 1
+check "missing file: server still up (no worker crash)" "$(survived "$CRASHES_BEFORE")" 1
 check "missing file: nothing loaded" "$(q "SELECT count(*) FROM t_pcp")" 0
 
 # ---- a non-columnar (heap) target is rejected --------------------------------
@@ -370,15 +427,27 @@ check "non-columnar target is rejected" \
 # skip must default off, so an ordinary write never takes that path.
 check "bulk_parallel_writer GUC defaults off (core write path unchanged)" \
 	"$(q "SHOW pgcolumnar.bulk_parallel_writer")" off
-for W in 1 2 4; do
-	psql_run "DROP TABLE IF EXISTS t_single; CREATE TABLE t_single (id int, txt text) USING pgcolumnar;" >/dev/null
-	check "parallel_copy(single table, $W workers): rows returned = 5000" \
-		"$(q "SELECT pgcolumnar.parallel_copy('t_single'::regclass, '$F', $W)")" 5000
-	check "parallel_copy(single table, $W workers): result == single-COPY oracle" \
-		"$(pgc_set_hash "SELECT * FROM t_single")" "$(pgc_set_hash "SELECT * FROM t_heap")"
-	check "parallel_copy(single table, $W workers): no prepared-transaction leak" \
-		"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
-done
+psql_run "DROP TABLE IF EXISTS t_single; CREATE TABLE t_single (id int, txt text) USING pgcolumnar;" >/dev/null
+check "parallel_copy(single table, 1 workers): rows returned = 5000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_single'::regclass, '$F', 1)")" 5000
+check "parallel_copy(single table, 1 workers): result == single-COPY oracle" \
+	"$(pgc_set_hash "SELECT * FROM t_single")" "$(pgc_set_hash "SELECT * FROM t_heap")"
+check "parallel_copy(single table, 1 workers): no prepared-transaction leak" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
+psql_run "DROP TABLE IF EXISTS t_single; CREATE TABLE t_single (id int, txt text) USING pgcolumnar;" >/dev/null
+check "parallel_copy(single table, 2 workers): rows returned = 5000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_single'::regclass, '$F', 2)")" 5000
+check "parallel_copy(single table, 2 workers): result == single-COPY oracle" \
+	"$(pgc_set_hash "SELECT * FROM t_single")" "$(pgc_set_hash "SELECT * FROM t_heap")"
+check "parallel_copy(single table, 2 workers): no prepared-transaction leak" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
+psql_run "DROP TABLE IF EXISTS t_single; CREATE TABLE t_single (id int, txt text) USING pgcolumnar;" >/dev/null
+check "parallel_copy(single table, 4 workers): rows returned = 5000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_single'::regclass, '$F', 4)")" 5000
+check "parallel_copy(single table, 4 workers): result == single-COPY oracle" \
+	"$(pgc_set_hash "SELECT * FROM t_single")" "$(pgc_set_hash "SELECT * FROM t_heap")"
+check "parallel_copy(single table, 4 workers): no prepared-transaction leak" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
 
 # ---- concurrency witness: prove the writers actually shared the storage -------
 # The oracle-equality checks above pass even if the loaders serialised by accident,
@@ -405,14 +474,13 @@ psql_run "DROP TABLE IF EXISTS t_wit; CREATE TABLE t_wit (id int, txt text) USIN
           SELECT pgcolumnar.set_options('t_wit'::regclass,
                                         chunk_group_row_limit => 1000,
                                         stripe_row_limit => 2000);" >/dev/null
-WN=4
-check "witness: parallel_copy(single table, $WN workers, 40000 rows) loads every row" \
-	"$(q "SELECT pgcolumnar.parallel_copy('t_wit'::regclass, '$F_W', $WN)")" 40000
+check "witness: parallel_copy(single table, 4 workers, 40000 rows) loads every row" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_wit'::regclass, '$F_W', 4)")" 40000
 check "witness: result == single-COPY oracle" \
 	"$(pgc_set_hash "SELECT * FROM t_wit")" "$(pgc_set_hash "SELECT * FROM t_wit_heap")"
 # (a) more distinct stripes than workers: concurrent reservations, >1 group per worker
-check "witness: >$WN distinct stripe ids (each worker reserved several stripes)" \
-	"$(q "SELECT count(DISTINCT stripeid) > $WN FROM pgcolumnar.stats('t_wit'::regclass)")" t
+check "witness: >4 distinct stripe ids (each worker reserved several stripes)" \
+	"$(q "SELECT count(DISTINCT stripeid) > 4 FROM pgcolumnar.stats('t_wit'::regclass)")" t
 # (b) no two stripe byte ranges overlap (each overlap counted twice; want 0)
 check "witness: no stripe byte-range overlaps another (no on-disk collision)" \
 	"$(q "WITH s AS (SELECT stripeid, fileoffset AS lo, fileoffset+datalength AS hi
@@ -428,8 +496,9 @@ check "witness: no prepared-transaction leak" \
 # single-table atomicity: a bad row rolls back the whole load, no leak
 psql_run "DROP TABLE IF EXISTS t_single; CREATE TABLE t_single (id int, txt text) USING pgcolumnar;" >/dev/null
 st_bad="$(err_of "SELECT pgcolumnar.parallel_copy('t_single'::regclass, '$F_BADKEY', 4)")"
+# The loader's own error, for the reason given at the loader-failure check above.
 check "single table: a bad row fails the whole load" \
-	"$(grep -qiE 'invalid input syntax|failed' <<<"$st_bad" && echo ok || echo no)" ok
+	"$(grep -qi 'failed: invalid input syntax' <<<"$st_bad" && echo ok || echo no)" ok
 check "single table: failed load leaves the target empty" "$(q "SELECT count(*) FROM t_single")" 0
 check "single table: no prepared-transaction leak after failure" "$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
 
@@ -456,7 +525,7 @@ check "parallel_copy on a FIFO is refused, not a hang (42809)" \
 	"$(sqlstate_or_hang "SELECT pgcolumnar.parallel_copy('t_fifo'::regclass, '$PCFIFO', 2)")" \
 	"42809"
 exec 9<>"$PCFIFO" 2>/dev/null; exec 9>&- 2>/dev/null    # release any blocked opener
-check "backend still up after the parallel_copy FIFO refusal" "$(q 'SELECT 1')" "1"
+check "backend still up after the parallel_copy FIFO refusal" "$(survived "$CRASHES_BEFORE")" "1"
 
 # The partition-aligned coordinator (pcopy_partition_aligned_offsets, reached only
 # for a PARTITIONED target) opens the file via getline() and had the same
@@ -468,6 +537,6 @@ check "parallel_copy on a FIFO via the partitioned coordinator is refused, not a
 	"$(sqlstate_or_hang "SELECT pgcolumnar.parallel_copy('t_fifo_part'::regclass, '$PCFIFO2', 3)")" \
 	"42809"
 exec 9<>"$PCFIFO2" 2>/dev/null; exec 9>&- 2>/dev/null
-check "backend still up after the partitioned-coordinator FIFO refusal" "$(q 'SELECT 1')" "1"
+check "backend still up after the partitioned-coordinator FIFO refusal" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary
