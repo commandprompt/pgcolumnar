@@ -6929,4 +6929,20 @@ suites_not_covered 28
 #     never         4533 - 1 = 4532
 #     dated         3398 + 3 = 3401
 #     4532 + 3401 == 7933
-checks_never_observed_red 4532
+# #1339, differential's five empty-vs-empty arms, its premises and three unmeasured
+# claims (OffgridwithJD): 4532 -> 4534.
+# Five shell arms compared EMPTY with EMPTY and could not fail ("c_int eq", "c_ztext
+# is null", "textbloom collate-mismatch", "empty scan", "wide nomatch"): with the row
+# reader returning nothing, main's shell passed all five. Each now has the twin's
+# present-value control. Three claims were never measured: "enc+" (a column stored
+# plain passed), one whole all-null chunk group (ignoring chunk_group_row_limit
+# passed) and the text bloom itself (a bloom never consulted passed every arm); each
+# now has a check. 12 rows added, 10 dated by the mutation each catches, the
+# same name red in both twins; 2 arrive never (a heap premise, and a control
+# count(*) answers from metadata).
+#
+#     ledger rows   7933 + 12 = 7945
+#     never         4532 + 2 = 4534
+#     dated         3401 + 10 = 3411
+#     4534 + 3411 == 7945
+checks_never_observed_red 4534
