@@ -6996,18 +6996,29 @@ suites_not_covered 28
 #     dated         3414 + 2 = 3416
 #     4545 + 3416 == 7961
 #
-# #1753, folded into #1746 at jdatcmd's suggestion, in parallel_flush_optin
-# (OffgridwithJD): 4545 -> 4545. The collect loop unpinned a DONE worker's output
-# segment and kept its handle until after the detach, so an error in between sent
-# pflush_error_cleanup to attach it again: "can't attach the same segment more than
-# once" replaced the original error and cut the cleanup short (an ERROR injected after
-# the first unpin, measured on PG17: 3 segments left; with the handle forgotten at the
-# unpin, the injected error is reported and 0 are left). Arm 5 reads the statement
-# after the unpin, comments blanked; it is dated by the handle invalidated after the
-# detach again, which reddens it alone in both twins (main's code reddens it too).
+# #1747, a parallel flush worker that fails after pinning its output, in
+# parallel_flush_optin (OffgridwithJD): 4545 -> 4545. On the normal path the collect
+# loop unpinned only a DONE slot, so a worker that raised after dsm_pin_segment (its
+# commit ran after the pin) reported FAILED and left the segment pinned to postmaster
+# restart: 8 segments from a two-stripe flush, measured on main with an injected ERROR
+# that is not committed. The worker now commits first and pins last, and arm 6 reads
+# the source: between the pin and the DONE write only the detach may run. Dated by the
+# worker committing after the pin again, which reddens the same name in both twins.
 #
-#     ledger rows   7961 + 1 = 7962
+#     ledger rows   7962 + 1 = 7963
 #     never         4545 + 0 = 4545
-#     dated         3416 + 1 = 3417
-#     4545 + 3417 == 7962
+#     dated         3417 + 1 = 3418
+#     4545 + 3418 == 7963
+#
+# #1748's review (jdatcmd), in parallel_flush_optin (OffgridwithJD): 4545 -> 4545. Arm 6's
+# structure check read from dsm_pin_segment to the DONE write, so a commit moved AFTER
+# the DONE write passed it (an ERROR there lands in PG_CATCH, which overwrites DONE with
+# FAILED, and the segment leaks). The stretch now runs to the end of the PG_TRY block and
+# must be the detach and the DONE write alone; the row is renamed for it and keeps its
+# date (the commit moved back before the DONE write still reddens it).
+#
+#     ledger rows   7963 + 0 = 7963
+#     never         4545 + 0 = 4545
+#     dated         3418 + 0 = 3418
+#     4545 + 3418 == 7963
 checks_never_observed_red 4545

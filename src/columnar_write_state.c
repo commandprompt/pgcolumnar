@@ -2496,7 +2496,16 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 		pgcolumnar_fsst_min_gain_percent = hdr->fsstMinGainPercent;
 		pgcolumnar_encoding_sample_rows = hdr->encodingSampleRows;
 
-		initStringInfo(&recbuf);
+		/*
+		 * The record outlives the transaction: it is copied into the OUTPUT
+		 * segment after the commit below (#1747).
+		 */
+		{
+			MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+
+			initStringInfo(&recbuf);
+			MemoryContextSwitchTo(oldcxt);
+		}
 
 		for (;;)
 		{
@@ -2551,7 +2560,18 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 		 * from the record. Pin the segment so it survives this worker's exit --
 		 * the backend attaches only after WaitForBackgroundWorkerShutdown, by
 		 * which point an unpinned segment (zero mappings) would be gone.
+		 *
+		 * COMMIT FIRST, PIN LAST (#1747). A worker that raised after the pin
+		 * reported FAILED, and the dispatcher's collect loop unpins only a DONE
+		 * slot, so the pinned segment stayed until postmaster restart. Everything
+		 * that can raise -- the commit, the create -- now runs before the pin;
+		 * after it there is only the detach and the DONE write. A segment created
+		 * and not yet pinned is freed when this worker exits.
 		 */
+		table_close(rel, AccessShareLock);
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+
 		outseg = dsm_create((Size) sizeof(uint32) + recbuf.len, 0);
 		obase = (char *) dsm_segment_address(outseg);
 		memcpy(obase, &count, sizeof(uint32));
@@ -2563,10 +2583,6 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 		pg_write_barrier();
 		dsm_pin_segment(outseg);
 		dsm_detach(outseg);		/* pinned: persists for the backend to attach */
-
-		table_close(rel, AccessShareLock);
-		PopActiveSnapshot();
-		CommitTransactionCommand();
 		pg_atomic_write_u32(&me->state, PFLUSH_DONE);
 	}
 	PG_CATCH();
@@ -2941,6 +2957,24 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 			ereport(WARNING,
 					(errmsg("pgcolumnar parallel_flush worker %d failed, completing its columns serially: %s",
 							i, slots[i].errmsg[0] ? slots[i].errmsg : "unknown error")));
+		}
+
+		/*
+		 * A segment this loop did not collect is freed here (#1747): the worker
+		 * pins last, so nothing should raise after it, but one it named and did
+		 * not report DONE for would otherwise stay pinned to postmaster restart.
+		 * A named segment that was never pinned is already gone (attach NULL).
+		 */
+		if (slots[i].outHandle != DSM_HANDLE_INVALID)
+		{
+			dsm_segment *s = dsm_attach(slots[i].outHandle);
+
+			if (s != NULL)
+			{
+				dsm_unpin_segment(slots[i].outHandle);
+				dsm_detach(s);
+			}
+			slots[i].outHandle = DSM_HANDLE_INVALID;
 		}
 	}
 	}

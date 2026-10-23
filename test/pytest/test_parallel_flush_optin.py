@@ -286,3 +286,29 @@ def _after_unpin():
 def test_the_collect_loop_forgets_a_handle_after_its_unpin(expect):
     expect.text(_after_unpin(), "slots[i].outHandle = DSM_HANDLE_INVALID;",
                 "the collect loop forgets a worker's handle in the statement after it unpins the segment")
+
+
+# ---- 6. nothing raises between a worker's pin and its DONE (#1747) ----------
+#
+# The shell's arm 6. On the NORMAL path the collect loop unpins only a DONE slot, so a
+# worker that raised after pinning its OUTPUT segment left it pinned until postmaster
+# restart. The worker now commits first and pins last: from dsm_pin_segment to the
+# end of the PG_TRY block, with comments blanked, only the detach and the DONE write
+# may run (an ERROR after DONE lands in PG_CATCH too, which overwrites it with FAILED).
+def _after_pin():
+    text = (SRC / "columnar_write_state.c").read_text()
+    m = re.search(r"\npgcolumnar_parallel_flush_worker\(Datum main_arg\)\n\{(.*?)\n\}\n", text, re.S)
+    if not m:
+        return "pgcolumnar_parallel_flush_worker not found"
+    b = re.search(r"dsm_pin_segment\(outseg\);(.*?)\}\s*PG_CATCH\(\);", m.group(1), re.S)
+    if not b:
+        return "the pin and the PG_CATCH are not both in the worker"
+    body = re.sub(r"/\*.*?\*/", "", b.group(1), flags=re.S)
+    body = re.sub(r"//[^\n]*", "", body)
+    body = re.sub(r"\s+", " ", body).strip()
+    return body or "(nothing)"
+
+
+def test_a_flush_worker_raises_nothing_after_its_pin(expect):
+    expect.text(_after_pin(), "dsm_detach(outseg); pg_atomic_write_u32(&me->state, PFLUSH_DONE);",
+                "a flush worker runs nothing that can raise after pinning its output, to the end of its PG_TRY block")
