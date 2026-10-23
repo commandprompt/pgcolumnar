@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 71
+suites_not_covered 70
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6067,4 +6067,26 @@ suites_not_covered 71
 #     never         4168 + 0 = 4168
 #     dated         2880 + 13 = 2893
 #     4168 + 2893 == 7061
-checks_never_observed_red 4168
+#
+# #1341, parallel_vector_agg seeded, with its twin (jdatcmd): 3853 -> 3861, and
+# suites_not_covered 105 -> 104. The suite had no rows. It enters with 29 checks from
+# five-major runs (29/29 on each of 15-19, shell and twin alike), after four fixes.
+# With the server stopped after the first table, main's shell passed 11 of 29: each
+# comparison read psql's error text, the same on both arms. q now reads psql's exit
+# status and prints nothing on failure, and every two-arm comparison is check_text.
+# The H2 sessions read the exit status and need both SELECTs: with both parallel
+# InitializeDSM callbacks raising an ERROR in a writing transaction, main's shell
+# passed 29/29. The grouped oracles are core's aggregate, not pgcolumnar's grouped
+# fold run serially: with the grouped row path skipping its WHERE recheck, main's
+# shell passed 29/29. "server still up" also needs the log's "terminated by signal"
+# count unmoved: main's passed after a worker's SIGSEGV. The partial-node check now
+# needs the Parallel Custom Scan, and nine checks lost their premise: prefix under
+# #1339. 21 are dated by nine mutations, each reddening the same names in both twins;
+# 8 arrive never: three float and all-null averages, the two empty reads, the
+# grouped float, and the Gather and Finalize row counts.
+#
+#     ledger rows   7061 + 29 = 7090
+#     never         4168 + 8 = 4176
+#     dated         2893 + 21 = 2914
+#     4176 + 2914 == 7090
+checks_never_observed_red 4176
