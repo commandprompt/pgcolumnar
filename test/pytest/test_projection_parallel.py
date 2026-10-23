@@ -232,15 +232,18 @@ def test_projection_parallel(pgc_conn, expect):
         want,
         "a parallel covering projection returns the covering rows once",
     )
+    # NOT PREMISES (#1339, #1236). The worker count is the projection path's own
+    # parallel_workers: with it set to 1, Workers Launched reads 1 and these go red.
+    # A check a pgcolumnar change can redden is an arm.
     expect.num(
         launched,
         2,
-        "premise: EXPLAIN ANALYZE launched two workers",
+        "EXPLAIN ANALYZE launched two workers",
     )
     expect.num(
         len(worker_rows),
         2,
-        "premise: ANALYZE printed a rows= line per launched worker",
+        "ANALYZE printed a rows= line per launched worker",
     )
     expect.num(
         n_busy,

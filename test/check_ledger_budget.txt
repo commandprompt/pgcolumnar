@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 75
+suites_not_covered 73
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -5957,4 +5957,66 @@ suites_not_covered 75
 #     never         4129 + 8 = 4137
 #     dated         2791 + 7 = 2798
 #     4137 + 2798 == 6935
-checks_never_observed_red 4137
+#
+# #1339, a batch of projection checks (jdatcmd): 4137 -> 4132, and suites_not_covered
+# 75 -> 74. Seven findings, each shown green on main under its mutation in both
+# twins and red by name after the fix. projection_drop_column is seeded: it had no
+# rows, and it enters with 11 checks from five-major runs (11/11 on each of 15-19,
+# twin green on each). Its stranger arms read only 42501, so deleting the unlocked
+# ownership check passed; a stranger is now asked while the owner holds SHARE, and
+# queues to 55P03 under that mutation. Its "two refusals are the same" check lost its
+# premise: prefix, joined the shell suite, and moved ahead of the two constant arms
+# so it can fail. projection_parallel's two worker-count checks lost their premise:
+# prefix: parallel_workers = 1 reddens both. projection_privilege's read_projection
+# arms each asserted one SQLSTATE twice; the first now asks only "refused", as the
+# shell suite does, and the shell's reconstruct arms read the SQLSTATE, as the twin
+# does. projection_scan_io gains a check that an empty projection is not priced at
+# zero pages. projections gains two: an EXPLAIN ANALYZE reading that the executor
+# opened the projection, and that the old-snapshot count plans it. Its twin's two
+# session-A timeout arms now read whether A answered, not the count again, and the
+# shell's poll no longer takes an ERROR that echoes the token for an answer. 19 rows
+# are dated by ten mutations, each reddening its target by the same name in both
+# twins (the pytest twin stops at a test's first red): the unlocked ownership check
+# deleted, both deleted, parallel_workers = 1, each function's aclcheck_error
+# replaced by elog, the RLS refusal raised as 42501, the one-page floor deleted, the
+# executor never opening the projection, projection pages multiplied by 1000000,
+# and the projection scan and liveness cache both on GetLatestSnapshot(). 8 arrive
+# never: one premise and seven drop_column checks no mutation here reached.
+#
+#     ledger rows   6935 + 14 = 6949
+#     never         4137 + 8 - 13 = 4132
+#     dated         2798 + 6 + 13 = 2817
+#     4132 + 2817 == 6949
+#
+# #1339, approx_aggregates gains one arm (jdatcmd): 4132 -> 4132, unchanged. "a tdigest stored in
+# a columnar table comes back byte for byte" is dated by a reader that returns each long
+# value as the previous long value read: main's suite passed every tdigest check under it,
+# and only the hll arm went red. suites_not_covered does not move.
+#
+#     ledger rows   6949 + 1 = 6950
+#     never         4132 + 0 = 4132
+#     dated         2817 + 1 = 2818
+#     4132 + 2818 == 6950
+#
+# #1341, parallel_copy_dedup seeded, with its twin (jdatcmd): 3853 -> 3857, and
+# suites_not_covered 105 -> 104. The suite had no rows. It enters with 17 checks from
+# five-major runs (17/17 on each of 15-19, shell and twin alike), after three fixes.
+# The changed file differed from the first in its first bytes and fitted in one
+# 256 KiB read, so a fingerprint of the first read alone still loaded it and main's
+# shell passed 14/14; the changed file now differs only in its last row, past the
+# first read, and a new check compares the table's records with the server's
+# sha256() of each file. The skip's NOTICE, promised in the header, was never read:
+# with it removed main's shell passed 14/14; a new check reads it. And the two
+# control checks lost their premise: prefix under #1339: dedup is pgcolumnar's own
+# default, and forcing it on reddens them. 13 are dated by six mutations, each
+# reddening the same names in both twins: the NOTICE never raised, the first read
+# alone fingerprinted, dedup forced on, the refused load committed anyway, a
+# fingerprint matched in any table, and the refused load reporting the rows it
+# discarded. 4 arrive never: the fixture-size premise, the first load's two checks,
+# and the prepared-transaction leak.
+#
+#     ledger rows   6950 + 17 = 6967
+#     never         4132 + 4 = 4136
+#     dated         2818 + 13 = 2831
+#     4136 + 2831 == 6967
+checks_never_observed_red 4136

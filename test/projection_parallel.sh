@@ -277,10 +277,13 @@ check "premise: the covering plan is parallel at the default page cost" \
 check "a page cost that makes I/O dominate costs the parallel covering path" \
 	"$(shape "$(explain_cov_spc $SPC_HI)")" "projection-only"
 
-check "premise: EXPLAIN ANALYZE launched two workers" \
+# NOT PREMISES (#1339, #1236). The worker count is the projection path's own
+# parallel_workers: with it set to 1, Workers Launched reads 1 and both of these
+# go red. A check a pgcolumnar change can redden is an arm.
+check "EXPLAIN ANALYZE launched two workers" \
 	"$(echo "$par_on_ana" | grep -oE 'Workers Launched: [0-9]+' | head -1 | grep -oE '[0-9]+')" "2"
 
-check "premise: ANALYZE printed a rows= line per launched worker" \
+check "ANALYZE printed a rows= line per launched worker" \
 	"$n_lines" "2"
 
 # THE DEFECT the plan-shape arms cannot see: Gather is present and the count

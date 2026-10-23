@@ -31,11 +31,14 @@ the refusal arms would fail against the wrong SQLSTATE rather than pass falsely.
 premise below fails first and names reachability instead of leaving `42501 != 42P01` to
 be interpreted.
 
-ONE THING THIS PORT ASSERTS THAT THE BASH SUITE DOES NOT. The two non-owner arms exist
-to show that a stranger cannot tell a projected column from an unprojected one. The bash
-suite asserts each against the literal `42501` and leaves the reader to notice they are
-the same string. Here they are also compared to each other, so the property -- these two
-are INDISTINGUISHABLE -- is asserted rather than implied by two separate constants.
+THE TWO NON-OWNER REFUSALS ARE COMPARED TO EACH OTHER, in both suites (#1339). The arms
+exist to show that a stranger cannot tell a projected column from an unprojected one, so
+the property -- these two are INDISTINGUISHABLE -- is asserted directly rather than
+implied by two separate constants, and it is asserted before them, so it can fail.
+
+**The lock is tested by contention.** The ownership check runs before the lock and again
+after it, and both raise 42501, so a SQLSTATE alone cannot tell which one refused. While
+the owner holds SHARE on the table, only the unlocked check refuses a stranger at once.
 """
 
 import psycopg
@@ -110,15 +113,43 @@ def test_drop_column_is_refused_while_a_projection_depends_on_it(pgc_conn, expec
         proj_err = _as_nobody(cur, "ALTER TABLE pdc DROP COLUMN sort_key")
         plain_err = _as_nobody(cur, "ALTER TABLE pdc DROP COLUMN payload")
 
+        # The property is that the two are INDISTINGUISHABLE, not that each happens to
+        # equal a constant, so it is compared FIRST. Placed after the two constant arms
+        # it could never run red: `expect` stops at the first failure, and if both
+        # constants hold the two are equal. With both ownership checks deleted, the
+        # stranger gets 2BP01 for the projected column and 42501 for the other, and
+        # this is the check that names it (#1339).
+        expect.text(proj_err.sqlstate if proj_err else "no error",
+                    plain_err.sqlstate if plain_err else "no error",
+                    "and the two refusals are the same error, so neither leaks")
         expect.sqlstate(proj_err, "42501",
                         "a non-owner learns nothing from a projected column")
         expect.sqlstate(plain_err, "42501",
                         "the same non-owner error is returned for an unprojected column")
-        # EXTRA: the property is that the two are INDISTINGUISHABLE, not that each
-        # happens to equal a constant.
-        expect.text(proj_err.sqlstate if proj_err else "no error",
-                    plain_err.sqlstate if plain_err else "no error",
-                    "premise: and the two refusals are the same error, so neither leaks")
+
+        # THE LOCK HALF OF THE PROPERTY (#1339). The ownership check runs twice: once
+        # with no lock, then again after ShareUpdateExclusiveLock. The arms above
+        # cannot tell them apart, because both raise 42501. Contention can: while the
+        # owner holds SHARE on pdc, which conflicts with ShareUpdateExclusiveLock, a
+        # stranger refused by the unlocked check gets 42501 at once, and one that
+        # reaches the lock first waits out its lock_timeout (55P03).
+        holder = psycopg.connect(pgc_conn.info.dsn, autocommit=False)
+        try:
+            holder.execute(f'SET search_path TO "{schema}"')
+            holder.execute("LOCK TABLE pdc IN SHARE MODE")
+            held = _one(cur, "SELECT count(*) FROM pg_locks WHERE relation = 'pdc'::regclass "
+                             "AND mode = 'ShareLock' AND granted")
+            expect.num(held, 1, "premise: the owner holds SHARE on pdc before the stranger asks")
+            cur.execute("SET lock_timeout = '2s'")
+            try:
+                waited_err = _as_nobody(cur, "ALTER TABLE pdc DROP COLUMN sort_key")
+            finally:
+                cur.execute("RESET lock_timeout")
+            expect.sqlstate(waited_err, "42501",
+                            "a non-owner is refused before it waits for the table lock")
+        finally:
+            holder.rollback()
+            holder.close()
 
         # --- the owner is refused as a dependency ---------------------------
         #

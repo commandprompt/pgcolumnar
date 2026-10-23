@@ -254,11 +254,18 @@ def test_a_role_with_execute_but_no_select_is_refused(pgc_cluster, pgc_conn, exp
         schema = _fixture(cur)
     _, err = _as(pgc_cluster, EXEC,
                  f"SELECT count(*) FROM pgcolumnar.{func}('prj_secret','p1')", schema)
-    expect.sqlstate(err, "42501", name)
     if func == "read_projection":
+        # TWO PROPERTIES, TWO ARMS, as in `projection_privilege.sh` (#1339). The first
+        # asks only that the call was refused; the second asks which code refused it.
+        # Both used to assert 42501 on the same error, so the second could never fail
+        # alone: with read_projection's aclcheck_error replaced by a plain elog
+        # (XX000), the first arm went red under the second's name.
+        expect.text("refused" if err is not None else "noerror", "refused", name)
         expect.sqlstate(
             err, "42501",
             "and THAT refusal is the C check, which raises 42501 from aclcheck_error")
+    else:
+        expect.sqlstate(err, "42501", name)
 
 
 def test_which_layer_refused_without_reading_the_message(pgc_cluster, pgc_conn, expect):
@@ -372,12 +379,16 @@ def test_a_policy_restricted_caller_is_refused(pgc_cluster, pgc_conn, expect, fu
 
     _, err = _as(pgc_cluster, SEL,
                  f"SELECT count(*) FROM pgcolumnar.{func}('prj_secret','p1')", schema)
-    expect.sqlstate(err, "0A000", name)
     if func == "read_projection":
+        # Refused, then WHICH refusal, as in the shell suite (#1339): asserting 0A000
+        # twice on one error left the second arm unable to fail on its own.
+        expect.text("refused" if err is not None else "noerror", "refused", name)
         expect.sqlstate(
             err, "0A000",
             "and the refusal says the feature is not supported, not that a privilege "
             "is missing")
+    else:
+        expect.sqlstate(err, "0A000", name)
 
 
 def test_the_acl_is_checked_before_rls_so_no_privilege_discloses_no_rls_state(
