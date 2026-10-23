@@ -1190,4 +1190,6 @@ guard_tests 837
 # cluster_tests 4020 -> 4027 for #1341's test_objstore_export_double_cancel.py, the twin of objstore_export_double_cancel.sh:
 # 7 checks in 7 tests, by collection over the cluster files.
 # cluster_tests 4006 -> 4020 for #1738's fourteen timestamp/timestamptz tests in test_native_skip.py, by collection.
-cluster_tests 4027
+# cluster_tests 4027 -> 4057 for #1743's test_objstore_export_open_uploads.py, the twin of objstore_export_open_uploads.sh:
+# 30 checks in 30 tests, by collection over the cluster files.
+cluster_tests 4057

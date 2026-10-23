@@ -65,6 +65,7 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
+#include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
 #include "columnar_objstore.h"
@@ -121,6 +122,13 @@ struct PgColumnarObjHandle
 	SSL_CTX    *sctx;
 	SSL		   *ssl;
 #endif
+
+	/*
+	 * When not 0, every wait on this handle ends by this time, and the request
+	 * raises once it passes (#1743). Set by the calls that take a timeout.
+	 */
+	TimestampTz deadline;
+	int			deadline_ms;	/* the timeout it came from, for the message */
 
 	/* receive staging */
 	uint8	   *rb;
@@ -241,23 +249,47 @@ os_resource_release(ResourceReleasePhase phase, bool isCommit,
 /* ------------------------------------------------------------------ waiting */
 
 static void
+os_deadline_passed(PgColumnarObjHandle *h)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_CONNECTION_FAILURE),
+			 errmsg("columnar: \"%s\" did not answer within %d ms",
+					h->url, h->deadline_ms)));
+}
+
+static void
 os_wait(PgColumnarObjHandle *h, uint32 sockEvents, int *quiet)
 {
 	int			rc;
+	uint32		events = WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH | sockEvents;
+	long		timeout = OS_WAIT_SLICE_MS;
 
 	/*
 	 * WL_TIMEOUT, or the slice is not a slice: without it WaitLatchOrSocket
 	 * ignores the timeout and waits for the socket or the latch alone, so a
 	 * silent peer never counts a quiet slice. Under proc_exit (a terminated
 	 * worker aborting its upload, #1727) interrupts are held and the latch
-	 * alone never ends the wait either.
+	 * alone never ends the wait either. A handle with a deadline (#1743) has
+	 * each slice cut to the time left, and the deadline is checked before and
+	 * after the wait, so it is bounded whether or not interrupts are held.
 	 */
-	rc = WaitLatchOrSocket(MyLatch,
-						   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH | sockEvents,
-						   h->fd, OS_WAIT_SLICE_MS, PG_WAIT_EXTENSION);
+	if (h->deadline != 0)
+	{
+		long		left = TimestampDifferenceMilliseconds(GetCurrentTimestamp(),
+														   h->deadline);
+
+		if (left <= 0)
+			os_deadline_passed(h);
+		timeout = Min(timeout, left);
+	}
+	rc = WaitLatchOrSocket(MyLatch, events, h->fd, timeout, PG_WAIT_EXTENSION);
 	if (rc & WL_LATCH_SET)
 		ResetLatch(MyLatch);
 	CHECK_FOR_INTERRUPTS();
+	if (h->deadline != 0 &&
+		!(rc & (WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE)) &&
+		GetCurrentTimestamp() >= h->deadline)
+		os_deadline_passed(h);
 
 	if (rc & (WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE))
 		*quiet = 0;
@@ -2664,6 +2696,237 @@ objstore_list_objects(const char *url, const PgColumnarObjStoreConfig *cfg,
 	return out;
 }
 
+/* --------------------------------------------- ListMultipartUploads (#1743)
+ *
+ * The response is endpoint XML like a ListObjectsV2 page, read with the same
+ * bounded extractor. Each <Upload> element carries a <Key> and an <UploadId>;
+ * a truncated page names the next page by NextKeyMarker and
+ * NextUploadIdMarker.
+ */
+static void
+os_uploads_parse_page(const char *body, int64 blen, const char *bucket,
+					  List **keys, List **ids, bool *truncated,
+					  char **nextKey, char **nextId)
+{
+	StringInfoData v;
+	StringInfoData kbuf;
+	int64		pos = 0;
+
+	*truncated = false;
+	*nextKey = NULL;
+	*nextId = NULL;
+
+	initStringInfo(&v);
+	if (os_xml_element(body, blen, "<IsTruncated>", "</IsTruncated>", &v))
+		*truncated = (v.len == 4 && pg_strncasecmp(v.data, "true", 4) == 0);
+	resetStringInfo(&v);
+	if (os_xml_element(body, blen, "<NextKeyMarker>", "</NextKeyMarker>", &v) &&
+		v.len > 0)
+		*nextKey = pstrdup(v.data);
+	resetStringInfo(&v);
+	if (os_xml_element(body, blen, "<NextUploadIdMarker>",
+					   "</NextUploadIdMarker>", &v))
+		*nextId = pstrdup(v.data);
+
+	initStringInfo(&kbuf);
+	for (;;)
+	{
+		int64		us = os_xml_find(body, blen, pos, "<Upload>");
+		int64		ue;
+
+		if (us < 0)
+			break;
+		ue = os_xml_find(body, blen, us, "</Upload>");
+		if (ue < 0)
+			break;
+		resetStringInfo(&kbuf);
+		appendStringInfo(&kbuf, "s3://%s/", bucket);
+		resetStringInfo(&v);
+		if (os_xml_element(body + us, ue - us, "<Key>", "</Key>", &kbuf) &&
+			os_xml_element(body + us, ue - us, "<UploadId>", "</UploadId>", &v) &&
+			v.len > 0)
+		{
+			*keys = lappend(*keys, pstrdup(kbuf.data));
+			*ids = lappend(*ids, pstrdup(v.data));
+		}
+		pos = ue;
+		if (list_length(*keys) > OS_LIST_MAX_KEYS)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("columnar: upload listing exceeded %d uploads",
+							OS_LIST_MAX_KEYS)));
+	}
+	pfree(kbuf.data);
+	pfree(v.data);
+}
+
+static void
+os_set_deadline(PgColumnarObjHandle *h, int timeout_ms)
+{
+	if (timeout_ms > 0)
+	{
+		h->deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
+												  timeout_ms);
+		h->deadline_ms = timeout_ms;
+	}
+}
+
+static char **
+objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
+					  int timeout_ms, char ***upload_ids, int *nuploads)
+{
+	const char *bstart;
+	const char *slash;
+	char	   *bucket;
+	char	   *encPrefix;
+	char	   *keyMarker = NULL;
+	char	   *idMarker = NULL;
+	PgColumnarObjHandle *h;
+	List	   *keys = NIL;
+	List	   *ids = NIL;
+	char	  **outKeys;
+	char	  **outIds;
+	int			pages = 0;
+	int			i;
+
+	if (pg_strncasecmp(url, "s3://", 5) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("columnar: listing uploads is only supported for s3:// URLs, not \"%s\"",
+						url)));
+	bstart = url + 5;
+	slash = strchr(bstart, '/');
+	if (slash == NULL || slash == bstart)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("columnar: \"%s\" is not s3://bucket/prefix", url)));
+	bucket = pnstrdup(bstart, slash - bstart);
+	encPrefix = os_uriencode_query(slash + 1);
+
+	/* as objstore_list_objects: resolve from a dummy key, request the bucket */
+	h = os_write_handle(psprintf("s3://%s/_", bucket), cfg);
+	os_set_deadline(h, timeout_ms);
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+		StringInfoData bp;
+
+		initStringInfo(&bp);
+		appendStringInfoChar(&bp, '/');
+		os_uriencode_path(&bp, bucket);
+		if (h->abspath != NULL)
+			pfree(h->abspath);
+		h->abspath = bp.data;
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	PG_TRY();
+	{
+		for (;;)
+		{
+			StringInfoData q;
+			char	   *body;
+			int64		blen = 0;
+			bool		truncated = false;
+			char	   *nextKey = NULL;
+			char	   *nextId = NULL;
+			int			before = list_length(keys);
+
+			if (++pages > OS_LIST_MAX_PAGES)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("columnar: upload listing of \"%s\" exceeded %d pages",
+								url, OS_LIST_MAX_PAGES)));
+
+			/* canonical query: key-marker < prefix < upload-id-marker < uploads */
+			initStringInfo(&q);
+			if (keyMarker != NULL)
+			{
+				char	   *enc = os_uriencode_query(keyMarker);
+
+				appendStringInfo(&q, "key-marker=%s&", enc);
+				pfree(enc);
+			}
+			appendStringInfo(&q, "prefix=%s&", encPrefix);
+			if (keyMarker != NULL && idMarker != NULL)
+			{
+				char	   *enc = os_uriencode_query(idMarker);
+
+				appendStringInfo(&q, "upload-id-marker=%s&", enc);
+				pfree(enc);
+			}
+			appendStringInfoString(&q, "uploads=");
+
+			body = os_list_request(h, q.data, &blen);
+			pfree(q.data);
+			os_uploads_parse_page(body, blen, bucket, &keys, &ids,
+								  &truncated, &nextKey, &nextId);
+			pfree(body);
+
+			if (!truncated || nextKey == NULL)
+				break;
+
+			/*
+			 * A truncated page must add uploads and move the markers on, or a
+			 * broken or hostile endpoint could keep the loop going (the same
+			 * two guards as objstore_list_objects).
+			 */
+			if (list_length(keys) == before ||
+				(keyMarker != NULL && strcmp(nextKey, keyMarker) == 0 &&
+				 strcmp(nextId ? nextId : "", idMarker ? idMarker : "") == 0))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROTOCOL_VIOLATION),
+						 errmsg("columnar: upload listing of \"%s\" did not advance",
+								url)));
+			keyMarker = nextKey;
+			idMarker = nextId;
+		}
+	}
+	PG_CATCH();
+	{
+		os_free_handle(h);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	os_free_handle(h);
+
+	*nuploads = list_length(keys);
+	outKeys = (char **) palloc(sizeof(char *) * Max(*nuploads, 1));
+	outIds = (char **) palloc(sizeof(char *) * Max(*nuploads, 1));
+	for (i = 0; i < *nuploads; i++)
+	{
+		outKeys[i] = (char *) list_nth(keys, i);
+		outIds[i] = (char *) list_nth(ids, i);
+	}
+	*upload_ids = outIds;
+	return outKeys;
+}
+
+static int
+objstore_abort_upload(const char *url, const char *upload_id,
+					  const PgColumnarObjStoreConfig *cfg, int timeout_ms)
+{
+	PgColumnarObjHandle *h = os_write_handle(url, cfg);
+	OsResponse	resp;
+	char	   *encId = os_uriencode_query(upload_id);
+	char	   *query = psprintf("uploadId=%s", encId);
+
+	os_set_deadline(h, timeout_ms);
+	PG_TRY();
+	{
+		os_write_request(h, "DELETE", query, NULL, 0, &resp, NULL);
+	}
+	PG_CATCH();
+	{
+		os_free_handle(h);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	os_free_handle(h);
+	pfree(query);
+	pfree(encId);
+	return resp.status;
+}
+
 static void
 objstore_delete_object(const char *url, const PgColumnarObjStoreConfig *cfg)
 {
@@ -2819,6 +3082,8 @@ static const PgColumnarObjStoreApi objstore_api = {
 	.delete_object = objstore_delete_object,
 	.list_objects = objstore_list_objects,
 	.http_request = objstore_http_request,
+	.list_uploads = objstore_list_uploads,
+	.abort_upload = objstore_abort_upload,
 };
 
 const PgColumnarObjStoreApi *
