@@ -1098,4 +1098,6 @@ guard_tests 804
 # 17 tests, one per check, by collection over the cluster files.
 # cluster_tests 3239 -> 3320 for #1341's test_parallel_copy.py, the twin of parallel_copy.sh:
 # 81 tests, one per check, by collection over the cluster files.
-cluster_tests 3320
+# cluster_tests 3320 -> 3333 for #1341's test_parallel.py, the twin of parallel.sh:
+# 13 tests, one per check, by collection over the cluster files.
+cluster_tests 3333

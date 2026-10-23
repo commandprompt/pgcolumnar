@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 72
+suites_not_covered 71
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6046,4 +6046,25 @@ suites_not_covered 72
 #     never         4136 + 32 = 4168
 #     dated         2831 + 49 = 2880
 #     4168 + 2880 == 7048
+#
+# #1341, parallel seeded, with its twin (jdatcmd): 3853 -> 3853, and
+# suites_not_covered 105 -> 104. The suite had no rows. It enters with 13 checks from
+# five-major runs (13/13 on each of 15-19, shell and twin alike), after three fixes and
+# three new checks. "par no-filter" was a bare count(*), which the vectorized aggregate
+# answers with no Gather, so with every participant reading every row group it stayed
+# green; it now returns rows, and "par queries all plan a Gather" holds all five par
+# queries to a Gather. The table was assumed to have 25 row groups: with the writer
+# ignoring stripe_row_limit it had 1, and a claim that skips every other group passed
+# main's shell 10/10; "par table has 25 row groups to claim" now counts them. And setg
+# swallows its error, so a serial setting that did not take ran the serial checks in
+# parallel; "serial queries plan no Gather" now says so. All 13 are dated by five
+# mutations, each reddening the same names in both twins: the writer ignoring
+# stripe_row_limit, every participant reading every row group, the partial path never
+# added, the scan named ColumnarScan as before #428, and a serial scan reading every
+# other row group.
+#
+#     ledger rows   7048 + 13 = 7061
+#     never         4168 + 0 = 4168
+#     dated         2880 + 13 = 2893
+#     4168 + 2893 == 7061
 checks_never_observed_red 4168
