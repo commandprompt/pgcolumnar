@@ -153,9 +153,16 @@ def test_deleted_rows_across_several_groups(pgc_conn, expect):
          "CREATE TABLE m (tag text, p1 int, p2 int) USING pgcolumnar",
          "SELECT pgcolumnar.set_options('m', stripe_row_limit => 8192, chunk_group_row_limit => 1024)",
          f"INSERT INTO hm {mgen}", f"INSERT INTO m {mgen}",
-         "DELETE FROM hm WHERE p1 % 17 = 0",
-         # the fixture's DELETE must not depend on the gating under test
-         "SET pgcolumnar.qual_skipvec_min_payload_cols = 100000", "DELETE FROM m WHERE p1 % 17 = 0")
+         "DELETE FROM hm WHERE p1 % 17 = 0")
+    # The fixture's DELETE must not depend on the gating under test, so it runs with
+    # the gate out of reach. The SET and the DELETE go together, as the shell's one
+    # psql -c: a refused SET skips the DELETE there, and the premise below names it,
+    # rather than an unnamed psycopg error ending this test (#1756 review).
+    try:
+        _run(conn, "SET pgcolumnar.qual_skipvec_min_payload_cols = 100000",
+             "DELETE FROM m WHERE p1 % 17 = 0")
+    except psycopg.Error:
+        pass
     _set_gate(conn, 0)
     expect.text(str(_one(conn, "SELECT count(*) > 1 FROM pgcolumnar.row_group "
                                "WHERE storage_id = pgcolumnar.get_storage_id('m')")), "True",
