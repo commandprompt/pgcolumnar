@@ -6824,4 +6824,27 @@ suites_not_covered 34
 #     never         4483 + 5 = 4488
 #     dated         3258 + 2 = 3260
 #     4488 + 3260 == 7748
-checks_never_observed_red 4488
+#
+# #1743, a cancelled remote export's open uploads, objstore_export_open_uploads seeded
+# with its twin (jdatcmd): 4488 -> 4506. A new suite, registered with its rows, so
+# suites_not_covered stays 34. A parallel_export_parquet to s3:// is ended while its
+# workers' multipart uploads are open: cancelled while they send parts; cancelled while
+# every CreateMultipartUpload is held unanswered by the fixture server's new
+# __uploads_delay__ hook; its workers terminated in that window; cancelled there and
+# cancelled again while the cleanup's part DELETE is held by #1741's __delete_delay__;
+# and cancelled there while the store does not answer the listing. 30 checks: 12 are
+# dated by four mutations of the dispatcher's new cleanup (no listing, every listed key
+# aborted, the part match off by one, and the cleanup run with the handled error still
+# on the stack, which reports "errstart was not called" as #1741 did), each reddening
+# the same names in both twins on PG17. 18 arrive never: eight premises, three reported
+# errors, the empty prefix, five survival checks, and "parts: no upload of this export
+# is left open": on this base #1727's worker exit callback aborts a sending worker's
+# upload, so dropping the listing alone no longer reddens it. A fifth mutation, the
+# listing's deadline dropped, reddens "silent listing: the export returned within 30 s
+# of the cancel" only, which was already dated.
+#
+#     ledger rows   7748 + 30 = 7778
+#     never         4488 + 18 = 4506
+#     dated         3260 + 12 = 3272
+#     4506 + 3272 == 7778
+checks_never_observed_red 4506

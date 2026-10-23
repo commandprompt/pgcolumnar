@@ -418,6 +418,21 @@ true until the next version shipped.
   `_SUCCESS` writers, now copies the error out first and re-throws it afterwards
   (#1741). `test/objstore_export_double_cancel.sh` and
   `test_objstore_export_double_cancel.py`.
+- **A cancelled `parallel_export_parquet` to `s3://` no longer leaves its multipart
+  uploads open.** A worker learns its upload id only from the answer to
+  CreateMultipartUpload, and the store creates the upload when the request
+  arrives. A worker that ended while it waited for that answer left an upload
+  open on the store that nothing could abort, billed until a lifecycle rule
+  removed it. The dispatcher's cleanup now lists the uploads under the export's
+  prefix and aborts each one whose key is one of the export's own part names.
+  Uploads under the same prefix with any other key are left alone. The aborts run
+  inside the cleanup that #1741 made safe from a second cancel, so a second cancel
+  during the cleanup does not skip them. The cleanup holds interrupts only while
+  it waits, and those waits are bounded: 5 s for the workers to stop, then 10 s
+  for the listing and the aborts. The object-store module gains two entries for
+  this, `list_uploads` and `abort_upload` (module ABI 6), so the module and the
+  extension must come from the same build (#1743, #1722).
+  `test/objstore_export_open_uploads.sh` and `test_objstore_export_open_uploads.py`.
 - **`export_parquet` no longer marks a `timestamp` column as a UTC instant.** Both
   `timestamp` and `timestamptz` were written as the converted type `TIMESTAMP_MICROS`,
   which the Parquet spec defines as adjusted to UTC. Every other reader (pyarrow,

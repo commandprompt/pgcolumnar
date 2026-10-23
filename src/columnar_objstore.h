@@ -33,7 +33,7 @@
 
 #include "postgres.h"
 
-#define PGCOLUMNAR_OBJSTORE_ABI 5
+#define PGCOLUMNAR_OBJSTORE_ABI 6
 
 /* An open remote object (read) / upload (write). Module owns both. */
 typedef struct PgColumnarObjHandle PgColumnarObjHandle;
@@ -158,6 +158,36 @@ typedef struct PgColumnarObjStoreApi
 										  int nheaders,
 										  const char *body, int64 body_len,
 										  int64 max_response);
+
+	/*
+	 * Multipart uploads in progress (#1743, ABI v6). A worker learns its
+	 * upload id only from the answer to CreateMultipartUpload, so a worker that
+	 * ends while waiting for that answer leaves an upload nobody holds the id
+	 * of. The parallel export's dispatcher finds those by listing.
+	 *
+	 * list_uploads lists the uploads in progress under `url`, an
+	 * s3://bucket/prefix (ListMultipartUploads, paged by the module). It
+	 * returns a palloc'd array of `*nuploads` keys, each a full s3://bucket/key
+	 * URL, and sets `*upload_ids` to a parallel array of upload ids, both in
+	 * the current memory context. It raises on a transport or parse failure.
+	 *
+	 * abort_upload aborts one upload (AbortMultipartUpload, DELETE ?uploadId=)
+	 * and returns the HTTP status; a status is not an error. It raises on a
+	 * transport failure.
+	 *
+	 * Both take `timeout_ms`: when it is above 0, every wait in the call ends by
+	 * then, and the call raises once that much time has passed, whether or not
+	 * interrupts are held. 0 means the module's ordinary waits. cfg may be NULL.
+	 */
+	char	  **(*list_uploads) (const char *url,
+								 const PgColumnarObjStoreConfig *cfg,
+								 int timeout_ms,
+								 char ***upload_ids,
+								 int *nuploads);
+	int			(*abort_upload) (const char *url,
+								 const char *upload_id,
+								 const PgColumnarObjStoreConfig *cfg,
+								 int timeout_ms);
 } PgColumnarObjStoreApi;
 
 /*
