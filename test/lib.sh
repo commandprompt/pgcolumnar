@@ -411,6 +411,14 @@ pgc_setup() {
 	{
 		echo "port=$PGC_PORT"
 		echo "listen_addresses='127.0.0.1'"
+		# THE SOCKET DIRECTORY, pinned to this cluster's own datadir, as
+		# pgc_cluster.py pins it. A packaged postgres defaults it to
+		# /var/run/postgresql, which only postgres can write: under runuser that is
+		# fine, but a non-root, non-postgres run -- the pytest-cluster job driving
+		# objstore_module.sh from test_objstore_stash_recovery.py -- FATALs on the
+		# lock file, and pg_ctl says only "could not start server" (#1717). Every
+		# connection here is TCP on 127.0.0.1, so nothing reads the socket's path.
+		echo "unix_socket_directories='$PGC_PGDATA'"
 		echo "shared_preload_libraries='pgcolumnar'"
 		# Deterministic text output so heap and columnar hashes match.
 		echo "extra_float_digits=3"

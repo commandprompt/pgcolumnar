@@ -52,8 +52,16 @@ def _same(a, b):
 def _run_suite(pg_config):
     env = dict(os.environ, PGC_SKIP_BUILD="1")
     env.pop("PGC_PORT", None)
-    return subprocess.run(["bash", str(SUITE), pg_config], capture_output=True,
-                          text=True, env=env, timeout=1800).returncode
+    r = subprocess.run(["bash", str(SUITE), pg_config], capture_output=True,
+                       text=True, env=env, timeout=1800)
+    if r.returncode != 0:
+        # SAID, not swallowed: CI's log is the only place a reader sees why the inner
+        # suite failed, and an exit status alone named nothing (#1717 review).
+        tail = (r.stdout + r.stderr).splitlines()[-40:]
+        print(f"-- {SUITE.name} exited {r.returncode}; last {len(tail)} lines:")
+        for line in tail:
+            print(f"   {line}")
+    return r.returncode
 
 
 @pytest.fixture(scope="module")
