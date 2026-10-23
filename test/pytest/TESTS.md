@@ -3931,6 +3931,8 @@ property this suite tests, so `SET ROLE` would assert it away. Each role connect
 | `test_the_premises_each_role_is_what_the_suite_assumes` | each premise run BY the role it is about |
 | `test_who_may_read_the_stats` | owner, GRANTed reader and superuser all succeed |
 | `test_a_role_with_no_privilege_is_refused` | the bar: 42501 **and** the table named |
+| `test_a_heap_table_is_refused_for_privilege_before_its_kind_is_read_by_stats` | a heap table the caller may not read is refused for privilege, not called non-columnar: the caller check runs before the storage id is read |
+| `test_a_superuser_is_told_a_heap_table_is_not_columnar_by_stats` | control: a caller who may read it is told "not a columnar table" |
 
 ### A helper that turned a driver detail into a product claim
 
@@ -8975,6 +8977,8 @@ A call made as a role reads the first column of its first row, or its failure as
 | `test_a_role_with_no_privilege_is_refused_its_sort_status` | a role with no privilege on the table is refused |
 | `test_the_refusal_names_the_table` | and the refusal names the TABLE, not a catalog table it never asked about |
 | `test_a_superuser_still_reads_the_sort_status` | a superuser still reads sort status |
+| `test_a_heap_table_is_refused_for_privilege_before_its_kind_is_read` | a role with no privilege on a heap table is refused for privilege, not told it is not columnar |
+| `test_a_superuser_is_told_a_heap_table_is_not_columnar` | a superuser asking about a heap table is told it is not columnar |
 ## 210. test_bloom_lazy.py: a scan reads the bloom filters of the groups and columns it examines
 
 The pytest twin of `test/bloom_lazy.sh` (ported for #1341), every check by the shell's name. Two tables differ only in how many groups a one-group equality scan skips (6 and 30), so the bloom blocks they fetch, read from `pg_stat_get_blocks_fetched` on `pgcolumnar.bloom`, must not grow with the skipped groups (#310); on a wide table where no group is excluded, six equality predicates must fetch more than one (#314). The answers are compared with a heap mirror, with and without bloom filters.

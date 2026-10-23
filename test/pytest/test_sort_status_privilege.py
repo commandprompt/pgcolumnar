@@ -61,6 +61,8 @@ def ss(pgc_cluster):
             conn.execute("ALTER TABLE ss_t OWNER TO t_ssowner")
             conn.execute("REVOKE ALL ON ss_t FROM PUBLIC")
             conn.execute("GRANT SELECT ON ss_t TO t_sssel")
+            conn.execute("CREATE TABLE ss_h (id int)")   # a heap table, readable by no test role
+            conn.execute("REVOKE ALL ON ss_h FROM PUBLIC")
             owner = conn.execute("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname='ss_t'").fetchone()[0]
             nosuper = conn.execute("SELECT bool_and(NOT rolsuper) FROM pg_roles WHERE rolname LIKE 't_ss%'").fetchone()[0]
             superuser = conn.execute("SELECT count(*) FROM pgcolumnar.sort_status('ss_t')").fetchone()[0]
@@ -80,6 +82,10 @@ def ss(pgc_cluster):
             "none refused": _refused(none_status, "permission denied for table"),
             "none names table": _refused(none_status, "ss_t"),
             "super status": superuser,
+            "none heap": _refused(_as(dsn, "t_ssnone", "SELECT count(*) FROM pgcolumnar.sort_status('ss_h')"),
+                                  "permission denied for table ss_h"),
+            "super heap": _refused(_as(dsn, "postgres", "SELECT count(*) FROM pgcolumnar.sort_status('ss_h')"),
+                                   'relation "ss_h" is not a columnar table'),
         }
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -143,3 +149,14 @@ def test_the_refusal_names_the_table(ss, expect):
 
 def test_a_superuser_still_reads_the_sort_status(ss, expect):
     expect.num(ss["super status"], 1, "a superuser still reads sort status")
+
+
+def test_a_heap_table_is_refused_for_privilege_before_its_kind_is_read(ss, expect):
+    """get_storage_id checks the DEFINER inside this SECURITY DEFINER function, so only
+    the explicit caller check refuses, and only while it runs first (#1657 review)."""
+    expect.num(ss["none heap"], 1,
+               "a role with no privilege on a heap table is refused for privilege, not told it is not columnar")
+
+
+def test_a_superuser_is_told_a_heap_table_is_not_columnar(ss, expect):
+    expect.num(ss["super heap"], 1, "a superuser asking about a heap table is told it is not columnar")

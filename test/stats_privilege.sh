@@ -51,6 +51,8 @@ psql_run "INSERT INTO st_t SELECT g, 'v'||g FROM generate_series(1,$ROWS) g;"
 psql_run "ALTER TABLE st_t OWNER TO t_stowner;"
 psql_run "REVOKE ALL ON st_t FROM PUBLIC;"
 psql_run "GRANT SELECT ON st_t TO t_stsel;"
+psql_run "CREATE TABLE st_h (id int);"   # a heap table, readable by no test role
+psql_run "REVOKE ALL ON st_h FROM PUBLIC;"
 
 as() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" \
 	-d "$PGC_DB" -At -v ON_ERROR_STOP=0 -c "$2" 2>&1 | head -1; }
@@ -100,6 +102,20 @@ check "a role with no privilege on the table is refused" \
 	"$(as t_stnone "SELECT count(*) FROM pgcolumnar.stats('st_t');" | grep -c 'permission denied for table')" "1"
 check "and the refusal names the TABLE, not a catalog table it never asked about" \
 	"$(as t_stnone "SELECT count(*) FROM pgcolumnar.stats('st_t');" | grep -c 'st_t')" "1"
+
+# ---- the order: privilege before anything else ------------------------------
+#
+# get_storage_id checks SELECT with GetUserId(), which inside this SECURITY DEFINER
+# function is the definer, so it passes for anyone and then says "not a columnar
+# table" for a heap table. Only the explicit caller check refuses, and only while
+# it runs FIRST: with the two lines swapped (#1657 review, "sidfirst") every check
+# above stays green, because on st_t the caller check still refuses afterwards.
+# A heap table the caller may not read must be refused for privilege; the control
+# shows the same call does say "not a columnar table" to a caller who may read it.
+check "a role with no privilege on a heap table is refused for privilege, not told it is not columnar" \
+	"$(as t_stnone "SELECT count(*) FROM pgcolumnar.stats('st_h');" | grep -c 'permission denied for table st_h')" "1"
+check "a superuser asking about a heap table is told it is not columnar" \
+	"$(as postgres "SELECT count(*) FROM pgcolumnar.stats('st_h');" | grep -c 'relation "st_h" is not a columnar table')" "1"
 
 # ---- the superuser path still works ----------------------------------------
 check_num "a superuser still reads stats" "$(q "SELECT count(*) FROM pgcolumnar.stats('st_t');")" "1"
