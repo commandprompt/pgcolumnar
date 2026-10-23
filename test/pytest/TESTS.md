@@ -4406,7 +4406,8 @@ the tool grades THIS tree.
 | `test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one` | `check_ratio` must not eat `check_ratio_needs_quiet_machine` |
 | `test_the_suite_local_helpers_are_known_and_excluded` | no suite defines its own check_ helper, which the grader would not read |
 | `test_every_pair_in_the_tree_is_declared` | the declaration is asserted BOTH ways, so a new pair cannot be silently ungraded |
-| `test_every_registered_suite_is_ported_or_declared_unported` | every registered suite with no twin is listed in `unported_suites.txt`, a ported one leaves it, and no listed stem is phantom (#1341); the parity goal (#432) is that file empty |
+| `test_every_registered_suite_is_ported_or_declared_unported` | every registered suite with no twin is listed in `unported_suites.txt` or declared in `SHELL_HARNESS`, a ported one leaves it, and no listed stem is phantom (#1341); the parity goal (#432) is that file empty |
+| `test_a_shell_harness_suite_is_declared_both_ways` | a `SHELL_HARNESS` stem (a suite that tests the shell harness itself, today `harness_selftest`) has no twin, is a registered suite, is not also listed unported, and says why: held both ways, so the declaration cannot become a one-way exemption (#1341) |
 | `test_the_ported_suites_in_this_tree_are_graded_one_for_one` | the standing arm: every pair in the tree, graded |
 
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
