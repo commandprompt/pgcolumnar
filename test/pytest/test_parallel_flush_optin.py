@@ -258,3 +258,31 @@ def test_double_cancel_reports_the_first_cancel(dc, expect):
 def test_double_cancel_leaves_no_segment_pinned(dc, expect):
     expect.text(f"{dc['left']} new segments", "0 new segments",
                 "a twice-cancelled parallel flush leaves no worker segment pinned")
+
+
+# ---- 5. the collect loop forgets a handle as soon as it unpins it (#1753) -----
+#
+# The shell's arm 5. While the handle stayed set after the collect loop's unpin, an
+# error before the detach sent pflush_error_cleanup to attach that segment again,
+# and "can't attach the same segment more than once" replaced the original error
+# and left the other segments pinned. With comments blanked, the statement right
+# after the unpin must forget the handle.
+SRC = pathlib.Path(__file__).resolve().parents[2] / "src"
+
+
+def _after_unpin():
+    text = (SRC / "columnar_write_state.c").read_text()
+    m = re.search(r"\nflush_columns_parallel\(.*?\n\{(.*?)\n\}\n", text, re.S)
+    if not m:
+        return "flush_columns_parallel not found"
+    body = re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.S)
+    body = re.sub(r"//[^\n]*", "", body)
+    b = re.search(r"dsm_unpin_segment\(slots\[i\]\.outHandle\);\s*([^;]*;)", body, re.S)
+    if not b:
+        return "the collect loop does not unpin slots[i].outHandle"
+    return re.sub(r"\s+", " ", b.group(1)).strip()
+
+
+def test_the_collect_loop_forgets_a_handle_after_its_unpin(expect):
+    expect.text(_after_unpin(), "slots[i].outHandle = DSM_HANDLE_INVALID;",
+                "the collect loop forgets a worker's handle in the statement after it unpins the segment")

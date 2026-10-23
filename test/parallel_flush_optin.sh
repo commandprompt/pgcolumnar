@@ -37,7 +37,12 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 # shared with every other cluster on the machine.
 psql_run "ALTER SYSTEM SET max_worker_processes = 16;"
 psql_run "ALTER SYSTEM SET dynamic_shared_memory_type = 'mmap';"
-env PATH="$PGC_BINDIR:$PATH" pg_ctl -D "$PGC_PGDATA" restart -w -o "-p $PGC_PORT" >/dev/null 2>&1 || true
+# Through pgc_pg, which drops to postgres when this runs as root (CI's suites job
+# does): a bare pg_ctl refuses root, and the refusal used to be swallowed, so the
+# server kept posix segments and arm 4 counted 0 whatever the code did (#1746
+# review). A restart that fails is said out loud; arm 4's premise then fails on it.
+pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' restart -w -o '-p $PGC_PORT'" >/dev/null 2>&1 \
+	|| echo "-- RESTART FAILED: dynamic_shared_memory_type = mmap is not in effect"
 sleep 1
 
 q() {
@@ -195,5 +200,26 @@ check_text "a twice-cancelled parallel flush reports the first cancel" \
 	"57014: canceling statement due to statement timeout"
 check_text "a twice-cancelled parallel flush leaves no worker segment pinned" \
 	"$LEFT new segments" "0 new segments"
+
+# ---- 5. the collect loop forgets a handle as soon as it unpins it (#1753) -----
+#
+# The collect loop attaches a DONE worker's OUTPUT segment, unpins it, reads its
+# columns, then detaches. While the handle stayed set after the unpin, an error in
+# between (a palloc in the deserialize) sent pflush_error_cleanup to attach that
+# segment again: "can't attach the same segment more than once" replaced the
+# original error and cut the cleanup short, leaving the other segments pinned
+# (measured on main with an ERROR injected after the first unpin: 3 left). The
+# statement right after the unpin must forget the handle; the source is read with
+# comments blanked.
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src"
+after_unpin="$(perl -0777 -ne '
+	if (/\nflush_columns_parallel\(.*?\n\{(.*?)\n\}\n/s) {
+		my $f = $1; $f =~ s{/\*.*?\*/}{}gs; $f =~ s{//[^\n]*}{}g;
+		if ($f =~ /dsm_unpin_segment\(slots\[i\]\.outHandle\);\s*([^;]*;)/s) {
+			my $b = $1; $b =~ s/\s+/ /g; $b =~ s/^ | $//g; print $b;
+		} else { print "the collect loop does not unpin slots[i].outHandle" }
+	} else { print "flush_columns_parallel not found" }' "$SRC/columnar_write_state.c")"
+check_text "the collect loop forgets a worker's handle in the statement after it unpins the segment" \
+	"$after_unpin" "slots[i].outHandle = DSM_HANDLE_INVALID;"
 
 pgc_summary

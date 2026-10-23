@@ -5559,6 +5559,7 @@ parallel_flush_optin	parallel_flush_optin	opting in stores byte-identical chunks
 parallel_flush_optin	parallel_flush_optin	parallel_flush is off by default	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.parallel_flush boot default set to true
 parallel_flush_optin	parallel_flush_optin	premise: a flush worker is still encoding when the second cancel lands	15;16;17;18;19	never	-
 parallel_flush_optin	parallel_flush_optin	premise: the cheap workers published their segments before the second cancel	15;16;17;18;19	never	-
+parallel_flush_optin	parallel_flush_optin	the collect loop forgets a worker's handle in the statement after it unpins the segment	15;16;17;18;19	2026-10-23	columnar_write_state.c: the collect loop invalidates slots[i].outHandle after dsm_detach, not right after dsm_unpin_segment
 parallel_flush_optin	parallel_flush_optin	the dispatch metric is byte-identical for a random and a constant column (the metric cannot separate opposite-cost shapes)	15;16;17;18;19	2026-10-21	columnar_write_state.c: pflush_metrics adds each value stream's first byte to valbytes, a content term
 parallel_flush_optin	parallel_flush_optin	with the GUC on, a wide-numeric flush dispatches parallel (not a silent serial fall-back)	15;16;17;18;19	2026-10-21	columnar_write_state.c: flush_columns_parallel never registers a worker (if (false && RegisterDynamicBackgroundWorker(...))), so every column falls back to serial
 parallel_scan_cost	parallel_scan_cost	an I/O-dominated parallel scan is not priced at serial/workers	15;16;17;18;19	never	-

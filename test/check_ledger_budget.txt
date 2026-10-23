@@ -6965,7 +6965,7 @@ suites_not_covered 28
 #
 # #1741, a second cancel during a remote export's cleanup, objstore_export_double_cancel
 # seeded with its twin (OffgridwithJD): 4538 -> 4543. A new suite, registered with its
-# rows, so suites_not_covered stays 28. A parallel_export_parquet to s3:// is cancelled
+# rows, so suites_not_covered stays 34. A parallel_export_parquet to s3:// is cancelled
 # while its workers upload, and again while the dispatcher's cleanup DELETE is held in flight
 # by the fixture server's new __delete_delay__ hook. On main the module's best-effort catch
 # swallowed the second cancel with FlushErrorState(), which also emptied the first cancel's
@@ -6995,4 +6995,19 @@ suites_not_covered 28
 #     never         4543 + 2 = 4545
 #     dated         3414 + 2 = 3416
 #     4545 + 3416 == 7961
+#
+# #1753, folded into #1746 at jdatcmd's suggestion, in parallel_flush_optin
+# (OffgridwithJD): 4545 -> 4545. The collect loop unpinned a DONE worker's output
+# segment and kept its handle until after the detach, so an error in between sent
+# pflush_error_cleanup to attach it again: "can't attach the same segment more than
+# once" replaced the original error and cut the cleanup short (an ERROR injected after
+# the first unpin, measured on PG17: 3 segments left; with the handle forgotten at the
+# unpin, the injected error is reported and 0 are left). Arm 5 reads the statement
+# after the unpin, comments blanked; it is dated by the handle invalidated after the
+# detach again, which reddens it alone in both twins (main's code reddens it too).
+#
+#     ledger rows   7961 + 1 = 7962
+#     never         4545 + 0 = 4545
+#     dated         3416 + 1 = 3417
+#     4545 + 3417 == 7962
 checks_never_observed_red 4545

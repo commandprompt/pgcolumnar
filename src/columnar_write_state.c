@@ -2898,6 +2898,15 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 			 */
 			dsm_unpin_segment(slots[i].outHandle);
 
+			/*
+			 * Forget the handle at once (#1753). The segment is ours to free now,
+			 * through our mapping; if anything below raises, the error cleanup
+			 * must not attach it again ("can't attach the same segment more than
+			 * once" would replace the original error and cut the cleanup short,
+			 * leaving the other workers' segments pinned).
+			 */
+			slots[i].outHandle = DSM_HANDLE_INVALID;
+
 			obase = (char *) dsm_segment_address(outseg);
 			memcpy(&count, obase, sizeof(uint32));
 			cursor = obase + sizeof(uint32);
@@ -2926,7 +2935,6 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 				nWorkerCols++;
 			}
 			dsm_detach(outseg);
-			slots[i].outHandle = DSM_HANDLE_INVALID;	/* freed; skip in cleanup */
 		}
 		else if (st == PFLUSH_FAILED)
 		{
