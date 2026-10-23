@@ -3766,35 +3766,35 @@ native_ctas	native_ctas	serial CTAS row count	15;16;17;18;19	2026-10-22	columnar
 native_ctas	native_ctas	serial CTAS still succeeds	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
 native_ctas	native_ctas	the parallel CTAS produced exactly one storage row	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write for a relation created in this transaction aborts the backend
 native_ctas	native_ctas	the second writer started while the first held its transaction open	15;16;17;18;19	2026-10-22	columnar_metadata.c: the storage-row write under the first-writer lock aborts the backend
+native_decode_gate_width	native_decode_gate_width	EXPLAIN reports Columnar Vector Decodes (the observable)	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gate_width	native_decode_gate_width	back to the shipped default	15;16;17;18;19	2026-10-23	columnar_tableam.c: pgcolumnar.qual_skipvec_min_payload_cols boot value 20 changed to 21
 native_decode_gate_width	native_decode_gate_width	control, gate forced on: a matches-everything narrow qual skips no vector (full decode)	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	control, gate forced on: a matches-everything wide qual skips no vector (full decode)	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	correctness: narrow needle matches the heap either way	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	correctness: the full scan matches the heap	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	correctness: wide needle, gate OFF, returns the identical rows (output-invariant)	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	correctness: wide needle, gate ON, matches the heap oracle	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	gate suppressed for the invariance arm	15;16;17;18;19	2026-10-23	columnar_tableam.c: pgcolumnar.qual_skipvec_min_payload_cols maximum 100000 changed to 23
 native_decode_gate_width	native_decode_gate_width	narrow, default: a zero-match LIKE decodes EVERY projected column of every vector -> NOT gated	15;16;17;18;19	2026-10-16	columnar_reader.c: phase-2 gating runs whatever the projection's payload width
 native_decode_gate_width	native_decode_gate_width	narrow, gate off (GUC=0): the SAME narrow projection now gates -> qual column alone	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: EXPLAIN reports Columnar Vector Decodes (the observable)	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: back to the shipped default	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: gate suppressed for the invariance arm	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: no vector is ruled out by VALUE (that is 1b-ii's path, not phase 2)	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: no whole row group is pruned	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: one row group, so every count below is one group's	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: still at the default before arm 1	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: the LIKE is unprunable (no usable skip predicate)	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	no vector is ruled out by VALUE (that is 1b-ii's path, not phase 2)	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gate_width	native_decode_gate_width	no whole row group is pruned	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gate_width	native_decode_gate_width	one row group, so every count below is one group's	15;16;17;18;19	2026-10-23	columnar_write_state.c: a table's stripe_row_limit option applied divided by 100
 native_decode_gate_width	native_decode_gate_width	premise: the control matches every row	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: the narrow plan is a columnar custom scan with projection	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: the narrow query takes the late-materialization path	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	premise: the needle matches exactly one vector's worth of rows	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	premise: the nomatch predicate matches no row	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	premise: the rejected probe GUC qual_skipvec_min_skip_pct was NOT shipped	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	premise: the rejected probe GUC qual_skipvec_probe_vecs was NOT shipped	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: the wide plan is a columnar custom scan with projection	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: the wide query takes the late-materialization path	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: the width gate is now disabled (0)	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: the width threshold is now above the projection width	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: the width threshold now equals the projection width	15;16;17;18;19	never	-
-native_decode_gate_width	native_decode_gate_width	premise: the width-gate GUC exists and defaults to the shipped 20	15;16;17;18;19	never	-
+native_decode_gate_width	native_decode_gate_width	still at the default before arm 1	15;16;17;18;19	2026-10-23	columnar_tableam.c: pgcolumnar.qual_skipvec_min_payload_cols boot value 20 changed to 21
+native_decode_gate_width	native_decode_gate_width	the LIKE is unprunable (no usable skip predicate)	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gate_width	native_decode_gate_width	the narrow plan is a columnar custom scan with projection	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gate_width	native_decode_gate_width	the narrow query takes the late-materialization path	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gate_width	native_decode_gate_width	the wide plan is a columnar custom scan with projection	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gate_width	native_decode_gate_width	the wide query takes the late-materialization path	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gate_width	native_decode_gate_width	the width gate is now disabled (0)	15;16;17;18;19	2026-10-23	columnar_tableam.c: pgcolumnar.qual_skipvec_min_payload_cols minimum 0 changed to 1
+native_decode_gate_width	native_decode_gate_width	the width threshold is now above the projection width	15;16;17;18;19	2026-10-23	columnar_tableam.c: pgcolumnar.qual_skipvec_min_payload_cols maximum 100000 changed to 23
+native_decode_gate_width	native_decode_gate_width	the width threshold now equals the projection width	15;16;17;18;19	2026-10-23	columnar_tableam.c: pgcolumnar.qual_skipvec_min_payload_cols maximum 100000 changed to 23
+native_decode_gate_width	native_decode_gate_width	the width-gate GUC exists and defaults to the shipped 20	15;16;17;18;19	2026-10-23	columnar_tableam.c: pgcolumnar.qual_skipvec_min_payload_cols boot value 20 changed to 21
 native_decode_gate_width	native_decode_gate_width	wide, default: a one-vector LIKE decodes the qual column plus payload for that vector only	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	wide, default: a zero-match LIKE decodes the qual column and NO payload -> gated	15;16;17;18;19	never	-
 native_decode_gate_width	native_decode_gate_width	wide, default: and reports the payload vectors skipped	15;16;17;18;19	never	-
@@ -3808,27 +3808,27 @@ native_decode_gating	native_decode_gating	and reports them all filtered before m
 native_decode_gating	native_decode_gating	and skips every vector	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluation between the decode passes never runs
 native_decode_gating	native_decode_gating	and the full scan across every group's mask matches too	15;16;17;18;19	never	-
 native_decode_gating	native_decode_gating	deletes + multiple groups + unprunable qual: columnar matches the heap	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator marks every vector skipped
-native_decode_gating	native_decode_gating	premise: no vector is ruled out by VALUE either (that is 1b-ii's path)	15;16;17;18;19	never	-
-native_decode_gating	native_decode_gating	premise: no whole row group is pruned	15;16;17;18;19	never	-
-native_decode_gating	native_decode_gating	premise: one row group, so every count below is one group's	15;16;17;18;19	never	-
-native_decode_gating	native_decode_gating	premise: rows really were deleted (so the mask is non-NULL)	15;16;17;18;19	never	-
-native_decode_gating	native_decode_gating	premise: the columnar table spans more than one row group	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	no vector is ruled out by VALUE either (that is 1b-ii's path)	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gating	native_decode_gating	no whole row group is pruned	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gating	native_decode_gating	one row group, so every count below is one group's	15;16;17;18;19	2026-10-23	columnar_write_state.c: a table's stripe_row_limit option applied divided by 100
 native_decode_gating	native_decode_gating	premise: the control matches every row	15;16;17;18;19	never	-
 native_decode_gating	native_decode_gating	premise: the half-needle survives in one vector, half of its rows	15;16;17;18;19	never	-
-native_decode_gating	native_decode_gating	premise: the needle plan is a columnar custom scan	15;16;17;18;19	never	-
-native_decode_gating	native_decode_gating	premise: the needle query takes the late-materialization path	15;16;17;18;19	never	-
 native_decode_gating	native_decode_gating	premise: the needle really matches one vector's worth of rows	15;16;17;18;19	never	-
 native_decode_gating	native_decode_gating	premise: the nomatch predicate matches no row	15;16;17;18;19	never	-
-native_decode_gating	native_decode_gating	premise: the reader has no usable skip predicate for this LIKE	15;16;17;18;19	never	-
-native_decode_gating	native_decode_gating	premise: the width gate is pinned off, so this narrow projection still gates	15;16;17;18;19	never	-
 native_decode_gating	native_decode_gating	rejections inside a surviving vector are counted once	15;16;17;18;19	2026-10-16	columnar_reader.c: the producer counts a gated group's rejections a second time
+native_decode_gating	native_decode_gating	rows really were deleted (so the mask is non-NULL)	15;16;17;18;19	2026-10-23	columnar_tableam.c: pgcolumnar_tuple_delete returns TM_Ok without PgColumnarMarkRowDeleted
 native_decode_gating	native_decode_gating	rows removed by filter across deleted rows count only live rows	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator counts a deleted row as filtered;columnar_reader.c: the producer counts a gated group's rejections a second time
+native_decode_gating	native_decode_gating	the columnar table spans more than one row group	15;16;17;18;19	2026-10-23	columnar_write_state.c: a table's stripe_row_limit option applied multiplied by 100
 native_decode_gating	native_decode_gating	the control decodes every column of every vector	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator marks every vector skipped
 native_decode_gating	native_decode_gating	the control returns every row, values intact	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator marks every vector skipped
+native_decode_gating	native_decode_gating	the needle plan is a columnar custom scan	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
 native_decode_gating	native_decode_gating	the needle query returns exactly the matching rows	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluator marks every vector skipped
+native_decode_gating	native_decode_gating	the needle query takes the late-materialization path	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
 native_decode_gating	native_decode_gating	the needle removes exactly the non-matching rows, counted once	15;16;17;18;19	never	-
 native_decode_gating	native_decode_gating	the needle skips exactly the vectors holding no match	15;16;17;18;19	2026-10-16	columnar_reader.c: the per-vector qual evaluation between the decode passes never runs;columnar_reader.c: the per-vector qual evaluator marks every vector skipped
 native_decode_gating	native_decode_gating	the nomatch query returns nothing	15;16;17;18;19	never	-
+native_decode_gating	native_decode_gating	the reader has no usable skip predicate for this LIKE	15;16;17;18;19	2026-10-23	columnar_customscan.c: the custom-scan path is never added (if (!pgcolumnar_enable_custom_scan) became if (true))
+native_decode_gating	native_decode_gating	the width gate is pinned off, so this narrow projection still gates	15;16;17;18;19	2026-10-23	columnar_tableam.c: pgcolumnar.qual_skipvec_min_payload_cols minimum 0 changed to 1
 native_decode_gating	native_decode_gating	the zero-match query removes every row by filter, counted once	15;16;17;18;19	never	-
 native_delete_visibility_paths	native_delete_visibility_paths	a DELETE whose qual deletes another row of the table succeeds and leaves heap's rows (#1394)	15;16;17;18;19	2026-10-16	PgColumnarUpsertDeleteVector without the command advance (main before #1394's fix);columnar_reader.c: the row-at-a-time scan reads a deleted row as live
 native_delete_visibility_paths	native_delete_visibility_paths	a deleted row is invisible via the index	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row ignores the flushed delete vector

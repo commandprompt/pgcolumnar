@@ -100,7 +100,7 @@ NARROW_CONTROL="SELECT tag, p1, p2 FROM nw WHERE tag LIKE '%row%'"
 
 # SHOW erroring (GUC undefined) -> q is empty -> this fails: it is also the guard
 # that the extern + DefineCustomIntVariable actually shipped.
-check "premise: the width-gate GUC exists and defaults to the shipped $DEFAULT_GUC" \
+check "the width-gate GUC exists and defaults to the shipped $DEFAULT_GUC" \
 	"$(gate_now)" "$DEFAULT_GUC"
 # The rejected selectivity-probe idea's two GUCs must NOT have shipped. SHOW of an
 # unknown parameter errors; q swallows the error and returns empty, so an empty
@@ -117,7 +117,7 @@ check "premise: the rejected probe GUC qual_skipvec_probe_vecs was NOT shipped" 
 	"$(show_state pgcolumnar.qual_skipvec_probe_vecs)" "42704"
 check "premise: the rejected probe GUC qual_skipvec_min_skip_pct was NOT shipped" \
 	"$(show_state pgcolumnar.qual_skipvec_min_skip_pct)" "42704"
-check "premise: one row group, so every count below is one group's" \
+check "one row group, so every count below is one group's" \
 	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('nw');")" \
 	"1"
 
@@ -129,31 +129,33 @@ PLAN_WIDE_NEEDLE="$(explain_of "$WIDE_NEEDLE")"
 PLAN_NARROW_NEEDLE="$(explain_of "SELECT tag, p1, p2 FROM nw WHERE tag LIKE '%needle%'")"
 PLAN_NARROW_NOMATCH="$(explain_of "$NARROW_NOMATCH")"
 
-check "premise: the wide plan is a columnar custom scan with projection" \
+check "the wide plan is a columnar custom scan with projection" \
 	"$(has_line "$PLAN_WIDE_NEEDLE" 'Columnar Projected Columns')" "yes"
-check "premise: the narrow plan is a columnar custom scan with projection" \
+check "the narrow plan is a columnar custom scan with projection" \
 	"$(has_line "$PLAN_NARROW_NOMATCH" 'Columnar Projected Columns')" "yes"
-check "premise: the LIKE is unprunable (no usable skip predicate)" \
+check "the LIKE is unprunable (no usable skip predicate)" \
 	"$(counter_in "$PLAN_WIDE_NEEDLE" 'Columnar Usable Skip Predicates')" "0"
-check "premise: no whole row group is pruned" \
+check "no whole row group is pruned" \
 	"$(counter_in "$PLAN_WIDE_NEEDLE" 'Columnar Chunk Groups Removed by Filter')" "0"
-check "premise: no vector is ruled out by VALUE (that is 1b-ii's path, not phase 2)" \
+check "no vector is ruled out by VALUE (that is 1b-ii's path, not phase 2)" \
 	"$(counter_in "$PLAN_WIDE_NEEDLE" 'Columnar Vectors Ruled Out by Value')" "0"
 # Phase 2 rides on 1a's callback: both projections must take the
 # late-materialization path or no decode count below measures phase 2.
-check "premise: the wide query takes the late-materialization path" \
+check "the wide query takes the late-materialization path" \
 	"$(has_line "$PLAN_WIDE_NEEDLE" 'Columnar Rows Filtered Before Materialization')" "yes"
-check "premise: the narrow query takes the late-materialization path" \
+check "the narrow query takes the late-materialization path" \
 	"$(has_line "$PLAN_NARROW_NEEDLE" 'Columnar Rows Filtered Before Materialization')" "yes"
-check "premise: EXPLAIN reports Columnar Vector Decodes (the observable)" \
+check "EXPLAIN reports Columnar Vector Decodes (the observable)" \
 	"$(has_line "$PLAN_NARROW_NOMATCH" 'Columnar Vector Decodes')" "yes"
 
+# The fixture's shape, read from the heap mirror the same generator filled (#1339):
+# read from the columnar table, a one-line reader change reddened these premises.
 check "premise: the needle matches exactly one vector's worth of rows" \
-	"$(q "SELECT count(*) FROM nw WHERE tag LIKE '%needle%';")" "1024"
+	"$(q "SELECT count(*) FROM hw WHERE tag LIKE '%needle%';")" "1024"
 check "premise: the nomatch predicate matches no row" \
-	"$(q "SELECT count(*) FROM nw WHERE tag LIKE '%zzzzz%';")" "0"
+	"$(q "SELECT count(*) FROM hw WHERE tag LIKE '%zzzzz%';")" "0"
 check "premise: the control matches every row" \
-	"$(q "SELECT count(*) FROM nw WHERE tag LIKE '%row%';")" "$ROWS"
+	"$(q "SELECT count(*) FROM hw WHERE tag LIKE '%row%';")" "$ROWS"
 
 # ---- ARM 1: at the shipped default, WIDE gates and NARROW does not -----------
 #
@@ -165,7 +167,7 @@ check "premise: the control matches every row" \
 # VECTORS*NARROW_NCOLS is the whole signal, and it is exactly the payload the gate
 # chose to spare or not.
 
-check "premise: still at the default before arm 1" "$(gate_now)" "$DEFAULT_GUC"
+check "still at the default before arm 1" "$(gate_now)" "$DEFAULT_GUC"
 
 PLAN_WIDE_NOMATCH="$(explain_of "$WIDE_NOMATCH")"
 check "wide, default: a zero-match LIKE decodes the qual column and NO payload -> gated" \
@@ -193,7 +195,7 @@ check "narrow, default: a zero-match LIKE decodes EVERY projected column of ever
 # scan now decodes the qual column alone.
 
 set_gate 0
-check "premise: the width gate is now disabled (0)" "$(gate_now)" "0"
+check "the width gate is now disabled (0)" "$(gate_now)" "0"
 check "narrow, gate off (GUC=0): the SAME narrow projection now gates -> qual column alone" \
 	"$(counter_in "$(explain_of "$NARROW_NOMATCH")" 'Columnar Vector Decodes')" "$VECTORS"
 
@@ -215,13 +217,13 @@ check "control, gate forced on: a matches-everything narrow qual skips no vector
 # would fail the suppression check.
 
 set_gate "$NCOLS_WIDE"					# 25 > 24 payload cols -> must NOT gate
-check "premise: the width threshold is now above the projection width" "$(gate_now)" "$NCOLS_WIDE"
+check "the width threshold is now above the projection width" "$(gate_now)" "$NCOLS_WIDE"
 check "wide, gate raised above width: the SAME wide SELECT * stops gating -> full decode" \
 	"$(counter_in "$(explain_of "$WIDE_NOMATCH")" 'Columnar Vector Decodes')" \
 	"$(( VECTORS * NCOLS_WIDE ))"
 
 set_gate "$PCOLS"					# exactly 24 == 24 payload cols -> gates (>=)
-check "premise: the width threshold now equals the projection width" "$(gate_now)" "$PCOLS"
+check "the width threshold now equals the projection width" "$(gate_now)" "$PCOLS"
 check "wide, gate AT the width (>= boundary): gates again -> qual column alone" \
 	"$(counter_in "$(explain_of "$WIDE_NOMATCH")" 'Columnar Vector Decodes')" "$VECTORS"
 
@@ -231,7 +233,7 @@ check "wide, gate AT the width (>= boundary): gates again -> qual column alone" 
 # it against the heap oracle AND against itself with the gate on vs off.
 
 reset_gate
-check "premise: back to the shipped default" "$(gate_now)" "$DEFAULT_GUC"
+check "back to the shipped default" "$(gate_now)" "$DEFAULT_GUC"
 
 HASH_HEAP_NEEDLE="$(pgc_set_hash "SELECT * FROM hw WHERE tag LIKE '%needle%'")"
 HASH_COL_NEEDLE_GATED="$(pgc_set_hash "$WIDE_NEEDLE")"
@@ -239,7 +241,7 @@ check "correctness: wide needle, gate ON, matches the heap oracle" \
 	"$HASH_COL_NEEDLE_GATED" "$HASH_HEAP_NEEDLE"
 
 set_gate "$NCOLS_WIDE"					# gate OFF for the wide projection
-check "premise: gate suppressed for the invariance arm" "$(gate_now)" "$NCOLS_WIDE"
+check "gate suppressed for the invariance arm" "$(gate_now)" "$NCOLS_WIDE"
 check "correctness: wide needle, gate OFF, returns the identical rows (output-invariant)" \
 	"$(pgc_set_hash "$WIDE_NEEDLE")" "$HASH_COL_NEEDLE_GATED"
 
