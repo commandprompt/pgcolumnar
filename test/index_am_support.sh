@@ -169,20 +169,29 @@ for am in $AMS; do
 	built="$(q "CREATE INDEX iam_probe ON iam USING $am ($col); SELECT 'built';" | tail -1)"
 	check "$am builds an index over a columnar table" "$built" "built"
 
+	# THE ROWS, NOT THEIR NUMBER (#1339): an index that returned the wrong rows in the
+	# right number agreed on count(*). Each side is md5(ids):count.
 	want="$(q "SET enable_indexscan = off; SET enable_indexonlyscan = off;
 		SET enable_bitmapscan = off;
-		SELECT count(*) FROM iam WHERE $pred;" | tail -1)"
+		SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM iam WHERE $pred;" | tail -1)"
 	got="$(q "SET pgcolumnar.enable_custom_scan = off; SET enable_seqscan = off;
-		SELECT count(*) FROM iam WHERE $pred;" | tail -1)"
+		SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM iam WHERE $pred;" | tail -1)"
 
 	# THE ANSWER MUST BE NON-EMPTY as well as equal. Two paths that both return
 	# nothing agree, and a predicate matching no row would satisfy the arm below
 	# while exercising neither path.
 	check "premise: the $am predicate matches rows at all" \
-		"$(awk -v n="${want:-0}" 'BEGIN { print (n + 0 > 0) ? "matches" : "matches-nothing" }')" \
+		"$(awk -v n="${want##*:}" 'BEGIN { print (n + 0 > 0) ? "matches" : "matches-nothing" }')" \
 		"matches"
 
-	check "$am answers its operator with the same rows the scan returns" "$got" "$want"
+	check_text "$am answers its operator with the same rows the scan returns" "$got" "$want"
+	# AND THE ANSWER CAME THROUGH THE INDEX (#1339). enable_seqscan = off is a price,
+	# not a ban: a method the planner cannot use for this predicate leaves the table
+	# scanned on both sides, and the two scans agree.
+	check "$am answers through the index it built" \
+		"$(n="$(q "SET pgcolumnar.enable_custom_scan = off; SET enable_seqscan = off;
+			EXPLAIN (COSTS OFF) SELECT id FROM iam WHERE $pred;" | grep -c 'iam_probe')"
+		   [ "${n:-0}" -gt 0 ] && echo yes || echo no)" "yes"
 done
 
 psql_run "DROP INDEX IF EXISTS iam_probe;"

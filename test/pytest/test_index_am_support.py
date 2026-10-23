@@ -171,31 +171,42 @@ def test_every_access_method_the_page_claims_builds_and_answers(pgc_conn, expect
             # The scan path's answer is the oracle. Comparing against a literal
             # would pin this fixture rather than the property, and the property is
             # that the two paths agree.
+            # THE ROWS, NOT THEIR NUMBER (#1339): an index returning the wrong rows in
+            # the right number agreed on count(*). Each side is md5(ids):count.
+            ids = (f"SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) "
+                   f"FROM ias WHERE {pred}")
             c.execute("SET enable_indexscan = off")
             c.execute("SET enable_indexonlyscan = off")
             c.execute("SET enable_bitmapscan = off")
-            want = _count(c, f"SELECT count(*) FROM ias WHERE {pred}")
+            want = c.execute(ids).fetchone()[0]
             c.execute("RESET enable_indexscan")
             c.execute("RESET enable_indexonlyscan")
             c.execute("RESET enable_bitmapscan")
 
             c.execute("SET pgcolumnar.enable_custom_scan = off")
             c.execute("SET enable_seqscan = off")
-            got = _count(c, f"SELECT count(*) FROM ias WHERE {pred}")
+            got = c.execute(ids).fetchone()[0]
+            plan = "\n".join(r[0] for r in c.execute(
+                f"EXPLAIN (COSTS OFF) SELECT id FROM ias WHERE {pred}").fetchall())
             c.execute("RESET pgcolumnar.enable_custom_scan")
             c.execute("RESET enable_seqscan")
 
             # NON-EMPTY AS WELL AS EQUAL. Two paths that both return nothing
             # agree, and a predicate matching no row satisfies the arm below
             # while exercising neither path.
+            n = int(want.rsplit(":", 1)[1]) if want else 0
             expect.text(
-                "matches" if want > 0 else "matches-nothing", "matches",
+                "matches" if n > 0 else "matches-nothing", "matches",
                 f"premise: the {am} predicate matches rows at all",
             )
-            expect.num(
-                got, want,
+            expect.text(
+                got or "", want or "",
                 f"{am} answers its operator with the same rows the scan returns",
             )
+            # AND THE ANSWER CAME THROUGH THE INDEX (#1339): enable_seqscan = off is a
+            # price, not a ban, so a method the planner cannot use left both sides scans.
+            expect.text("yes" if "ias_probe" in plan else "no", "yes",
+                        f"{am} answers through the index it built")
 
         c.execute("DROP INDEX IF EXISTS ias_probe")
 

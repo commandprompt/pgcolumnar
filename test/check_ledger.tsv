@@ -3295,10 +3295,13 @@ import_export_privilege	import_export_privilege	the owner can still read its own
 import_export_privilege	import_export_privilege	victim still holds exactly its own rows (no import landed)	15;16;17;18;19	2026-10-14	parallel_copy without its INSERT check on the target
 index_am_support	index_am_support	an overlap query reaches the row through a GiST index	15;16;17;18;19	2026-09-23	pgcolumnar_index_build_range_scan errors, so CREATE INDEX fails
 index_am_support	index_am_support	btree answers its operator with the same rows the scan returns	15;16;17;18;19	2026-09-23	pgcolumnar_index_build_range_scan drops two rows in three, so the index misses entries
+index_am_support	index_am_support	btree answers through the index it built	15;16;17;18;19	never	-
 index_am_support	index_am_support	btree builds an index over a columnar table	15;16;17;18;19	2026-09-23	pgcolumnar_index_build_range_scan errors, so CREATE INDEX fails
 index_am_support	index_am_support	gist answers its operator with the same rows the scan returns	15;16;17;18;19	2026-09-23	pgcolumnar_index_build_range_scan drops two rows in three, so the index misses entries
+index_am_support	index_am_support	gist answers through the index it built	15;16;17;18;19	never	-
 index_am_support	index_am_support	gist builds an index over a columnar table	15;16;17;18;19	2026-09-23	pgcolumnar_index_build_range_scan errors, so CREATE INDEX fails
 index_am_support	index_am_support	hash answers its operator with the same rows the scan returns	15;16;17;18;19	2026-09-23	pgcolumnar_index_build_range_scan drops two rows in three, so the index misses entries
+index_am_support	index_am_support	hash answers through the index it built	15;16;17;18;19	never	-
 index_am_support	index_am_support	hash builds an index over a columnar table	15;16;17;18;19	2026-09-23	pgcolumnar_index_build_range_scan errors, so CREATE INDEX fails
 index_am_support	index_am_support	premise: btree, which the page claims, has a probe in this suite	15;16;17;18;19	never	-
 index_am_support	index_am_support	premise: gist, which the page claims, has a probe in this suite	15;16;17;18;19	never	-
@@ -3310,6 +3313,7 @@ index_am_support	index_am_support	premise: the gist predicate matches rows at al
 index_am_support	index_am_support	premise: the hash predicate matches rows at all	15;16;17;18;19	never	-
 index_am_support	index_am_support	premise: the spgist predicate matches rows at all	15;16;17;18;19	never	-
 index_am_support	index_am_support	spgist answers its operator with the same rows the scan returns	15;16;17;18;19	2026-09-23	pgcolumnar_index_build_range_scan drops two rows in three, so the index misses entries
+index_am_support	index_am_support	spgist answers through the index it built	15;16;17;18;19	never	-
 index_am_support	index_am_support	spgist builds an index over a columnar table	15;16;17;18;19	2026-09-23	pgcolumnar_index_build_range_scan errors, so CREATE INDEX fails
 index_am_support	index_am_support	the claim bullet holds the claim and nothing else	15;16;17;18;19	2026-09-19	docs/features.md qualifies the claim inside its own bullet: 'builds ... over a columnar table, though spgist cannot be chosen'. The first version of this suite screened for negation tokens and passed this, because \bnot\b has no word boundary before the 'not' in 'cannot';the whitelist refuses it for being a form the suite cannot read
 index_am_support	index_am_support	the features page names at least one index access method	15;16;17;18;19	2026-09-19	docs/features.md qualifies the claim inside its own bullet: 'builds ... over a columnar table, though spgist cannot be chosen'. The first version of this suite screened for negation tokens and passed this, because \bnot\b has no word boundary before the 'not' in 'cannot';docs/features.md stops naming any index access method, so the extractor finds nothing and the per-method loop runs zero times;the whitelist refuses it for being a form the suite cannot read
@@ -3324,10 +3328,11 @@ index_delete_liveness	index_delete_liveness	premise: arm A holds 400 rows before
 index_delete_liveness	index_delete_liveness	premise: arm A really plans an Index Scan, so the arm measures the index	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	a 50000-row correlated range uses the custom scan, not a fetching index	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	a selective point lookup still uses the index	15;16;17;18;19	never	-
+index_fetch_penalty_crossover	index_fetch_penalty_crossover	and the index-forced path really fetches by index	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	both paths return the same aggregate at 50000	15;16;17;18;19	never	-
-index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the 50000-row estimate is exact, so no arm here rests on a sample draw	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the btree on id exists	15;16;17;18;19	never	-
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	premise: the table holds all 1000000 rows	15;16;17;18;19	never	-
+index_fetch_penalty_crossover	index_fetch_penalty_crossover	the 50000-row estimate is exact, so no arm here rests on a sample draw	15;16;17;18;19	2026-10-22	columnar_tableam.c: ANALYZE samples the first int4 column halved, so its histogram is wrong (analyzehalf)
 index_fetch_penalty_crossover	index_fetch_penalty_crossover	the fetch penalty leaves a clustered ORDER BY on its index	15;16;17;18;19	never	-
 index_only	index_only	GUC off: no index-only scan	15;16;17;18;19	2026-10-21	pgcolumnar.enable_index_only_scan off no longer clears canreturn
 index_only	index_only	GUC on: index-only scan chosen	15;16;17;18;19	never	-
