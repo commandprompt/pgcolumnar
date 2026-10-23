@@ -6112,4 +6112,22 @@ suites_not_covered 69
 #     never         4176 + 16 = 4192
 #     dated         2914 + 38 = 2952
 #     4192 + 2952 == 7144
-checks_never_observed_red 4192
+#
+# #1339, product-side batch (jdatcmd): 4192 -> 4187. Five parallel_scan_cost checks
+# lose their `premise: ` prefix in both twins and are dated, because a one-line change
+# to columnar_customscan.c reddens each (#1236): the scan's CustomName changed to
+# PgColumnarScanX reddens the three "columnar scan" checks, the partial path planned
+# with one worker reddens "the parallel plan has Gather", and with workers + 1
+# reddens "the parallel plan uses two workers". partition_lifecycle gains one check,
+# "a NULL width or a NULL lead is refused before any DDL", from five-major runs (all
+# green on each of 15-19, shell and twin alike); partition_create_ahead without the
+# NULL halves of its guard reddens it in both twins. docs_style gains one, "META.json
+# names the base install script of the version VERSION holds", dated by META.json
+# naming the alpha4 -> alpha5 upgrade script, which reddens it in both twins.
+# suites_not_covered does not move.
+#
+#     ledger rows   7144 + 2 = 7146
+#     never         4192 - 5 = 4187
+#     dated         2952 + 7 = 2959
+#     4187 + 2959 == 7146
+checks_never_observed_red 4187

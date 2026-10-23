@@ -194,6 +194,12 @@ q "CREATE TABLE wa (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts);" >/
 check "a width that is not positive, or a negative lead, is refused before any DDL" \
 	"$(refusal "SELECT pgcolumnar.partition_create_ahead('wa', '0 seconds', 1);")|$(refusal "SELECT pgcolumnar.partition_create_ahead('wa', '-1 day', 1);")|$(refusal "SELECT pgcolumnar.partition_create_ahead('wa', '1 day', -1);")|$(kids wa)" \
 	"22023 width must be positive and ahead not negative|22023 width must be positive and ahead not negative|22023 width must be positive and ahead not negative|0"
+# And the NULL halves of that guard (#1339). The function is not STRICT, so a NULL
+# reaches the body; without `width IS NULL OR ... ahead IS NULL` the comparison is
+# NULL, the guard does not fire and the call answers instead of refusing.
+check "a NULL width or a NULL lead is refused before any DDL" \
+	"$(refusal "SELECT pgcolumnar.partition_create_ahead('wa', NULL, 1);")|$(refusal "SELECT pgcolumnar.partition_create_ahead('wa', '1 day', NULL);")|$(kids wa)" \
+	"22023 width must be positive and ahead not negative|22023 width must be positive and ahead not negative|0"
 q "CREATE TABLE lp (ts timestamptz NOT NULL, v int) PARTITION BY LIST (ts);
    CREATE TABLE mc (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts, v);
    CREATE TABLE np (ts timestamptz NOT NULL, v int) USING pgcolumnar;" >/dev/null
