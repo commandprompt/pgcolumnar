@@ -228,18 +228,20 @@ check_text "the collect loop forgets a worker's handle in the statement after it
 # dispatcher's collect loop unpins only a DONE slot; a worker that raised after the
 # pin reported FAILED, and its pinned segment stayed until postmaster restart
 # (measured on main with an injected ERROR after the pin: 8 segments left by a
-# two-stripe flush). The worker now commits first and pins last, so nothing between
-# dsm_pin_segment and the DONE write can raise: the source is read, comments blanked,
-# and the stretch must be the detach alone.
+# two-stripe flush). The worker now commits first and pins last, so nothing after
+# dsm_pin_segment can raise. The stretch read runs to the end of the PG_TRY block, not
+# just to the DONE write: an ERROR after DONE also lands in PG_CATCH, which overwrites
+# DONE with FAILED, so a commit moved after the DONE write leaks the segment too
+# (#1748 review). Comments blanked, it must be the detach and the DONE write alone.
 after_pin="$(perl -0777 -ne '
 	if (/\npgcolumnar_parallel_flush_worker\(Datum main_arg\)\n\{(.*?)\n\}\n/s) {
 		my $f = $1;
-		if ($f =~ /dsm_pin_segment\(outseg\);(.*?)pg_atomic_write_u32\(&me->state, PFLUSH_DONE\);/s) {
+		if ($f =~ /dsm_pin_segment\(outseg\);(.*?)\}\s*PG_CATCH\(\);/s) {
 			my $b = $1; $b =~ s{/\*.*?\*/}{}gs; $b =~ s{//[^\n]*}{}g; $b =~ s/\s+/ /g; $b =~ s/^ | $//g;
 			print $b eq "" ? "(nothing)" : $b;
-		} else { print "the pin and the DONE write are not both in the worker" }
+		} else { print "the pin and the PG_CATCH are not both in the worker" }
 	} else { print "pgcolumnar_parallel_flush_worker not found" }' "$SRC/columnar_write_state.c")"
-check_text "a flush worker runs nothing that can raise between pinning its output and reporting DONE" \
-	"$after_pin" "dsm_detach(outseg);"
+check_text "a flush worker runs nothing that can raise after pinning its output, to the end of its PG_TRY block" \
+	"$after_pin" "dsm_detach(outseg); pg_atomic_write_u32(&me->state, PFLUSH_DONE);"
 
 pgc_summary
