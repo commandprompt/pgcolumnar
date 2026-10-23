@@ -345,6 +345,7 @@ behaviour, the source of that number is named.
 - [297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically](#297-test_parallel_copypy-parallel_copy-splits-a-file-on-record-boundaries-and-loads-it-atomically)
 - [298. test_parallel.py: a parallel columnar scan returns what the heap returns](#298-test_parallelpy-a-parallel-columnar-scan-returns-what-the-heap-returns)
 - [299. test_parallel_vector_agg.py: the parallel vectorized aggregates fold every row group once](#299-test_parallel_vector_aggpy-the-parallel-vectorized-aggregates-fold-every-row-group-once)
+- [300. test_parallel_export_parquet.py: parallel Parquet export equals serial export equals the source](#300-test_parallel_export_parquetpy-parallel-parquet-export-equals-serial-export-equals-the-source)
 
 ## 1. How to read a test in here
 
@@ -11501,3 +11502,50 @@ Every comparison refuses a failed reading, so two failed arms never agree. The g
 | `test_pva_grouped_few_groups_many_workers` | grouped few-groups-many-workers: parallel == serial (#349) |
 | `test_pva_grouped_in_xact_deletes_equal_core_serial` | grouped in-xact deletes (H2): parallel fold == serial (#349) |
 | `test_pva_server_still_up` | server still up |
+
+## 300. test_parallel_export_parquet.py: parallel Parquet export equals serial export equals the source
+
+The pytest twin of `test/parallel_export_parquet.sh` (ported for #1341), every check by the shell's name: 54 tests, nine of the functions parametrized over a literal table of the shell's names (W is 1, 2 and 4). `pgcolumnar.parallel_export_parquet` writes one Parquet file per worker for a single columnar table and one per partition for a partitioned one, and `pgcolumnar.read_parquet` reads the directory back. Also asserted: empty input, an export inside a transaction with uncommitted rows (#329), a cancelled export (#394), the destination-length guard (#863) and the two refusals. On a private database; the exported files live in `server_dir`.
+
+### Every test
+
+The source hashes and counts come from the generator that fills each table, not from the table being exported. A refusal must carry its own message, and the server must answer with no backend killed by a signal since setup.
+
+| test | what it holds |
+| --- | --- |
+| `test_pexport_serial_export_reads_back_the_source` | serial export read-back == source |
+| `test_pexport_single_returns_the_source_count` | parametrized by the shell's three names: single(W): rows returned == source count |
+| `test_pexport_single_reads_back_the_source` | parametrized by the shell's three names: single(W): read-back == source |
+| `test_pexport_single_reads_back_the_serial_export` | parametrized by the shell's three names: single(W): read-back == serial export |
+| `test_pexport_single_writes_one_file_per_worker` | parametrized by the shell's three names: single(W): wrote exactly W files (distinct per worker) |
+| `test_pexport_single_writes_a_success_marker` | parametrized by the shell's three names: single(W): a _SUCCESS completion marker is written |
+| `test_pexport_single_success_marker_is_empty` | parametrized by the shell's three names: single(W): the _SUCCESS marker is empty |
+| `test_pexport_part_returns_the_source_count` | parametrized by the shell's three names: part(W): rows returned == source count |
+| `test_pexport_part_reads_back_the_source` | parametrized by the shell's three names: part(W): read-back == source |
+| `test_pexport_part_writes_one_file_per_partition` | parametrized by the shell's three names: part(W): one file per partition (4, incl the empty one) |
+| `test_pexport_empty_returns_zero_rows` | empty: rows returned == 0 |
+| `test_pexport_empty_reads_back_the_empty_set` | empty: read-back is the empty set |
+| `test_pexport_in_txn_count_is_the_committed_count` | in-txn export: read-back count == committed count (no duplication) |
+| `test_pexport_in_txn_has_no_duplicate_ids` | in-txn export: no duplicate ids in the read-back |
+| `test_pexport_in_txn_reads_back_the_committed_rows` | in-txn export: read-back == committed rows (uncommitted rows absent) |
+| `test_pexport_cancel_control_writes_files` | cancel-control: a completed export writes files |
+| `test_pexport_a_file_was_on_disk_before_the_cancel` | a file was on disk before the cancel (cleanup has work to do) |
+| `test_pexport_the_export_was_cancelled_mid_flight` | the export was cancelled mid-flight, not completed first (fixture premise) |
+| `test_pexport_a_cancelled_export_leaves_no_files` | a cancelled export leaves no partial files (item 2) |
+| `test_pexport_a_cancelled_export_writes_no_marker` | a cancelled export writes no _SUCCESS marker |
+| `test_pexport_a_retry_into_the_cleaned_directory_succeeds` | retry into the cleaned directory succeeds |
+| `test_pexport_the_retry_writes_a_fresh_marker` | the retry writes a fresh _SUCCESS marker |
+| `test_pexport_accepted_boundary_length` | accepted boundary: the destination is exactly MAXPGPATH-40 bytes |
+| `test_pexport_accepted_boundary_still_exports` | accepted boundary: a 984-byte destination still exports |
+| `test_pexport_accepted_boundary_wrote_both_parts` | accepted boundary: it wrote both part files |
+| `test_pexport_accepted_boundary_wrote_a_marker` | accepted boundary: it wrote a _SUCCESS marker |
+| `test_pexport_rejected_boundary_length` | rejected boundary: the destination is exactly MAXPGPATH-39 bytes |
+| `test_pexport_rejected_boundary_raises_54000` | rejected boundary: a 985-byte destination raises 54000 |
+| `test_pexport_rejected_boundary_creates_nothing` | rejected boundary: the destination was not created |
+| `test_pexport_window_length` | cleanup-scan window: the destination is exactly MAXPGPATH-30 bytes |
+| `test_pexport_window_raises_54000` | cleanup-scan window: a 994-byte destination raises 54000 |
+| `test_pexport_window_message_is_ours` | cleanup-scan window: and it is OUR message, not another 54000 |
+| `test_pexport_window_creates_nothing` | cleanup-scan window: the destination was not created |
+| `test_pexport_rejects_a_non_empty_directory` | reject a non-empty output directory |
+| `test_pexport_rejects_a_non_columnar_target` | reject a non-columnar target |
+| `test_pexport_the_server_survives_the_exports` | server still up after the exports |

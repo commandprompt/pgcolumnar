@@ -1102,4 +1102,6 @@ guard_tests 804
 # 13 tests, one per check, by collection over the cluster files.
 # cluster_tests 3333 -> 3362 for #1341's test_parallel_vector_agg.py, the twin of parallel_vector_agg.sh:
 # 29 tests, one per check, by collection over the cluster files.
-cluster_tests 3362
+# cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
+# 54 tests, one per check, by collection over the cluster files.
+cluster_tests 3416

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 70
+suites_not_covered 69
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6089,4 +6089,27 @@ suites_not_covered 70
 #     never         4168 + 8 = 4176
 #     dated         2893 + 21 = 2914
 #     4176 + 2914 == 7090
-checks_never_observed_red 4176
+#
+# #1341, parallel_export_parquet seeded, with its twin (jdatcmd): 3878 -> 3894, and
+# suites_not_covered 103 -> 102. The suite had no rows. It enters with 54 checks from
+# five-major runs (54/54 on each of 15-19, shell and twin alike), after four fixes. The
+# source oracles read the columnar table under test, so with tuple_insert dropping one
+# row all 54 passed; they now read the generator. The two refusals grepped for "error",
+# which a dead server's psql prints, and took any error as the refusal; they now read
+# psql's exit status and match their own messages. "a 984-byte destination still
+# exports" read a dead server as "none" (accepted), and the two "not created" checks
+# read it as absent; each now needs the statement to have reached the server. "server
+# still up" took SELECT 1, which answers after crash recovery; it now also needs the
+# log's count of backends killed by a signal unmoved. Loop names are now literal. 38
+# are dated by seven mutations, each reddening the same names in both twins: an insert
+# that drops one row, a non-columnar target not refused, the cancel cleanup not
+# removing files, no _SUCCESS marker, the length guard probing only the part name, a
+# non-empty directory not refused, and every worker writing part-0000. 16 arrive never,
+# among them the premises, the empty-input pair, the per-partition file counts and the
+# survival check, which a backend killed by SIGSEGV reddens as a harness edit.
+#
+#     ledger rows   7090 + 54 = 7144
+#     never         4176 + 16 = 4192
+#     dated         2914 + 38 = 2952
+#     4192 + 2952 == 7144
+checks_never_observed_red 4192

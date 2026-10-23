@@ -4853,6 +4853,60 @@ parallel_degree	parallel_degree	premise: the columnar table really is smaller on
 parallel_degree	parallel_degree	premise: the heap plan is parallel	15;16;17;18;19	never	-
 parallel_degree	parallel_degree	the columnar plan is parallel	15;16;17;18;19	2026-10-21	columnar_customscan.c: the parallel columnar partial path never added (if (false && workers > 0))
 parallel_degree	parallel_degree	the worker cap is not what decides either arm	15;16;17;18;19	2026-10-21	columnar_customscan.c: the #451 estimate over-asks into the cap, pages * 243;columnar_customscan.c: the parallel columnar partial path never added (if (false && workers > 0))
+parallel_export_parquet	parallel_export_parquet	a cancelled export leaves no partial files (item 2)	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the error cleanup of a cancelled export does not remove its part files
+parallel_export_parquet	parallel_export_parquet	a cancelled export writes no _SUCCESS marker	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	a file was on disk before the cancel (cleanup has work to do)	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	accepted boundary: a 984-byte destination still exports	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	accepted boundary: it wrote a _SUCCESS marker	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written
+parallel_export_parquet	parallel_export_parquet	accepted boundary: it wrote both part files	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet
+parallel_export_parquet	parallel_export_parquet	accepted boundary: the destination is exactly MAXPGPATH-40 bytes	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	cancel-control: a completed export writes files	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	cleanup-scan window: a 994-byte destination raises 54000	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the length guard probes only the final part name, not the in-flight .tmp.<pid> form
+parallel_export_parquet	parallel_export_parquet	cleanup-scan window: and it is OUR message, not another 54000	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the length guard probes only the final part name, not the in-flight .tmp.<pid> form
+parallel_export_parquet	parallel_export_parquet	cleanup-scan window: the destination is exactly MAXPGPATH-30 bytes	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	cleanup-scan window: the destination was not created	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the length guard probes only the final part name, not the in-flight .tmp.<pid> form
+parallel_export_parquet	parallel_export_parquet	empty: read-back is the empty set	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	empty: rows returned == 0	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	in-txn export: no duplicate ids in the read-back	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet;columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	in-txn export: read-back == committed rows (uncommitted rows absent)	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet;columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	in-txn export: read-back count == committed count (no duplication)	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet;columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	part(1): one file per partition (4, incl the empty one)	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	part(1): read-back == source	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	part(1): rows returned == source count	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	part(2): one file per partition (4, incl the empty one)	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	part(2): read-back == source	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	part(2): rows returned == source count	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	part(4): one file per partition (4, incl the empty one)	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	part(4): read-back == source	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	part(4): rows returned == source count	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	reject a non-columnar target	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: a non-columnar target is not refused (else if (true)), so a heap target fails on another error
+parallel_export_parquet	parallel_export_parquet	reject a non-empty output directory	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: a non-empty output directory is not refused
+parallel_export_parquet	parallel_export_parquet	rejected boundary: a 985-byte destination raises 54000	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the length guard probes only the final part name, not the in-flight .tmp.<pid> form
+parallel_export_parquet	parallel_export_parquet	rejected boundary: the destination is exactly MAXPGPATH-39 bytes	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	rejected boundary: the destination was not created	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the length guard probes only the final part name, not the in-flight .tmp.<pid> form
+parallel_export_parquet	parallel_export_parquet	retry into the cleaned directory succeeds	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the error cleanup of a cancelled export does not remove its part files
+parallel_export_parquet	parallel_export_parquet	serial export read-back == source	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	server still up after the exports	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	single(1): a _SUCCESS completion marker is written	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written
+parallel_export_parquet	parallel_export_parquet	single(1): read-back == serial export	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	single(1): read-back == source	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	single(1): rows returned == source count	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	single(1): the _SUCCESS marker is empty	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written
+parallel_export_parquet	parallel_export_parquet	single(1): wrote exactly 1 files (distinct per worker)	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	single(2): a _SUCCESS completion marker is written	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written
+parallel_export_parquet	parallel_export_parquet	single(2): read-back == serial export	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet
+parallel_export_parquet	parallel_export_parquet	single(2): read-back == source	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet;columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	single(2): rows returned == source count	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	single(2): the _SUCCESS marker is empty	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written
+parallel_export_parquet	parallel_export_parquet	single(2): wrote exactly 2 files (distinct per worker)	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet
+parallel_export_parquet	parallel_export_parquet	single(4): a _SUCCESS completion marker is written	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written
+parallel_export_parquet	parallel_export_parquet	single(4): read-back == serial export	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet
+parallel_export_parquet	parallel_export_parquet	single(4): read-back == source	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet;columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	single(4): rows returned == source count	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert drops the row whose first column is 1
+parallel_export_parquet	parallel_export_parquet	single(4): the _SUCCESS marker is empty	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written
+parallel_export_parquet	parallel_export_parquet	single(4): wrote exactly 4 files (distinct per worker)	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: every worker of a single-table export writes part-0000.parquet
+parallel_export_parquet	parallel_export_parquet	the export was cancelled mid-flight, not completed first (fixture premise)	15;16;17;18;19	never	-
+parallel_export_parquet	parallel_export_parquet	the retry writes a fresh _SUCCESS marker	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written;columnar_parallel_export.c: the error cleanup of a cancelled export does not remove its part files
 parallel_flush_optin	parallel_flush_optin	a default flush dispatches serial	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.parallel_flush boot default set to true
 parallel_flush_optin	parallel_flush_optin	opting in stores byte-identical chunks to the serial path	15;16;17;18;19	2026-10-21	columnar_write_state.c: flush_columns_parallel stores each worker column under the next index (colResults[(col + 1) % natts])
 parallel_flush_optin	parallel_flush_optin	parallel_flush is off by default	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.parallel_flush boot default set to true
