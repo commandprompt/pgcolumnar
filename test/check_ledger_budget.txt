@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 69
+suites_not_covered 68
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6112,4 +6112,24 @@ suites_not_covered 69
 #     never         4176 + 16 = 4192
 #     dated         2914 + 38 = 2952
 #     4192 + 2952 == 7144
-checks_never_observed_red 4192
+#
+# #1341, native_fold_deferral seeded, with its twin (OffgridwithJD): 4192 -> 4196, and
+# suites_not_covered 69 -> 68. The suite had no rows. It enters with 13 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The heap mirror was a CTAS from the columnar table, so it read through the scan under
+# test: with the writer storing one value off by one, the fold, the row path and the
+# mirror all agreed and main passed 13/13. The mirror is now written from the
+# generator. The three answer checks compared readings taken with tail -1 using check:
+# with the server stopped all three passed on empty strings. Readings now fail empty
+# and the checks are check_text. And three premises a one-line pgcolumnar change
+# reddens (the fold's ANALYZE line, the EXPLAIN group total, the writer's stripe limit)
+# lost the prefix. 9 are dated by eight mutations, each reddening the same names in
+# both twins. 4 arrive never: the two remaining premises, the counter's presence, and
+# the eager-load bound, which no measured mutation reaches: with every group deferring,
+# the loads equal survivors times width exactly, which still clears its 99% floor.
+#
+#     ledger rows   7144 + 13 = 7157
+#     never         4192 + 4 = 4196
+#     dated         2952 + 9 = 2961
+#     4196 + 2961 == 7157
+checks_never_observed_red 4196

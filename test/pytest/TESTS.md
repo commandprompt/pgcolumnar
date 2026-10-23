@@ -346,6 +346,7 @@ behaviour, the source of that number is named.
 - [298. test_parallel.py: a parallel columnar scan returns what the heap returns](#298-test_parallelpy-a-parallel-columnar-scan-returns-what-the-heap-returns)
 - [299. test_parallel_vector_agg.py: the parallel vectorized aggregates fold every row group once](#299-test_parallel_vector_aggpy-the-parallel-vectorized-aggregates-fold-every-row-group-once)
 - [300. test_parallel_export_parquet.py: parallel Parquet export equals serial export equals the source](#300-test_parallel_export_parquetpy-parallel-parquet-export-equals-serial-export-equals-the-source)
+- [301. test_native_fold_deferral.py: the batch fold defers payload until a row passes its keys, and the work is measured](#301-test_native_fold_deferralpy-the-batch-fold-defers-payload-until-a-row-passes-its-keys-and-the-work-is-measured)
 
 ## 1. How to read a test in here
 
@@ -11550,3 +11551,27 @@ The source hashes and counts come from the generator that fills each table, not 
 | `test_pexport_rejects_a_non_empty_directory` | reject a non-empty output directory |
 | `test_pexport_rejects_a_non_columnar_target` | reject a non-columnar target |
 | `test_pexport_the_server_survives_the_exports` | server still up after the exports |
+
+## 301. test_native_fold_deferral.py: the batch fold defers payload until a row passes its keys, and the work is measured
+
+The twin of `test/native_fold_deferral.sh`. On a five-column table over six row groups, a 1%-survival sum folds with every group deferred and loads exactly survivors times payload width; a 99%-survival sum defers only the optimistic first group and loads more than survivors alone; and both answers equal the row path and a heap mirror written from the generator.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()`, so two failed reads never agree, and a count or plan line that cannot be read is a failed reading, never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_fold_deferral_the_selective_query_takes_the_fold` | the selective query takes the fold (ANALYZE, post-#602) |
+| `test_fold_deferral_the_selective_predicate_is_selective` | premise: the selective predicate is genuinely selective (<= 2%) |
+| `test_fold_deferral_deferred_fold_equals_row_path` | deferred fold == row path (selective) |
+| `test_fold_deferral_deferred_fold_equals_heap_mirror` | deferred fold == heap mirror (selective) |
+| `test_fold_deferral_high_survival_fold_equals_heap_mirror` | fold == heap mirror (high survival) |
+| `test_fold_deferral_the_loads_counter_exists` | the loads counter exists under ANALYZE |
+| `test_fold_deferral_the_predicate_has_survivors` | premise: the predicate has survivors (the identity is not 0 == 0) |
+| `test_fold_deferral_loads_equal_survivors_times_payload` | deferred: loads == survivors x payload width (the identity) |
+| `test_fold_deferral_explain_group_total_matches_stats` | EXPLAIN group total == stats() group count |
+| `test_fold_deferral_the_fixture_spans_several_groups` | the fixture spans several groups |
+| `test_fold_deferral_every_group_deferred_at_one_percent` | deferred: every group deferred at 1% survival |
+| `test_fold_deferral_only_the_first_group_defers_at_high_survival` | adaptive: only the optimistic first group deferred at 99% survival |
+| `test_fold_deferral_eager_groups_load_more_than_survivors` | adaptive: eager groups load more than survivors alone (work measured, not assumed) |
