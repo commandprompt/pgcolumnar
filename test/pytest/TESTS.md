@@ -387,6 +387,7 @@ behaviour, the source of that number is named.
 - [339. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards](#339-test_decode_interruptspy-the-decode-paths-interrupt-checks-each-inside-the-loop-it-guards)
 - [340. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value](#340-test_decode_skip_interruptspy-the-thrift-and-avro-skip-loops-of-a-hostile-file-yield-to-a-cancel-per-skipped-value)
 - [341. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop](#341-test_native_cancelpy-a-scans-row-group-load-yields-to-statement_timeout-inside-the-decode-loop)
+- [342. test_objstore_export_double_cancel.py: a second cancel during a remote export's cleanup keeps the export's own error](#342-test_objstore_export_double_cancelpy-a-second-cancel-during-a-remote-exports-cleanup-keeps-the-exports-own-error)
 
 ## 1. How to read a test in here
 
@@ -7592,8 +7593,16 @@ The pytest twin of `test/native_skip.sh`, every check by the shell's name (#1433
 | `test_a_partitioned_columnar_table_returns_heaps_rows` | the partitioned table returns heap's rows (#436) |
 | `test_a_partition_takes_the_columnar_custom_scan` | it plans the columnar custom scan (#436) |
 | `test_a_partition_prunes_row_groups` | and it prunes row groups (#436) |
+| `test_heap_finds_rows_across_the_gap` | **premise**: heap finds rows for each of `>`, `>=`, `=`, `<`, `<=` against a timestamptz constant across the 2024-03-10 New York gap (#1738) (parametrized) |
+| `test_a_timestamptz_constant_across_the_gap_returns_heaps_rows` | a timestamp column against a timestamptz constant across a spring-forward gap returns heap's rows, for each operator (#1738) (parametrized) |
+| `test_across_the_fall_back_hour_returns_heaps_rows` | across the fall-back hour, where the conversion stays monotonic, the rows match heap's (#1738) |
+| `test_the_reverse_pair_in_the_gap_returns_heaps_rows` | the reverse pair, a timestamptz column against a timestamp constant in the gap, returns heap's rows (#1738) |
+| `test_a_same_type_constant_still_skips` | a timestamp column against a timestamp constant still removes a group (#1738) |
+| `test_the_reverse_pair_still_skips` | the reverse pair still removes a group: the refusal covers only (timestamp, timestamptz) (#1738) |
 
 ONE CHECK PER TEST (#1339): module fixtures build each data set once, and each test asserts one reading. Measured with zone-map skipping disabled in the scan on PG17: the shell reddens 21 checks. The earlier twin, 13 tests holding 76 checks, reported 10. This one reports the same 21.
+
+A TIMESTAMP COLUMN AGAINST A TIMESTAMPTZ CONSTANT (#1738) is not skipped on: the cross-type proc reads each group's min/max wall time as an instant in the session zone, which is not order-preserving across a spring-forward gap (02:30 is 07:30Z, 03:00 is 07:00Z in New York on 2024-03-10). Main's reader fails the five gap arms on PG15-19, in shell and twin alike; refusing the reverse pair as well fails only `the reverse pair, tz against a timestamp constant, still skips groups (#1738)`.
 
 ## 134. test_unique_conc.py: concurrent inserters of one unique key serialize
 
@@ -10288,6 +10297,13 @@ The ON check reads the split line ("N of M columns by K worker(s)") as well as t
 | `test_optin_the_guc_on_flushes_in_workers` | with the GUC on, a wide-numeric flush dispatches parallel (not a silent serial fall-back) |
 | `test_optin_stores_the_serial_paths_chunks` | opting in stores byte-identical chunks to the serial path |
 | `test_optin_the_dispatch_metric_cannot_separate_the_shapes` | the dispatch metric is byte-identical for a random and a constant column (the metric cannot separate opposite-cost shapes) |
+| `test_double_cancel_a_worker_is_still_encoding` | premise: a flush worker is still encoding when the second cancel lands |
+| `test_double_cancel_the_cheap_workers_published` | premise: the cheap workers published their segments before the second cancel |
+| `test_double_cancel_reports_the_first_cancel` | a twice-cancelled parallel flush reports the first cancel |
+| `test_double_cancel_leaves_no_segment_pinned` | a twice-cancelled parallel flush leaves no worker segment pinned |
+| `test_the_collect_loop_forgets_a_handle_after_its_unpin` | the collect loop forgets a worker's handle in the statement after it unpins the segment |
+
+Arm 4 (#1745) runs on a private cluster with `dynamic_shared_memory_type = mmap`, so the workers' output segments are files in that cluster's own `pg_dynshmem` and can be counted from SQL. A 2s `statement_timeout` cancels a parallel flush while one worker still encodes a zstd-19 text column, and `pg_cancel_backend` cancels it again 1.5s later, inside the error cleanup's wait. No new segment may survive, and the error reported must be the first cancel's.
 
 ## 263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics
 
@@ -12803,3 +12819,21 @@ Every test makes one check under the shell's name, in a private database, becaus
 | `test_the_load_outlasts_the_timeout` | premise: the load outlasts the timeout, so the timeout can fire during it |
 | `test_the_short_timeout_is_what_fired` | the short timeout is what fired |
 | `test_the_cancel_arrives_well_before_the_load_completes` | cancel arrives well before the load completes |
+
+## 342. test_objstore_export_double_cancel.py: a second cancel during a remote export's cleanup keeps the export's own error
+
+The pytest twin of `test/objstore_export_double_cancel.sh` (#1741), every check by the shell's name. A `parallel_export_parquet` to `s3://` is cancelled while its workers upload, and again while the dispatcher's cleanup DELETE is held in flight by the fixture server's `__delete_delay__` hook. The export must report its own cancel (57014), and the server log must not gain "errstart was not called": the cleanup used to run with the first cancel's error still on the error stack, and the module's best-effort catch emptied the whole stack when it swallowed the second cancel. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole scenario once, and makes one `expect` call by the shell's check name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_double_cancel_sigv4_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_a_worker_was_uploading_before_the_first_cancel` | premise: a worker was uploading before the first cancel |
+| `test_the_cleanup_was_deleting_when_the_second_cancel_landed` | premise: the first cancel's cleanup was deleting when the second cancel landed |
+| `test_the_export_reports_its_own_cancel` | double cancel: the export reports its own cancel (57014) |
+| `test_the_server_log_has_no_errstart_was_not_called` | double cancel: the server log has no 'errstart was not called' |
+| `test_no_completed_object_remains_at_the_prefix` | double cancel: no completed object remains at the prefix |
+| `test_the_server_survived` | double cancel: the server survived |

@@ -32,8 +32,17 @@ set -uo pipefail
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 # The ON arms need worker slots; a bulk flush registers min(natts, <=8) workers.
+# mmap puts every dynamic shared memory segment in this cluster's own pg_dynshmem,
+# where arm 4 can count them from SQL (#1745); posix would put them in /dev/shm,
+# shared with every other cluster on the machine.
 psql_run "ALTER SYSTEM SET max_worker_processes = 16;"
-env PATH="$PGC_BINDIR:$PATH" pg_ctl -D "$PGC_PGDATA" restart -w -o "-p $PGC_PORT" >/dev/null 2>&1 || true
+psql_run "ALTER SYSTEM SET dynamic_shared_memory_type = 'mmap';"
+# Through pgc_pg, which drops to postgres when this runs as root (CI's suites job
+# does): a bare pg_ctl refuses root, and the refusal used to be swallowed, so the
+# server kept posix segments and arm 4 counted 0 whatever the code did (#1746
+# review). A restart that fails is said out loud; arm 4's premise then fails on it.
+pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' restart -w -o '-p $PGC_PORT'" >/dev/null 2>&1 \
+	|| echo "-- RESTART FAILED: dynamic_shared_memory_type = mmap is not in effect"
 sleep 1
 
 q() {
@@ -145,5 +154,72 @@ check_text "the dispatch metric is byte-identical for a random and a constant co
 # REMOVAL PROOF / future signal: this can only go RED if a distinguishing term
 # (e.g. per-column encode cost) is added to the metric -- which is the signal a
 # real gate has become possible. A comment at the dispatch says so.
+
+# ---- 4. a second cancel during the error cleanup frees what the workers pinned (#1745)
+#
+# A worker publishes its columns in an OUTPUT segment it pins, so the segment
+# outlives it. On an error during the dispatcher's wait, pflush_error_cleanup
+# terminates the workers, waits for them, then unpins every published segment.
+# The wait checked for interrupts, so a second cancel landing in it raised out of
+# the cleanup before the unpin: the segments stayed pinned until postmaster
+# restart, and the second cancel was reported in place of the first.
+#
+# The fixture makes the window deterministic. Seven cheap int columns are encoded
+# and published within the first second; one text column at zstd level 19 keeps a
+# worker encoding for many seconds, and a terminated worker exits only at its next
+# interrupt check, after that column. The first cancel is a 2s statement_timeout,
+# so it lands in the dispatcher's wait with the cheap outputs published; the second
+# is pg_cancel_backend at 3.5s, while the cleanup waits for the encoding worker.
+dsm() { q "SELECT string_agg(f, ' ' ORDER BY f) FROM pg_ls_dir('pg_dynshmem') f"; }
+pf_workers() { q "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'pgcolumnar parallel_flush worker'"; }
+q "CREATE TABLE dc (a int, b int, c int, d int, e int, f int, g int, x text) USING pgcolumnar;" >/dev/null
+DSM0="$(dsm)"
+DCOUT="$PGC_WORKDIR/double_cancel.out"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+	-v VERBOSITY=verbose -c "SET application_name = 'pf_double_cancel';" \
+	-c "SET pgcolumnar.parallel_flush = on;" -c "SET pgcolumnar.compression = zstd;" \
+	-c "SET pgcolumnar.compression_level = 19;" -c "SET pgcolumnar.stripe_row_limit = 1000000;" \
+	-c "SET statement_timeout = '2s';" \
+	-c "INSERT INTO dc SELECT g, g, g, g, g, g, g, md5(g::text) || md5((g * 7)::text) || md5((g * 13)::text) FROM generate_series(1, 150000) g;" \
+	>"$DCOUT" 2>&1 &
+DCPID=$!
+sleep 3.5
+W_AT="$(pf_workers)"
+NEW_AT="$(LC_ALL=C comm -13 <(tr ' ' '\n' <<<"$DSM0" | LC_ALL=C sort) <(dsm | tr ' ' '\n' | LC_ALL=C sort) | grep -c .)"
+q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE application_name = 'pf_double_cancel';" >/dev/null
+wait "$DCPID"
+for _ in $(seq 1 120); do [ "$(pf_workers)" = 0 ] && break; sleep 1; done
+LEFT="$(LC_ALL=C comm -13 <(tr ' ' '\n' <<<"$DSM0" | LC_ALL=C sort) <(dsm | tr ' ' '\n' | LC_ALL=C sort) | grep -c .)"
+
+check_text "premise: a flush worker is still encoding when the second cancel lands" \
+	"$([ "${W_AT:-0}" -ge 1 ] 2>/dev/null && echo yes || echo "no (workers=[$W_AT])")" "yes"
+check_text "premise: the cheap workers published their segments before the second cancel" \
+	"$([ "${NEW_AT:-0}" -ge 2 ] 2>/dev/null && echo yes || echo "no (new segments=[$NEW_AT])")" "yes"
+check_text "a twice-cancelled parallel flush reports the first cancel" \
+	"$(grep -oE 'ERROR: +[0-9A-Z]{5}: .*' "$DCOUT" | head -1 | sed -E 's/ERROR: +//')" \
+	"57014: canceling statement due to statement timeout"
+check_text "a twice-cancelled parallel flush leaves no worker segment pinned" \
+	"$LEFT new segments" "0 new segments"
+
+# ---- 5. the collect loop forgets a handle as soon as it unpins it (#1753) -----
+#
+# The collect loop attaches a DONE worker's OUTPUT segment, unpins it, reads its
+# columns, then detaches. While the handle stayed set after the unpin, an error in
+# between (a palloc in the deserialize) sent pflush_error_cleanup to attach that
+# segment again: "can't attach the same segment more than once" replaced the
+# original error and cut the cleanup short, leaving the other segments pinned
+# (measured on main with an ERROR injected after the first unpin: 3 left). The
+# statement right after the unpin must forget the handle; the source is read with
+# comments blanked.
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src"
+after_unpin="$(perl -0777 -ne '
+	if (/\nflush_columns_parallel\(.*?\n\{(.*?)\n\}\n/s) {
+		my $f = $1; $f =~ s{/\*.*?\*/}{}gs; $f =~ s{//[^\n]*}{}g;
+		if ($f =~ /dsm_unpin_segment\(slots\[i\]\.outHandle\);\s*([^;]*;)/s) {
+			my $b = $1; $b =~ s/\s+/ /g; $b =~ s/^ | $//g; print $b;
+		} else { print "the collect loop does not unpin slots[i].outHandle" }
+	} else { print "flush_columns_parallel not found" }' "$SRC/columnar_write_state.c")"
+check_text "the collect loop forgets a worker's handle in the statement after it unpins the segment" \
+	"$after_unpin" "slots[i].outHandle = DSM_HANDLE_INVALID;"
 
 pgc_summary

@@ -400,6 +400,31 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+- **A `timestamp` column compared with a `timestamptz` constant no longer loses
+  rows across a spring-forward gap.** The zone maps compared each chunk group's
+  min/max through the cross-type ordering proc, which reads a wall time as an
+  instant in the session zone, and that is not order-preserving inside the gap:
+  in New York on 2024-03-10, `02:30` is 07:30Z but `03:00` is 07:00Z, so a group
+  whose max was `03:00` was skipped for `ts > '07:15+00'` although its `02:30` row
+  matched. That pair is no longer used to skip; the reverse pair and same-type
+  comparisons still are (#1738). `test/native_skip.sh` and `test_native_skip.py`.
+- **A second cancel during a remote export's cleanup no longer reports "errstart
+  was not called".** When a `parallel_export_parquet` to `s3://` was cancelled
+  again while the first cancel's cleanup was still deleting its parts, the export
+  failed with `XX000: errstart was not called` instead of its own 57014. The
+  cleanup ran with the first cancel's error still on the error stack, and the
+  object-store module's best-effort catch, swallowing the second cancel, emptied
+  the whole stack. That cleanup, and the sink abort in the Parquet, Arrow and
+  `_SUCCESS` writers, now copies the error out first and re-throws it afterwards
+  (#1741). `test/objstore_export_double_cancel.sh` and
+  `test_objstore_export_double_cancel.py`.
+- **A second cancel during a parallel flush's error cleanup no longer leaks the
+  workers' output segments.** With `pgcolumnar.parallel_flush` on, a cancel during
+  the flush terminates the workers and frees the shared memory segments they
+  published. A second cancel landing while the cleanup waited for a worker to exit
+  ended the cleanup early: the segments stayed pinned until the server restarted, and
+  the second cancel was reported instead of the first. The cleanup now finishes
+  whatever arrives, in the time a single cancel already took (#1745).
 - **`export_parquet` no longer marks a `timestamp` column as a UTC instant.** Both
   `timestamp` and `timestamptz` were written as the converted type `TIMESTAMP_MICROS`,
   which the Parquet spec defines as adjusted to UTC. Every other reader (pyarrow,

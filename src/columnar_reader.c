@@ -951,6 +951,19 @@ pgcolumnar_make_predicates(SkipPredicate *out, int nkeys, ScanKey keys,
 
 			if (!OidIsValid(opclass))
 				continue;
+
+			/*
+			 * Not a timestamp column against a timestamptz constant (#1738).
+			 * timestamp_cmp_timestamptz turns the column's value into an instant
+			 * in the session zone, and across a spring-forward gap that is not
+			 * order-preserving: in New York on 2024-03-10 the nonexistent 02:30
+			 * is read as standard time, 07:30Z, while 03:00 is 07:00Z. A group
+			 * whose max is 03:00 then looked wholly below 07:15Z although its
+			 * 02:30 row is above it, and was skipped. The reverse pair converts
+			 * the constant once, and the date pairs carry no zone, so both stay.
+			 */
+			if (colType == TIMESTAMPOID && argType == TIMESTAMPTZOID)
+				continue;
 			opfamily = get_opclass_family(opclass);
 			cmpProc = get_opfamily_proc(opfamily, colType, argType,
 										BTORDER_PROC);

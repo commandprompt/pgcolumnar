@@ -5189,6 +5189,13 @@ objstore_crlf	objstore_crlf	a CR/LF in the URL path is rejected before the reque
 objstore_crlf	objstore_crlf	backend alive	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	backend alive after the REST attempt	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	no injected line reached the listener (no request splitting)	15;16;17;18;19	2026-10-14	the request-line guard on the URL path removed
+objstore_export_double_cancel	objstore_export_double_cancel	double cancel: no completed object remains at the prefix	15;16;17;18;19	never	-
+objstore_export_double_cancel	objstore_export_double_cancel	double cancel: the export reports its own cancel (57014)	15;16;17;18;19	2026-10-22	PgColumnarCleanupAndRethrow runs the cleanup with the handled error still on the error stack and PG_RE_THROWs (the pre-#1741 order)
+objstore_export_double_cancel	objstore_export_double_cancel	double cancel: the server log has no 'errstart was not called'	15;16;17;18;19	2026-10-22	PgColumnarCleanupAndRethrow runs the cleanup with the handled error still on the error stack and PG_RE_THROWs (the pre-#1741 order)
+objstore_export_double_cancel	objstore_export_double_cancel	double cancel: the server survived	15;16;17;18;19	never	-
+objstore_export_double_cancel	objstore_export_double_cancel	premise: a worker was uploading before the first cancel	15;16;17;18;19	never	-
+objstore_export_double_cancel	objstore_export_double_cancel	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
+objstore_export_double_cancel	objstore_export_double_cancel	premise: the first cancel's cleanup was deleting when the second cancel landed	15;16;17;18;19	never	-
 objstore_http_read	objstore_http_read	A: count(*) over http	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
 objstore_http_read	objstore_http_read	A: full scan http == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
 objstore_http_read	objstore_http_read	A: projection http == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
@@ -5546,8 +5553,13 @@ parallel_export_parquet	parallel_export_parquet	single(4): wrote exactly 4 files
 parallel_export_parquet	parallel_export_parquet	the export was cancelled mid-flight, not completed first (fixture premise)	15;16;17;18;19	never	-
 parallel_export_parquet	parallel_export_parquet	the retry writes a fresh _SUCCESS marker	15;16;17;18;19	2026-10-22	columnar_parallel_export.c: the _SUCCESS marker is never written;columnar_parallel_export.c: the error cleanup of a cancelled export does not remove its part files
 parallel_flush_optin	parallel_flush_optin	a default flush dispatches serial	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.parallel_flush boot default set to true
+parallel_flush_optin	parallel_flush_optin	a twice-cancelled parallel flush leaves no worker segment pinned	15;16;17;18;19	2026-10-22	columnar_write_state.c: pflush_error_cleanup waits for its workers without HOLD_INTERRUPTS, so a second cancel leaves before the unpin loop
+parallel_flush_optin	parallel_flush_optin	a twice-cancelled parallel flush reports the first cancel	15;16;17;18;19	2026-10-22	columnar_write_state.c: pflush_error_cleanup waits for its workers without HOLD_INTERRUPTS, so a second cancel leaves before the unpin loop
 parallel_flush_optin	parallel_flush_optin	opting in stores byte-identical chunks to the serial path	15;16;17;18;19	2026-10-21	columnar_write_state.c: flush_columns_parallel stores each worker column under the next index (colResults[(col + 1) % natts])
 parallel_flush_optin	parallel_flush_optin	parallel_flush is off by default	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.parallel_flush boot default set to true
+parallel_flush_optin	parallel_flush_optin	premise: a flush worker is still encoding when the second cancel lands	15;16;17;18;19	never	-
+parallel_flush_optin	parallel_flush_optin	premise: the cheap workers published their segments before the second cancel	15;16;17;18;19	never	-
+parallel_flush_optin	parallel_flush_optin	the collect loop forgets a worker's handle in the statement after it unpins the segment	15;16;17;18;19	2026-10-23	columnar_write_state.c: the collect loop invalidates slots[i].outHandle after dsm_detach, not right after dsm_unpin_segment
 parallel_flush_optin	parallel_flush_optin	the dispatch metric is byte-identical for a random and a constant column (the metric cannot separate opposite-cost shapes)	15;16;17;18;19	2026-10-21	columnar_write_state.c: pflush_metrics adds each value stream's first byte to valbytes, a content term
 parallel_flush_optin	parallel_flush_optin	with the GUC on, a wide-numeric flush dispatches parallel (not a silent serial fall-back)	15;16;17;18;19	2026-10-21	columnar_write_state.c: flush_columns_parallel never registers a worker (if (false && RegisterDynamicBackgroundWorker(...))), so every column falls back to serial
 parallel_scan_cost	parallel_scan_cost	an I/O-dominated parallel scan is not priced at serial/workers	15;16;17;18;19	never	-

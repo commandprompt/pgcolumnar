@@ -6962,4 +6962,52 @@ suites_not_covered 28
 #     never         4534 + 4 = 4538
 #     dated         3411 + 1 = 3412
 #     4538 + 3412 == 7950
-checks_never_observed_red 4538
+#
+# #1741, a second cancel during a remote export's cleanup, objstore_export_double_cancel
+# seeded with its twin (OffgridwithJD): 4538 -> 4543. A new suite, registered with its
+# rows, so suites_not_covered stays 34. A parallel_export_parquet to s3:// is cancelled
+# while its workers upload, and again while the dispatcher's cleanup DELETE is held in flight
+# by the fixture server's new __delete_delay__ hook. On main the module's best-effort catch
+# swallowed the second cancel with FlushErrorState(), which also emptied the first cancel's
+# error off the stack, and the re-throw reported "errstart was not called" (XX000), on every
+# major 15-19, shell and twin alike. 7 checks: 2 dated by main's dispatcher and by a
+# mutation of the fix that runs the cleanup with the handled error still on the stack, each
+# reddening the same names in both twins. 5 arrive never: three premises, the prefix left
+# empty and the survival check, which no mutation moved.
+#
+#     ledger rows   7950 + 7 = 7957
+#     never         4538 + 5 = 4543
+#     dated         3412 + 2 = 3414
+#     4543 + 3414 == 7957
+#
+# #1745, a second cancel during the parallel flush's error cleanup, in
+# parallel_flush_optin (OffgridwithJD): 4543 -> 4545. pflush_error_cleanup waited for
+# its terminated workers with interrupts live, so a second cancel landing in that wait
+# left before the loop that unpins the workers' published output segments: they stayed
+# pinned until postmaster restart, and the second cancel was reported in place of the
+# first. Arm 4 cancels a parallel flush by statement_timeout, then by
+# pg_cancel_backend while one worker still encodes, and counts the new files in
+# pg_dynshmem (the suite's cluster now runs dynamic_shared_memory_type = mmap). The two
+# checks are dated by the cleanup without HOLD_INTERRUPTS, which reddens the same names
+# in both twins (main's code reddens them on PG15-19). The two premises arrive never.
+#
+#     ledger rows   7957 + 4 = 7961
+#     never         4543 + 2 = 4545
+#     dated         3414 + 2 = 3416
+#     4545 + 3416 == 7961
+#
+# #1753, folded into #1746 at jdatcmd's suggestion, in parallel_flush_optin
+# (OffgridwithJD): 4545 -> 4545. The collect loop unpinned a DONE worker's output
+# segment and kept its handle until after the detach, so an error in between sent
+# pflush_error_cleanup to attach it again: "can't attach the same segment more than
+# once" replaced the original error and cut the cleanup short (an ERROR injected after
+# the first unpin, measured on PG17: 3 segments left; with the handle forgotten at the
+# unpin, the injected error is reported and 0 are left). Arm 5 reads the statement
+# after the unpin, comments blanked; it is dated by the handle invalidated after the
+# detach again, which reddens it alone in both twins (main's code reddens it too).
+#
+#     ledger rows   7961 + 1 = 7962
+#     never         4545 + 0 = 4545
+#     dated         3416 + 1 = 3417
+#     4545 + 3417 == 7962
+checks_never_observed_red 4545

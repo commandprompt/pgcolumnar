@@ -1384,8 +1384,7 @@ PgColumnarWriteParquetFile(Relation rel, Snapshot snapshot, const char *filepath
 	}
 	PG_CATCH();
 	{
-		PgColumnarSinkAbort(snk);
-		PG_RE_THROW();
+		PgColumnarSinkAbortAndRethrow(snk);	/* never returns (#1741) */
 	}
 	PG_END_TRY();
 
