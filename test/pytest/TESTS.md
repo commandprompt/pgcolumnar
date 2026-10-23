@@ -392,6 +392,7 @@ behaviour, the source of that number is named.
 - [344. test_parquet_skip_cross_type.py: Parquet row-group skipping uses a constant of another type in the operator family](#344-test_parquet_skip_cross_typepy-parquet-row-group-skipping-uses-a-constant-of-another-type-in-the-operator-family)
 - [345. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap](#345-test_parquet_exportpy-pgcolumnarexport_parquet-writes-a-file-two-readers-read-back-equal-to-the-heap)
 - [346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined](#346-test_planner_choice_qualitypy-the-planners-chosen-plan-is-not-far-slower-than-the-plans-it-declined)
+- [347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open](#347-test_objstore_export_open_uploadspy-a-cancelled-remote-export-leaves-none-of-its-multipart-uploads-open)
 
 ## 1. How to read a test in here
 
@@ -12965,3 +12966,43 @@ Every test makes one check under the shell's name, on a private database with se
 | `test_wide_range_count_forcing_produced_a_different_plan` | [wide range, narrow projection] forcing produced a different plan |
 | `test_wide_range_count_chosen_plan_ran_to_completion` | [wide range, narrow projection] the chosen plan ran to completion |
 | `test_wide_range_count_chosen_plan_is_not_far_slower` | [wide range, narrow projection] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
+## 347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open
+
+The twin of `test/objstore_export_open_uploads.sh` (#1743, #1722), every check by the shell's name. A `parallel_export_parquet` to `s3://` is ended while its workers' multipart uploads are open, and the dispatcher's cleanup must list the uploads under the prefix and abort each one whose key is one of the export's own part names. Two foreign uploads seeded under each prefix, `part-0004.parquet` (one past a 4-worker export's last part) and `notes.parquet`, must stay open. Five arms: a cancel while every worker sends parts; a cancel while every worker waits for the answer to CreateMultipartUpload, which the fixture server's `__uploads_delay__` hook holds after the upload exists; the workers terminated in that same window; a cancel there followed by a second cancel while the first cancel's cleanup deletes a part key (`__delete_delay__` holds each DELETE 3 s), where the export must still report the first cancel and leave none of its uploads open (#1741); and a cancel there while the store does not answer the listing, where the cleanup's bounded wait must give up and the export still report its own cancel within 30 s. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole scenario once, and makes one `expect` call by the shell's check name. Open uploads are read from the fixture server's `__open_uploads__` record; survival also reads the server log's crash count.
+
+| test | what it holds |
+| --- | --- |
+| `test_open_uploads_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_the_foreign_uploads_were_open_before_the_exports` | premise: the foreign uploads were open before the exports |
+| `test_parts_cancel_landed_while_every_worker_sent_parts` | premise: parts: every worker was sending parts when the cancel landed |
+| `test_parts_reports_its_own_cancel` | parts: the export reports its own cancel (57014) |
+| `test_parts_leaves_no_upload_of_the_export_open` | parts: no upload of this export is left open |
+| `test_parts_leaves_the_foreign_uploads_open` | parts: the foreign uploads under the prefix are left open |
+| `test_parts_the_server_survived` | parts: the server survived |
+| `test_cancel_landed_while_every_create_was_unanswered` | premise: cancel: every worker's CreateMultipartUpload was unanswered when the cancel landed |
+| `test_cancel_reports_its_own_cancel` | cancel: the export reports its own cancel (57014) |
+| `test_cancel_leaves_no_upload_of_the_export_open` | cancel: no upload of this export is left open |
+| `test_cancel_leaves_the_foreign_uploads_open` | cancel: the foreign uploads under the prefix are left open |
+| `test_cancel_leaves_no_completed_object` | cancel: no completed object remains at the prefix |
+| `test_cancel_the_server_survived` | cancel: the server survived |
+| `test_terminate_landed_while_every_create_was_unanswered` | premise: terminate: every worker's CreateMultipartUpload was unanswered when the workers were terminated |
+| `test_terminate_reports_that_a_worker_failed` | terminate: the export reports that a worker failed |
+| `test_terminate_leaves_no_upload_of_the_export_open` | terminate: no upload of this export is left open |
+| `test_terminate_leaves_the_foreign_uploads_open` | terminate: the foreign uploads under the prefix are left open |
+| `test_terminate_the_server_survived` | terminate: the server survived |
+| `test_double_cancel_first_cancel_landed_while_every_create_was_unanswered` | premise: double cancel: every worker's CreateMultipartUpload was unanswered when the first cancel landed |
+| `test_double_cancel_second_cancel_landed_in_a_part_delete` | premise: double cancel: the first cancel's cleanup was deleting a part when the second cancel landed |
+| `test_double_cancel_reports_the_exports_own_cancel` | double cancel: the export reports its own cancel (57014) |
+| `test_double_cancel_logs_no_errstart` | double cancel: the server log has no 'errstart was not called' |
+| `test_double_cancel_leaves_no_upload_of_the_export_open` | double cancel: no upload of this export is left open |
+| `test_double_cancel_leaves_the_foreign_uploads_open` | double cancel: the foreign uploads under the prefix are left open |
+| `test_double_cancel_the_server_survived` | double cancel: the server survived |
+| `test_silent_listing_cancel_landed_while_every_create_was_unanswered` | premise: silent listing: every worker's CreateMultipartUpload was unanswered when the cancel landed |
+| `test_silent_listing_the_cleanup_asked_for_open_uploads` | silent listing: the cleanup asked the store for its open uploads |
+| `test_silent_listing_reports_its_own_cancel` | silent listing: the export reports its own cancel (57014) |
+| `test_silent_listing_returned_promptly` | silent listing: the export returned within 30 s of the cancel |
+| `test_silent_listing_the_server_survived` | silent listing: the server survived |

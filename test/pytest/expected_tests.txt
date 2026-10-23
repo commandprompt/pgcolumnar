@@ -1228,4 +1228,6 @@ guard_tests 846
 # one per check, by collection over the cluster files.
 # cluster_tests 4268 -> 4282 for #1341's test_parquet_export.py, the twin of parquet_export.sh:
 # 14 tests, one per check, by collection over the cluster files.
-cluster_tests 4293
+# cluster_tests 4293 -> 4323 for #1743's test_objstore_export_open_uploads.py, the twin of objstore_export_open_uploads.sh:
+# 30 checks in 30 tests, by collection over the cluster files.
+cluster_tests 4323

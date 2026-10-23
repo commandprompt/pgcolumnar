@@ -31,6 +31,25 @@
 #                    to hold the dispatcher's cleanup DELETE in flight while a
 #                    second cancel lands (#1741).
 #
+# Multipart introspection and hooks (#1743), read per request from --dir:
+#   __open_uploads__      written by the server, never read: the key of every
+#                         upload created and neither completed nor aborted, one
+#                         per line, rewritten on each change. These are the
+#                         billable orphans a real store would keep.
+#   __uploads_delay__     a number of seconds: CreateMultipartUpload (POST
+#                         ?uploads) creates the upload at once and answers only
+#                         after that long, so a suite can end the client while
+#                         the upload exists and its id has not reached it.
+#   __part_delay__        a number of seconds: every part PUT is stored at once
+#                         and answered only after that long, so a suite can end
+#                         the client while its uploads are in progress.
+#   __list_uploads_delay__ a number of seconds: ListMultipartUploads (GET
+#                         ?uploads) is answered only after that long, a silent
+#                         store for the client's bounded wait.
+# --seed-upload KEY (repeatable) opens an upload at KEY ("bucket/key") before
+# the first request: an upload some other writer left, which a client must not
+# abort as its own.
+#
 # SigV4 verification mode (#393 M2): with --sigv4-key/--sigv4-secret/
 # --sigv4-region, every request must carry a valid AWS Signature Version 4
 # Authorization header. The signature is recomputed here with python's stdlib
@@ -312,6 +331,54 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _do_list_uploads(self):
+        # ListMultipartUploads (#1743): the uploads in progress whose key starts
+        # with `prefix`, sorted by key then upload id, paged by --list-page-size
+        # with key-marker/upload-id-marker as S3 does it.
+        _hook_sleep(self.server.rootdir, "__list_uploads_delay__")
+        q = self._qdict()
+        bucket = self.path.partition("?")[0].lstrip("/").split("/", 1)[0]
+        prefix = q.get("prefix", "")
+        kmark = q.get("key-marker")
+        umark = q.get("upload-id-marker", "")
+        base = os.path.join(self.server.rootdir, bucket)
+        with self.server.uploads_lock:
+            ups = []
+            for uid, up in self.server.uploads.items():
+                key = os.path.relpath(up["local"], base).replace(os.sep, "/")
+                if key.startswith(prefix) and not key.startswith(".."):
+                    ups.append((key, uid))
+        ups.sort()
+        if kmark is not None:
+            ups = [u for u in ups if u > (kmark, umark)]
+        page_size = self.server.list_page_size
+        page = ups[:page_size]
+        truncated = len(ups) > page_size
+
+        def esc(x):
+            return (x.replace("&", "&amp;").replace("<", "&lt;")
+                     .replace(">", "&gt;"))
+        parts = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                 "<ListMultipartUploadsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
+                 "<Bucket>%s</Bucket>" % esc(bucket),
+                 "<Prefix>%s</Prefix>" % esc(prefix),
+                 "<MaxUploads>%d</MaxUploads>" % page_size,
+                 "<IsTruncated>%s</IsTruncated>" % ("true" if truncated else "false")]
+        if truncated and page:
+            parts.append("<NextKeyMarker>%s</NextKeyMarker>" % esc(page[-1][0]))
+            parts.append("<NextUploadIdMarker>%s</NextUploadIdMarker>" % esc(page[-1][1]))
+        for key, uid in page:
+            parts.append("<Upload><Key>%s</Key><UploadId>%s</UploadId>"
+                         "<Initiated>2026-10-22T00:00:00.000Z</Initiated></Upload>"
+                         % (esc(key), esc(uid)))
+        parts.append("</ListMultipartUploadsResult>")
+        body = "".join(parts).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/xml")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         self._log_line()
         if not self._sigv4_check():
@@ -319,6 +386,9 @@ class Handler(BaseHTTPRequestHandler):
         _rawpath, _, _query = self.path.partition("?")
         if "list-type=2" in _query:
             self._do_list_v2(_query)
+            return
+        if "uploads" in self._qdict():
+            self._do_list_uploads()
             return
         mode, local = self._resolve()
         if mode == "hangup":
@@ -378,15 +448,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
     # ---- write side (#394): plain PUT, and a faithful multipart emulation --
-    def _open_uploads(self):
-        # <rootdir>/__open_uploads__ lists the key of every upload created and
-        # neither completed nor aborted, one per line, rewritten on each change:
-        # the billable orphans a real store would keep. Call with uploads_lock.
-        root = self.server.rootdir
-        with open(os.path.join(root, "__open_uploads__"), "w") as f:
-            for up in self.server.uploads.values():
-                f.write(os.path.relpath(up["local"], root) + "\n")
-
     def _qdict(self):
         q = {}
         for part in self.path.partition("?")[2].split("&"):
@@ -418,6 +479,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._deny(code, "InternalError")
                     return
             up["parts"][int(q["partNumber"])] = self._body
+            _hook_sleep(self.server.rootdir, "__part_delay__")
             etag = hashlib.md5(self._body).hexdigest()
             self.send_response(200)
             self.send_header("ETag", '"%s"' % etag)
@@ -447,7 +509,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.upload_seq += 1
                 uid = "up/%d+x" % self.server.upload_seq
                 self.server.uploads[uid] = {"local": local, "parts": {}}
-                self._open_uploads()
+                _write_open_uploads(self.server)
+            _hook_sleep(self.server.rootdir, "__uploads_delay__")
             body = ("<?xml version=\"1.0\"?><InitiateMultipartUploadResult>"
                     "<UploadId>%s</UploadId>"
                     "</InitiateMultipartUploadResult>" % uid).encode()
@@ -479,7 +542,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._deny(400, "InvalidPart")
                         return
                 del self.server.uploads[q["uploadId"]]
-                self._open_uploads()
+                _write_open_uploads(self.server)
             os.makedirs(os.path.dirname(local), exist_ok=True)
             with open(local, "wb") as f:
                 for n, _ in listed:
@@ -507,7 +570,7 @@ class Handler(BaseHTTPRequestHandler):
             with self.server.uploads_lock:
                 up = self.server.uploads.pop(q["uploadId"], None)
                 if up is not None:
-                    self._open_uploads()
+                    _write_open_uploads(self.server)
             if up is None:
                 self._deny(404, "NoSuchUpload")
                 return
@@ -516,6 +579,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+
+def _write_open_uploads(srv):
+    # <rootdir>/__open_uploads__: one key per open upload. Call with uploads_lock.
+    with open(os.path.join(srv.rootdir, "__open_uploads__"), "w") as f:
+        for up in srv.uploads.values():
+            f.write(os.path.relpath(up["local"], srv.rootdir) + "\n")
+
+
+def _hook_sleep(rootdir, name):
+    # Sleep for the number of seconds in <rootdir>/<name>, when it exists.
+    try:
+        with open(os.path.join(rootdir, name)) as fh:
+            time.sleep(float(fh.read().strip() or 0))
+    except (OSError, ValueError):
+        pass
 
 
 def main():
@@ -535,6 +614,8 @@ def main():
                          "bucket (S3 virtual-host addressing, #621)")
     ap.add_argument("--list-page-size", type=int, default=1000,
                     help="ListObjectsV2 keys per page; small values force paging")
+    ap.add_argument("--seed-upload", action="append", default=[],
+                    help="open a multipart upload at bucket/key before serving")
     args = ap.parse_args()
 
     if args.tls_cert:
@@ -554,6 +635,11 @@ def main():
     srv.uploads = {}
     srv.uploads_lock = threading.Lock()
     srv.upload_seq = 0
+    for key in args.seed_upload:
+        srv.upload_seq += 1
+        srv.uploads["seed/%d+x" % srv.upload_seq] = {
+            "local": os.path.join(args.dir, key), "parts": {}}
+    _write_open_uploads(srv)
     open(args.log, "a").close()
     # Readiness marker for the suite: print once the socket is bound.
     print("READY", flush=True)

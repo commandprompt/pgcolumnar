@@ -66,6 +66,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 
 #define PEXPORT_MAGIC		0x50455850	/* 'PEXP' */
 #define PEXPORT_KEY_HEADER	0
@@ -291,11 +292,9 @@ pexport_remove_outputs(const char *dir, int nkeys)
 	 * Remote (#623): the dispatcher knows its own key set exactly, so no
 	 * listing is needed. The keys are dir/part-0000.parquet through
 	 * dir/part-(nkeys-1).parquet; delete each through the module, best-effort
-	 * like the local unlink. A worker the dispatcher TERMINATES dies FATAL
-	 * with its multipart upload neither completed nor aborted, and the ABI's
-	 * delete_object removes a completed key, not an in-progress upload, so an
-	 * orphaned upload is left to the bucket's incomplete-multipart lifecycle
-	 * rule (the same residue #622 documented for a single object).
+	 * like the local unlink. delete_object removes a completed key, not an
+	 * upload in progress: a worker that ended FATAL leaves its upload open,
+	 * and pexport_abort_own_uploads aborts those (#1743).
 	 */
 	if (PgColumnarPathIsRemote(dir))
 	{
@@ -424,6 +423,131 @@ pexport_write_success_marker(const char *dir)
 	PG_END_TRY();
 }
 
+/*
+ * How long the dispatcher's upload cleanup may take (#1743): first for the
+ * terminated workers to stop, then for the listing and the aborts together.
+ * Interrupts are held across both, so both are bounded.
+ */
+#define PEXPORT_STOP_WAIT_MS		5000
+#define PEXPORT_UPLOAD_CLEANUP_MS	10000
+
+/*
+ * pexport_abort_own_uploads
+ *		Abort every multipart upload this export left open on a remote prefix
+ *		(#1743). A worker learns its upload id only from the answer to
+ *		CreateMultipartUpload, and the store creates the upload when the request
+ *		arrives. A worker that ends while it waits for that answer (a cancel
+ *		terminates it, or it is terminated directly) leaves an upload nobody
+ *		holds the id of, and a worker that ends FATAL never runs its own abort.
+ *		So the dispatcher lists the uploads under the prefix and aborts each one
+ *		whose key is one of this export's part names, dir/part-0000.parquet to
+ *		dir/part-(nkeys-1).parquet, exactly. Any other key under the prefix is
+ *		someone else's upload and is left alone.
+ *
+ *		The workers must have stopped first, so none starts an upload after the
+ *		listing. Interrupts are held from the wait to the last abort, and every
+ *		wait is bounded: the worker wait by PEXPORT_STOP_WAIT_MS on a timed
+ *		latch, the store's answers by the module's timeout_ms, which ends each
+ *		wait at PEXPORT_UPLOAD_CLEANUP_MS after the listing starts.
+ *
+ *		Best effort, and never raises: anything the listing or an abort raises
+ *		ends the cleanup and is discarded. The caller must have an empty error
+ *		stack, so discarding it discards nothing else.
+ */
+static void
+pexport_abort_own_uploads(const char *dir, int nkeys,
+						  BackgroundWorkerHandle **handles, int nhandles)
+{
+	const PgColumnarObjStoreApi *api;
+	TimestampTz start;
+	MemoryContext cxt = CurrentMemoryContext;
+	uint32		held;
+	uint32		cancelHeld;
+
+	if (dir == NULL || !PgColumnarPathIsRemote(dir) || nkeys <= 0)
+		return;
+	api = PgColumnarObjStoreGet();
+	if (api == NULL || api->list_uploads == NULL || api->abort_upload == NULL)
+		return;
+
+	HOLD_INTERRUPTS();
+	held = InterruptHoldoffCount;
+	cancelHeld = QueryCancelHoldoffCount;
+
+	/* wait, bounded, for the terminated workers to stop */
+	start = GetCurrentTimestamp();
+	for (;;)
+	{
+		int			running = 0;
+		int			i;
+
+		for (i = 0; i < nhandles; i++)
+		{
+			pid_t		pid;
+
+			if (handles != NULL && handles[i] != NULL &&
+				GetBackgroundWorkerPid(handles[i], &pid) != BGWH_STOPPED)
+				running++;
+		}
+		if (running == 0 ||
+			TimestampDifferenceExceeds(start, GetCurrentTimestamp(),
+									   PEXPORT_STOP_WAIT_MS))
+			break;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 100L, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+	}
+
+	start = GetCurrentTimestamp();
+	PG_TRY();
+	{
+		char		prefix[MAXPGPATH];
+		char		own[MAXPGPATH];
+		char	  **keys;
+		char	  **ids = NULL;
+		int			n = 0;
+		int			i;
+
+		snprintf(prefix, sizeof(prefix), "%s/", dir);
+		keys = api->list_uploads(prefix, NULL, PEXPORT_UPLOAD_CLEANUP_MS,
+								 &ids, &n);
+		for (i = 0; i < n; i++)
+		{
+			const char *base = keys[i] + strlen(prefix);
+			int			idx;
+			long		left;
+
+			/* this export's own part name, character for character */
+			if (strncmp(keys[i], prefix, strlen(prefix)) != 0 ||
+				!pexport_part_index(base, &idx) || idx < 0 || idx >= nkeys)
+				continue;
+			snprintf(own, sizeof(own), "%s/part-%04d.parquet", dir, idx);
+			if (strcmp(keys[i], own) != 0)
+				continue;
+
+			left = PEXPORT_UPLOAD_CLEANUP_MS -
+				TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
+			if (left <= 0)
+				break;
+			(void) api->abort_upload(keys[i], ids[i], NULL, (int) left);
+		}
+	}
+	PG_CATCH();
+	{
+		/*
+		 * errfinish zeroed the holdoff counts before the longjmp; put back what
+		 * this function held, so the RESUME below balances the HOLD above.
+		 */
+		InterruptHoldoffCount = held;
+		QueryCancelHoldoffCount = cancelHeld;
+		MemoryContextSwitchTo(cxt);
+		FlushErrorState();		/* the caller's stack was empty: only ours */
+	}
+	PG_END_TRY();
+
+	RESUME_INTERRUPTS();
+}
+
 /* error-cleanup: stop every worker so a dispatcher FATAL cannot leave them
  * reading after the exported snapshot is gone, and remove any partial output */
 static void
@@ -438,11 +562,19 @@ pexport_cleanup(int code, Datum arg)
 	pexport_remove_outputs(s->dirpath, s->nkeys);
 }
 
-/* the ERROR path's form of pexport_cleanup, for PgColumnarCleanupAndRethrow */
+/*
+ * The ERROR path's form of pexport_cleanup, for PgColumnarCleanupAndRethrow,
+ * which has copied the handled error out and emptied the error stack. On a
+ * remote prefix, the uploads the workers left open are then aborted (#1743):
+ * a second cancel that lands in a part DELETE cuts short only that DELETE.
+ */
 static void
 pexport_cleanup_in_catch(void *arg)
 {
-	pexport_cleanup(0, PointerGetDatum(arg));
+	PexportSpawn *s = (PexportSpawn *) arg;
+
+	pexport_cleanup(0, PointerGetDatum(s));
+	pexport_abort_own_uploads(s->dirpath, s->nkeys, s->handles, s->n);
 }
 
 /*
@@ -828,7 +960,9 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	 * macro's PG_CATCH (#1741): the cleanup's remote DELETEs wait on the store,
 	 * a second cancel lands there, and swallowing it with the cancel being
 	 * handled still on the error stack lost that error ("errstart was not
-	 * called").
+	 * called"). On a remote prefix that cleanup then aborts the uploads the
+	 * workers left open (#1743), so a second cancel cannot skip the aborts
+	 * either.
 	 */
 	before_shmem_exit(pexport_cleanup, PointerGetDatum(&spawn));
 	PG_TRY();
@@ -892,6 +1026,8 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 		/* all workers have stopped; drop any part files they wrote so the failed
 		 * run leaves a clean directory and a retry is not half-read or blocked */
 		pexport_remove_outputs(dir, single_table ? workers : npart);
+		pexport_abort_own_uploads(dir, single_table ? workers : npart,
+								  handles, workers);
 		dsm_detach(seg);
 		if (pushed)
 			PopActiveSnapshot();
