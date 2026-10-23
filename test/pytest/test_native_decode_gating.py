@@ -12,6 +12,8 @@ its cluster, so the five-column projection still gates.
 """
 import re
 
+import psycopg
+
 ROWS = 32768
 VECTORS = 32            # ROWS / 1024
 NCOLS = 6               # tag plus five payload columns
@@ -30,6 +32,17 @@ def _rows(conn, sql):
     with conn.cursor() as cur:
         cur.execute(sql)
         return cur.fetchall()
+
+
+def _set_gate(conn, v):
+    """A REFUSED SET IS LEFT FOR THE PREMISE THAT READS IT BACK (#1339), as the shell's
+    PGC_EXTRA_CONF and psql -c leave it: raising here ended the test unnamed when the
+    GUC's range lost the value."""
+    with conn.cursor() as cur:
+        try:
+            cur.execute(f"SET pgcolumnar.qual_skipvec_min_payload_cols = {v}")
+        except psycopg.Error:
+            pass
 
 
 def _run(conn, *sqls):
@@ -65,31 +78,33 @@ def test_an_unprunable_qual_gates_payload_decode(pgc_conn, expect):
     conn = pgc_conn
     gen = (f"SELECT 'row' || CASE WHEN g <= 1024 THEN 'needle' ELSE 'miss' END, "
            f"g, g + 1, g + 2, g + 3, g + 4 FROM generate_series(1, {ROWS}) g")
-    _run(conn, "SET pgcolumnar.qual_skipvec_min_payload_cols = 0",
-         "CREATE TABLE h (tag text, p1 int, p2 int, p3 int, p4 int, p5 int)",
+    _set_gate(conn, 0)
+    _run(conn, "CREATE TABLE h (tag text, p1 int, p2 int, p3 int, p4 int, p5 int)",
          "CREATE TABLE n (tag text, p1 int, p2 int, p3 int, p4 int, p5 int) USING pgcolumnar",
          "SELECT pgcolumnar.set_options('n', stripe_row_limit => 65536, chunk_group_row_limit => 1024)",
          f"INSERT INTO h {gen}", f"INSERT INTO n {gen}")
     needle, nomatch, control = _plan(conn, NEEDLEQ), _plan(conn, NOMATCHQ), _plan(conn, CONTROLQ)
 
-    expect.text(_has(needle, "Columnar Projected Columns"), "yes", "premise: the needle plan is a columnar custom scan")
+    expect.text(_has(needle, "Columnar Projected Columns"), "yes", "the needle plan is a columnar custom scan")
     expect.num(_one(conn, "SELECT count(*) FROM pgcolumnar.row_group "
                           "WHERE storage_id = pgcolumnar.get_storage_id('n')"), 1,
-               "premise: one row group, so every count below is one group's")
+               "one row group, so every count below is one group's")
     expect.text(_one(conn, "SHOW pgcolumnar.qual_skipvec_min_payload_cols"), "0",
-                "premise: the width gate is pinned off, so this narrow projection still gates")
+                "the width gate is pinned off, so this narrow projection still gates")
     expect.num(_counter(needle, "Columnar Usable Skip Predicates"), 0,
-               "premise: the reader has no usable skip predicate for this LIKE")
-    expect.num(_counter(needle, "Columnar Chunk Groups Removed by Filter"), 0, "premise: no whole row group is pruned")
+               "the reader has no usable skip predicate for this LIKE")
+    expect.num(_counter(needle, "Columnar Chunk Groups Removed by Filter"), 0, "no whole row group is pruned")
     expect.num(_counter(needle, "Columnar Vectors Ruled Out by Value"), 0,
-               "premise: no vector is ruled out by VALUE either (that is 1b-ii's path)")
+               "no vector is ruled out by VALUE either (that is 1b-ii's path)")
     expect.text(_has(needle, "Columnar Rows Filtered Before Materialization"), "yes",
-                "premise: the needle query takes the late-materialization path")
-    expect.num(_one(conn, "SELECT count(*) FROM n WHERE tag LIKE '%needle%'"), MATCHES,
+                "the needle query takes the late-materialization path")
+    # The fixture's shape, read from the heap mirror the same generator filled (#1339):
+    # read from the columnar table, a one-line reader change reddened these premises.
+    expect.num(_one(conn, "SELECT count(*) FROM h WHERE tag LIKE '%needle%'"), MATCHES,
                "premise: the needle really matches one vector's worth of rows")
-    expect.num(_one(conn, "SELECT count(*) FROM n WHERE tag LIKE '%zzzzz%'"), 0,
+    expect.num(_one(conn, "SELECT count(*) FROM h WHERE tag LIKE '%zzzzz%'"), 0,
                "premise: the nomatch predicate matches no row")
-    expect.num(_one(conn, "SELECT count(*) FROM n WHERE tag LIKE '%row%'"), ROWS,
+    expect.num(_one(conn, "SELECT count(*) FROM h WHERE tag LIKE '%row%'"), ROWS,
                "premise: the control matches every row")
 
     expect.text(_has(control, "Columnar Vector Decodes"), "yes", "EXPLAIN reports Columnar Vector Decodes")
@@ -112,7 +127,7 @@ def test_an_unprunable_qual_gates_payload_decode(pgc_conn, expect):
 
     # Every row of the needle's surviving vector matches, so a producer that counted
     # its re-test's rejections twice reads right above; half of vector 0 passes here.
-    expect.text(_one(conn, "SELECT count(*) || '|' || count(DISTINCT (p1 - 1) / 1024) FROM n "
+    expect.text(_one(conn, "SELECT count(*) || '|' || count(DISTINCT (p1 - 1) / 1024) FROM h "
                            "WHERE tag LIKE '%needle%' AND p1 % 2 = 0"), "512|1",
                 "premise: the half-needle survives in one vector, half of its rows")
     expect.num(_counter(_plan(conn, HALFQ), "Rows Removed by Filter"), ROWS - 512,
@@ -133,21 +148,28 @@ def test_deleted_rows_across_several_groups(pgc_conn, expect):
     conn = pgc_conn
     mgen = (f"SELECT 'x' || CASE WHEN g % 4096 = 7 THEN 'needle' ELSE 'miss' END || g::text, g, g * 2 "
             f"FROM generate_series(1, {MROWS}) g")
-    _run(conn, "SET pgcolumnar.qual_skipvec_min_payload_cols = 0",
-         "CREATE TABLE hm (tag text, p1 int, p2 int)",
+    _set_gate(conn, 0)
+    _run(conn, "CREATE TABLE hm (tag text, p1 int, p2 int)",
          "CREATE TABLE m (tag text, p1 int, p2 int) USING pgcolumnar",
          "SELECT pgcolumnar.set_options('m', stripe_row_limit => 8192, chunk_group_row_limit => 1024)",
          f"INSERT INTO hm {mgen}", f"INSERT INTO m {mgen}",
-         "DELETE FROM hm WHERE p1 % 17 = 0",
-         # the fixture's DELETE must not depend on the gating under test
-         "SET pgcolumnar.qual_skipvec_min_payload_cols = 100000", "DELETE FROM m WHERE p1 % 17 = 0",
-         "SET pgcolumnar.qual_skipvec_min_payload_cols = 0")
+         "DELETE FROM hm WHERE p1 % 17 = 0")
+    # The fixture's DELETE must not depend on the gating under test, so it runs with
+    # the gate out of reach. The SET and the DELETE go together, as the shell's one
+    # psql -c: a refused SET skips the DELETE there, and the premise below names it,
+    # rather than an unnamed psycopg error ending this test (#1756 review).
+    try:
+        _run(conn, "SET pgcolumnar.qual_skipvec_min_payload_cols = 100000",
+             "DELETE FROM m WHERE p1 % 17 = 0")
+    except psycopg.Error:
+        pass
+    _set_gate(conn, 0)
     expect.text(str(_one(conn, "SELECT count(*) > 1 FROM pgcolumnar.row_group "
                                "WHERE storage_id = pgcolumnar.get_storage_id('m')")), "True",
-                "premise: the columnar table spans more than one row group")
+                "the columnar table spans more than one row group")
     # count(*), not a count WHERE p1 % 17 = 0: that WHERE would run through the gating
     expect.num(_one(conn, "SELECT count(*) FROM m"), MROWS - MROWS // 17,
-               "premise: rows really were deleted (so the mask is non-NULL)")
+               "rows really were deleted (so the mask is non-NULL)")
     expect.row_set(_rows(conn, "SELECT * FROM m WHERE tag LIKE '%needle%'"),
                    _rows(conn, "SELECT * FROM hm WHERE tag LIKE '%needle%'"),
                    "deletes + multiple groups + unprunable qual: columnar matches the heap")

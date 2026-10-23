@@ -7021,4 +7021,22 @@ suites_not_covered 28
 #     never         4545 + 0 = 4545
 #     dated         3418 + 0 = 3418
 #     4545 + 3418 == 7963
-checks_never_observed_red 4545
+#
+# #1339, premises that a one-line pgcolumnar change reddens, in native_decode_gate_width
+# and native_decode_gating (OffgridwithJD): 4545 -> 4520. Twenty-five checks read
+# pgcolumnar's own output (its plan, its EXPLAIN counters, its GUC's default and range,
+# its row-group catalog, its delete) under a premise: label, the shape jdatcmd flagged
+# on #1691, #1698 and #1700. Each loses the prefix, keeps its row under the new name
+# and is dated by the one-line mutant that reddens it in the shell: no custom scan (13),
+# the width gate's default 21 (3), its minimum 1 (2), its maximum 23 (3), a table's
+# stripe_row_limit /100 (2) and x100 (1), and a delete that marks nothing (1). Each
+# twin is one test, so it names the first of these per mutant; both twins now leave a
+# refused gate SET to the premise that reads it, as the shell does, rather than end the
+# test unnamed. The fixture-count premises now read the heap mirror and stay premises,
+# and the two rejected-GUC premises stay: no one-line change ships a GUC.
+#
+#     ledger rows   7963 + 0 = 7963
+#     never         4545 - 25 = 4520
+#     dated         3418 + 25 = 3443
+#     4520 + 3443 == 7963
+checks_never_observed_red 4520
