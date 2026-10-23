@@ -317,7 +317,9 @@
 # guard_tests 474 -> 476 for #1339's test_mutation_ledger.py :525 and :1002: the new
 # test_the_prior_ceiling_is_resolved_rather_than_assumed and
 # test_a_ledger_row_must_name_a_real_major, by collection over NO_CLUSTER.
-guard_tests 804
+# guard_tests 804 -> 806 for #1613's test_a_refused_comparison_is_counted_and_named in
+# test_check_records.py, serial and xdist, by collection over NO_CLUSTER.
+guard_tests 806
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
