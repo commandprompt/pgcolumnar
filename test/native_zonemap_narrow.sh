@@ -53,8 +53,10 @@ echo "-- zone_map idx_tup_fetch: wide(30 col)=$WF narrow(2 col)=$NF"
 # Per-column: the 30-column table reads essentially the same zone_map tuples as
 # the 2-column table (only c1's). Allow a small margin. Before the fix WF was
 # about 15x NF (30 columns vs 2), so this fails on the whole-group read.
+# Both readings must be numbers: an unread one is "no reading", never compared (#1341).
 check "zone_map reads scale with predicates, not table width (wide ~= narrow)" \
-	"$([ "$WF" -le $((NF * 2)) ] && echo yes || echo no)" "yes"
+	"$(if ! [[ "$WF" =~ ^[0-9]+$ && "$NF" =~ ^[0-9]+$ ]]; then echo "no reading (wide [$WF], narrow [$NF])"
+	   elif [ "$WF" -le $((NF * 2)) ]; then echo yes; else echo no; fi)" "yes"
 
 # Correctness: skipping unread columns' zone maps must not change results.
 check "wide scan result is correct" "$(q 'SELECT count(*) FROM w WHERE c1 >= 0;')" "20000"
@@ -63,5 +65,20 @@ check "narrow scan result is correct" "$(q 'SELECT count(*) FROM n WHERE c1 >= 0
 # lives in the last group only.
 check "a pruning predicate still prunes on the wide table" \
 	"$(q 'SELECT count(*) FROM w WHERE c1 > 19000;')" "1000"
+
+# The answer alone does not show a group was skipped: a scan that read the zone maps
+# but never excluded a group, or never consulted them, returned the same 1000 rows,
+# and main passed all four checks under each (#1341). The scan's own counter says how
+# many of the ten groups the zone map removed: c1 > 19000 leaves only the last.
+# removed TABLE PRED -> "Columnar Chunk Groups Removed by Filter", or "no reading".
+removed() {
+	local plan n
+	plan="$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM $1 WHERE $2;")"
+	n="$(sed -n 's/.*Columnar Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' <<<"$plan" | head -1)"
+	[ -n "$n" ] && echo "$n" || echo "no reading ($(head -1 <<<"$plan"))"
+}
+check "the zone map removes the nine groups c1 > 19000 cannot match, on the wide table" \
+	"$(removed w 'c1 > 19000')" "9"
+check "and on the narrow table" "$(removed n 'c1 > 19000')" "9"
 
 pgc_summary

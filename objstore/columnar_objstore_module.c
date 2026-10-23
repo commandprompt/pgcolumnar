@@ -245,8 +245,15 @@ os_wait(PgColumnarObjHandle *h, uint32 sockEvents, int *quiet)
 {
 	int			rc;
 
+	/*
+	 * WL_TIMEOUT, or the slice is not a slice: without it WaitLatchOrSocket
+	 * ignores the timeout and waits for the socket or the latch alone, so a
+	 * silent peer never counts a quiet slice. Under proc_exit (a terminated
+	 * worker aborting its upload, #1727) interrupts are held and the latch
+	 * alone never ends the wait either.
+	 */
 	rc = WaitLatchOrSocket(MyLatch,
-						   WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | sockEvents,
+						   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH | sockEvents,
 						   h->fd, OS_WAIT_SLICE_MS, PG_WAIT_EXTENSION);
 	if (rc & WL_LATCH_SET)
 		ResetLatch(MyLatch);
@@ -2002,8 +2009,8 @@ os_flush_part(PgColumnarObjSink *s)
 						s->h->url, resp.status)));
 	/* The part's ETag is the server's word for its bytes; CompleteMultipart
 	 * validates the list against it on a real S3, so echo it verbatim (already
-	 * quoted by the server). The fixture ignores it and concatenates by part
-	 * number, so both are satisfied. */
+	 * quoted by the server). The fixture checks it the same way and assembles
+	 * the listed parts, so both are satisfied. */
 	etag = resp.etag[0] ? resp.etag : "\"\"";
 	appendStringInfo(&s->completeXml,
 					 "<Part><PartNumber>%d</PartNumber><ETag>%s</ETag></Part>",
@@ -2170,6 +2177,14 @@ objstore_sink_abort(PgColumnarObjSink *s)
 			char	   *encId = os_uriencode_query(s->uploadId);
 			char	   *query = psprintf("uploadId=%s", encId);
 
+			/*
+			 * The abort can land mid-request (a cancel or a SIGTERM inside
+			 * os_wait), with a part's body still on this connection: the
+			 * DELETE would be read as more of that body, or its answer
+			 * confused with the part's. A fresh connection makes it a request
+			 * of its own (#1722).
+			 */
+			os_disconnect(s->h);
 			os_write_request(s->h, "DELETE", query, NULL, 0, &resp, NULL);
 			pfree(query);
 			pfree(encId);

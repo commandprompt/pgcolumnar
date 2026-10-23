@@ -56,6 +56,16 @@ python3 - "$PGC_WORKDIR/$BUCKET/vh.parquet" <<'PY'
 import sys, pyarrow as pa, pyarrow.parquet as pq
 pq.write_table(pa.table({"id": pa.array([1, 2, 3, 4], pa.int64())}), sys.argv[1])
 PY
+# A key a reader must URI-encode: a space, '+' and '='. The fixture decodes the request
+# path once to find the file, and verifies SigV4 over the raw path, so a key sent with
+# '+' for a space, or with '+'/'=' left bare, either misses the file or shows up in the
+# request log below (#621).
+ENCKEY="dir sp/a+b=c.parquet"
+mkdir -p "$PGC_WORKDIR/$BUCKET/dir sp"
+python3 - "$PGC_WORKDIR/$BUCKET/$ENCKEY" <<'PY'
+import sys, pyarrow as pa, pyarrow.parquet as pq
+pq.write_table(pa.table({"id": pa.array([5, 6, 7], pa.int64())}), sys.argv[1])
+PY
 
 python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
 	--dir "$PGC_WORKDIR" --port "$S3_PORT" --log "$S3_LOG" \
@@ -76,6 +86,11 @@ RD="SELECT count(*), sum(id) FROM pgcolumnar.read_parquet"
 check "s3:// path-style read" "$(q "$RD('s3://$BUCKET/vh.parquet') AS t(id int8)" | tr '|' ' ')" "4 10"
 check "path-style put the bucket in the request path" \
 	"$([ "$(gets | grep -c '^/pgc-bucket/vh.parquet$')" -ge 1 ] && echo yes)" "yes"
+: > "$S3_LOG"
+check "a key with a space, '+' and '=' reads back (path-style)" \
+	"$(q "$RD('s3://$BUCKET/$ENCKEY') AS t(id int8)" | tr '|' ' ')" "3 18"
+check "and its path-style request path is the key URI-encoded once" \
+	"$([ "$(gets | grep -c '^/pgc-bucket/dir%20sp/a%2Bb%3Dc.parquet$')" -ge 1 ] && echo yes)" "yes"
 
 # gs:// round-trips through the interop API against the same overridden endpoint
 : > "$S3_LOG"
@@ -94,6 +109,12 @@ check "virtual-host read == path-style read (same object, different addressing)"
 	        -c "$RD('s3://$BUCKET/vh.parquet') AS t(id int8)" | tr '|' ' ')" "4 10"
 check "virtual-host put the KEY ALONE in the path (no bucket segment)" \
 	"$([ "$(gets | grep -c '^/vh.parquet$')" -ge 1 ] && [ "$(gets | grep -c '^/pgc-bucket/vh.parquet$')" -eq 0 ] && echo yes)" "yes"
+: > "$S3_LOG"
+check "a key with a space, '+' and '=' reads back (virtual-host)" \
+	"$(qset -c "SET pgcolumnar.objstore_s3_addressing='virtual'" \
+	        -c "$RD('s3://$BUCKET/$ENCKEY') AS t(id int8)" | tr '|' ' ')" "3 18"
+check "and its virtual-host request path is the key alone, URI-encoded once" \
+	"$([ "$(gets | grep -c '^/dir%20sp/a%2Bb%3Dc.parquet$')" -ge 1 ] && echo yes)" "yes"
 # removal proof of the addressing switch: path-style (default) keeps the bucket
 : > "$S3_LOG"
 check "removal proof: with addressing=path the bucket is back in the path" \
@@ -106,7 +127,11 @@ check "and the request path carried the bucket again" \
 pg_restart_env "AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" "AWS_REGION='$REGION'"
 check "s3:// with no endpoint demands one (names AWS_ENDPOINT_URL)" \
 	"$([ "$(msg_of "$RD('s3://$BUCKET/vh.parquet') AS t(id int8)" | grep -c 'AWS_ENDPOINT_URL')" -ge 1 ] && echo yes)" "yes"
-check "gs:// with no endpoint uses the storage.googleapis.com default (does not demand AWS_ENDPOINT_URL)" \
-	"$([ "$(msg_of "$RD('gs://$BUCKET/vh.parquet') AS t(id int8)" | grep -c 'AWS_ENDPOINT_URL')" -eq 0 ] && echo yes)" "yes"
+# The default is storage.googleapis.com, and this cluster's allow-list holds only
+# s3.local, so the read must be refused by the allow-list naming that host, before any
+# connection. The old check only wanted the message NOT to name AWS_ENDPOINT_URL, which
+# a mistyped default, any other error, or a crash (no message at all) also satisfied.
+check "gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name)" \
+	"$(msg_of "$RD('gs://$BUCKET/vh.parquet') AS t(id int8)" | grep -c 'endpoint "storage.googleapis.com:443" is not in pgcolumnar.objstore_allowed_endpoints')" "1"
 
 pgc_summary

@@ -26,10 +26,14 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 # is per-vector. id is monotonic, so each vector's zone map is tight and
 # non-overlapping, which is what lets a narrow range rule most of them out.
 ROWS=32768
-GEN="SELECT g AS id, (g % 97) AS v FROM generate_series(1, $ROWS) g"
+# w is NULL on every seventh row, so a vector carries nulls and the packed stream is
+# indexed by presence rather than by row: a reader that ignores the validity bitmap
+# reads the wrong value for every row after the first null (#1341 port; with no
+# nulls, a fold that ignored the bitmap passed every check).
+GEN="SELECT g AS id, (g % 97) AS v, CASE WHEN g % 7 = 0 THEN NULL ELSE g % 89 END AS w FROM generate_series(1, $ROWS) g"
 
-psql_run "CREATE TABLE h (id int, v int);"
-psql_run "CREATE TABLE n (id int, v int) USING pgcolumnar;"
+psql_run "CREATE TABLE h (id int, v int, w int);"
+psql_run "CREATE TABLE n (id int, v int, w int) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('n', stripe_row_limit => 65536, chunk_group_row_limit => 1024);"
 psql_run "INSERT INTO h $GEN;"
 psql_run "INSERT INTO n $GEN;"
@@ -47,6 +51,7 @@ counter_in() {  # counter_in <plan text> <label>
 }
 
 has_line() { grep -qF "$2" <<<"$1" && echo yes || echo no; }
+isnum() { [[ "$1" =~ ^[0-9]+$ ]]; }
 
 # The narrow range lives inside a single vector; the wide one spans them all.
 NARROW="SELECT id, v FROM n WHERE id BETWEEN 2000 AND 2050"
@@ -55,30 +60,33 @@ WIDE="SELECT id, v FROM n WHERE id BETWEEN 1 AND $ROWS"
 PLAN_NARROW="$(explain_of "$NARROW")"
 PLAN_WIDE="$(explain_of "$WIDE")"
 
-# ---- premises -------------------------------------------------------------
+# ---- the ground --------------------------------------------------------------
 #
 # Every number below is read out of these two plans. If the planner stops
 # choosing the columnar custom scan, or the group splits, the comparisons start
 # reporting a decode regression that is really a plan or a layout change. Assert
-# the ground first so a failure names its own cause.
+# the ground first so a failure names its own cause. None of these is a premise:
+# each reads pgcolumnar's plan or its writer's row_group catalog, and a one-line
+# pgcolumnar change reddens it (the custom scan off by default; a writer that
+# reads stripe_row_limit wrong).
 
-check "premise: the narrow plan is a columnar custom scan" \
+check "the narrow plan is a columnar custom scan" \
 	"$(has_line "$PLAN_NARROW" 'Columnar Projected Columns')" "yes"
-check "premise: the wide plan is a columnar custom scan" \
+check "the wide plan is a columnar custom scan" \
 	"$(has_line "$PLAN_WIDE" 'Columnar Projected Columns')" "yes"
-check "premise: one row group, so every difference is per-vector" \
+check "one row group, so every difference is per-vector" \
 	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('n');")" \
 	"1"
-check "premise: no whole group is pruned on the narrow query" \
+check "no whole group is pruned on the narrow query" \
 	"$(counter_in "$PLAN_NARROW" 'Columnar Chunk Groups Removed by Filter')" "0"
 
 # The two arms must differ in what the zone maps rule out, or the central check
 # compares a number with itself and passes against any implementation.
 SKIP_NARROW="$(counter_in "$PLAN_NARROW" 'Columnar Vectors Skipped')"
 SKIP_WIDE="$(counter_in "$PLAN_WIDE" 'Columnar Vectors Skipped')"
-check "premise: the narrow range skips vectors" \
-	"$([ "${SKIP_NARROW:-0}" -gt 0 ] && echo yes || echo no)" "yes"
-check "premise: the wide range skips none, so the arms really differ" \
+check "the narrow range skips vectors" \
+	"$(isnum "$SKIP_NARROW" && { [ "$SKIP_NARROW" -gt 0 ] && echo yes || echo no; } || echo "no reading [$SKIP_NARROW]")" "yes"
+check "the wide range skips none, so the arms really differ" \
 	"$SKIP_WIDE" "0"
 
 # ---- the observable -------------------------------------------------------
@@ -95,14 +103,16 @@ check "and it is not stuck at zero when a full scan decodes everything" \
 DEC_NARROW="$(counter_in "$PLAN_NARROW" 'Columnar Vectors Decoded')"
 
 check "a ruled-out vector is not decoded" \
-	"$([ "${DEC_NARROW:-0}" -lt "${DEC_WIDE:-0}" ] && echo yes || echo no)" "yes"
+	"$(isnum "$DEC_NARROW" && isnum "$DEC_WIDE" && { [ "$DEC_NARROW" -lt "$DEC_WIDE" ] && echo yes || echo no; } || echo "no reading [$DEC_NARROW] [$DEC_WIDE]")" "yes"
 
 # The check that has teeth. "Decodes fewer" is satisfied by decoding one vector
 # less out of thirty-two, which is what a half-working mask does. Every vector
 # the zone maps ruled out must go undecoded, so the two counters must account
 # for the whole group between them.
+# All three counters must be READ: with the plans failing, 0 + 0 = 0 used to pass.
 check "and EVERY ruled-out vector is: decoded plus skipped is the group's vectors" \
-	"$(( ${DEC_NARROW:-0} + ${SKIP_NARROW:-0} ))" "${DEC_WIDE:-0}"
+	"$(isnum "$DEC_NARROW" && isnum "$SKIP_NARROW" && echo $(( DEC_NARROW + SKIP_NARROW )) || echo "no reading [$DEC_NARROW] [$SKIP_NARROW]")" \
+	"$(isnum "$DEC_WIDE" && echo "$DEC_WIDE" || echo "no wide reading [$DEC_WIDE]")"
 
 # ---- correctness, which is the risk this change carries -------------------
 #
@@ -123,14 +133,20 @@ check "boundary range parity, a range starting exactly on a vector edge" \
 	"$(pgc_set_hash 'SELECT id, v FROM n WHERE id BETWEEN 1025 AND 2048')" \
 	"$(pgc_set_hash 'SELECT id, v FROM h WHERE id BETWEEN 1025 AND 2048')"
 
+check "premise: the nullable column has nulls inside the ranges read below" \
+	"$(q 'SELECT count(*) - count(w) > 0 FROM h WHERE id BETWEEN 2000 AND 2050;')" "t"
+check "cross-vector parity of a nullable column, nulls included" \
+	"$(pgc_set_hash 'SELECT id, w FROM n WHERE id BETWEEN 3000 AND 9000')" \
+	"$(pgc_set_hash 'SELECT id, w FROM h WHERE id BETWEEN 3000 AND 9000')"
+
 # The aggregate path is the one that reads the raw buffer directly.
-check "aggregate over a skipping range matches heap" \
+check_text "aggregate over a skipping range matches heap" \
 	"$(q 'SELECT count(*), sum(v) FROM n WHERE id BETWEEN 2000 AND 2050;')" \
 	"$(q 'SELECT count(*), sum(v) FROM h WHERE id BETWEEN 2000 AND 2050;')"
-check "aggregate over a range spanning many skipped vectors matches heap" \
+check_text "aggregate over a range spanning many skipped vectors matches heap" \
 	"$(q 'SELECT count(*), sum(v), min(v), max(v) FROM n WHERE id BETWEEN 5000 AND 5200;')" \
 	"$(q 'SELECT count(*), sum(v), min(v), max(v) FROM h WHERE id BETWEEN 5000 AND 5200;')"
-check "a range matching no row at all is still correct" \
+check_num "a range matching no row at all is still correct" \
 	"$(q 'SELECT count(*) FROM n WHERE id BETWEEN 100000 AND 200000;')" "0"
 
 # ---- the fold, which is the path that reads the holes ----------------------
@@ -160,11 +176,11 @@ FQ="SELECT count(*), sum(v) FROM n WHERE id BETWEEN 2000 AND 2050"
 # Without this the two checks below are unreachable and would pass forever while
 # guarding nothing: the fold declines most shapes, and a declined fold answers
 # from the scalar path that was never at risk.
-check "premise: the aggregate really reaches the batch fold" \
+check "the aggregate really reaches the batch fold" \
 	"$(fold_plan "$FQ" | grep -oE 'Columnar Batch Fold: [a-z]+' | head -1)" \
 	"Columnar Batch Fold: yes"
 
-check "the fold answers correctly over a range that skips vectors" \
+check_text "the fold answers correctly over a range that skips vectors" \
 	"$(fold_run "$FQ")" \
 	"$(q 'SELECT count(*), sum(v) FROM h WHERE id BETWEEN 2000 AND 2050;')"
 
@@ -177,11 +193,22 @@ check "the fold answers correctly over a range that skips vectors" \
 # The first range above starts in vector 1 and cannot show this: one leading
 # skipped vector is too few for a misalignment to be obvious, and its answer
 # could be right by luck.
+# A nullable column through the fold: the packed stream holds only present values,
+# so the fold must advance its present index by the validity bitmap. With the bitmap
+# ignored it reads a shifted value for every row after the first null.
+FQN="SELECT count(w), sum(w) FROM n WHERE id BETWEEN 2000 AND 2050"
+check "a nullable aggregate reaches the fold" \
+	"$(fold_plan "$FQN" | grep -oE 'Columnar Batch Fold: [a-z]+' | head -1)" \
+	"Columnar Batch Fold: yes"
+check_text "the fold answers count and sum of a nullable column over a skipping range" \
+	"$(fold_run "$FQN")" \
+	"$(q 'SELECT count(w), sum(w) FROM h WHERE id BETWEEN 2000 AND 2050;')"
+
 FQ2="SELECT count(*), sum(v) FROM n WHERE id BETWEEN 20000 AND 20050"
-check "premise: the deep range reaches the fold too" \
+check "the deep range reaches the fold too" \
 	"$(fold_plan "$FQ2" | grep -oE 'Columnar Batch Fold: [a-z]+' | head -1)" \
 	"Columnar Batch Fold: yes"
-check "and it agrees with heap after many leading skipped vectors" \
+check_text "and it agrees with heap after many leading skipped vectors" \
 	"$(fold_run "$FQ2")" \
 	"$(q 'SELECT count(*), sum(v) FROM h WHERE id BETWEEN 20000 AND 20050;')"
 
@@ -203,7 +230,7 @@ check "and it agrees with heap after many leading skipped vectors" \
 # On a non-assert build there is no poison and this check is merely another
 # parity check. The matrix runs assert builds, which is where it has teeth.
 POISONQ="SELECT count(*), sum(v) FROM n WHERE id BETWEEN -2000000000 AND 3000"
-check "premise: the poison-accepting range reaches the fold" \
+check "the poison-accepting range reaches the fold" \
 	"$(fold_plan "$POISONQ" | grep -oE 'Columnar Batch Fold: [a-z]+' | head -1)" \
 	"Columnar Batch Fold: yes"
 # Measured on the FOLD plan, not on a bare projection beside it.
@@ -221,7 +248,7 @@ check "premise: the poison-accepting range reaches the fold" \
 # in the first three vectors of 1024, so three is the whole of what this query
 # needs and the other 29 are the saving.
 FOLD_DEC="$(counter_in "$(fold_plan "$POISONQ")" 'Columnar Vectors Decoded')"
-check "premise: the FOLD ARM really decodes only the vectors it needs" "$FOLD_DEC" "3"
+check_num "the FOLD ARM really decodes only the vectors it needs" "$FOLD_DEC" "3"
 
 # The counter must be capable of reading high on this arm, or the check above is
 # satisfied by a number that is simply always small. This is the case that would
@@ -230,7 +257,7 @@ check "premise: the FOLD ARM really decodes only the vectors it needs" "$FOLD_DE
 check "control: and the same counter reads every vector when nothing is skipped" \
 	"$(counter_in "$(fold_plan 'SELECT count(*), sum(v) FROM n WHERE id >= 0')" 'Columnar Vectors Decoded')" \
 	"32"
-check "the fold does not count rows from a vector it never decoded" \
+check_text "the fold does not count rows from a vector it never decoded" \
 	"$(fold_run "$POISONQ")" \
 	"$(q 'SELECT count(*), sum(v) FROM h WHERE id BETWEEN -2000000000 AND 3000;')"
 

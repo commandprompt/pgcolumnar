@@ -16,13 +16,18 @@
 # Written fresh for pgColumnar.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# The remote reads below are refused for want of an endpoint and credentials, and
+# each check names the refusal it wants. The postmaster inherits this environment,
+# so an ambient AWS_* would turn those refusals into connection attempts: clear them.
+unset AWS_ENDPOINT_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+	AWS_REGION AWS_DEFAULT_REGION
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 # nm reads the symbol tables the separation checks rest on; stat sizes the
 # stand-in module. Without this, a missing nm makes "the symbol is absent from
 # the main library" true for the wrong reason, which is the whole failure this
 # suite exists to catch, turned on itself.
-pgc_require_tools nm stat || { pgc_summary; exit 1; }
+pgc_require_tools nm stat ldd || { pgc_summary; exit 1; }
 
 LIBDIR="$("$PGC_PG_CONFIG" --pkglibdir 2>/dev/null || echo "")"
 [ -n "$LIBDIR" ] || LIBDIR="$(pgc_pg "pg_config --pkglibdir" | tail -1 | tr -d '\r')"
@@ -70,8 +75,9 @@ for stash in "$MOD.away" "$MOD.probe"; do
 	# every check below would run against a broken installation and report the
 	# confusing half of the truth, so stop here and say which file to look at.
 	if ! stash_is_debris; then
-		pgc_fail "restored $stash to $MOD, but that is not a module either" \
-			"this installation needs 'make install' before the suite can run"
+		# A literal name, so the twin can carry it: the paths go in the detail.
+		pgc_fail "a stash restored over a missing module is a module" \
+			"restored $stash to $MOD, but that is not a module either; this installation needs 'make install' before the suite can run"
 		pgc_summary
 		exit 1
 	fi
@@ -100,15 +106,39 @@ check_num "the module's entry point is NOT inside the preloaded library" \
 check_num "positive control: it IS defined in the module, so nm really looked" \
 	"$(pgc_pg "nm -D --defined-only '$MOD' | grep -c ' T pgcolumnar_objstore_init'" | tail -1)" "1"
 
+# A remote path's refusal, verbose: "ERROR:  SQLSTATE: message" on its first line.
+refusal_of() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -q -c '\set VERBOSITY verbose' -c "$1" 2>&1
+}
+
+# What each URL must be refused with, SQLSTATE and message. The checks used to take
+# any of seven phrases, and "is not supported" is one of them: with the module
+# dropping s3:// or gs:// from the schemes it handles, each read said so and main
+# passed 30 of 30 (#1341). An https:// read reaches the allow-list only when the
+# module was built with OpenSSL; without it the scheme is unhandled, by design.
+if [ "$(pgc_pg "ldd '$MOD'" 2>/dev/null | grep -c libssl)" -ge 1 ]; then
+	HTTPS_REFUSAL='42501: columnar: endpoint "host:443" is not in pgcolumnar.objstore_allowed_endpoints'
+else
+	HTTPS_REFUSAL='0A000: columnar: reading "https://host/key.parquet" is not supported'
+fi
+refusal_for() {
+	case "$1" in
+	s3://*) echo "28000: columnar: reading \"$1\" requires AWS_ENDPOINT_URL in the server environment" ;;
+	gs://*) echo "28000: columnar: reading \"$1\" requires AWS_ACCESS_KEY_ID in the server environment" ;;
+	https://*) echo "$HTTPS_REFUSAL" ;;
+	esac
+}
+
 # A remote path must report a remote error, from the reader, without a connection.
 for url in "s3://bucket/key.parquet" "gs://bucket/key.parquet" "https://host/key.parquet"; do
 	# The scheme, by parameter expansion rather than a `cut` subshell, because BOTH
 	# names need it now: the headline already carried it and the continuation did not,
 	# which is why three iterations produced one ledger key (#982).
 	scheme="${url%%:*}"
-	out=$(psql_run "SELECT * FROM pgcolumnar.read_parquet('$url') AS (a int)" 2>&1)
+	out=$(refusal_of "SELECT * FROM pgcolumnar.read_parquet('$url') AS (a int)")
 	check "a $scheme URL reports an object-storage error, not a missing file" \
-		"$([ "$(grep -c 'object storage is not implemented\|is not supported\|requires the object-store module\|requires AWS_\|could not resolve\|could not connect\|objstore_allowed_endpoints' <<<"$out")" -ge 1 ] && echo yes || echo no)" "yes"
+		"$(head -1 <<<"$out")" "ERROR:  $(refusal_for "$url")"
 	check_num "and the $scheme URL is NOT reported as a missing file" \
 		"$(grep -c 'No such file or directory' <<<"$out")" "0"
 done
@@ -128,16 +158,24 @@ for pat in "s3://bucket/a*.parquet" "s3://bucket/a?.parquet" "s3://bucket/a[0-9]
 	# either, so three iterations produced one key for each of two checks (#982).
 	meta="${pat#s3://bucket/a}"
 	meta="${meta%.parquet}"
-	out=$(psql_run "SELECT * FROM pgcolumnar.read_parquet('$pat') AS (a int)" 2>&1)
+	out=$(refusal_of "SELECT * FROM pgcolumnar.read_parquet('$pat') AS (a int)")
+	# The listing is refused for want of an endpoint, as a read is; the URL it names
+	# is the listing's, not the pattern, so only the SQLSTATE and the cause are pinned.
 	check "a remote glob ($meta) is handled remotely (an object-storage error, not a local one)" \
-		"$([ "$(grep -c 'requires AWS_\|object storage\|objstore_allowed_endpoints\|requires the object-store module\|could not resolve\|could not connect\|is not in pgcolumnar' <<<"$out")" -ge 1 ] && echo yes || echo no)" "yes"
+		"$(head -1 <<<"$out" | sed -n 's/^ERROR:  \(28000\): columnar: reading "s3:[^"]*" \(requires AWS_ENDPOINT_URL\) .*/\1 \2/p')" \
+		"28000 requires AWS_ENDPOINT_URL"
 	check_num "and the $meta glob is NOT reported as a local filesystem miss" \
 		"$(grep -c 'no files match pattern\|matched no regular files\|No such file or directory' <<<"$out")" "0"
 done
 
 # A local path must be entirely unaffected, which is the regression this could cause.
-psql_run "CREATE TABLE lp (a int) USING pgcolumnar; INSERT INTO lp VALUES (1),(2),(3);" >/dev/null 2>&1
-check_num "a local path still works" "$(q 'SELECT count(*) FROM lp')" "3"
+# Read THROUGH read_parquet, the path the remote dispatch sits in front of. This used to
+# count a columnar table, which never reaches the dispatch: with every local
+# read_parquet refused as a missing file, main passed 30 of 30 (#1341).
+psql_run "CREATE TABLE lp (a int) USING pgcolumnar; INSERT INTO lp VALUES (1),(2),(3);
+	SELECT pgcolumnar.export_parquet('lp', '$PGC_WORKDIR/lp.parquet');" >/dev/null 2>&1
+check_num "a local path still works" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('$PGC_WORKDIR/lp.parquet') AS (a int) WHERE a IN (1, 2, 3)")" "3"
 # A RELATIVE path, which is what the label says. The previous version of this
 # passed an absolute one, so the case it named was never exercised.
 check_num "a relative path is not mistaken for a URL" \

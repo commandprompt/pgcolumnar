@@ -10,12 +10,17 @@
 #      arithmetic from the fixture's structure (open = 1 HEAD + 3 ranged GETs,
 #      data = one GET per needed chunk); unbuffered (dev GUC off) >= 10*K.
 #      Removal proof: force the GUC off and the buffered check must go red.
-#   C  failure taxonomy on SQLSTATE: unreachable port and 404 name the URL and
-#      produce no rows; a Range-ignoring server is an error, never a silent
-#      whole-object read.
+#   C  failure taxonomy on SQLSTATE AND message: unreachable port and 404 name
+#      the URL and produce no rows; a Range-ignoring server is an error, never a
+#      silent whole-object read; a short 206 body and EOF mid-body are refused;
+#      a keep-alive connection the server dropped is retried once, and a fresh
+#      connection the server hangs up on is not. Many guards share 08006 and
+#      08P01, so each refusal must also carry its own guard's message.
 #   D  cancel: statement_timeout fires within bound while the server stalls
 #      mid-body. Removal proof: with the module's WaitLatchOrSocket wait arm
 #      deleted, this check hangs or reds.
+#   Survival: the server still answers and no backend died across the arms (the
+#      server log's "terminated by signal" count, read after waiting for it).
 #
 # The fixture server (test/objstore_http_server.py) logs one line per request;
 # that log is seam B. The suite tears the server down through a chained trap
@@ -87,14 +92,52 @@ psql_run "CREATE SERVER osrv FOREIGN DATA WRAPPER pgcolumnar_parquet;"
 psql_run "CREATE FOREIGN TABLE flocal ($COLDEFS) SERVER osrv OPTIONS (path '$PGC_WORKDIR/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fhttp  ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/fixture.parquet');"
 
-# SQLSTATE of a failing statement (psql VERBOSITY sqlstate prints the bare code).
-sqlstate_of() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
+# Wait up to 30 s for the server to answer; -> what SELECT 1 last returned. A
+# crash restarts the server, so every reading after one waits for it: otherwise
+# the next reading fails on recovery instead of measuring its own guard.
+await_server() {
+	local up=""
+	for _ in $(seq 1 60); do
+		up="$(q 'SELECT 1')"
+		[ "$up" = 1 ] && break
+		sleep 0.5
+	done
+	echo "$up"
+}
+
+# refusal_of SQL PHRASE -> "SQLSTATE: PHRASE" when SQL failed with PHRASE in its
+# primary message, else the SQLSTATE and the message it did give, or what came
+# back instead of an error.
+refusal_of() {
+	local out code err
+	await_server >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
 $1;
 SQLEOF
+)"
+	# readers that consume all their input: an early exit SIGPIPEs the printf
+	err="$(printf '%s\n' "$out" | awk '/^ERROR:/ && !f { print; f = 1 }')"
+	code="$(printf '%s\n' "$err" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p')"
+	if [ -z "$code" ]; then
+		out="${out//$'\n'/ }"
+		echo "no error: ${out:0:200}"
+	elif [[ "$err" == *"$2"* ]]; then
+		echo "$code: $2"
+	else
+		echo "$code: ${err#ERROR:  $code: }"
+	fi
 }
+
+# Backends the server log says died; blank when the log can't be read, so a
+# blind count never reads as "no crashes".
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+CRASHES0="$(crashes)"
 
 # Requests logged since the last truncation.
 reqs() { wc -l < "$HTTP_LOG" | tr -d ' '; }
@@ -159,12 +202,35 @@ psql_run "CREATE FOREIGN TABLE fdead ($COLDEFS) SERVER osrv OPTIONS (path 'http:
 psql_run "CREATE FOREIGN TABLE f404  ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/no_such.parquet');"
 psql_run "CREATE FOREIGN TABLE fnorange ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/norange/fixture.parquet');"
 
-check "C: unreachable endpoint SQLSTATE" "$(sqlstate_of "SELECT count(*) FROM fdead")" "08006"
-check "C: http 404 SQLSTATE" "$(sqlstate_of "SELECT count(*) FROM f404")" "58P01"
-check "C: range-ignoring server SQLSTATE" "$(sqlstate_of "SELECT count(*) FROM fnorange")" "08P01"
+psql_run "CREATE FOREIGN TABLE fshort ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/short/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE ftrunc ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/trunc/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fdropka ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/dropka/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fhangup ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/hangup/fixture.parquet');"
+
+check "C: unreachable endpoint SQLSTATE" \
+	"$(refusal_of "SELECT count(*) FROM fdead" "could not connect to")" "08006: could not connect to"
+check "C: http 404 SQLSTATE" \
+	"$(refusal_of "SELECT count(*) FROM f404" "does not exist (HTTP 404)")" "58P01: does not exist (HTTP 404)"
+check "C: range-ignoring server SQLSTATE" \
+	"$(refusal_of "SELECT count(*) FROM fnorange" "ignored a Range request")" "08P01: ignored a Range request"
+check "C: a short 206 body is refused" \
+	"$(refusal_of "SELECT count(*) FROM fshort" "requested bytes")" "08P01: requested bytes"
+check "C: EOF mid-body is refused" \
+	"$(refusal_of "SELECT count(*) FROM ftrunc" "closed mid-body")" "08006: closed mid-body"
+# The server closes after every response without saying so, so every request
+# after the first on a connection meets the keep-alive race and must be retried.
+await_server >/dev/null
+check "C: a dropped keep-alive connection is retried (http == local)" \
+	"$(pgc_set_hash "SELECT c2, c5 FROM fdropka")" "$(pgc_set_hash "SELECT c2, c5 FROM flocal")"
+: > "$HTTP_LOG"
+check "C: a server that hangs up on a fresh connection is refused" \
+	"$(refusal_of "SELECT count(*) FROM fhangup" "failed before a response")" "08006: failed before a response"
+check_num "C: and that fresh connection is not retried (one request logged)" \
+	"$(wc -l < "$HTTP_LOG" | tr -d ' ')" "1"
 
 # ---- arm D: cancel while the server stalls mid-body ------------------------
 psql_run "CREATE FOREIGN TABLE fstall ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/stall/fixture.parquet');"
+await_server >/dev/null
 D_START=$(date +%s)
 D_STATE="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 	-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
@@ -177,5 +243,15 @@ D_ELAPSED=$(( $(date +%s) - D_START ))
 check "D: stalled transfer cancelled with query_canceled" "$D_STATE" "57014"
 check_num "D: cancel latency bounded (<=10s)" \
 	"$([ "$D_ELAPSED" -le 10 ] 2>/dev/null && echo 1 || echo 0)" "1"
+
+# ---- survival ----------------------------------------------------------------
+# A crash is restarted from, so a bare SELECT 1 alone passes once recovery ends:
+# wait for the server, then require the crash count unmoved since the start.
+UP="$(await_server)"
+CRASHES1="$(crashes)"
+check "survival: the server answers and no backend crashed" \
+	"$(if ! [[ "$CRASHES0" =~ ^[0-9]+$ && "$CRASHES1" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$UP" = 1 ] && [ "$CRASHES1" = "$CRASHES0" ]; then echo 1
+	else echo "no ([$UP], $(( CRASHES1 - CRASHES0 )) backend crashes)"; fi)" "1"
 
 pgc_summary

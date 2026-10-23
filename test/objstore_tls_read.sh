@@ -14,14 +14,21 @@
 #       SNI suppressed for the IP literal).
 #   A2  s3://bucket/key over an https endpoint with SigV4 verification on:
 #       the M2 signer composed over TLS.
-#   C   wronghost / expired / untrusted each fail SQLSTATE 08006 with
-#       OpenSSL's deterministic reason string, and each carries the premise
+#   C   wronghost / expired / untrusted / self-signed each fail SQLSTATE
+#       08006 with the module's own message and OpenSSL's verification
+#       reason, word for word, in the DETAIL -- not any error that happens to
+#       mention a certificate -- and each carries the premise
 #       that the TLS handshake was genuinely attempted (the fixture logs
 #       HANDSHAKE at accept time, BEFORE the handshake can fail) -- a reason
 #       grep without that premise is satisfied by a server that was never
 #       contacted.
 #   D   statement_timeout cancels a transfer stalled mid-body over TLS: the
 #       SSL_ERROR_WANT_* wait loop services interrupts like the cleartext one.
+#   E   the CA in SSL_CERT_DIR alone (no SSL_CERT_FILE) carries the good read:
+#       the default verify paths honour the directory as well as the file.
+#   No arm may crash a backend: the server log's "terminated by signal" count
+#   is read at the end, and every refusal waits for the server to answer
+#   SELECT 1 again, so a crash fails its own checks and not the next arm's.
 #
 # The fixture CA is trusted through SSL_CERT_FILE in the postmaster
 # environment, which OpenSSL's default verify paths honour; the module carries
@@ -87,7 +94,14 @@ gen_cert expired   ca1 "IP:127.0.0.1" \
 # proves the certificate is genuinely expired, whichever path produced it.
 [ -s "$PKI/expired.pem" ] || gen_cert expired ca1 "IP:127.0.0.1" -days 0
 gen_cert untrusted ca2 "IP:127.0.0.1"
-for f in ca1 ca2 good goodsig wronghost expired untrusted; do
+# A self-signed leaf: its own issuer, trusted by nobody.
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$PKI/selfsigned.key" \
+	-subj "/CN=selfsigned" -addext "subjectAltName=IP:127.0.0.1" \
+	-days 2 -out "$PKI/selfsigned.pem" 2>/dev/null
+# The SSL_CERT_DIR form of CA-1: a directory holding it under its subject hash.
+mkdir -p "$PKI/cadir"
+cp "$PKI/ca1.pem" "$PKI/cadir/$(openssl x509 -hash -noout -in "$PKI/ca1.pem").0"
+for f in ca1 ca2 good goodsig wronghost expired untrusted selfsigned; do
 	[ -s "$PKI/$f.pem" ] || { echo "FATAL: PKI generation failed for $f"; exit 1; }
 done
 check "premise: expired certificate is genuinely expired" \
@@ -129,7 +143,9 @@ start_srv goodsig   goodsig --sigv4-key "$AKID" --sigv4-secret "$SECRET" \
 start_srv wronghost wronghost
 start_srv expired   expired
 start_srv untrusted untrusted
-check_num "premise: five TLS servers are up" "${#SRV_PIDS[@]}" "5"
+start_srv selfsigned selfsigned
+check_num "premise: six TLS servers are up" "${#SRV_PIDS[@]}" "6"
+CRASHES_BEFORE="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
 
 # Restart the cluster with the trust anchor and the s3 environment.
 pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
@@ -146,6 +162,7 @@ psql_run "CREATE FOREIGN TABLE fs3tls ($COLDEFS) SERVER tlssrv OPTIONS (path 's3
 psql_run "CREATE FOREIGN TABLE fwrong ($COLDEFS) SERVER tlssrv OPTIONS (path 'https://127.0.0.1:${PORT[wronghost]}/$BUCKET/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fexp ($COLDEFS) SERVER tlssrv OPTIONS (path 'https://127.0.0.1:${PORT[expired]}/$BUCKET/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE funtr ($COLDEFS) SERVER tlssrv OPTIONS (path 'https://127.0.0.1:${PORT[untrusted]}/$BUCKET/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fself ($COLDEFS) SERVER tlssrv OPTIONS (path 'https://127.0.0.1:${PORT[selfsigned]}/$BUCKET/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fstall ($COLDEFS) SERVER tlssrv OPTIONS (path 'https://127.0.0.1:${PORT[good]}/stall/$BUCKET/fixture.parquet');"
 
 # SQLSTATE and full verbose error of a failing statement.
@@ -159,6 +176,9 @@ SQLEOF
 handshakes_for() {  # handshakes since last truncation
 	grep -c "^HANDSHAKE" "$LOG" | tr -d ' '
 }
+wait_up() {  # a crashed backend fails its own check, not the next arm's
+	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return; sleep 0.5; done
+}
 
 # ---- arm A: the good certificate carries data -------------------------------
 check "A: https differential == local" \
@@ -171,24 +191,32 @@ check "A2: s3 over https differential == local" \
 	"$(pgc_set_hash "SELECT * FROM fs3tls")" "$(pgc_set_hash "SELECT * FROM flocal")"
 
 # ---- arm C: the refusal matrix ---------------------------------------------
-c_arm() {  # c_arm <label> <table> <reason-regex>
-	local label="$1" tbl="$2" want="$3" out state reason hs0 hs1
+# The refusal is the module's own: its message names the URL it could not
+# reach, and its DETAIL is OpenSSL's verification reason for THIS certificate,
+# compared whole -- a different verification failure, a cleartext reply or a
+# crash each read differently.
+c_arm() {  # c_arm <label> <table> <server> <verification reason>
+	local label="$1" tbl="$2" srv="$3" want="$4" out state msg detail hs0 hs1
 	hs0="$(handshakes_for)"
 	out="$(verr "SELECT count(*) FROM $tbl")"
 	hs1="$(handshakes_for)"
+	wait_up
 	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)"
-	reason="$(grep -icE "$want" <<<"$out")"
+	msg="$(sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' <<<"$out" | head -1)"
+	detail="$(sed -n 's/^DETAIL:  //p' <<<"$out" | head -1)"
 	check "premise: $label handshake was attempted" \
 		"$([ "$hs1" -gt "$hs0" ] 2>/dev/null && echo yes)" "yes"
 	check "C: $label refused with 08006" "$state" "08006"
-	check "C: $label names its reason" \
-		"$([ "${reason:-0}" -ge 1 ] && echo yes || echo no)" "yes"
+	check "C: $label refusal is the TLS one" "$msg" \
+		"columnar: could not establish TLS to \"https://127.0.0.1:${PORT[$srv]}/$BUCKET/fixture.parquet\""
+	check "C: $label names its reason" "$detail" "Certificate verification failed: $want."
 	check_num "C: $label returned no rows" \
 		"$(grep -cE '^[0-9]+$' <<<"$out")" "0"
 }
-c_arm "wrong-host" fwrong "hostname mismatch|ip address mismatch"
-c_arm "expired" fexp "certificate has expired"
-c_arm "untrusted-ca" funtr "unable to get local issuer|self-signed certificate|unable to verify"
+c_arm "wrong-host" fwrong wronghost "IP address mismatch"
+c_arm "expired" fexp expired "certificate has expired"
+c_arm "untrusted-ca" funtr untrusted "unable to get local issuer certificate"
+c_arm "self-signed" fself selfsigned "self-signed certificate"
 
 # ---- arm D: cancel mid-body over TLS ---------------------------------------
 D_START=$(date +%s)
@@ -203,5 +231,16 @@ D_ELAPSED=$(( $(date +%s) - D_START ))
 check "D: stalled TLS transfer cancelled with query_canceled" "$D_STATE" "57014"
 check_num "D: cancel latency bounded (<=10s)" \
 	"$([ "$D_ELAPSED" -le 10 ] 2>/dev/null && echo 1 || echo 0)" "1"
+wait_up
+
+# ---- arm E: the CA from SSL_CERT_DIR alone ---------------------------------
+pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
+pgc_pg "SSL_CERT_DIR='$PKI/cadir' pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
+wait_up
+check_num "E: SSL_CERT_DIR alone trusts the CA (count(*) over https)" \
+	"$(q "SELECT count(*) FROM fgood")" "$((G * ROWS_PER_GROUP))"
+
+check_num "survival: no backend was terminated by a signal" \
+	"$(( $(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null) - CRASHES_BEFORE ))" "0"
 
 pgc_summary

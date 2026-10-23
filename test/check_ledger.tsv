@@ -645,6 +645,17 @@ bloom_sizing	bloom_sizing	premise: those values really are distinct	15;16;17;18;
 bloom_sizing	bloom_sizing	premise: zone maps alone skip nothing on this fixture	15;16;17;18;19	never	-
 bloom_sizing	bloom_sizing	results are identical with the filter and without it	15;16;17;18;19	2026-10-20	columnar_bloom.c: the build sets only the first of k bits, so a present value probes absent
 bloom_sizing	bloom_sizing	the filter still skips groups it can prove empty (#467)	15;16;17;18;19	2026-10-20	columnar_bloom.c: the probe answers may-be-present for every value, so nothing is skipped
+cancel_decode	cancel_decode	a scan of many small groups is cancelled	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
+cancel_decode	cancel_decode	a scan of one large group is cancelled	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
+cancel_decode	cancel_decode	cancel latency does not grow with row group size	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
+cancel_decode	cancel_decode	no backend crashed while the scans were cancelled	15;16;17;18;19	2026-10-22	columnar_reader.c: a flag the group load sets around its decode, left set by a cancel, so the next load in that backend calls abort()
+cancel_decode	cancel_decode	the cancel arrives within a generous absolute bound	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
+cancel_decode	cancel_decode	the cancelled predicate returns its true answer when allowed to finish	15;16;17;18;19	2026-10-22	columnar_reader.c: a flag the group load sets around its decode, left set by a cancel, so the next load in that backend calls abort()
+cancel_decode	cancel_decode	the many-group table has many groups	15;16;17;18;19	never	-
+cancel_decode	cancel_decode	the one-group table has exactly one group	15;16;17;18;19	never	-
+cancel_decode	cancel_decode	the scan outlasts the timeout, so a cancel is possible	15;16;17;18;19	never	-
+cancel_decode	cancel_decode	the session is usable after the cancel	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
+cancel_decode	cancel_decode	the table still reads correctly after the cancel	15;16;17;18;19	2026-10-22	columnar_reader.c: abort() where the group load takes a pending cancel, ahead of its per-chunk CHECK_FOR_INTERRUPTS
 capability_sweep	capability_sweep	and no member of the population is this very file	15;16;17;18;19	2026-09-23	the self-exclusion removed from pgc_cap_population, so the sweep enters its own population
 capability_sweep	capability_sweep	and pyarrow.parquet with it	15;16;17;18;19	2026-09-23	the shim's pyarrow.py emptied, so both runs are the present run
 capability_sweep	capability_sweep	no suite loses a check without recording a skip or a refusal	15;16;17;18;19	2026-10-12	a check_skip block removed from a suite so its arms vanish with no skip and no fail;the pyarrow decline reason stops naming the capability, so no skip counts as declined
@@ -954,6 +965,40 @@ debug_hook_privilege	debug_hook_privilege	peon may even brick its OWN scratch ta
 debug_hook_privilege	debug_hook_privilege	premise: the peon role runs its own statements	15;16;17;18;19	never	-
 debug_hook_privilege	debug_hook_privilege	the gated table still reads (version untouched by the refused calls)	15;16;17;18;19	2026-10-14	the debug set-metapage-version hook without its owner check
 debug_hook_privilege	debug_hook_privilege	the owner can call the advance hook (no-op advance)	15;16;17;18;19	2026-10-14	the debug advance hook refuses every caller including the owner
+decode_interrupts	decode_interrupts	bitunpack checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in bitunpack moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	bitunpack was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: bitunpack renamed bitunpack_v2
+decode_interrupts	decode_interrupts	decode_alp checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_alp moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_alp was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_alp renamed decode_alp_v2
+decode_interrupts	decode_interrupts	decode_delta checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_delta moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_delta was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_delta renamed decode_delta_v2
+decode_interrupts	decode_interrupts	decode_dict checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_dict moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_dict was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_dict renamed decode_dict_v2
+decode_interrupts	decode_interrupts	decode_dod checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_dod moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_dod was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_dod renamed decode_dod_v2
+decode_interrupts	decode_interrupts	decode_for checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_for's COLUMNAR_DECODE_INTERRUPT(i) written as a comment
+decode_interrupts	decode_interrupts	decode_for was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_for renamed decode_for_v2
+decode_interrupts	decode_interrupts	decode_fsst_shared checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_fsst_shared's check moved below its decode loop
+decode_interrupts	decode_interrupts	decode_fsst_shared checks inside its decode loop, not only in the table parse	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_fsst_shared's check moved below its decode loop
+decode_interrupts	decode_interrupts	decode_fsst_shared was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_fsst_shared renamed decode_fsst_shared_v2
+decode_interrupts	decode_interrupts	decode_fsst_shared's decode loop was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_fsst_shared's decode loop header respelled (end > p)
+decode_interrupts	decode_interrupts	decode_gorilla checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_gorilla moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_gorilla was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_gorilla renamed decode_gorilla_v2
+decode_interrupts	decode_interrupts	decode_rle checks for interrupts	15;16;17;18;19	2026-10-22	columnar_encoding.c: every check in decode_rle moved to the top of its body, out of every loop
+decode_interrupts	decode_interrupts	decode_rle checks inside its value loop, not only around it	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_rle's check moved below the run's value loop
+decode_interrupts	decode_interrupts	decode_rle was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_rle renamed decode_rle_v2
+decode_interrupts	decode_interrupts	decode_rle's inner value loop was found	15;16;17;18;19	2026-10-22	columnar_encoding.c: decode_rle's value loop header respelled (produced < n && run-- > 0)
+decode_interrupts	decode_interrupts	the decode interrupt macro exists	15;16;17;18;19	2026-10-22	columnar_encoding.c: the decode macro's parameter renamed (k for i)
+decode_interrupts	decode_interrupts	the group load checks for interrupts per column chunk	15;16;17;18;19	2026-10-22	columnar_reader.c: the group load's CHECK_FOR_INTERRUPTS moved in front of its per-chunk loop
+decode_interrupts	decode_interrupts	the macro calls CHECK_FOR_INTERRUPTS	15;16;17;18;19	2026-10-22	columnar_encoding.c: the decode macro's CHECK_FOR_INTERRUPTS() written as a comment
+decode_interrupts	decode_interrupts	the row loop checks for interrupts	15;16;17;18;19	2026-10-22	columnar_reader.c: next_row's CHECK_FOR_INTERRUPTS moved in front of its row loop
+decode_interrupts	decode_interrupts	the stride is a power of two	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT_STRIDE 65535, not a power of two
+decode_interrupts	decode_interrupts	the stride is defined	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT_STRIDE spelled (1 << 16)
+decode_interrupts	decode_interrupts	the stride is not so large that a check never lands	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT_STRIDE 16777216
+decode_skip_interrupts	decode_skip_interrupts	PgColumnarThriftSkip checks for interrupts	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's interrupt check moved into the struct arm (per field, not per value)
+decode_skip_interrupts	decode_skip_interrupts	Thrift skip-bomb footer is cancellable, not an uninterruptible hang	15;16;17;18;19	2026-10-22	columnar_thrift.c: the list arm refuses a count over 1e9 with 57014 under its own message
+decode_skip_interrupts	decode_skip_interrupts	av_skip checks for interrupts per element (before the switch, not just per block)	15;16;17;18;19	2026-10-22	columnar_avro.c: av_skip's per-element interrupt check commented out
+decode_skip_interrupts	decode_skip_interrupts	backend survived the Thrift skip-bomb footer	15;16;17;18;19	2026-10-22	columnar_thrift.c: abort() in PgColumnarThriftSkip's list arm on a count over 1e9
+decode_skip_interrupts	decode_skip_interrupts	the cancel lands within 3 s of the statement's start under a 1 s timeout	15;16;17;18;19	2026-10-22	columnar_thrift.c: abort() in PgColumnarThriftSkip's list arm on a count over 1e9
 dependency_estimate	dependency_estimate	a case core already estimates well is unchanged (within 20%)	15;16;17;18;19	2026-10-19	core's estimate overridden where it is right (rel->rows = depRows * 3 unconditionally)
 dependency_estimate	dependency_estimate	a table with no dependency statistic is left to core's estimate (not raised)	15;16;17;18;19	2026-10-19	the #438 correction fires with no dependency statistic (degree forced to 1)
 dependency_estimate	dependency_estimate	and it is not an over-correction (bounded by the most selective marginal)	15;16;17;18;19	2026-10-19	core's estimate overridden where it is right (rel->rows = depRows * 3 unconditionally);the #438 raise overshoots tenfold (rel->rows = depRows * 10)
@@ -3647,6 +3692,10 @@ native_bloom	native_bloom	bloom rows written	15;16;17;18;19	2026-10-16	columnar_
 native_bloom	native_bloom	equality probe parity	15;16;17;18;19	2026-10-16	columnar_reader.c: the bloom answers absent for every value, so a matching group is pruned
 native_bloom	native_bloom	row count	15;16;17;18;19	never	-
 native_bloom	native_bloom	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
+native_cancel	native_cancel	cancel arrives well before the load completes	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT is a no-op
+native_cancel	native_cancel	one row group	15;16;17;18;19	never	-
+native_cancel	native_cancel	premise: the load outlasts the timeout, so the timeout can fire during it	15;16;17;18;19	never	-
+native_cancel	native_cancel	the short timeout is what fired	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT aborts the backend when a cancel is pending
 native_chunk_length_bound	native_chunk_length_bound	a sequential scan of the same poisoned chunk is refused (XX001)	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	an index fetch of a chunk whose page_length is 2^32 too large is refused (XX001)	15;16;17;18;19	never	-
 native_chunk_length_bound	native_chunk_length_bound	backend survived the sequential refusal	15;16;17;18;19	never	-
@@ -3972,6 +4021,9 @@ native_fetch_group_memo	native_fetch_group_memo	scattered index-fetched values a
 native_fetch_group_memo	native_fetch_group_memo	the fetch count is exact (3000 rows found)	15;16;17;18;19	2026-10-22	columnar_reader.c: the memo's last-group fast path serves rows up to 1000 past that group's end
 native_fetch_group_memo	native_fetch_group_memo	the measured plan is a nested loop of index probes (fetch path engaged)	15;16;17;18;19	never	-
 native_fetch_group_memo	native_fetch_group_memo	the table is exact after the in-statement rewrite	15;16;17;18;19	never	-
+native_fetch_interrupt	native_fetch_interrupt	pgcolumnar_fetch_row carries an interrupt check	15;16;17;18;19	2026-10-22	columnar_reader.c: pgcolumnar_fetch_row's CHECK_FOR_INTERRUPTS commented out where it stood
+native_fetch_interrupt	native_fetch_interrupt	the interrupt check precedes the row-group resolution	15;16;17;18;19	2026-10-22	columnar_reader.c: pgcolumnar_fetch_row's CHECK_FOR_INTERRUPTS commented out where it stood
+native_fetch_interrupt	native_fetch_interrupt	the row-group resolution is where the catalog read lives	15;16;17;18;19	2026-10-22	columnar_reader.c: pgcolumnar_lookup_row_group's uncached path no longer reads the row-group list, a comment naming the read
 native_fetch_position	native_fetch_position	a varying-length column reaches its value through an offset table	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row reaches a varying-length value by decoding every earlier one (the #143 walk)
 native_fetch_position	native_fetch_position	doubling the row group does not double the cost of the same fetches	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row counts the validity bits from the group's start for every fetch (the #143 walk);columnar_reader.c: pgcolumnar_fetch_row reaches a varying-length value by decoding every earlier one (the #143 walk)
 native_fetch_position	native_fetch_position	every column matches the heap mirror	15;16;17;18;19	2026-10-16	columnar_reader.c: pgcolumnar_fetch_row takes the row number as the rank, counting rows rather than present values;columnar_reader.c: pgcolumnar_fetch_row's rank is one past the row's
@@ -4346,6 +4398,105 @@ native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses vectorized agg when GUC on	15;16;17;18;19	2026-09-12	drop JOINREL fold
+native_late_materialization	native_late_materialization	a rejected row does not materialize its payload columns	15;16;17;18;19	2026-10-22	columnar_reader.c: a row the qual rejects is skipped but never counted
+native_late_materialization	native_late_materialization	a volatile qual is refused the two-pass path	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_late_materialization	native_late_materialization	and the answers are the same with it off	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_tuple_insert drops the row whose id is 7
+native_late_materialization	native_late_materialization	and the volatile query still matches the heap mirror	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_tuple_insert drops the row whose id is 7
+native_late_materialization	native_late_materialization	heap agrees on how many rows match	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_tuple_insert drops the row whose id is 7
+native_late_materialization	native_late_materialization	nothing was pruned at the group level	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_late_materialization	native_late_materialization	nothing was pruned at the vector level	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_late_materialization	native_late_materialization	premise: the fixture loaded every row	15;16;17;18;19	never	-
+native_late_materialization	native_late_materialization	premise: the needle is selective, not most of the table	15;16;17;18;19	never	-
+native_late_materialization	native_late_materialization	the executor still reports the rows the scan filtered	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_tuple_insert drops the row whose id is 7
+native_late_materialization	native_late_materialization	the query runs on the columnar custom scan	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_late_materialization	native_late_materialization	the rows are identical to the heap mirror	15;16;17;18;19	2026-10-22	columnar_reader.c: the late-materialization path rejects a row the qual accepts
+native_late_materialization	native_late_materialization	the same shape without the volatile term does use it	15;16;17;18;19	2026-10-22	columnar_reader.c: a row the qual rejects is skipped but never counted
+native_late_materialization	native_late_materialization	with the feature off nothing is filtered early	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_lazy_slot	native_lazy_slot	SELECT * through the index matches heap	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert stores c40 off by one in a wide bigint table, so lz_c holds a wrong value
+native_lazy_slot	native_lazy_slot	a range of rows sums the same as heap	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert stores c40 off by one in a wide bigint table, so lz_c holds a wrong value
+native_lazy_slot	native_lazy_slot	a row fetched before it is flushed reads correctly	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_slot_decode_upto decodes one column fewer than the prefix asked for
+native_lazy_slot	native_lazy_slot	a unique violation is still detected through the fetch path	15;16;17;18;19	never	-
+native_lazy_slot	native_lazy_slot	a wide table is not in a different class from a narrow one	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_slot_decode_upto decodes the whole row whatever prefix was asked for
+native_lazy_slot	native_lazy_slot	an ORDER BY over index-fetched rows matches heap	15;16;17;18;19	2026-10-22	columnar_tableam.c: the index fetch no longer clears the slot, so a new row keeps the previous row's decoded prefix
+native_lazy_slot	native_lazy_slot	copying index-fetched rows into a heap table keeps every column	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert stores c40 off by one in a wide bigint table, so lz_c holds a wrong value
+native_lazy_slot	native_lazy_slot	count(*) through the index matches heap	15;16;17;18;19	never	-
+native_lazy_slot	native_lazy_slot	single-row index fetches match heap for every column position	15;16;17;18;19	2026-10-22	columnar_tableam.c: tuple_insert stores c40 off by one in a wide bigint table, so lz_c holds a wrong value
+native_lazy_slot	native_lazy_slot	the fetch really is an index scan	15;16;17;18;19	never	-
+native_metadata_flush	native_metadata_flush	a 20-column flush opens a small constant number of metadata relations, not one per row	15;16;17;18;19	2026-10-22	columnar_metadata.c: open_columnar_table never reuses a session's open relation (#445 reverted), so each metadata row opens its catalog again
+native_metadata_flush	native_metadata_flush	a zone-map-pruned range read matches heap (the batched zone rows are correct)	15;16;17;18;19	never	-
+native_metadata_flush	native_metadata_flush	and that range read rules out a vector by its zone row alone	15;16;17;18;19	2026-10-22	columnar_metadata.c: zone_map rows are written with a NULL minimum and maximum, so no vector can be ruled out by its zone row
+native_metadata_flush	native_metadata_flush	and the 20-column flush opens at least the three tables every flush writes	15;16;17;18;19	2026-10-22	columnar_metadata.c: the flush session never counts an open, so the witness reads opens=0 for every flush
+native_metadata_flush	native_metadata_flush	every column reads back correct (sum over all 20 columns matches the heap mirror)	15;16;17;18;19	2026-10-22	columnar_reader.c: PgColumnarEncodeValueByLen stores a 4-byte by-value 1777 as 1778
+native_metadata_flush	native_metadata_flush	narrow (3 col) and wide (20 col) flush open the same number of metadata relations	15;16;17;18;19	2026-10-22	columnar_metadata.c: open_columnar_table never reuses a session's open relation (#445 reverted), so each metadata row opens its catalog again
+native_metadata_flush	native_metadata_flush	the flush emits the metadata-open witness	15;16;17;18;19	2026-10-22	columnar_write_state.c: the flush never begins a metadata session, so it neither batches nor emits the witness
+native_metadata_flush	native_metadata_flush	the wide table's row count survives the batched flush	15;16;17;18;19	never	-
+native_page_offset_bound	native_page_offset_bound	alive after projected overrun	15;16;17;18;19	never	-
+native_page_offset_bound	native_page_offset_bound	alive after projected page_offset=-1	15;16;17;18;19	never	-
+native_page_offset_bound	native_page_offset_bound	alive after whole-group overrun	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	alive after whole-group page_offset=-1	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	alive after whole-group wrap	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	an intact table reads every row and value with projection off	15;16;17;18;19	2026-10-22	columnar_reader.c: both containment guards refuse a chunk ending exactly at its group end
+native_page_offset_bound	native_page_offset_bound	an intact table's projected read returns every id	15;16;17;18;19	2026-10-22	columnar_reader.c: both containment guards refuse every chunk
+native_page_offset_bound	native_page_offset_bound	projected page_offset overrun is refused by the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the projected read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	projected page_offset=-1 hits the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the projected read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	whole-group page_offset overrun is refused by the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	whole-group page_offset=-1 hits the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_page_offset_bound	native_page_offset_bound	whole-group page_offset=0 is refused by the containment guard	15;16;17;18;19	2026-10-22	columnar_reader.c: the whole-group read's chunk containment guard removed
+native_param_pushdown	native_param_pushdown	a correlated PARAM_EXEC builds no skip predicate	15;16;17;18;19	2026-10-22	columnar_customscan.c: a correlated PARAM_EXEC is frozen into a scan key too
+native_param_pushdown	native_param_pushdown	a correlated PARAM_EXEC is not mis-pruned (results stay correct)	15;16;17;18;19	never	-
+native_param_pushdown	native_param_pushdown	a correlated PARAM_EXEC upper bound is not mis-pruned either	15;16;17;18;19	2026-10-22	columnar_customscan.c: a correlated PARAM_EXEC is frozen into a scan key too
+native_param_pushdown	native_param_pushdown	a generic-plan parameterized qual prunes chunk groups (19 of 20 removed)	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
+native_param_pushdown	native_param_pushdown	a second execution in the same session counts with its own value	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
+native_param_pushdown	native_param_pushdown	and prunes with its own value too (18 of 20 removed)	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
+native_param_pushdown	native_param_pushdown	backend alive	15;16;17;18;19	never	-
+native_param_pushdown	native_param_pushdown	literal count is the expected value	15;16;17;18;19	never	-
+native_param_pushdown	native_param_pushdown	parameterized count matches the literal count	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
+native_param_pushdown	native_param_pushdown	the correlated arm rescans the columnar scan once per outer row	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	backend survived the crafted header	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: a page declaring a size past MaxAllocSize aborts instead of being refused
+native_parquet_codecs	native_parquet_codecs	crafted uncompressed size gives a clean decode error	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: a page declaring a size past MaxAllocSize aborts instead of being refused
+native_parquet_codecs	native_parquet_codecs	gzip FDW count	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	gzip decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_codecs	native_parquet_codecs	gzip sum matches the generator	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_codecs	native_parquet_codecs	lz4 FDW count	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	lz4 decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_codecs	native_parquet_codecs	premise: the gzip file is GZIP-compressed	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	premise: the lz4 file is LZ4-compressed	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	premise: the uncompressed file is UNCOMPRESSED	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	premise: the zstd file is ZSTD-compressed	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	uncompressed decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_codecs	native_parquet_codecs	zstd FDW count	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	zstd decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_fdw	native_parquet_fdw	EXPLAIN shows Foreign Scan	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	a one-column query reads one of the eleven columns	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: projection pushdown ignored, every column decoded
+native_parquet_fdw	native_parquet_fdw	a selective predicate skips the three row groups it cannot match	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: row-group skipping never skips a group
+native_parquet_fdw	native_parquet_fdw	and the skipped scan still returns every matching row	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_skip moves each group's skip decision to the next group, skipping the one that matches
+native_parquet_fdw	native_parquet_fdw	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scan's missing-path refusal removed (the backend crashes)
+native_parquet_fdw	native_parquet_fdw	fdw row count	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	full scan: fdw == source	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	nested export rows	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	nested full scan: fdw == source	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	nested-loop self-join (rescan): fdw == source	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: every row group skipped once any qual is pushable
+native_parquet_fdw	native_parquet_fdw	predicate: fdw == source	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: every row group skipped once any qual is pushable
+native_parquet_fdw	native_parquet_fdw	projection: fdw == source	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	reject empty path option (HV00D)	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	reject invalid table option (HV00D)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the option validator accepts an unknown option
+native_parquet_fdw	native_parquet_fdw	scalar export rows	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	scan of non-parquet file errors (XX001)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the short-file refusal removed, so the bad-magic guard refuses instead
+native_parquet_fdw	native_parquet_fdw	scan with incompatible declared type errors (42804)	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	scan without path option errors (HV00J)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scan's missing-path refusal removed (the backend crashes)
+native_parquet_fdw	native_parquet_fdw	skip export rows	15;16;17;18;19	never	-
+native_parquet_fdw	native_parquet_fdw	the skip file has four row groups	15;16;17;18;19	2026-10-22	columnar_parquet.c: the exporter writes 131072-row groups instead of 65536
+native_parquet_fieldid	native_parquet_fieldid	a duplicate field id in the file is refused (42702)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
+native_parquet_fieldid	native_parquet_fieldid	a duplicate requested field id is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
+native_parquet_fieldid	native_parquet_fieldid	a field_ids/column-count mismatch is refused (22023)	15;16;17;18;19	never	-
+native_parquet_fieldid	native_parquet_fieldid	a file with no field ids is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the 'file carries no field ids' guard removed, so an id-less file falls to the absent-id refusal
+native_parquet_fieldid	native_parquet_fieldid	a nested/array output column is refused (0A000)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scalar-only guard on field-id projection removed
+native_parquet_fieldid	native_parquet_fieldid	an absent field id is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the absent-field-id refusal becomes abort()
+native_parquet_fieldid	native_parquet_fieldid	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the absent-field-id refusal becomes abort()
+native_parquet_fieldid	native_parquet_fieldid	field-id projection binds and reorders by id (g=gamma, a=alpha)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
+native_parquet_fieldid	native_parquet_fieldid	field-id projection reads a subset (only id 3 = beta)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
+native_parquet_fieldid	native_parquet_fieldid	positional read_parquet is unaffected	15;16;17;18;19	never	-
+native_parquet_fieldid	native_parquet_fieldid	the duplicate-requested-id error names the id, not the file	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_flba	native_parquet_flba	FDW scan == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL keeps its null	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL reads	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: an INT32 or INT64 DECIMAL is widened byte-reversed;columnar_parquet_reader.c: pq_decimal_to_numeric reads a narrower-than-16-byte negative DECIMAL as its unsigned magnitude
@@ -4361,6 +4512,24 @@ native_parquet_flba	native_parquet_flba	pyarrow decimal128 values are exact	15;1
 native_parquet_flba	native_parquet_flba	pyarrow uuid reads as uuid	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	uuid round-trips through export/read	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	whole-row round-trip == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
+native_parquet_hardening	native_parquet_hardening	backend survived short chunk list	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the chunk-count refusal becomes abort()
+native_parquet_hardening	native_parquet_hardening	date in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range date decodes one day late
+native_parquet_hardening	native_parquet_hardening	date invalid -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the date validity check removed (the offset-overflow branch kept)
+native_parquet_hardening	native_parquet_hardening	date offset overflow -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the whole date guard removed, so the epoch offset wraps
+native_parquet_hardening	native_parquet_hardening	import_parquet also raises 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	import_parquet left no wrapped rows	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	int2 in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 guard over-applied, refusing the in-range 30000
+native_parquet_hardening	native_parquet_hardening	int2 out of range -> 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	no wrapped -25536 appears	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	parquet_schema still describes a bad chunk list	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	read_parquet also raises 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	read_parquet in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 guard over-applied, refusing the in-range 30000
+native_parquet_hardening	native_parquet_hardening	short chunk list rejected with a specific error	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the row-group chunk-count guard removed
+native_parquet_hardening	native_parquet_hardening	time in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range INT64 time decodes one microsecond late
+native_parquet_hardening	native_parquet_hardening	time out of day -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the INT64 time range guard removed
+native_parquet_hardening	native_parquet_hardening	timestamp in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range timestamp decodes one microsecond late
+native_parquet_hardening	native_parquet_hardening	timestamp overflow -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the timestamp guard removed, so the epoch offset wraps
+native_parquet_hardening	native_parquet_hardening	valid two-column file still reads	15;16;17;18;19	never	-
 native_parquet_multifile	native_parquet_multifile	EXPLAIN reports 3 files	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
 native_parquet_multifile	native_parquet_multifile	EXPLAIN sums row groups across files	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
 native_parquet_multifile	native_parquet_multifile	FDW(directory) == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
@@ -4393,6 +4562,58 @@ native_parquet_multifile	native_parquet_multifile	predicate skips the two non-ma
 native_parquet_multifile	native_parquet_multifile	read_parquet(directory) == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
 native_parquet_multifile	native_parquet_multifile	schema-mismatched file in directory errors	15;16;17;18;19	never	-
 native_parquet_multifile	native_parquet_multifile	tree read order follows the sorted full path	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked directory's files are not sorted;columnar_parquet_reader.c: a walked entry is read whatever its extension
+native_parquet_partition	native_parquet_partition	IN on a partition column prunes	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	__HIVE_DEFAULT_PARTITION__ reads as null	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	a byte invalid in the server encoding is rejected	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	a file missing a declared partition component errors	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	a file whose basename looks like a partition component is unaffected	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	a null partition value is not the literal marker	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	a null partition value prunes	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	a percent-encoded partition value decodes	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	a predicate matching everything prunes nothing	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	a predicate on a file column prunes no files	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	a pruned file's row groups are never counted	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	a stable clause still prunes	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	a volatile clause keeps every matching partition row	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	a volatile clause prunes nothing	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the volatile-clause guard on partition pruning removed
+native_parquet_partition	native_parquet_partition	all four partitions read	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	all three partitions still read	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	an empty partition_columns option is rejected	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	an encoded null byte in a partition value is rejected	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the explicit encoded-NUL guard removed, so the encoding check's 22021 stands in
+native_parquet_partition	native_parquet_partition	an inequality on a partition column prunes	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	an unencoded value is unaffected	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	an unknown partition column errors rather than being ignored	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the unknown-partition-column guard removed, so a later column-count error stands in
+native_parquet_partition	native_parquet_partition	and reads the other half	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	backend survived the bad declarations	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the unknown-partition-column refusal becomes abort()
+native_parquet_partition	native_parquet_partition	backend survived the malformed partition values	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the unknown-partition-column refusal becomes abort()
+native_parquet_partition	native_parquet_partition	both columns prune down to one file	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	declaring a file column as a partition column errors	15;16;17;18;19	never	-
+native_parquet_partition	native_parquet_partition	group by a partition column	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	one partition value prunes half the files	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	partition column is typed, not text	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	partition prune plus row-group skip	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	partition values materialize	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	pruned scan still returns the right rows	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	row groups are still skipped inside the surviving files	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning never drops a file
+native_parquet_partition	native_parquet_partition	the encoded value is queryable as itself	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_partition	native_parquet_partition	the tree reads again once both are gone	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: partition pruning drops the files that match instead of those that do not
+native_parquet_projection	native_parquet_projection	after a dropped column, one column reads 1	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed matches the needed set by target index, not by attribute number
+native_parquet_projection	native_parquet_projection	after a dropped column, projection [d] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed matches the needed set by target index, not by attribute number
+native_parquet_projection	native_parquet_projection	count(*) decodes nothing, survives corruption	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	count(*) reads 0	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	good-column values are still correct	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	one column reads 1	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	projection [*] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a BYTE_ARRAY text longer than 2 bytes decodes without its last byte (shared with read_parquet)
+native_parquet_projection	native_parquet_projection	projection [a, d] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the last target column is never decoded, even when referenced
+native_parquet_projection	native_parquet_projection	projection [a] == oracle	15;16;17;18;19	never	-
+native_parquet_projection	native_parquet_projection	projection [b, c, d] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a BYTE_ARRAY text longer than 2 bytes decodes without its last byte (shared with read_parquet)
+native_parquet_projection	native_parquet_projection	projection [c] == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a BYTE_ARRAY text longer than 2 bytes decodes without its last byte (shared with read_parquet)
+native_parquet_projection	native_parquet_projection	qual on unselected column == oracle	15;16;17;18;19	never	-
+native_parquet_projection	native_parquet_projection	select star reads 4	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the last target column is never decoded, even when referenced
+native_parquet_projection	native_parquet_projection	selected 1 + qual 1 reads 2	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	selecting the corrupt column does error	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the last target column is never decoded, even when referenced
+native_parquet_projection	native_parquet_projection	selecting the good column skips the corrupt one	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pqfdw_compute_needed marks every column needed, so projection decodes all
+native_parquet_projection	native_parquet_projection	two columns read 2	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the last target column is never decoded, even when referenced
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: predicate skips 3 of 4 groups	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: INT64 statistics are not decoded, so an INT64-backed DECIMAL never skips;columnar_parquet_reader.c: pqfdw_compute_skip never marks a row group skippable
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: skipping did not drop rows	15;16;17;18;19	never	-
 native_parquet_pushdown	native_parquet_pushdown	INT64-backed DECIMAL: unfiltered scan skips nothing	15;16;17;18;19	never	-
@@ -4475,6 +4696,69 @@ native_parquet_schema	native_parquet_schema	type of c_text	15;16;17;18;19	never	
 native_parquet_schema	native_parquet_schema	type of c_time	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_ts	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_uuid	15;16;17;18;19	never	-
+native_parquet_stack	native_parquet_stack	a shallow valid schema chain still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema's guard trips on any nesting, not only on stack exhaustion
+native_parquet_stack	native_parquet_stack	backend survived read_parquet on the crash input	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip calls abort() where its stack guard would raise
+native_parquet_stack	native_parquet_stack	backend survived the nested-struct footer	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip calls abort() where its stack guard would raise
+native_parquet_stack	native_parquet_stack	backend survived the schema-chain footer	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema calls abort() where its stack guard would raise
+native_parquet_stack	native_parquet_stack	backend survived the valid file	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema calls abort() on entry, so any footer that parses crashes the backend
+native_parquet_stack	native_parquet_stack	nested-struct footer raises stack-depth, not SIGSEGV	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's check_stack_depth() removed, so a nested-struct footer is not bounded
+native_parquet_stack	native_parquet_stack	read_parquet rejects the nested-struct footer the same way	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's check_stack_depth() removed, so a nested-struct footer is not bounded
+native_parquet_stack	native_parquet_stack	schema-chain footer raises stack-depth, not SIGSEGV	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema's check_stack_depth() removed, so a schema chain is not bounded
+native_parquet_streaming	native_parquet_streaming	a second dictionary page in a chunk is rejected	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the one-dictionary-page-per-chunk guard removed
+native_parquet_streaming	native_parquet_streaming	all-null column (empty dictionary page) still reads	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	backend survived the crafted page areas	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the second-dictionary-page refusal becomes abort()
+native_parquet_streaming	native_parquet_streaming	backend survived the failed read	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	negative page offset is rejected by the offset check	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_read_page_header no longer refuses a negative page offset
+native_parquet_streaming	native_parquet_streaming	page size past end of file is rejected by the size bound	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: compressed_size no longer bounded by what is left of the file
+native_parquet_streaming	native_parquet_streaming	parquet_schema reads a file over the 1GB palloc ceiling	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	parquet_schema reports the columns of the oversized file	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	parquet_schema still reads a normal file	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	read_parquet still reads a normal file	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	streaming: LIMIT 10 (inside group 0) decodes one row group	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	streaming: LIMIT 1010 (into group 1) decodes two row groups	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	streaming: a full scan decodes all four row groups	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	streaming: full scan content is correct	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	streaming: rescan under a nested loop is correct	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	the uncompressed source file still reads	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	unparseable page header is rejected	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	v2 level lengths past the page are rejected	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	value read of the sparse file fails cleanly	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	zero-filled page area is rejected, not walked byte by byte	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the progress guard for a data page with no values removed
+native_parquet_units	native_parquet_units	import_parquet honours the unit	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	millis == micros	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	millis pushdown result == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	millis-scaled stats skip the non-matching group	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	millis-to-micros overflow raises 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	nanos == micros	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads NANOS as micros (no /1000)
+native_parquet_units	native_parquet_units	nanos read as bigint is exact	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	nanos sub-us truncates toward zero [frac]	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads NANOS as micros (no /1000)
+native_parquet_units	native_parquet_units	nanos sub-us truncates toward zero [neg]	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads NANOS as micros (no /1000)
+native_parquet_units	native_parquet_units	parquet_schema advises bigint for nanos (lossless)	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	parquet_schema advises time for TIME_MILLIS	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	parquet_schema advises timestamp for micros	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	parquet_schema advises timestamp for millis	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	read_parquet honours the unit	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	the millis file reads back exactly as written	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	time micros decodes to the right time	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	time millis decodes to the right time	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	ts_ms decodes to the right instant	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	ts_ns decodes to the right instant	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads NANOS as micros (no /1000)
+native_parquet_units	native_parquet_units	ts_us decodes to the right instant	15;16;17;18;19	never	-
+native_read_parquet	native_read_parquet	a role without pg_read_server_files is refused by read_parquet's own gate	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: read_parquet's own pg_read_server_files gate removed
+native_read_parquet	native_read_parquet	and a member of pg_read_server_files reads every row	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
+native_read_parquet	native_read_parquet	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
+native_read_parquet	native_read_parquet	import parity rows	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
+native_read_parquet	native_read_parquet	nested export rows	15;16;17;18;19	never	-
+native_read_parquet	native_read_parquet	nested round-trip: read_parquet == the generated rows	15;16;17;18;19	2026-10-22	columnar_reader.c: the columnar reader returns int4 777 as 778 (store_att_byval), so the source table and the file agree on the wrong value
+native_read_parquet	native_read_parquet	premise: reject missing column definition list	15;16;17;18;19	never	-
+native_read_parquet	native_read_parquet	projected column round-trips	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
+native_read_parquet	native_read_parquet	read_parquet == import_parquet	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
+native_read_parquet	native_read_parquet	reject fewer columns than file	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the leaf-count guard removed
+native_read_parquet	native_read_parquet	reject incompatible declared type	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scalar physical-type guard removed
+native_read_parquet	native_read_parquet	reject non-parquet file	15;16;17;18;19	never	-
+native_read_parquet	native_read_parquet	scalar export rows	15;16;17;18;19	never	-
+native_read_parquet	native_read_parquet	scalar read_parquet row count	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
+native_read_parquet	native_read_parquet	scalar round-trip: read_parquet == the generated rows	15;16;17;18;19	2026-10-22	columnar_reader.c: the columnar reader returns int4 777 as 778 (store_att_byval), so the source table and the file agree on the wrong value
 native_reclaim	native_reclaim	and every live row is still there, once	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 0.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac <= 0.0
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 1.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac >= 1.0
@@ -4512,6 +4796,19 @@ native_reclaim	native_reclaim	repeated recluster reuses space (file plateaus)	15
 native_reclaim	native_reclaim	reused-block data matches heap mirror	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	row count correct after cycle	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	ten row groups, every one half deleted	15;16;17;18;19	2026-10-14	the write state ignores stripe_row_limit
+native_reclaim_reconcile	native_reclaim_reconcile	compact_rewrite reconciled the stale row	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList never drops a free row, overlapping or not
+native_reclaim_reconcile	native_reclaim_reconcile	compact_rewrite recorded the free ranges it left	15;16;17;18;19	2026-10-22	columnar_metadata.c: record_free_space drops its insert, so every freed range leaks
+native_reclaim_reconcile	native_reclaim_reconcile	data intact after compact reconcile	15;16;17;18;19	never	-
+native_reclaim_reconcile	native_reclaim_reconcile	data intact after reconcile + rewrite	15;16;17;18;19	never	-
+native_reclaim_reconcile	native_reclaim_reconcile	data intact after truncate reconcile	15;16;17;18;19	never	-
+native_reclaim_reconcile	native_reclaim_reconcile	parity after reuse cycle 1	15;16;17;18;19	never	-
+native_reclaim_reconcile	native_reclaim_reconcile	parity after reuse cycle 2	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList never drops a free row, overlapping or not
+native_reclaim_reconcile	native_reclaim_reconcile	parity before	15;16;17;18;19	never	-
+native_reclaim_reconcile	native_reclaim_reconcile	plain compact kept the legitimate free ranges, which overlap no live group	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList drops every free row, not only those overlapping a live group
+native_reclaim_reconcile	native_reclaim_reconcile	plain compact reconciled the stale row	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList never drops a free row, overlapping or not
+native_reclaim_reconcile	native_reclaim_reconcile	row count intact	15;16;17;18;19	never	-
+native_reclaim_reconcile	native_reclaim_reconcile	stale overlapping free row injected	15;16;17;18;19	never	-
+native_reclaim_reconcile	native_reclaim_reconcile	truncate reconciled the stale row	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList never drops a free row, overlapping or not
 native_recluster	native_recluster	VACUUM set the visibility map, so the index-only count answers from the index before the recluster	15;16;17;18;19	never	-
 native_recluster	native_recluster	box parity (pre-recluster)	15;16;17;18;19	never	-
 native_recluster	native_recluster	full-table parity after recluster	15;16;17;18;19	2026-10-16	columnar_vacuum.c: recluster_online retires none of the old groups (PgColumnarRetireGroup removed)
@@ -4548,6 +4845,37 @@ native_repack	native_repack	the columnar table is unharmed: content hash	19	2026
 native_repack	native_repack	the columnar table is unharmed: row count	19	2026-10-16	columnar_tableam.c: relation_copy_for_cluster returns without raising, so a rewrite copies nothing
 native_repack	native_repack	the columnar table is unharmed: storage options	19	never	-
 native_repack	native_repack	without an identity index it is refused by PostgreSQL, not by us	19	never	-
+native_rewrite	native_rewrite	a group deleted below the threshold is not rewritten	15;16;17;18;19	2026-10-22	columnar_vacuum.c: every group with a live row is a rewrite candidate, deleted or not
+native_rewrite	native_rewrite	a rewrite plus later writes reuse no group number	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	a second rewrite with nothing deleted rewrites no group	15;16;17;18;19	2026-10-22	columnar_vacuum.c: every group with a live row is a rewrite candidate, deleted or not
+native_rewrite	native_rewrite	an index range read after vacuum returns the rows asked for	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group inserts no index entries for the rows it moves
+native_rewrite	native_rewrite	compact_rewrite holds ShareUpdateExclusiveLock	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	compact_rewrite holds no AccessExclusiveLock	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	dead-row space reclaimed	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	deleted id absent via index	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	every live row still reads back after rewrite and vacuum	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	group numbers issued after a rewrite are past every earlier one	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	index scan returns each live row once	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	live id present via index	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	parity after delete	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	parity after rewrite	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	rewrote some groups	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	row count after delete	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	row count after rewrite	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	there are deleted rows to reclaim	15;16;17;18;19	never	-
+native_rewrite	native_rewrite	unique constraint still enforced	15;16;17;18;19	2026-10-22	columnar_vacuum.c: rewrite_one_group drops the first live row of each group it rewrites
+native_rewrite	native_rewrite	vacuum rewrites into a fresh storage id	15;16;17;18;19	never	-
+native_rewrite_conc	native_rewrite_conc	a compact_rewrite holds its lock on t_col mid-verb	15;16;17;18;19	2026-10-22	columnar_vacuum.c: compact_rewrite no longer honours pgcolumnar.maintenance_hold_ms
+native_rewrite_conc	native_rewrite_conc	a reader with a 3 s lock_timeout finishes while the rewrite holds its lock	15;16;17;18;19	2026-10-22	columnar_vacuum.c: compact_rewrite opens the table with AccessExclusiveLock instead of ShareUpdateExclusiveLock
+native_rewrite_conc	native_rewrite_conc	a writer with a 3 s lock_timeout inserts while the rewrite holds its lock	15;16;17;18;19	2026-10-22	columnar_vacuum.c: compact_rewrite opens the table with AccessExclusiveLock instead of ShareUpdateExclusiveLock
+native_rewrite_conc	native_rewrite_conc	all workers succeeded (retried past serialization failures)	15;16;17;18;19	2026-10-22	columnar_metadata.c: every delete flush is refused as a concurrent compaction (over-apply)
+native_rewrite_conc	native_rewrite_conc	and the rewrite still held its lock when both had finished	15;16;17;18;19	2026-10-22	columnar_vacuum.c: compact_rewrite no longer honours pgcolumnar.maintenance_hold_ms
+native_rewrite_conc	native_rewrite_conc	conc-rewrite count/sum	15;16;17;18;19	2026-10-22	columnar_metadata.c: the F3b conflict check never raises, so a delete racing a committed rewrite lands on the retired group
+native_rewrite_conc	native_rewrite_conc	conc-rewrite range	15;16;17;18;19	2026-10-22	columnar_metadata.c: the F3b conflict check never raises, so a delete racing a committed rewrite lands on the retired group
+native_rewrite_conc	native_rewrite_conc	conc-rewrite whole-row	15;16;17;18;19	2026-10-22	columnar_metadata.c: the F3b conflict check never raises, so a delete racing a committed rewrite lands on the retired group
+native_rewrite_conc	native_rewrite_conc	row count sane	15;16;17;18;19	never	-
+native_rewrite_conc	native_rewrite_conc	the compactor rewrote groups while the workers were writing	15;16;17;18;19	2026-10-22	columnar_metadata.c: every delete flush is refused as a concurrent compaction (over-apply)
+native_rewrite_conc	native_rewrite_conc	the held rewrite itself completed	15;16;17;18;19	never	-
 native_roundtrip	native_roundtrip	native aggregate (sum over a scanned column)	15;16;17;18;19	2026-10-17	columnar_reader.c: the native reader never loads the last row group
 native_roundtrip	native_roundtrip	native count with filter	15;16;17;18;19	2026-10-17	columnar_reader.c: the native reader never loads the last row group
 native_roundtrip	native_roundtrip	native filtered scan	15;16;17;18;19	2026-10-17	columnar_reader.c: a null by-reference column reads back as a present empty value;columnar_reader.c: zone-map pruning skips the groups that can match and keeps the ones that cannot
@@ -4610,6 +4938,29 @@ native_saop_pushdown	native_saop_pushdown	the predicate builder's reject express
 native_saop_pushdown	native_saop_pushdown	the predicate builder's reject expression contains SK_SEARCHNULL	15;16;17;18;19	2026-10-16	columnar_reader.c: the reject expression keeps only SK_ISNULL
 native_saop_pushdown	native_saop_pushdown	vector-agg count over an IN-list is exact (conservative keys not folded)	15;16;17;18;19	2026-10-16	columnar_reader.c: a set key never probes the bloom filter (it probes zero values and rules the group out)
 native_saop_pushdown	native_saop_pushdown	vector-agg path engaged for the guard arm (plan shape)	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_vacuum.c: vacuum_sorted with no key declared aborts the backend in place of its refusal
+native_sort_by	native_sort_by	declared sort_by round-trips	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	empty table sorts without error	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the sorted rewrite orders each key descending
+native_sort_by	native_sort_by	equality parity (post-sort)	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	equality parity (pre-sort)	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	explicit columns lay the rows out as the declared key does	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the declared key loses its first column, so the rewrite sorts by ts alone
+native_sort_by	native_sort_by	explicit-column sort parity	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	full-table parity after sort	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	premise: before sorting, the scan order does not follow (host, ts)	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	row count	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	row count after sort	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	set_options rejects a nonexistent sort_by column	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	set_options rejects a virtual generated sort_by column	18;19	never	-
+native_sort_by	native_sort_by	single-row parity	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	single-row table sorts without error	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the sorted rewrite orders each key descending
+native_sort_by	native_sort_by	sort_by cleared	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	sorting a text key enables group skipping	15;16;17;18;19	2026-10-22	columnar_vacuum.c: vacuum_sorted rewrites in arrival order (no sort keys)
+native_sort_by	native_sort_by	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
+native_sort_by	native_sort_by	the scan order follows the declared key (host, ts)	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the sorted rewrite applies only the first sort key (host), leaving ts unordered
+native_sort_by	native_sort_by	vacuum_sorted rejects an explicit virtual generated column	18;19	2026-10-22	columnar_vacuum.c: the virtual-column refusal aborts the backend in place of its error (PG18+)
+native_sort_by	native_sort_by	virtual generated sort keys	15;16;17	never	-
+native_sort_by	native_sort_by	zero-arg errors on a dropped declared column	15;16;17;18;19	2026-10-22	columnar_vacuum.c: a dropped declared sort_by column gets the generic column-does-not-exist message
+native_sort_by	native_sort_by	zero-arg errors when no key declared	15;16;17;18;19	2026-10-22	columnar_vacuum.c: vacuum_sorted with no key declared aborts the backend in place of its refusal
 native_toasted_write	native_toasted_write	equality on a toasted value (bloom + recheck) matches heap	15;16;17;18;19	2026-10-17	columnar_write_state.c: the bloom hash of a varlena is taken from a fixed value, not the row's flattened one;columnar_write_state.c: the running maximum is never raised past a chunk's first value
 native_toasted_write	native_toasted_write	premise: each range selects some rows and not all	15;16;17;18;19	never	-
 native_toasted_write	native_toasted_write	premise: the source values are toasted (pglz)	15;16;17;18;19	never	-
@@ -4647,6 +4998,34 @@ native_varlena_bound	native_varlena_bound	backend survived the corrupt minimum	1
 native_varlena_bound	native_varlena_bound	backend survived the external-tagged minimum	15;16;17;18;19	never	-
 native_varlena_bound	native_varlena_bound	the txt column has a whole-chunk zone map to corrupt	15;16;17;18;19	never	-
 native_varlena_bound	native_varlena_bound	with the minimum restored, the range read is clean	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	EXPLAIN reports Columnar Vectors Decoded	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_vecdecode	native_vecdecode	a nullable aggregate reaches the fold	15;16;17;18;19	2026-10-22	columnar_vector.c: pgcolumnar_batch_shape_eligible refuses every shape, so no aggregate reaches the batch fold
+native_vecdecode	native_vecdecode	a range matching no row at all is still correct	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	a ruled-out vector is not decoded	15;16;17;18;19	2026-10-22	columnar_reader.c: the zone maps never build a skip mask, so no vector is ruled out
+native_vecdecode	native_vecdecode	aggregate over a range spanning many skipped vectors matches heap	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	aggregate over a skipping range matches heap	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	and EVERY ruled-out vector is: decoded plus skipped is the group's vectors	15;16;17;18;19	2026-10-22	columnar_reader.c: decode ignores the skip mask and decodes every vector
+native_vecdecode	native_vecdecode	and it agrees with heap after many leading skipped vectors	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	and it is not stuck at zero when a full scan decodes everything	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_vecdecode	native_vecdecode	boundary range parity, a range starting exactly on a vector edge	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	control: and the same counter reads every vector when nothing is skipped	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_vecdecode	native_vecdecode	cross-vector parity of a nullable column, nulls included	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	cross-vector range parity	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	narrow range parity with heap	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	no whole group is pruned on the narrow query	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_vecdecode	native_vecdecode	one row group, so every difference is per-vector	15;16;17;18;19	2026-10-22	columnar_write_state.c: the writer divides the table's stripe_row_limit by 100
+native_vecdecode	native_vecdecode	premise: the nullable column has nulls inside the ranges read below	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	the FOLD ARM really decodes only the vectors it needs	15;16;17;18;19	2026-10-22	columnar_reader.c: the zone maps never build a skip mask, so no vector is ruled out
+native_vecdecode	native_vecdecode	the aggregate really reaches the batch fold	15;16;17;18;19	2026-10-22	columnar_vector.c: pgcolumnar_batch_shape_eligible refuses every shape, so no aggregate reaches the batch fold
+native_vecdecode	native_vecdecode	the deep range reaches the fold too	15;16;17;18;19	2026-10-22	columnar_vector.c: pgcolumnar_batch_shape_eligible refuses every shape, so no aggregate reaches the batch fold
+native_vecdecode	native_vecdecode	the fold answers correctly over a range that skips vectors	15;16;17;18;19	never	-
+native_vecdecode	native_vecdecode	the fold answers count and sum of a nullable column over a skipping range	15;16;17;18;19	2026-10-22	columnar_vector.c: the fold ignores the validity bitmap, so a null row is read as a present value
+native_vecdecode	native_vecdecode	the fold does not count rows from a vector it never decoded	15;16;17;18;19	2026-10-22	columnar_vector.c: the fold ignores the skip mask and reads a skipped vector's hole as values (the hole zero-filled so the read is deterministic)
+native_vecdecode	native_vecdecode	the narrow plan is a columnar custom scan	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_vecdecode	native_vecdecode	the narrow range skips vectors	15;16;17;18;19	2026-10-22	columnar_reader.c: the zone maps never build a skip mask, so no vector is ruled out
+native_vecdecode	native_vecdecode	the poison-accepting range reaches the fold	15;16;17;18;19	2026-10-22	columnar_vector.c: pgcolumnar_batch_shape_eligible refuses every shape, so no aggregate reaches the batch fold
+native_vecdecode	native_vecdecode	the wide plan is a columnar custom scan	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
+native_vecdecode	native_vecdecode	the wide range skips none, so the arms really differ	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.enable_custom_scan defaults to off
 native_vecskip	native_vecskip	and the aggregate skips the same seven vectors	15;16;17;18;19	2026-10-16	columnar_reader.c: no vector skip at all (zone-map rule off, refine_skipvec and qual_skipvec return at once)
 native_vecskip	native_vecskip	cross-vector range parity	15;16;17;18;19	never	-
 native_vecskip	native_vecskip	empty range parity	15;16;17;18;19	never	-
@@ -4672,6 +5051,48 @@ native_writer	native_writer	native row groups (5000 rows / 1000 limit)	15;16;17;
 native_writer	native_writer	native row-group row total	15;16;17;18;19	never	-
 native_writer	native_writer	native storage row written	15;16;17;18;19	never	-
 native_writer	native_writer	native vector length recorded	15;16;17;18;19	2026-10-16	columnar.h: COLUMNAR_NATIVE_VECTOR_LENGTH 2048
+native_zonemap	native_zonemap	every vector's maximum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
+native_zonemap	native_zonemap	every vector's minimum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
+native_zonemap	native_zonemap	every whole-chunk maximum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
+native_zonemap	native_zonemap	every whole-chunk minimum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
+native_zonemap	native_zonemap	id (int4) min width = 4 bytes	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	k (int8) max width = 8 bytes	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	min/max present for all columns	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
+native_zonemap	native_zonemap	null_count sums (v, nullable)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	null_count zero (id, no nulls)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	per-vector value+null = 1024	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	per-vector value_count folds into chunk (k)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	per-vector zone rows	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	premise: v is not ascending within a vector, so a stale minimum would show	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	read parity (no regression)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	row count	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	sum null for non-int4 columns	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	sum present for int4 columns	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	value_count sums (id, no nulls)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	value_count sums (v, nullable)	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	whole-chunk sum(id) matches heap	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	whole-chunk value+null = group rows	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	whole-chunk zone rows	15;16;17;18;19	never	-
+native_zonemap	native_zonemap	zone maps cleaned on drop	15;16;17;18;19	never	-
+native_zonemap_narrow	native_zonemap_narrow	a pruning predicate still prunes on the wide table	15;16;17;18;19	2026-10-22	columnar_reader.c: group skipping excludes every group
+native_zonemap_narrow	native_zonemap_narrow	and on the narrow table	15;16;17;18;19	2026-10-22	columnar_reader.c: group skipping reads the predicate column's zone map but never excludes a group
+native_zonemap_narrow	native_zonemap_narrow	narrow scan result is correct	15;16;17;18;19	2026-10-22	columnar_reader.c: group skipping excludes every group
+native_zonemap_narrow	native_zonemap_narrow	the zone map removes the nine groups c1 > 19000 cannot match, on the wide table	15;16;17;18;19	2026-10-22	columnar_reader.c: group skipping reads the predicate column's zone map but never excludes a group
+native_zonemap_narrow	native_zonemap_narrow	wide scan result is correct	15;16;17;18;19	2026-10-22	columnar_reader.c: group skipping excludes every group
+native_zonemap_narrow	native_zonemap_narrow	zone_map reads scale with predicates, not table width (wide ~= narrow)	15;16;17;18;19	2026-10-22	columnar_reader.c: every attribute's zone map is read up front (#314 reverted)
+native_zonemap_session	native_zonemap_session	a second predicate column still resolves zone_map once	15;16;17;18;19	2026-10-22	columnar_metadata.c: the session opens zone_map afresh on every probe (#744 reverted inside the session)
+native_zonemap_session	native_zonemap_session	and each of them opened exactly once	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
+native_zonemap_session	native_zonemap_session	and each of them probed exactly its own groups	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
+native_zonemap_session	native_zonemap_session	and the short circuit means it adds one probe, not one per group	15;16;17;18;19	2026-10-22	columnar_reader.c: every zone-map fetch is made twice
+native_zonemap_session	native_zonemap_session	every scan around an aborted one reports its own session (#744)	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
+native_zonemap_session	native_zonemap_session	nested columnar scans each hold their own handle	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
+native_zonemap_session	native_zonemap_session	nested columnar scans return the right answer	15;16;17;18;19	2026-10-22	columnar_reader.c: every chunk group is ruled out
+native_zonemap_session	native_zonemap_session	the fixture has more than one chunk group	15;16;17;18;19	2026-10-22	columnar_write_state.c: the writer multiplies the table's stripe_row_limit by 100
+native_zonemap_session	native_zonemap_session	the middle scan really did error inside the subtransaction	15;16;17;18;19	2026-10-22	columnar_reader.c: every chunk group is ruled out
+native_zonemap_session	native_zonemap_session	the scan after the subtransaction abort returns the right answer	15;16;17;18;19	2026-10-22	columnar_reader.c: the scan's zone-map session is one static shared across scans and reset at the end hook (the first implementation of #744)
+native_zonemap_session	native_zonemap_session	the scan really probed the zone maps, once per group	15;16;17;18;19	2026-10-22	columnar_reader.c: every zone-map fetch is made twice
+native_zonemap_session	native_zonemap_session	the scan resolves zone_map ONCE, not once per group (#744)	15;16;17;18;19	2026-10-22	columnar_metadata.c: the session opens zone_map afresh on every probe (#744 reverted inside the session)
+native_zonemap_session	native_zonemap_session	zs2 has more than one chunk group	15;16;17;18;19	2026-10-22	columnar_write_state.c: the writer ignores the table's stripe_row_limit
 nologin_workers	nologin_workers	a NOLOGIN role's parallel flush encodes every column in a worker	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
 nologin_workers	nologin_workers	a NOLOGIN role's parallel_copy loads every row	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
 nologin_workers	nologin_workers	a NOLOGIN role's parallel_export_parquet exports every row	15;16;17;18;19	2026-10-21	the workers connect as the calling role, as before #1585, so PG15 and PG16 refuse a NOLOGIN caller
@@ -4687,6 +5108,22 @@ nologin_workers	nologin_workers	premise: SET ROLE to the NOLOGIN role takes	15;1
 nologin_workers	nologin_workers	premise: the NOLOGIN role cannot open a session	15;16;17;18;19	never	-
 nologin_workers	nologin_workers	premise: the server log records the NOLOGIN role's refused login	15;16;17;18;19	never	-
 nologin_workers	nologin_workers	the flush is dispatched to workers	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	a key with a space, '+' and '=' reads back (path-style)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_uriencode_path encodes a space as '+'
+objstore_addressing	objstore_addressing	a key with a space, '+' and '=' reads back (virtual-host)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_uriencode_path encodes a space as '+'
+objstore_addressing	objstore_addressing	and its path-style request path is the key URI-encoded once	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	and its virtual-host request path is the key alone, URI-encoded once	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
+objstore_addressing	objstore_addressing	and the request path carried the bucket again	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	gs:// read round-trips (scheme handled, HMAC creds reused)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
+objstore_addressing	objstore_addressing	gs:// read-back of the written object	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
+objstore_addressing	objstore_addressing	gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: gs:// demands AWS_ENDPOINT_URL like s3:// instead of defaulting to storage.googleapis.com
+objstore_addressing	objstore_addressing	gs:// write round-trips	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
+objstore_addressing	objstore_addressing	path-style put the bucket in the request path	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	premise: fixture up	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	removal proof: with addressing=path the bucket is back in the path	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	s3:// path-style read	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	s3:// with no endpoint demands one (names AWS_ENDPOINT_URL)	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	virtual-host put the KEY ALONE in the path (no bucket segment)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
+objstore_addressing	objstore_addressing	virtual-host read == path-style read (same object, different addressing)	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	a multi-entry list matches any entry	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	a non-superuser cannot widen the list (42501)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
 objstore_allowlist	objstore_allowlist	a superuser session SET works (admin override)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
@@ -4735,6 +5172,177 @@ objstore_crlf	objstore_crlf	a CR/LF in the URL path is rejected before the reque
 objstore_crlf	objstore_crlf	backend alive	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	backend alive after the REST attempt	15;16;17;18;19	never	-
 objstore_crlf	objstore_crlf	no injected line reached the listener (no request splitting)	15;16;17;18;19	2026-10-14	the request-line guard on the URL path removed
+objstore_http_read	objstore_http_read	A: count(*) over http	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	A: full scan http == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	A: projection http == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	B: buffered 2-col requests (K = 4 + G*2)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	B: buffered full-width requests (K = 4 + G*NCOLS)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	B: buffered/unbuffered request ratio	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	B: every GET carried a Range header	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no Range header sent on a GET
+objstore_http_read	objstore_http_read	B: unbuffered >= 10x K	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	C: EOF mid-body is refused	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_read_exact ends the read on EOF mid-body instead of raising
+objstore_http_read	objstore_http_read	C: a dropped keep-alive connection is retried (http == local)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_request never retries a stale keep-alive connection
+objstore_http_read	objstore_http_read	C: a server that hangs up on a fresh connection is refused	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	C: a short 206 body is refused	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_read_body accepts a 206 body shorter than the range (cl > want only)
+objstore_http_read	objstore_http_read	C: and that fresh connection is not retried (one request logged)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_request retries a fresh connection that failed before a response
+objstore_http_read	objstore_http_read	C: http 404 SQLSTATE	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a HEAD 404 read as an empty object
+objstore_http_read	objstore_http_read	C: range-ignoring server SQLSTATE	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range-ignored guard dropped (a 200 falls through to unexpected HTTP status)
+objstore_http_read	objstore_http_read	C: unreachable endpoint SQLSTATE	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	D: cancel latency bounded (<=10s)	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	D: stalled transfer cancelled with query_canceled	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	premise: buffered run logged requests	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	premise: fixture server is up	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	premise: fixture written	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	premise: the range-audit phase logged GETs	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	premise: unbuffered run logged requests	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	survival: the server answers and no backend crashed	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the HEAD 404 refusal
+objstore_listing	objstore_listing	FDW over a prefix == read_parquet over the prefix	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	Hive over a remote prefix stamps the partition column	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last key of every page is dropped
+objstore_listing	objstore_listing	a LIST that returns HTTP 500 is refused, not read as an empty prefix	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a non-2xx LIST read as an empty, untruncated page
+objstore_listing	objstore_listing	a non-advancing continuation token is refused, not an infinite paging loop	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the non-advancing continuation token refusal removed
+objstore_listing	objstore_listing	a partition predicate prunes a remote file (Files Pruned = 1)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last key of every page is dropped
+objstore_listing	objstore_listing	a truncated page with no keys is refused, not looped	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the truncated-page-with-no-keys refusal removed
+objstore_listing	objstore_listing	an exact-key read issues no ListObjectsV2	15;16;17;18;19	never	-
+objstore_listing	objstore_listing	and the request log recorded the exact-key read	15;16;17;18;19	never	-
+objstore_listing	objstore_listing	backend still up after the listing refusals	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the non-advancing token refusal (the backend crashes)
+objstore_listing	objstore_listing	exact-key read returns its rows	15;16;17;18;19	never	-
+objstore_listing	objstore_listing	glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	premise: fixture up	15;16;17;18;19	never	-
+objstore_listing	objstore_listing	read_parquet over a prefix reads every object under it (4 parts, recursive)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	the prefix listing paged (more than one list-type=2 request)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_module	objstore_module	a broken module does NOT masquerade as an unhandled scheme	15;16;17;18;19	never	-
+objstore_module	objstore_module	a gs URL reports an object-storage error, not a missing file	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the module stops handling gs:// URLs
+objstore_module	objstore_module	a https URL reports an object-storage error, not a missing file	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a module built with OpenSSL stops handling https:// URLs
+objstore_module	objstore_module	a local path still works	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: every local read_parquet path is refused as a missing file
+objstore_module	objstore_module	a relative path is not mistaken for a URL	15;16;17;18;19	never	-
+objstore_module	objstore_module	a remote glob (*) is handled remotely (an object-storage error, not a local one)	15;16;17;18;19	never	-
+objstore_module	objstore_module	a remote glob (?) is handled remotely (an object-storage error, not a local one)	15;16;17;18;19	never	-
+objstore_module	objstore_module	a remote glob ([0-9]) is handled remotely (an object-storage error, not a local one)	15;16;17;18;19	never	-
+objstore_module	objstore_module	a s3 URL reports an object-storage error, not a missing file	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the module stops handling s3:// URLs
+objstore_module	objstore_module	and neither claims the module is missing	15;16;17;18;19	never	-
+objstore_module	objstore_module	and neither downgrades it to an unhandled scheme	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a missing object-store module is reported as an unhandled scheme
+objstore_module	objstore_module	and the * glob is NOT reported as a local filesystem miss	15;16;17;18;19	never	-
+objstore_module	objstore_module	and the ? glob is NOT reported as a local filesystem miss	15;16;17;18;19	never	-
+objstore_module	objstore_module	and the [0-9] glob is NOT reported as a local filesystem miss	15;16;17;18;19	never	-
+objstore_module	objstore_module	and the gs URL is NOT reported as a missing file	15;16;17;18;19	never	-
+objstore_module	objstore_module	and the https URL is NOT reported as a missing file	15;16;17;18;19	never	-
+objstore_module	objstore_module	and the loader's own reason survives	15;16;17;18;19	2026-10-22	columnar_objstore.c: a module that is present but fails to load is reported as not installed
+objstore_module	objstore_module	and the s3 URL is NOT reported as a missing file	15;16;17;18;19	never	-
+objstore_module	objstore_module	both reads name the missing module, identically	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a missing object-store module is reported as an unhandled scheme
+objstore_module	objstore_module	nor as a module that was never installed	15;16;17;18;19	2026-10-22	columnar_objstore.c: a module that is present but fails to load is reported as not installed
+objstore_module	objstore_module	positive control: it IS defined in the module, so nm really looked	15;16;17;18;19	never	-
+objstore_module	objstore_module	premise: and the real module is back afterwards	15;16;17;18;19	never	-
+objstore_module	objstore_module	premise: the module really is corrupt for this run, not merely intended to be	15;16;17;18;19	never	-
+objstore_module	objstore_module	premise: the module really was absent while those two reads ran	15;16;17;18;19	never	-
+objstore_module	objstore_module	premise: the real module was restored afterwards	15;16;17;18;19	never	-
+objstore_module	objstore_module	the main library is installed	15;16;17;18;19	never	-
+objstore_module	objstore_module	the module's entry point is NOT inside the preloaded library	15;16;17;18;19	never	-
+objstore_module	objstore_module	the object-store module is installed BESIDE it, not inside it	15;16;17;18;19	never	-
+objstore_module	objstore_module	with the module absent, neither read leaks the loader's own error	15;16;17;18;19	never	-
+objstore_module	objstore_module	with the module present, both reads report an unhandled scheme	15;16;17;18;19	never	-
+objstore_s3_read	objstore_s3_read	403 ordering premise: verified requests still reach 404 = 58P01	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a 404 on open is refused 28000 instead of 58P01
+objstore_s3_read	objstore_s3_read	403: tamper bucket surfaces 28000	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a 403 on open is read as an empty object
+objstore_s3_read	objstore_s3_read	A: count(*) over s3	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_s3_read	objstore_s3_read	A: full scan s3 == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_s3_read	objstore_s3_read	A: percent-encoded key s3 == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_s3_read	objstore_s3_read	A: projection s3 == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_s3_read	objstore_s3_read	B: signing left the request arithmetic unchanged	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_s3_read	objstore_s3_read	backend still up after the s3 refusals	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort cleanup of an open handle calls abort() after the ERROR reached the client
+objstore_s3_read	objstore_s3_read	config: s3 read with no AWS_SECRET_ACCESS_KEY is refused naming it	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a missing AWS_SECRET_ACCESS_KEY signs with an empty secret
+objstore_s3_read	objstore_s3_read	config: s3 read with no environment is 28000	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: s3:// with no AWS_ENDPOINT_URL falls back to a default host instead of refusing
+objstore_s3_read	objstore_s3_read	config: s3 read with no region is refused naming it	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: with no region configured the signer uses us-east-1 instead of refusing
+objstore_s3_read	objstore_s3_read	https endpoint is not downgraded	15;16;17;18;19	never	-
+objstore_s3_read	objstore_s3_read	premise: fixture written	15;16;17;18;19	never	-
+objstore_s3_read	objstore_s3_read	premise: signed run logged requests	15;16;17;18;19	never	-
+objstore_s3_read	objstore_s3_read	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
+objstore_s3_read	objstore_s3_read	region: AWS_DEFAULT_REGION is the fallback	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION is never consulted
+objstore_s3_read	objstore_s3_read	region: AWS_REGION outranks AWS_DEFAULT_REGION	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_sink_write	objstore_sink_write	all four workers' uploads were open before the cancel	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the sink never flushes a part, so no export opens a multipart upload
+objstore_sink_write	objstore_sink_write	allow-list: an unlisted endpoint refuses 42501 before any write	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	and completed it exactly once (POST with uploadId, no partNumber)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: CompleteMultipartUpload is never sent and read as done
+objstore_sink_write	objstore_sink_write	arrow export to s3:// also round-trips	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
+objstore_sink_write	objstore_sink_write	cancel: no _SUCCESS marker at the prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	cancel: no completed object remains at the prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	cancel: the dispatcher issued DELETE over the known keys	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	cancel: the server holds no open upload under the prefix	15;16;17;18;19	2026-10-22	the before_shmem_exit registration in PgColumnarSinkOpen dropped (noreg)
+objstore_sink_write	objstore_sink_write	inject: every upload started was aborted (no billable orphan)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a failed export never aborts its multipart upload
+objstore_sink_write	objstore_sink_write	inject: mid-upload failure surfaces as disk-full (53100)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	inject: the key does not exist	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no multipart, the growing object is PUT to the final key as it grows
+objstore_sink_write	objstore_sink_write	inject: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
+objstore_sink_write	objstore_sink_write	large export to s3:// succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	large round trip: s3 read-back == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last part is left out of the CompleteMultipartUpload list
+objstore_sink_write	objstore_sink_write	parallel export to an s3:// prefix succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel remote: a _SUCCESS marker object exists at the prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel remote: the marker went to the prefix as a PUT	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: a re-run into the same prefix succeeds (overwrite)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: every worker PUT went to the prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: one object per worker was written (4)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: the union of the per-worker objects == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
+objstore_sink_write	objstore_sink_write	part failure: a refused part fails the export (58030)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a part upload the server refused is read as stored
+objstore_sink_write	objstore_sink_write	part failure: the key does not exist	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no multipart, the growing object is PUT to the final key as it grows
+objstore_sink_write	objstore_sink_write	part failure: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
+objstore_sink_write	objstore_sink_write	premise: a worker was uploading before the cancel	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: the export was cancelled, not completed	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: the fault landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: the large export took the multipart protocol	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: the part failure landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	shrink: _SUCCESS certifies the reconciled prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	shrink: parts 0002/0003 from the larger run are gone	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	shrink: the 4-worker run wrote 4 parts + marker	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	small export to s3:// succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	small object went as ONE plain PUT (no multipart)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	small round trip: s3 read-back == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
+objstore_sink_write	objstore_sink_write	terminate: export workers exit within 75 s while the store is silent	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_wait without WL_TIMEOUT, so a silent store never counts a quiet slice
+objstore_stash_recovery	objstore_stash_recovery	and the installed module is still the one that was there, not the debris	15;16;17;18;19	2026-10-22	objstore_module.sh start guard with no debris branch: every stash restored over the installed module
+objstore_stash_recovery	objstore_stash_recovery	and the module left installed is still valid	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	and the stash is cleared	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
+objstore_stash_recovery	objstore_stash_recovery	and the stash is not left behind for the next run to trip on	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
+objstore_stash_recovery	objstore_stash_recovery	premise: a 19-byte stand-in really is installed as the module	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: a debris stash really is in place for the run below	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: and the debris is a valid module that differs from the installed one	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: and the real module is the thing parked at the stash	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: and the stash beside it is the real module	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: nothing is installed at the module's path for this slice	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: the installed module is valid before this slice arranges anything	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	premise: which is not a module	15;16;17;18;19	never	-
+objstore_stash_recovery	objstore_stash_recovery	the debris is gone afterwards	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
+objstore_stash_recovery	objstore_stash_recovery	the module is installed again afterwards, and valid	15;16;17;18;19	2026-10-22	objstore_module.sh start guard decides on presence alone: every stash is debris and is deleted
+objstore_stash_recovery	objstore_stash_recovery	the real module survived, rather than being deleted with the stash	15;16;17;18;19	2026-10-22	objstore_module.sh start guard decides on presence alone: every stash is debris and is deleted
+objstore_stash_recovery	objstore_stash_recovery	the suite recovers the only surviving copy and runs to completion	15;16;17;18;19	2026-10-22	objstore_module.sh start guard walks .away only, so a .probe that is the only copy is never restored
+objstore_stash_recovery	objstore_stash_recovery	the suite replaces the stand-in with the real module and completes	15;16;17;18;19	2026-10-22	objstore_module.sh start guard decides on presence alone: every stash is debris and is deleted
+objstore_stash_recovery	objstore_stash_recovery	the suite runs to completion with debris beside a valid module	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix
+objstore_tls_read	objstore_tls_read	A2: s3 over https differential == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: trust from SSL_CERT_DIR only (SSL_CTX_set_default_verify_dir in place of set_default_verify_paths)
+objstore_tls_read	objstore_tls_read	A: count(*) over https	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: trust from SSL_CERT_DIR only (SSL_CTX_set_default_verify_dir in place of set_default_verify_paths)
+objstore_tls_read	objstore_tls_read	A: https differential == local	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: trust from SSL_CERT_DIR only (SSL_CTX_set_default_verify_dir in place of set_default_verify_paths)
+objstore_tls_read	objstore_tls_read	C: expired names its reason	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: expired refusal is the TLS one	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: expired refused with 08006	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: expired returned no rows	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: SSL_VERIFY_NONE in place of SSL_VERIFY_PEER
+objstore_tls_read	objstore_tls_read	C: self-signed names its reason	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: self-signed refusal is the TLS one	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: self-signed refused with 08006	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: self-signed returned no rows	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: SSL_VERIFY_NONE in place of SSL_VERIFY_PEER
+objstore_tls_read	objstore_tls_read	C: untrusted-ca names its reason	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: untrusted-ca refusal is the TLS one	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: untrusted-ca refused with 08006	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: untrusted-ca returned no rows	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: SSL_VERIFY_NONE in place of SSL_VERIFY_PEER
+objstore_tls_read	objstore_tls_read	C: wrong-host names its reason	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: wrong-host refusal is the TLS one	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: wrong-host refused with 08006	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
+objstore_tls_read	objstore_tls_read	C: wrong-host returned no rows	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the IP-literal endpoint is never bound (X509_VERIFY_PARAM_set1_ip_asc skipped)
+objstore_tls_read	objstore_tls_read	D: cancel latency bounded (<=10s)	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	D: stalled TLS transfer cancelled with query_canceled	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: trust from SSL_CERT_DIR only (SSL_CTX_set_default_verify_dir in place of set_default_verify_paths)
+objstore_tls_read	objstore_tls_read	E: SSL_CERT_DIR alone trusts the CA (count(*) over https)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: trust from SSL_CERT_FILE only (SSL_CTX_set_default_verify_file in place of set_default_verify_paths)
+objstore_tls_read	objstore_tls_read	premise: expired certificate is genuinely expired	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	premise: expired handshake was attempted	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	premise: self-signed handshake was attempted	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	premise: six TLS servers are up	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	premise: untrusted-ca handshake was attempted	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	premise: wrong-host handshake was attempted	15;16;17;18;19	never	-
+objstore_tls_read	objstore_tls_read	survival: no backend was terminated by a signal	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the certificate-verification refusal
 parallel	parallel	par count	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
 parallel	parallel	par filtered scan	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
 parallel	parallel	par no-filter	15;16;17;18;19	2026-10-22	columnar_reader.c: a parallel custom scan claims row groups from its own rowGroupIndex, not the shared counter, so every participant reads every group (D6e)
@@ -5311,6 +5919,172 @@ pg_dump_roundtrip	pg_dump_roundtrip	plain: row count survives	15;16;17;18;19	nev
 pg_dump_roundtrip	pg_dump_roundtrip	plain: row data survives (checksum)	15;16;17;18;19	never	-
 pg_dump_roundtrip	pg_dump_roundtrip	plain: the projection declaration IS carried	15;16;17;18;19	2026-10-16	columnar_projection.c: drop_projection keeps the projection's declaration;pgcolumnar--1.0-alpha5.sql: pgcolumnar.projection_declaration no longer registered with pg_extension_config_dump
 pg_dump_roundtrip	pg_dump_roundtrip	the base table has a projection to preserve	15;16;17;18;19	never	-
+phase2	phase2	between count	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	count where a<50	15;16;17;18;19	never	-
+phase2	phase2	count(*)	15;16;17;18;19	never	-
+phase2	phase2	empty range	15;16;17;18;19	never	-
+phase2	phase2	fallback codec=0	15;16;17;18;19	2026-10-22	columnar_compression.c: zstd output kept when it is no smaller than its input
+phase2	phase2	fallback value	15;16;17;18;19	never	-
+phase2	phase2	lz4 block codec	15;16;17;18;19	2026-10-22	columnar_write_state.c: the session's pgcolumnar.compression ignored, every write uses the boot default zstd
+phase2	phase2	lz4 count	15;16;17;18;19	never	-
+phase2	phase2	lz4 distinct pl	15;16;17;18;19	never	-
+phase2	phase2	lz4 payload ok	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	lz4 sum(id)	15;16;17;18;19	never	-
+phase2	phase2	minmax present	15;16;17;18;19	never	-
+phase2	phase2	no nulls t.b	15;16;17;18;19	never	-
+phase2	phase2	none block codec	15;16;17;18;19	2026-10-22	columnar_write_state.c: the session's pgcolumnar.compression ignored, every write uses the boot default zstd
+phase2	phase2	none count	15;16;17;18;19	never	-
+phase2	phase2	none distinct pl	15;16;17;18;19	never	-
+phase2	phase2	none payload ok	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	none sum(id)	15;16;17;18;19	never	-
+phase2	phase2	nonnull val	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	null count	15;16;17;18;19	never	-
+phase2	phase2	null rows	15;16;17;18;19	never	-
+phase2	phase2	null value	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	order by a limit3	15;16;17;18;19	never	-
+phase2	phase2	orphan chunks	15;16;17;18;19	2026-10-22	columnar_metadata.c: a dropped table's column_chunk rows kept
+phase2	phase2	orphan row groups	15;16;17;18;19	2026-10-22	columnar_metadata.c: a dropped table's row_group rows kept
+phase2	phase2	pglz block codec	15;16;17;18;19	2026-10-22	columnar_write_state.c: the session's pgcolumnar.compression ignored, every write uses the boot default zstd
+phase2	phase2	pglz count	15;16;17;18;19	never	-
+phase2	phase2	pglz distinct pl	15;16;17;18;19	never	-
+phase2	phase2	pglz payload ok	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	pglz sum(id)	15;16;17;18;19	never	-
+phase2	phase2	point lookup	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	project a	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	project b	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	project b,c	15;16;17;18;19	never	-
+phase2	phase2	project c	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	project sum	15;16;17;18;19	never	-
+phase2	phase2	range decodes 1 of 3 vectors	15;16;17;18;19	2026-10-22	columnar_reader.c: the zone maps rule out no vector
+phase2	phase2	range min/max	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	v0 max=10000	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	v0 min=1	15;16;17;18;19	never	-
+phase2	phase2	v2 max=25000	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	vectors	15;16;17;18;19	never	-
+phase2	phase2	zstd block codec	15;16;17;18;19	2026-10-22	columnar_write_state.c: the block codec never applied, every chunk stored with codec 0
+phase2	phase2	zstd count	15;16;17;18;19	never	-
+phase2	phase2	zstd distinct pl	15;16;17;18;19	never	-
+phase2	phase2	zstd payload ok	15;16;17;18;19	2026-10-22	columnar_metadata.c: a zone map's maximum written as its minimum
+phase2	phase2	zstd sum(id)	15;16;17;18;19	never	-
+phase3	phase3	bulk update rows	15;16;17;18;19	never	-
+phase3	phase3	bulk update sfx	15;16;17;18;19	never	-
+phase3	phase3	delete boundaries	15;16;17;18;19	never	-
+phase3	phase3	delete count	15;16;17;18;19	never	-
+phase3	phase3	delete gone	15;16;17;18;19	never	-
+phase3	phase3	delete neighbors	15;16;17;18;19	never	-
+phase3	phase3	delete tail count	15;16;17;18;19	never	-
+phase3	phase3	delete tail max	15;16;17;18;19	never	-
+phase3	phase3	delete_vector cleaned	15;16;17;18;19	2026-10-22	columnar_metadata.c: a dropped table's delete_vector rows kept
+phase3	phase3	delete_vector deleted	15;16;17;18;19	never	-
+phase3	phase3	delete_vector rows>0	15;16;17;18;19	never	-
+phase3	phase3	durable odd only	15;16;17;18;19	never	-
+phase3	phase3	durable survivors	15;16;17;18;19	never	-
+phase3	phase3	rb after count	15;16;17;18;19	never	-
+phase3	phase3	rb after range	15;16;17;18;19	never	-
+phase3	phase3	rb before	15;16;17;18;19	never	-
+phase3	phase3	reg count	15;16;17;18;19	never	-
+phase3	phase3	reg filter a<100	15;16;17;18;19	never	-
+phase3	phase3	row group cleaned	15;16;17;18;19	2026-10-22	columnar_metadata.c: a dropped table's row_group rows kept
+phase3	phase3	ryw count	15;16;17;18;19	never	-
+phase3	phase3	ryw persisted	15;16;17;18;19	never	-
+phase3	phase3	ryw sum	15;16;17;18;19	never	-
+phase3	phase3	savepoint failed delete discarded	15;16;17;18;19	2026-10-22	columnar_tableam.c: a savepoint's abort keeps its pending delete-vector changes
+phase3	phase3	savepoint failed final	15;16;17;18;19	never	-
+phase3	phase3	savepoint failed insert discarded	15;16;17;18;19	2026-10-22	columnar_tableam.c: a savepoint's abort keeps its pending writes
+phase3	phase3	savepoint final	15;16;17;18;19	never	-
+phase3	phase3	savepoint in-txn	15;16;17;18;19	never	-
+phase3	phase3	savepoint nested read in a delete sees its deleted rows, as on heap	15;16;17;18;19	2026-10-22	columnar_tableam.c: a savepoint's commit does not hand its delete buffers and written marks to the parent
+phase3	phase3	temp deleted	15;16;17;18;19	never	-
+phase3	phase3	temp survivors	15;16;17;18;19	never	-
+phase3	phase3	the deleted range straddles vectors 0 and 1	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.chunk_group_row_limit boots at 16384, not 10000
+phase3	phase3	update count	15;16;17;18;19	never	-
+phase3	phase3	update key gone	15;16;17;18;19	never	-
+phase3	phase3	update key new	15;16;17;18;19	never	-
+phase3	phase3	update key total	15;16;17;18;19	never	-
+phase3	phase3	update one row	15;16;17;18;19	never	-
+phase3	phase3	update value	15;16;17;18;19	never	-
+phase4	phase4	IOS off: plain index scan	15;16;17;18;19	never	-
+phase4	phase4	btree miss	15;16;17;18;19	never	-
+phase4	phase4	btree plan is index scan	15;16;17;18;19	never	-
+phase4	phase4	btree point	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch hands back the next live row's values
+phase4	phase4	btree range count	15;16;17;18;19	never	-
+phase4	phase4	btree range first	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch hands back the next live row's values
+phase4	phase4	check reject	15;16;17;18;19	never	-
+phase4	phase4	ck unchanged	15;16;17;18;19	never	-
+phase4	phase4	conv back heap	15;16;17;18;19	never	-
+phase4	phase4	conv col count	15;16;17;18;19	never	-
+phase4	phase4	conv col sum	15;16;17;18;19	never	-
+phase4	phase4	conv col value	15;16;17;18;19	never	-
+phase4	phase4	conv heap count	15;16;17;18;19	never	-
+phase4	phase4	conv heap sum	15;16;17;18;19	never	-
+phase4	phase4	conv heap value	15;16;17;18;19	never	-
+phase4	phase4	conv now columnar	15;16;17;18;19	never	-
+phase4	phase4	conv starts heap	15;16;17;18;19	never	-
+phase4	phase4	covering value	15;16;17;18;19	never	-
+phase4	phase4	deleted point	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch ignores the delete vector
+phase4	phase4	deleted range	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch ignores the delete vector
+phase4	phase4	deleted range plan is index scan	15;16;17;18;19	never	-
+phase4	phase4	full-table scan available	15;16;17;18;19	never	-
+phase4	phase4	hash miss	15;16;17;18;19	never	-
+phase4	phase4	hash plan is index scan	15;16;17;18;19	never	-
+phase4	phase4	hash point	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch hands back the next live row's values
+phase4	phase4	hash point2	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch hands back the next live row's values
+phase4	phase4	neighbor present	15;16;17;18;19	never	-
+phase4	phase4	not null reject	15;16;17;18;19	never	-
+phase4	phase4	survivors around	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch ignores the delete vector
+phase4	phase4	updated new found	15;16;17;18;19	never	-
+phase4	phase4	updated old gone	15;16;17;18;19	2026-10-22	columnar_tableam.c: an index fetch ignores the delete vector
+phase4	phase4	uq cross-stmt dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a duplicate of a flushed unique key is refused with an internal error (XX000) not 23505
+phase4	phase4	uq final count	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_index_fetch_tuple returns nothing to a dirty snapshot, so a unique check never sees the existing row
+phase4	phase4	uq initial	15;16;17;18;19	never	-
+phase4	phase4	uq new row	15;16;17;18;19	never	-
+phase4	phase4	uq unchanged	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_index_fetch_tuple returns nothing to a dirty snapshot, so a unique check never sees the existing row
+phase4	phase4	uq within-stmt dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a unique check that finds a buffered row calls abort()
+phase4	phase4	uq2 count	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_index_fetch_tuple returns nothing to a dirty snapshot, so a unique check never sees the existing row
+phase4	phase4	uq2 dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a duplicate of a flushed unique key is refused with an internal error (XX000) not 23505
+phase6	phase6	avg filtered	15;16;17;18;19	never	-
+phase6	phase6	avg(a) ignores nulls	15;16;17;18;19	never	-
+phase6	phase6	avg(bigint)->numeric	15;16;17;18;19	never	-
+phase6	phase6	avg(float8)	15;16;17;18;19	2026-10-22	columnar_encoding.c: the float decode (ALP and Gorilla) flips a high mantissa bit of each vector's first value
+phase6	phase6	avg(id)	15;16;17;18;19	never	-
+phase6	phase6	count after delete	15;16;17;18;19	never	-
+phase6	phase6	count distinct	15;16;17;18;19	never	-
+phase6	phase6	count empty result	15;16;17;18;19	never	-
+phase6	phase6	count filtered	15;16;17;18;19	never	-
+phase6	phase6	count(*)	15;16;17;18;19	never	-
+phase6	phase6	count(*) with nulls	15;16;17;18;19	never	-
+phase6	phase6	count(a) skips nulls	15;16;17;18;19	never	-
+phase6	phase6	count(code) nulls	15;16;17;18;19	never	-
+phase6	phase6	count(id)	15;16;17;18;19	never	-
+phase6	phase6	filter excludes nulls	15;16;17;18;19	never	-
+phase6	phase6	filter other col	15;16;17;18;19	never	-
+phase6	phase6	filtered projected scan	15;16;17;18;19	never	-
+phase6	phase6	filtered scan exact count	15;16;17;18;19	never	-
+phase6	phase6	filtered scan exact value	15;16;17;18;19	never	-
+phase6	phase6	full table scan	15;16;17;18;19	2026-10-22	columnar_encoding.c: an uncompressed varlena decode turns the first 'w' byte of each vector into 'W'
+phase6	phase6	group by (fallback)	15;16;17;18;19	never	-
+phase6	phase6	min empty is null	15;16;17;18;19	never	-
+phase6	phase6	min(id),max(id)	15;16;17;18;19	never	-
+phase6	phase6	min/max filtered	15;16;17;18;19	never	-
+phase6	phase6	min/max text	15;16;17;18;19	2026-10-22	columnar_encoding.c: an uncompressed varlena decode turns the first 'w' byte of each vector into 'W'
+phase6	phase6	min/max(a) with nulls	15;16;17;18;19	never	-
+phase6	phase6	min/max(txt) nulls	15;16;17;18;19	never	-
+phase6	phase6	multi-predicate	15;16;17;18;19	never	-
+phase6	phase6	ordered-set agg	15;16;17;18;19	never	-
+phase6	phase6	row count	15;16;17;18;19	never	-
+phase6	phase6	scan after delete	15;16;17;18;19	never	-
+phase6	phase6	several at once	15;16;17;18;19	never	-
+phase6	phase6	string agg (fallback)	15;16;17;18;19	never	-
+phase6	phase6	sum after delete	15;16;17;18;19	never	-
+phase6	phase6	sum empty is null	15;16;17;18;19	never	-
+phase6	phase6	sum filtered	15;16;17;18;19	never	-
+phase6	phase6	sum(a) ignores nulls	15;16;17;18;19	never	-
+phase6	phase6	sum(bigint)->numeric	15;16;17;18;19	never	-
+phase6	phase6	sum(float8)	15;16;17;18;19	2026-10-22	columnar_encoding.c: the float decode (ALP and Gorilla) flips a high mantissa bit of each vector's first value
+phase6	phase6	sum(id)	15;16;17;18;19	never	-
+phase6	phase6	sum(numeric)	15;16;17;18;19	2026-10-22	columnar_encoding.c: an uncompressed varlena decode turns the first 'w' byte of each vector into 'W'
+phase6	phase6	sum(smallint)	15;16;17;18;19	never	-
+phase6	phase6	vectors formed	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and prunes as well as the equivalent explicit range	15;16;17;18;19	2026-10-21	columnar_customscan.c: the date_trunc preimage keys are derived and then dropped, so no rewrite happens
 preimage_rewrite	preimage_rewrite	...and still answers correctly with the fold enabled	15;16;17;18;19	never	-
 preimage_rewrite	preimage_rewrite	...and the heap agrees it is unsatisfiable	15;16;17;18;19	never	-
@@ -5815,9 +6589,11 @@ reader_buffer_reuse	reader_buffer_reuse	reads after DROP COLUMN match	15;16;17;1
 reader_buffer_reuse	reader_buffer_reuse	the full scan matches a heap mirror exactly	15;16;17;18;19	2026-10-21	columnar_reader.c: when the group buffer is reused rather than grown, a projected read does not refresh it, so it decodes the previous group's bytes
 reader_buffer_reuse	reader_buffer_reuse	the full scan with column projection off (a whole-group read) matches a heap mirror	15;16;17;18;19	2026-10-21	columnar_reader.c: when the group buffer is reused rather than grown, the whole-group read stops 64 bytes short, so the group's last 64 bytes are the previous group's
 recluster_extent	recluster_extent	a group numbered below the run is not counted as ordered	15;16;17;18;19	2026-10-20	the online recluster records no extent at all;the run claims every group, below and above the rewrite (#342)
+recluster_extent	recluster_extent	a row deleted during the rewrite stays deleted	15;16;17;18;19	2026-10-22	columnar_vacuum.c: pgcolumnar_recluster_online reads under its listing snapshot, so a row deleted before its read is written back
 recluster_extent	recluster_extent	an uncontended rewrite claims the whole relation	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
 recluster_extent	recluster_extent	an uncontended rewrite counts every row as sorted	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
-recluster_extent	recluster_extent	every row is present afterwards	15;16;17;18;19	never	-
+recluster_extent	recluster_extent	every row is present afterwards	15;16;17;18;19	2026-10-22	columnar_vacuum.c: pgcolumnar_recluster_online reads every row its read snapshot sees, not only the groups it listed and retires (#1633)
+recluster_extent	recluster_extent	no row was rewritten and also kept	15;16;17;18;19	2026-10-22	columnar_vacuum.c: pgcolumnar_recluster_online reads every row its read snapshot sees, not only the groups it listed and retires (#1633)
 recluster_extent	recluster_extent	noproj: a full recluster claims every row	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
 recluster_extent	recluster_extent	noproj: a full recluster leaves nothing appended	15;16;17;18;19	2026-10-20	the online recluster records no extent at all
 recluster_extent	recluster_extent	premise: the concurrent insert was not in the rewrite's work set	15;16;17;18;19	never	-

@@ -401,10 +401,24 @@ pgc_setup() {
 	esac
 
 	echo "-- initdb"
-	pgc_pg "initdb -D '$PGC_PGDATA' -A trust" >/dev/null 2>&1
+	# -U postgres, because every psql below connects as postgres (#1341). initdb's
+	# default superuser is whoever runs it, which is postgres only under the
+	# runuser above; a non-root run -- the pytest-cluster job, which chowns
+	# pkglibdir precisely so that it can stay non-root, driving a shell suite as
+	# test_objstore_stash_recovery.py does -- got a cluster with no postgres role,
+	# and every start attempt "failed". pgc_cluster.initdb has always passed it.
+	pgc_pg "initdb -D '$PGC_PGDATA' -A trust -U postgres" >/dev/null 2>&1
 	{
 		echo "port=$PGC_PORT"
 		echo "listen_addresses='127.0.0.1'"
+		# THE SOCKET DIRECTORY, pinned to this cluster's own datadir, as
+		# pgc_cluster.py pins it. A packaged postgres defaults it to
+		# /var/run/postgresql, which only postgres can write: under runuser that is
+		# fine, but a non-root, non-postgres run -- the pytest-cluster job driving
+		# objstore_module.sh from test_objstore_stash_recovery.py -- FATALs on the
+		# lock file, and pg_ctl says only "could not start server" (#1717). Every
+		# connection here is TCP on 127.0.0.1, so nothing reads the socket's path.
+		echo "unix_socket_directories='$PGC_PGDATA'"
 		echo "shared_preload_libraries='pgcolumnar'"
 		# Deterministic text output so heap and columnar hashes match.
 		echo "extra_float_digits=3"

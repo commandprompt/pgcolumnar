@@ -64,10 +64,12 @@ psql_run "DROP TABLE IF EXISTS zs;
 	SELECT pgcolumnar.set_options('zs', stripe_row_limit => 10000);
 	INSERT INTO zs SELECT g, g, g FROM generate_series(1, $ROWS) g;" >/dev/null 2>&1
 
-# The group count comes FROM THE DATA, never from rows/stripe_row_limit.
+# The group count comes FROM THE DATA, never from rows/stripe_row_limit. Not a
+# premise: it reads the writer's own row_group catalog, and a writer that reads the
+# stripe_row_limit option wrong (one line) reddens it, as zs2's check below.
 groups=$(q "SELECT count(*) FROM pgcolumnar.row_group
             WHERE storage_id = pgcolumnar.get_storage_id('zs');")
-check "premise: the fixture really has more than one chunk group" \
+check "the fixture has more than one chunk group" \
 	"$([ "${groups:-0}" -gt 1 ] && echo yes || echo no)" "yes"
 
 witness() {	# witness "<where clause>" -> "probes=N opens=M"
@@ -81,10 +83,10 @@ probes="$(printf '%s' "$w" | grep -oE 'probes=[0-9]+' | grep -oE '[0-9]+')"
 opens="$(printf '%s' "$w" | grep -oE 'opens=[0-9]+' | grep -oE '[0-9]+')"
 echo "-- one predicate column over $groups groups: $w"
 
-# The premise first: if the scan probed nothing, "opens=1" would be trivially
+# The probe count first: if the scan probed nothing, "opens=1" would be trivially
 # satisfied by a scan that did no work at all, which is the shape that let
 # zonemap_cost price pruning for a year while pruning zero groups.
-check "premise: the scan really probed the zone maps, once per group" \
+check "the scan really probed the zone maps, once per group" \
 	"$probes" "$groups"
 check "the scan resolves zone_map ONCE, not once per group (#744)" "$opens" "1"
 
@@ -105,10 +107,24 @@ psql_run "DROP TABLE IF EXISTS zs2;
 	SELECT pgcolumnar.set_options('zs2', stripe_row_limit => 1000);
 	INSERT INTO zs2 SELECT g, g FROM generate_series(1,20000) g;" >/dev/null 2>&1
 
-nested=$(q "SET enable_indexscan=off; SET max_parallel_workers_per_gather=0;
-	SELECT count(*) FROM zs2 a JOIN zs2 b ON a.k = b.k
-	 WHERE a.k <= 1000 AND b.k <= 1000;" | tail -1)
-check "nested columnar scans each hold their own handle" "$nested" "1000"
+groups2=$(q "SELECT count(*) FROM pgcolumnar.row_group
+             WHERE storage_id = pgcolumnar.get_storage_id('zs2');")
+check "zs2 has more than one chunk group" \
+	"$([ "${groups2:-0}" -gt 1 ] 2>/dev/null && echo yes || echo no)" "yes"
+
+# Both scans of a join stay open until ExecutorEnd, so a session shared between
+# them (the static the first implementation used) adds one scan's probes to the
+# other's and leaves the second report empty. The answer cannot see that: the
+# shared handle reads correctly. The witness can: each scan must report ITS OWN
+# groups, opened once.
+nestout="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -At -v ON_ERROR_STOP=1 \
+	-c "SET client_min_messages=debug1; SET enable_indexscan=off; SET max_parallel_workers_per_gather=0;" \
+	-c "SELECT count(*) FROM zs2 a JOIN zs2 b ON a.k = b.k WHERE a.k <= 1000 AND b.k <= 1000;" 2>&1)"
+check "nested columnar scans return the right answer" \
+	"$(printf '%s\n' "$nestout" | grep -E '^[0-9]+$' | tail -1)" "1000"
+check "nested columnar scans each hold their own handle" \
+	"$(printf '%s\n' "$nestout" | grep -c "zone map read: probes=${groups2:-x} opens=1\$")" "2"
 
 # An erroring scan never runs its end hook. What must be true afterwards is that
 # the NEXT scan opens for itself rather than inheriting anything.
@@ -126,7 +142,7 @@ SELECT count(*) FROM zs2 WHERE k <= 1000;
 SQL
 out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 	-d "$PGC_DB" -At -v ON_ERROR_STOP=0 -f "$PGC_WORKDIR/zsub.sql" 2>&1)"
-check "premise: the middle scan really did error inside the subtransaction" \
+check "the middle scan really did error inside the subtransaction" \
 	"$(printf '%s' "$out" | grep -c 'division by zero')" "1"
 # THREE scans complete: before, after ROLLBACK TO, after COMMIT. Each must
 # report. Two would mean one of them ran on state left behind by the error,
@@ -135,6 +151,10 @@ check "every scan around an aborted one reports its own session (#744)" \
 	"$(printf '%s' "$out" | grep -c 'zone map read: probes=')" "3"
 check "and each of them opened exactly once" \
 	"$(printf '%s' "$out" | grep -c 'zone map read: probes=[0-9]* opens=1')" "3"
+# And each probed ITS OWN groups: a session carried over from the aborted scan
+# would report that scan's probes on top of its own.
+check "and each of them probed exactly its own groups" \
+	"$(printf '%s\n' "$out" | grep -c "zone map read: probes=${groups2:-x} opens=1\$")" "3"
 check "the scan after the subtransaction abort returns the right answer" \
 	"$(printf '%s' "$out" | grep -cE '^1000$')" "3"
 

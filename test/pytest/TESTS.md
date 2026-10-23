@@ -347,6 +347,46 @@ behaviour, the source of that number is named.
 - [299. test_parallel_vector_agg.py: the parallel vectorized aggregates fold every row group once](#299-test_parallel_vector_aggpy-the-parallel-vectorized-aggregates-fold-every-row-group-once)
 - [300. test_parallel_export_parquet.py: parallel Parquet export equals serial export equals the source](#300-test_parallel_export_parquetpy-parallel-parquet-export-equals-serial-export-equals-the-source)
 - [301. test_native_fold_deferral.py: the batch fold defers payload until a row passes its keys, and the work is measured](#301-test_native_fold_deferralpy-the-batch-fold-defers-payload-until-a-row-passes-its-keys-and-the-work-is-measured)
+- [302. test_native_lazy_slot.py: the index fetch decodes only the prefix the executor asks for, and never a stale one](#302-test_native_lazy_slotpy-the-index-fetch-decodes-only-the-prefix-the-executor-asks-for-and-never-a-stale-one)
+- [303. test_native_metadata_flush.py: a stripe flush opens each metadata table once, and the flush's writes read back correctly](#303-test_native_metadata_flushpy-a-stripe-flush-opens-each-metadata-table-once-and-the-flushs-writes-read-back-correctly)
+- [304. test_native_late_materialization.py: a row the qual rejects is not materialized, and the answers do not change](#304-test_native_late_materializationpy-a-row-the-qual-rejects-is-not-materialized-and-the-answers-do-not-change)
+- [305. test_native_reclaim_reconcile.py: a reuse op drops the free_space row that overlaps a live group, and only that row](#305-test_native_reclaim_reconcilepy-a-reuse-op-drops-the-free_space-row-that-overlaps-a-live-group-and-only-that-row)
+- [306. test_native_page_offset_bound.py: a corrupt page_offset is refused by the containment guard on both reads, and an intact table still reads](#306-test_native_page_offset_boundpy-a-corrupt-page_offset-is-refused-by-the-containment-guard-on-both-reads-and-an-intact-table-still-reads)
+- [307. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen](#307-test_native_param_pushdownpy-a-parameterized-qual-prunes-chunk-groups-and-a-correlated-one-is-never-frozen)
+- [308. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's](#308-test_native_sort_bypy-the-declared-sort_by-key-orders-the-rows-it-says-and-each-refusal-is-its-own-guards)
+- [309. test_native_rewrite.py: compact_rewrite reclaims partially-deleted groups online, and vacuum's rewrite keeps every row reachable](#309-test_native_rewritepy-compact_rewrite-reclaims-partially-deleted-groups-online-and-vacuums-rewrite-keeps-every-row-reachable)
+- [310. test_native_zonemap.py: zone-map rows carry exact counts, sums and the right bounds, by value](#310-test_native_zonemappy-zone-map-rows-carry-exact-counts-sums-and-the-right-bounds-by-value)
+- [311. test_native_zonemap_session.py: a scan resolves zone_map once, and each scan holds its own session](#311-test_native_zonemap_sessionpy-a-scan-resolves-zone_map-once-and-each-scan-holds-its-own-session)
+- [312. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes](#312-test_native_zonemap_narrowpy-group-skipping-reads-only-the-predicate-columns-zone-maps-and-still-prunes)
+- [313. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values](#313-test_native_vecdecodepy-decode-honours-the-skip-vector-and-the-fold-reads-neither-holes-nor-nulls-as-values)
+- [314. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard](#314-test_native_parquet_fieldidpy-read_parquet-binds-output-columns-by-parquet-field-id-and-refuses-each-misuse-by-its-own-guard)
+- [315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused](#315-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-and-a-crafted-page-size-is-refused)
+- [316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly](#316-test_native_parquet_unitspy-time-and-timestamp-units-decode-to-the-right-instant-and-their-stats-skip-correctly)
+- [317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows](#317-test_native_parquet_projectionpy-a-projected-parquet-scan-decodes-only-the-columns-it-references-and-reads-the-generators-rows)
+- [318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks](#318-test_native_parquet_hardeningpy-the-parquet-reader-refuses-values-that-do-not-fit-their-column-and-a-row-group-with-too-few-chunks)
+- [319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend](#319-test_native_parquet_stackpy-a-crafted-parquet-footer-trips-the-recursion-guard-instead-of-crashing-the-backend)
+- [320. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time](#320-test_native_parquet_streamingpy-external-parquet-reads-stream-an-oversized-file-describes-itself-crafted-pages-are-refused-the-fdw-decodes-one-row-group-at-a-time)
+- [321. test_native_parquet_partition.py: Hive-style partition columns materialize and prune whole files, and a tree that does not match fails loudly](#321-test_native_parquet_partitionpy-hive-style-partition-columns-materialize-and-prune-whole-files-and-a-tree-that-does-not-match-fails-loudly)
+- [322. test_native_parquet_fdw.py: the Parquet FDW reads an exported file as a foreign table, prunes what it can, and refuses each misuse by its own guard](#322-test_native_parquet_fdwpy-the-parquet-fdw-reads-an-exported-file-as-a-foreign-table-prunes-what-it-can-and-refuses-each-misuse-by-its-own-guard)
+- [323. test_native_read_parquet.py: read_parquet returns the rows that were written, refuses what it must, and keeps its file gate](#323-test_native_read_parquetpy-read_parquet-returns-the-rows-that-were-written-refuses-what-it-must-and-keeps-its-file-gate)
+- [324. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused](#324-test_objstore_listingpy-a-remote-prefix-or-glob-is-listed-page-by-page-an-exact-key-is-not-listed-and-a-listing-that-cannot-advance-or-fails-is-refused)
+- [325. test_native_rewrite_conc.py: The online rewrite runs alongside writers without losing a row, and without blocking them](#325-test_native_rewrite_concpy-the-online-rewrite-runs-alongside-writers-without-losing-a-row-and-without-blocking-them)
+- [326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received](#326-test_objstore_addressingpy-gs-and-s3-virtual-host-addressing-checked-by-the-request-path-the-server-received)
+- [327. test_objstore_stash_recovery.py: recovery from a stash an interrupted objstore_module run left](#327-test_objstore_stash_recoverypy-recovery-from-a-stash-an-interrupted-objstore_module-run-left)
+- [328. test_objstore_s3_read.py: SigV4-signed s3:// reads, every refusal naming its cause](#328-test_objstore_s3_readpy-sigv4-signed-s3-reads-every-refusal-naming-its-cause)
+- [329. test_objstore_tls_read.py: TLS for object-store reads, every verification proven by a certificate that must be refused](#329-test_objstore_tls_readpy-tls-for-object-store-reads-every-verification-proven-by-a-certificate-that-must-be-refused)
+- [330. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard](#330-test_objstore_http_readpy-the-http-ranged-byte-source-with-request-counts-and-each-refusals-own-guard)
+- [331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload](#331-test_objstore_sink_writepy-exports-to-s3-go-as-one-put-or-a-completed-multipart-upload-read-back-as-the-generator-and-a-failed-export-leaves-no-key-and-no-open-upload)
+- [332. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable](#332-test_native_fetch_interruptpy-the-by-row-number-fetch-is-cancellable)
+- [333. test_objstore_module.py: the object-store module's packaging and loader, every refusal pinned](#333-test_objstore_modulepy-the-object-store-modules-packaging-and-loader-every-refusal-pinned)
+- [334. test_phase2.py: compression, projection, zone maps and chunk-group filtering](#334-test_phase2py-compression-projection-zone-maps-and-chunk-group-filtering)
+- [335. test_phase3.py: read-your-writes, DELETE, UPDATE, rollback, savepoints and temporary tables](#335-test_phase3py-read-your-writes-delete-update-rollback-savepoints-and-temporary-tables)
+- [336. test_phase4.py: btree and hash index reads through the index fetch, and refusals by SQLSTATE](#336-test_phase4py-btree-and-hash-index-reads-through-the-index-fetch-and-refusals-by-sqlstate)
+- [337. test_phase6.py: vectorized aggregates and scans against a heap oracle, not only against themselves](#337-test_phase6py-vectorized-aggregates-and-scans-against-a-heap-oracle-not-only-against-themselves)
+- [338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it](#338-test_cancel_decodepy-a-cancel-lands-inside-one-large-row-groups-decode-and-the-session-it-lands-in-survives-it)
+- [339. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards](#339-test_decode_interruptspy-the-decode-paths-interrupt-checks-each-inside-the-loop-it-guards)
+- [340. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value](#340-test_decode_skip_interruptspy-the-thrift-and-avro-skip-loops-of-a-hostile-file-yield-to-a-cancel-per-skipped-value)
+- [341. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop](#341-test_native_cancelpy-a-scans-row-group-load-yields-to-statement_timeout-inside-the-decode-loop)
 
 ## 1. How to read a test in here
 
@@ -9794,6 +9834,8 @@ Whether the insert ran during the rewrite is asked of the server before the inse
 | `test_the_rewrite_reported_groups_reclustered` | the rewrite reported groups reclustered |
 | `test_the_concurrent_insert_was_not_in_the_work_set` | premise: the concurrent insert was not in the rewrite's work set |
 | `test_every_row_is_present_afterwards` | every row is present afterwards |
+| `test_no_row_was_rewritten_and_also_kept` | no row was rewritten and also kept (#1633) |
+| `test_a_row_deleted_during_the_rewrite_stays_deleted` | a row deleted during the rewrite stays deleted (#1633) |
 | `test_the_run_does_not_claim_rows_written_during_the_rewrite` | the run does not claim rows written during the rewrite |
 | `test_the_counts_still_cover_every_stored_row` | the counts still cover every stored row |
 | `test_the_concurrent_rows_are_reported_as_appended` | the concurrent rows are reported as appended |
@@ -11575,3 +11617,1174 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_fold_deferral_every_group_deferred_at_one_percent` | deferred: every group deferred at 1% survival |
 | `test_fold_deferral_only_the_first_group_defers_at_high_survival` | adaptive: only the optimistic first group deferred at 99% survival |
 | `test_fold_deferral_eager_groups_load_more_than_survivors` | adaptive: eager groups load more than survivors alone (work measured, not assumed) |
+
+## 302. test_native_lazy_slot.py: the index fetch decodes only the prefix the executor asks for, and never a stale one
+
+The twin of `test/native_lazy_slot.sh` (#157). Through an index scan with the custom scan off, values match a heap table built from the generator for every column position and for count(*); a row still in the write buffer reads correctly; sorting, CREATE TABLE AS and a unique check still get the whole row; and a 41-column table is not in a different class from a 3-column one for the same 2000 one-column fetches.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. The heap mirror is written from the generator, not copied through the reader under test. Readings are values: a failed query is a query_error() that every comparison refuses by name, so two failed reads never agree, and a timing whose statement failed is no reading rather than a fast one.
+
+| test | what it holds |
+| --- | --- |
+| `test_lazy_slot_the_fetch_is_an_index_scan` | the fetch really is an index scan |
+| `test_lazy_slot_every_column_position_matches_heap` | single-row index fetches match heap for every column position |
+| `test_lazy_slot_select_star_matches_heap` | SELECT * through the index matches heap |
+| `test_lazy_slot_a_range_sums_the_same_as_heap` | a range of rows sums the same as heap |
+| `test_lazy_slot_count_star_matches_heap` | count(*) through the index matches heap |
+| `test_lazy_slot_a_buffered_row_reads_correctly` | a row fetched before it is flushed reads correctly |
+| `test_lazy_slot_an_order_by_matches_heap` | an ORDER BY over index-fetched rows matches heap |
+| `test_lazy_slot_a_copy_keeps_every_column` | copying index-fetched rows into a heap table keeps every column |
+| `test_lazy_slot_a_unique_violation_is_detected` | a unique violation is still detected through the fetch path |
+| `test_lazy_slot_a_wide_table_is_not_in_another_class` | a wide table is not in a different class from a narrow one |
+
+## 303. test_native_metadata_flush.py: a stripe flush opens each metadata table once, and the flush's writes read back correctly
+
+The twin of `test/native_metadata_flush.sh`. A 3-column and a 20-column table each flush one stripe under small limits; the flush's DEBUG1 witness (`metadata flush: opens=N`) must report the same small count for both, no more than six and at least the three tables every flush writes. The wide table must read back exactly what the generator wrote, and a range read must rule out a vector by its zone row alone.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. The witness is captured from the inserting session's notices, with the stripe limits set in that session as the shell does. The heap mirror is written from the generator. A failed reading is a `query_error()`, so two failures never agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_native_metadata_flush_emits_the_witness` | the flush emits the metadata-open witness |
+| `test_native_metadata_flush_narrow_and_wide_open_the_same` | narrow (3 col) and wide (20 col) flush open the same number of metadata relations |
+| `test_native_metadata_flush_wide_opens_a_small_constant` | a 20-column flush opens a small constant number of metadata relations, not one per row |
+| `test_native_metadata_flush_wide_opens_at_least_three` | and the 20-column flush opens at least the three tables every flush writes |
+| `test_native_metadata_flush_row_count_survives` | the wide table's row count survives the batched flush |
+| `test_native_metadata_flush_every_column_reads_back` | every column reads back correct (sum over all 20 columns matches the heap mirror) |
+| `test_native_metadata_flush_range_read_matches_heap` | a zone-map-pruned range read matches heap (the batched zone rows are correct) |
+| `test_native_metadata_flush_zone_row_rules_out_a_vector` | and that range read rules out a vector by its zone row alone |
+
+## 304. test_native_late_materialization.py: a row the qual rejects is not materialized, and the answers do not change
+
+The twin of `test/native_late_materialization.sh`. A leading-wildcard LIKE that cannot be pruned selects one row in 1024 from a one-group table with wide payload columns; the scan counts the rejected rows as filtered before materialization, the executor still reports them as removed by filter, and every answer, with the feature on, off and refused for a volatile qual, equals a heap mirror written from the generator.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order, with serial plans as the shell's cluster runs them. A failed reading is a `query_error()`, and a counter the plan did not print is a failed reading, never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_late_materialization_fixture_loaded_every_row` | premise: the fixture loaded every row |
+| `test_late_materialization_needle_is_selective` | premise: the needle is selective, not most of the table |
+| `test_late_materialization_heap_agrees_on_matches` | heap agrees on how many rows match |
+| `test_late_materialization_query_runs_on_the_custom_scan` | the query runs on the columnar custom scan |
+| `test_late_materialization_nothing_pruned_at_group_level` | nothing was pruned at the group level |
+| `test_late_materialization_nothing_pruned_at_vector_level` | nothing was pruned at the vector level |
+| `test_late_materialization_rejected_row_not_materialized` | a rejected row does not materialize its payload columns |
+| `test_late_materialization_executor_still_reports_filtered_rows` | the executor still reports the rows the scan filtered |
+| `test_late_materialization_rows_identical_to_heap` | the rows are identical to the heap mirror |
+| `test_late_materialization_off_filters_nothing_early` | with the feature off nothing is filtered early |
+| `test_late_materialization_off_answers_unchanged` | and the answers are the same with it off |
+| `test_late_materialization_volatile_qual_refused` | a volatile qual is refused the two-pass path |
+| `test_late_materialization_volatile_matches_heap` | and the volatile query still matches the heap mirror |
+| `test_late_materialization_same_shape_uses_the_path` | the same shape without the volatile term does use it |
+
+## 305. test_native_reclaim_reconcile.py: a reuse op drops the free_space row that overlaps a live group, and only that row
+
+The twin of `test/native_reclaim_reconcile.sh` (Phase F reconcile). A free_space row synthesized over a live group, the post-crash state end-truncation can leave, is dropped by compact_rewrite, compact and truncate, the data still equals a heap mirror after each, the legitimate free ranges come through a plain compact unchanged, and reuse keeps the data right for two more cycles.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order, each statement in its own autocommit session as the shell's psql -c runs it. Readings are values: a failed query is a query_error(), so two failed reads never agree, and the row sets are compared as an md5 over the sorted rows.
+
+| test | what it holds |
+| --- | --- |
+| `test_rr_parity_before` | parity before |
+| `test_rr_stale_row_injected` | stale overlapping free row injected |
+| `test_rr_compact_rewrite_reconciled` | compact_rewrite reconciled the stale row |
+| `test_rr_data_intact_after_rewrite` | data intact after reconcile + rewrite |
+| `test_rr_row_count_intact` | row count intact |
+| `test_rr_a_legitimate_free_range_exists` | compact_rewrite recorded the free ranges it left |
+| `test_rr_plain_compact_reconciled` | plain compact reconciled the stale row |
+| `test_rr_plain_compact_kept_the_legitimate_ranges` | plain compact kept the legitimate free ranges, which overlap no live group |
+| `test_rr_data_intact_after_compact` | data intact after compact reconcile |
+| `test_rr_truncate_reconciled` | truncate reconciled the stale row |
+| `test_rr_data_intact_after_truncate` | data intact after truncate reconcile |
+| `test_rr_parity_after_reuse_cycle_1` | parity after reuse cycle 1 |
+| `test_rr_parity_after_reuse_cycle_2` | parity after reuse cycle 2 |
+
+## 306. test_native_page_offset_bound.py: a corrupt page_offset is refused by the containment guard on both reads, and an intact table still reads
+
+The twin of `test/native_page_offset_bound.sh`. A 20000-row table is corrupted one column_chunk.page_offset at a time (past the group, to 0 so the subtraction wraps, and to -1 so it arrives near UINT64_MAX), and read through the whole-group read (column projection off) and the projected read; each read must be refused by the chunk containment guard, the backend must survive, and an intact table must still read every row on both paths.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A refusal reads as "XX001 (containment guard)" only when the primary message is the guard's; survival also reads the server log's count of backends killed by a signal since the arm began; a failed reading is a `query_error()`.
+
+| test | what it holds |
+| --- | --- |
+| `test_an_intact_table_reads_every_row_with_projection_off` | an intact table reads every row and value with projection off |
+| `test_an_intact_tables_projected_read_returns_every_id` | an intact table's projected read returns every id |
+| `test_a_projected_page_offset_overrun_is_refused_by_the_guard` | projected page_offset overrun is refused by the containment guard |
+| `test_the_backend_survives_the_projected_overrun` | alive after projected overrun |
+| `test_a_whole_group_page_offset_overrun_is_refused_by_the_guard` | whole-group page_offset overrun is refused by the containment guard |
+| `test_the_backend_survives_the_whole_group_overrun` | alive after whole-group overrun |
+| `test_a_whole_group_page_offset_of_zero_is_refused_by_the_guard` | whole-group page_offset=0 is refused by the containment guard |
+| `test_the_backend_survives_the_whole_group_wrap` | alive after whole-group wrap |
+| `test_a_whole_group_page_offset_of_minus_one_hits_the_guard` | whole-group page_offset=-1 hits the containment guard |
+| `test_the_backend_survives_the_whole_group_minus_one` | alive after whole-group page_offset=-1 |
+| `test_a_projected_page_offset_of_minus_one_hits_the_guard` | projected page_offset=-1 hits the containment guard |
+| `test_the_backend_survives_the_projected_minus_one` | alive after projected page_offset=-1 |
+
+## 307. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen
+
+The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()`, a plan line that is missing is a failed reading, and survival also requires the server log's crash count to be unchanged.
+
+| test | what it holds |
+| --- | --- |
+| `test_param_pushdown_a_generic_plan_parameterized_qual_prunes` | a generic-plan parameterized qual prunes chunk groups (19 of 20 removed) |
+| `test_param_pushdown_the_parameterized_count_matches_the_literal` | parameterized count matches the literal count |
+| `test_param_pushdown_the_literal_count_is_the_expected_value` | literal count is the expected value |
+| `test_param_pushdown_the_correlated_arm_rescans_the_columnar_scan` | the correlated arm rescans the columnar scan once per outer row |
+| `test_param_pushdown_a_correlated_param_exec_builds_no_skip_predicate` | a correlated PARAM_EXEC builds no skip predicate |
+| `test_param_pushdown_a_correlated_param_exec_is_not_mis_pruned` | a correlated PARAM_EXEC is not mis-pruned (results stay correct) |
+| `test_param_pushdown_a_correlated_upper_bound_is_not_mis_pruned` | a correlated PARAM_EXEC upper bound is not mis-pruned either |
+| `test_param_pushdown_a_second_execution_counts_with_its_own_value` | a second execution in the same session counts with its own value |
+| `test_param_pushdown_a_second_execution_prunes_with_its_own_value` | and prunes with its own value too (18 of 20 removed) |
+| `test_param_pushdown_the_backend_is_alive` | backend alive |
+
+## 308. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's
+
+The twin of `test/native_sort_by.sh`. A 40,960-row table with 50 hosts cycled in insert order is sorted by its declared key (host, ts) with the zero-argument vacuum_sorted: heap parity holds before and after, group skipping on a host appears, the rows lie in (host, ts) order in scan order, and explicit columns lay them out the same way. The key round-trips and resets, and no key, a bad column, a dropped declared column and (PG18+) a virtual generated column are each refused by their own guard, with the backend still up.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A refusal reads as '<SQLSTATE> <phrase of the guard's message>', a failed reading is a `query_error()`, and every reading after a refusal first waits for the server, so a crash reds its own arm and the survival check. Before PostgreSQL 18 the virtual arm declines, as the shell records its skip.
+
+| test | what it holds |
+| --- | --- |
+| `test_nsb_row_count` | row count |
+| `test_nsb_the_plan_under_test_is_a_columnar_custom_scan` | the plan under test is a columnar custom scan |
+| `test_nsb_equality_parity_pre_sort` | equality parity (pre-sort) |
+| `test_nsb_the_scan_order_starts_unsorted` | premise: before sorting, the scan order does not follow (host, ts) |
+| `test_nsb_declared_sort_by_round_trips` | declared sort_by round-trips |
+| `test_nsb_row_count_after_sort` | row count after sort |
+| `test_nsb_full_table_parity_after_sort` | full-table parity after sort |
+| `test_nsb_equality_parity_post_sort` | equality parity (post-sort) |
+| `test_nsb_sorting_a_text_key_enables_group_skipping` | sorting a text key enables group skipping |
+| `test_nsb_the_scan_order_follows_the_declared_key` | the scan order follows the declared key (host, ts) |
+| `test_nsb_explicit_column_sort_parity` | explicit-column sort parity |
+| `test_nsb_explicit_columns_lay_the_rows_out_as_the_declared_key_does` | explicit columns lay the rows out as the declared key does |
+| `test_nsb_sort_by_cleared` | sort_by cleared |
+| `test_nsb_zero_arg_errors_when_no_key_declared` | zero-arg errors when no key declared |
+| `test_nsb_set_options_rejects_a_nonexistent_sort_by_column` | set_options rejects a nonexistent sort_by column |
+| `test_nsb_zero_arg_errors_on_a_dropped_declared_column` | zero-arg errors on a dropped declared column |
+| `test_nsb_empty_table_sorts_without_error` | empty table sorts without error |
+| `test_nsb_single_row_table_sorts_without_error` | single-row table sorts without error |
+| `test_nsb_single_row_parity` | single-row parity |
+| `test_nsb_set_options_rejects_a_virtual_generated_sort_by_column` | set_options rejects a virtual generated sort_by column |
+| `test_nsb_vacuum_sorted_rejects_an_explicit_virtual_generated_column` | vacuum_sorted rejects an explicit virtual generated column |
+| `test_nsb_backend_still_up_after_the_refusals` | backend still up after the refusals |
+
+## 309. test_native_rewrite.py: compact_rewrite reclaims partially-deleted groups online, and vacuum's rewrite keeps every row reachable
+
+The twin of `test/native_rewrite.sh` (Phase F3b). compact_rewrite rewrites groups past the deleted-fraction threshold, and only those, into fresh groups with fresh row numbers under ShareUpdateExclusiveLock, with results equal to a heap mirror written from the generator; index scans and point lookups stay right; group numbers are never reused; and pgcolumnar.vacuum rewrites into fresh storage with every row reachable, through the index as well.
+
+### Every test
+
+Every test makes one check under the shell's name, from one module fixture that takes every reading in the shell's order on a private schema. Readings are values: a failed query is a query_error(), so two failed reads never agree, counts are compared as numbers, and the duplicate must be refused with 23505 by n_id_uq itself. The index after vacuum is read over a narrow range, because over the whole table stale entries still land on every row once.
+
+| test | what it holds |
+| --- | --- |
+| `test_row_count_after_delete` | row count after delete |
+| `test_there_are_deleted_rows_to_reclaim` | there are deleted rows to reclaim |
+| `test_parity_after_delete` | parity after delete |
+| `test_rewrote_some_groups` | rewrote some groups |
+| `test_dead_row_space_reclaimed` | dead-row space reclaimed |
+| `test_parity_after_rewrite` | parity after rewrite |
+| `test_row_count_after_rewrite` | row count after rewrite |
+| `test_a_second_rewrite_with_nothing_deleted_rewrites_no_group` | a second rewrite with nothing deleted rewrites no group |
+| `test_a_group_deleted_below_the_threshold_is_not_rewritten` | a group deleted below the threshold is not rewritten |
+| `test_index_scan_returns_each_live_row_once` | index scan returns each live row once |
+| `test_live_id_present_via_index` | live id present via index |
+| `test_deleted_id_absent_via_index` | deleted id absent via index |
+| `test_unique_constraint_still_enforced` | unique constraint still enforced |
+| `test_compact_rewrite_holds_share_update_exclusive_lock` | compact_rewrite holds ShareUpdateExclusiveLock |
+| `test_compact_rewrite_holds_no_access_exclusive_lock` | compact_rewrite holds no AccessExclusiveLock |
+| `test_a_rewrite_plus_later_writes_reuse_no_group_number` | a rewrite plus later writes reuse no group number |
+| `test_group_numbers_issued_after_a_rewrite_are_past_every_earlier_one` | group numbers issued after a rewrite are past every earlier one |
+| `test_vacuum_rewrites_into_a_fresh_storage_id` | vacuum rewrites into a fresh storage id |
+| `test_every_live_row_still_reads_back_after_rewrite_and_vacuum` | every live row still reads back after rewrite and vacuum |
+| `test_an_index_range_read_after_vacuum_returns_the_rows_asked_for` | an index range read after vacuum returns the rows asked for |
+
+## 310. test_native_zonemap.py: zone-map rows carry exact counts, sums and the right bounds, by value
+
+The twin of `test/native_zonemap.sh`. On a four-column table of three row groups of two vectors each, the pgcolumnar.zone_map rows are checked against a heap mirror written from the same generator: their number, value and null counts, sums, the presence and width of their bounds, and each bound of id, k and v decoded and compared with the heap's own for its group and vector; the read path still matches the heap, and the rows go with the table.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each reading opens its own connection and returns a failure as a `query_error()`, so two failed reads never agree and a count that cannot be read is never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_zonemap_row_count` | row count |
+| `test_zonemap_read_parity` | read parity (no regression) |
+| `test_zonemap_whole_chunk_zone_rows` | whole-chunk zone rows |
+| `test_zonemap_per_vector_zone_rows` | per-vector zone rows |
+| `test_zonemap_whole_chunk_rows_cover_their_group` | whole-chunk value+null = group rows |
+| `test_zonemap_each_vector_covers_1024` | per-vector value+null = 1024 |
+| `test_zonemap_value_count_sums_for_nullable_v` | value_count sums (v, nullable) |
+| `test_zonemap_null_count_sums_for_nullable_v` | null_count sums (v, nullable) |
+| `test_zonemap_value_count_sums_for_id` | value_count sums (id, no nulls) |
+| `test_zonemap_null_count_zero_for_id` | null_count zero (id, no nulls) |
+| `test_zonemap_vector_value_counts_fold_into_the_chunk` | per-vector value_count folds into chunk (k) |
+| `test_zonemap_min_max_present_for_all_columns` | min/max present for all columns |
+| `test_zonemap_int4_min_width` | id (int4) min width = 4 bytes |
+| `test_zonemap_int8_max_width` | k (int8) max width = 8 bytes |
+| `test_zonemap_v_is_not_ascending_within_a_vector` | premise: v is not ascending within a vector, so a stale minimum would show |
+| `test_zonemap_every_vector_minimum_is_the_heaps` | every vector's minimum of id, k and v is the heap's |
+| `test_zonemap_every_vector_maximum_is_the_heaps` | every vector's maximum of id, k and v is the heap's |
+| `test_zonemap_every_chunk_minimum_is_the_heaps` | every whole-chunk minimum of id, k and v is the heap's |
+| `test_zonemap_every_chunk_maximum_is_the_heaps` | every whole-chunk maximum of id, k and v is the heap's |
+| `test_zonemap_sum_present_for_int4_columns` | sum present for int4 columns |
+| `test_zonemap_sum_null_for_other_columns` | sum null for non-int4 columns |
+| `test_zonemap_whole_chunk_sum_of_id_matches_heap` | whole-chunk sum(id) matches heap |
+| `test_zonemap_zone_maps_go_with_the_table` | zone maps cleaned on drop |
+
+## 311. test_native_zonemap_session.py: a scan resolves zone_map once, and each scan holds its own session
+
+The twin of `test/native_zonemap_session.sh`. The witness is the DEBUG1 line each scan's zone-map session emits when it closes, `probes=N opens=M`: over 40 chunk groups a scan probes once per group and opens zone_map once, a second predicate column adds one probe and no open, the two scans of a join each report their own groups, and the scans around one that errors inside a subtransaction each open for themselves and probe only their own groups.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each reading returns a failure as a `query_error()`, and the statements around the aborted scan run one by one, continuing past the error as psql does with ON_ERROR_STOP=0.
+
+| test | what it holds |
+| --- | --- |
+| `test_native_zonemap_session_fixture_has_several_groups` | the fixture has more than one chunk group |
+| `test_native_zonemap_session_scan_probes_once_per_group` | the scan really probed the zone maps, once per group |
+| `test_native_zonemap_session_scan_resolves_zone_map_once` | the scan resolves zone_map ONCE, not once per group (#744) |
+| `test_native_zonemap_session_second_column_still_opens_once` | a second predicate column still resolves zone_map once |
+| `test_native_zonemap_session_short_circuit_adds_one_probe` | and the short circuit means it adds one probe, not one per group |
+| `test_native_zonemap_session_zs2_has_several_groups` | zs2 has more than one chunk group |
+| `test_native_zonemap_session_nested_scans_answer` | nested columnar scans return the right answer |
+| `test_native_zonemap_session_nested_scans_hold_their_own_handle` | nested columnar scans each hold their own handle |
+| `test_native_zonemap_session_middle_scan_errored` | the middle scan really did error inside the subtransaction |
+| `test_native_zonemap_session_every_scan_reports_its_own_session` | every scan around an aborted one reports its own session (#744) |
+| `test_native_zonemap_session_each_scan_opened_once` | and each of them opened exactly once |
+| `test_native_zonemap_session_each_scan_probed_its_own_groups` | and each of them probed exactly its own groups |
+| `test_native_zonemap_session_scan_after_abort_answers` | the scan after the subtransaction abort returns the right answer |
+
+## 312. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes
+
+The twin of `test/native_zonemap_narrow.sh`. A one-predicate scan of a 30-column table reads about as many pgcolumnar.zone_map tuples as the same scan of a 2-column table (pg_stat_all_tables.idx_tup_fetch, flushed with pg_stat_force_next_flush); both answer correctly; and c1 > 19000 removes nine of the ten groups on each table, read from the scan's own counter.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Each reading opens its own connection, as the shell's psql calls do, and returns a failure as a `query_error()`, so two failed reads never agree and an unread count is never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_zone_map_reads_scale_with_predicates_not_table_width` | zone_map reads scale with predicates, not table width (wide ~= narrow) |
+| `test_the_wide_scan_result_is_correct` | wide scan result is correct |
+| `test_the_narrow_scan_result_is_correct` | narrow scan result is correct |
+| `test_a_pruning_predicate_still_prunes_on_the_wide_table` | a pruning predicate still prunes on the wide table |
+| `test_the_zone_map_removes_nine_groups_on_the_wide_table` | the zone map removes the nine groups c1 > 19000 cannot match, on the wide table |
+| `test_the_zone_map_removes_nine_groups_on_the_narrow_table` | and on the narrow table |
+
+## 313. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values
+
+The twin of `test/native_vecdecode.sh`. One row group of 32 1024-row vectors with a monotonic id, so a narrow range rules most vectors out: "Columnar Vectors Decoded" must move by exactly the skipped count, every range must match a heap mirror written from the generator, and the batch fold must answer correctly over skipped vectors and over a nullable column.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each counter is read from the plan text and a missing one is a `query_error()`, never 0; every comparison of two readings refuses a failed side. The fold arm runs with the shell's SET statements.
+
+| test | what it holds |
+| --- | --- |
+| `test_vecdecode_narrow_plan_is_the_custom_scan` | the narrow plan is a columnar custom scan |
+| `test_vecdecode_wide_plan_is_the_custom_scan` | the wide plan is a columnar custom scan |
+| `test_vecdecode_one_row_group` | one row group, so every difference is per-vector |
+| `test_vecdecode_no_whole_group_pruned` | no whole group is pruned on the narrow query |
+| `test_vecdecode_narrow_range_skips_vectors` | the narrow range skips vectors |
+| `test_vecdecode_wide_range_skips_none` | the wide range skips none, so the arms really differ |
+| `test_vecdecode_explain_reports_vectors_decoded` | EXPLAIN reports Columnar Vectors Decoded |
+| `test_vecdecode_full_scan_decodes_something` | and it is not stuck at zero when a full scan decodes everything |
+| `test_vecdecode_ruled_out_vector_not_decoded` | a ruled-out vector is not decoded |
+| `test_vecdecode_decoded_plus_skipped_is_the_groups_vectors` | and EVERY ruled-out vector is: decoded plus skipped is the group's vectors |
+| `test_vecdecode_narrow_range_parity` | narrow range parity with heap |
+| `test_vecdecode_cross_vector_parity` | cross-vector range parity |
+| `test_vecdecode_boundary_range_parity` | boundary range parity, a range starting exactly on a vector edge |
+| `test_vecdecode_nullable_column_has_nulls` | premise: the nullable column has nulls inside the ranges read below |
+| `test_vecdecode_nullable_cross_vector_parity` | cross-vector parity of a nullable column, nulls included |
+| `test_vecdecode_aggregate_over_skipping_range` | aggregate over a skipping range matches heap |
+| `test_vecdecode_aggregate_over_many_skipped_vectors` | aggregate over a range spanning many skipped vectors matches heap |
+| `test_vecdecode_range_matching_no_row` | a range matching no row at all is still correct |
+| `test_vecdecode_aggregate_reaches_the_fold` | the aggregate really reaches the batch fold |
+| `test_vecdecode_fold_answers_over_skipping_range` | the fold answers correctly over a range that skips vectors |
+| `test_vecdecode_nullable_aggregate_reaches_the_fold` | a nullable aggregate reaches the fold |
+| `test_vecdecode_fold_nullable_count_and_sum` | the fold answers count and sum of a nullable column over a skipping range |
+| `test_vecdecode_deep_range_reaches_the_fold` | the deep range reaches the fold too |
+| `test_vecdecode_deep_range_agrees_with_heap` | and it agrees with heap after many leading skipped vectors |
+| `test_vecdecode_poison_range_reaches_the_fold` | the poison-accepting range reaches the fold |
+| `test_vecdecode_fold_arm_decodes_only_what_it_needs` | the FOLD ARM really decodes only the vectors it needs |
+| `test_vecdecode_fold_counter_reads_every_vector_when_none_skipped` | control: and the same counter reads every vector when nothing is skipped |
+| `test_vecdecode_fold_does_not_count_undecoded_rows` | the fold does not count rows from a vector it never decoded |
+
+## 314. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard
+
+The twin of `test/native_parquet_fieldid.sh`. pyarrow writes a file whose field ids are out of order and disjoint from position (alpha=7, beta=3, gamma=12), one with no field ids, and one where two columns share an id. read_parquet(path, field_ids) must bind and reorder by id, read a subset, leave the positional read alone, and refuse an absent id, a duplicate id in the file, a non-scalar output column, a count mismatch, an id-less file and a duplicate requested id, each with its own guard's message; the backend must survive.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The writer runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A refusal reads as '<SQLSTATE> (<label>)' only when the primary message is the guard's own; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_fieldid_projection_binds_and_reorders_by_id` | field-id projection binds and reorders by id (g=gamma, a=alpha) |
+| `test_fieldid_projection_reads_a_subset` | field-id projection reads a subset (only id 3 = beta) |
+| `test_positional_read_parquet_is_unaffected_by_fieldid_binding` | positional read_parquet is unaffected |
+| `test_an_absent_field_id_is_refused` | an absent field id is refused (22023) |
+| `test_a_duplicate_field_id_in_the_parquet_file_is_refused` | a duplicate field id in the file is refused (42702) |
+| `test_a_nested_fieldid_output_column_is_refused` | a nested/array output column is refused (0A000) |
+| `test_a_field_ids_column_count_mismatch_is_refused` | a field_ids/column-count mismatch is refused (22023) |
+| `test_a_parquet_file_with_no_field_ids_is_refused` | a file with no field ids is refused (22023) |
+| `test_a_duplicate_requested_field_id_is_refused` | a duplicate requested field id is refused (22023) |
+| `test_the_duplicate_requested_id_error_names_the_id` | the duplicate-requested-id error names the id, not the file |
+| `test_the_backend_survives_the_fieldid_refusals` | backend still up after the refusals |
+
+## 315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused
+
+The twin of `test/native_parquet_codecs.sh`. `test/craft_parquet_codecs.py`, the shell's own crafter, writes the same 20000 rows with each codec plus an uncompressed control, and a gzip page whose header declares an uncompressed size of -1. Each file's codec is read from its own metadata; every file decodes through `read_parquet` to the generator's rows, built in SQL; each FDW count and a sum read every value; and the crafted header is refused with the reader's own decode error, killing no backend.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Each test declines under the shell's pyarrow skip name before it asks for the fixture, which runs the crafter as a subprocess, so the fixture never imports pyarrow. A failed reading is a `query_error()`, and survival also requires the server log's count of backends killed by a signal not to have moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_uncompressed_file_is_uncompressed` | premise: the uncompressed file is UNCOMPRESSED |
+| `test_the_gzip_file_is_gzip_compressed` | premise: the gzip file is GZIP-compressed |
+| `test_the_zstd_file_is_zstd_compressed` | premise: the zstd file is ZSTD-compressed |
+| `test_the_lz4_file_is_lz4_compressed` | premise: the lz4 file is LZ4-compressed |
+| `test_uncompressed_decodes_to_the_generators_rows` | uncompressed decodes to the generator's rows |
+| `test_gzip_decodes_to_the_generators_rows` | gzip decodes to the generator's rows |
+| `test_zstd_decodes_to_the_generators_rows` | zstd decodes to the generator's rows |
+| `test_lz4_decodes_to_the_generators_rows` | lz4 decodes to the generator's rows |
+| `test_the_gzip_fdw_counts_every_row` | gzip FDW count |
+| `test_the_zstd_fdw_counts_every_row` | zstd FDW count |
+| `test_the_lz4_fdw_counts_every_row` | lz4 FDW count |
+| `test_the_gzip_sum_matches_the_generator` | gzip sum matches the generator |
+| `test_a_crafted_uncompressed_size_is_a_clean_decode_error` | crafted uncompressed size gives a clean decode error |
+| `test_the_backend_survives_the_crafted_header` | backend survived the crafted header |
+
+## 316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly
+
+The twin of `test/native_parquet_units.sh`. pyarrow writes one instant as TIMESTAMP millis, micros and nanos, a time as TIME micros and millis, a millis value whose conversion overflows, two nanos values with sub-microsecond digits (one pre-epoch), and a two-group millis file; each reads back to the right value through the FDW, read_parquet and import_parquet, parquet_schema advises the lossless type, the overflow raises 22008, and the millis stats skip the group a predicate cannot match.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database, and declines first under the shell's pyarrow skip name. Each reading returns a failure as a `query_error()`, so two failed reads never agree. The truncation checks want literals and the two-group file is compared with the generator's series, so no oracle is read through the reader under test.
+
+| test | what it holds |
+| --- | --- |
+| `test_ts_ms_decodes_to_the_right_instant` | ts_ms decodes to the right instant |
+| `test_ts_us_decodes_to_the_right_instant` | ts_us decodes to the right instant |
+| `test_ts_ns_decodes_to_the_right_instant` | ts_ns decodes to the right instant |
+| `test_time_micros_decodes_to_the_right_time` | time micros decodes to the right time |
+| `test_time_millis_decodes_to_the_right_time` | time millis decodes to the right time |
+| `test_parquet_schema_advises_time_for_time_millis` | parquet_schema advises time for TIME_MILLIS |
+| `test_parquet_schema_advises_timestamp_for_millis` | parquet_schema advises timestamp for millis |
+| `test_parquet_schema_advises_timestamp_for_micros` | parquet_schema advises timestamp for micros |
+| `test_parquet_schema_advises_bigint_for_nanos` | parquet_schema advises bigint for nanos (lossless) |
+| `test_nanos_read_as_bigint_is_exact` | nanos read as bigint is exact |
+| `test_millis_to_micros_overflow_raises_22008` | millis-to-micros overflow raises 22008 |
+| `test_read_parquet_honours_the_unit` | read_parquet honours the unit |
+| `test_import_parquet_honours_the_unit` | import_parquet honours the unit |
+| `test_millis_equals_micros` | millis == micros |
+| `test_nanos_equals_micros` | nanos == micros |
+| `test_nanos_sub_us_truncates_toward_zero_frac` | nanos sub-us truncates toward zero [frac] |
+| `test_nanos_sub_us_truncates_toward_zero_neg` | nanos sub-us truncates toward zero [neg] |
+| `test_millis_scaled_stats_skip_the_non_matching_group` | millis-scaled stats skip the non-matching group |
+| `test_the_millis_file_reads_back_exactly_as_written` | the millis file reads back exactly as written |
+| `test_millis_pushdown_result_equals_the_oracle` | millis pushdown result == oracle |
+
+## 317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows
+
+The twin of `test/native_parquet_projection.sh`. `test/craft_parquet_projection.py`, the shell's own crafter, writes a four-column file and a two-column file whose second column's data page is smashed. Each projection, a qual on an unselected column, and a projection behind a dropped column return the generator's rows, built in SQL; the EXPLAIN "Columns Read" counter reflects each projection; and the smashed column is never decoded when projected out.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Each test declines under the shell's pyarrow skip name before it asks for the fixture, which runs the crafter as a subprocess, so the fixture never imports pyarrow. A failed reading is a `query_error()`, and a setup step that fails is not raised: every reading then fails by its own name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_a_projection_matches_the_oracle` | projection [a] == oracle |
+| `test_the_c_projection_matches_the_oracle` | projection [c] == oracle |
+| `test_the_a_d_projection_matches_the_oracle` | projection [a, d] == oracle |
+| `test_the_b_c_d_projection_matches_the_oracle` | projection [b, c, d] == oracle |
+| `test_the_star_projection_matches_the_oracle` | projection [*] == oracle |
+| `test_a_qual_on_an_unselected_column_matches_the_oracle` | qual on unselected column == oracle |
+| `test_one_column_reads_one` | one column reads 1 |
+| `test_two_columns_read_two` | two columns read 2 |
+| `test_select_star_reads_four` | select star reads 4 |
+| `test_count_star_reads_zero` | count(*) reads 0 |
+| `test_after_a_dropped_column_the_d_projection_matches_the_oracle` | after a dropped column, projection [d] == oracle |
+| `test_after_a_dropped_column_one_column_reads_one` | after a dropped column, one column reads 1 |
+| `test_a_selected_column_and_a_qual_column_read_two` | selected 1 + qual 1 reads 2 |
+| `test_selecting_the_good_column_skips_the_corrupt_one` | selecting the good column skips the corrupt one |
+| `test_count_star_decodes_nothing_and_survives_the_corruption` | count(*) decodes nothing, survives corruption |
+| `test_selecting_the_corrupt_column_does_error` | selecting the corrupt column does error |
+| `test_the_good_column_values_are_still_correct` | good-column values are still correct |
+
+## 318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks
+
+The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range) and a two-column file whose row group carries one column chunk. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, the short chunk list must be refused by the chunk-count guard itself, and the backend must survive.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The crafter runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A refusal reads as 'SQLSTATE: message' through the shell's own pgc_try; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_parquet_hardening_int2_out_of_range_raises_22003` | int2 out of range -> 22003 |
+| `test_parquet_hardening_time_out_of_day_raises_22008` | time out of day -> 22008 |
+| `test_parquet_hardening_invalid_date_raises_22008` | date invalid -> 22008 |
+| `test_parquet_hardening_date_offset_overflow_raises_22008` | date offset overflow -> 22008 |
+| `test_parquet_hardening_timestamp_overflow_raises_22008` | timestamp overflow -> 22008 |
+| `test_parquet_hardening_int2_in_range_still_reads` | int2 in range still reads |
+| `test_parquet_hardening_time_in_range_still_reads` | time in range still reads |
+| `test_parquet_hardening_date_in_range_still_reads` | date in range still reads |
+| `test_parquet_hardening_timestamp_in_range_still_reads` | timestamp in range still reads |
+| `test_parquet_hardening_no_wrapped_value_appears` | no wrapped -25536 appears |
+| `test_parquet_hardening_read_parquet_also_raises_22003` | read_parquet also raises 22003 |
+| `test_parquet_hardening_read_parquet_in_range_still_reads` | read_parquet in range still reads |
+| `test_parquet_hardening_import_parquet_also_raises_22003` | import_parquet also raises 22003 |
+| `test_parquet_hardening_import_parquet_left_no_wrapped_rows` | import_parquet left no wrapped rows |
+| `test_parquet_hardening_short_chunk_list_is_a_clean_reject` | short chunk list rejected with a specific error |
+| `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
+| `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
+| `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
+
+## 319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend
+
+The twin of `test/native_parquet_stack.sh`. Two hand-crafted footers (no writer makes them, so no pyarrow) each drive one of the footer parser's two recursions 20000 deep: a run of Thrift struct openers through `PgColumnarThriftSkip`, and a linear schema chain through `walk_schema`. Under a pinned `max_stack_depth` each must raise 54001 rather than SIGSEGV, a shallow valid chain must still describe its one column, and `read_parquet` must refuse the crash input the same way `parquet_schema` does.
+
+### Every test
+
+Every test makes one check under the shell's name. Each parquet_schema or read_parquet call runs on its own connection with max_stack_depth pinned, and a failed or unreachable reading is a `query_error()`, so a crash shows as the survival check reading something other than 1 rather than as an unnamed error. Each survival test runs its own trigger with a crash baseline taken just before it, waits for the server, and wants SELECT 1 and an unchanged count of `terminated by signal` in the server log, since a bare SELECT 1 answers again once crash recovery is over (#1708 review).
+
+| test | what it holds |
+| --- | --- |
+| `test_nested_struct_footer_raises_stack_depth` | nested-struct footer raises stack-depth, not SIGSEGV |
+| `test_backend_survived_the_nested_struct_footer` | backend survived the nested-struct footer |
+| `test_schema_chain_footer_raises_stack_depth` | schema-chain footer raises stack-depth, not SIGSEGV |
+| `test_backend_survived_the_schema_chain_footer` | backend survived the schema-chain footer |
+| `test_a_shallow_valid_schema_chain_still_reads` | a shallow valid schema chain still reads |
+| `test_backend_survived_the_valid_file` | backend survived the valid file |
+| `test_read_parquet_rejects_the_nested_struct_footer` | read_parquet rejects the nested-struct footer the same way |
+| `test_backend_survived_read_parquet_on_the_crash_input` | backend survived read_parquet on the crash input |
+
+## 320. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time
+
+The twin of `test/native_parquet_streaming.sh`. `test/craft_parquet_streaming.py`, now shared by both harnesses, writes a 1600MB sparse file carrying a small file's footer (over the old 1GB palloc ceiling), six crafted files that each break one thing the page loop must not trust, an all-null column, and a four-row-group file for the FDW's Row Groups Decoded counter. The footer path reads the oversized file; each crafted page area is refused by the page loop's own decode refusal; the backend survives; and a LIMIT decodes only the row groups it needs.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The crafter runs as a subprocess, so the module imports no pyarrow; every test declines under the shell's skip name before it asks for the fixture, and on a box that cannot build the sparse file under the shell's other skip name. Every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved since its section began. One extra test mirrors 'crafted files were built', which the shell records only when the crafter fails.
+
+| test | what it holds |
+| --- | --- |
+| `test_parquet_streaming_crafted_files_were_built` | crafted files were built |
+| `test_parquet_streaming_schema_reads_a_file_over_the_palloc_ceiling` | parquet_schema reads a file over the 1GB palloc ceiling |
+| `test_parquet_streaming_schema_reports_the_oversized_files_columns` | parquet_schema reports the columns of the oversized file |
+| `test_parquet_streaming_value_read_of_the_sparse_file_fails_cleanly` | value read of the sparse file fails cleanly |
+| `test_parquet_streaming_backend_survived_the_failed_read` | backend survived the failed read |
+| `test_parquet_streaming_schema_still_reads_a_normal_file` | parquet_schema still reads a normal file |
+| `test_parquet_streaming_read_parquet_still_reads_a_normal_file` | read_parquet still reads a normal file |
+| `test_parquet_streaming_zero_filled_page_area_is_rejected` | zero-filled page area is rejected, not walked byte by byte |
+| `test_parquet_streaming_page_size_past_eof_is_rejected` | page size past end of file is rejected by the size bound |
+| `test_parquet_streaming_negative_page_offset_is_rejected` | negative page offset is rejected by the offset check |
+| `test_parquet_streaming_unparseable_page_header_is_rejected` | unparseable page header is rejected |
+| `test_parquet_streaming_second_dictionary_page_is_rejected` | a second dictionary page in a chunk is rejected |
+| `test_parquet_streaming_v2_level_lengths_past_the_page_are_rejected` | v2 level lengths past the page are rejected |
+| `test_parquet_streaming_all_null_column_still_reads` | all-null column (empty dictionary page) still reads |
+| `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
+| `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |
+| `test_parquet_streaming_full_scan_content_is_correct` | streaming: full scan content is correct |
+| `test_parquet_streaming_full_scan_decodes_all_four_row_groups` | streaming: a full scan decodes all four row groups |
+| `test_parquet_streaming_limit_10_decodes_one_row_group` | streaming: LIMIT 10 (inside group 0) decodes one row group |
+| `test_parquet_streaming_limit_1010_decodes_two_row_groups` | streaming: LIMIT 1010 (into group 1) decodes two row groups |
+| `test_parquet_streaming_rescan_under_a_nested_loop_is_correct` | streaming: rescan under a nested loop is correct |
+
+## 321. test_native_parquet_partition.py: Hive-style partition columns materialize and prune whole files, and a tree that does not match fails loudly
+
+The twin of `test/native_parquet_partition.sh`. pyarrow writes a four-file dt=/region= tree and a percent-encoded tree. The partition values must materialize as typed columns; a predicate on a partition column must drop whole files before they are opened (the EXPLAIN Files and Files Pruned counters); partition and file predicates must combine; a volatile clause must never decide a whole file; a tree that does not match the declaration must fail with its own guard's message; Hive encoding (percent escapes, the null marker) must decode, and an encoded NUL or an invalid byte must be refused.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The writer runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A pruning count is 'no reading' unless the plan's Files line shows the scan ran; a refusal reads as '<SQLSTATE> (its own message)' only when the primary message is the guard's own; every reading waits for the server; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_all_four_partitions_read` | all four partitions read |
+| `test_partition_values_materialize` | partition values materialize |
+| `test_a_partition_column_is_typed_not_text` | partition column is typed, not text |
+| `test_group_by_a_partition_column` | group by a partition column |
+| `test_one_partition_value_prunes_half_the_files` | one partition value prunes half the files |
+| `test_and_reads_the_other_half` | and reads the other half |
+| `test_both_partition_columns_prune_down_to_one_file` | both columns prune down to one file |
+| `test_a_pruned_scan_still_returns_the_right_rows` | pruned scan still returns the right rows |
+| `test_an_inequality_on_a_partition_column_prunes` | an inequality on a partition column prunes |
+| `test_in_on_a_partition_column_prunes` | IN on a partition column prunes |
+| `test_a_predicate_matching_everything_prunes_nothing` | a predicate matching everything prunes nothing |
+| `test_a_predicate_on_a_file_column_prunes_no_files` | a predicate on a file column prunes no files |
+| `test_a_pruned_files_row_groups_are_never_counted` | a pruned file's row groups are never counted |
+| `test_partition_prune_plus_row_group_skip` | partition prune plus row-group skip |
+| `test_row_groups_are_still_skipped_inside_the_surviving_files` | row groups are still skipped inside the surviving files |
+| `test_a_volatile_clause_prunes_nothing` | a volatile clause prunes nothing |
+| `test_a_volatile_clause_keeps_every_matching_partition_row` | a volatile clause keeps every matching partition row |
+| `test_a_stable_clause_still_prunes` | a stable clause still prunes |
+| `test_a_file_missing_a_declared_partition_component_errors` | a file missing a declared partition component errors |
+| `test_a_basename_that_looks_like_a_partition_component_is_unaffected` | a file whose basename looks like a partition component is unaffected |
+| `test_an_unknown_partition_column_errors` | an unknown partition column errors rather than being ignored |
+| `test_an_empty_partition_columns_option_is_rejected` | an empty partition_columns option is rejected |
+| `test_declaring_a_file_column_as_a_partition_column_errors` | declaring a file column as a partition column errors |
+| `test_the_backend_survives_the_bad_declarations` | backend survived the bad declarations |
+| `test_a_percent_encoded_partition_value_decodes` | a percent-encoded partition value decodes |
+| `test_the_encoded_value_is_queryable_as_itself` | the encoded value is queryable as itself |
+| `test_hive_default_partition_reads_as_null` | __HIVE_DEFAULT_PARTITION__ reads as null |
+| `test_a_null_partition_value_is_not_the_literal_marker` | a null partition value is not the literal marker |
+| `test_an_unencoded_value_is_unaffected` | an unencoded value is unaffected |
+| `test_all_three_encoded_partitions_still_read` | all three partitions still read |
+| `test_a_null_partition_value_prunes` | a null partition value prunes |
+| `test_an_encoded_null_byte_in_a_partition_value_is_rejected` | an encoded null byte in a partition value is rejected |
+| `test_a_byte_invalid_in_the_server_encoding_is_rejected` | a byte invalid in the server encoding is rejected |
+| `test_the_encoded_tree_reads_again_once_both_are_gone` | the tree reads again once both are gone |
+| `test_the_backend_survives_the_malformed_partition_values` | backend survived the malformed partition values |
+
+## 322. test_native_parquet_fdw.py: the Parquet FDW reads an exported file as a foreign table, prunes what it can, and refuses each misuse by its own guard
+
+The twin of `test/native_parquet_fdw.sh`. A columnar table is exported and read back through a pgcolumnar_parquet foreign table, compared with a heap table written from the generator across full scan, projection, predicate, a nested-loop self-join (rescan) and a nested-type table. EXPLAIN ANALYZE must show a one-column query reading one of eleven columns, and a selective predicate skipping three of four row groups. The option validator and the scan refuse an invalid option, an empty path, a missing path, a non-Parquet file and an incompatible declared type, each with its own guard's message, and the backend survives.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database with its own foreign server; the files live in server_dir. A failed reading is a query_error(), unique per call, so two failures never agree. A refusal reads as '<SQLSTATE> (<label>)' only when the primary message is the guard's own; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_scalar_table_exports_every_row` | scalar export rows |
+| `test_a_full_foreign_scan_equals_the_source` | full scan: fdw == source |
+| `test_the_foreign_table_counts_every_row` | fdw row count |
+| `test_a_projection_equals_the_source` | projection: fdw == source |
+| `test_a_predicate_equals_the_source` | predicate: fdw == source |
+| `test_a_nested_loop_self_join_rescans_correctly` | nested-loop self-join (rescan): fdw == source |
+| `test_explain_shows_a_foreign_scan` | EXPLAIN shows Foreign Scan |
+| `test_a_one_column_query_reads_one_column` | a one-column query reads one of the eleven columns |
+| `test_the_skip_table_exports_every_row` | skip export rows |
+| `test_the_skip_file_has_four_row_groups` | the skip file has four row groups |
+| `test_a_selective_predicate_skips_three_row_groups` | a selective predicate skips the three row groups it cannot match |
+| `test_the_skipped_scan_returns_every_matching_row` | and the skipped scan still returns every matching row |
+| `test_the_fdw_nested_table_exports_every_row` | nested export rows |
+| `test_a_nested_full_scan_equals_the_source` | nested full scan: fdw == source |
+| `test_an_invalid_table_option_is_rejected` | reject invalid table option (HV00D) |
+| `test_an_empty_path_option_is_rejected` | reject empty path option (HV00D) |
+| `test_a_scan_without_a_path_option_errors` | scan without path option errors (HV00J) |
+| `test_a_scan_of_a_non_parquet_file_errors` | scan of non-parquet file errors (XX001) |
+| `test_a_scan_with_an_incompatible_declared_type_errors` | scan with incompatible declared type errors (42804) |
+| `test_the_backend_is_still_up_after_the_fdw_refusals` | backend still up after the refusals |
+
+## 323. test_native_read_parquet.py: read_parquet returns the rows that were written, refuses what it must, and keeps its file gate
+
+The twin of `test/native_read_parquet.sh`. A columnar table of eleven scalar types (with an all-NULL row) and one of int[], text[] and a composite are exported; read_parquet reads each file back as the generator's rows, a projection keeps its column, and import_parquet of the same file agrees. A missing column list, too few columns, an incompatible type and a non-Parquet file are each refused with their own SQLSTATE and message; a role without pg_read_server_files is refused by read_parquet's own gate, and a member reads every row.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Every reading waits for the server first and returns a failure as a `query_error()`, so a crash fails only its own reading and the survival check, and two failed reads never agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_read_parquet_fixture_exports_every_scalar_row` | scalar export rows |
+| `test_read_parquet_returns_the_generated_scalar_rows` | scalar round-trip: read_parquet == the generated rows |
+| `test_read_parquet_counts_every_scalar_row` | scalar read_parquet row count |
+| `test_a_projected_column_round_trips` | projected column round-trips |
+| `test_read_parquet_fixture_exports_every_nested_row` | nested export rows |
+| `test_read_parquet_returns_the_generated_nested_rows` | nested round-trip: read_parquet == the generated rows |
+| `test_a_missing_column_definition_list_is_refused` | premise: reject missing column definition list |
+| `test_fewer_declared_columns_than_the_file_is_refused` | reject fewer columns than file |
+| `test_an_incompatible_declared_type_is_refused` | reject incompatible declared type |
+| `test_a_file_that_is_not_parquet_is_refused` | reject non-parquet file |
+| `test_read_parquet_keeps_its_own_file_gate` | a role without pg_read_server_files is refused by read_parquet's own gate |
+| `test_a_pg_read_server_files_member_reads_every_row` | and a member of pg_read_server_files reads every row |
+| `test_the_backend_is_still_up_after_the_read_parquet_refusals` | backend still up after the refusals |
+| `test_import_parquet_loads_every_row` | import parity rows |
+| `test_read_parquet_agrees_with_import_parquet` | read_parquet == import_parquet |
+
+## 324. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused
+
+The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, an exact key is read with no LIST, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard, and the backend survives.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private cluster restarted with AWS_* in its environment; the Parquet fixtures are written by a subprocess, and without pyarrow every test declines under the shell's skip message. A failed reading is a query_error(), unique per call, so two failures never agree. A refusal reads as '<SQLSTATE> by the <guard>' only when the message is the guard's own; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_listing_fixture_server_is_up` | premise: fixture up |
+| `test_read_parquet_over_a_prefix_reads_every_object_under_it` | read_parquet over a prefix reads every object under it (4 parts, recursive) |
+| `test_the_prefix_listing_paged` | the prefix listing paged (more than one list-type=2 request) |
+| `test_the_fdw_over_a_prefix_reads_what_read_parquet_reads` | FDW over a prefix == read_parquet over the prefix |
+| `test_hidden_and_non_parquet_objects_are_excluded_from_the_listing` | hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded |
+| `test_a_remote_glob_matches_only_the_top_level_parts` | glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/ |
+| `test_an_exact_key_read_returns_its_rows` | exact-key read returns its rows |
+| `test_an_exact_key_read_issues_no_list` | an exact-key read issues no ListObjectsV2 |
+| `test_the_exact_key_read_reached_the_request_log` | and the request log recorded the exact-key read |
+| `test_hive_over_a_remote_prefix_stamps_the_partition_column` | Hive over a remote prefix stamps the partition column |
+| `test_a_partition_predicate_prunes_a_remote_file` | a partition predicate prunes a remote file (Files Pruned = 1) |
+| `test_a_non_advancing_continuation_token_is_refused` | a non-advancing continuation token is refused, not an infinite paging loop |
+| `test_a_truncated_page_with_no_keys_is_refused` | a truncated page with no keys is refused, not looped |
+| `test_a_list_that_fails_is_refused_not_read_as_empty` | a LIST that returns HTTP 500 is refused, not read as an empty prefix |
+| `test_the_backend_is_still_up_after_the_listing_refusals` | backend still up after the listing refusals |
+
+## 325. test_native_rewrite_conc.py: The online rewrite runs alongside writers without losing a row, and without blocking them
+
+The twin of `test/native_rewrite_conc.sh`. Six workers insert, delete and update disjoint ranges of a columnar table and its heap oracle while a compactor loops compact_rewrite and compact. A delete that races a rewrite of its group is refused with a serialization failure and retried, so the two tables must end equal. A compact_rewrite held mid-verb must then let a reader and a writer through.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The workers and the compactor run as threads, each statement retried as the shell's runsql retries it. The oracle comparisons hash both tables, and a failed read is a value no other read shares. The held rewrite runs in its own thread; the reader and the writer each set a 3 s lock_timeout, and the lock is checked to be still held after both finish.
+
+| test | what it holds |
+| --- | --- |
+| `test_all_rewrite_workers_succeeded` | all workers succeeded (retried past serialization failures) |
+| `test_the_compactor_rewrote_groups_while_the_workers_were_writing` | the compactor rewrote groups while the workers were writing |
+| `test_conc_rewrite_whole_row` | conc-rewrite whole-row |
+| `test_conc_rewrite_count_sum` | conc-rewrite count/sum |
+| `test_conc_rewrite_range` | conc-rewrite range |
+| `test_row_count_sane` | row count sane |
+| `test_a_compact_rewrite_holds_its_lock_mid_verb` | a compact_rewrite holds its lock on t_col mid-verb |
+| `test_a_reader_finishes_while_the_rewrite_holds_its_lock` | a reader with a 3 s lock_timeout finishes while the rewrite holds its lock |
+| `test_a_writer_inserts_while_the_rewrite_holds_its_lock` | a writer with a 3 s lock_timeout inserts while the rewrite holds its lock |
+| `test_the_rewrite_still_held_its_lock_when_both_had_finished` | and the rewrite still held its lock when both had finished |
+| `test_the_held_rewrite_itself_completed` | the held rewrite itself completed |
+
+## 326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received
+
+The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, and a key with a space, '+' and '=' under both addressings. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
+
+### Every test
+
+Every test makes one check under the shell's name. Each addressing check reads the request paths the fixture logged for that read, not only the answer, since the fixture serves the same object either way. Refusals are a SQLSTATE plus the phrase that names the cause; a failed read is a query_error, never text. The first test mirrors the shell's two pgc_skip names: it declines without pyarrow, or UNAVAILABLE_ENDPOINT where pgc-bucket.s3.local does not resolve, and the rest decline with it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_server_is_up` | premise: fixture up |
+| `test_an_s3_path_style_read` | s3:// path-style read |
+| `test_path_style_puts_the_bucket_in_the_request_path` | path-style put the bucket in the request path |
+| `test_a_key_needing_encoding_reads_back_path_style` | a key with a space, '+' and '=' reads back (path-style) |
+| `test_the_path_style_request_path_is_the_key_encoded_once` | and its path-style request path is the key URI-encoded once |
+| `test_a_gs_read_round_trips` | gs:// read round-trips (scheme handled, HMAC creds reused) |
+| `test_a_gs_write_round_trips` | gs:// write round-trips |
+| `test_the_gs_written_object_reads_back` | gs:// read-back of the written object |
+| `test_a_virtual_host_read_equals_the_path_style_read` | virtual-host read == path-style read (same object, different addressing) |
+| `test_virtual_host_puts_the_key_alone_in_the_path` | virtual-host put the KEY ALONE in the path (no bucket segment) |
+| `test_a_key_needing_encoding_reads_back_virtual_host` | a key with a space, '+' and '=' reads back (virtual-host) |
+| `test_the_virtual_host_request_path_is_the_key_alone_encoded_once` | and its virtual-host request path is the key alone, URI-encoded once |
+| `test_addressing_path_puts_the_bucket_back_in_the_path` | removal proof: with addressing=path the bucket is back in the path |
+| `test_the_request_path_carries_the_bucket_again` | and the request path carried the bucket again |
+| `test_s3_with_no_endpoint_demands_one` | s3:// with no endpoint demands one (names AWS_ENDPOINT_URL) |
+| `test_gs_with_no_endpoint_goes_to_storage_googleapis_com` | gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name) |
+
+## 327. test_objstore_stash_recovery.py: recovery from a stash an interrupted objstore_module run left
+
+The twin of `test/objstore_stash_recovery.sh`. It runs `test/objstore_module.sh` as a subprocess against three arrangements of pkglibdir, each from a pristine copy of the module: a different valid module left at `.probe` beside a good one, the only copy at `.probe` with nothing installed, and a 19-byte stand-in installed with the real module at `.away`. It asserts on the suite's exit status and on what it left behind. The installed module is shared, so this file must not run beside others that load it.
+
+### Every test
+
+Every test reads one observation the module fixture took, and makes one check under the shell's name. If no valid module is installed, each test is unrunnable as `stash recovery`, the shell's skip.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_session_build_installed_a_valid_module` | the build or install failed, so nothing below measures the guard |
+| `test_debris_premise_installed_module_valid` | premise: the installed module is valid before this slice arranges anything |
+| `test_debris_premise_stash_in_place` | premise: a debris stash really is in place for the run below |
+| `test_debris_premise_stash_is_a_different_valid_module` | premise: and the debris is a valid module that differs from the installed one |
+| `test_debris_suite_completes` | the suite runs to completion with debris beside a valid module |
+| `test_debris_not_restored_over_the_module` | and the installed module is still the one that was there, not the debris |
+| `test_debris_gone` | the debris is gone afterwards |
+| `test_debris_module_still_valid` | and the module left installed is still valid |
+| `test_only_copy_premise_nothing_installed` | premise: nothing is installed at the module's path for this slice |
+| `test_only_copy_premise_stash_is_real` | premise: and the stash beside it is the real module |
+| `test_only_copy_suite_completes` | the suite recovers the only surviving copy and runs to completion |
+| `test_only_copy_reinstalled` | the module is installed again afterwards, and valid |
+| `test_only_copy_stash_not_left` | and the stash is not left behind for the next run to trip on |
+| `test_stand_in_premise_installed` | premise: a 19-byte stand-in really is installed as the module |
+| `test_stand_in_premise_not_a_module` | premise: which is not a module |
+| `test_stand_in_premise_stash_is_real` | premise: and the real module is the thing parked at the stash |
+| `test_stand_in_suite_completes` | the suite replaces the stand-in with the real module and completes |
+| `test_stand_in_real_module_survived` | the real module survived, rather than being deleted with the stash |
+| `test_stand_in_stash_cleared` | and the stash is cleared |
+
+## 328. test_objstore_s3_read.py: SigV4-signed s3:// reads, every refusal naming its cause
+
+The twin of `test/objstore_s3_read.sh`. A private cluster reads a parquet object through the local fixture server in SigV4 mode, which recomputes every signature with python's stdlib, requires the session token in the signed set, and refuses a tamper bucket against a different secret. Reads are compared with the byte-identical local file, the request count with the unsigned arithmetic, and the region with both AWS_REGION and AWS_DEFAULT_REGION set, then the fallback alone. A missing endpoint, region and secret are each refused naming what is missing; a 403 names the HTTP 403 and a 404 stays 58P01; an https endpoint is never downgraded.
+
+### Every test
+
+Every test makes one check under the shell's name. Refusals are a SQLSTATE plus the phrase that names the cause; a failed read is a query_error, never text. Every reading waits for the server first, and survival also counts killed backends in the private cluster's log. The first tests decline without pyarrow, under the shell's skip message. The real-S3 arm declines UNMET_PRECONDITION unless PGC_S3_INTEGRATION_ENDPOINT is set, which no matrix run does, so expected_unrunnable.txt lists it on every major.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_is_written` | premise: fixture written |
+| `test_the_sigv4_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_an_s3_read_with_no_environment_is_refused_naming_the_endpoint` | config: s3 read with no environment is 28000 |
+| `test_aws_region_outranks_aws_default_region` | region: AWS_REGION outranks AWS_DEFAULT_REGION |
+| `test_a_full_scan_over_s3_reads_what_the_local_file_reads` | A: full scan s3 == local |
+| `test_a_projection_over_s3_reads_what_the_local_file_reads` | A: projection s3 == local |
+| `test_a_percent_encoded_key_over_s3_reads_what_the_local_file_reads` | A: percent-encoded key s3 == local |
+| `test_count_over_s3` | A: count(*) over s3 |
+| `test_the_signed_run_logged_requests` | premise: signed run logged requests |
+| `test_signing_left_the_request_arithmetic_unchanged` | B: signing left the request arithmetic unchanged |
+| `test_the_tamper_bucket_surfaces_its_403_as_28000` | 403: tamper bucket surfaces 28000 |
+| `test_a_verified_request_for_a_missing_key_still_reaches_404` | 403 ordering premise: verified requests still reach 404 = 58P01 |
+| `test_aws_default_region_is_the_fallback` | region: AWS_DEFAULT_REGION is the fallback |
+| `test_an_s3_read_with_no_region_is_refused_naming_it` | config: s3 read with no region is refused naming it |
+| `test_an_s3_read_with_no_secret_is_refused_naming_it` | config: s3 read with no AWS_SECRET_ACCESS_KEY is refused naming it |
+| `test_an_https_endpoint_is_not_downgraded` | https endpoint is not downgraded |
+| `test_the_backend_is_still_up_after_the_s3_refusals` | backend still up after the s3 refusals |
+| `test_a_real_s3_implementation_reads_what_the_local_file_reads` | integration: real S3 implementation == local |
+
+## 329. test_objstore_tls_read.py: TLS for object-store reads, every verification proven by a certificate that must be refused
+
+The twin of `test/objstore_tls_read.sh`. A private cluster, trusting the fixture CA through SSL_CERT_FILE in the postmaster environment, reads a parquet object over https from the shell's fixture server and over s3:// with SigV4 on an https endpoint, then must refuse four servers: a wrong host, an expired certificate, an untrusted CA and a self-signed leaf. A transfer stalled mid-body must be cancelled by statement_timeout, and a restart with SSL_CERT_DIR alone must still trust the CA.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal is 08006, the module's own message naming the URL, and OpenSSL's verification reason for that certificate as the whole DETAIL; each carries the premise that the fixture logged the handshake, and waits for SELECT 1 afterwards so a crash fails only its own checks, which the closing survival check counts in the server log. The PKI, the fixture and the logs live in `server_dir`, since the backend reads the CA. The first test mirrors the shell's two pgc_skip names: it declines without pyarrow or without the openssl CLI, and the rest decline with it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_expired_certificate_is_genuinely_expired` | premise: expired certificate is genuinely expired |
+| `test_six_tls_servers_are_up` | premise: six TLS servers are up |
+| `test_an_https_read_equals_the_local_read` | A: https differential == local |
+| `test_count_over_https` | A: count(*) over https |
+| `test_s3_over_https_equals_the_local_read` | A2: s3 over https differential == local |
+| `test_the_handshake_was_attempted[...]` | premise: {label} handshake was attempted, one test per label (wrong-host, expired, untrusted-ca, self-signed) |
+| `test_the_certificate_is_refused_08006[...]` | C: {label} refused with 08006, one test per label |
+| `test_the_refusal_is_the_tls_one[...]` | C: {label} refusal is the TLS one: the module's message naming the URL, one test per label |
+| `test_the_refusal_names_its_reason[...]` | C: {label} names its reason: the whole DETAIL, OpenSSL's verification reason, one test per label |
+| `test_the_refused_read_returned_no_rows[...]` | C: {label} returned no rows, one test per label |
+| `test_a_stalled_tls_transfer_is_cancelled` | D: stalled TLS transfer cancelled with query_canceled |
+| `test_the_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
+| `test_ssl_cert_dir_alone_trusts_the_ca` | E: SSL_CERT_DIR alone trusts the CA (count(*) over https) |
+| `test_no_backend_was_terminated_by_a_signal` | survival: no backend was terminated by a signal |
+
+## 330. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard
+
+The twin of `test/objstore_http_read.sh`. Foreign tables over the local fixture server (`test/objstore_http_server.py`, the shell's own) read a G-row-group parquet fixture: the answer must equal the byte-identical local file, the buffered request count must equal the arithmetic from the fixture's shape with every GET carrying a Range header, and statement_timeout must cancel a transfer stalled mid-body. An unreachable port, a 404, a server that ignores Range, a short 206 body, EOF mid-body and a server that hangs up are each refused by their own guard; a keep-alive connection the server dropped is retried once, and a fresh connection is not.
+
+### Every test
+
+Every test makes one check under the shell's name, from readings a module fixture takes in the shell's order, each statement on its own connection as the shell's psql calls are. Request counts come from the fixture's request log. A refusal is the SQLSTATE plus the phrase from its own guard's message, since many guards share 08006 and 08P01; each refusal reading first waits for the server, so a crash in one arm can't leak into the next. A failed read is a query_error, never text. The first test mirrors the shell's pgc_skip name: it declines without pyarrow, and the rest decline with it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_http_read_fixture_is_written` | premise: fixture written |
+| `test_the_http_read_fixture_server_is_up` | premise: fixture server is up |
+| `test_a_full_scan_over_http_equals_the_local_file` | A: full scan http == local |
+| `test_a_projection_over_http_equals_the_local_file` | A: projection http == local |
+| `test_count_over_http` | A: count(*) over http |
+| `test_the_buffered_run_logged_requests` | premise: buffered run logged requests |
+| `test_the_unbuffered_run_logged_requests` | premise: unbuffered run logged requests |
+| `test_buffered_full_width_requests` | B: buffered full-width requests (K = 4 + G*NCOLS) |
+| `test_buffered_two_column_requests` | B: buffered 2-col requests (K = 4 + G*2) |
+| `test_unbuffered_is_at_least_ten_times_k` | B: unbuffered >= 10x K |
+| `test_the_buffered_to_unbuffered_request_ratio` | B: buffered/unbuffered request ratio |
+| `test_the_range_audit_phase_logged_gets` | premise: the range-audit phase logged GETs |
+| `test_every_get_carried_a_range_header` | B: every GET carried a Range header |
+| `test_an_unreachable_endpoint_is_refused` | C: unreachable endpoint SQLSTATE |
+| `test_a_404_is_refused` | C: http 404 SQLSTATE |
+| `test_a_range_ignoring_server_is_refused` | C: range-ignoring server SQLSTATE |
+| `test_a_short_206_body_is_refused` | C: a short 206 body is refused |
+| `test_eof_mid_body_is_refused` | C: EOF mid-body is refused |
+| `test_a_dropped_keep_alive_connection_is_retried` | C: a dropped keep-alive connection is retried (http == local) |
+| `test_a_server_that_hangs_up_is_refused` | C: a server that hangs up on a fresh connection is refused |
+| `test_a_fresh_connection_is_not_retried` | C: and that fresh connection is not retried (one request logged) |
+| `test_a_stalled_transfer_is_cancelled` | D: stalled transfer cancelled with query_canceled |
+| `test_the_http_read_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
+| `test_the_server_survives` | survival: the server answers and no backend crashed |
+
+## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
+
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private cluster restarted with AWS_* in its environment; the fixtures are generated by SQL, so the module needs no pyarrow. A failed reading is a query_error(), unique per call, so two failures never agree. A refusal reads as '<SQLSTATE> by the <guard>' only when the message is the guard's own, and every reading waits for the server first. Open uploads are read from the fixture server's __open_uploads__, not inferred from the DELETE count.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_sink_write_sigv4_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_a_small_export_to_s3_succeeds` | small export to s3:// succeeds |
+| `test_a_small_object_goes_as_one_plain_put` | small object went as ONE plain PUT (no multipart) |
+| `test_the_small_object_reads_back_as_the_generator` | small round trip: s3 read-back == source |
+| `test_a_large_export_to_s3_succeeds` | large export to s3:// succeeds |
+| `test_the_large_export_took_the_multipart_protocol` | premise: the large export took the multipart protocol |
+| `test_the_large_export_completed_its_upload_once` | and completed it exactly once (POST with uploadId, no partNumber) |
+| `test_the_large_object_reads_back_as_the_generator` | large round trip: s3 read-back == source |
+| `test_an_injected_mid_upload_failure_surfaces_as_disk_full` | inject: mid-upload failure surfaces as disk-full (53100) |
+| `test_the_injected_failure_leaves_no_key` | inject: the key does not exist |
+| `test_the_injected_fault_landed_mid_multipart` | premise: the fault landed mid-multipart (an upload was started) |
+| `test_every_upload_the_injected_export_started_was_aborted` | inject: every upload started was aborted (no billable orphan) |
+| `test_the_injected_failure_leaves_no_open_upload` | inject: the server holds no open upload for the key |
+| `test_a_refused_part_fails_the_export` | part failure: a refused part fails the export (58030) |
+| `test_a_refused_part_leaves_no_key` | part failure: the key does not exist |
+| `test_the_part_failure_landed_mid_multipart` | premise: the part failure landed mid-multipart (an upload was started) |
+| `test_a_refused_part_leaves_no_open_upload` | part failure: the server holds no open upload for the key |
+| `test_an_unlisted_endpoint_is_refused_by_the_allow_list` | allow-list: an unlisted endpoint refuses 42501 before any write |
+| `test_an_arrow_export_to_s3_imports_back_as_the_generator` | arrow export to s3:// also round-trips |
+| `test_a_parallel_export_to_an_s3_prefix_succeeds` | parallel export to an s3:// prefix succeeds |
+| `test_the_parallel_export_wrote_one_object_per_worker` | parallel: one object per worker was written (4) |
+| `test_every_worker_put_went_to_the_prefix` | parallel: every worker PUT went to the prefix |
+| `test_a_success_marker_exists_at_the_prefix` | parallel remote: a _SUCCESS marker object exists at the prefix |
+| `test_the_marker_went_to_the_prefix_as_a_put` | parallel remote: the marker went to the prefix as a PUT |
+| `test_the_per_worker_objects_read_back_as_the_generator` | parallel: the union of the per-worker objects == source |
+| `test_a_rerun_into_the_same_prefix_succeeds` | parallel: a re-run into the same prefix succeeds (overwrite) |
+| `test_the_four_worker_run_wrote_four_parts_and_a_marker` | shrink: the 4-worker run wrote 4 parts + marker |
+| `test_a_smaller_rerun_leaves_exactly_its_own_parts` | shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped) |
+| `test_the_larger_runs_stale_parts_are_gone` | shrink: parts 0002/0003 from the larger run are gone |
+| `test_the_marker_certifies_the_reconciled_prefix` | shrink: _SUCCESS certifies the reconciled prefix |
+| `test_a_worker_was_uploading_before_the_cancel` | premise: a worker was uploading before the cancel |
+| `test_all_four_uploads_were_open_before_the_cancel` | all four workers' uploads were open before the cancel -- an upload whose POST ?uploads is in flight is #1743's window |
+| `test_the_export_was_cancelled_not_completed` | premise: the export was cancelled, not completed |
+| `test_the_dispatcher_deleted_the_known_keys_on_cancel` | cancel: the dispatcher issued DELETE over the known keys |
+| `test_no_completed_object_remains_after_the_cancel` | cancel: no completed object remains at the prefix |
+| `test_no_success_marker_remains_after_the_cancel` | cancel: no _SUCCESS marker at the prefix |
+| `test_no_upload_stays_open_after_the_cancel` | cancel: the server holds no open upload under the prefix -- #1722: the workers the cancel terminates abort their uploads on the way out |
+| `test_terminated_workers_exit_while_the_store_is_silent` | terminate: export workers exit within 75 s while the store is silent -- #1727: each wait slice times out, so the 60 s quiet limit ends a worker's abort |
+
+## 332. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable
+
+The twin of `test/native_fetch_interrupt.sh`. It reads `src/columnar_reader.c` as the shell does: `pgcolumnar_fetch_row` carries a `CHECK_FOR_INTERRUPTS`, the check comes before the `pgcolumnar_lookup_row_group(` call it guards, and that helper is where `PgColumnarReadRowGroupList` is called. It needs no cluster and is listed in NO_CLUSTER.
+
+### Every test
+
+Every test makes one check under the shell's name. Each function body is taken from its signature to the first closing brace at column 0, with its comments blanked (multi-line ones too, newlines kept), so a call commented out is not a call. A missing file or function reads as an empty body, which fails every check.
+
+| test | what it holds |
+| --- | --- |
+| `test_fetch_row_carries_an_interrupt_check` | pgcolumnar_fetch_row carries an interrupt check |
+| `test_the_check_precedes_the_row_group_resolution` | the interrupt check precedes the row-group resolution |
+| `test_the_resolution_is_where_the_catalog_read_lives` | the row-group resolution is where the catalog read lives |
+
+## 333. test_objstore_module.py: the object-store module's packaging and loader, every refusal pinned
+
+The twin of `test/objstore_module.sh`. nm finds the module's entry point absent from `pgcolumnar.so` and present in `pgcolumnar_objstore.so`. An s3://, gs:// and https:// read are each refused with their own SQLSTATE and message (https:// by whether the module links libssl), a remote glob is listed remotely, a local file `export_parquet` wrote reads back through `read_parquet`, and a relative path is not taken for a URL. Then the installed module is moved: present, absent and broken are three different reports, each the same twice in one session.
+
+### Every test
+
+Every test makes one check under the shell's name, from one module fixture that takes a pristine copy of the module first and puts it back in its finally; the file runs alone, as the shell does. A refusal reads as `SQLSTATE: primary message`; a read that succeeded reads as a query_error. Counts are lines of the error text, as the shell's grep -c. With an ambient AWS_* in this process's environment (the session postmaster inherits it) the remote refusals decline UNMET_PRECONDITION; with the module unmovable the moving arms decline under the shell's skip name.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_restored_stash_is_a_module` | a stash restored over a missing module is a module -- the shell records it only when it fails, so it has no ledger row |
+| `test_the_main_library_is_installed` | the main library is installed |
+| `test_the_module_is_installed_beside_it` | the object-store module is installed BESIDE it, not inside it |
+| `test_the_entry_point_is_not_in_the_preloaded_library` | the module's entry point is NOT inside the preloaded library |
+| `test_the_entry_point_is_defined_in_the_module` | positive control: it IS defined in the module, so nm really looked |
+| `test_an_s3_url_reports_an_object_storage_error` | a s3 URL reports an object-storage error, not a missing file |
+| `test_an_s3_url_is_not_a_missing_file` | and the s3 URL is NOT reported as a missing file |
+| `test_a_gs_url_reports_an_object_storage_error` | a gs URL reports an object-storage error, not a missing file |
+| `test_a_gs_url_is_not_a_missing_file` | and the gs URL is NOT reported as a missing file |
+| `test_an_https_url_reports_an_object_storage_error` | a https URL reports an object-storage error, not a missing file |
+| `test_an_https_url_is_not_a_missing_file` | and the https URL is NOT reported as a missing file |
+| `test_a_star_glob_is_handled_remotely` | a remote glob (*) is handled remotely (an object-storage error, not a local one) |
+| `test_a_star_glob_is_not_a_local_miss` | and the * glob is NOT reported as a local filesystem miss |
+| `test_a_question_glob_is_handled_remotely` | a remote glob (?) is handled remotely (an object-storage error, not a local one) |
+| `test_a_question_glob_is_not_a_local_miss` | and the ? glob is NOT reported as a local filesystem miss |
+| `test_a_bracket_glob_is_handled_remotely` | a remote glob ([0-9]) is handled remotely (an object-storage error, not a local one) |
+| `test_a_bracket_glob_is_not_a_local_miss` | and the [0-9] glob is NOT reported as a local filesystem miss |
+| `test_a_local_path_still_works` | a local path still works |
+| `test_a_relative_path_is_not_a_url` | a relative path is not mistaken for a URL |
+| `test_present_both_reads_report_an_unhandled_scheme` | with the module present, both reads report an unhandled scheme |
+| `test_present_neither_claims_the_module_is_missing` | and neither claims the module is missing |
+| `test_premise_the_module_was_absent` | premise: the module really was absent while those two reads ran |
+| `test_premise_the_module_is_back` | premise: and the real module is back afterwards |
+| `test_absent_no_read_leaks_the_loader_error` | with the module absent, neither read leaks the loader's own error |
+| `test_absent_both_reads_name_the_missing_module` | both reads name the missing module, identically |
+| `test_absent_neither_downgrades_to_an_unhandled_scheme` | and neither downgrades it to an unhandled scheme |
+| `test_premise_the_module_is_corrupt` | premise: the module really is corrupt for this run, not merely intended to be |
+| `test_premise_the_module_was_restored` | premise: the real module was restored afterwards |
+| `test_broken_is_not_an_unhandled_scheme` | a broken module does NOT masquerade as an unhandled scheme |
+| `test_broken_is_not_a_module_never_installed` | nor as a module that was never installed |
+| `test_broken_keeps_the_loader_reason` | and the loader's own reason survives |
+
+## 334. test_phase2.py: compression, projection, zone maps and chunk-group filtering
+
+The twin of `test/phase2.sh`. A private database, built once by a module fixture in the shell's order: the phase 1 regression table, one table per codec, the too-small-to-compress fallback, nulls under lz4, projection, and 25000 sorted ints in three vectors whose zone maps are decoded from their bytes. Every expected value comes from the generator.
+
+### Every test
+
+Every test reads one value the fixture took and makes one check under the shell's name; the five per-codec tests are parametrized over the four codecs, named by the shell's own `$codec` template. A failed query is a query_error(), never text standing in for one.
+
+| test | what it holds |
+| --- | --- |
+| `test_count_star_reads_every_row` | count(*) |
+| `test_a_filtered_count_reads_the_matching_rows` | count where a<50 |
+| `test_order_by_limit_returns_the_first_three_rows` | order by a limit3 |
+| `test_a_column_with_no_nulls_reads_none` | no nulls t.b |
+| `test_a_codec_round_trips_every_row` (none, pglz, lz4, zstd) | {codec} count |
+| `test_a_codec_round_trips_the_ids` (each codec) | {codec} sum(id) |
+| `test_a_codec_round_trips_a_payload` (each codec) | {codec} payload ok |
+| `test_a_codec_round_trips_one_distinct_payload` (each codec) | {codec} distinct pl |
+| `test_the_codec_asked_for_is_the_block_codec_stored` (each codec) | {codec} block codec -- 0, 1, 2, 3 |
+| `test_a_value_too_small_to_compress_round_trips` | fallback value |
+| `test_a_value_too_small_to_compress_is_stored_with_codec_0` | fallback codec=0 |
+| `test_nulls_round_trip_under_lz4` | null rows |
+| `test_every_third_value_reads_null` | null count |
+| `test_a_null_reads_null` | null value |
+| `test_a_value_beside_nulls_reads_its_value` | nonnull val |
+| `test_projecting_a_reads_a` | project a |
+| `test_projecting_b_reads_b` | project b |
+| `test_projecting_c_reads_c` | project c |
+| `test_a_sum_over_one_projected_column` | project sum |
+| `test_projecting_two_columns_in_order` | project b,c |
+| `test_three_vectors_have_zone_maps` | vectors |
+| `test_every_zone_map_has_a_minimum_and_maximum` | minmax present |
+| `test_vector_0_minimum_is_1` | v0 min=1 |
+| `test_vector_0_maximum_is_10000` | v0 max=10000 |
+| `test_vector_2_maximum_is_25000` | v2 max=25000 |
+| `test_a_between_filter_returns_its_rows` | between count |
+| `test_a_range_filter_returns_its_bounds` | range min/max |
+| `test_a_point_lookup_returns_one_row` | point lookup |
+| `test_a_range_past_the_data_returns_none` | empty range |
+| `test_a_range_inside_the_last_vector_decodes_one_of_three` | range decodes 1 of 3 vectors |
+| `test_no_row_group_outlives_its_table` | orphan row groups |
+| `test_no_column_chunk_outlives_its_table` | orphan chunks |
+
+## 335. test_phase3.py: read-your-writes, DELETE, UPDATE, rollback, savepoints and temporary tables
+
+The twin of `test/phase3.sh`. A private database, built once by a module fixture in the shell's order. Statements the shell runs in one psql session run on one connection here, including the savepoint arms, where a statement meant to fail may fail only with division_by_zero (22012). Every expected value comes from the generator, except the nested-read arm's, which is heap's answer to the same statement on the same rows.
+
+### Every test
+
+Every test reads one value the fixture took and makes one check under the shell's name. A failed query, or a reading the session never reached, is a query_error(), never text standing in for one.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_regression_table_counts_every_row` | reg count |
+| `test_the_regression_table_filters` | reg filter a<100 |
+| `test_a_table_created_in_the_transaction_reads_its_rows` | ryw count |
+| `test_an_insert_is_read_by_its_own_transaction` | ryw sum |
+| `test_the_transaction_s_rows_persist` | ryw persisted |
+| `test_the_deleted_range_straddles_a_vector_boundary` | the deleted range straddles vectors 0 and 1 |
+| `test_a_delete_leaves_the_survivors` | delete count |
+| `test_deleted_rows_are_gone` | delete gone |
+| `test_the_deleted_range_s_neighbours_survive` | delete neighbors |
+| `test_the_table_s_bounds_survive` | delete boundaries |
+| `test_a_tail_delete_leaves_the_survivors` | delete tail count |
+| `test_a_tail_delete_lowers_the_maximum` | delete tail max |
+| `test_the_delete_vector_catalog_has_rows` | delete_vector rows>0 |
+| `test_the_delete_vector_catalog_counts_every_deletion` | delete_vector deleted |
+| `test_an_update_shows_the_new_value` | update value |
+| `test_an_update_changes_one_row` | update one row |
+| `test_an_update_keeps_the_row_count` | update count |
+| `test_a_key_update_removes_the_old_keys` | update key gone |
+| `test_a_key_update_writes_the_new_keys` | update key new |
+| `test_a_key_update_keeps_the_row_count` | update key total |
+| `test_a_bulk_update_keeps_the_row_count` | bulk update rows |
+| `test_a_bulk_update_rewrites_every_row` | bulk update sfx |
+| `test_the_rollback_table_starts_with_its_rows` | rb before |
+| `test_a_rolled_back_transaction_leaves_the_count` | rb after count |
+| `test_a_rolled_back_transaction_leaves_the_range` | rb after range |
+| `test_rollback_to_a_savepoint_keeps_the_work_before_it` | savepoint in-txn |
+| `test_rollback_to_a_savepoint_holds_after_commit` | savepoint final |
+| `test_an_insert_that_failed_inside_a_savepoint_leaves_nothing` | savepoint failed insert discarded |
+| `test_a_delete_that_failed_inside_a_savepoint_deletes_nothing` | savepoint failed delete discarded |
+| `test_the_failed_statements_leave_nothing_after_commit` | savepoint failed final |
+| `test_a_read_in_a_block_that_commits_into_an_aborted_one_sees_the_deletes` | savepoint nested read in a delete sees its deleted rows, as on heap |
+| `test_a_temporary_table_keeps_its_survivors` | temp survivors |
+| `test_a_temporary_table_s_deleted_rows_are_gone` | temp deleted |
+| `test_deletes_survive_their_transaction` | durable survivors |
+| `test_only_the_undeleted_rows_survive` | durable odd only |
+| `test_drop_removes_the_delete_vector_rows` | delete_vector cleaned |
+| `test_drop_removes_the_row_group_rows` | row group cleaned |
+
+## 336. test_phase4.py: btree and hash index reads through the index fetch, and refusals by SQLSTATE
+
+The twin of `test/phase4.sh`. On a private database it builds btree and hash indexes over columnar tables and reads them back, deletes and updates under an index, refuses unique, primary-key, NOT NULL and CHECK violations, converts a heap table to columnar and back, and plans a plain index scan for a covering query with pgcolumnar.enable_index_only_scan off. Every index read runs with seqscan, the columnar custom scan and the index-only scan off, so it goes through pgcolumnar_index_fetch_tuple; the plan checks assert that plan under the same settings.
+
+### Every test
+
+Every test makes one check under the shell's name, from readings a module fixture takes in the shell's order. A refusal is the SQLSTATE the statement failed with (23505, 23502, 23514); a lost connection carries none and is a query_error, never a match. A failed query is a query_error, never text.
+
+| test | what it holds |
+| --- | --- |
+| `test_btree_plan_is_index_scan` | btree plan is index scan |
+| `test_btree_point` | btree point |
+| `test_btree_range_count` | btree range count |
+| `test_btree_range_first` | btree range first |
+| `test_btree_miss` | btree miss |
+| `test_hash_plan_is_index_scan` | hash plan is index scan |
+| `test_hash_point` | hash point |
+| `test_hash_point2` | hash point2 |
+| `test_hash_miss` | hash miss |
+| `test_uq_initial` | uq initial |
+| `test_uq_cross_statement_duplicate_refused` | uq cross-stmt dup |
+| `test_uq_within_statement_duplicate_refused` | uq within-stmt dup |
+| `test_uq_unchanged` | uq unchanged |
+| `test_uq_new_row` | uq new row |
+| `test_uq_final_count` | uq final count |
+| `test_uq2_duplicate_refused` | uq2 dup |
+| `test_uq2_count` | uq2 count |
+| `test_not_null_refused` | not null reject |
+| `test_check_refused` | check reject |
+| `test_ck_unchanged` | ck unchanged |
+| `test_deleted_range_plan_is_index_scan` | deleted range plan is index scan |
+| `test_deleted_point` | deleted point |
+| `test_deleted_range` | deleted range |
+| `test_survivors_around` | survivors around |
+| `test_neighbor_present` | neighbor present |
+| `test_updated_old_gone` | updated old gone |
+| `test_updated_new_found` | updated new found |
+| `test_conv_starts_heap` | conv starts heap |
+| `test_conv_now_columnar` | conv now columnar |
+| `test_conv_col_count` | conv col count |
+| `test_conv_col_value` | conv col value |
+| `test_conv_col_sum` | conv col sum |
+| `test_conv_back_heap` | conv back heap |
+| `test_conv_heap_count` | conv heap count |
+| `test_conv_heap_value` | conv heap value |
+| `test_conv_heap_sum` | conv heap sum |
+| `test_ios_off_plain_index_scan` | IOS off: plain index scan |
+| `test_covering_value` | covering value |
+| `test_full_table_scan_available` | full-table scan available |
+
+## 337. test_phase6.py: vectorized aggregates and scans against a heap oracle, not only against themselves
+
+The twin of `test/phase6.sh`. On a private database a 50,000-row columnar table (five chunk groups) and a 30,000-row table with NULLs in independent patterns are read by aggregates, filtered aggregates, fallback aggregates and row scans, before and after a DELETE. Each query runs with pgcolumnar.enable_vectorization on, with it off, and against schema `oracle`, heap tables of the same names filled by the same generator and the same DELETE; all three must agree, and equal the known value where the shell names one.
+
+### Every test
+
+Every test makes one check under the shell's name, from readings a module fixture takes in the shell's order. Values are read in PostgreSQL's text format, columns joined by "|" as psql -qAt prints them; a failed query is a query_error, never text. The shell's timing block records no check and is not ported.
+
+| test | what it holds |
+| --- | --- |
+| `test_t_row_count` | row count |
+| `test_vectors_formed` | vectors formed |
+| `test_t_count_star` | count(*) |
+| `test_count_id` | count(id) |
+| `test_sum_id` | sum(id) |
+| `test_sum_smallint` | sum(smallint) |
+| `test_avg_id` | avg(id) |
+| `test_min_id_max_id` | min(id),max(id) |
+| `test_min_max_text` | min/max text |
+| `test_several_at_once` | several at once |
+| `test_count_filtered` | count filtered |
+| `test_sum_filtered` | sum filtered |
+| `test_avg_filtered` | avg filtered |
+| `test_min_max_filtered` | min/max filtered |
+| `test_filter_other_col` | filter other col |
+| `test_multi_predicate` | multi-predicate |
+| `test_full_table_scan` | full table scan |
+| `test_filtered_projected_scan` | filtered projected scan |
+| `test_filtered_scan_exact_value` | filtered scan exact value |
+| `test_filtered_scan_exact_count` | filtered scan exact count |
+| `test_count_with_nulls` | count(*) with nulls |
+| `test_count_a_skips_nulls` | count(a) skips nulls |
+| `test_sum_a_ignores_nulls` | sum(a) ignores nulls |
+| `test_avg_a_ignores_nulls` | avg(a) ignores nulls |
+| `test_min_max_a_with_nulls` | min/max(a) with nulls |
+| `test_min_max_txt_nulls` | min/max(txt) nulls |
+| `test_count_code_nulls` | count(code) nulls |
+| `test_filter_excludes_nulls` | filter excludes nulls |
+| `test_count_empty_result` | count empty result |
+| `test_sum_empty_is_null` | sum empty is null |
+| `test_min_empty_is_null` | min empty is null |
+| `test_sum_bigint_numeric` | sum(bigint)->numeric |
+| `test_avg_bigint_numeric` | avg(bigint)->numeric |
+| `test_sum_numeric` | sum(numeric) |
+| `test_avg_float8` | avg(float8) |
+| `test_sum_float8` | sum(float8) |
+| `test_ordered_set_agg` | ordered-set agg |
+| `test_string_agg_fallback` | string agg (fallback) |
+| `test_group_by_fallback` | group by (fallback) |
+| `test_count_distinct` | count distinct |
+| `test_count_after_delete` | count after delete |
+| `test_sum_after_delete` | sum after delete |
+| `test_scan_after_delete` | scan after delete |
+
+## 338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it
+
+The twin of `test/cancel_decode.sh`. On a private database, two 4,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
+
+### Every test
+
+Every test makes one check under the shell's name, reading what a module fixture measured in the shell's order. A cancel is SQLSTATE 57014 with the message "canceling statement due to statement timeout"; anything else is reported as what came back. One connection takes a cancel and then answers the three follow-up checks, and the crash check reads the server log once the server answers again.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_many_group_table_has_many_groups` | the many-group table has many groups |
+| `test_the_one_group_table_has_exactly_one_group` | the one-group table has exactly one group |
+| `test_the_scan_outlasts_the_timeout` | the scan outlasts the timeout, so a cancel is possible |
+| `test_a_scan_of_many_small_groups_is_cancelled` | a scan of many small groups is cancelled |
+| `test_a_scan_of_one_large_group_is_cancelled` | a scan of one large group is cancelled |
+| `test_cancel_latency_does_not_grow_with_row_group_size` | cancel latency does not grow with row group size |
+| `test_the_cancel_arrives_within_an_absolute_bound` | the cancel arrives within a generous absolute bound |
+| `test_the_session_is_usable_after_the_cancel` | the session is usable after the cancel |
+| `test_the_table_still_reads_correctly_after_the_cancel` | the table still reads correctly after the cancel |
+| `test_the_cancelled_predicate_returns_its_true_answer` | the cancelled predicate returns its true answer when allowed to finish |
+| `test_no_backend_crashed_while_the_scans_were_cancelled` | no backend crashed while the scans were cancelled |
+
+## 339. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards
+
+The twin of `test/decode_interrupts.sh`. A source-shape suite: a cancel cannot tell the decoders' interrupt checks apart at any scale CI can carry, so both twins read `src/columnar_encoding.c` and `src/columnar_reader.c`, with comments blanked, and require each check inside the loop it guards. It needs no cluster and is listed in NO_CLUSTER.
+
+### Every test
+
+Every test makes one check under the shell's name; the per-decoder pair is parametrized over the shell's own `$f` loop, so each runs once per decoder. A check counts only inside the braces of a for, while or foreach body, or of the loop whose header the arm names, walked character by character over the comment-blanked file.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_decode_interrupt_macro_exists` | the decode interrupt macro exists |
+| `test_the_macro_calls_check_for_interrupts` | the macro calls CHECK_FOR_INTERRUPTS |
+| `test_a_decoder_was_found` | `$f was found`, once for each of the nine decoders |
+| `test_a_decoder_checks_inside_a_loop` | `$f checks for interrupts`, once for each of the nine decoders, inside a loop body |
+| `test_decode_rle_inner_loop_was_found` | decode_rle's inner value loop was found |
+| `test_decode_rle_checks_in_its_value_loop` | decode_rle checks inside its value loop, not only around it |
+| `test_decode_fsst_shared_decode_loop_was_found` | decode_fsst_shared's decode loop was found |
+| `test_decode_fsst_shared_checks_in_its_decode_loop` | decode_fsst_shared checks inside its decode loop, not only in the table parse |
+| `test_the_stride_is_defined` | the stride is defined |
+| `test_the_stride_is_a_power_of_two` | the stride is a power of two |
+| `test_the_stride_is_not_too_large` | the stride is not so large that a check never lands |
+| `test_the_group_load_checks_per_column_chunk` | the group load checks for interrupts per column chunk |
+| `test_the_row_loop_checks_for_interrupts` | the row loop checks for interrupts |
+
+## 340. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value
+
+The twin of `test/decode_skip_interrupts.sh`. It writes the shell's Thrift skip-bomb footer (256 lists of 4.3e9 zero-byte bools in one unrecognised struct) and wants a 1 s statement_timeout to cancel parquet_schema() over it, by the timeout's own 57014, within 3 s, with no backend killed. av_skip's window is too small for a timeout to resolve, so both skip functions are also held by shape: an interrupt check before the switch, in the source with its comments blanked.
+
+### Every test
+
+Every test makes one check under the shell's name. The functional arm runs once in a module fixture on the shared cluster; the statement runs in a daemon thread abandoned after 30 s, as the shell's KILL abandons psql, and survival waits for SELECT 1 before reading the server log's crash count. The shape tests read src/ with `re`.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_thrift_skip_bomb_is_cancelled_by_the_timeout` | Thrift skip-bomb footer is cancellable, not an uninterruptible hang |
+| `test_the_cancel_lands_inside_the_skip_loop` | the cancel lands within 3 s of the statement's start under a 1 s timeout |
+| `test_the_backend_survived_the_skip_bomb` | backend survived the Thrift skip-bomb footer |
+| `test_thrift_skip_checks_for_interrupts_before_its_switch` | PgColumnarThriftSkip checks for interrupts |
+| `test_av_skip_checks_for_interrupts_before_its_switch` | av_skip checks for interrupts per element (before the switch, not just per block) |
+
+## 341. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop
+
+The twin of `test/native_cancel.sh`. One row group, one vector, one column of 16M values, so the whole table decodes in one load whose only inner interrupt point is COLUMNAR_DECODE_INTERRUPT. A statement_timeout of a quarter of the server's own load time must fire with its own 57014 and land in the lower half of the window between the timeout and a full load.
+
+### Every test
+
+Every test makes one check under the shell's name, in a private database, because the row-group premise counts a catalog every test shares. Each timing is a fresh connection plus the statement, as the shell times a psql; the cancel is the quickest of three that raised the timeout's error. Unlike the shell's check_timing, the twin's timing check has no PGC_SKIP_TIMING switch.
+
+| test | what it holds |
+| --- | --- |
+| `test_one_row_group` | one row group |
+| `test_the_load_outlasts_the_timeout` | premise: the load outlasts the timeout, so the timeout can fire during it |
+| `test_the_short_timeout_is_what_fired` | the short timeout is what fired |
+| `test_the_cancel_arrives_well_before_the_load_completes` | cancel arrives well before the load completes |

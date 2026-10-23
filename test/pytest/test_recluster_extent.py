@@ -26,6 +26,7 @@ from pgc_vacuity import query_error
 
 DB = "pgc_recluster_extent"
 BASE = 1500000
+DELETED = 1000     # rows deleted inside the rewrite's window (#1633)
 
 
 class _Db:
@@ -113,7 +114,11 @@ def re_(pgc_cluster):
             time.sleep(0.5)
         d.run(f"INSERT INTO t SELECT g, ((g::bigint * 7919) % 100000)::int, 'v' || g "
               f"FROM generate_series({BASE + 1}, {BASE + 50000}) g")
-        # asked again after the insert has committed: the rewrite must still be running
+        # and a DELETE in the same window (#1633): in the rewrite's listed work set,
+        # but gone before it reads, so it must not be written back
+        d.run(f"DELETE FROM t WHERE id <= {DELETED}")
+        # asked again after the insert and the delete have committed: the rewrite
+        # must still be running
         after = d.n(recl)
         th.join()
         r["during"] = ("yes" if held == 1 and after == 1
@@ -121,6 +126,8 @@ def re_(pgc_cluster):
                        else f"no (the rewrite had ended when the insert committed: {after})")
         r["retired"] = out["retired"]
         r["rows"] = d.n("SELECT count(*) FROM t")
+        r["dups"] = d.n("SELECT count(*) - count(DISTINCT id) FROM t")
+        r["deleted back"] = d.n(f"SELECT count(*) FROM t WHERE id <= {DELETED}")
         r["sorted"], r["appended"] = d.ss("sorted_rows"), d.ss("appended_rows")
         r["cover"] = d.q("SELECT (sorted_rows + appended_rows = (SELECT sum(rowcount) FROM pgcolumnar.stats('t')))::text "
                          "FROM pgcolumnar.sort_status('t')")
@@ -171,7 +178,17 @@ def test_the_concurrent_insert_was_not_in_the_work_set(re_, expect):
 
 
 def test_every_row_is_present_afterwards(re_, expect):
-    expect.num(re_["rows"], BASE + 50000, "every row is present afterwards")
+    expect.num(re_["rows"], BASE + 50000 - DELETED, "every row is present afterwards")
+
+
+def test_no_row_was_rewritten_and_also_kept(re_, expect):
+    # #1633: a row committed between the rewrite's listing and its read was read and
+    # rewritten, and its group was not retired, so it was kept twice
+    expect.num(re_["dups"], 0, "no row was rewritten and also kept")
+
+
+def test_a_row_deleted_during_the_rewrite_stays_deleted(re_, expect):
+    expect.num(re_["deleted back"], 0, "a row deleted during the rewrite stays deleted")
 
 
 def test_the_run_does_not_claim_rows_written_during_the_rewrite(re_, expect):
@@ -233,4 +250,4 @@ def test_an_uncontended_rewrite_claims_the_whole_relation(re_, expect):
 
 
 def test_an_uncontended_rewrite_counts_every_row_as_sorted(re_, expect):
-    expect.num(re_["final sorted"], BASE + 50000, "an uncontended rewrite counts every row as sorted")
+    expect.num(re_["final sorted"], BASE + 50000 - DELETED, "an uncontended rewrite counts every row as sorted")

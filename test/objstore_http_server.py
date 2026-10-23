@@ -13,6 +13,17 @@
 #   /stall/<file>    answer the first ranged GET's headers, send half the body,
 #                    then sleep: the cancel arm proves statement_timeout gets the
 #                    backend back while the transfer is wedged.
+#   /short/<file>    answer each ranged GET with an honest 206 one byte SHORT of
+#                    the range asked for (Content-Range and Content-Length agree):
+#                    the client must refuse the short body, never pad or use it.
+#   /trunc/<file>    answer each ranged GET's headers with the full length, send
+#                    half the body, then close: EOF mid-body is an error.
+#   /dropka/<file>   serve normally, but close the connection after every
+#                    response WITHOUT a Connection: close header: the client's
+#                    next request on it fails before a status line, and must be
+#                    retried once on a fresh connection (the keep-alive race).
+#   /hangup/<file>   close every connection without answering at all: on a fresh
+#                    connection that is the server's answer, not a race to retry.
 #
 # SigV4 verification mode (#393 M2): with --sigv4-key/--sigv4-secret/
 # --sigv4-region, every request must carry a valid AWS Signature Version 4
@@ -34,6 +45,7 @@ import os
 import re
 import ssl
 import sys
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -114,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
         # query never names a file.
         path = urllib.parse.unquote(self.path.partition("?")[0])
         mode = "normal"
-        for prefix in ("/norange/", "/stall/"):
+        for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -206,9 +218,15 @@ class Handler(BaseHTTPRequestHandler):
         self._log_line()
         if not self._sigv4_check():
             return
-        size = self._head_common(self._resolve()[1])
+        mode, local = self._resolve()
+        if mode == "hangup":
+            self.close_connection = True
+            return
+        size = self._head_common(local)
         if size < 0:
             return
+        if mode == "dropka":
+            self.close_connection = True
         self.send_response(200)
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
@@ -222,6 +240,18 @@ class Handler(BaseHTTPRequestHandler):
         # Fuzz hook: if <rootdir>/__listing_override__ exists, its raw bytes are
         # returned verbatim as the listing body, so a harness can feed the C
         # parser arbitrary (malformed) XML and check the backend survives.
+        #
+        # Status hook: if <rootdir>/__listing_status__ exists, its content is an
+        # HTTP status every listing is answered with, an empty body, so a harness
+        # can prove a failed LIST is refused rather than read as an empty prefix.
+        status = os.path.join(self.server.rootdir, "__listing_status__")
+        if os.path.exists(status):
+            with open(status) as f:
+                code = int(f.read().strip())
+            self.send_response(code)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         override = os.path.join(self.server.rootdir, "__listing_override__")
         if os.path.exists(override):
             with open(override, "rb") as f:
@@ -285,9 +315,14 @@ class Handler(BaseHTTPRequestHandler):
             self._do_list_v2(_query)
             return
         mode, local = self._resolve()
+        if mode == "hangup":
+            self.close_connection = True
+            return
         size = self._head_common(local)
         if size < 0:
             return
+        if mode == "dropka":
+            self.close_connection = True
 
         rng = self.headers.get("Range")
         m = RANGE_RE.match(rng.replace(" ", "")) if rng else None
@@ -313,6 +348,8 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        if mode == "short" and hi > lo:
+            hi -= 1
         n = hi - lo + 1
         with open(local, "rb") as f:
             f.seek(lo)
@@ -321,6 +358,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Range", "bytes %d-%d/%d" % (lo, hi, size))
         self.send_header("Content-Length", str(n))
         self.end_headers()
+        if mode == "trunc":
+            self.wfile.write(body[: n // 2])
+            self.wfile.flush()
+            self.close_connection = True
+            return
         if mode == "stall":
             self.wfile.write(body[: n // 2])
             self.wfile.flush()
@@ -330,6 +372,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
     # ---- write side (#394): plain PUT, and a faithful multipart emulation --
+    def _open_uploads(self):
+        # <rootdir>/__open_uploads__ lists the key of every upload created and
+        # neither completed nor aborted, one per line, rewritten on each change:
+        # the billable orphans a real store would keep. Call with uploads_lock.
+        root = self.server.rootdir
+        with open(os.path.join(root, "__open_uploads__"), "w") as f:
+            for up in self.server.uploads.values():
+                f.write(os.path.relpath(up["local"], root) + "\n")
+
     def _qdict(self):
         q = {}
         for part in self.path.partition("?")[2].split("&"):
@@ -349,6 +400,17 @@ class Handler(BaseHTTPRequestHandler):
             if up is None or up["local"] != local:
                 self._deny(404, "NoSuchUpload")
                 return
+            # Part-failure hook: if <rootdir>/__part_status__ exists, it holds
+            # "STATUS FROM": every part numbered FROM or above is answered with
+            # STATUS and not stored, so a harness can prove a failed part fails
+            # the export rather than completing a short object.
+            pstat = os.path.join(self.server.rootdir, "__part_status__")
+            if os.path.exists(pstat):
+                with open(pstat) as f:
+                    code, first = (int(x) for x in f.read().split())
+                if int(q["partNumber"]) >= first:
+                    self._deny(code, "InternalError")
+                    return
             up["parts"][int(q["partNumber"])] = self._body
             etag = hashlib.md5(self._body).hexdigest()
             self.send_response(200)
@@ -375,8 +437,11 @@ class Handler(BaseHTTPRequestHandler):
             # in the canonical query or its signature diverges. With this id the
             # multipart round trip passes ONLY if that encoding is correct
             # (#394 review turned from "unproven" to pinned).
-            uid = "up/%d+x" % (len(self.server.uploads) + 1)
-            self.server.uploads[uid] = {"local": local, "parts": {}}
+            with self.server.uploads_lock:
+                self.server.upload_seq += 1
+                uid = "up/%d+x" % self.server.upload_seq
+                self.server.uploads[uid] = {"local": local, "parts": {}}
+                self._open_uploads()
             body = ("<?xml version=\"1.0\"?><InitiateMultipartUploadResult>"
                     "<UploadId>%s</UploadId>"
                     "</InitiateMultipartUploadResult>" % uid).encode()
@@ -386,13 +451,32 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if "uploadId" in q:
-            up = self.server.uploads.pop(q["uploadId"], None)
-            if up is None or up["local"] != local:
-                self._deny(404, "NoSuchUpload")
-                return
+            # As S3 does, the object is the parts the request LISTS, in order,
+            # each checked against its stored ETag; an unlisted part is
+            # dropped, and a listed part that was never stored fails the
+            # complete and leaves the upload open (abortable).
+            listed = [(int(n), e.replace(b"&quot;", b"").strip(b'"')) for n, e in re.findall(
+                rb"<PartNumber>\s*(\d+)\s*</PartNumber>\s*<ETag>([^<]*)</ETag>",
+                self._body)]
+            with self.server.uploads_lock:
+                up = self.server.uploads.get(q["uploadId"])
+                if up is None or up["local"] != local:
+                    self._deny(404, "NoSuchUpload")
+                    return
+                nums = [n for n, _ in listed]
+                if not listed or nums != sorted(set(nums)):
+                    self._deny(400, "InvalidPartOrder" if listed else "MalformedXML")
+                    return
+                for n, e in listed:
+                    if n not in up["parts"] or (e and e.decode() !=
+                                                hashlib.md5(up["parts"][n]).hexdigest()):
+                        self._deny(400, "InvalidPart")
+                        return
+                del self.server.uploads[q["uploadId"]]
+                self._open_uploads()
             os.makedirs(os.path.dirname(local), exist_ok=True)
             with open(local, "wb") as f:
-                for n in sorted(up["parts"]):
+                for n, _ in listed:
                     f.write(up["parts"][n])
             body = b"<?xml version=\"1.0\"?><CompleteMultipartUploadResult/>"
             self.send_response(200)
@@ -409,7 +493,10 @@ class Handler(BaseHTTPRequestHandler):
         q = self._qdict()
         _, local = self._resolve()
         if "uploadId" in q:
-            up = self.server.uploads.pop(q["uploadId"], None)
+            with self.server.uploads_lock:
+                up = self.server.uploads.pop(q["uploadId"], None)
+                if up is not None:
+                    self._open_uploads()
             if up is None:
                 self._deny(404, "NoSuchUpload")
                 return
@@ -454,6 +541,8 @@ def main():
     srv.vhost_base = args.virtual_host_base
     srv.list_page_size = args.list_page_size
     srv.uploads = {}
+    srv.uploads_lock = threading.Lock()
+    srv.upload_seq = 0
     open(args.log, "a").close()
     # Readiness marker for the suite: print once the socket is bound.
     print("READY", flush=True)

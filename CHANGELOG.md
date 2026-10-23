@@ -417,6 +417,15 @@ true until the next version shipped.
   each, `stats()` read 104 blocks of the table and `sort_status()` 170. Each now reads
   the storage id once: 1 block (#1637). `test/catalog_filter_reads.sh` and
   `test_catalog_filter_reads.py`.
+- **`pgcolumnar.recluster` no longer duplicates rows inserted while it waits for
+  its groups.** The online recluster listed the groups it would retire, then
+  locked them and read the table under a later snapshot, and retired only the
+  groups it had listed. A row committed in between, including while the recluster
+  waited for another session's group lock, sat in a group it never listed: it was
+  read and rewritten, and its own group was kept, so the row appeared twice. The
+  rewrite now reads only the groups it listed. A row written in that window stays
+  where it is and is counted as appended, and a row deleted in that window stays
+  deleted (#1633). `test/recluster_extent.sh` and `test_recluster_extent.py`.
 - **A NOLOGIN role can run `parallel_export_parquet`, `parallel_copy` and the
   parallel flush on PostgreSQL 15 and 16.** After `SET ROLE` to a role without
   LOGIN, the export failed `worker 0 failed: worker exited without reporting a

@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 68
+suites_not_covered 28
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -6132,4 +6132,801 @@ suites_not_covered 68
 #     never         4192 + 4 = 4196
 #     dated         2952 + 9 = 2961
 #     4196 + 2961 == 7157
-checks_never_observed_red 4196
+#
+# #1341, native_lazy_slot seeded, with its twin (OffgridwithJD): 4196 -> 4199,
+# and suites_not_covered 68 -> 67. The suite had no rows. It enters with its 10
+# checks from five-major runs (all green on each of 15-19, shell and twin alike), after two
+# fixes. The heap mirror was a copy of lz_c, read through the reader under test, so a value
+# the writer stored wrong was wrong on both sides: with the writer storing c40 off by one,
+# main passed 10/10. It is now written from the generator, and that mutant reddens four
+# checks. And five comparisons read `q ... | tail -1` and compared with check, so two failed
+# reads agreed, and a failed timing read as fast: with the server stopped after setup, six
+# checks passed on main. Each side's failure now carries its side's name, and a failed
+# timing is no reading. 7 are dated by four mutations, each reddening the same names in
+# both twins. 3 arrive never.
+#
+#     ledger rows   7157 + 10 = 7167
+#     never         4196 + 3 = 4199
+#     dated         2961 + 7 = 2968
+#     4199 + 2968 == 7167
+#
+# #1341, native_metadata_flush seeded, with its twin (OffgridwithJD): 4199 -> 4201,
+# and suites_not_covered 67 -> 66. The suite had no rows. It enters with 8 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes,
+# each measured on main's shell, which passed all six under it. A witness that counted
+# nothing (zerocount, opens=0 for every flush) passed both open-count checks, since 0 equals
+# 0 and 0 is small: a floor now wants at least the three tables every flush writes. The heap
+# mirror was copied from the columnar table, so a writer storing a wrong value
+# (writecorrupt) agreed with itself: it is now written from the generator. Nothing showed
+# the zone rows were read, since the reader also rules vectors out by value after decoding:
+# a check now wants a vector ruled out by its zone row alone (Skipped minus Ruled Out by
+# Value), and zone rows with no min/max (zonenull) redden it. And the witness check was
+# labelled a premise though a flush that never begins its session (nosession) reddens it,
+# so it lost the prefix (#1339). 6 are dated by five mutations, each the same names in
+# both twins. 2 arrive never: the row count and the range read against the heap mirror.
+#
+#     ledger rows   7167 + 8 = 7175
+#     never         4199 + 2 = 4201
+#     dated         2968 + 6 = 2974
+#     4201 + 2974 == 7175
+#
+# #1341, native_late_materialization seeded, with its twin (OffgridwithJD): 4201 -> 4203, and
+# suites_not_covered 66 -> 65. The suite had no rows. It enters with 14 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# Every counter defaulted to 0 when it could not be read, and four checks want exactly
+# 0: with the server stopped before the feature-off arm, "with the feature off nothing
+# is filtered early" and "a volatile qual is refused the two-pass path" passed on main.
+# An unread counter is now "no reading". And five checks a one-line pgcolumnar change
+# reddens (the custom scan off by default, the early counter dropped, a survivor
+# rejected, a writer that drops one row) lost the prefix; the two fixture premises
+# now read the heap mirror h, which pgcolumnar does not write (jdatcmd's #1691
+# review). 12 are dated by seven mutations, each reddening the same names in both
+# twins: dropseven (pgcolumnar_tuple_insert drops the row whose id is 7) dates "heap
+# agrees on how many rows match", the executor's own Rows Removed by Filter and the
+# two answer checks with the feature off and refused, which no mutation of the
+# late-materialization path reaches. 2 arrive never: the two fixture premises.
+# Building a rejected row's payload anyway (matall) reddens nothing: no counter
+# reports per-row materialization.
+#
+#     ledger rows   7175 + 14 = 7189
+#     never         4201 + 2 = 4203
+#     dated         2974 + 12 = 2986
+#     4203 + 2986 == 7189
+#
+# #1341, native_reclaim_reconcile seeded, with its twin (OffgridwithJD): 4203 -> 4210,
+# and suites_not_covered 65 -> 64. The suite had no rows. It enters with its 13
+# checks from five-major runs (all green on each of 15-19, shell and twin alike), after two
+# fixes. Every reconcile check counted only the injected stale row, so a reconcile that
+# dropped EVERY free row, leaking all reusable space, passed 11/11 on main. A plain compact
+# (which does not reuse) must now keep the legitimate free ranges the earlier rewrite left,
+# as count and bytes, and "compact_rewrite recorded the free ranges it left" checks that
+# one exists. It is not a premise (jdatcmd's #1692 review): the ranges exist only because
+# pgcolumnar recorded them, and nofree (record_free_space drops its insert, one line)
+# reddens it alone. And "row count intact" compared two
+# readings with plain check: with the server stopped before it, main passed it on two
+# empty strings. It is check_num now. The reuse-cycle loop is unrolled so its two names are
+# literals. 6 are dated by three mutations, each reddening the same names in both twins.
+# 7 arrive never.
+#
+#     ledger rows   7189 + 13 = 7202
+#     never         4203 + 7 = 4210
+#     dated         2986 + 6 = 2992
+#     4210 + 2992 == 7202
+#
+# #1341, native_page_offset_bound seeded, with its twin (OffgridwithJD): 4210 -> 4212, and
+# suites_not_covered 64 -> 63. The suite had no rows. It enters with 12 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# Every refusal arm counted any psql failure as refused: with the whole-group guard
+# removed the backend segfaulted and the arm still passed, and with the projected
+# guard removed a later XX001 passed it. Each now wants XX001 with the guard's own
+# message. Survival was a bare SELECT 1, which answers again after crash recovery:
+# with the probe 4s late, main passed both whole-group survival arms with the backend
+# killed. It now also reads the server log's crash count. And nothing read an intact
+# table, so a guard over-applied to refuse every chunk (overall) or a legal chunk
+# ending exactly at its group end (offby1) passed all 10: two controls now read rows
+# behind an OFFSET 0 fence, which an aggregate over an intact table would not decode.
+# 10 are dated by four mutations, each reddening the same names in both twins. With
+# the whole-group guard removed, whether the read segfaults or fails decoding depends
+# on where it lands; its three refusal checks are red either way. 2 arrive never:
+# the two projected survival arms, which no mutation crashes.
+#
+#     ledger rows   7202 + 12 = 7214
+#     never         4210 + 2 = 4212
+#     dated         2992 + 10 = 3002
+#     4212 + 3002 == 7214
+#
+# #1341, native_param_pushdown seeded, with its twin (OffgridwithJD): 4212 -> 4216, and
+# suites_not_covered 63 -> 62. The suite had no rows. It enters with 10 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# With the PARAM_EXEC guard removed (freezeexec) the correlated arm still answered 3002:
+# Begin freezes before any outer row sets the param, and "ts >= <its initial value>"
+# prunes nothing. The arm now reads the scan's Usable Skip Predicates and asks the upper
+# bound too, where that frozen value prunes every group. Every arm ran one execution per
+# session, so a value frozen once and reused (staleparam) passed; two executions in one
+# session now each count and prune with their own value. And survival was a bare
+# SELECT 1, green on main with a backend SIGKILLed; it now reads the crash count.
+# 6 are dated by four mutations, each reddening the same names in both twins. 4
+# arrive never: the literal count, the rescan premise, the lower-bound correlated answer
+# and survival (red only under the harness kill).
+#
+#     ledger rows   7214 + 10 = 7224
+#     never         4212 + 4 = 4216
+#     dated         3002 + 6 = 3008
+#     4216 + 3008 == 7224
+#
+# #1341, native_sort_by seeded, with its twin (OffgridwithJD): 4216 -> 4230, and
+# suites_not_covered 62 -> 61. The suite had no rows. It enters with 23 rows: 20 checks
+# run on every major, two virtual-column checks run on 18-19, and their skip recorded
+# on 15-17, all green in shell and twin alike on each of 15-19, after two fixes.
+# The physical order was never read: group skipping on host was the only evidence of a
+# sort, and a rewrite that applied only the first key (ts left unordered) passed 16/16 on
+# main. The rows are now read in scan order and every adjacent pair is compared on (host,
+# ts), with a premise that the inserted order is not already sorted, and the explicit-
+# column sort must lay the rows out as the declared key does. And every refusal counted
+# any psql failure: a backend aborting in place of the no-key refusal passed its own
+# check, a crash in place of the virtual-column refusal passed 18/18 on PG18, and a
+# dropped declared column given the generic message passed. Each refusal now wants its
+# guard's SQLSTATE and message, and a new check reads the server log's crash count. 9
+# are dated by the mutations, each reddening the same names in both twins. 14 arrive
+# never: the premise, the virtual arm's skip on 15-17, and the checks no measured
+# mutation reaches.
+#
+#     ledger rows   7224 + 23 = 7247
+#     never         4216 + 14 = 4230
+#     dated         3008 + 9 = 3017
+#     4230 + 3017 == 7247
+#
+# #1341, native_rewrite seeded, with its twin (OffgridwithJD): 4230 -> 4241,
+# and suites_not_covered 61 -> 60. The suite had no rows. It enters with its 20
+# checks from five-major runs (all green on each of 15-19, shell and twin alike), after four
+# fixes. Rewriting every undeleted group, or ignoring min_deleted_fraction, passed all 17 on
+# main: two checks now hold the threshold from both sides. vacuum without its index rebuild
+# passed too: stale entries land on every live row once over the whole table, so a count
+# and a hash through the index both matched; a narrow index range read now catches it
+# (id 4097 read back as 6146). The four counts compared two readings with plain check, and
+# "unique constraint still enforced" took any psql failure: with the server stopped after
+# the rewrite, four checks passed on main. Counts are check_num and the refusal wants
+# 23505 and n_id_uq's message. 9 are dated by five mutations of the rewrite, each
+# reddening the same names in both twins. 11 arrive never.
+#
+#     ledger rows   7247 + 20 = 7267
+#     never         4230 + 11 = 4241
+#     dated         3017 + 9 = 3026
+#     4241 + 3026 == 7267
+#
+# #1341, native_zonemap seeded, with its twin (OffgridwithJD): 4241 -> 4259, and
+# suites_not_covered 60 -> 59. The suite had no rows. It enters with 23 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The bounds were checked for presence and width only, and every column ascended, so a
+# vector's first value was always its minimum: with a vector max never raised past its
+# first value, a min never lowered, or a chunk max never folded past its first vector,
+# main passed 18/18. v is now a permutation (values, nulls and counts unchanged), and
+# four checks decode each bound of id, k and v and compare it with the heap's for its
+# group and vector. And three checks compared two readings with check: with the server
+# stopped they passed on two empty strings; they are now check_num. 5 are dated by
+# four mutations, each reddening the same names in both twins. 18 arrive never.
+#
+#     ledger rows   7267 + 23 = 7290
+#     never         4241 + 18 = 4259
+#     dated         3026 + 5 = 3031
+#     4259 + 3031 == 7290
+#
+# #1341, native_zonemap_session seeded, with its twin (OffgridwithJD): 4259 -> 4259,
+# and suites_not_covered 59 -> 58. The suite had no rows. It enters with 13 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# "nested columnar scans each hold their own handle" compared only the join's count, which
+# a shared handle still answers correctly: with one static session shared across scans,
+# the first implementation's defect, main passed it. It is now the witness, each scan
+# reporting its own groups opened once, and the count is a check of its own. The three scans
+# around the aborted one must also each probe exactly their own groups. Three premises that
+# a one-line pgcolumnar change reddens lost the prefix (#1339), and a new check holds zs2
+# to more than one group, which a writer ignoring stripe_row_limit fails. The third is
+# "the fixture has more than one chunk group" (jdatcmd's #1698 review): it reads the
+# writer's row_group catalog, and optx100 (a writer that multiplies stripe_row_limit by
+# 100) reddens it. All 13 are dated by seven mutations, each reddening the same names in
+# both twins; none arrives never. The re-resolved index oid columnar_metadata.c documents
+# is not counted by any witness here: with it restored the suite stays 13/13, stated
+# rather than claimed.
+#
+#     ledger rows   7290 + 13 = 7303
+#     never         4259 + 0 = 4259
+#     dated         3031 + 13 = 3044
+#     4259 + 3044 == 7303
+#
+# #1341, native_zonemap_narrow seeded, with its twin (OffgridwithJD): 4259 -> 4259,
+# and suites_not_covered 58 -> 57. The suite had no rows. It enters with 6 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after one fix.
+# Nothing showed a group was skipped: the pruning check read only the answer, so a scan
+# that read the zone maps but never excluded a group, or never consulted them, returned
+# the same 1000 rows, and main passed all four checks under each. Two checks now read the
+# scan's Columnar Chunk Groups Removed by Filter (9 of 10, on each table), and the width
+# check refuses an unread count rather than comparing two blanks. 6 are dated by four
+# mutations, each reddening the same names in both twins. 0 arrive never.
+#
+#     ledger rows   7303 + 6 = 7309
+#     never         4259 + 0 = 4259
+#     dated         3044 + 6 = 3050
+#     4259 + 3050 == 7309
+#
+# #1341, native_vecdecode seeded, with its twin (OffgridwithJD): 4259 -> 4269,
+# and suites_not_covered 57 -> 56. The suite had no rows. It enters with 28 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The fixture had no nulls, so a fold that ignored the validity bitmap (nonull) passed all
+# 24 on main: a nullable column w now runs through the fold and through a scalar parity
+# check. "decoded plus skipped is the group's vectors" read missing counters as 0, so with
+# the plans failing it passed as 0 + 0 = 0, and two aggregate parities compared two empty
+# readings: with the server stopped before the plans main passed 3, now none. And nine
+# "premise:" checks read pgcolumnar's own behaviour, so they lost the prefix (#1339):
+# nofold reddens the three "reaches the fold" checks, decodeall the fold arm's decode
+# count, noskip "the narrow range skips vectors"; and (jdatcmd's #1700 review) noscan,
+# the custom scan off by default, reddens the two plan-shape checks, "no whole group is
+# pruned" and "the wide range skips none", while optdiv100, a writer that divides the
+# table's stripe_row_limit by 100, reddens "one row group". 18 are dated by seven
+# mutations, each the same names in both twins; noscan also dates "EXPLAIN reports
+# Columnar Vectors Decoded", "and it is not stuck at zero" and the control. The poison
+# check is dated by holeread, whose hole is zero-filled so a fold that reads it counts
+# rows that are not there on a non-assert build too. 10 arrive never: the heap-side
+# nulls premise and nine parity checks with heap.
+#
+#     ledger rows   7309 + 28 = 7337
+#     never         4259 + 10 = 4269
+#     dated         3050 + 18 = 3068
+#     4269 + 3068 == 7337
+#
+# #1341, native_parquet_fieldid seeded, with its twin (OffgridwithJD): 4269 -> 4271,
+# and suites_not_covered 56 -> 55. The suite had no rows. It enters with 11 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The refusal arms read only the SQLSTATE, and four refusals share 22023: with the 'no field
+# ids' guard removed (noanyid) an id-less file fell to the absent-id refusal and main passed
+# 11/11. Each arm now wants its own guard's message. And survival was a bare SELECT 1: with
+# the absent-id refusal turned into abort() it passed after crash recovery, and the crash took
+# five later refusal arms with it. Survival now reads the server log's count of killed
+# backends, and every reading waits for the server first, so a crash fails only its own arm
+# and survival. 9 are dated by five mutations, each the same names in both twins. 2
+# arrive never.
+#
+#     ledger rows   7337 + 11 = 7348
+#     never         4269 + 2 = 4271
+#     dated         3068 + 9 = 3077
+#     4271 + 3077 == 7348
+#
+# #1341, native_parquet_codecs seeded, with its twin (OffgridwithJD): 4271 -> 4278,
+# and suites_not_covered 55 -> 54. The suite had no rows. It enters with 14 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# Every codec was compared with c_none.parquet read back through read_parquet, the reader
+# under test: with one decoded byte flipped in every page over 4 KB, the same way for
+# every codec, main passed all nine checks. Each file now decodes to the generator's rows,
+# built in SQL. Each file's codec is read from its own metadata (a crafter that wrote every
+# file uncompressed passed main 9/9). And survival reads the server log's crash count: with
+# the crafted-size guard aborting and the probe 3 s late, main's bare SELECT 1 passed. 7
+# are dated by four mutations, each reddening the same names in both twins. 7 arrive
+# never: the four codec premises read pyarrow's metadata, not pgcolumnar, and the FDW counts
+# hold under each mutation.
+#
+#     ledger rows   7348 + 14 = 7362
+#     never         4271 + 7 = 4278
+#     dated         3077 + 7 = 3084
+#     4278 + 3084 == 7362
+#
+# #1341, native_parquet_units seeded, with its twin (OffgridwithJD): 4278 -> 4285,
+# and suites_not_covered 54 -> 53. The suite had no rows. It enters with 20 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The pushdown oracle was the two-group millis file read back through read_parquet, the
+# reader under test: with every row after a page's first taking the next dictionary
+# entry, the scan and the mirror shifted alike and main passed 19/19. The oracle is now
+# the generator's hourly series, and a new check compares the whole file with it. The two
+# nanos truncation checks compared the file with a second file read the same way, so
+# with the server stopped both passed on two empty reads; they now want the toward-zero
+# microseconds as literals. 13 are dated by four mutations, each reddening the same
+# names in both twins. 7 arrive never.
+#
+#     ledger rows   7362 + 20 = 7382
+#     never         4278 + 7 = 4285
+#     dated         3084 + 13 = 3097
+#     4285 + 3097 == 7382
+#
+# #1341, native_parquet_projection seeded, with its twin (OffgridwithJD): 4285 -> 4287,
+# and suites_not_covered 53 -> 52. The suite had no rows. It enters with 17 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The oracle h was read_parquet of the same file, and read_parquet shares the scan's
+# decoders: with a text decoder dropping a byte, or an INT64 decoder off by one, main passed
+# 15/15. h is now built in SQL from the crafter's generator. And no table had a dropped
+# column, so a projection matching the needed set by target index rather than attribute
+# number passed 15/15; ftd drops a column ahead of the others and must still read exactly
+# the column asked for. 15 are dated by five mutations, each reddening the same names in
+# both twins. 2 arrive never: projection [a] and the unselected-qual hash, which no
+# mutation reached.
+#
+#     ledger rows   7382 + 17 = 7399
+#     never         4285 + 2 = 4287
+#     dated         3097 + 15 = 3112
+#     4287 + 3112 == 7399
+#
+# #1341, native_parquet_hardening seeded, with its twin (OffgridwithJD): 4287 -> 4289,
+# and suites_not_covered 52 -> 51. The suite had no rows. It enters with 18 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes,
+# each measured on main's shell on PG17. The short-chunk verdict matched any 'has a malformed
+# row group', which five guards raise: with the chunk-count guard removed a later guard
+# rejected the file and main passed 18/18; it now wants this guard's detail. The 'still
+# reads' arms counted rows: a date, time or timestamp decoded one unit off passed 18/18; they
+# now compare the decoded values. The no-wrap arm counted -25536 in the in-range file, which
+# never holds 40000, so it could not fail; it now reads the out-of-range file, which must
+# refuse. And survival was a bare SELECT 1: with the chunk refusal turned into abort() and the
+# probe 5 s late it passed; it now reads the server log's count of killed backends, and every
+# reading waits for the server. The range refusals also want their own type's message, since
+# four share 22008. 16 are dated by eleven mutations, each the same names in both twins. 2
+# arrive never.
+#
+#     ledger rows   7399 + 18 = 7417
+#     never         4287 + 2 = 4289
+#     dated         3112 + 16 = 3128
+#     4289 + 3128 == 7417
+#
+# #1341, native_parquet_stack seeded, with its twin (OffgridwithJD): 4289 -> 4289,
+# and suites_not_covered 51 -> 50. The suite had no rows. It enters with 8
+# checks from five-major runs (all green on each of 15-19, shell and twin alike). The footer
+# parser has two independent unbounded recursions, PgColumnarThriftSkip and walk_schema,
+# each guarded by check_stack_depth(); the fixture pins max_stack_depth so a ~20 KB crafted
+# footer trips the guard without overflowing the real C stack, so removing a guard fails the
+# check by a wrong SQLSTATE rather than by crashing. The two refusal checks pin 54001, not
+# any error, and read_parquet is held to the same refusal. 4 are dated: the nested-struct
+# and read_parquet refusals by removing the thrift guard, the schema-chain refusal by removing
+# the walk guard, and the valid-file control by a guard that trips on any nesting. The four
+# survival checks were a bare SELECT 1, which answers again once crash recovery is over, and
+# the twin's read_parquet survival test never read the file (jdatcmd's #1708 review). Each
+# arm now takes a crash baseline right before its trigger, every reading waits for the
+# server, and survival wants SELECT 1 and an unchanged count of "terminated by signal" in the
+# server log, so a crash fails only its own arm. An abort() at each input's decode site dates
+# them: thriftabort (PgColumnarThriftSkip aborts where its guard would raise) the
+# nested-struct and read_parquet survivals, walkabort (the same in walk_schema) the
+# schema-chain survival, validabort (walk_schema aborts on entry) the valid-file survival.
+# All 8 are dated; none arrives never.
+#
+#     ledger rows   7417 + 8 = 7425
+#     never         4289 + 0 = 4289
+#     dated         3128 + 8 = 3136
+#     4289 + 3136 == 7425
+#
+# #1341, native_parquet_streaming seeded, with its twin (OffgridwithJD): 4289 -> 4304,
+# and suites_not_covered 50 -> 49. The suite had no rows. It enters with 20 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after one fix measured
+# on main's shell on PG17: survival was a bare SELECT 1, so with the second-dictionary refusal
+# turned into abort() 'backend survived the crafted page areas' passed, and the crash also
+# failed the v2 arm read during recovery. Survival now reads the server log's count of killed
+# backends since its section began, and every reading waits for the server first. As hardening,
+# the two refusals that accepted any ERROR now want the page loop's own decode refusal; no
+# mutant here separated them. The v2 level guard stays unisolated, as the suite's header
+# argues. 5 are dated by five mutations, each the same names in both twins. 15 arrive
+# never.
+#
+#     ledger rows   7425 + 20 = 7445
+#     never         4289 + 15 = 4304
+#     dated         3136 + 5 = 3141
+#     4304 + 3141 == 7445
+#
+# #1341, native_parquet_partition seeded, with its twin (OffgridwithJD): 4304 -> 4310,
+# and suites_not_covered 49 -> 48. The suite had no rows. It enters with 35 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The pruning reader defaulted to 0 on any failure, so with the server stopped the three
+# 'prunes nothing' checks passed on no reading; 'Files Pruned' prints only above 0, so a
+# missing line now counts as 0 only beside the plan's Files line. The refusals took any
+# error: with the unknown-column guard removed (nocolcheck) a later 42804 stood in, and with
+# the explicit encoded-NUL guard removed (nonul) the encoding check's 22021 did, main 35/35
+# each; every refusal now wants its own message. And survival was a bare SELECT 1, which
+# an abort() in the unknown-column refusal passed with the probe 5 s late; it now reads the
+# server log's crash count. 29 are dated by six mutations, each the same names in both
+# twins. 6 arrive never.
+#
+#     ledger rows   7445 + 35 = 7480
+#     never         4304 + 6 = 4310
+#     dated         3141 + 29 = 3170
+#     4310 + 3170 == 7480
+#
+# #1341, native_parquet_fdw seeded, with its twin (OffgridwithJD): 4310 -> 4320,
+# and suites_not_covered 48 -> 47. The suite had no rows. It enters with 20 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes.
+# Projection and row-group skipping were never read: every arm compared answers, which the
+# executor's recheck and a discarding projection keep right, so with every column decoded
+# (noproj) or no group skipped (noskip) main passed 14/14. Two checks now read the scan's
+# EXPLAIN ANALYZE counters, over a 200,000-row file of four row groups. The refusal arms
+# accepted any psql failure: with the scan's missing-path guard removed (nopathguard) the
+# backend crashed and main passed, and with the short-file guard removed (nolen) the
+# bad-magic guard refused instead and main passed. Each arm now wants its own guard's
+# SQLSTATE and message, and a survival check reads the server log's count of killed
+# backends. The oracle is a heap table written from the generator, and the self-join counts
+# are check_num, since two failed reads agreed. The skipped scan's row count read a plain
+# int4 constant, a cross-type comparison that skips nothing (#1712), so it came from a full
+# scan (jdatcmd's #1711 review); it now runs the plan's own int8 query, and skipshift (each
+# group's skip decision moved to the next group, still 3 skipped) dates it. 10 are dated by
+# eight mutations, each the same names in both twins. 10 arrive never.
+#
+#     ledger rows   7480 + 20 = 7500
+#     never         4310 + 10 = 4320
+#     dated         3170 + 10 = 3180
+#     4320 + 3180 == 7500
+#
+# #1341, native_read_parquet seeded, with its twin (OffgridwithJD): 4320 -> 4324,
+# and suites_not_covered 47 -> 46. The suite had no rows. It enters with 15 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The round trips compared read_parquet with the source table, which the columnar scan
+# reads both to write the file and as the oracle: with the columnar reader returning
+# int4 777 as 778 (columnar_reader.c, store_att_byval), main passed 12/12. Every round trip now hashes the generator's own rows. The refusals
+# counted any psql failure: with the scalar physical-type guard removed, main passed
+# 12/12; each refusal now requires its SQLSTATE and its own message, and a survival check
+# reads the crash count. read_parquet's own pg_read_server_files gate was never tested:
+# with it removed, main passed 12/12; a role holding USAGE but not the role is now refused
+# by it, beside a member that reads every row. 11 are dated by five mutations, each
+# reddening the same names in both twins. 4 arrive never, among them "premise: reject
+# missing column definition list", which reads PostgreSQL's parser (42601), not pgcolumnar.
+#
+#     ledger rows   7500 + 15 = 7515
+#     never         4320 + 4 = 4324
+#     dated         3180 + 11 = 3191
+#     4324 + 3191 == 7515
+#
+# #1341, objstore_listing seeded, with its twin (OffgridwithJD): 4324 -> 4328,
+# and suites_not_covered 46 -> 45. The suite had no rows. It enters with 15 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The two non-progress refusals share 08P01 and read only the SQLSTATE: the no-keys page
+# replays its token, so with the progress check removed (noprogress) the token check refused
+# it on the next page and main passed 12/12. Each refusal now wants its own guard's message.
+# No check made a LIST fail, so a non-2xx read as an empty prefix (non200empty) passed 12/12;
+# the fixture server gained a __listing_status__ hook and a check wants the HTTP status
+# refusal (08006). The exact-key 'no LIST' count read a log nothing proved alive; a control
+# now wants the key's own GET in it. A survival check reads the server log's count of killed
+# backends, and every refusal waits for the server first. 11 are dated by seven mutations,
+# each the same names in both twins. 4 arrive never.
+#
+#     ledger rows   7515 + 15 = 7530
+#     never         4324 + 4 = 4328
+#     dated         3191 + 11 = 3202
+#     4328 + 3202 == 7530
+#
+# #1341, native_rewrite_conc seeded, with its twin (OffgridwithJD): 4328 -> 4330,
+# and suites_not_covered 45 -> 44. The suite had no rows. It enters with 11 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# Nothing tested that the online rewrite does not block: with compact_rewrite under
+# AccessExclusiveLock (ael) the workers simply waited and main passed 5/5. A compact_rewrite
+# now holds its lock mid-verb (pgcolumnar.maintenance_hold_ms) while a reader and a writer,
+# each with a 3 s lock_timeout, must finish. And the race was assumed, not shown: a new check
+# requires the compactor to have moved rows while the workers wrote. 9 are dated by four
+# mutations, each the same names in both twins (noconflict on 3 of 3 runs). 2 arrive never.
+#
+#     ledger rows   7530 + 11 = 7541
+#     never         4328 + 2 = 4330
+#     dated         3202 + 9 = 3211
+#     4330 + 3211 == 7541
+#
+# #1341, objstore_addressing seeded, with its twin (OffgridwithJD): 4330 -> 4335,
+# and suites_not_covered 44 -> 43. The suite had no rows. It enters with 16 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The gs:// no-endpoint check passed whenever the message did not name AWS_ENDPOINT_URL, so a
+# mistyped default host (gswrongdef) passed 12/12; it now requires the allow-list refusal naming
+# storage.googleapis.com:443. No key needed URI-encoding, so a space sent as '+' (plusspace) or
+# '+'/'=' left bare (plusraw) passed 12/12; a key "dir sp/a+b=c.parquet" is now read under both
+# addressings and its request path checked in the fixture's log. 11 are dated by seven
+# mutations, each the same names in both twins. 5 arrive never. Neither pgc_skip name
+# (pyarrow, the virtual-host name) gets a row: CI emits neither.
+#
+#     ledger rows   7541 + 16 = 7557
+#     never         4330 + 5 = 4335
+#     dated         3211 + 11 = 3222
+#     4335 + 3222 == 7557
+#
+# #1341, objstore_stash_recovery seeded, with its twin (OffgridwithJD): 4335 -> 4344,
+# and suites_not_covered 43 -> 42. The suite had no rows. It enters with 18 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# "and it did not stop at the start guard" counted 'interrupted mid-move', the refusal's
+# text before #393's fix, which nothing prints any more: with the guard turned back into a
+# refusal, eight checks went red and it stayed green. The debris was a byte-identical copy,
+# so a guard that restored every stash over the installed module passed 17/17; the debris
+# is now a different valid module and the installed one is compared with the pristine copy.
+# Both restore slices parked the module at .away, so a guard that walked .away alone passed
+# 17/17; the only-copy slice now parks it at .probe. Each slice also starts from the
+# pristine copy, so one slice's damage no longer reddens the next one's premises.
+# 9 are dated by four mutations of objstore_module.sh's guard, each reddening the same
+# names in both twins. 9 arrive never.
+#
+#     ledger rows   7557 + 18 = 7575
+#     never         4335 + 9 = 4344
+#     dated         3222 + 9 = 3231
+#     4344 + 3231 == 7575
+#
+# #1341, objstore_s3_read seeded, with its twin (OffgridwithJD): 4344 -> 4348,
+# and suites_not_covered 42 -> 41. The suite had no rows. It enters with 17 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after these fixes.
+# The no-environment and 403 refusals read a bare 28000, which five guards share: with s3://
+# falling back to a default host (noepreq) the region guard refused instead and main passed
+# 12/12. Each refusal now names its cause. Region handling was never tested: dropping the
+# AWS_DEFAULT_REGION fallback, swapping its precedence, signing us-east-1 when no region is set,
+# or signing with an empty secret each passed 12/12, and four checks now pin them. Nothing
+# read the crash count, and an abort() in abort cleanup passed every SQLSTATE check (main's
+# shell exited FATAL on the restart with no red): survival now reads the server log. The https
+# check's name interpolated the build's want, so the grader could not read it. 13 are dated
+# by twelve mutations, each the same names in both twins. 4 arrive never. Neither the
+# pyarrow pgc_skip name nor the optional real-S3 check gets a row: CI emits neither.
+#
+#     ledger rows   7575 + 17 = 7592
+#     never         4344 + 4 = 4348
+#     dated         3231 + 13 = 3244
+#     4348 + 3244 == 7592
+#
+# #1341, objstore_tls_read seeded, with its twin (OffgridwithJD): 4348 -> 4355,
+# and suites_not_covered 41 -> 40. The suite had no rows. It enters with 29 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes.
+# A refusal was any 08006 plus a reason grepped anywhere in the output: with the module
+# speaking cleartext to the TLS port (httpfall), main's three "refused with 08006" checks
+# passed; each refusal now also wants the module's own TLS message naming the URL, and the
+# whole DETAIL, OpenSSL's reason for that certificate. A self-signed leaf had no arm; it has
+# one now. Trust from SSL_CERT_DIR was never read: with only SSL_CERT_FILE honoured
+# (nocadir), main passed 19/19; arm E restarts with SSL_CERT_DIR alone and reads the good
+# server. Nothing read the server log: with abort() in place of the verification refusal,
+# the crash also reddened the next arm's premise and D, and "returned no rows" passed; each
+# refusal now waits for SELECT 1, and a survival check counts "terminated by signal".
+# 22 are dated by six mutations, each the same names in both twins. 7 arrive never.
+# Neither pgc_skip name (pyarrow, openssl) gets a row: CI emits neither.
+#
+#     ledger rows   7592 + 29 = 7621
+#     never         4348 + 7 = 4355
+#     dated         3244 + 22 = 3266
+#     4355 + 3266 == 7621
+#
+# #1341, objstore_http_read seeded, with its twin (OffgridwithJD): 4355 -> 4363,
+# and suites_not_covered 40 -> 39. The suite had no rows. It enters with 24 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike). Main's arm C took
+# the SQLSTATE alone, so a dropped Range-ignored guard (noguard200) passed on 08P01 from
+# "unexpected HTTP status 200"; each refusal now also needs its own guard's message. Short
+# 206 bodies, EOF mid-body and the keep-alive retry had no fixture: noshort, eofok, noretry
+# and alwaysretry each passed 18/18 on main. The fixture server gains /short/, /trunc/,
+# /dropka/ and /hangup/ modes, inert unless a path names them, and a survival check reads
+# the crash count after waiting for the server. 16 are dated by ten mutations, each the
+# same names in both twins. 8 arrive never. The pgc_skip name (pyarrow) gets no row:
+# CI does not emit it.
+#
+#     ledger rows   7621 + 24 = 7645
+#     never         4355 + 8 = 4363
+#     dated         3266 + 16 = 3282
+#     4363 + 3282 == 7645
+#
+# #1341, objstore_sink_write seeded, with its twin (OffgridwithJD): 4363 -> 4387,
+# and suites_not_covered 39 -> 38. The suite had no rows. It enters with 35 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after five fixes.
+# The fixture server completed an upload from every stored part, whatever the complete listed,
+# so dropping the last part from the list (droplist) passed 30/30; it now assembles the listed
+# parts, each checked against its ETag, as S3 does. No check made a part fail, so a refused
+# part read as stored (partok) passed 30/30; a __part_status__ hook and four checks want the
+# part check's own 58030, no key and no open upload. Abort was read from the DELETE count, so
+# an abort naming the wrong upload (abortwrongid) passed 30/30; the server now keeps its open
+# uploads and two checks want none. The Arrow arm read only export_arrow > 0 (green under
+# shortput); the object is imported back. Every oracle is the generator, not the scanned
+# table, and each refusal wants its own guard's message. 11 are dated by eight mutations,
+# each the same names in both twins. 24 arrive never.
+#
+#     ledger rows   7645 + 35 = 7680
+#     never         4363 + 24 = 4387
+#     dated         3282 + 11 = 3293
+#     4387 + 3293 == 7680
+#
+# #1722, a cancelled remote parallel export aborts its workers' uploads (OffgridwithJD):
+# 3907 -> 3907. One check joins objstore_sink_write, red first on all five majors in both
+# twins: after the cancel the fixture server still held 4 open multipart uploads under cx/,
+# because SIGTERM ends each worker in FATAL, which never unwinds to the writers' PG_CATCH
+# and its sink abort. It is dated by dropping the new before_shmem_exit registration, which
+# reddens it by name in both twins.
+#
+#     ledger rows   7680 + 1 = 7681
+#     never         4387 + 0 = 4387
+#     dated         3293 + 1 = 3294
+#     4387 + 3294 == 7681
+#
+# #1727's review (jdatcmd): two more checks. os_wait passed no WL_TIMEOUT, so
+# WaitLatchOrSocket ignored its 5 s slice and a silent store never counted a quiet slice;
+# under proc_exit interrupts are held, so a worker SIGTERM ended stayed in its abort until
+# the store answered (all four alive at +92 s). "terminate: export workers exit within
+# 75 s while the store is silent" stops the fixture mid-upload and times the workers'
+# exit: red without WL_TIMEOUT (4 left after 91 s, both twins), 61 s with it; that
+# pre-fix wait dates it. And the cancel arm now cancels only once all four uploads are
+# registered on the server, "all four workers' uploads were open before the cancel": an
+# upload whose POST ?uploads was in flight is #1743's window, and it flaked the
+# open-upload check in CI. It is not a premise: a sink that never flushes a part (no
+# export opens a multipart upload, one line) reddens it, which dates it.
+#
+#     ledger rows   7681 + 2 = 7683
+#     never         4387 + 0 = 4387
+#     dated         3294 + 2 = 3296
+#     4387 + 3296 == 7683
+#
+# #1341, native_fetch_interrupt seeded, with its twin (OffgridwithJD): 4387 -> 4387,
+# and suites_not_covered 38 -> 37. The suite had no rows. It enters with 3 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after one fix: the
+# checks read the function bodies with their comments in them, so the guard written as
+# /* CHECK_FOR_INTERRUPTS(); */, or folded into the comment above it, passed 3/3 on main, and so
+# did the lookup's catalog read commented out. Both bodies now have their comments blanked,
+# newlines kept. All 3 are dated by three mutations, each the same names in both twins; none arrive never.
+#
+#     ledger rows   7683 + 3 = 7686
+#     never         4387 + 0 = 4387
+#     dated         3296 + 3 = 3299
+#     4387 + 3299 == 7686
+#
+# #1341, objstore_module seeded, with its twin (OffgridwithJD): 4387 -> 4409,
+# and suites_not_covered 37 -> 36. The suite had no rows. It enters with 30 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The remote-read checks took any of seven phrases, "is not supported" among them: with the
+# module no longer handling s3://, gs:// or (built with OpenSSL) https://, main passed 30/30.
+# Each URL's refusal is now pinned by SQLSTATE and message, the https one by whether the
+# module links libssl. "a local path still works" counted a columnar table, which never
+# reaches read_parquet's dispatch: with every local read_parquet refused, main passed 30/30.
+# It now reads back a file export_parquet wrote. 8 are dated by seven mutations, each the
+# same names in both twins. 22 arrive never. The unmovable-module skip gets no row: CI
+# emits none. Nor does the start guard's failure, now under a literal name the twin
+# reads every run (one extra test): green runs never record it.
+#
+#     ledger rows   7686 + 30 = 7716
+#     never         4387 + 22 = 4409
+#     dated         3299 + 8 = 3307
+#     4409 + 3307 == 7716
+#
+# #1341, phase2 seeded, with its twin (OffgridwithJD): 4409 -> 4434,
+# and suites_not_covered 36 -> 35. The suite had no rows. It enters with 47 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The codec loop round-tripped each codec and never read which one was stored, since the
+# native conversion dropped the 2.2 catalog's check and left $code computed for nothing:
+# with the session's setting ignored, or no block codec ever applied, all 42 passed. Each
+# codec now reads its block_codec (four checks). The filter checks held with the zone
+# maps ruling out nothing, because exact selection returns the same rows; a range inside
+# the last vector must now decode one of the three (one check).
+# 22 are dated by seven mutations of the write path, the compression fallback, the zone
+# maps and the drop cleanup, each reddening the same names in both twins. 25 arrive never.
+#
+#     ledger rows   7716 + 47 = 7763
+#     never         4409 + 25 = 4434
+#     dated         3307 + 22 = 3329
+#     4434 + 3329 == 7763
+#
+# #1341, phase3 seeded, with its twin (OffgridwithJD): 4434 -> 4465,
+# and suites_not_covered 35 -> 34. The suite had no rows. It enters with 37 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# Its savepoint arm rolled back only completed statements, whose buffers executor end had
+# already flushed under the subtransaction, so the abort's xmin verdict hid them (#1441):
+# with the savepoint's discard of pending writes or pending deletes removed, all 32 passed.
+# An INSERT and a DELETE that fail partway inside a savepoint must now leave nothing, in
+# the transaction and after it (three checks). The delete arm said its range straddled a
+# vector boundary and nothing read one: with 16384-row vectors all 32 passed; the zone
+# maps' maxima are now read (one check). And a DELETE whose RETURNING reads the table in
+# a block that commits into one that aborts must see the rows deleted so far, as heap
+# does: with the commit not handing the read's written marks to the parent, no later
+# read wrote them again, and the reads summed 19999 against heap's 14950 (one check).
+# 6 are dated by six mutations of the subtransaction callback, the vector size and the
+# drop cleanup, each reddening the same names in both twins. 31 arrive never.
+#
+#     ledger rows   7763 + 37 = 7800
+#     never         4434 + 31 = 4465
+#     dated         3329 + 6 = 3335
+#     4465 + 3335 == 7800
+#
+# #1341, phase4 seeded, with its twin (OffgridwithJD): 4465 -> 4490,
+# and suites_not_covered 34 -> 33. The suite had no rows. It enters with 39 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after these fixes.
+# A refusal passed on any failure: a unique check raising XX000 instead of 23505 passed both
+# duplicate arms (dirtyerr, 38/38 on main), and a backend that died on the duplicate passed
+# as rejected (bufcrash). Each refusal now asserts its SQLSTATE. The point reads ran with only
+# enable_seqscan off, so they planned the columnar custom scan and never reached the index
+# fetch: an index fetch handing back the next row's values passed every hash and btree point
+# read (fetchshift, 37/38). They now read under the plan checks' settings, and a new check
+# asserts the delete-vector reads plan a plain index scan. 14 are dated by five mutations,
+# each the same names in both twins. "uq unchanged" was first dated by bufcrash, but only as
+# a crash's collateral (a read during recovery, jdatcmd's #1723 review); dirtyskip (the index
+# fetch returns nothing to a dirty snapshot, so the unique check never sees the existing
+# row) keeps the server up and reddens it on its own, and dates "uq final count" and "uq2
+# count" too. 25 arrive never.
+#
+#     ledger rows   7800 + 39 = 7839
+#     never         4465 + 25 = 4490
+#     dated         3335 + 14 = 3349
+#     4490 + 3349 == 7839
+#
+# #1341, phase6 seeded, with its twin (OffgridwithJD): 4490 -> 4528,
+# and suites_not_covered 33 -> 32. The suite had no rows. It enters with 43 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after this fix.
+# Every aggregate and scan check compared vectorization on with vectorization off, and
+# both read the same columnar decode. 21 of its 39 queries plan the same either way, so
+# those compared a path with itself. A float decode that changed one value per vector
+# passed 43/43 (floatbit), and a text decode that changed one byte per vector reddened
+# only min/max text (textw). Each query is now also run against a heap oracle built by
+# the same generator. 5 are dated by two mutations, each the same names in both
+# twins. 38 arrive never.
+#
+#     ledger rows   7839 + 43 = 7882
+#     never         4490 + 38 = 4528
+#     dated         3349 + 5 = 3354
+#     4528 + 3354 == 7882
+#
+# #1341, cancel_decode seeded, with its twin (OffgridwithJD): 4528 -> 4531,
+# and suites_not_covered 32 -> 31. The suite had no rows. It enters with 11 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after three fixes.
+# The three after-the-cancel checks each opened a new psql, so they read a backend that had
+# never been cancelled: with a flag the group load sets and a cancel leaves set, the next
+# scan in that backend raised an ERROR (stalestate) or called abort() (stalecrash), and main
+# passed 10/10 under both; one session now takes the cancel and then answers all three. A
+# crash was not looked for: a new check counts "terminated by signal" in the server log once
+# the server answers again. And a cancel was any output containing "canceling statement"; it
+# is now SQLSTATE 57014 with the timeout's own message. 8 are dated by five mutations, each
+# the same names in both twins. 3 arrive never: the three fixture checks (the two group counts and the
+# scan outlasting the timeout), which no product mutation here moves.
+#
+#     ledger rows   7882 + 11 = 7893
+#     never         4528 + 3 = 4531
+#     dated         3354 + 8 = 3362
+#     4531 + 3362 == 7893
+#
+# #1341, decode_interrupts seeded, with its twin (OffgridwithJD): 4531 -> 4531,
+# and suites_not_covered 31 -> 30. The suite had no rows. It enters with 29 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# Every check read the source with its comments in it: with decode_for's call or the macro's
+# own CHECK_FOR_INTERRUPTS() written as a comment, main passed 29/29; both files are now read
+# with comments blanked. And presence in a function stood for presence in its loop: with
+# decode_for's check hoisted in front of its loop (where it runs once), decode_rle's or
+# decode_fsst_shared's moved below the loop it guarded, either reader check moved in front of
+# its loop, or any of six other decoders' checks hoisted to the top of the body, main
+# passed 29/29; a check now counts only inside the braces of a loop body, or of the named
+# loop where placement is the point. 29 are dated by 30 mutations, each the same names in
+# both twins. 0 arrive never. No cluster, so the twin moves guard_tests.
+#
+#     ledger rows   7893 + 29 = 7922
+#     never         4531 + 0 = 4531
+#     dated         3362 + 29 = 3391
+#     4531 + 3391 == 7922
+#
+# #1341, decode_skip_interrupts seeded, with its twin (OffgridwithJD): 4531 -> 4531,
+# and suites_not_covered 30 -> 29. The suite had no rows. It enters with 5 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after four fixes.
+# Survival was a fresh SELECT 1, which answers once crash recovery is over: with abort()
+# in the list arm (thriftcrash) it passed; it now counts "terminated by signal" since the
+# scenario began. The cancel was any 57014: a guard that refused the list under the cancel
+# code (fakecancel) passed; it now wants the timeout's own message. With the interrupt
+# check moved into the struct arm (thriftstruct), the cancel still came, after a whole
+# 4.3e9-element list (7 s), inside the 30 s cap, and the shape count still read 1: main
+# passed 4/4. A new check wants the cancel within 3 s of a 1 s timeout, and the Thrift
+# shape now counts before the switch, as av_skip's does. Both shape counts read comments:
+# with av_skip's check commented out (avcomment) main passed 4/4; comments are blanked now.
+# 5 are dated by eight mutations, each the same names in both twins. 0 arrive never.
+#
+#     ledger rows   7922 + 5 = 7927
+#     never         4531 + 0 = 4531
+#     dated         3391 + 5 = 3396
+#     4531 + 3396 == 7927
+#
+# #1341, native_cancel seeded, with its twin (OffgridwithJD): 4531 -> 4533,
+# and suites_not_covered 29 -> 28. The suite had no rows. It enters with 4 checks
+# from five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# The table had two columns, so load_group's per-chunk interrupt check fell at half the
+# load: with COLUMNAR_DECODE_INTERRUPT a no-op (nodecode) the cancel landed there, 90 ms
+# against a 172 ms load and a 106 ms limit, and main passed 4/4, the opposite of what
+# its own header claimed. The table is now one column of 16M values, so every per-chunk
+# check falls before the decode. The timeout's error is now pinned by SQLSTATE too, and
+# the cancel is the quickest of three that each raised it, so a refused connection
+# during crash recovery cannot read as an early cancel.
+# 2 are dated by four mutations, each the same names in both twins. 2 arrive never:
+# the row-group premise and the load-outlasts-the-timeout premise.
+#
+#     ledger rows   7927 + 4 = 7931
+#     never         4531 + 2 = 4533
+#     dated         3396 + 2 = 3398
+#     4533 + 3398 == 7931
+# #1633, recluster_online duplicated rows written between its group listing and its
+# read (OffgridwithJD): 4533 -> 4532, and suites_not_covered stays. The rewrite
+# listed the groups it would retire, then locked them and read under a later
+# snapshot, and retired only what it listed, so a row committed in between was
+# rewritten and kept. recluster_extent's hold now sits between the listing and the
+# read, and a DELETE joins the insert inside it. Two checks are new: "no row was
+# rewritten and also kept", dated by the fix reverted (50000 duplicates), and "a row
+# deleted during the rewrite stays deleted", dated by a read under the listing's
+# snapshot (all 1000 come back). "every row is present afterwards" was never and is
+# now dated by the fix reverted.
+#
+#     ledger rows   7931 + 2 = 7933
+#     never         4533 - 1 = 4532
+#     dated         3398 + 3 = 3401
+#     4532 + 3401 == 7933
+checks_never_observed_red 4532

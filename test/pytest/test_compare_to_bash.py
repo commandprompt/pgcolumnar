@@ -204,6 +204,7 @@ COMPLETE = ["advisory_lock_class",
             "arrow_import",
             "autovacuum_expire",
             "base_scan_io",
+            "cancel_decode",
             "bench_guards",
             "catalog_delete_index",
             "catalog_filter_reads",
@@ -213,8 +214,10 @@ COMPLETE = ["advisory_lock_class",
             "column_extent",
             "corruption",
             "debug_hook_privilege",
+            "decode_interrupts",
             "differential",
             "encode_post_codec",
+            "decode_skip_interrupts",
             "entry_point_privilege",
             "fk_referencing",
             "format_downgrade",
@@ -236,6 +239,7 @@ COMPLETE = ["advisory_lock_class",
             "native_backend_crash",
             "native_batch_fold_projection",
             "native_bloom",
+            "native_cancel",
             "native_chunk_length_bound",
             "native_ctas",
             "native_cluster",
@@ -253,6 +257,7 @@ COMPLETE = ["advisory_lock_class",
             "native_fetch_bigcap",
             "native_fetch_cache",
             "native_fetch_coalesce",
+            "native_fetch_interrupt",
             "native_fetch_group_memo",
             "native_fetch_position",
             "native_fetch_projection",
@@ -268,39 +273,72 @@ COMPLETE = ["advisory_lock_class",
             "native_ios",
             "native_join_runtime_filter",
             "native_join_vector_agg",
+            "native_late_materialization",
+            "native_metadata_flush",
+            "native_lazy_slot",
             "native_ownership",
+            "native_parquet_codecs",
+            "native_page_offset_bound",
             "native_parquet_dict_oob",
+            "native_parquet_fieldid",
             "native_parquet_flba",
+            "native_parquet_hardening",
             "native_parquet_multifile",
+            "native_parquet_fdw",
+            "native_parquet_partition",
+            "native_parquet_streaming",
             "native_parquet_pushdown",
+            "native_parquet_projection",
+            "native_param_pushdown",
             "native_parquet_schema",
+            "native_parquet_stack",
+            "native_parquet_units",
             "native_projection",
+            "native_read_parquet",
             "native_reclaim",
             "native_reclaim_cycles",
             "native_reclaim_frag",
+            "native_rewrite_conc",
+            "native_reclaim_reconcile",
             "native_recluster",
+            "native_rewrite",
             "native_repack",
             "native_roundtrip",
             "native_saop_pushdown",
             "native_skip",
+            "native_sort_by",
             "native_toasted_write",
             "native_truncate",
             "native_upgrade_converge",
             "native_vacuum_race",
             "native_varlena_bound",
+            "native_vecdecode",
             "native_vecskip",
+            "native_zonemap_narrow",
+            "native_zonemap_session",
             "native_writer",
+            "objstore_addressing",
+            "native_zonemap",
             "objstore_allowlist",
             "objstore_credentials",
             "objstore_crlf",
+            "objstore_module",
+            "objstore_http_read",
+            "objstore_tls_read",
+            "objstore_s3_read",
+            "objstore_stash_recovery",
+            "objstore_listing",
             "objstore_userinfo",
             "parallel_am_scan",
             "parallel_scan_cost",
             "partition_lifecycle",
+            "phase6",
             "partition_rows",
+            "phase4",
             "partman_columnar",
             "pg_dump_roundtrip",
             "pg_upgrade",
+            "phase2",
             "prepared_across_sessions",
             "prepared_writes",
             "projection_drop_column",
@@ -310,6 +348,7 @@ COMPLETE = ["advisory_lock_class",
             "projection_scan_io",
             "projection_update",
             "projections",
+            "phase3",
             "recovery",
             "recovery_minimal_wal",
             "replication",
@@ -363,6 +402,11 @@ INCOMPLETE = {
     # having no SKIP verdict for an arm a run chooses not to make, does not carry.
     "large_values": "the 1 MB to 200 MB round trips and the TOASTed-update arms are "
                     "ported; the opt-in chunk-over-1-GB refusal is not",
+    # #1341's remote sink: the opt-in real-S3 arms (PGC_S3_INTEGRATION_ENDPOINT, never
+    # set in CI) need an S3 implementation this layer does not start, and it has no
+    # SKIP verdict for an arm a run chooses not to make.
+    "objstore_sink_write": "every arm against the SigV4 fixture server is ported; the "
+                           "two opt-in real-S3 integration arms are not",
 }
 
 
@@ -1142,16 +1186,21 @@ def test_the_extractor_reads_every_recorder_lib_sh_defines(expect):
     # well-formed"` -- so the extractor reads their shape as a template from
     # `parallel_copy.sh` itself while the 12 labels the suite supplies go unread. The
     # behaviour list is the one that matters for the queue: `sorted_pathkeys.sh`
-    # defines `ans` and `ansp` and loses 19 of its 113 names, and `phase6.sh` loses 39
-    # of 43. Filed rather than fixed here: this change is about the recorders `lib.sh`
-    # shares, and widening both populations at once would make the removal proof
-    # unreadable.
+    # defines `ans` and `ansp` and loses 19 of its 113 names. (`phase6.sh` was listed
+    # here as losing 39 of 43; its `eq_on_off` is read now, and test_phase6.py grades
+    # all 43, #1341.) Filed rather than fixed here: this change is about the recorders
+    # `lib.sh` shares, and widening both populations at once would make the removal
+    # proof unreadable.
+    direct_call = re.compile(r'\bpgc_record\s+[A-Z]')
     direct = sorted(sh.name[:-3] for sh in HERE.parent.glob("*.sh")
                     if sh.name != "lib.sh"
-                    and re.search(r'\bpgc_record\s+[A-Z]', _strip_comments(sh.read_text())))
-    expect.at_least(len(direct), 1,
-                    "premise: some suite does call pgc_record directly, so this is "
-                    "not vacuous")
+                    and direct_call.search(_strip_comments(sh.read_text())))
+    # The corpus no longer has a suite that calls pgc_record directly (phase6.sh was
+    # the last, #1341), so the arm below cannot lean on one being there. A planted
+    # line proves the detector still finds such a call, wherever the corpus stands.
+    planted = 'pgc_record PASS "$suite" "$part" "a planted name"\n'
+    expect.num(1 if direct_call.search(_strip_comments(planted)) else 0, 1,
+               "control: the detector finds a planted direct pgc_record call")
     twinned = sorted(d for d in direct if (HERE / f"test_{d}.py").exists())
     expect.text(", ".join(twinned) or "none", "none",
                 "no suite calling pgc_record directly has a twin, so excluding the "
@@ -1375,8 +1424,8 @@ def test_the_suite_local_helpers_are_known_and_excluded(expect):
     adds one again reddens this arm, which is what says the grader cannot see it.
 
     The population is `check_<something>`, which is not the same as "starts with
-    check": `checks_in` in `decode_interrupts.sh` is a COUNTING utility returning a
-    number of interrupt checks in a function body, and records nothing. It was in
+    check": `checks_in`, which `decode_interrupts.sh` had until #1341, was a COUNTING
+    utility returning a number of interrupt checks in a function body, and recorded nothing. It was in
     this list until the arm printed it and the definition was read.
     """
     root = HERE.parent
