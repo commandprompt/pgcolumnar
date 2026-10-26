@@ -2544,19 +2544,35 @@ PgColumnarRenameDeclaredSortByColumn(Oid relid, const char *oldName,
 	}
 	if (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		bool		isnull;
-		Datum		d = heap_getattr(tuple, Anum_options_sort_by, tupdesc, &isnull);
+		/*
+		 * #1309: sketch_columns holds names for the same reason sort_by does, so
+		 * a rename follows into it too, or the writer would stop sketching the
+		 * column without a word. Both arrays change in the one tuple update.
+		 */
+		int			attnos[2] = {Anum_options_sort_by, Anum_options_sketch_columns};
+		int			nattnos = (tupdesc->natts >= Anum_options_sketch_columns) ? 2 : 1;
+		Datum		values[Natts_options];
+		bool		nulls[Natts_options];
+		bool		replace[Natts_options];
+		bool		any = false;
+		int			a;
 
-		if (!isnull)
+		memset(values, 0, sizeof(values));
+		memset(nulls, false, sizeof(nulls));
+		memset(replace, false, sizeof(replace));
+		for (a = 0; a < nattnos; a++)
 		{
-			ArrayType  *arr = DatumGetArrayTypeP(d);
+			bool		isnull;
+			Datum		d = heap_getattr(tuple, attnos[a], tupdesc, &isnull);
 			Datum	   *elems;
 			bool	   *elnulls;
 			int			n;
 			int			i;
 			bool		hit = false;
 
-			deconstruct_array(arr, NAMEOID, NAMEDATALEN, false, 'c',
+			if (isnull)
+				continue;
+			deconstruct_array(DatumGetArrayTypeP(d), NAMEOID, NAMEDATALEN, false, 'c',
 							  &elems, &elnulls, &n);
 			for (i = 0; i < n; i++)
 			{
@@ -2569,27 +2585,24 @@ PgColumnarRenameDeclaredSortByColumn(Oid relid, const char *oldName,
 					hit = true;
 				}
 			}
-
-			/* a rename touching no declared column must not rewrite the row */
 			if (hit)
 			{
-				Datum		values[Natts_options];
-				bool		nulls[Natts_options];
-				bool		replace[Natts_options];
-				HeapTuple	newTuple;
-
-				memset(values, 0, sizeof(values));
-				memset(nulls, false, sizeof(nulls));
-				memset(replace, false, sizeof(replace));
-				values[Anum_options_sort_by - 1] =
+				values[attnos[a] - 1] =
 					PointerGetDatum(construct_array(elems, n, NAMEOID,
 													NAMEDATALEN, false,
 													TYPALIGN_CHAR));
-				replace[Anum_options_sort_by - 1] = true;
-				newTuple = heap_modify_tuple(tuple, tupdesc, values, nulls, replace);
-				CatalogTupleUpdate(rel, &newTuple->t_self, newTuple);
-				heap_freetuple(newTuple);
+				replace[attnos[a] - 1] = true;
+				any = true;
 			}
+		}
+
+		/* a rename touching no declared column must not rewrite the row */
+		if (any)
+		{
+			HeapTuple	newTuple = heap_modify_tuple(tuple, tupdesc, values, nulls, replace);
+
+			CatalogTupleUpdate(rel, &newTuple->t_self, newTuple);
+			heap_freetuple(newTuple);
 		}
 	}
 	systable_endscan(scan);

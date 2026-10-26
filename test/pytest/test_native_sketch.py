@@ -24,6 +24,10 @@ DB = "pgc_native_sketch"
 PIN = "ce25d8b59b9f5a5752c42116b4ff9212"
 # THE RULE, RECOMPUTED in SQL from core's hashint8extended: the low 11 bits pick the
 # register, its value one more than the trailing zeros of the other 53 bits (54 if zero).
+# A read inside an EXCEPTION block writes the INSERT's buffer and keeps it (#1360); the
+# block aborts and the rows are written again. The table's sketch union must be the pin.
+KEPT_FN = "CREATE FUNCTION skx_f(g int) RETURNS bigint LANGUAGE plpgsql AS $f$ BEGIN IF g = 500 THEN BEGIN PERFORM count(*) FROM skx; RAISE EXCEPTION 'boom'; EXCEPTION WHEN others THEN NULL; END; END IF; RETURN g; END $f$;"
+KEPT_UNION = "SELECT md5(decode(string_agg(lpad(to_hex(m), 2, '0'), '' ORDER BY i), 'hex')) FROM (SELECT i, max(get_byte(k.registers, i)) AS m FROM pgcolumnar.sketch k, generate_series(0, 2047) i WHERE k.storage_id = pgcolumnar.get_storage_id('skx') GROUP BY i) u"
 ORACLE = "WITH h AS (SELECT hashint8extended(g::bigint, 0) AS h FROM generate_series(1, 1000) g), r AS (SELECT (h & 2047)::int AS idx, (h >> 11) & 9007199254740991 AS w FROM h), k AS (SELECT idx, max(CASE WHEN w = 0 THEN 54 ELSE round(log(2, (w & -w)::numeric))::int + 1 END) AS rank FROM r GROUP BY idx) SELECT md5(decode(string_agg(lpad(to_hex(coalesce(k.rank, 0)), 2, '0'), '' ORDER BY i), 'hex')) FROM generate_series(0, 2047) i LEFT JOIN k ON k.idx = i"
 
 
@@ -198,6 +202,25 @@ def nsk(pgc_cluster):
         sid = _value(dsn, "SELECT storage_id FROM pgcolumnar.storage WHERE relation_oid = 'skpin'::regclass")
         _run(dsn, "DROP TABLE skpin")
         r["drop"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.sketch WHERE storage_id = {sid}")
+        # 4. a kept flush (#1360), a rename, and groups from before the option
+        _run(dsn, "CREATE TABLE skx (a bigint) USING pgcolumnar; "
+                  "SELECT pgcolumnar.set_options('skx', sketch_columns => ARRAY['a']); " + KEPT_FN)
+        _run(dsn, "INSERT INTO skx SELECT skx_f(g) FROM generate_series(1, 1000) g")
+        r["kept rows"] = _value(dsn, "SELECT count(*) || '/' || count(DISTINCT a) FROM skx")
+        r["kept union"] = _value(dsn, KEPT_UNION)
+        _run(dsn, "CREATE TABLE skr (a bigint) USING pgcolumnar; "
+                  "SELECT pgcolumnar.set_options('skr', sketch_columns => ARRAY['a']);")
+        _run(dsn, "INSERT INTO skr SELECT g FROM generate_series(1, 100) g")
+        _run(dsn, "ALTER TABLE skr RENAME COLUMN a TO a2")
+        _run(dsn, "INSERT INTO skr SELECT g FROM generate_series(101, 200) g")
+        r["renamed option"] = _value(dsn, "SELECT sketch_columns::text FROM pgcolumnar.options "
+                                          "WHERE regclass = 'skr'::regclass")
+        r["renamed"] = f"{_sketches(dsn, 'skr', 0)} for {_groups(dsn, 'skr')} groups"
+        _run(dsn, "CREATE TABLE skb (a bigint) USING pgcolumnar")
+        _run(dsn, "INSERT INTO skb SELECT g FROM generate_series(1, 100) g")
+        _run(dsn, "SELECT pgcolumnar.set_options('skb', sketch_columns => ARRAY['a'])")
+        _run(dsn, "INSERT INTO skb SELECT g FROM generate_series(101, 200) g")
+        r["before"] = f"{_sketches(dsn, 'skb', 0)} for {_groups(dsn, 'skb')} groups"
         r["orphans"] = _value(dsn, "SELECT count(*) FROM pgcolumnar.sketch k WHERE NOT EXISTS "
                                    "(SELECT 1 FROM pgcolumnar.row_group r WHERE r.storage_id = k.storage_id "
                                    "AND r.group_number = k.group_number)")
@@ -325,6 +348,26 @@ def test_truncate_leaves_no_sketch(nsk, expect):
 
 def test_drop_leaves_no_sketch(nsk, expect):
     expect.text(nsk["drop"], "0", "DROP TABLE leaves no sketch behind")
+
+
+def test_the_insert_around_the_aborted_block_wrote_every_row(nsk, expect):
+    expect.text(nsk["kept rows"], "1000/1000", "premise: the insert around the aborted block wrote 1000 distinct rows")
+
+
+def test_a_kept_flush_loses_no_row_from_the_sketch(nsk, expect):
+    expect.text(nsk["kept union"], PIN, "a kept flush whose subtransaction aborted loses no row from the sketch")
+
+
+def test_a_rename_follows_into_sketch_columns(nsk, expect):
+    expect.text(nsk["renamed option"], "{a2}", "a rename follows into sketch_columns")
+
+
+def test_a_group_after_a_rename_gets_its_sketch(nsk, expect):
+    expect.text(nsk["renamed"], "2 for 2 groups", "a row group written after a rename still gets its sketch")
+
+
+def test_a_group_from_before_the_option_has_no_sketch(nsk, expect):
+    expect.text(nsk["before"], "1 for 2 groups", "a row group written before the option was set has no sketch row")
 
 
 def test_no_sketch_outlives_its_row_group(nsk, expect):

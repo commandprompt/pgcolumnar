@@ -194,6 +194,45 @@ psql_run "DROP TABLE skpin;" >/dev/null 2>&1
 check "DROP TABLE leaves no sketch behind" \
 	"$(q "SELECT count(*) FROM pgcolumnar.sketch WHERE storage_id = $_sid;")" "0"
 
+# --- 4. kept flushes, renames, and groups from before the option -------------
+
+# A KEPT FLUSH (#1360). A read inside a plpgsql EXCEPTION block writes the enclosing
+# INSERT's buffer under the block's subtransaction and keeps it; the block raises,
+# the abort takes the catalog rows, and the same rows are written again later. The
+# registers belong to that buffer: cleared at the first write, the rewrite sketched
+# only rows 500..1000 (@OffgridwithJD on #1766). The union of the table's sketches
+# must be the pin, the sketch of 1..1000.
+psql_run "CREATE TABLE skx (a bigint) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('skx', sketch_columns => ARRAY['a']);
+	CREATE FUNCTION skx_f(g int) RETURNS bigint LANGUAGE plpgsql AS \$f\$ BEGIN IF g = 500 THEN BEGIN PERFORM count(*) FROM skx; RAISE EXCEPTION 'boom'; EXCEPTION WHEN others THEN NULL; END; END IF; RETURN g; END \$f\$;" >/dev/null 2>&1
+psql_run "INSERT INTO skx SELECT skx_f(g) FROM generate_series(1, 1000) g;" >/dev/null 2>&1
+check "premise: the insert around the aborted block wrote 1000 distinct rows" \
+	"$(q "SELECT count(*) || '/' || count(DISTINCT a) FROM skx;")" "1000/1000"
+check "a kept flush whose subtransaction aborted loses no row from the sketch" \
+	"$(q "SELECT md5(decode(string_agg(lpad(to_hex(m), 2, '0'), '' ORDER BY i), 'hex')) FROM (SELECT i, max(get_byte(k.registers, i)) AS m FROM pgcolumnar.sketch k, generate_series(0, 2047) i WHERE k.storage_id = pgcolumnar.get_storage_id('skx') GROUP BY i) u")" "ce25d8b59b9f5a5752c42116b4ff9212"
+
+# A RENAME. sketch_columns holds names, as sort_by does, so the rename follows into
+# it; otherwise the writer would stop sketching the column without a word.
+psql_run "CREATE TABLE skr (a bigint) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('skr', sketch_columns => ARRAY['a']);" >/dev/null 2>&1
+psql_run "INSERT INTO skr SELECT g FROM generate_series(1, 100) g;" >/dev/null 2>&1
+psql_run "ALTER TABLE skr RENAME COLUMN a TO a2;" >/dev/null 2>&1
+psql_run "INSERT INTO skr SELECT g FROM generate_series(101, 200) g;" >/dev/null 2>&1
+check "a rename follows into sketch_columns" \
+	"$(q "SELECT sketch_columns FROM pgcolumnar.options WHERE regclass = 'skr'::regclass;")" "{a2}"
+check "a row group written after a rename still gets its sketch" \
+	"$(sketches skr 0) for $(groups skr) groups" "2 for 2 groups"
+
+# BEFORE THE OPTION. A group written before sketch_columns was set has no sketch row,
+# and gets none later. Pinned because the fold that reads sketches (phase 3) must
+# scan such a group rather than count it as empty.
+psql_run "CREATE TABLE skb (a bigint) USING pgcolumnar;" >/dev/null 2>&1
+psql_run "INSERT INTO skb SELECT g FROM generate_series(1, 100) g;" >/dev/null 2>&1
+psql_run "SELECT pgcolumnar.set_options('skb', sketch_columns => ARRAY['a']);" >/dev/null 2>&1
+psql_run "INSERT INTO skb SELECT g FROM generate_series(101, 200) g;" >/dev/null 2>&1
+check "a row group written before the option was set has no sketch row" \
+	"$(sketches skb 0) for $(groups skb) groups" "1 for 2 groups"
+
 # THE INVARIANT, over every storage: a sketch row whose row group no longer exists is
 # one some cleanup path forgot. Counting per table could not see the old storage a
 # rewrite left behind.

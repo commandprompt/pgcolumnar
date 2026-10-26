@@ -13013,7 +13013,7 @@ Every test reads one value from a module fixture that runs the whole scenario on
 
 ## 348. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does
 
-The twin of `test/native_sketch.sh` (#1309 phase 1), every check by the shell's name. A column named in `set_options(sketch_columns => ...)` gets one HyperLogLog sketch per row group in `pgcolumnar.sketch`: 2048 one-byte registers from the type's extended hash (seed 0) of each non-NULL value. The option refuses an unknown column (42703), a type with no extended hash and a nondeterministic collation (0A000). A group of one value sets one register and an all-NULL group none. The registers of a fixed group are pinned by digest, and recomputed independently in SQL from `hashint8extended`. A parallel flush writes the same sketch; a projection's storage gets none; vacuum, compact_rewrite, TRUNCATE and DROP leave no sketch whose row group is gone, checked over every storage; `reset_options` stops new sketches. A private database.
+The twin of `test/native_sketch.sh` (#1309 phase 1), every check by the shell's name. A column named in `set_options(sketch_columns => ...)` gets one HyperLogLog sketch per row group in `pgcolumnar.sketch`: 2048 one-byte registers from the type's extended hash (seed 0) of each non-NULL value. The option refuses an unknown column (42703), a type with no extended hash and a nondeterministic collation (0A000). A group of one value sets one register and an all-NULL group none. The registers of a fixed group are pinned by digest, and recomputed independently in SQL from `hashint8extended`. A parallel flush writes the same sketch; a projection's storage gets none; vacuum, compact_rewrite, TRUNCATE and DROP leave no sketch whose row group is gone, checked over every storage; `reset_options` stops new sketches. A kept flush (#1360) rewritten after its subtransaction aborts still sketches every row, a column rename follows into `sketch_columns`, and a group written before the option was set has no sketch row. A private database.
 
 ### Every test
 
@@ -13049,4 +13049,9 @@ Every test reads one value from a module fixture that runs the shell's scenario 
 | `test_a_group_after_the_reset_gets_no_sketch` | a row group written after the reset gets no sketch |
 | `test_truncate_leaves_no_sketch` | TRUNCATE leaves no sketch for the old storage |
 | `test_drop_leaves_no_sketch` | DROP TABLE leaves no sketch behind |
+| `test_the_insert_around_the_aborted_block_wrote_every_row` | premise: the insert around the aborted block wrote 1000 distinct rows |
+| `test_a_kept_flush_loses_no_row_from_the_sketch` | a kept flush whose subtransaction aborted loses no row from the sketch |
+| `test_a_rename_follows_into_sketch_columns` | a rename follows into sketch_columns |
+| `test_a_group_after_a_rename_gets_its_sketch` | a row group written after a rename still gets its sketch |
+| `test_a_group_from_before_the_option_has_no_sketch` | a row group written before the option was set has no sketch row |
 | `test_no_sketch_outlives_its_row_group` | no sketch outlives its row group |

@@ -3202,6 +3202,21 @@ reset_stripe(PgColumnarWriteState *writeState)
 	writeState->currentGroup = NULL;
 	writeState->stripeRowCount = 0;
 	writeState->haveReservation = false;
+
+	/*
+	 * The sketch registers belong to the buffer, so they are cleared with it and
+	 * nowhere else (#1309). A kept flush (#1360) writes the buffer and keeps it,
+	 * and if its subtransaction aborts the same rows are written again: had the
+	 * flush cleared the registers, that rewrite would sketch none of them.
+	 */
+	if (writeState->sketchRegs != NULL)
+	{
+		int			c;
+
+		for (c = 0; c < writeState->natts; c++)
+			if (writeState->sketchRegs[c] != NULL)
+				memset(writeState->sketchRegs[c], 0, PGC_SKETCH_REGISTERS);
+	}
 }
 
 /*
@@ -3496,7 +3511,6 @@ flush_row_group(PgColumnarWriteState *writeState, bool keep)
 					PgColumnarInsertSketchRow(writeState->storageId, groupNumber, c,
 											  writeState->sketchRegs[c],
 											  PGC_SKETCH_REGISTERS);
-					memset(writeState->sketchRegs[c], 0, PGC_SKETCH_REGISTERS);
 				}
 
 		PgColumnarEndMetadataFlush();
