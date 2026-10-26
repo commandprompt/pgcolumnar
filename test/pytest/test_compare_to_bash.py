@@ -247,6 +247,8 @@ COMPLETE = ["advisory_lock_class",
             "native_batch_fold_projection",
             "native_bloom",
             "drop_cleanup",
+            "large_values",
+            "objstore_sink_write",
             "native_cancel",
             "native_chunk_length_bound",
             "native_ctas",
@@ -393,16 +395,6 @@ COMPLETE = ["advisory_lock_class",
 # about the PORT rather than a licence: the standing arm does not grade it, so the
 # reason is the only thing standing between a declared gap and a forgotten one.
 INCOMPLETE = {
-    # #1341's megabyte values: every arm is ported except the opt-in chunk over 1 GB
-    # (PGC_RUN_OVER_1GB=1), which needs several GB of memory and which this layer,
-    # having no SKIP verdict for an arm a run chooses not to make, does not carry.
-    "large_values": "the 1 MB to 200 MB round trips and the TOASTed-update arms are "
-                    "ported; the opt-in chunk-over-1-GB refusal is not",
-    # #1341's remote sink: the opt-in real-S3 arms (PGC_S3_INTEGRATION_ENDPOINT, never
-    # set in CI) need an S3 implementation this layer does not start, and it has no
-    # SKIP verdict for an arm a run chooses not to make.
-    "objstore_sink_write": "every arm against the SigV4 fixture server is ported; the "
-                           "two opt-in real-S3 integration arms are not",
 }
 
 
