@@ -485,6 +485,11 @@ one of those eight measurements exited 0.
 | `test_an_expected_unrunnable_test_leaves_the_run_green` | #1163. The same declaration the three arms above exit 67 for, listed for this major, exits 0, so the difference is the list and not the declaration |
 | `test_an_unlisted_unrunnable_test_is_named_and_refused` | the control beside it: an empty list refuses the same run, and names the test rather than counting it |
 | `test_a_listed_test_that_runs_makes_the_list_stale` | the other direction. A feature arriving is a fact the list must stop claiming, and nothing else would notice: the test simply starts passing |
+| `test_a_conditional_row_lets_the_arm_decline_while_its_condition_is_unmet` | a row `MAJOR NODEID unless-env VAR=VALUE` covers an opt-in arm's decline while VAR does not have VALUE (#1767); the inner arm is `test_optin_flag` |
+| `test_a_conditional_row_lets_the_arm_run_once_its_condition_is_met` | with the condition met, the arm runs and the run exits 0, not as a stale list |
+| `test_a_conditional_row_refuses_a_decline_once_its_condition_is_met` | the control: with the condition met, an arm that still declines is refused (67); the inner arm is `test_optin_declines` |
+| `test_a_bare_variable_condition_is_met_by_any_value` | `unless-env VAR` is met by any non-empty value, for an opt-in variable that names an endpoint; the inner arm is `test_optin_endpoint` |
+| `test_a_row_with_any_other_suffix_is_refused` | fail closed: an unknown suffix raises, naming the forms a row may take, rather than leaving the row dead |
 | `test_a_listed_test_the_run_never_collected_is_not_a_stale_row` | and the premise that direction owes (#1204). `allowed - actual` reads as "listed, did not decline", which is only answerable for a test the run COLLECTED. A one-file run on PG 15-17 collected none of the others and exited 67 while its own file passed, telling the reader to edit a list that was correct |
 | `test_the_list_is_read_for_the_running_major_only` | a row for 15 does not excuse a decline on 18, which is what a flat set would do |
 | `test_an_unreadable_pg_config_fails_closed` | no major means no judgement, and no judgement means the old behaviour. The dangerous reading is the other one: unknown major treated as expect-anything |
@@ -7420,13 +7425,14 @@ The pytest twin of `test/settings_reference.sh` (#1341 items 42, 57 and 83), eve
 
 ## 117. test_large_values.py: megabyte-scale values are stored exactly
 
-The pytest twin of `test/large_values.sh` (#1341), every check by the shell's name but one. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. The shell's opt-in arm for a chunk over 1 GB (`PGC_RUN_OVER_1GB=1`, refused with 54000, nothing committed, server up) is not ported, and `test_compare_to_bash.py` declares the pair incomplete for it.
+The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. A chunk over 1 GB is refused with 54000, commits nothing, and leaves the server up; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_megabyte_values_are_stored_exactly` | the four values and the TOASTed update against heap, and the rows the update left alone |
+| `test_a_chunk_over_1gb_is_refused` | opt-in: about 1.1 GB of incompressible text in one chunk group is refused with 54000, nothing committed, the server up, each read on a fresh connection |
 
 ## 118. test_recovery_minimal_wal.py: tables that skip WAL survive a crash
 
@@ -12555,7 +12561,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open.
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
 
 ### Every test
 
@@ -12601,6 +12607,8 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_no_success_marker_remains_after_the_cancel` | cancel: no _SUCCESS marker at the prefix |
 | `test_no_upload_stays_open_after_the_cancel` | cancel: the server holds no open upload under the prefix -- #1722: the workers the cancel terminates abort their uploads on the way out |
 | `test_terminated_workers_exit_while_the_store_is_silent` | terminate: export workers exit within 75 s while the store is silent -- #1727: each wait slice times out, so the 60 s quiet limit ends a worker's abort |
+| `test_integration_a_multipart_export_to_real_s3_succeeds` | opt-in: integration: multipart export to real S3 succeeds |
+| `test_integration_the_real_s3_read_back_equals_the_source` | opt-in: integration: real S3 read-back == source |
 
 ## 332. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable
 

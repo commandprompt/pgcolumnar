@@ -1586,13 +1586,21 @@ def _server_major(config):
     return m.group(1) if m else None
 
 
-def expected_unrunnable(major, path=EXPECTED_UNRUNNABLE):
+def expected_unrunnable(major, path=EXPECTED_UNRUNNABLE, env=None):
     """-> the set of nodeids allowed to decline on `major`.
 
     A major with no rows expects NOTHING to decline, which is a claim and not an
     absence: 18 and 19 are in that position and a test declining there is a
     finding.
+
+    A ROW MAY CARRY A CONDITION, `MAJOR NODEID unless-env VAR=VALUE` (#1767
+    review), for an opt-in arm: the row applies only while VAR does not have
+    VALUE, or, written `unless-env VAR`, while VAR is unset or empty. An opted-in run therefore expects the arm to RUN, and refuses it if it
+    declines, instead of reading the run as a stale list. Any other suffix is an
+    error: read as part of the nodeid it would never match, and the row would be
+    dead without a word.
     """
+    env = os.environ if env is None else env
     found = set()
     try:
         text = pathlib.Path(path).read_text(encoding="utf-8")
@@ -1602,9 +1610,19 @@ def expected_unrunnable(major, path=EXPECTED_UNRUNNABLE):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        parts = line.split(None, 1)
-        if len(parts) == 2 and parts[0] == str(major):
-            found.add(parts[1].strip())
+        parts = line.split()
+        if len(parts) < 2 or parts[0] != str(major):
+            continue
+        if len(parts) == 4 and parts[2] == "unless-env":
+            var, eq, value = parts[3].partition("=")
+            # VAR=VALUE is met by that value; a bare VAR by any non-empty one, for
+            # an opt-in variable that carries an endpoint rather than a flag
+            if (env.get(var) == value) if eq else bool(env.get(var)):
+                continue
+        elif len(parts) != 2:
+            raise ValueError(f"{path}: {line!r} is not 'MAJOR NODEID' or "
+                             "'MAJOR NODEID unless-env VAR[=VALUE]'")
+        found.add(parts[1])
     return found
 
 
