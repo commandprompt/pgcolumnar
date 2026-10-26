@@ -485,6 +485,11 @@ one of those eight measurements exited 0.
 | `test_an_expected_unrunnable_test_leaves_the_run_green` | #1163. The same declaration the three arms above exit 67 for, listed for this major, exits 0, so the difference is the list and not the declaration |
 | `test_an_unlisted_unrunnable_test_is_named_and_refused` | the control beside it: an empty list refuses the same run, and names the test rather than counting it |
 | `test_a_listed_test_that_runs_makes_the_list_stale` | the other direction. A feature arriving is a fact the list must stop claiming, and nothing else would notice: the test simply starts passing |
+| `test_a_conditional_row_lets_the_arm_decline_while_its_condition_is_unmet` | a row `MAJOR NODEID unless-env VAR=VALUE` covers an opt-in arm's decline while VAR does not have VALUE (#1767); the inner arm is `test_optin_flag` |
+| `test_a_conditional_row_lets_the_arm_run_once_its_condition_is_met` | with the condition met, the arm runs and the run exits 0, not as a stale list |
+| `test_a_conditional_row_refuses_a_decline_once_its_condition_is_met` | the control: with the condition met, an arm that still declines is refused (67); the inner arm is `test_optin_declines` |
+| `test_a_bare_variable_condition_is_met_by_any_value` | `unless-env VAR` is met by any non-empty value, for an opt-in variable that names an endpoint; the inner arm is `test_optin_endpoint` |
+| `test_a_row_with_any_other_suffix_is_refused` | fail closed: an unknown suffix raises, naming the forms a row may take, rather than leaving the row dead |
 | `test_a_listed_test_the_run_never_collected_is_not_a_stale_row` | and the premise that direction owes (#1204). `allowed - actual` reads as "listed, did not decline", which is only answerable for a test the run COLLECTED. A one-file run on PG 15-17 collected none of the others and exited 67 while its own file passed, telling the reader to edit a list that was correct |
 | `test_the_list_is_read_for_the_running_major_only` | a row for 15 does not excuse a decline on 18, which is what a flat set would do |
 | `test_an_unreadable_pg_config_fails_closed` | no major means no judgement, and no judgement means the old behaviour. The dangerous reading is the other one: unknown major treated as expect-anything |
@@ -7412,13 +7417,14 @@ The pytest twin of `test/settings_reference.sh` (#1341 items 42, 57 and 83), eve
 
 ## 117. test_large_values.py: megabyte-scale values are stored exactly
 
-The pytest twin of `test/large_values.sh` (#1341), every check by the shell's name but one. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. The shell's opt-in arm for a chunk over 1 GB (`PGC_RUN_OVER_1GB=1`, refused with 54000, nothing committed, server up) is not ported, and `test_compare_to_bash.py` declares the pair incomplete for it.
+The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. A chunk over 1 GB is refused with 54000, commits nothing, and leaves the server up; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_megabyte_values_are_stored_exactly` | the four values and the TOASTed update against heap, and the rows the update left alone |
+| `test_a_chunk_over_1gb_is_refused` | opt-in: about 1.1 GB of incompressible text in one chunk group is refused with 54000, nothing committed, the server up, each read on a fresh connection |
 
 ## 118. test_recovery_minimal_wal.py: tables that skip WAL survive a crash
 

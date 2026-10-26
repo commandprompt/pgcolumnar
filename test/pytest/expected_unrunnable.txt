@@ -110,12 +110,13 @@
 19 test_pg_upgrade.py::test_pg_upgrade_preserves_a_columnar_table
 
 # Every major: test_objstore_s3_read.py's real-S3 arm needs PGC_S3_INTEGRATION_ENDPOINT,
-# which no matrix run sets; the shell records nothing for it there either.
-15 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads
-16 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads
-17 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads
-18 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads
-19 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads
+# which no matrix run sets; the shell records nothing for it there either. Conditional
+# since #1767: a run that sets the endpoint expects the arm to run.
+15 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads unless-env PGC_S3_INTEGRATION_ENDPOINT
+16 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads unless-env PGC_S3_INTEGRATION_ENDPOINT
+17 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads unless-env PGC_S3_INTEGRATION_ENDPOINT
+18 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads unless-env PGC_S3_INTEGRATION_ENDPOINT
+19 test_objstore_s3_read.py::test_a_real_s3_implementation_reads_what_the_local_file_reads unless-env PGC_S3_INTEGRATION_ENDPOINT
 
 # Every major: test_concurrency.py's timeout mirror records the shell's fixed
 # wait_timeout names only where a bounded wait timed out, as the shell records them
@@ -202,3 +203,12 @@
 16 test_audit.py::test_audit_reject_set_options_on_a_partitioned_parent
 16 test_audit.py::test_audit_nothing_was_recorded_for_the_partitioned_parent
 16 test_audit.py::test_audit_the_partition_itself_is_still_accepted
+
+# Every major: test_large_values.py's chunk-over-1-GB arm needs PGC_RUN_OVER_1GB=1 and
+# several GB of memory, so it is opt-in, as the shell's is, and declines without it (#432).
+# The condition lets an opted-in run expect it to RUN, not read it as a stale row.
+15 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
+16 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
+17 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
+18 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
+19 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
