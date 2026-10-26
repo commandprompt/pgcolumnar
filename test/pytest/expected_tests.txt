@@ -1244,4 +1244,6 @@ guard_tests 854
 # shell's opt-in arm, by collection over the cluster files.
 # cluster_tests 4400 -> 4402 for #432's two real-S3 integration arms in test_objstore_sink_write.py,
 # opt-in as the shell's are, by collection over the cluster files.
-cluster_tests 4402
+# cluster_tests 4402 -> 4410 for #432's completed test_drop_cleanup.py, the twin of drop_cleanup.sh:
+# 8 storage and catalog cleanup checks in 8 new tests, by collection over the cluster files.
+cluster_tests 4410
