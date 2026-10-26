@@ -413,6 +413,12 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+
+- `min` and `max` with a `COLLATE` override answer under that collation (#1771).
+  The grouped and the ungrouped vectorized aggregate compared values under the
+  column's collation, so on an ICU column `min(t COLLATE "C")` returned the ICU
+  answer. They now decline such an aggregate, and core answers it.
+  `test/native_agg_collation.sh` and `test_native_agg_collation.py`.
 - **A `timestamp` column compared with a `timestamptz` constant no longer loses
   rows across a spring-forward gap.** The zone maps compared each chunk group's
   min/max through the cross-type ordering proc, which reads a wall time as an

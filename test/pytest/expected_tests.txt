@@ -1242,4 +1242,6 @@ guard_tests 852
 # shell's opt-in arm, by collection over the cluster files.
 # cluster_tests 4400 -> 4402 for #432's two real-S3 integration arms in test_objstore_sink_write.py,
 # opt-in as the shell's are, by collection over the cluster files.
-cluster_tests 4402
+# cluster_tests 4402 -> 4407 for #1771's test_native_agg_collation.py, the twin of native_agg_collation.sh:
+# 5 checks in 5 tests, by collection over the cluster files.
+cluster_tests 4407
