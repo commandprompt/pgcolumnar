@@ -212,3 +212,17 @@
 17 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
 18 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
 19 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
+
+# Every major: test_objstore_sink_write.py's two real-S3 arms need PGC_S3_INTEGRATION_ENDPOINT,
+# which no matrix run sets; the shell records nothing for them there either (#432).
+# Conditional, so a run that sets the endpoint expects them to run.
+15 test_objstore_sink_write.py::test_integration_a_multipart_export_to_real_s3_succeeds unless-env PGC_S3_INTEGRATION_ENDPOINT
+16 test_objstore_sink_write.py::test_integration_a_multipart_export_to_real_s3_succeeds unless-env PGC_S3_INTEGRATION_ENDPOINT
+17 test_objstore_sink_write.py::test_integration_a_multipart_export_to_real_s3_succeeds unless-env PGC_S3_INTEGRATION_ENDPOINT
+18 test_objstore_sink_write.py::test_integration_a_multipart_export_to_real_s3_succeeds unless-env PGC_S3_INTEGRATION_ENDPOINT
+19 test_objstore_sink_write.py::test_integration_a_multipart_export_to_real_s3_succeeds unless-env PGC_S3_INTEGRATION_ENDPOINT
+15 test_objstore_sink_write.py::test_integration_the_real_s3_read_back_equals_the_source unless-env PGC_S3_INTEGRATION_ENDPOINT
+16 test_objstore_sink_write.py::test_integration_the_real_s3_read_back_equals_the_source unless-env PGC_S3_INTEGRATION_ENDPOINT
+17 test_objstore_sink_write.py::test_integration_the_real_s3_read_back_equals_the_source unless-env PGC_S3_INTEGRATION_ENDPOINT
+18 test_objstore_sink_write.py::test_integration_the_real_s3_read_back_equals_the_source unless-env PGC_S3_INTEGRATION_ENDPOINT
+19 test_objstore_sink_write.py::test_integration_the_real_s3_read_back_equals_the_source unless-env PGC_S3_INTEGRATION_ENDPOINT
