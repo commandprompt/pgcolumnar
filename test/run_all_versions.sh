@@ -145,8 +145,8 @@ SUITES=(
 	maintenance_due
 	maintenance_rollback
 	native_agg
-	native_agg_collation
 	native_agg_addcolumn
+	native_agg_collation
 	native_agg_deletes
 	native_backend_crash
 	native_batch_fold_projection
@@ -1770,6 +1770,24 @@ pgc_tally_suite() {	# pgc_tally_suite NAME VERDICT LOGFILE
 			*)	echo "  PG$major could not run the ledger gate at all, which is not a pass:"
 				echo "  the input or the prior ceiling was unusable, and regenerating the"
 				echo "  ledger will not help. The failure above says which."
+				verfail=1 ;;
+		esac
+
+		# EACH LEDGER COMMIT CARRIES ITS CENSUS (#1431). The derivation lives in the
+		# commit message now, not the budget, so every commit since the merge base with
+		# the same prior that changes the tsv must end with a `Ledger-census:` trailer
+		# equal to that commit's tsv. A restate re-derives it rather than carrying the
+		# old one.
+		python3 "$builddir/test/pgc_ledger.py" census-commits \
+			--tsv "$builddir/test/check_ledger.tsv" --against "$_led_against"
+		case "$?" in
+			0)	;;
+			1)	echo "  PG$major: a ledger commit's Ledger-census trailer is wrong or missing,"
+				echo "  which is not a pass. Re-derive it from that commit's tsv, the line above"
+				echo "  names each one, and reword the commit."
+				verfail=1 ;;
+			*)	echo "  PG$major could not check the ledger commits at all, which is not a pass:"
+				echo "  the failure above says why. A shallow checkout is the usual cause."
 				verfail=1 ;;
 		esac
 	fi

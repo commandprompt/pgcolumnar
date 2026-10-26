@@ -246,6 +246,7 @@ COMPLETE = ["advisory_lock_class",
             "native_backend_crash",
             "native_batch_fold_projection",
             "native_bloom",
+            "drop_cleanup",
             "native_agg_collation",
             "large_values",
             "objstore_sink_write",
@@ -395,11 +396,6 @@ COMPLETE = ["advisory_lock_class",
 # about the PORT rather than a licence: the standing arm does not grade it, so the
 # reason is the only thing standing between a declared gap and a forgotten one.
 INCOMPLETE = {
-    # #1341 item 29 ported the arms four fixes added with shell arms only. Each
-    # pair below holds that fix's arms and nothing else of its shell suite.
-    "drop_cleanup": "the #1265 arms (a columnar matview's options row goes with its "
-                    "DROP and survives its REFRESH, with an unrelated row as the "
-                    "control) are ported; the storage and catalog cleanup arms are not",
 }
 
 

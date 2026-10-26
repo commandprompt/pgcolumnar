@@ -2302,6 +2302,8 @@ harness_selftest	410-a-check-must-have-been-red	a check observed red gains the d
 harness_selftest	410-a-check-must-have-been-red	a check seen once claims the one major it was seen on	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a check the ledger has never seen is refused	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a clean status says nothing and does not fail the major	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a commit that leaves the tsv alone needs no trailer	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits checks every commit in the range, not only those that change the tsv (mutation, #1431)
+harness_selftest	410-a-check-must-have-been-red	a commit whose trailer matches its tsv passes the census-commit gate	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits checks every commit in the range, not only those that change the tsv (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a date that is not a date is refused rather than stored	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a deliberate break says so with --mutation	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a gate over a nonexistent log is an integrity failure, not a pass	15;16;17;18;19	never	-
@@ -2315,9 +2317,11 @@ harness_selftest	410-a-check-must-have-been-red	a log from ANOTHER tree is refus
 harness_selftest	410-a-check-must-have-been-red	a log naming NO source fingerprint is refused when one is expected	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a log whose source fingerprint is the expected one is read	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a major the ledger holds no row for refuses nothing, as an uncovered suite does	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a missing trailer is refused	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a name that appeared while another disappeared is reported as a rename	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a named mutation is recorded against the check that reddened	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a premise the ledger has seen go red is refused	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a range with no merge base is an integrity failure	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits carries on without a merge base instead of failing closed (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a real refusal is a different status from an integrity failure	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a ref that does not resolve is an integrity failure, not a bootstrap	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a ref that exists with the budget still compares	15;16;17;18;19	never	-
@@ -2332,9 +2336,12 @@ harness_selftest	410-a-check-must-have-been-red	a run that emits every row in it
 harness_selftest	410-a-check-must-have-been-red	a run whose checks are all ledgered passes the gate	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a second major is ADDED to the set, sorted, not written over the first	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a second mutation ACCUMULATES rather than replacing the first	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a self-inconsistent trailer is refused	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a skipped part is NOT an orphan, so --orphans-only returns 0	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a stale prior is named WITH its distance from HEAD	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a stale trailer is refused	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a target that did not fail is refused, because the claim is wrong	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a trailer outside the final trailer block is refused as missing	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431);pgc_ledger.py: census-commits reads trailer lines from the whole message, not git's final trailer block (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a verdict pgc_record cannot emit is an integrity failure	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	an absolute budget path resolves against git rather than shrugging	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	an empty check name is one too, because it names no check	15;16;17;18;19	never	-
@@ -2358,6 +2365,7 @@ harness_selftest	410-a-check-must-have-been-red	and an undated merge does not er
 harness_selftest	410-a-check-must-have-been-red	and defines it BEFORE the first call, since bash reads top to bottom	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and every job that runs the suite matrix collects from the path it retains	15;16;17;18;19	2026-09-24	the matrix job's collection step globs only the build directory run_all_versions.sh deletes, so a red run collects no per-suite log at all
 harness_selftest	410-a-check-must-have-been-red	and every suite log is APPENDED to, so the stamp survives the run	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	and for being inconsistent, not only for disagreeing with the tsv	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits does not check that dated is rows - never (mutation, #1431);pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	and it copies them BEFORE removing the build directory, which is the only order that works	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and it entered as debt, not as an observation nothing made	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and it is REFUSED, not merely printed	15;16;17;18;19	never	-
@@ -2401,6 +2409,7 @@ harness_selftest	410-a-check-must-have-been-red	and the refusal names both value
 harness_selftest	410-a-check-must-have-been-red	and the refusal names how many failed, so the author can narrow the run	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal names the check that reddened	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal names the check that was not claimed as a target	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	and the refusal names the commit and both censuses	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	and the refusal names the fingerprint the log carries, so a reader can tell which tree	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal names the raise	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal quotes the claim beside the measurement	15;16;17;18;19	never	-
@@ -2490,19 +2499,24 @@ harness_selftest	410-a-check-must-have-been-red	raising the ceiling above its co
 harness_selftest	410-a-check-must-have-been-red	raising the ceiling in the tracked file is refused	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	regenerating the ledger lets the new check through	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	so a first run on a new major is not a failure	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	the budget holds no derivation line	15;16;17;18;19	2026-10-26	check_ledger_budget.txt: the budget as main 6ae11a38 carries it, with 7142 lines of history paragraphs and derivations (mutation, #1431)
+harness_selftest	410-a-check-must-have-been-red	the budget holds no history paragraph	15;16;17;18;19	2026-10-26	check_ledger_budget.txt: the budget as main 6ae11a38 carries it, with 7142 lines of history paragraphs and derivations (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	the budget names a ceiling and a census, and says which is which	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the ceiling refuses being exceeded	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	the census is the budget's last line	15;16;17;18;19	2026-10-26	check_ledger_budget.txt: a plain comment line appended after the census line (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	the check the run still emits is not called an orphan	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the committed census matches the committed ledger	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the dated fixture differs from the control in the premise row's date alone	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the distance travels with a refusal too, not only with a pass	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the four categories account for every ledger row	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the gate refuses to run without the registered suite list	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	the good range holds one tsv commit, so its pass checked something	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits checks every commit in the range, not only those that change the tsv (mutation, #1431);pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	the helper writes a source line a reader can parse	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the ledger partitions into observed and never	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the orphan scan stays a REPORT while any skip loop cannot be compared to its arms	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the refusal says why, rather than only that it refused	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the runner asks the tool to resolve the prior rather than naming one	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	the runner calls the census-commit gate with the ledger gate's prior	15;16;17;18;19	2026-10-26	run_all_versions.sh: the runner does not call census-commits (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	the runner captures the gate's status rather than only its success	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the runner defines one stamping helper rather than repeating the line	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the runner invokes the ledger gate	15;16;17;18;19	never	-
@@ -2516,6 +2530,7 @@ harness_selftest	410-a-check-must-have-been-red	the scan reports a finding on a 
 harness_selftest	410-a-check-must-have-been-red	the stable check is not reported	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the suites job fetches the PR base for the ceiling comparison	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	two checks stay two rows whatever the majors, because the key is not the major	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	two trailers are refused	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431);pgc_ledger.py: census-commits takes the first of several Ledger-census trailers (mutation, #1431)
 harness_selftest	420-a-deleted-part-must-be-visible	and every name in the manifest is a part on disk, so a deletion reddens	15;16;17;18;19	never	-
 harness_selftest	420-a-deleted-part-must-be-visible	every part on disk is named in the manifest	15;16;17;18;19	never	-
 harness_selftest	420-a-deleted-part-must-be-visible	premise: a part present in the manifest and missing on disk is named	15;16;17;18;19	never	-
@@ -3656,11 +3671,11 @@ native_agg_addcolumn	native_agg_addcolumn	sum over an added int column	15;16;17;
 native_agg_addcolumn	native_agg_addcolumn	sum with both a delete and an added column	15;16;17;18;19	2026-10-17	columnar_vector.c: the metadata fold reads a row group with no chunk for an added column from its absent zone map;columnar_vector.c: the metadata fold reads a row group with no chunk for an added column, and count(col) counts such a group as all non-null
 native_agg_addcolumn	native_agg_addcolumn	the metadata aggregate path is the one under test	15;16;17;18;19	never	-
 native_agg_addcolumn	native_agg_addcolumn	the scan reads an added column's default for the rows written before it	15;16;17;18;19	2026-10-17	columnar_reader.c: the reader loses an added column's missing value (null for every older row group)
-native_agg_collation	native_agg_collation	and answer what heap answers	18	never	-
-native_agg_collation	native_agg_collation	control: min and max under the column's own collation take the grouped node	18	2026-10-26	columnar_vector.c: every min/max declines the vectorized paths (mutation, #1771)
-native_agg_collation	native_agg_collation	grouped min and max under a C-collation override answer what heap answers	18	2026-10-26	columnar_vector.c as at 5163ca27: pgcolumnar_classify_aggref accepts min/max whose input collation differs from the column's (#1771)
-native_agg_collation	native_agg_collation	premise: the groups mix values the two collations order differently	18	never	-
-native_agg_collation	native_agg_collation	ungrouped min and max under a C-collation override answer what heap answers	18	2026-10-26	columnar_vector.c as at 5163ca27: pgcolumnar_classify_aggref accepts min/max whose input collation differs from the column's (#1771)
+native_agg_collation	native_agg_collation	and answer what heap answers	15;16;17;18;19	never	-
+native_agg_collation	native_agg_collation	control: min and max under the column's own collation take the grouped node	15;16;17;18;19	2026-10-26	columnar_vector.c: every min/max declines the vectorized paths (mutation, #1771)
+native_agg_collation	native_agg_collation	grouped min and max under a C-collation override answer what heap answers	15;16;17;18;19	2026-10-26	columnar_vector.c as at 5163ca27: pgcolumnar_classify_aggref accepts min/max whose input collation differs from the column's (#1771)
+native_agg_collation	native_agg_collation	premise: the groups mix values the two collations order differently	15;16;17;18;19	never	-
+native_agg_collation	native_agg_collation	ungrouped min and max under a C-collation override answer what heap answers	15;16;17;18;19	2026-10-26	columnar_vector.c as at 5163ca27: pgcolumnar_classify_aggref accepts min/max whose input collation differs from the column's (#1771)
 native_agg_deletes	native_agg_deletes	a dirty group is scanned without scanning the clean ones	15;16;17;18;19	2026-10-22	columnar_vector.c: one delete anywhere defers every row group to the scan (the per-group decision of #149 reverted for min/max)
 native_agg_deletes	native_agg_deletes	aggregates match heap after a contiguous tenth is deleted	15;16;17;18;19	2026-10-22	columnar_vector.c: a group with deletes is folded from its zone maps as if nothing were deleted
 native_agg_deletes	native_agg_deletes	aggregates match heap after every group is dirtied	15;16;17;18;19	2026-10-22	columnar_vector.c: a group with deletes is folded from its zone maps as if nothing were deleted

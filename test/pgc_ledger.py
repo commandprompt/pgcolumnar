@@ -1402,6 +1402,91 @@ def cmd_gate(args):
     return rc
 
 
+_TRAILER = re.compile(r"rows=(\d+) never=(\d+) dated=(\d+)")
+
+
+def _census_of(text):
+    """-> (rows, never, dated) of a tsv's text, counted the way the budget's recipe does."""
+    rows = [l.split("\t") for l in text.splitlines() if l]
+    never = sum(1 for r in rows if len(r) > 4 and r[4] == "never")
+    return len(rows), never, len(rows) - never
+
+
+def cmd_census_commits(args):
+    """Every commit from the merge base with the prior to HEAD that changes the tsv
+    carries exactly one `Ledger-census:` trailer, equal to the tsv at that commit (#1431).
+
+    The derivation left the budget for the commit message, so a restate that carries a
+    stale message would record a census its own commit contradicts. Read through `git
+    interpret-trailers --parse`, not a regex over the message, so only the final
+    trailer block counts and a wrapped message parses the way git parses it. No merge
+    base is an integrity failure: without it there is no saying what the change added,
+    and passing would enforce nothing.
+    """
+    tsv = pathlib.Path(args.tsv).resolve()
+
+    def git(*a, stdin=None):
+        r = subprocess.run(["git", "-C", str(tsv.parent), *a], input=stdin,
+                           capture_output=True, text=True)
+        return r.returncode, r.stdout
+
+    rc, top = git("rev-parse", "--show-toplevel")
+    if rc != 0:
+        raise LedgerError(f"{tsv} is not in a git repository, so no commit can be checked")
+    rel = tsv.relative_to(pathlib.Path(top.strip()).resolve()).as_posix()
+    prior = _resolve_against(args.tsv, args.against)
+    rc, base = git("merge-base", prior, "HEAD")
+    if rc != 0 or not base.strip():
+        raise LedgerError(
+            f"HEAD and the prior {prior} have no merge base here, so there is no saying "
+            "which commits this change adds. A shallow checkout is the usual cause: fetch "
+            "the full history")
+    # `:(top)` because git runs in the tsv's directory, where a bare pathspec would be
+    # read relative to it and match nothing, which passes every commit.
+    rc, out = git("rev-list", "--reverse", "--no-merges", f"{base.strip()}..HEAD", "--",
+                  f":(top){rel}")
+    if rc != 0:
+        raise LedgerError(f"could not list the commits from {base.strip()[:8]} to HEAD")
+    commits = out.split()
+
+    refused = []
+    for c in commits:
+        short = c[:8]
+        _, subject = git("log", "-1", "--format=%s", c)
+        _, message = git("log", "-1", "--format=%B", c)
+        _, trailers = git("interpret-trailers", "--parse", stdin=message)
+        found = [l.split(":", 1)[1].strip() for l in trailers.splitlines()
+                 if l.split(":", 1)[0].strip().lower() == "ledger-census"]
+        rc, text = git("show", f"{c}:{rel}")
+        if rc != 0:
+            refused.append(f"{short} {subject.strip()}: the tsv is absent at this commit")
+            continue
+        actual = "rows=%d never=%d dated=%d" % _census_of(text)
+        if len(found) != 1:
+            refused.append(f"{short} {subject.strip()}: {len(found)} Ledger-census trailers, "
+                           f"want exactly one, saying {actual}")
+            continue
+        m = _TRAILER.fullmatch(found[0])
+        if not m:
+            refused.append(f"{short} {subject.strip()}: the trailer {found[0]!r} is not "
+                           f"'rows=N never=N dated=N'")
+            continue
+        rows, never, dated = (int(g) for g in m.groups())
+        if dated != rows - never:
+            refused.append(f"{short} {subject.strip()}: the trailer says {found[0]}, and "
+                           f"dated must be rows - never = {rows - never}")
+            continue
+        if found[0] != actual:
+            refused.append(f"{short} {subject.strip()}: the trailer says {found[0]}, the tsv "
+                           f"at this commit says {actual}")
+
+    print(f"  census commits: {len(commits)} change {rel} since {base.strip()[:8]} "
+          f"(merge base with {prior}), {len(refused)} refused")
+    for line in refused:
+        print(f"    {line}")
+    return 1 if refused else 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1460,6 +1545,13 @@ def main(argv=None):
                         "or an explicit git ref. Fails closed when no trustworthy prior exists")
     g.add_argument("logs", nargs="+")
     g.set_defaults(fn=cmd_gate)
+
+    cc = sub.add_parser("census-commits",
+                        help="refuse a ledger commit whose Ledger-census trailer is not its tsv's")
+    cc.add_argument("--tsv", required=True)
+    cc.add_argument("--against", required=True,
+                    help="'auto', 'parent' or an explicit ref, resolved as the gate's is")
+    cc.set_defaults(fn=cmd_census_commits)
 
     args = ap.parse_args(argv)
     try:
