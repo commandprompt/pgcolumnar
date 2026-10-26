@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 25
+suites_not_covered 24
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -7212,4 +7212,23 @@ suites_not_covered 25
 #     never         4567 - 9 = 4558
 #     dated         3514 + 9 = 3523
 #     4558 + 3523 == 8081
-checks_never_observed_red 4558
+#
+# #432, parquet_import seeded, with its twin completed (OffgridwithJD): 4558 -> 4562,
+# and suites_not_covered 25 -> 24. The suite had no rows, and its twin held the #1263
+# arms only; it now holds every check, one test each, by the shell's names. It enters
+# with 25 checks from PG17 and PG18 runs (green in shell and twin alike), after one fix:
+# its three refusal arms read "psql failed", so with the scalar binder's column-count
+# check skipped "reject column-count mismatch" PASSED on a backend killed by signal 11,
+# and with the magic check skipped "reject non-parquet file" PASSED on a later error.
+# Each now asserts its SQLSTATE and message. 21 are dated by seven mutations, each
+# reddening the same names in both twins: the magic check (1), the column-count check
+# (1), the DATE epoch offset (2), the v2 value offset (2), the v1 definition levels
+# (8), no index state on import (5) and the #1263 storage guard (2). 4 arrive never:
+# three premises, and "the index-scan check really uses the index", which no one-line
+# mutant reaches and which went red in both twins under a changed expectation.
+#
+#     ledger rows   8081 + 25 = 8106
+#     never         4558 + 4 = 4562
+#     dated         3523 + 21 = 3544
+#     4562 + 3544 == 8106
+checks_never_observed_red 4562
