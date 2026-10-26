@@ -218,6 +218,7 @@ SUITES=(
 	native_rewrite_conc
 	native_roundtrip
 	native_saop_pushdown
+	native_sketch
 	native_skip
 	native_sort_by
 	native_toasted_write

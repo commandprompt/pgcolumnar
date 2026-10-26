@@ -18,6 +18,15 @@ true until the next version shipped.
 
 ### Added
 
+- `set_options(t, sketch_columns => ARRAY[...])` gives each named column a
+  distinct-count sketch in every row group it writes from then on (#1309, phase 1):
+  a HyperLogLog of 2048 one-byte registers in the new catalog `pgcolumnar.sketch`,
+  about 2 KB per row group per column. Nothing reads the sketches yet; the
+  aggregate that does arrives in a later phase. The option refuses a column whose
+  type has no extended hash function or whose collation is nondeterministic
+  (SQLSTATE 0A000). Hashing a column adds about 3% to insert time for a bigint and
+  4% for a 96-byte text column, measured on #1309; a table that names no column
+  pays nothing. `test/native_sketch.sh` and `test_native_sketch.py`.
 - `pgcolumnar.partition_drop_plan(parent, cutoff)` returns the statements that
   retire every time partition whose whole range is older than `cutoff`: a
   `DETACH PARTITION ... CONCURRENTLY` and a `DROP TABLE` each, in range order,

@@ -208,6 +208,13 @@
 #define COLUMNAR_ENCODE_EFFORT_FULL 0
 #define COLUMNAR_ENCODE_EFFORT_FAST 1
 
+/*
+ * #1309: a row group's distinct-count sketch is HyperLogLog with 2^11 one-byte
+ * registers. Fixed, so every sketch merges with every other.
+ */
+#define PGC_SKETCH_LOG2M 11
+#define PGC_SKETCH_REGISTERS (1 << PGC_SKETCH_LOG2M)
+
 typedef struct PgColumnarOptions
 {
 	bool		chunkGroupRowLimitSet;

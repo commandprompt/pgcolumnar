@@ -27,6 +27,7 @@
 #include "miscadmin.h"
 #include "libpq/pqsignal.h"
 #include "port/atomics.h"
+#include "port/pg_bitutils.h"
 #include "postmaster/bgworker.h"
 #include "storage/dsm.h"
 #include "storage/ipc.h"
@@ -44,6 +45,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 #include "utils/typcache.h"
 
 /*
@@ -226,6 +228,8 @@ typedef struct PgColumnarColumnDef
 	bool		bloomable;
 	FmgrInfo	hashFn;
 	Oid			hashCollation;	/* collation to hash under (InvalidOid if none) */
+	FmgrInfo	sketchFn;		/* extended hash for the column's sketch (#1309) */
+	Oid			sketchCollation;
 
 	/*
 	 * Cached FSST keep/drop verdict and how many row groups have reused it
@@ -336,6 +340,15 @@ struct PgColumnarWriteState
 	uint64		storageId;
 	PgColumnarColumnDef *colDefs;		/* array [natts], in writeContext */
 
+	/*
+	 * #1309: one HyperLogLog register array per column named in sketch_columns,
+	 * NULL for every other column, filled as rows are written and written out and
+	 * cleared at each row-group flush. The leader keeps them, so a parallel flush
+	 * writes the same sketch as a serial one. NULL as a whole for a projection's
+	 * writer: a projection's storage gets no sketch.
+	 */
+	uint8	  **sketchRegs;
+
 	MemoryContext writeContext;		/* lives for the transaction */
 	MemoryContext stripeContext;	/* reset after each stripe flush */
 
@@ -405,6 +418,7 @@ static bool ws_has_projection_rows(PgColumnarWriteState *writeState);
 static ChunkGroupBuffer *pgcolumnar_start_chunk_group(PgColumnarWriteState *writeState);
 static uint64 *grow_uint64_array(uint64 *arr, int oldSize, int newSize);
 static void pgcolumnar_init_col_defs(PgColumnarWriteState *writeState);
+static void pgcolumnar_init_sketches(PgColumnarWriteState *writeState, Oid relid);
 static void build_column_def(Form_pg_attribute att, bool bloomEnabled,
 							 MemoryContext cxt, PgColumnarColumnDef *def);
 
@@ -571,6 +585,104 @@ build_column_def(Form_pg_attribute att, bool bloomEnabled, MemoryContext cxt,
 		def->bloomable = true;
 		fmgr_info_copy(&def->hashFn, &tce->hash_proc_finfo, cxt);
 		def->hashCollation = att->attcollation;
+	}
+}
+
+/*
+ * pgcolumnar_unsketchable_reason
+ *		Why a column cannot carry a sketch (#1309), or NULL when it can. The ONE
+ *		predicate, used by set_options (through pgcolumnar_check_sketch_column)
+ *		and by the writer, so the two cannot disagree: the type needs an extended
+ *		hash, and a collatable value a deterministic collation, or two values
+ *		equal under the collation would hash apart and count twice.
+ */
+static const char *
+pgcolumnar_unsketchable_reason(Form_pg_attribute att)
+{
+	TypeCacheEntry *tce = lookup_type_cache(att->atttypid, TYPECACHE_HASH_EXTENDED_PROC_FINFO);
+
+	if (!OidIsValid(tce->hash_extended_proc_finfo.fn_oid))
+		return psprintf("its type %s has no extended hash function",
+						format_type_be(att->atttypid));
+	if (!PgColumnarCollationIsDeterministic(att->attcollation))
+		return "its collation is nondeterministic";
+	return NULL;
+}
+
+PG_FUNCTION_INFO_V1(pgcolumnar_check_sketch_column);
+
+/*
+ * pgcolumnar_check_sketch_column
+ *		SQL: pgcolumnar.check_sketch_column(regclass, name). Raises 0A000 when the
+ *		named column cannot carry a sketch; set_options calls it for each column
+ *		of sketch_columns, after its own existence check.
+ */
+Datum
+pgcolumnar_check_sketch_column(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Name		col = PG_GETARG_NAME(1);
+	HeapTuple	tup = SearchSysCacheAttName(relid, NameStr(*col));
+	const char *why;
+
+	if (!HeapTupleIsValid(tup))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_COLUMN),
+				 errmsg("column \"%s\" of relation \"%s\" does not exist",
+						NameStr(*col), get_rel_name(relid))));
+	why = pgcolumnar_unsketchable_reason((Form_pg_attribute) GETSTRUCT(tup));
+	ReleaseSysCache(tup);
+	if (why != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("column \"%s\" cannot have a sketch: %s", NameStr(*col), why)));
+	PG_RETURN_VOID();
+}
+
+/*
+ * pgcolumnar_init_sketches
+ *		Give each column named in the relation's sketch_columns option a register
+ *		array (#1309). set_options refuses a column that cannot be sketched; one
+ *		that became unsketchable since (a type changed under it) is skipped here
+ *		rather than refused, so the option cannot block a write.
+ */
+static void
+pgcolumnar_init_sketches(PgColumnarWriteState *writeState, Oid relid)
+{
+	List	   *names;
+	ListCell   *lc;
+
+	if (!PgColumnarSketchCatalogPresent())
+		return;
+	names = PgColumnarReadSketchColumns(relid);
+	if (names == NIL)
+		return;
+
+	writeState->sketchRegs = MemoryContextAllocZero(PgColumnarWriteContext,
+													sizeof(uint8 *) * writeState->natts);
+	foreach(lc, names)
+	{
+		const char *name = (const char *) lfirst(lc);
+		int			c;
+
+		for (c = 0; c < writeState->natts; c++)
+		{
+			Form_pg_attribute att = TupleDescAttr(writeState->tupdesc, c);
+			TypeCacheEntry *tce;
+
+			if (att->attisdropped || strcmp(NameStr(att->attname), name) != 0)
+				continue;
+			if (pgcolumnar_unsketchable_reason(att) == NULL)
+			{
+				tce = lookup_type_cache(att->atttypid, TYPECACHE_HASH_EXTENDED_PROC_FINFO);
+				fmgr_info_copy(&writeState->colDefs[c].sketchFn,
+							   &tce->hash_extended_proc_finfo, PgColumnarWriteContext);
+				writeState->colDefs[c].sketchCollation = att->attcollation;
+				writeState->sketchRegs[c] =
+					MemoryContextAllocZero(PgColumnarWriteContext, PGC_SKETCH_REGISTERS);
+			}
+			break;
+		}
 	}
 }
 
@@ -742,6 +854,7 @@ PgColumnarGetWriteState(Relation rel)
 	}
 
 	pgcolumnar_init_col_defs(writeState);
+	pgcolumnar_init_sketches(writeState, relid);
 
 	writeState->stripeContext = AllocSetContextCreate(PgColumnarWriteContext,
 													  "columnar stripe",
@@ -1005,6 +1118,28 @@ PgColumnarWriteRow(PgColumnarWriteState *writeState, Relation rel,
 									  v));
 
 				appendBinaryStringInfo(&col->hashBuf, (char *) &h, sizeof(uint32));
+			}
+
+			/*
+			 * #1309: the row group's HyperLogLog sketch. The low PGC_SKETCH_LOG2M
+			 * bits of the type's extended hash (seed 0) pick the register; its
+			 * value is the rank of the first set bit in the rest, kept as a max.
+			 * Pinned by native_sketch: the registers are on disk, and merged with
+			 * ones other builds wrote.
+			 */
+			if (writeState->sketchRegs != NULL && writeState->sketchRegs[c] != NULL)
+			{
+				uint64		h = DatumGetUInt64(
+					FunctionCall2Coll(&writeState->colDefs[c].sketchFn,
+									  writeState->colDefs[c].sketchCollation,
+									  v, Int64GetDatum(0)));
+				uint64		w = h >> PGC_SKETCH_LOG2M;
+				uint8		rank = (w == 0) ? (uint8) (64 - PGC_SKETCH_LOG2M + 1)
+					: (uint8) (pg_rightmost_one_pos64(w) + 1);
+				uint8	   *reg = &writeState->sketchRegs[c][h & (PGC_SKETCH_REGISTERS - 1)];
+
+				if (rank > *reg)
+					*reg = rank;
 			}
 
 			/* maintain the per-chunk exact int sum for the zone map (D5) */
@@ -3354,6 +3489,15 @@ flush_row_group(PgColumnarWriteState *writeState, bool keep)
 			PgColumnarInsertZoneMapRow((NativeZoneMapMetadata *) lfirst(lc));
 		foreach(lc, bloomRows)
 			PgColumnarInsertBloomRow((NativeBloomMetadata *) lfirst(lc));
+		if (writeState->sketchRegs != NULL)
+			for (c = 0; c < natts; c++)
+				if (writeState->sketchRegs[c] != NULL)
+				{
+					PgColumnarInsertSketchRow(writeState->storageId, groupNumber, c,
+											  writeState->sketchRegs[c],
+											  PGC_SKETCH_REGISTERS);
+					memset(writeState->sketchRegs[c], 0, PGC_SKETCH_REGISTERS);
+				}
 
 		PgColumnarEndMetadataFlush();
 	}

@@ -42,14 +42,19 @@ ALTER TABLE pgcolumnar.zone_map ADD COLUMN IF NOT EXISTS max_upper bytea;
 -- plain view while its sibling errored on the same relation. The predicate is
 -- copied from set_options verbatim and deliberately not widened; see the
 -- comment in the function body.
-CREATE OR REPLACE FUNCTION pgcolumnar.reset_options(
+-- #1309 adds sketch_columns, a new argument, so the old signature is dropped
+-- rather than replaced, and the COMMENT ON is re-issued with it.
+DROP FUNCTION IF EXISTS pgcolumnar.reset_options(regclass, bool, bool, bool, bool, bool, bool);
+
+CREATE FUNCTION pgcolumnar.reset_options(
 	table_name regclass,
 	chunk_group_row_limit bool DEFAULT false,
 	stripe_row_limit bool DEFAULT false,
 	compression bool DEFAULT false,
 	compression_level bool DEFAULT false,
 	encode_effort bool DEFAULT false,
-	sort_by bool DEFAULT false)
+	sort_by bool DEFAULT false,
+	sketch_columns bool DEFAULT false)
 	RETURNS void
 	LANGUAGE plpgsql
 	AS $reset_options$
@@ -107,10 +112,16 @@ BEGIN
 			THEN NULL ELSE o.encode_effort END,
 		sort_by = CASE
 			WHEN reset_options.sort_by
-			THEN NULL ELSE o.sort_by END
+			THEN NULL ELSE o.sort_by END,
+		sketch_columns = CASE
+			WHEN reset_options.sketch_columns
+			THEN NULL ELSE o.sketch_columns END
 	WHERE o.regclass = table_name;
 END;
 $reset_options$;
+
+COMMENT ON FUNCTION pgcolumnar.reset_options(regclass, bool, bool, bool, bool, bool, bool, bool)
+	IS 'reset per-table columnar options to the instance defaults';
 
 -- set_options accepts a columnar MATERIALIZED VIEW (#1265). jd settled the
 -- question this file's sibling comment left open: a matview holds rows of its
@@ -127,13 +138,15 @@ $reset_options$;
 --   < FN|pgcolumnar.set_options(...)|2113853fea4ad7a654560b4e1784045e|...
 --   > FN|pgcolumnar.set_options(...)|44abe8992bafb0acd1e809cdb1b0c3d9|...
 --
--- The body below is copied verbatim from pgcolumnar--1.0-alpha5.sql, with only
--- CREATE changed to CREATE OR REPLACE. The two must stay byte-identical from
--- the argument list down; that suite is what enforces it. CREATE OR REPLACE
--- keeps the existing COMMENT ON, which is why none is re-issued here -- the
--- same reason reset_options above does not re-issue its own.
+-- The body below is copied verbatim from pgcolumnar--1.0-alpha5.sql. The two
+-- must stay byte-identical from the argument list down; that suite is what
+-- enforces it. Since #1309 the old signature is dropped first, so the COMMENT ON
+-- is re-issued after it, as reset_options' above is.
 
-CREATE OR REPLACE FUNCTION pgcolumnar.set_options(
+-- #1309 adds sketch_columns, a new argument: dropped and re-created, comment and all.
+DROP FUNCTION IF EXISTS pgcolumnar.set_options(regclass, int, int, name, int, name, name[], name, interval);
+
+CREATE FUNCTION pgcolumnar.set_options(
 	table_name regclass,
 	chunk_group_row_limit int DEFAULT NULL,
 	stripe_row_limit int DEFAULT NULL,
@@ -142,7 +155,8 @@ CREATE OR REPLACE FUNCTION pgcolumnar.set_options(
 	encode_effort name DEFAULT NULL,
 	sort_by name[] DEFAULT NULL,
 	ttl_column name DEFAULT NULL,
-	ttl_interval interval DEFAULT NULL)
+	ttl_interval interval DEFAULT NULL,
+	sketch_columns name[] DEFAULT NULL)
 	RETURNS void
 	LANGUAGE plpgsql
 	AS $set_options$
@@ -281,13 +295,36 @@ BEGIN
 		END LOOP;
 	END IF;
 
+	/*
+	 * sketch_columns (#1309): each named column must exist, and must be one the
+	 * writer can sketch. pgcolumnar.check_sketch_column applies the writer's own
+	 * predicate, so set_options cannot accept a column the writer would skip.
+	 */
+	IF sketch_columns IS NOT NULL THEN
+		FOREACH col IN ARRAY sketch_columns LOOP
+			IF NOT EXISTS (SELECT 1 FROM pg_attribute a
+						   WHERE a.attrelid = table_name
+							 AND a.attname = col
+							 AND a.attnum > 0
+							 AND NOT a.attisdropped
+							 AND a.attgenerated <> 'v') THEN
+				RAISE EXCEPTION 'column "%" cannot be used in sketch_columns for table %',
+					col, table_name
+					USING ERRCODE = 'undefined_column',
+						HINT = 'The column must exist, must not be dropped, '
+						'and must not be a VIRTUAL generated column.';
+			END IF;
+			PERFORM pgcolumnar.check_sketch_column(table_name, col);
+		END LOOP;
+	END IF;
+
 	INSERT INTO pgcolumnar.options AS o
 		(regclass, chunk_group_row_limit, stripe_row_limit,
 		 compression, compression_level, encode_effort, sort_by,
-		 ttl_column, ttl_interval)
+		 ttl_column, ttl_interval, sketch_columns)
 	VALUES (table_name, chunk_group_row_limit, stripe_row_limit,
 			compression, compression_level, encode_effort, sort_by,
-			ttl_column, ttl_interval)
+			ttl_column, ttl_interval, sketch_columns)
 	ON CONFLICT (regclass) DO UPDATE SET
 		chunk_group_row_limit =
 			COALESCE(EXCLUDED.chunk_group_row_limit, o.chunk_group_row_limit),
@@ -304,9 +341,14 @@ BEGIN
 		ttl_column =
 			COALESCE(EXCLUDED.ttl_column, o.ttl_column),
 		ttl_interval =
-			COALESCE(EXCLUDED.ttl_interval, o.ttl_interval);
+			COALESCE(EXCLUDED.ttl_interval, o.ttl_interval),
+		sketch_columns =
+			COALESCE(EXCLUDED.sketch_columns, o.sketch_columns);
 END;
 $set_options$;
+
+COMMENT ON FUNCTION pgcolumnar.set_options(regclass, int, int, name, int, name, name[], name, interval, name[])
+	IS 'set per-table columnar options; NULL leaves a value unchanged. sort_by declares the physical sort key applied by vacuum_sorted() with no explicit columns (#288); it is NOT auto-maintained -- rows inserted after a sort append in insert order, so re-run vacuum_sorted() to re-establish it, like PostgreSQL CLUSTER';
 
 
 /*
@@ -2023,3 +2065,33 @@ BEGIN
 		 sorted_rows, appended_rows;
 END;
 $sort_status$;
+
+-- Per-row-group distinct-count sketches (#1309): the option column, the catalog and
+-- the check set_options calls. All three are in pgcolumnar--1.0-alpha5.sql too, so
+-- a fresh install and an upgraded one converge.
+ALTER TABLE pgcolumnar.options ADD COLUMN IF NOT EXISTS sketch_columns name[];
+
+/* ---------------------------------------------------------------------------
+ * pgcolumnar.sketch (#1309)
+ *
+ * One HyperLogLog sketch per row group for each column the table's options name
+ * in sketch_columns: 2048 one-byte registers, from the type's extended hash
+ * (seed 0) of each non-NULL value. Keyed like bloom, and like bloom NOT dumped:
+ * a restore rewrites the rows, and the writer rewrites the sketches with them.
+ * ------------------------------------------------------------------------- */
+CREATE TABLE pgcolumnar.sketch (
+	storage_id bigint NOT NULL,
+	group_number bigint NOT NULL,
+	column_index smallint NOT NULL,
+	registers bytea NOT NULL
+);
+CREATE UNIQUE INDEX sketch_pkey
+	ON pgcolumnar.sketch USING btree (storage_id, group_number, column_index);
+
+CREATE FUNCTION pgcolumnar.check_sketch_column(table_name regclass, col name)
+	RETURNS void
+	LANGUAGE C STABLE STRICT
+	AS 'MODULE_PATHNAME', 'pgcolumnar_check_sketch_column';
+
+COMMENT ON FUNCTION pgcolumnar.check_sketch_column(regclass, name)
+	IS 'raise 0A000 unless the column can carry a distinct-count sketch (#1309): an extended hash, and a deterministic collation';

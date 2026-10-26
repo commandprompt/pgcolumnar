@@ -7196,4 +7196,4 @@ suites_not_covered 25
 #     never         4566 + 1 = 4567
 #     dated         3506 + 8 = 3514
 #     4567 + 3514 == 8081
-checks_never_observed_red 4567
+checks_never_observed_red 4572

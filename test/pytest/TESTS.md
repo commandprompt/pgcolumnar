@@ -393,6 +393,7 @@ behaviour, the source of that number is named.
 - [345. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap](#345-test_parquet_exportpy-pgcolumnarexport_parquet-writes-a-file-two-readers-read-back-equal-to-the-heap)
 - [346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined](#346-test_planner_choice_qualitypy-the-planners-chosen-plan-is-not-far-slower-than-the-plans-it-declined)
 - [347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open](#347-test_objstore_export_open_uploadspy-a-cancelled-remote-export-leaves-none-of-its-multipart-uploads-open)
+- [348. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does](#348-test_native_sketchpy-a-named-column-gets-one-distinct-count-sketch-per-row-group-and-nothing-else-does)
 
 ## 1. How to read a test in here
 
@@ -13009,3 +13010,43 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | `test_silent_listing_reports_its_own_cancel` | silent listing: the export reports its own cancel (57014) |
 | `test_silent_listing_returned_promptly` | silent listing: the export returned within 30 s of the cancel |
 | `test_silent_listing_the_server_survived` | silent listing: the server survived |
+
+## 348. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does
+
+The twin of `test/native_sketch.sh` (#1309 phase 1), every check by the shell's name. A column named in `set_options(sketch_columns => ...)` gets one HyperLogLog sketch per row group in `pgcolumnar.sketch`: 2048 one-byte registers from the type's extended hash (seed 0) of each non-NULL value. The option refuses an unknown column (42703), a type with no extended hash and a nondeterministic collation (0A000). A group of one value sets one register and an all-NULL group none. The registers of a fixed group are pinned by digest, and recomputed independently in SQL from `hashint8extended`. A parallel flush writes the same sketch; a projection's storage gets none; vacuum, compact_rewrite, TRUNCATE and DROP leave no sketch whose row group is gone, checked over every storage; `reset_options` stops new sketches. A private database.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the shell's scenario once, and makes one `expect` call by the shell's check name. Counts read the base storage by `pgcolumnar.get_storage_id`, because a projection's storage row carries the table's oid too.
+
+| test | what it holds |
+| --- | --- |
+| `test_set_options_accepts_sketch_columns` | set_options accepts sketch_columns naming a column |
+| `test_the_options_row_records_it` | and the options row records it |
+| `test_an_unknown_column_is_refused` | an unknown column is refused |
+| `test_a_type_with_no_extended_hash_is_refused` | a column whose type has no extended hash is refused |
+| `test_a_nondeterministic_collation_is_refused` | a column with a nondeterministic collation is refused |
+| `test_the_refusals_left_the_option_alone` | the refusals left the recorded option alone |
+| `test_the_insert_wrote_three_row_groups` | premise: the insert wrote three row groups |
+| `test_each_row_group_gets_one_sketch` | each row group gets one sketch for the named column |
+| `test_a_column_not_named_gets_no_sketch` | a column not named gets no sketch |
+| `test_each_sketch_holds_2048_registers` | each sketch holds 2048 registers |
+| `test_a_table_naming_no_column_has_no_sketch` | a table that names no column has no sketch rows |
+| `test_one_group_of_a_value_and_one_of_nulls` | one group of a single value and one of NULLs was written |
+| `test_one_distinct_value_sets_one_register` | a row group of one distinct value sets exactly one register |
+| `test_an_all_null_group_sets_no_register` | an all-NULL row group sets no register |
+| `test_the_sketch_of_a_fixed_group_is_pinned` | the sketch of a fixed row group is pinned |
+| `test_the_registers_follow_the_stated_rule` | the registers follow the stated rule, recomputed in SQL |
+| `test_the_parallel_insert_used_a_worker` | premise: the parallel insert flushed columns in a worker |
+| `test_a_parallel_flush_writes_the_same_sketch` | a parallel flush writes the same sketch as a serial one |
+| `test_the_projection_storage_holds_groups` | premise: the projection's storage holds row groups |
+| `test_a_projection_gets_no_sketch` | a projection's storage gets no sketch |
+| `test_a_rewrite_leaves_one_sketch_per_group` | a rewrite leaves one sketch per surviving row group |
+| `test_compact_rewrite_rewrote_groups` | premise: compact_rewrite rewrote row groups |
+| `test_compact_rewrite_leaves_one_sketch_per_group` | compact_rewrite leaves one sketch per surviving row group |
+| `test_reset_options_clears_sketch_columns` | reset_options clears sketch_columns |
+| `test_the_insert_after_the_reset_wrote_a_group` | premise: the insert after the reset wrote a row group |
+| `test_a_group_after_the_reset_gets_no_sketch` | a row group written after the reset gets no sketch |
+| `test_truncate_leaves_no_sketch` | TRUNCATE leaves no sketch for the old storage |
+| `test_drop_leaves_no_sketch` | DROP TABLE leaves no sketch behind |
+| `test_no_sketch_outlives_its_row_group` | no sketch outlives its row group |

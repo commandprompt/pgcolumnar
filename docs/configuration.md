@@ -167,6 +167,7 @@ SELECT pgcolumnar.set_options(
 | `sort_by` | name[] | Declared physical sort key (#288), applied by `pgcolumnar.vacuum_sorted(t)` with no columns. Column names, so it survives `pg_dump`/restore. Not auto-maintained; re-run after inserts. Cannot name a virtual generated column. Clear with `reset_options(t, sort_by => true)`. |
 | `ttl_column` | name | The `date`, `timestamp` or `timestamptz` column a retention is measured on. On a `date` column the cutoff is truncated to the day, so a row dated on the cutoff is kept. Set it with `ttl_interval`; neither works alone. Nothing is deleted until `pgcolumnar.expire(t)` runs: by name, or from the daemon with `pgcolumnar.autovacuum_expire` on. |
 | `ttl_interval` | interval | How long a row is kept, measured from `ttl_column`. `pgcolumnar.expire(t)` then drops row groups whose rows are all older than this. A group with one live row is kept whole. |
+| `sketch_columns` | name[] | Columns that get a distinct-count sketch in each row group: about 2 KB per row group per column, in `pgcolumnar.sketch`. The type needs an extended hash function, and a text column a deterministic collation; anything else is refused with SQLSTATE 0A000. Rows written before the option was set have no sketch. Clear with `reset_options(t, sketch_columns => true)`. |
 
 **A `stripe_row_limit` below 1024 disables FSST on text columns.** A vector is a
 fixed 1024 values. A row group smaller than that never fills one, so the
