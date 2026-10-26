@@ -238,10 +238,13 @@ At the cap the node hands its groups to the `Finalize` and empties its table.
 Then it carries on. The `Finalize` combines the groups, and it spills to disk
 within `work_mem`. `EXPLAIN ANALYZE` reports each hand-off in
 `Columnar Group Table Flushes`. It reports the most the table held at once in
-`Columnar Group Table Peak Memory`. Other aggregates keep the serial node. An
-example is `sum` over `bigint` or `numeric`. Those queries still stop with the
-error above. To keep larger tables on the fast path, raise
-`pgcolumnar.groupagg_max_groups`.
+`Columnar Group Table Peak Memory`. The other aggregates, `sum` and `avg` over
+`bigint` and `numeric`, keep the serial node. At the cap it writes its groups to
+a sort, which spills within `work_mem`, and empties its table. At the end it
+merges each group's parts and finishes them once. The answer, scale included,
+is the one core gives. A group key whose type has no ordering cannot be sorted,
+so such a query runs the ordinary plan. The error above is no longer reached.
+To keep larger tables on the fast path, raise `pgcolumnar.groupagg_max_groups`.
 
 ### Encode effort
 

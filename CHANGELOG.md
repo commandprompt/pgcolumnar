@@ -256,8 +256,13 @@ true until the next version shipped.
   reports the most the table held at once as `Columnar Group Table Peak Memory`. This
   covers `count`, `sum` and `avg` over integer and float columns, and `min` and
   `max`. A plan that outlives its bound (the cap lowered under a prepared
-  statement, or the table grown past it) now answers what core answers. Other
-  aggregates keep the serial node and the error. The `Finalize` is priced as
+  statement, or the table grown past it) now answers what core answers. The
+  other aggregates, `sum` and `avg` over `bigint` and `numeric`, keep the
+  serial node, which at the cap writes its groups to a sort (spilling within
+  `work_mem`), empties its table, and at the end merges each group's parts and
+  finishes them once, so the value and scale are core's. A group key with no
+  ordering gets the ordinary plan. The `groupagg_max_groups` error is no longer
+  reached. The `Finalize` is priced as
   free, measured on #1300: 0.97 to 1.02 of the bare node's runtime from 10 to 1M
   groups, so no plan choice changes.
 
