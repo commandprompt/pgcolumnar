@@ -729,6 +729,22 @@ def test_the_committed_ledger_and_budget_agree(expect):
                "and the ceiling matches the suites with no rows")
 
 
+def test_the_budget_holds_no_history(expect):
+    """#1431. Every PR appended its derivation above the census line, so any two PRs
+    that changed the ledger conflicted on the budget's end. The derivation belongs in
+    the commit message, where its Ledger-census trailer is checked against the tsv. A
+    derivation line anywhere refuses: old restates wrapped one mid-paragraph."""
+    lines = (REPO / "test" / "check_ledger_budget.txt").read_text().splitlines()
+    derivation = re.compile(r"ledger rows|^#\s+(never|dated)\s+[0-9]")
+    expect.num(len([l for l in lines if derivation.search(l)]), 0,
+               "the budget holds no derivation line")
+    expect.num(len([l for l in lines if re.match(r"# (#[0-9]+|MERGED)", l)]), 0,
+               "the budget holds no history paragraph")
+    last = [l for l in lines if l.strip()][-1]
+    expect.num(1 if re.fullmatch(r"checks_never_observed_red [0-9]+", last) else 0, 1,
+               "the census is the budget's last line")
+
+
 def test_the_ledger_refuses_two_rows_sharing_one_key(tmp_path, expect):
     """The same class one level down, found while building the arm above.
 

@@ -2490,8 +2490,11 @@ harness_selftest	410-a-check-must-have-been-red	raising the ceiling above its co
 harness_selftest	410-a-check-must-have-been-red	raising the ceiling in the tracked file is refused	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	regenerating the ledger lets the new check through	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	so a first run on a new major is not a failure	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	the budget holds no derivation line	15;16;17;18;19	2026-10-26	check_ledger_budget.txt: the budget as main 6ae11a38 carries it, with 7142 lines of history paragraphs and derivations (mutation, #1431)
+harness_selftest	410-a-check-must-have-been-red	the budget holds no history paragraph	15;16;17;18;19	2026-10-26	check_ledger_budget.txt: the budget as main 6ae11a38 carries it, with 7142 lines of history paragraphs and derivations (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	the budget names a ceiling and a census, and says which is which	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the ceiling refuses being exceeded	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	the census is the budget's last line	15;16;17;18;19	2026-10-26	check_ledger_budget.txt: a plain comment line appended after the census line (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	the check the run still emits is not called an orphan	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the committed census matches the committed ledger	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the dated fixture differs from the control in the premise row's date alone	15;16;17;18;19	never	-

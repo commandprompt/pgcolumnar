@@ -2949,6 +2949,10 @@ If they disagree, one was edited by hand. `suites_not_covered` is 250 of 251, so
 gate cannot refuse a new check in 250 suites — a real limit, counted rather than hidden,
 which falls as suites are seeded.
 
+### `test_the_budget_holds_no_history`
+
+`check_ledger_budget.txt` holds its header, the two numbers and nothing after the census line (#1431). A derivation line (`ledger rows`, or a `never`/`dated` arithmetic line) anywhere refuses, and so does a paragraph that opens with `# #NNNN` or `# MERGED`. The derivation belongs in the commit message's `Ledger-census` trailer. Same three check names as `test/selftest/410-a-check-must-have-been-red.sh`.
+
 ### `test_the_gate_refuses_a_census_that_contradicts_its_own_ledger`
 
 The arm above asserts the two committed files agree. This one asserts the **tool

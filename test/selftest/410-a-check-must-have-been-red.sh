@@ -967,6 +967,20 @@ check "the committed census matches the committed ledger" \
 check "the budget names a ceiling and a census, and says which is which" \
 	"$(grep -cE '^(suites_not_covered|checks_never_observed_red) [0-9]+$' "$_budget")" "2"
 
+# ---- #1431: the budget holds no history -------------------------------------
+#
+# Every PR appended its derivation above the census line, so any two PRs that
+# changed the ledger conflicted on the budget's end and needed a restate. The
+# derivation belongs in the commit message, where its Ledger-census trailer is
+# checked against the tsv. A derivation line anywhere refuses, not only at a
+# paragraph start: old restates wrapped one mid-paragraph ("2812 ->\n# 2818").
+check "the budget holds no derivation line" \
+	"$(grep -cE 'ledger rows|^#[[:space:]]+(never|dated)[[:space:]]+[0-9]' "$_budget" || true)" "0"
+check "the budget holds no history paragraph" \
+	"$(grep -cE '^# (#[0-9]+|MERGED)' "$_budget" || true)" "0"
+check "the census is the budget's last line" \
+	"$(grep -v '^[[:space:]]*$' "$_budget" | tail -1 | grep -cE '^checks_never_observed_red [0-9]+$' || true)" "1"
+
 
 # ---- #952: the census is printed AND compared -------------------------------
 #
