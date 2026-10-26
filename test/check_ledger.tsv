@@ -6178,6 +6178,54 @@ phase4	phase4	uq unchanged	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolum
 phase4	phase4	uq within-stmt dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a unique check that finds a buffered row calls abort()
 phase4	phase4	uq2 count	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_index_fetch_tuple returns nothing to a dirty snapshot, so a unique check never sees the existing row
 phase4	phase4	uq2 dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a duplicate of a flushed unique key is refused with an internal error (XX000) not 23505
+phase5	phase5	both entry points accept a columnar matview (#1265, settled)	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options admits relkind r only, refusing a columnar matview (IN ('r', 'm') -> IN ('r'))
+phase5	phase5	chunk group limit applied	15;16;17;18;19	2026-10-26	columnar_write_state.c: the write state ignores a per-table chunk_group_row_limit (if (false && opts.chunkGroupRowLimitSet))
+phase5	phase5	columnar default plan is not parallel	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	columnar default uses custom scan, not seqscan	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	control: a partitioned parent is still refused by both	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options skips its relkind and access-method guard (IF NOT EXISTS -> IF false AND NOT EXISTS)
+phase5	phase5	control: both entry points accept an ordinary columnar table	15;16;17;18;19	never	-
+phase5	phase5	covering count(*) skips the scan	15;16;17;18;19	2026-10-26	columnar_vector.c: an unfiltered aggregate always scans instead of answering from zone-map metadata (needsScan = true || (quals != NIL))
+phase5	phase5	default uses zstd	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.compression boots as LZ4 instead of ZSTD (COLUMNAR_COMPRESSION_ZSTD -> COLUMNAR_COMPRESSION_LZ4)
+phase5	phase5	disable custom scan -> seq scan	15;16;17;18;19	2026-10-26	columnar_customscan.c: the custom scan ignores pgcolumnar.enable_custom_scan (if (false && !pgcolumnar_enable_custom_scan))
+phase5	phase5	equality full result	15;16;17;18;19	2026-10-26	columnar_reader.c: the zone-map skip decision is inverted (match = !pgcolumnar_native_group_can_match(...)), so matching groups are skipped
+phase5	phase5	filtered count(*) also scans one group	15;16;17;18;19	2026-10-26	columnar_reader.c: every chunk group is read, its zone-map match ignored (match = true || pgcolumnar_native_group_can_match(...))
+phase5	phase5	filtered reads one group	15;16;17;18;19	2026-10-26	columnar_reader.c: every chunk group is read, its zone-map match ignored (match = true || pgcolumnar_native_group_can_match(...))
+phase5	phase5	filtered select uses custom scan	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	filtered skips four groups	15;16;17;18;19	2026-10-26	columnar_reader.c: every chunk group is read, its zone-map match ignored (match = true || pgcolumnar_native_group_can_match(...))
+phase5	phase5	option none disables compression	15;16;17;18;19	2026-10-26	columnar_write_state.c: the write state ignores a per-table compression option (if (opts.compressionSet) -> if (false && opts.compressionSet))
+phase5	phase5	plain select uses custom scan	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	premise: the columnar fixture is relkind r on the columnar access method	15;16;17;18;19	never	-
+phase5	phase5	premise: the heap fixture is relkind r and is NOT columnar	15;16;17;18;19	never	-
+phase5	phase5	premise: the matview fixture is relkind m on the columnar access method	15;16;17;18;19	never	-
+phase5	phase5	premise: the partitioned fixture is relkind p with no storage	15;16;17;18;19	never	-
+phase5	phase5	projects one column	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarProjectionFromAttnos projects every column (if (projected == NULL) -> if (true || projected == NULL))
+phase5	phase5	projects two columns	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarProjectionFromAttnos projects every column (if (projected == NULL) -> if (true || projected == NULL))
+phase5	phase5	pushdown matches off	15;16;17;18;19	2026-10-26	columnar_reader.c: the zone-map skip decision is inverted (match = !pgcolumnar_native_group_can_match(...)), so matching groups are skipped
+phase5	phase5	pushdown-on count	15;16;17;18;19	2026-10-26	columnar_reader.c: the zone-map skip decision is inverted (match = !pgcolumnar_native_group_can_match(...)), so matching groups are skipped
+phase5	phase5	pushdown-on sum matches off	15;16;17;18;19	2026-10-26	columnar_reader.c: the zone-map skip decision is inverted (match = !pgcolumnar_native_group_can_match(...)), so matching groups are skipped
+phase5	phase5	reset restores default limit	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options keeps chunk_group_row_limit when asked to reset it (THEN NULL -> THEN o.chunk_group_row_limit)
+phase5	phase5	select star projects all	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	seq-scan fallback returns correct rows	15;16;17;18;19	2026-10-26	columnar_vacuum.c: compaction keeps no row it read (tuplestore_puttupleslot dropped), so a rewrite empties the table
+phase5	phase5	set_options and reset_options agree about a columnar matview	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options admits relkind r only, refusing a columnar matview (IN ('r', 'm') -> IN ('r'))
+phase5	phase5	set_options and reset_options agree about a columnar table	15;16;17;18;19	never	-
+phase5	phase5	set_options and reset_options agree about a heap table	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options skips its relkind and access-method guard (IF NOT EXISTS -> IF false AND NOT EXISTS)
+phase5	phase5	set_options and reset_options agree about a partitioned parent	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options skips its relkind and access-method guard (IF NOT EXISTS -> IF false AND NOT EXISTS)
+phase5	phase5	table has three columns	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	the vi point lookup really uses the index	15;16;17;18;19	2026-10-26	columnar_customscan.c: the custom scan ignores pgcolumnar.enable_custom_scan (if (false && !pgcolumnar_enable_custom_scan))
+phase5	phase5	unfiltered sum answered from metadata	15;16;17;18;19	2026-10-26	columnar_vector.c: an unfiltered aggregate always scans instead of answering from zone-map metadata (needsScan = true || (quals != NIL))
+phase5	phase5	v compacts to one stripe	15;16;17;18;19	2026-10-26	columnar_vacuum.c: pgcolumnar.vacuum does not compact (pgcolumnar_compact_relation(rel, 0, NULL) dropped)
+phase5	phase5	v deleted rows tracked	15;16;17;18;19	2026-10-26	columnar_tableam.c: tuple_delete reports success without marking the row deleted (PgColumnarMarkRowDeleted dropped)
+phase5	phase5	v live rows after delete	15;16;17;18;19	2026-10-26	columnar_tableam.c: tuple_delete reports success without marking the row deleted (PgColumnarMarkRowDeleted dropped)
+phase5	phase5	v no deleted rows after vacuum	15;16;17;18;19	2026-10-26	columnar_vacuum.c: pgcolumnar.vacuum does not compact (pgcolumnar_compact_relation(rel, 0, NULL) dropped)
+phase5	phase5	v rows correct after vacuum	15;16;17;18;19	2026-10-26	columnar_tableam.c: tuple_delete reports success without marking the row deleted (PgColumnarMarkRowDeleted dropped)
+phase5	phase5	v starts with five stripes	15;16;17;18;19	2026-10-26	columnar_write_state.c: the write state ignores a per-table stripe_row_limit (if (false && opts.stripeRowLimitSet))
+phase5	phase5	v sum correct after vacuum	15;16;17;18;19	2026-10-26	columnar_tableam.c: tuple_delete reports success without marking the row deleted (PgColumnarMarkRowDeleted dropped)
+phase5	phase5	v value intact after vacuum	15;16;17;18;19	2026-10-26	columnar_reader.c: the zone-map skip decision is inverted (match = !pgcolumnar_native_group_can_match(...)), so matching groups are skipped
+phase5	phase5	vacuum_full keeps data	15;16;17;18;19	2026-10-26	columnar_vacuum.c: compaction keeps no row it read (tuplestore_puttupleslot dropped), so a rewrite empties the table
+phase5	phase5	vi count after vacuum	15;16;17;18;19	2026-10-26	columnar_tableam.c: tuple_delete reports success without marking the row deleted (PgColumnarMarkRowDeleted dropped)
+phase5	phase5	vi index point after vacuum	15;16;17;18;19	2026-10-26	columnar_vacuum.c: pgcolumnar_compact_relation does not rebuild the indexes after renumbering the rows (PgColumnarReindexRelation dropped)
+phase5	phase5	vi index sees deletion after vacuum	15;16;17;18;19	2026-10-26	columnar_vacuum.c: pgcolumnar_compact_relation does not rebuild the indexes after renumbering the rows (PgColumnarReindexRelation dropped)
+phase5	phase5	vi index survivor after vacuum	15;16;17;18;19	2026-10-26	columnar_vacuum.c: compaction keeps no row it read (tuplestore_puttupleslot dropped), so a rewrite empties the table
 phase6	phase6	avg filtered	15;16;17;18;19	never	-
 phase6	phase6	avg(a) ignores nulls	15;16;17;18;19	never	-
 phase6	phase6	avg(bigint)->numeric	15;16;17;18;19	never	-

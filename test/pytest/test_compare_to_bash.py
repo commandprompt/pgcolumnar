@@ -91,6 +91,7 @@ COMPLETE = ["advisory_lock_class",
             "server_file_privilege",
             "inheritance",
             "parquet_import",
+            "phase5",
             "smoke",
             "sort_status",
             "sort_status_privilege",
@@ -393,9 +394,6 @@ COMPLETE = ["advisory_lock_class",
 INCOMPLETE = {
     # #1341 item 29 ported the arms four fixes added with shell arms only. Each
     # pair below holds that fix's arms and nothing else of its shell suite.
-    "phase5": "the #1265 arms (set_options and reset_options agree on every relkind, "
-              "accept a columnar matview and refuse a partitioned parent) are "
-              "ported; the projection, pushdown, compression and vacuum arms are not",
     "drop_cleanup": "the #1265 arms (a columnar matview's options row goes with its "
                     "DROP and survives its REFRESH, with an unrelated row as the "
                     "control) are ported; the storage and catalog cleanup arms are not",
