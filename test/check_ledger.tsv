@@ -2302,6 +2302,8 @@ harness_selftest	410-a-check-must-have-been-red	a check observed red gains the d
 harness_selftest	410-a-check-must-have-been-red	a check seen once claims the one major it was seen on	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a check the ledger has never seen is refused	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a clean status says nothing and does not fail the major	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a commit that leaves the tsv alone needs no trailer	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits checks every commit in the range, not only those that change the tsv (mutation, #1431)
+harness_selftest	410-a-check-must-have-been-red	a commit whose trailer matches its tsv passes the census-commit gate	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits checks every commit in the range, not only those that change the tsv (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a date that is not a date is refused rather than stored	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a deliberate break says so with --mutation	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a gate over a nonexistent log is an integrity failure, not a pass	15;16;17;18;19	never	-
@@ -2315,9 +2317,11 @@ harness_selftest	410-a-check-must-have-been-red	a log from ANOTHER tree is refus
 harness_selftest	410-a-check-must-have-been-red	a log naming NO source fingerprint is refused when one is expected	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a log whose source fingerprint is the expected one is read	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a major the ledger holds no row for refuses nothing, as an uncovered suite does	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a missing trailer is refused	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a name that appeared while another disappeared is reported as a rename	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a named mutation is recorded against the check that reddened	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a premise the ledger has seen go red is refused	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a range with no merge base is an integrity failure	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits carries on without a merge base instead of failing closed (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a real refusal is a different status from an integrity failure	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a ref that does not resolve is an integrity failure, not a bootstrap	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a ref that exists with the budget still compares	15;16;17;18;19	never	-
@@ -2332,9 +2336,12 @@ harness_selftest	410-a-check-must-have-been-red	a run that emits every row in it
 harness_selftest	410-a-check-must-have-been-red	a run whose checks are all ledgered passes the gate	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a second major is ADDED to the set, sorted, not written over the first	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a second mutation ACCUMULATES rather than replacing the first	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a self-inconsistent trailer is refused	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a skipped part is NOT an orphan, so --orphans-only returns 0	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	a stale prior is named WITH its distance from HEAD	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a stale trailer is refused	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a target that did not fail is refused, because the claim is wrong	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	a trailer outside the final trailer block is refused as missing	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431);pgc_ledger.py: census-commits reads trailer lines from the whole message, not git's final trailer block (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	a verdict pgc_record cannot emit is an integrity failure	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	an absolute budget path resolves against git rather than shrugging	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	an empty check name is one too, because it names no check	15;16;17;18;19	never	-
@@ -2358,6 +2365,7 @@ harness_selftest	410-a-check-must-have-been-red	and an undated merge does not er
 harness_selftest	410-a-check-must-have-been-red	and defines it BEFORE the first call, since bash reads top to bottom	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and every job that runs the suite matrix collects from the path it retains	15;16;17;18;19	2026-09-24	the matrix job's collection step globs only the build directory run_all_versions.sh deletes, so a red run collects no per-suite log at all
 harness_selftest	410-a-check-must-have-been-red	and every suite log is APPENDED to, so the stamp survives the run	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	and for being inconsistent, not only for disagreeing with the tsv	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits does not check that dated is rows - never (mutation, #1431);pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	and it copies them BEFORE removing the build directory, which is the only order that works	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and it entered as debt, not as an observation nothing made	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and it is REFUSED, not merely printed	15;16;17;18;19	never	-
@@ -2401,6 +2409,7 @@ harness_selftest	410-a-check-must-have-been-red	and the refusal names both value
 harness_selftest	410-a-check-must-have-been-red	and the refusal names how many failed, so the author can narrow the run	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal names the check that reddened	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal names the check that was not claimed as a target	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	and the refusal names the commit and both censuses	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	and the refusal names the fingerprint the log carries, so a reader can tell which tree	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal names the raise	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	and the refusal quotes the claim beside the measurement	15;16;17;18;19	never	-
@@ -2490,19 +2499,24 @@ harness_selftest	410-a-check-must-have-been-red	raising the ceiling above its co
 harness_selftest	410-a-check-must-have-been-red	raising the ceiling in the tracked file is refused	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	regenerating the ledger lets the new check through	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	so a first run on a new major is not a failure	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	the budget holds no derivation line	15;16;17;18;19	2026-10-26	check_ledger_budget.txt: the budget as main 6ae11a38 carries it, with 7142 lines of history paragraphs and derivations (mutation, #1431)
+harness_selftest	410-a-check-must-have-been-red	the budget holds no history paragraph	15;16;17;18;19	2026-10-26	check_ledger_budget.txt: the budget as main 6ae11a38 carries it, with 7142 lines of history paragraphs and derivations (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	the budget names a ceiling and a census, and says which is which	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the ceiling refuses being exceeded	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	the census is the budget's last line	15;16;17;18;19	2026-10-26	check_ledger_budget.txt: a plain comment line appended after the census line (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	the check the run still emits is not called an orphan	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the committed census matches the committed ledger	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the dated fixture differs from the control in the premise row's date alone	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the distance travels with a refusal too, not only with a pass	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the four categories account for every ledger row	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the gate refuses to run without the registered suite list	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	the good range holds one tsv commit, so its pass checked something	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits checks every commit in the range, not only those that change the tsv (mutation, #1431);pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	the helper writes a source line a reader can parse	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the ledger partitions into observed and never	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the orphan scan stays a REPORT while any skip loop cannot be compared to its arms	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the refusal says why, rather than only that it refused	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the runner asks the tool to resolve the prior rather than naming one	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	the runner calls the census-commit gate with the ledger gate's prior	15;16;17;18;19	2026-10-26	run_all_versions.sh: the runner does not call census-commits (mutation, #1431)
 harness_selftest	410-a-check-must-have-been-red	the runner captures the gate's status rather than only its success	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the runner defines one stamping helper rather than repeating the line	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the runner invokes the ledger gate	15;16;17;18;19	never	-
@@ -2516,6 +2530,7 @@ harness_selftest	410-a-check-must-have-been-red	the scan reports a finding on a 
 harness_selftest	410-a-check-must-have-been-red	the stable check is not reported	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	the suites job fetches the PR base for the ceiling comparison	15;16;17;18;19	never	-
 harness_selftest	410-a-check-must-have-been-red	two checks stay two rows whatever the majors, because the key is not the major	15;16;17;18;19	never	-
+harness_selftest	410-a-check-must-have-been-red	two trailers are refused	15;16;17;18;19	2026-10-26	pgc_ledger.py: census-commits passes the tsv pathspec unanchored, so from the tsv's directory it matches no commit (mutation, #1431);pgc_ledger.py: census-commits takes the first of several Ledger-census trailers (mutation, #1431)
 harness_selftest	420-a-deleted-part-must-be-visible	and every name in the manifest is a part on disk, so a deletion reddens	15;16;17;18;19	never	-
 harness_selftest	420-a-deleted-part-must-be-visible	every part on disk is named in the manifest	15;16;17;18;19	never	-
 harness_selftest	420-a-deleted-part-must-be-visible	premise: a part present in the manifest and missing on disk is named	15;16;17;18;19	never	-
@@ -3362,22 +3377,22 @@ index_only	index_only	vm bit round-trips on columnar rel (block 0)	15;16;17;18;1
 index_only	index_only	vm bit round-trips on columnar rel (block 171)	15;16;17;18;19	never	-
 index_only	index_only	vm bit round-trips on columnar rel (block 3)	15;16;17;18;19	never	-
 index_only	index_only	vm bit round-trips on columnar rel (block 50)	15;16;17;18;19	never	-
-inheritance	inheritance	INHERITS parent includes the child (columnar)	15;16;17;18;19	never	-
+inheritance	inheritance	INHERITS parent includes the child (columnar)	15;16;17;18;19	2026-10-26	columnar_vector.c: the ungrouped vector-aggregate path no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so count(*) reads the parent's own storage alone
 inheritance	inheritance	INHERITS parent includes the child (heap oracle)	15;16;17;18;19	never	-
 inheritance	inheritance	ONLY parent is still just the parent	15;16;17;18;19	never	-
-inheritance	inheritance	SELECT * from an INHERITS parent plans an Append	15;16;17;18;19	never	-
+inheritance	inheritance	SELECT * from an INHERITS parent plans an Append	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarSetRelPathlist no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so a Custom Scan reads the parent's own storage in place of the Append
 inheritance	inheritance	a columnar materialized view is still recognised as columnar	15;16;17;18;19	2026-09-24	the predicate narrowed to `relkind == RELKIND_RELATION` instead of RELKIND_HAS_STORAGE -- the obvious wrong fix, which also excludes RELKIND_MATVIEW and stops a columnar materialized view being recognised at all 31 call sites
-inheritance	inheritance	a large child is still visible through the parent	15;16;17;18;19	never	-
+inheritance	inheritance	a large child is still visible through the parent	15;16;17;18;19	2026-10-26	columnar_vector.c: the ungrouped vector-aggregate path no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so count(*) reads the parent's own storage alone
 inheritance	inheritance	a partitioned parent still returns every row	15;16;17;18;19	never	-
 inheritance	inheritance	add_projection on the parent is refused rather than aborting the backend	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarIsColumnarRelation answers from relam alone again, the #1259 predicate reverted
 inheritance	inheritance	and it still returns its rows	15;16;17;18;19	never	-
 inheritance	inheritance	and the cluster is still up after it	15;16;17;18;19	never	-
 inheritance	inheritance	and the cluster is still up after that too	15;16;17;18;19	never	-
-inheritance	inheritance	and the partition is still a PgColumnarScan (#436)	15;16;17;18;19	never	-
+inheritance	inheritance	and the partition is still a PgColumnarScan (#436)	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarSetRelPathlist admits RELOPT_BASEREL only again, so a declarative partition (RELOPT_OTHER_MEMBER_REL) falls back to a sequential scan (#436 reverted)
 inheritance	inheritance	control: add_projection on the LEAF still works	15;16;17;18;19	never	-
 inheritance	inheritance	control: get_storage_id on the LEAF still returns an id	15;16;17;18;19	never	-
-inheritance	inheritance	count(*) from an INHERITS parent plans an Append	15;16;17;18;19	never	-
-inheritance	inheritance	filtered rows match the heap	15;16;17;18;19	never	-
+inheritance	inheritance	count(*) from an INHERITS parent plans an Append	15;16;17;18;19	2026-10-26	columnar_vector.c: the ungrouped vector-aggregate path no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so count(*) reads the parent's own storage alone
+inheritance	inheritance	filtered rows match the heap	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarSetRelPathlist no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so a Custom Scan reads the parent's own storage in place of the Append
 inheritance	inheritance	get_storage_id on the parent is refused rather than reading storage	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarIsColumnarRelation answers from relam alone again, the #1259 predicate reverted
 inheritance	inheritance	premise: a materialized view is relkind m	15;16;17;18;19	never	-
 inheritance	inheritance	premise: and it carries the columnar access method	15;16;17;18;19	never	-
@@ -3385,9 +3400,9 @@ inheritance	inheritance	premise: and it is partitioned	15;16;17;18;19	never	-
 inheritance	inheritance	premise: so it has no storage of its own	15;16;17;18;19	never	-
 inheritance	inheritance	premise: the parent carries the columnar access method	15;16;17;18;19	never	-
 inheritance	inheritance	premise: while its leaf is an ordinary relation	15;16;17;18;19	never	-
-inheritance	inheritance	row identities match the heap	15;16;17;18;19	never	-
-inheritance	inheritance	the child is visible through the parent	15;16;17;18;19	never	-
-inheritance	inheritance	ungrouped vector aggregation also sees the child rows	15;16;17;18;19	never	-
+inheritance	inheritance	row identities match the heap	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarSetRelPathlist no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so a Custom Scan reads the parent's own storage in place of the Append
+inheritance	inheritance	the child is visible through the parent	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarSetRelPathlist no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so a Custom Scan reads the parent's own storage in place of the Append
+inheritance	inheritance	ungrouped vector aggregation also sees the child rows	15;16;17;18;19	2026-10-26	columnar_vector.c: the ungrouped vector-aggregate path no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so count(*) reads the parent's own storage alone
 int8_agg_int128	int8_agg_int128	a large NEGATIVE sum agrees	15;16;17;18;19	2026-10-21	the int128 to numeric rebuild drops the low half past int64
 int8_agg_int128	int8_agg_int128	a sum past int64 agrees with the scalar path and with heap	15;16;17;18;19	2026-10-21	the int128 to numeric rebuild drops the low half past int64
 int8_agg_int128	int8_agg_int128	and its avg agrees	15;16;17;18;19	2026-10-21	the int128 to numeric rebuild drops the low half past int64
@@ -4956,40 +4971,40 @@ native_saop_pushdown	native_saop_pushdown	the predicate builder's reject express
 native_saop_pushdown	native_saop_pushdown	the predicate builder's reject expression contains SK_SEARCHNULL	15;16;17;18;19	2026-10-16	columnar_reader.c: the reject expression keeps only SK_ISNULL
 native_saop_pushdown	native_saop_pushdown	vector-agg count over an IN-list is exact (conservative keys not folded)	15;16;17;18;19	2026-10-16	columnar_reader.c: a set key never probes the bloom filter (it probes zero values and rules the group out)
 native_saop_pushdown	native_saop_pushdown	vector-agg path engaged for the guard arm (plan shape)	15;16;17;18;19	never	-
-native_sketch	native_sketch	DROP TABLE leaves no sketch behind	18	2026-10-26	columnar_metadata.c: deleting a storage's metadata keeps its sketch rows (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
-native_sketch	native_sketch	TRUNCATE leaves no sketch for the old storage	18	2026-10-26	columnar_metadata.c: deleting a storage's metadata keeps its sketch rows (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
-native_sketch	native_sketch	a column not named gets no sketch	18	2026-10-26	columnar_write_state.c: the writer sketches every column, whatever the option names (mutation, #1309)
-native_sketch	native_sketch	a column whose type has no extended hash is refused	18	2026-10-26	columnar_write_state.c: every column counts as sketchable (mutation, #1309)
-native_sketch	native_sketch	a column with a nondeterministic collation is refused	18	2026-10-26	columnar_write_state.c: every column counts as sketchable (mutation, #1309)
-native_sketch	native_sketch	a kept flush whose subtransaction aborted loses no row from the sketch	18	2026-10-26	columnar_write_state.c and columnar_metadata.c as at 2795e4c9: the registers cleared at every flush, kept (#1360) or not, and a column rename not followed into sketch_columns (#1766 review)
-native_sketch	native_sketch	a parallel flush writes the same sketch as a serial one	18	2026-10-26	columnar_write_state.c: a register's rank is two more than the trailing zeros, not one (mutation, #1309);columnar_write_state.c: a sketch row stores half its registers (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
-native_sketch	native_sketch	a projection's storage gets no sketch	18	2026-10-26	columnar_write_state.c: a projection's writer sets up sketches too (mutation, #1309)
-native_sketch	native_sketch	a rename follows into sketch_columns	18	2026-10-26	columnar_write_state.c and columnar_metadata.c as at 2795e4c9: the registers cleared at every flush, kept (#1360) or not, and a column rename not followed into sketch_columns (#1766 review)
-native_sketch	native_sketch	a rewrite leaves one sketch per surviving row group	18	2026-10-26	columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
-native_sketch	native_sketch	a row group of one distinct value sets exactly one register	18	2026-10-26	columnar_write_state.c: a sketch row stores half its registers (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
-native_sketch	native_sketch	a row group written after a rename still gets its sketch	18	2026-10-26	columnar_write_state.c and columnar_metadata.c as at 2795e4c9: the registers cleared at every flush, kept (#1360) or not, and a column rename not followed into sketch_columns (#1766 review)
-native_sketch	native_sketch	a row group written after the reset gets no sketch	18	2026-10-26	columnar_write_state.c: a table naming no column is sketched as if it named a (mutation, #1309);pgcolumnar--1.0-alpha5.sql: reset_options keeps sketch_columns (mutation, #1309)
-native_sketch	native_sketch	a row group written before the option was set has no sketch row	18	never	-
-native_sketch	native_sketch	a table that names no column has no sketch rows	18	2026-10-26	columnar_write_state.c: a table naming no column is sketched as if it named a (mutation, #1309)
-native_sketch	native_sketch	an all-NULL row group sets no register	18	2026-10-26	columnar_write_state.c: a NULL sets a register (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the registers are not cleared after a row group is flushed (mutation, #1309)
-native_sketch	native_sketch	an unknown column is refused	18	2026-10-26	columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309)
-native_sketch	native_sketch	and the options row records it	18	2026-10-26	columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
-native_sketch	native_sketch	compact_rewrite leaves one sketch per surviving row group	18	2026-10-26	columnar_metadata.c: a retired row group keeps its sketch rows (mutation, #1309);columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
-native_sketch	native_sketch	each row group gets one sketch for the named column	18	2026-10-26	columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
-native_sketch	native_sketch	each sketch holds 2048 registers	18	2026-10-26	columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309);columnar_write_state.c: a sketch row stores half its registers (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
-native_sketch	native_sketch	no sketch outlives its row group	18	2026-10-26	columnar_metadata.c: a retired row group keeps its sketch rows (mutation, #1309);columnar_metadata.c: deleting a storage's metadata keeps its sketch rows (mutation, #1309)
-native_sketch	native_sketch	one group of a single value and one of NULLs was written	18	2026-10-26	columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
-native_sketch	native_sketch	premise: compact_rewrite rewrote row groups	18	never	-
-native_sketch	native_sketch	premise: the insert after the reset wrote a row group	18	never	-
-native_sketch	native_sketch	premise: the insert around the aborted block wrote 1000 distinct rows	18	never	-
-native_sketch	native_sketch	premise: the insert wrote three row groups	18	never	-
-native_sketch	native_sketch	premise: the parallel insert flushed columns in a worker	18	never	-
-native_sketch	native_sketch	premise: the projection's storage holds row groups	18	never	-
-native_sketch	native_sketch	reset_options clears sketch_columns	18	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options keeps sketch_columns (mutation, #1309)
-native_sketch	native_sketch	set_options accepts sketch_columns naming a column	18	2026-10-26	columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
-native_sketch	native_sketch	the refusals left the recorded option alone	18	2026-10-26	columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
-native_sketch	native_sketch	the registers follow the stated rule, recomputed in SQL	18	2026-10-26	columnar_write_state.c: a register's rank is two more than the trailing zeros, not one (mutation, #1309);columnar_write_state.c: a sketch row stores half its registers (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
-native_sketch	native_sketch	the sketch of a fixed row group is pinned	18	2026-10-26	columnar_write_state.c: a register's rank is two more than the trailing zeros, not one (mutation, #1309);columnar_write_state.c: a sketch row stores half its registers (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
+native_sketch	native_sketch	DROP TABLE leaves no sketch behind	15;16;17;18;19	2026-10-26	columnar_metadata.c: deleting a storage's metadata keeps its sketch rows (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
+native_sketch	native_sketch	TRUNCATE leaves no sketch for the old storage	15;16;17;18;19	2026-10-26	columnar_metadata.c: deleting a storage's metadata keeps its sketch rows (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
+native_sketch	native_sketch	a column not named gets no sketch	15;16;17;18;19	2026-10-26	columnar_write_state.c: the writer sketches every column, whatever the option names (mutation, #1309)
+native_sketch	native_sketch	a column whose type has no extended hash is refused	15;16;17;18;19	2026-10-26	columnar_write_state.c: every column counts as sketchable (mutation, #1309)
+native_sketch	native_sketch	a column with a nondeterministic collation is refused	15;16;17;18;19	2026-10-26	columnar_write_state.c: every column counts as sketchable (mutation, #1309)
+native_sketch	native_sketch	a kept flush whose subtransaction aborted loses no row from the sketch	15;16;17;18;19	2026-10-26	columnar_write_state.c and columnar_metadata.c as at 2795e4c9: the registers cleared at every flush, kept (#1360) or not, and a column rename not followed into sketch_columns (#1766 review)
+native_sketch	native_sketch	a parallel flush writes the same sketch as a serial one	15;16;17;18;19	2026-10-26	columnar_write_state.c: a register's rank is two more than the trailing zeros, not one (mutation, #1309);columnar_write_state.c: a sketch row stores half its registers (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
+native_sketch	native_sketch	a projection's storage gets no sketch	15;16;17;18;19	2026-10-26	columnar_write_state.c: a projection's writer sets up sketches too (mutation, #1309)
+native_sketch	native_sketch	a rename follows into sketch_columns	15;16;17;18;19	2026-10-26	columnar_write_state.c and columnar_metadata.c as at 2795e4c9: the registers cleared at every flush, kept (#1360) or not, and a column rename not followed into sketch_columns (#1766 review)
+native_sketch	native_sketch	a rewrite leaves one sketch per surviving row group	15;16;17;18;19	2026-10-26	columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
+native_sketch	native_sketch	a row group of one distinct value sets exactly one register	15;16;17;18;19	2026-10-26	columnar_write_state.c: a sketch row stores half its registers (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
+native_sketch	native_sketch	a row group written after a rename still gets its sketch	15;16;17;18;19	2026-10-26	columnar_write_state.c and columnar_metadata.c as at 2795e4c9: the registers cleared at every flush, kept (#1360) or not, and a column rename not followed into sketch_columns (#1766 review)
+native_sketch	native_sketch	a row group written after the reset gets no sketch	15;16;17;18;19	2026-10-26	columnar_write_state.c: a table naming no column is sketched as if it named a (mutation, #1309);pgcolumnar--1.0-alpha5.sql: reset_options keeps sketch_columns (mutation, #1309)
+native_sketch	native_sketch	a row group written before the option was set has no sketch row	15;16;17;18;19	never	-
+native_sketch	native_sketch	a table that names no column has no sketch rows	15;16;17;18;19	2026-10-26	columnar_write_state.c: a table naming no column is sketched as if it named a (mutation, #1309)
+native_sketch	native_sketch	an all-NULL row group sets no register	15;16;17;18;19	2026-10-26	columnar_write_state.c: a NULL sets a register (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the registers are not cleared after a row group is flushed (mutation, #1309)
+native_sketch	native_sketch	an unknown column is refused	15;16;17;18;19	2026-10-26	columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309)
+native_sketch	native_sketch	and the options row records it	15;16;17;18;19	2026-10-26	columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
+native_sketch	native_sketch	compact_rewrite leaves one sketch per surviving row group	15;16;17;18;19	2026-10-26	columnar_metadata.c: a retired row group keeps its sketch rows (mutation, #1309);columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
+native_sketch	native_sketch	each row group gets one sketch for the named column	15;16;17;18;19	2026-10-26	columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
+native_sketch	native_sketch	each sketch holds 2048 registers	15;16;17;18;19	2026-10-26	columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309);columnar_write_state.c: a sketch row stores half its registers (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
+native_sketch	native_sketch	no sketch outlives its row group	15;16;17;18;19	2026-10-26	columnar_metadata.c: a retired row group keeps its sketch rows (mutation, #1309);columnar_metadata.c: deleting a storage's metadata keeps its sketch rows (mutation, #1309)
+native_sketch	native_sketch	one group of a single value and one of NULLs was written	15;16;17;18;19	2026-10-26	columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
+native_sketch	native_sketch	premise: compact_rewrite rewrote row groups	15;16;17;18;19	never	-
+native_sketch	native_sketch	premise: the insert after the reset wrote a row group	15;16;17;18;19	never	-
+native_sketch	native_sketch	premise: the insert around the aborted block wrote 1000 distinct rows	15;16;17;18;19	never	-
+native_sketch	native_sketch	premise: the insert wrote three row groups	15;16;17;18;19	never	-
+native_sketch	native_sketch	premise: the parallel insert flushed columns in a worker	15;16;17;18;19	never	-
+native_sketch	native_sketch	premise: the projection's storage holds row groups	15;16;17;18;19	never	-
+native_sketch	native_sketch	reset_options clears sketch_columns	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options keeps sketch_columns (mutation, #1309)
+native_sketch	native_sketch	set_options accepts sketch_columns naming a column	15;16;17;18;19	2026-10-26	columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
+native_sketch	native_sketch	the refusals left the recorded option alone	15;16;17;18;19	2026-10-26	columnar_write_state.c and pgcolumnar--1.0-alpha5.sql: neither set_options nor check_sketch_column refuses a column that does not exist (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
+native_sketch	native_sketch	the registers follow the stated rule, recomputed in SQL	15;16;17;18;19	2026-10-26	columnar_write_state.c: a register's rank is two more than the trailing zeros, not one (mutation, #1309);columnar_write_state.c: a sketch row stores half its registers (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
+native_sketch	native_sketch	the sketch of a fixed row group is pinned	15;16;17;18;19	2026-10-26	columnar_write_state.c: a register's rank is two more than the trailing zeros, not one (mutation, #1309);columnar_write_state.c: a sketch row stores half its registers (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309);columnar_write_state.c: the writer never sets up a sketch (mutation, #1309);pgcolumnar--1.0-alpha5.sql: set_options records no sketch_columns (mutation, #1309)
 native_sort_by	native_sort_by	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_vacuum.c: vacuum_sorted with no key declared aborts the backend in place of its refusal
 native_sort_by	native_sort_by	declared sort_by round-trips	15;16;17;18;19	never	-
 native_sort_by	native_sort_by	empty table sorts without error	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the sorted rewrite orders each key descending
@@ -5866,6 +5881,31 @@ parquet_export_stats	parquet_export_stats	the same date unadorned is unknown, ta
 parquet_export_stats	parquet_export_stats	the same digits unquoted are an integer, and skip as well	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the exact-type refusal before #1712 restored, so a constant of another type skips nothing
 parquet_export_stats	parquet_export_stats	the same digits unquoted are an integer, and skip as well (int2)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the exact-type refusal before #1712 restored, so a constant of another type skips nothing
 parquet_export_stats	parquet_export_stats	the same literal unquoted is double precision, and skips as well	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the exact-type refusal before #1712 restored, so a constant of another type skips nothing
+parquet_import	parquet_import	and the cluster is still up, so the refusal was not an abort	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: the RELKIND_HAS_STORAGE guard is skipped, the #1263 fix reverted, so a partitioned parent is imported into (signal 11)
+parquet_import	parquet_import	control: a HEAP target still imports, so the guard is about storage	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
+parquet_import	parquet_import	control: importing that file into the LEAF still works	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
+parquet_import	parquet_import	import into an indexed table: a point lookup finds its row	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: import_parquet opens no index state (sinkarg.indexes = false && PgColumnarRelationHasIndexes(rel)), so imported rows reach no index
+parquet_import	parquet_import	import into an indexed table: both scans agree	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: import_parquet opens no index state (sinkarg.indexes = false && PgColumnarRelationHasIndexes(rel)), so imported rows reach no index
+parquet_import	parquet_import	import into an indexed table: the rows are there	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
+parquet_import	parquet_import	importing into the partitioned parent is refused	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: the RELKIND_HAS_STORAGE guard is skipped, the #1263 fix reverted, so a partitioned parent is imported into (signal 11)
+parquet_import	parquet_import	importing the same keys twice raises unique_violation	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: import_parquet opens no index state (sinkarg.indexes = false && PgColumnarRelationHasIndexes(rel)), so imported rows reach no index
+parquet_import	parquet_import	partial index covers its rows after import	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: import_parquet opens no index state (sinkarg.indexes = false && PgColumnarRelationHasIndexes(rel)), so imported rows reach no index
+parquet_import	parquet_import	plain import first s	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
+parquet_import	parquet_import	plain import rows	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
+parquet_import	parquet_import	plain import sum(id)	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
+parquet_import	parquet_import	premise: a parquet file exists, so the import reaches the relation	15;16;17;18;19	never	-
+parquet_import	parquet_import	premise: so it has no storage of its own	15;16;17;18;19	never	-
+parquet_import	parquet_import	premise: the parent is partitioned and carries the columnar access method	15;16;17;18;19	never	-
+parquet_import	parquet_import	reject column-count mismatch	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: the scalar binder's lf >= pf->ncols check is skipped, so a target with a column the file lacks reads past the file's leaves (signal 11)
+parquet_import	parquet_import	reject non-parquet file	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: the magic check is skipped (if (false && (memcmp(head, PAR1 ...)))), so a file that is not Parquet is parsed as one
+parquet_import	parquet_import	the failed second import left the row count alone	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: import_parquet opens no index state (sinkarg.indexes = false && PgColumnarRelationHasIndexes(rel)), so imported rows reach no index
+parquet_import	parquet_import	the index-scan check really uses the index	15;16;17;18;19	never	-
+parquet_import	parquet_import	v1 contents match heap oracle	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATE adds the Unix-to-PostgreSQL epoch offset instead of subtracting it (pg_sub_s32_overflow -> pg_add_s32_overflow)
+parquet_import	parquet_import	v1 row count matches oracle	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
+parquet_import	parquet_import	v1 rows imported	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
+parquet_import	parquet_import	v2 contents match heap oracle	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATE adds the Unix-to-PostgreSQL epoch offset instead of subtracting it (pg_sub_s32_overflow -> pg_add_s32_overflow)
+parquet_import	parquet_import	v2 row count matches oracle	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE_V2 page reads its values from the start of the level bytes (vraw = praw + levLen -> praw)
+parquet_import	parquet_import	v2 rows imported	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE_V2 page reads its values from the start of the level bytes (vraw = praw + levLen -> praw)
 parquet_level_width	parquet_level_width	a non-positive maximum returns before shifting at all	15;16;17;18;19	2026-10-21	columnar_parquet_format.h: pq_bits_for's non-positive guard is commented out
 parquet_level_width	parquet_level_width	and both callers reach the shared one	15;16;17;18;19	never	-
 parquet_level_width	parquet_level_width	and no signed 1 << remains in it	15;16;17;18;19	2026-10-21	columnar_parquet_format.h: pq_bits_for shifts a signed 1
@@ -6187,6 +6227,54 @@ phase4	phase4	uq unchanged	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolum
 phase4	phase4	uq within-stmt dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a unique check that finds a buffered row calls abort()
 phase4	phase4	uq2 count	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar_index_fetch_tuple returns nothing to a dirty snapshot, so a unique check never sees the existing row
 phase4	phase4	uq2 dup	15;16;17;18;19	2026-10-22	columnar_tableam.c: a duplicate of a flushed unique key is refused with an internal error (XX000) not 23505
+phase5	phase5	both entry points accept a columnar matview (#1265, settled)	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options admits relkind r only, refusing a columnar matview (IN ('r', 'm') -> IN ('r'))
+phase5	phase5	chunk group limit applied	15;16;17;18;19	2026-10-26	columnar_write_state.c: the write state ignores a per-table chunk_group_row_limit (if (false && opts.chunkGroupRowLimitSet))
+phase5	phase5	columnar default plan is not parallel	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	columnar default uses custom scan, not seqscan	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	control: a partitioned parent is still refused by both	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options skips its relkind and access-method guard (IF NOT EXISTS -> IF false AND NOT EXISTS)
+phase5	phase5	control: both entry points accept an ordinary columnar table	15;16;17;18;19	never	-
+phase5	phase5	covering count(*) skips the scan	15;16;17;18;19	2026-10-26	columnar_vector.c: an unfiltered aggregate always scans instead of answering from zone-map metadata (needsScan = true || (quals != NIL))
+phase5	phase5	default uses zstd	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.compression boots as LZ4 instead of ZSTD (COLUMNAR_COMPRESSION_ZSTD -> COLUMNAR_COMPRESSION_LZ4)
+phase5	phase5	disable custom scan -> seq scan	15;16;17;18;19	2026-10-26	columnar_customscan.c: the custom scan ignores pgcolumnar.enable_custom_scan (if (false && !pgcolumnar_enable_custom_scan))
+phase5	phase5	equality full result	15;16;17;18;19	2026-10-26	columnar_reader.c: the zone-map skip decision is inverted (match = !pgcolumnar_native_group_can_match(...)), so matching groups are skipped
+phase5	phase5	filtered count(*) also scans one group	15;16;17;18;19	2026-10-26	columnar_reader.c: every chunk group is read, its zone-map match ignored (match = true || pgcolumnar_native_group_can_match(...))
+phase5	phase5	filtered reads one group	15;16;17;18;19	2026-10-26	columnar_reader.c: every chunk group is read, its zone-map match ignored (match = true || pgcolumnar_native_group_can_match(...))
+phase5	phase5	filtered select uses custom scan	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	filtered skips four groups	15;16;17;18;19	2026-10-26	columnar_reader.c: every chunk group is read, its zone-map match ignored (match = true || pgcolumnar_native_group_can_match(...))
+phase5	phase5	option none disables compression	15;16;17;18;19	2026-10-26	columnar_write_state.c: the write state ignores a per-table compression option (if (opts.compressionSet) -> if (false && opts.compressionSet))
+phase5	phase5	plain select uses custom scan	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	premise: the columnar fixture is relkind r on the columnar access method	15;16;17;18;19	never	-
+phase5	phase5	premise: the heap fixture is relkind r and is NOT columnar	15;16;17;18;19	never	-
+phase5	phase5	premise: the matview fixture is relkind m on the columnar access method	15;16;17;18;19	never	-
+phase5	phase5	premise: the partitioned fixture is relkind p with no storage	15;16;17;18;19	never	-
+phase5	phase5	projects one column	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarProjectionFromAttnos projects every column (if (projected == NULL) -> if (true || projected == NULL))
+phase5	phase5	projects two columns	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarProjectionFromAttnos projects every column (if (projected == NULL) -> if (true || projected == NULL))
+phase5	phase5	pushdown matches off	15;16;17;18;19	2026-10-26	columnar_reader.c: the zone-map skip decision is inverted (match = !pgcolumnar_native_group_can_match(...)), so matching groups are skipped
+phase5	phase5	pushdown-on count	15;16;17;18;19	2026-10-26	columnar_reader.c: the zone-map skip decision is inverted (match = !pgcolumnar_native_group_can_match(...)), so matching groups are skipped
+phase5	phase5	pushdown-on sum matches off	15;16;17;18;19	2026-10-26	columnar_reader.c: the zone-map skip decision is inverted (match = !pgcolumnar_native_group_can_match(...)), so matching groups are skipped
+phase5	phase5	reset restores default limit	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options keeps chunk_group_row_limit when asked to reset it (THEN NULL -> THEN o.chunk_group_row_limit)
+phase5	phase5	select star projects all	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	seq-scan fallback returns correct rows	15;16;17;18;19	2026-10-26	columnar_vacuum.c: compaction keeps no row it read (tuplestore_puttupleslot dropped), so a rewrite empties the table
+phase5	phase5	set_options and reset_options agree about a columnar matview	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options admits relkind r only, refusing a columnar matview (IN ('r', 'm') -> IN ('r'))
+phase5	phase5	set_options and reset_options agree about a columnar table	15;16;17;18;19	never	-
+phase5	phase5	set_options and reset_options agree about a heap table	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options skips its relkind and access-method guard (IF NOT EXISTS -> IF false AND NOT EXISTS)
+phase5	phase5	set_options and reset_options agree about a partitioned parent	15;16;17;18;19	2026-10-26	pgcolumnar--1.0-alpha5.sql: reset_options skips its relkind and access-method guard (IF NOT EXISTS -> IF false AND NOT EXISTS)
+phase5	phase5	table has three columns	15;16;17;18;19	2026-10-26	columnar_tableam.c: pgcolumnar.enable_custom_scan boots false, so neither the scan nor the vectorized aggregate is planned
+phase5	phase5	the vi point lookup really uses the index	15;16;17;18;19	2026-10-26	columnar_customscan.c: the custom scan ignores pgcolumnar.enable_custom_scan (if (false && !pgcolumnar_enable_custom_scan))
+phase5	phase5	unfiltered sum answered from metadata	15;16;17;18;19	2026-10-26	columnar_vector.c: an unfiltered aggregate always scans instead of answering from zone-map metadata (needsScan = true || (quals != NIL))
+phase5	phase5	v compacts to one stripe	15;16;17;18;19	2026-10-26	columnar_vacuum.c: pgcolumnar.vacuum does not compact (pgcolumnar_compact_relation(rel, 0, NULL) dropped)
+phase5	phase5	v deleted rows tracked	15;16;17;18;19	2026-10-26	columnar_tableam.c: tuple_delete reports success without marking the row deleted (PgColumnarMarkRowDeleted dropped)
+phase5	phase5	v live rows after delete	15;16;17;18;19	2026-10-26	columnar_tableam.c: tuple_delete reports success without marking the row deleted (PgColumnarMarkRowDeleted dropped)
+phase5	phase5	v no deleted rows after vacuum	15;16;17;18;19	2026-10-26	columnar_vacuum.c: pgcolumnar.vacuum does not compact (pgcolumnar_compact_relation(rel, 0, NULL) dropped)
+phase5	phase5	v rows correct after vacuum	15;16;17;18;19	2026-10-26	columnar_tableam.c: tuple_delete reports success without marking the row deleted (PgColumnarMarkRowDeleted dropped)
+phase5	phase5	v starts with five stripes	15;16;17;18;19	2026-10-26	columnar_write_state.c: the write state ignores a per-table stripe_row_limit (if (false && opts.stripeRowLimitSet))
+phase5	phase5	v sum correct after vacuum	15;16;17;18;19	2026-10-26	columnar_tableam.c: tuple_delete reports success without marking the row deleted (PgColumnarMarkRowDeleted dropped)
+phase5	phase5	v value intact after vacuum	15;16;17;18;19	2026-10-26	columnar_reader.c: the zone-map skip decision is inverted (match = !pgcolumnar_native_group_can_match(...)), so matching groups are skipped
+phase5	phase5	vacuum_full keeps data	15;16;17;18;19	2026-10-26	columnar_vacuum.c: compaction keeps no row it read (tuplestore_puttupleslot dropped), so a rewrite empties the table
+phase5	phase5	vi count after vacuum	15;16;17;18;19	2026-10-26	columnar_tableam.c: tuple_delete reports success without marking the row deleted (PgColumnarMarkRowDeleted dropped)
+phase5	phase5	vi index point after vacuum	15;16;17;18;19	2026-10-26	columnar_vacuum.c: pgcolumnar_compact_relation does not rebuild the indexes after renumbering the rows (PgColumnarReindexRelation dropped)
+phase5	phase5	vi index sees deletion after vacuum	15;16;17;18;19	2026-10-26	columnar_vacuum.c: pgcolumnar_compact_relation does not rebuild the indexes after renumbering the rows (PgColumnarReindexRelation dropped)
+phase5	phase5	vi index survivor after vacuum	15;16;17;18;19	2026-10-26	columnar_vacuum.c: compaction keeps no row it read (tuplestore_puttupleslot dropped), so a rewrite empties the table
 phase6	phase6	avg filtered	15;16;17;18;19	never	-
 phase6	phase6	avg(a) ignores nulls	15;16;17;18;19	never	-
 phase6	phase6	avg(bigint)->numeric	15;16;17;18;19	never	-

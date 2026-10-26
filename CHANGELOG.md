@@ -245,6 +245,18 @@ true until the next version shipped.
   over a failed attempt's file is allowed.
 
 ### Changed
+
+- The ledger budget, `test/check_ledger_budget.txt`, holds only its header and its
+  two numbers (#1431). Every PR that changed the ledger used to append its
+  derivation above the census line, so any two such PRs conflicted there. The
+  derivation now goes in the commit message, which ends with a
+  `Ledger-census: rows=N never=N dated=N` trailer.
+  `pgc_ledger.py census-commits` checks the trailer of every commit that
+  changes the tsv against the tsv at that commit, and the runner calls it after
+  the ledger gate. The 7142 lines of history are in git:
+  `git show 6ae11a38:test/check_ledger_budget.txt`.
+  `test/selftest/410-a-check-must-have-been-red.sh` and
+  `test_mutation_ledger.py`.
 - **A Parquet timestamp read into the other PostgreSQL timestamp type is
   converted in the session's time zone.** The reader ignored the file's
   `isAdjustedToUTC` flag. A wall-time column read into `timestamptz` was taken as

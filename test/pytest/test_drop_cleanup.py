@@ -1,6 +1,14 @@
-"""Dropping a columnar materialized view takes its options row with it, and REFRESH
-keeps it (#1265, #1341). Part of the pytest twin of `test/drop_cleanup.sh`: these
-arms only, by the shell's names, and the pair is declared INCOMPLETE.
+"""DROP TABLE takes the whole table's metadata with it, projections included, and a
+columnar materialized view takes its options row (#1265, #1341, #432). The pytest twin
+of `test/drop_cleanup.sh`, every check by the shell's name.
+
+A projection keeps its own storage, so the drop hook that deleted only the relation's
+own storage id left the projection's row groups, chunks, zone maps, blooms and
+projection rows behind: ten create-and-drop cycles took pgcolumnar.projection from 36
+rows to 56. Each arm counts EVERY catalog that hangs off a storage id, re-captured just
+before its own work, so it measures the increment its own step adds; the last is
+absolute, for a standing leak no single step increases. A private database, so the
+absolute arm counts this module's tables and nothing another module left.
 
 The drop hook returned before it examined anything that was not an ordinary table, so
 an options row describing a columnar matview outlived the relation. The row is planted
@@ -11,6 +19,139 @@ refresh that dropped the relation would discard the user's options, so REFRESH i
 asserted too, and an unrelated table's row is the control against a hook that deletes
 every row.
 """
+
+
+import psycopg
+import pytest
+
+from pgc_vacuity import query_error
+
+DB = "pgc_drop_cleanup"
+
+SNAPSHOT = ("SELECT (SELECT count(*) FROM pgcolumnar.storage) || '/' || "
+            "(SELECT count(*) FROM pgcolumnar.projection) || '/' || "
+            "(SELECT count(*) FROM pgcolumnar.row_group) || '/' || "
+            "(SELECT count(*) FROM pgcolumnar.column_chunk) || '/' || "
+            "(SELECT count(*) FROM pgcolumnar.zone_map) || '/' || "
+            "(SELECT count(*) FROM pgcolumnar.bloom) || '/' || "
+            "(SELECT count(*) FROM pgcolumnar.delete_vector)")
+
+
+def _value(dsn, sql):
+    """-> the first column of the first row as text, or the failure as a query_error()."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            row = c.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        return query_error(str(exc).splitlines()[0])
+    return query_error(f"no value from {sql}") if row is None or row[0] is None else str(row[0])
+
+
+def _exec(dsn, *sqls):
+    """Each statement on its own, as the shell's psql_run calls are; a failure is
+    printed and the scenario goes on, so the reading after it is what fails."""
+    with psycopg.connect(dsn, autocommit=True) as c:
+        for sql in sqls:
+            try:
+                c.execute(sql)
+            except psycopg.Error as exc:
+                print(f"-- {sql[:60]}: {str(exc).splitlines()[0]}")
+
+
+@pytest.fixture(scope="module")
+def dcl(pgc_cluster):
+    """Every reading the storage-cleanup arms assert, in the shell's order."""
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {DB}")
+    try:
+        dsn = pgc_cluster.dsn(dbname=DB)
+        _exec(dsn, "CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        r = {}
+        snap = lambda: _value(dsn, SNAPSHOT)
+
+        base = snap()
+        _exec(dsn, "CREATE TABLE dcl_plain (id int, v text) USING pgcolumnar",
+              "INSERT INTO dcl_plain SELECT g, 'x' || g FROM generate_series(1, 5000) g",
+              "DELETE FROM dcl_plain WHERE id % 5 = 0", "DROP TABLE dcl_plain")
+        r["plain"] = (snap(), base)
+
+        base = snap()
+        _exec(dsn, "CREATE TABLE dcl_proj (id int, a int, b text) USING pgcolumnar",
+              "SELECT pgcolumnar.add_projection('dcl_proj','dcl_p',ARRAY['a','b'],ARRAY['a'])",
+              "INSERT INTO dcl_proj SELECT g, g % 50, 'b' || g FROM generate_series(1, 5000) g")
+        grew = snap()
+        r["grew"] = "no" if grew == base else "yes"
+        _exec(dsn, "DROP TABLE dcl_proj")
+        r["proj"] = (snap(), base)
+
+        base = snap()
+        _exec(dsn, "CREATE TABLE dcl_multi (id int, a int, b text, c int) USING pgcolumnar",
+              "SELECT pgcolumnar.add_projection('dcl_multi','m1',ARRAY['a'],ARRAY['a'])",
+              "SELECT pgcolumnar.add_projection('dcl_multi','m2',ARRAY['b','c'],ARRAY['c'])",
+              "INSERT INTO dcl_multi SELECT g, g%10, 'z'||g, g*3 FROM generate_series(1, 4000) g",
+              "SELECT pgcolumnar.drop_projection('dcl_multi','m1')", "DROP TABLE dcl_multi")
+        r["multi"] = (snap(), base)
+
+        base = snap()
+        for i in range(1, 11):
+            _exec(dsn, f"CREATE TABLE dcl_c{i} (id int, a int) USING pgcolumnar",
+                  f"SELECT pgcolumnar.add_projection('dcl_c{i}','p{i}',ARRAY['a'],ARRAY['a'])",
+                  f"INSERT INTO dcl_c{i} SELECT g, g FROM generate_series(1, 500) g",
+                  f"DROP TABLE dcl_c{i}")
+        r["cycles"] = (snap(), base)
+
+        r["orphans"] = _value(dsn, "SELECT count(*) FROM pgcolumnar.storage s WHERE NOT EXISTS "
+                                   "(SELECT 1 FROM pg_class c WHERE c.oid = s.relation_oid)")
+
+        _exec(dsn, "DROP TABLE IF EXISTS dcl_live",
+              "CREATE TABLE dcl_live (id int, a int) USING pgcolumnar",
+              "SELECT pgcolumnar.add_projection('dcl_live','lp',ARRAY['a'],ARRAY['a'])",
+              "INSERT INTO dcl_live SELECT g, g % 20 FROM generate_series(1, 3000) g")
+        r["live"] = (_value(dsn, "SELECT count(*) || '/' || sum(a) FROM dcl_live"),
+                     _value(dsn, "SELECT count(*) || '/' || sum(g % 20) FROM generate_series(1,3000) g"))
+        r["live proj"] = _value(dsn, "SELECT count(*) FROM pgcolumnar.read_projection('dcl_live','lp')")
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+
+
+def test_a_plain_table_leaves_nothing_behind(dcl, expect):
+    got, want = dcl["plain"]
+    expect.text(got, want, "a plain table leaves nothing behind")
+
+
+def test_the_projection_did_add_metadata(dcl, expect):
+    expect.text(dcl["grew"], "yes", "the projection did add metadata")
+
+
+def test_dropping_it_takes_the_projections_metadata_too(dcl, expect):
+    got, want = dcl["proj"]
+    expect.text(got, want, "dropping it takes the projection's metadata too")
+
+
+def test_two_projections_one_dropped_by_hand_leave_nothing(dcl, expect):
+    got, want = dcl["multi"]
+    expect.text(got, want, "two projections, one dropped by hand, leave nothing")
+
+
+def test_ten_create_and_drop_cycles_leave_nothing(dcl, expect):
+    got, want = dcl["cycles"]
+    expect.text(got, want, "ten create-and-drop cycles leave nothing")
+
+
+def test_no_storage_row_refers_to_a_missing_relation(dcl, expect):
+    expect.text(dcl["orphans"], "0", "no storage row refers to a missing relation")
+
+
+def test_a_live_table_with_a_projection_still_reads_correctly(dcl, expect):
+    got, want = dcl["live"]
+    expect.text(got, want, "a live table with a projection still reads correctly")
+
+
+def test_and_its_projection_is_still_readable(dcl, expect):
+    expect.text(dcl["live proj"], "3000", "and its projection is still readable")
 
 
 def _one(conn, sql):

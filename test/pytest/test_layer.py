@@ -331,6 +331,109 @@ def test_a_listed_test_that_runs_makes_the_list_stale(pytester, expect):
     result.stderr.fnmatch_lines(["*RAN, so the list is stale*"])
 
 
+# ---------------------------------------------------------------------------
+# A ROW WITH A CONDITION: `MAJOR NODEID unless-env VAR=VALUE` (#1767 review).
+#
+# An opt-in arm declines unless its variable is set, so it is listed for every
+# major. Without a condition, the run that SETS the variable cannot exit green:
+# the arm runs, and a listed test that runs is a stale list (exit 67, measured by
+# @OffgridwithJD on PG 17 with PGC_RUN_OVER_1GB=1). The row now applies only while
+# the variable does not have that value; with it, the test is expected to RUN, so
+# a decline then is refused like any unlisted one.
+# ---------------------------------------------------------------------------
+
+def _optin_fixture(pytester, body, row):
+    pytester.makeconftest(_INNER_CONFTEST)
+    pytester.makepyfile(body)
+    listing = pytester.path / "expected_unrunnable.txt"
+    listing.write_text(row)
+    return str(listing)
+
+
+_OPTIN_BODY = """
+import os
+
+
+def test_optin_flag(expect):
+    if os.environ.get("PGC_OPTIN_PROBE") != "1":
+        expect.cannot_run("UNMET_PRECONDITION", "PGC_OPTIN_PROBE is not 1")
+        return
+    expect.num(1, 1, "the opt-in arm ran")
+"""
+
+
+def _optin_run(pytester, listing):
+    return pytester.runpytest(
+        "-p", "pgc_vacuity",
+        "--pg-config", _stub_pg_config(pytester, "PostgreSQL 17.10"),
+        "--pgc-expected-unrunnable", listing)
+
+
+def test_a_conditional_row_lets_the_arm_decline_while_its_condition_is_unmet(pytester, monkeypatch, expect):
+    monkeypatch.delenv("PGC_OPTIN_PROBE", raising=False)
+    listing = _optin_fixture(pytester, _OPTIN_BODY, "17 test_a_conditional_row_lets_the_arm_decline_while_its_"
+                             "condition_is_unmet.py::test_optin_flag unless-env PGC_OPTIN_PROBE=1\n")
+    expect.num(_optin_run(pytester, listing).ret, 0,
+               "a conditional row covers the decline while its condition is unmet")
+
+
+def test_a_conditional_row_lets_the_arm_run_once_its_condition_is_met(pytester, monkeypatch, expect):
+    monkeypatch.setenv("PGC_OPTIN_PROBE", "1")
+    listing = _optin_fixture(pytester, _OPTIN_BODY, "17 test_a_conditional_row_lets_the_arm_run_once_its_"
+                             "condition_is_met.py::test_optin_flag unless-env PGC_OPTIN_PROBE=1\n")
+    expect.num(_optin_run(pytester, listing).ret, 0,
+               "an opted-in run of a conditional row exits green, not stale")
+
+
+def test_a_conditional_row_refuses_a_decline_once_its_condition_is_met(pytester, monkeypatch, expect):
+    """The control: with the condition met the row does not apply, so the arm is
+    expected to run, and declining is the unlisted decline it would be anywhere."""
+    monkeypatch.setenv("PGC_OPTIN_PROBE", "1")
+    body = """
+def test_optin_declines(expect):
+    expect.cannot_run("UNMET_PRECONDITION", "declines even when opted in")
+"""
+    listing = _optin_fixture(pytester, body, "17 test_a_conditional_row_refuses_a_decline_once_its_"
+                             "condition_is_met.py::test_optin_declines unless-env PGC_OPTIN_PROBE=1\n")
+    expect.num(_optin_run(pytester, listing).ret, 67,
+               "an opted-in arm that still declines is refused")
+
+
+def test_a_bare_variable_condition_is_met_by_any_value(pytester, monkeypatch, expect):
+    """`unless-env VAR` with no value: met whenever VAR is set and non-empty, for an
+    opt-in variable that carries an endpoint rather than a flag."""
+    monkeypatch.setenv("PGC_OPTIN_ENDPOINT", "http://127.0.0.1:9")
+    body = """
+import os
+
+
+def test_optin_endpoint(expect):
+    if not os.environ.get("PGC_OPTIN_ENDPOINT"):
+        expect.cannot_run("UNMET_PRECONDITION", "PGC_OPTIN_ENDPOINT is unset")
+        return
+    expect.num(1, 1, "the opt-in arm ran")
+"""
+    listing = _optin_fixture(pytester, body, "17 test_a_bare_variable_condition_is_met_by_any_value.py"
+                             "::test_optin_endpoint unless-env PGC_OPTIN_ENDPOINT\n")
+    expect.num(_optin_run(pytester, listing).ret, 0,
+               "an opted-in run of a bare-variable row exits green, not stale")
+
+
+def test_a_row_with_any_other_suffix_is_refused(tmp_path, expect):
+    """Fail closed. A suffix the parser does not know would otherwise be read as
+    part of the nodeid, never match, and leave the row silently dead."""
+    from pgc_vacuity import expected_unrunnable
+
+    listing = tmp_path / "expected_unrunnable.txt"
+    listing.write_text("17 test_x.py::test_y unless PGC_OPTIN_PROBE=1\n")
+    try:
+        expected_unrunnable(17, listing)
+        got = "accepted"
+    except ValueError as exc:
+        got = "refused" if "unless-env" in str(exc) else f"refused without naming the form: {exc}"
+    expect.text(got, "refused", "a row with an unknown suffix is refused, naming the form it must take")
+
+
 def test_a_listed_test_the_run_never_collected_is_not_a_stale_row(pytester, expect):
     """`allowed - actual` is only answerable for a test the run COLLECTED (#1204).
 
