@@ -29,6 +29,10 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 # The postmaster must reinitialize a crashed backend rather than shut the cluster
 # down; that is the default, set here so the suite does not depend on it.
 psql_run "ALTER SYSTEM SET restart_after_crash = on;"
+# THE WAL WRITER IS HELD OFF (its 10s maximum), as a busy runner can leave it, so
+# a kill always loses the killed write's unflushed WAL. See the post-flush
+# scenario below for why that decides the order of the scenarios.
+psql_run "ALTER SYSTEM SET wal_writer_delay = '10s';"
 psql_run "SELECT pg_reload_conf();" >/dev/null
 
 # Heap mirror and columnar table, same committed baseline in both.
@@ -187,13 +191,20 @@ assert_intact() {  # label
 	check "$1: the killed insert left no partial row group" "$(rowgroups)" "$base_groups"
 }
 
+# --- kill after the stripes have flushed, before the commit that never comes -
+# FIRST, because its write is the small one. A killed write's stripe reservation
+# (the metapage highwater) is WAL-logged but unflushed, while its pages already
+# extend the file. Redo then restores the old highwater over blocks that exist,
+# and the next write fills them before it extends anything: after crashA, all
+# 100000 rows of this one fit, the relation never grew, and its premise failed
+# (nightly 40376459928, PG 17). Here it follows only the committed baseline.
+# crashA and crashC write 3000000 rows, which outgrow any such leftover.
+crash_one_backend 100000 crashB sleep
+assert_intact "post-flush"
+
 # --- kill while a large insert is mid-write ----------------------------------
 crash_one_backend 3000000 crashA insert
 assert_intact "mid-write"
-
-# --- kill after the stripes have flushed, before the commit that never comes -
-crash_one_backend 100000 crashB sleep
-assert_intact "post-flush"
 
 # --- kill with a concurrent reader holding a connection ----------------------
 # The reinit drops every session, not only the one that died. This scenario adds

@@ -49,6 +49,9 @@ def nbc(pgc_cluster):
             c.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
             # the postmaster must reinitialize after a backend crash, not shut down
             c.execute("ALTER SYSTEM SET restart_after_crash = on")
+            # the WAL writer held off, as the shell does: a kill always loses the
+            # killed write's unflushed WAL, which is what orders the scenarios below
+            c.execute("ALTER SYSTEM SET wal_writer_delay = '10s'")
             c.execute("SELECT pg_reload_conf()")
             c.execute("CREATE TABLE h (id int, v text, x float8)")
             c.execute("CREATE TABLE c (id int, v text, x float8) USING pgcolumnar")
@@ -213,14 +216,19 @@ def base(nbc):
             "mirror": _rows(nbc, "SELECT id, v, x FROM h"), "pm": _postmaster_pid(nbc)}
 
 
+def test_a_kill_after_the_stripes_flushed(nbc, base, expect):
+    """FIRST, because its write is the small one. A killed write's stripe reservation
+    is WAL-logged but unflushed while its pages already extend the file, so redo
+    restores the old highwater over blocks that exist and the next write fills them
+    first: after crashA, all 100000 rows fit, the relation never grew, and the premise
+    failed (nightly 40376459928, PG 17). crashA and crashC outgrow any leftover."""
+    dropped = _crash_one_backend(nbc, expect, 100000, "crashB", "sleep")
+    _assert_intact(nbc, expect, "post-flush", dropped, base)
+
+
 def test_a_kill_mid_write(nbc, base, expect):
     dropped = _crash_one_backend(nbc, expect, 3000000, "crashA", "insert")
     _assert_intact(nbc, expect, "mid-write", dropped, base)
-
-
-def test_a_kill_after_the_stripes_flushed(nbc, base, expect):
-    dropped = _crash_one_backend(nbc, expect, 100000, "crashB", "sleep")
-    _assert_intact(nbc, expect, "post-flush", dropped, base)
 
 
 def test_a_kill_with_a_second_reader(nbc, base, expect):
