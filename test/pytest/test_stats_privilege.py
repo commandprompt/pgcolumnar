@@ -75,6 +75,9 @@ def _fixture(cur):
     cur.execute(f"ALTER TABLE st_t OWNER TO {OWNER}")
     cur.execute("REVOKE ALL ON st_t FROM PUBLIC")
     cur.execute(f"GRANT SELECT ON st_t TO {SEL}")
+    cur.execute("DROP TABLE IF EXISTS st_h")
+    cur.execute("CREATE TABLE st_h (id int)")   # a heap table, readable by no test role
+    cur.execute("REVOKE ALL ON st_h FROM PUBLIC")
     return schema
 
 
@@ -170,3 +173,28 @@ def test_a_role_with_no_privilege_is_refused(pgc_cluster, pgc_conn, expect):
     expect.contains(
         str(err), "st_t",
         "and the refusal names the TABLE, not a catalog table it never asked about")
+
+
+def _says(err, text):
+    """-> 1 when the statement failed with `text` in its message, else 0, as the shell's grep -c."""
+    return 1 if err is not None and text in str(err) else 0
+
+
+def test_a_heap_table_is_refused_for_privilege_before_its_kind_is_read_by_stats(pgc_cluster, pgc_conn, expect):
+    """get_storage_id checks SELECT with GetUserId(), the DEFINER here, so it passes for
+    anyone and then says "not a columnar table". Only the explicit caller check refuses,
+    and only while it runs first: with the two swapped (#1657 review) every arm above
+    stays green, because on st_t the caller check still refuses afterwards."""
+    with pgc_conn.cursor() as cur:
+        schema = _fixture(cur)
+    _, err = _as(pgc_cluster, NONE, "SELECT count(*) FROM pgcolumnar.stats('st_h')", schema)
+    expect.num(_says(err, "permission denied for table st_h"), 1,
+               "a role with no privilege on a heap table is refused for privilege, not told it is not columnar")
+
+
+def test_a_superuser_is_told_a_heap_table_is_not_columnar_by_stats(pgc_cluster, pgc_conn, expect):
+    with pgc_conn.cursor() as cur:
+        schema = _fixture(cur)
+    _, err = _as(pgc_cluster, "postgres", "SELECT count(*) FROM pgcolumnar.stats('st_h')", schema)
+    expect.num(_says(err, 'relation "st_h" is not a columnar table'), 1,
+               "a superuser asking about a heap table is told it is not columnar")

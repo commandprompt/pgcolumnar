@@ -7103,7 +7103,9 @@ sort_status	sort_status	unsorted table reports every row appended	15;16;17;18;19
 sort_status	sort_status	unsorted table reports no sorted groups	15;16;17;18;19	2026-10-20	sort_status counts every group as sorted when the table has no mark
 sort_status	sort_status	unsorted table reports no sorted rows	15;16;17;18;19	2026-10-20	sort_status counts every group as sorted when the table has no mark
 sort_status_privilege	sort_status_privilege	a role merely GRANTed select can read it too	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608)
+sort_status_privilege	sort_status_privilege	a role with no privilege on a heap table is refused for privilege, not told it is not columnar	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: sort_status() reads the storage id before the caller check (the two lines swapped)
 sort_status_privilege	sort_status_privilege	a role with no privilege on the table is refused	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608);sort_status no longer checks the caller's SELECT privilege (require_caller_select removed)
+sort_status_privilege	sort_status_privilege	a superuser asking about a heap table is told it is not columnar	15;16;17;18;19	never	-
 sort_status_privilege	sort_status_privilege	a superuser still reads sort status	15;16;17;18;19	never	-
 sort_status_privilege	sort_status_privilege	and the refusal names the TABLE, not a catalog table it never asked about	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608);sort_status no longer checks the caller's SELECT privilege (require_caller_select removed)
 sort_status_privilege	sort_status_privilege	premise: none of these roles is a superuser	15;16;17;18;19	never	-
@@ -7199,6 +7201,21 @@ statement_self_visibility	statement_self_visibility	and it read only the rows th
 statement_self_visibility	statement_self_visibility	and the table holds them once, as heap does	15;16;17;18;19	2026-10-15	a serial scan re-reads its row-group list when it reaches the end, so it picks up groups its own statement flushed (src/columnar_reader.c pgcolumnar_next_group_index)
 statement_self_visibility	statement_self_visibility	in one transaction, an INSERT, an UPDATE of every row and an INSERT SELECT run to completion	15;16;17;18;19	2026-10-15	a serial scan re-reads its row-group list when it reaches the end, so it picks up groups its own statement flushed (src/columnar_reader.c pgcolumnar_next_group_index)
 statement_self_visibility	statement_self_visibility	the INSERT flushed row groups while its scan was still reading	15;16;17;18;19	2026-10-15	a serial scan re-reads its row-group list when it reaches the end, so it picks up groups its own statement flushed (src/columnar_reader.c pgcolumnar_next_group_index)
+stats_privilege	stats_privilege	a role merely GRANTed select can read them too	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	a role with no privilege on a heap table is refused for privilege, not told it is not columnar	15;16;17;18;19	2026-10-22	pgcolumnar--1.0-alpha5.sql: stats() reads the storage id before the caller check (the two lines swapped)
+stats_privilege	stats_privilege	a role with no privilege on the table is refused	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	a superuser asking about a heap table is told it is not columnar	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	a superuser still reads stats	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	and the refusal names the TABLE, not a catalog table it never asked about	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	premise: none of these roles is a superuser	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	premise: t_stowner really owns the table	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	premise: the catalog tables are NOT readable by these roles, so a GRANT is not the fix	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	premise: the granted role can open a session	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	premise: the no-privilege role can open a session	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	premise: the no-privilege role cannot read it by ordinary SQL	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	premise: the owner can open a session	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	premise: the owner can read its own table by ordinary SQL	15;16;17;18;19	never	-
+stats_privilege	stats_privilege	the OWNER of the table can read its stats	15;16;17;18;19	never	-
 storage_row_repair	storage_row_repair	REFRESH MATERIALIZED VIEW repairs the view's row	15;16;17;18;19	2026-10-12	PgColumnarRetargetStorageRelation returns at once, so no repair repoints a storage row
 storage_row_repair	storage_row_repair	a same-type ALTER COLUMN ... USING repairs the table's row	15;16;17;18;19	2026-10-12	PgColumnarRetargetStorageRelation returns at once, so no repair repoints a storage row
 storage_row_repair	storage_row_repair	after both repairs the notes' query finds nothing	15;16;17;18;19	2026-10-12	PgColumnarRetargetStorageRelation returns at once, so no repair repoints a storage row;the release notes' query is edited from NOT EXISTS to EXISTS
