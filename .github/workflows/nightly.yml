@@ -728,7 +728,11 @@ jobs:
   pytest-cluster:
     name: pytest (cluster tests, PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 40, not 20, as in ci.yml's job of the same name (#1740). The run is serial and
+    # grows with every ported twin: on 2026-10-26 PG 16 finished its tests in 18m52s,
+    # and PG 15, 17 and 18 were cancelled at the 20-minute limit, PG 15 after its
+    # accounting line had printed 7305 pass + 0 fail (#1757).
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -752,7 +756,7 @@ jobs:
         # the names its tests decline UNAVAILABLE_ENDPOINT and the run ends 67.
         run: echo "127.0.0.1 s3.local pgc-bucket.s3.local" | sudo tee -a /etc/hosts
 
-      - name: Add the PGDG repository and install PostgreSQL ${{ matrix.pg }} with its headers
+      - name: Add the PGDG repository and refresh the package lists
         run: |
           set -euo pipefail
           sudo install -d /usr/share/postgresql-common/pgdg
@@ -767,12 +771,29 @@ jobs:
             https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           .github/scripts/apt-retry.sh 100 3 update
-          .github/scripts/apt-retry.sh 200 3 install -y --no-install-recommends \
+
+      # SEEDED FROM ci.yml's BUILD JOB CACHE, READ-ONLY, as ci.yml's job of the same
+      # name is (#1754). Without it this job downloads ~110 MB per run, most of it the
+      # LLVM toolchain postgresql-server-dev-N depends on, and that download stalls: on
+      # 2026-10-26 PG 16 and 17 failed all three 200-second attempts (#1758's run
+      # 40365017512). It derives no key and never saves; apt resolves every version
+      # and downloads what the archive lacks, so a miss falls back to the full download.
+      - name: Restore the build job's PostgreSQL ${{ matrix.pg }} packages, if any
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: apt-pgdev-codecs-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+          restore-keys: |
+            apt-pgdev-codecs-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install PostgreSQL ${{ matrix.pg }} with its headers
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/apt-archives/partial"
+          .github/scripts/apt-retry.sh 200 3 \
+            -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} postgresql-${{ matrix.pg }}-partman postgresql-${{ matrix.pg }}-hll postgresql-${{ matrix.pg }}-tdigest \
             liblz4-dev libzstd-dev zlib1g-dev
-          # NOT cached, deliberately. The suites job caches because it runs a matrix for
-          # an hour; a second copy of that cache-key derivation is a thing that goes
-          # stale silently, and this job is minutes long.
 
       # ASSERTED, not assumed. A missing pg_config would otherwise surface as a
       # confusing failure inside conftest's build rather than here.
