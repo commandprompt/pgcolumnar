@@ -728,7 +728,11 @@ jobs:
   pytest-cluster:
     name: pytest (cluster tests, PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 40, not 20, as in ci.yml's job of the same name (#1740). The run is serial and
+    # grows with every ported twin: on 2026-10-26 PG 16 finished its tests in 18m52s,
+    # and PG 15, 17 and 18 were cancelled at the 20-minute limit, PG 15 after its
+    # accounting line had printed 7305 pass + 0 fail (#1757).
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
