@@ -1246,4 +1246,6 @@ guard_tests 854
 # opt-in as the shell's are, by collection over the cluster files.
 # cluster_tests 4402 -> 4410 for #432's completed test_drop_cleanup.py, the twin of drop_cleanup.sh:
 # 8 storage and catalog cleanup checks in 8 new tests, by collection over the cluster files.
-cluster_tests 4410
+# cluster_tests 4410 -> 4415 for #1771's test_native_agg_collation.py, the twin of native_agg_collation.sh:
+# 5 checks in 5 tests, by collection over the cluster files.
+cluster_tests 4415
