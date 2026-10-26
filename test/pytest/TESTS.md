@@ -185,7 +185,7 @@ behaviour, the source of that number is named.
 - [137. test_native_backend_crash.py: one backend dies and committed data is intact](#137-test_native_backend_crashpy-one-backend-dies-and-committed-data-is-intact)
 - [138. test_corruption.py: a corrupt catalog row is refused cleanly and no backend dies](#138-test_corruptionpy-a-corrupt-catalog-row-is-refused-cleanly-and-no-backend-dies)
 - [139. test_inheritance.py: an INHERITS parent plans an Append, a partitioned columnar parent is refused](#139-test_inheritancepy-an-inherits-parent-plans-an-append-a-partitioned-columnar-parent-is-refused)
-- [140. test_parquet_import.py: a partitioned columnar parent is refused by import_parquet](#140-test_parquet_importpy-a-partitioned-columnar-parent-is-refused-by-import_parquet)
+- [140. test_parquet_import.py: import_parquet round-trips both page versions and keeps the indexes](#140-test_parquet_importpy-import_parquet-round-trips-both-page-versions-and-keeps-the-indexes)
 - [141. test_phase5.py: set_options and reset_options agree](#141-test_phase5py-set_options-and-reset_options-agree)
 - [142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP](#142-test_drop_cleanuppy-a-columnar-matviews-options-row-goes-with-its-drop)
 - [143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it](#143-test_native_upgrade_convergepy-every-release-upgrades-to-a-fresh-catalog-and-the-window-before-it)
@@ -7745,14 +7745,32 @@ The pytest twin of `test/inheritance.sh`, every check by the shell's name (#432;
 | `test_a_partitioned_parent_is_refused_and_its_leaf_is_not` | the server major is a number; the parent is refused with 42809 by both calls and no backend crashed; its leaf is accepted by both |
 | `test_a_columnar_materialized_view_is_still_columnar` | a columnar matview is still recognised and returns its rows |
 
-## 140. test_parquet_import.py: a partitioned columnar parent is refused by import_parquet
+## 140. test_parquet_import.py: import_parquet round-trips both page versions and keeps the indexes
 
-Part of the pytest twin of `test/parquet_import.sh` (#1263, ported for #1341): its #1263 arms only, by the shell's names, and the pair is declared INCOMPLETE. Handed a partitioned parent, import_parquet used to SIGSEGV. The file is exported first, so the import reaches the relation; a leaf and a heap target must still import; the parent must be refused with 42809, and no backend may crash, read from the server log. It declines on PostgreSQL 15 and 16.
+The pytest twin of `test/parquet_import.sh`, every check by the shell's name (#432; the #1263 arms were ported for #1341). pyarrow writes the files from data this module generates, and the same data is loaded into a heap table by COPY FROM STDIN as the oracle: nine types with nulls in five, a snappy dictionary file per data-page version, and an uncompressed PLAIN one. A file that is not Parquet and a target with a column the file lacks are refused, each by its SQLSTATE and message; the shell read "psql failed", which passed on a crash. Imported rows must reach the indexes (#153): an index scan, asserted to be one, agrees with a sequential scan, a unique index refuses a second import and leaves the count alone, and a partial index holds its rows. The fixture is built once per module in a private database and each check is its own test. Without pyarrow every test but the last declines. Handed a partitioned parent, import_parquet used to SIGSEGV; it must be refused with 42809 and no backend may crash, read from the server log. That test declines on PostgreSQL 15 and 16.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
+| `test_every_row_is_imported[v1]` | v1 rows imported |
+| `test_every_row_is_imported[v2]` | v2 rows imported |
+| `test_the_row_count_matches_the_oracle[v1]` | v1 row count matches oracle |
+| `test_the_row_count_matches_the_oracle[v2]` | v2 row count matches oracle |
+| `test_the_contents_match_the_heap_oracle[v1]` | v1 contents match heap oracle |
+| `test_the_contents_match_the_heap_oracle[v2]` | v2 contents match heap oracle |
+| `test_a_plain_file_imports_every_row` | plain import rows |
+| `test_a_plain_file_imports_its_ids` | plain import sum(id) |
+| `test_a_plain_file_imports_its_text` | plain import first s -- no row is a reading to fail on, not a failed query |
+| `test_a_file_that_is_not_parquet_is_refused_by_import` | reject non-parquet file -- XX001 and its message |
+| `test_a_target_with_a_column_the_file_lacks_is_refused` | reject column-count mismatch -- 42804 and its message |
+| `test_the_index_scan_check_uses_the_index` | the index-scan check really uses the index |
+| `test_the_index_and_sequential_scans_agree` | import into an indexed table: both scans agree |
+| `test_the_imported_rows_are_there` | import into an indexed table: the rows are there |
+| `test_an_index_point_lookup_finds_its_row` | import into an indexed table: a point lookup finds its row |
+| `test_a_unique_index_refuses_the_second_import` | importing the same keys twice raises unique_violation -- 23505 and its message |
+| `test_the_refused_import_left_the_row_count_alone` | the failed second import left the row count alone |
+| `test_a_partial_index_covers_its_rows` | partial index covers its rows after import |
 | `test_a_partitioned_parent_is_refused` | the file exists, a leaf and a heap target import 50 rows each, and the parent is refused with 42809 and no crash |
 
 ## 141. test_phase5.py: set_options and reset_options agree

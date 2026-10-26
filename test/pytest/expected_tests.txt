@@ -1233,4 +1233,6 @@ guard_tests 847
 # cluster_tests 4323 -> 4332 for #1339's nine rewrite-form tests in test_rewrite_storage_oid.py, by collection.
 # cluster_tests 4332 -> 4344 for #432's completed test_inheritance.py, the twin of inheritance.sh:
 # 12 inheritance-tree checks in 12 new tests, by collection over the cluster files.
-cluster_tests 4344
+# cluster_tests 4344 -> 4362 for #432's completed test_parquet_import.py, the twin of parquet_import.sh:
+# 18 checks in 18 new tests, by collection over the cluster files.
+cluster_tests 4362
