@@ -47,7 +47,7 @@ VERSIONS = ["1.0-alpha", "1.0-alpha2", "1.0-alpha3", "1.0-alpha4"]
 # column default, index definition, constraint, row-level-security flag and policy. The
 # comments are here because pg_get_functiondef does not emit COMMENT.
 SNAPSHOT = """
-  SELECT 'FN|'||p.oid::regprocedure||'|'||md5(pg_get_functiondef(p.oid))||'|'||coalesce(p.proacl::text,'(def)')||'|'||md5(coalesce(obj_description(p.oid,'pg_proc'),''))
+  SELECT 'FN|'||p.oid::regprocedure||'|'||CASE WHEN p.prokind='a' THEN md5((SELECT ag::text FROM pg_aggregate ag WHERE ag.aggfnoid=p.oid)) ELSE md5(pg_get_functiondef(p.oid)) END||'|'||coalesce(p.proacl::text,'(def)')||'|'||md5(coalesce(obj_description(p.oid,'pg_proc'),''))
     FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pgcolumnar'
   UNION ALL SELECT 'REL|'||c.relkind::text||'|'||c.relname||'|'||coalesce(c.relacl::text,'(def)')||'|'||md5(coalesce(obj_description(c.oid,'pg_class'),''))
     FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar'

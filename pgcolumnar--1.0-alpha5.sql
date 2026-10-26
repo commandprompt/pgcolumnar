@@ -765,6 +765,52 @@ COMMENT ON FUNCTION pgcolumnar.check_sketch_column(regclass, name)
 	IS 'raise 0A000 unless the column can carry a distinct-count sketch (#1309): an extended hash, and a deterministic collation';
 
 /* ---------------------------------------------------------------------------
+ * pgcolumnar.approx_count_distinct (#1309 phase 2)
+ *
+ * A HyperLogLog distinct count over the type's extended hash, with the same
+ * 2048 registers and register rule as pgcolumnar.sketch. Its state is the
+ * registers, serialized as bytea between parallel workers and combined by a
+ * register-wise max. NULLs are not counted, as with count(DISTINCT).
+ * ------------------------------------------------------------------------- */
+CREATE FUNCTION pgcolumnar.approx_count_distinct_transfn(internal, anyelement)
+	RETURNS internal
+	LANGUAGE C PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_acd_transfn';
+
+CREATE FUNCTION pgcolumnar.approx_count_distinct_combinefn(internal, internal)
+	RETURNS internal
+	LANGUAGE C PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_acd_combinefn';
+
+CREATE FUNCTION pgcolumnar.approx_count_distinct_serialfn(internal)
+	RETURNS bytea
+	LANGUAGE C STRICT PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_acd_serialfn';
+
+CREATE FUNCTION pgcolumnar.approx_count_distinct_deserialfn(bytea, internal)
+	RETURNS internal
+	LANGUAGE C STRICT PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_acd_deserialfn';
+
+CREATE FUNCTION pgcolumnar.approx_count_distinct_finalfn(internal)
+	RETURNS bigint
+	LANGUAGE C PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_acd_finalfn';
+
+CREATE AGGREGATE pgcolumnar.approx_count_distinct(anyelement) (
+	SFUNC = pgcolumnar.approx_count_distinct_transfn,
+	STYPE = internal,
+	FINALFUNC = pgcolumnar.approx_count_distinct_finalfn,
+	COMBINEFUNC = pgcolumnar.approx_count_distinct_combinefn,
+	SERIALFUNC = pgcolumnar.approx_count_distinct_serialfn,
+	DESERIALFUNC = pgcolumnar.approx_count_distinct_deserialfn,
+	PARALLEL = SAFE
+);
+
+COMMENT ON AGGREGATE pgcolumnar.approx_count_distinct(anyelement)
+	IS 'approximate count of distinct non-NULL values: HyperLogLog, 2048 registers, standard error about 2.3% (#1309)';
+
+/* ---------------------------------------------------------------------------
  * Storage-id lookup, statistics, and vacuum (spec 8.2)
  * ------------------------------------------------------------------------- */
 

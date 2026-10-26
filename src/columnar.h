@@ -13,6 +13,7 @@
 #define PGCOLUMNAR_H
 
 #include "postgres.h"
+#include "port/pg_bitutils.h"
 
 #include "columnar_compat.h"
 
@@ -214,6 +215,27 @@
  */
 #define PGC_SKETCH_LOG2M 11
 #define PGC_SKETCH_REGISTERS (1 << PGC_SKETCH_LOG2M)
+
+/*
+ * Add one value's 64-bit hash to a sketch: the low PGC_SKETCH_LOG2M bits pick
+ * the register, and its value is one more than the trailing zeros of the other
+ * 53 bits (54 when they are all zero), kept as a max. The ONE copy of the rule,
+ * used by the writer's per-row-group sketches and by approx_count_distinct, so
+ * the two can be merged (phase 3) and cannot drift.
+ */
+static inline void
+pgc_sketch_add(uint8 *regs, uint64 h)
+{
+	uint64		w = h >> PGC_SKETCH_LOG2M;
+	uint8		rank = (w == 0) ? (uint8) (64 - PGC_SKETCH_LOG2M + 1)
+		: (uint8) (pg_rightmost_one_pos64(w) + 1);
+	uint8	   *reg = &regs[h & (PGC_SKETCH_REGISTERS - 1)];
+
+	if (rank > *reg)
+		*reg = rank;
+}
+
+extern double pgc_sketch_estimate(const uint8 *regs);
 
 typedef struct PgColumnarOptions
 {

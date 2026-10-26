@@ -1233,4 +1233,6 @@ guard_tests 847
 # cluster_tests 4323 -> 4332 for #1339's nine rewrite-form tests in test_rewrite_storage_oid.py, by collection.
 # cluster_tests 4332 -> 4366 for #1309's test_native_sketch.py, the twin of native_sketch.sh:
 # 34 checks in 34 tests, by collection over the cluster files.
-cluster_tests 4366
+# cluster_tests 4366 -> 4385 for #1309's test_native_sketch_agg.py, the twin of native_sketch_agg.sh:
+# 19 checks in 19 tests, by collection over the cluster files.
+cluster_tests 4385

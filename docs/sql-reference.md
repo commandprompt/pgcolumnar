@@ -53,6 +53,23 @@ SELECT pgcolumnar.set_options('events', ttl_column => 'ts',
                               ttl_interval => '90 days');
 ```
 
+### pgcolumnar.approx_count_distinct(value anyelement) returns bigint
+
+An aggregate: the approximate number of distinct non-NULL values, from a
+HyperLogLog of 2048 registers. The standard error is about 2.3%, so most answers
+fall within 5% of the exact `count(DISTINCT value)`. It runs on any table, heap
+or columnar, and in parallel plans, where it returns the serial answer exactly.
+
+```sql
+SELECT pgcolumnar.approx_count_distinct(device_id) FROM readings;
+```
+
+The value's type needs an extended hash function, and a text value a
+deterministic collation; anything else is refused with SQLSTATE 0A000. Its hash
+and registers are those of the sketches a column named in `set_options(t,
+sketch_columns => ...)` stores per row group. Today the aggregate always reads
+the rows; answering from the stored sketches is a later phase (#1309).
+
 ### pgcolumnar.get_storage_id(rel regclass) returns bigint
 
 Returns the internal storage identifier of a columnar table. Used to join the

@@ -1128,19 +1128,10 @@ PgColumnarWriteRow(PgColumnarWriteState *writeState, Relation rel,
 			 * ones other builds wrote.
 			 */
 			if (writeState->sketchRegs != NULL && writeState->sketchRegs[c] != NULL)
-			{
-				uint64		h = DatumGetUInt64(
-					FunctionCall2Coll(&writeState->colDefs[c].sketchFn,
-									  writeState->colDefs[c].sketchCollation,
-									  v, Int64GetDatum(0)));
-				uint64		w = h >> PGC_SKETCH_LOG2M;
-				uint8		rank = (w == 0) ? (uint8) (64 - PGC_SKETCH_LOG2M + 1)
-					: (uint8) (pg_rightmost_one_pos64(w) + 1);
-				uint8	   *reg = &writeState->sketchRegs[c][h & (PGC_SKETCH_REGISTERS - 1)];
-
-				if (rank > *reg)
-					*reg = rank;
-			}
+				pgc_sketch_add(writeState->sketchRegs[c],
+							   DatumGetUInt64(FunctionCall2Coll(&writeState->colDefs[c].sketchFn,
+																writeState->colDefs[c].sketchCollation,
+																v, Int64GetDatum(0))));
 
 			/* maintain the per-chunk exact int sum for the zone map (D5) */
 			if (writeState->colDefs[c].summableInt)
