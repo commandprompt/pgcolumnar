@@ -341,9 +341,17 @@ q "CREATE INDEX vi_a_idx ON vi (a);" >/dev/null
 q "DELETE FROM vi WHERE a BETWEEN 100 AND 5000;" >/dev/null
 q "SELECT pgcolumnar.vacuum('vi');" >/dev/null
 check "vi count after vacuum" "$(q "SELECT count(*) FROM vi;")" "15099"
-check "vi index point after vacuum" "$(q "SET enable_seqscan=off; SELECT b FROM vi WHERE a = 12345;")" "i12345"
-check "vi index sees deletion after vacuum" "$(q "SET enable_seqscan=off; SELECT count(*) FROM vi WHERE a BETWEEN 100 AND 5000;")" "0"
-check "vi index survivor after vacuum" "$(q "SET enable_seqscan=off; SELECT count(*) FROM vi WHERE a BETWEEN 1 AND 99;")" "99"
+# THE LOOKUPS MUST REACH THE INDEX (#432). enable_seqscan does not discourage the
+# custom scan, so with it alone the point lookup planned as a PgColumnarScan and never
+# read vi_a_idx: with the reindex after the rewrite dropped, "vi index point" stayed
+# green. The custom scan is taken out of the running too, and the plan is asserted.
+VI_IDX="SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off;"
+vi_plan="$(run_pg "$PSQL -c \"$VI_IDX EXPLAIN (COSTS OFF) SELECT b FROM vi WHERE a = 12345;\"")"
+check "the vi point lookup really uses the index" \
+	"$(grep -q 'Index Scan using vi_a_idx' <<<"$vi_plan" && echo yes || echo "no: $(tr '\n' ' ' <<<"$vi_plan")")" "yes"
+check "vi index point after vacuum" "$(q "$VI_IDX SELECT b FROM vi WHERE a = 12345;")" "i12345"
+check "vi index sees deletion after vacuum" "$(q "$VI_IDX SELECT count(*) FROM vi WHERE a BETWEEN 100 AND 5000;")" "0"
+check "vi index survivor after vacuum" "$(q "$VI_IDX SELECT count(*) FROM vi WHERE a BETWEEN 1 AND 99;")" "99"
 
 # vacuum_full across a schema
 q "SELECT pgcolumnar.vacuum_full('public');" >/dev/null

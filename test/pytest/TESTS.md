@@ -186,7 +186,7 @@ behaviour, the source of that number is named.
 - [138. test_corruption.py: a corrupt catalog row is refused cleanly and no backend dies](#138-test_corruptionpy-a-corrupt-catalog-row-is-refused-cleanly-and-no-backend-dies)
 - [139. test_inheritance.py: an INHERITS parent plans an Append, a partitioned columnar parent is refused](#139-test_inheritancepy-an-inherits-parent-plans-an-append-a-partitioned-columnar-parent-is-refused)
 - [140. test_parquet_import.py: import_parquet round-trips both page versions and keeps the indexes](#140-test_parquet_importpy-import_parquet-round-trips-both-page-versions-and-keeps-the-indexes)
-- [141. test_phase5.py: set_options and reset_options agree](#141-test_phase5py-set_options-and-reset_options-agree)
+- [141. test_phase5.py: the custom scan, pushdown, projection, options and vacuum](#141-test_phase5py-the-custom-scan-pushdown-projection-options-and-vacuum)
 - [142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP](#142-test_drop_cleanuppy-a-columnar-matviews-options-row-goes-with-its-drop)
 - [143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it](#143-test_native_upgrade_convergepy-every-release-upgrades-to-a-fresh-catalog-and-the-window-before-it)
 - [144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen](#144-test_fk_referencingpy-a-foreign-key-referencing-a-columnar-table-is-refused-where-it-is-chosen)
@@ -7773,15 +7773,52 @@ The pytest twin of `test/parquet_import.sh`, every check by the shell's name (#4
 | `test_a_partial_index_covers_its_rows` | partial index covers its rows after import |
 | `test_a_partitioned_parent_is_refused` | the file exists, a leaf and a heap target import 50 rows each, and the parent is refused with 42809 and no crash |
 
-## 141. test_phase5.py: set_options and reset_options agree
+## 141. test_phase5.py: the custom scan, pushdown, projection, options and vacuum
 
-Part of the pytest twin of `test/phase5.sh` (#1265, ported for #1341): its #1265 arms only, by the shell's names, and the pair is declared INCOMPLETE. reset_options had no guard, so it reported success where set_options refused. The property is parity on a columnar table, a heap table, a partitioned parent and a columnar matview, with an ordinary columnar table as the control both must accept, and the settled verdicts named: both accept the matview and refuse the partitioned parent.
+The pytest twin of `test/phase5.sh`, every check by the shell's name (#432; the #1265 arms were ported for #1341). The custom scan is the plan for a plain and a filtered SELECT; a narrow range reads one chunk group of five and skips four, while an unfiltered count(*) or sum is answered from zone-map metadata; results agree with qual pushdown on and off; only the referenced columns are projected; the compression, chunk_group_row_limit and stripe_row_limit options take effect for later writes and reset_options restores the default; vacuum compacts five stripes into one and rebuilds the index, whose lookups switch off both the sequential and the custom scan and assert an index-scan plan (with enable_seqscan alone the point lookup was a PgColumnarScan and could not see a missing reindex); vacuum_full keeps the data; the default plan is the serial custom scan, and disabling it falls back to a sequential scan with the same answer. The fixture is built once per module in a private database and each check is its own test. set_options and reset_options must reach the same verdict on every relkind, with the settled verdicts named: both accept a columnar matview and refuse a partitioned parent.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_set_and_reset_options_agree` | the four fixtures' kinds, the control, parity on each, and the matview and partitioned-parent verdicts |
+| `test_a_plain_select_uses_the_custom_scan` | plain select uses custom scan |
+| `test_a_filtered_select_uses_the_custom_scan` | filtered select uses custom scan |
+| `test_a_covering_count_skips_the_scan` | covering count(*) skips the scan |
+| `test_an_unfiltered_sum_is_answered_from_metadata` | unfiltered sum answered from metadata |
+| `test_a_narrow_range_reads_one_group` | filtered reads one group |
+| `test_a_narrow_range_skips_four_groups` | filtered skips four groups |
+| `test_a_filtered_count_also_scans_one_group` | filtered count(*) also scans one group |
+| `test_the_pushdown_on_count` | pushdown-on count |
+| `test_the_pushdown_count_matches_off` | pushdown matches off |
+| `test_the_pushdown_sum_matches_off` | pushdown-on sum matches off |
+| `test_an_equality_on_a_low_cardinality_column_returns_every_match` | equality full result |
+| `test_one_referenced_column_is_projected` | projects one column |
+| `test_the_table_has_three_columns` | table has three columns |
+| `test_select_star_projects_every_column` | select star projects all |
+| `test_two_referenced_columns_are_projected` | projects two columns |
+| `test_the_default_compression_is_zstd` | default uses zstd |
+| `test_compression_none_stores_uncompressed` | option none disables compression |
+| `test_the_chunk_group_limit_applies` | chunk group limit applied |
+| `test_reset_restores_the_default_limit` | reset restores default limit |
+| `test_the_vacuum_table_starts_with_five_stripes` | v starts with five stripes |
+| `test_the_live_rows_after_delete` | v live rows after delete |
+| `test_the_deleted_rows_are_tracked` | v deleted rows tracked |
+| `test_vacuum_compacts_to_one_stripe` | v compacts to one stripe |
+| `test_vacuum_leaves_no_deleted_rows` | v no deleted rows after vacuum |
+| `test_the_rows_are_right_after_vacuum` | v rows correct after vacuum |
+| `test_the_sum_is_right_after_vacuum` | v sum correct after vacuum |
+| `test_a_value_is_intact_after_vacuum` | v value intact after vacuum |
+| `test_the_indexed_table_count_after_vacuum` | vi count after vacuum |
+| `test_the_point_lookup_uses_the_index` | the vi point lookup really uses the index |
+| `test_an_index_point_lookup_after_vacuum` | vi index point after vacuum |
+| `test_the_index_sees_the_deletion_after_vacuum` | vi index sees deletion after vacuum |
+| `test_the_index_finds_the_survivors_after_vacuum` | vi index survivor after vacuum |
+| `test_vacuum_full_keeps_the_data` | vacuum_full keeps data |
+| `test_the_default_plan_is_the_custom_scan` | columnar default uses custom scan, not seqscan |
+| `test_the_default_plan_is_not_parallel` | columnar default plan is not parallel |
+| `test_disabling_the_custom_scan_falls_back_to_a_seq_scan` | disable custom scan -> seq scan |
+| `test_the_seq_scan_fallback_returns_the_right_rows` | seq-scan fallback returns correct rows |
 
 ## 142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP
 

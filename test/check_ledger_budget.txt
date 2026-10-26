@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 24
+suites_not_covered 23
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -7231,4 +7231,27 @@ suites_not_covered 24
 #     never         4558 + 4 = 4562
 #     dated         3523 + 21 = 3544
 #     4562 + 3544 == 8106
-checks_never_observed_red 4562
+#
+# #432, phase5 seeded, with its twin completed (OffgridwithJD): 4562 -> 4568, and
+# suites_not_covered 24 -> 23. The suite had no rows, and its twin held the #1265 arms
+# only; it now holds every check, one test each, by the shell's names. It enters with
+# 48 checks from PG17 and PG18 runs (green in shell and twin alike), after one fix: the
+# vi index arms set only enable_seqscan off, which does not discourage the custom scan,
+# so the point lookup planned as a PgColumnarScan, and with the reindex after the
+# rewrite dropped "vi index point after vacuum" stayed green. They now switch the custom
+# scan off too, and a new check, "the vi point lookup really uses the index", asserts
+# the plan. 42 are dated by seventeen mutations, each reddening the same names in both
+# twins (the #1265 test stops at its first red, so the twin shows one of each set
+# there): the compression boot value, the per-table compression, chunk-group and
+# stripe limits, reset_options keeping the limit, its guard and its matview relkind,
+# chunk-group skipping ignored and inverted, projection of every column, the metadata
+# answer refused, enable_custom_scan ignored and booting false, no reindex, no
+# compaction, a delete that marks nothing, and a compaction that keeps no row. 6
+# arrive never: four premises, the columnar control both entry points must accept, and
+# parity on that columnar table, which no one-line mutant broke.
+#
+#     ledger rows   8106 + 48 = 8154
+#     never         4562 + 6 = 4568
+#     dated         3544 + 42 = 3586
+#     4568 + 3586 == 8154
+checks_never_observed_red 4568

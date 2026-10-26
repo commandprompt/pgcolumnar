@@ -1235,4 +1235,6 @@ guard_tests 847
 # 12 inheritance-tree checks in 12 new tests, by collection over the cluster files.
 # cluster_tests 4344 -> 4362 for #432's completed test_parquet_import.py, the twin of parquet_import.sh:
 # 18 checks in 18 new tests, by collection over the cluster files.
-cluster_tests 4362
+# cluster_tests 4362 -> 4399 for #432's completed test_phase5.py, the twin of phase5.sh:
+# 37 checks in 37 new tests, by collection over the cluster files.
+cluster_tests 4399
