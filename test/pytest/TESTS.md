@@ -187,7 +187,7 @@ behaviour, the source of that number is named.
 - [139. test_inheritance.py: an INHERITS parent plans an Append, a partitioned columnar parent is refused](#139-test_inheritancepy-an-inherits-parent-plans-an-append-a-partitioned-columnar-parent-is-refused)
 - [140. test_parquet_import.py: import_parquet round-trips both page versions and keeps the indexes](#140-test_parquet_importpy-import_parquet-round-trips-both-page-versions-and-keeps-the-indexes)
 - [141. test_phase5.py: the custom scan, pushdown, projection, options and vacuum](#141-test_phase5py-the-custom-scan-pushdown-projection-options-and-vacuum)
-- [142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP](#142-test_drop_cleanuppy-a-columnar-matviews-options-row-goes-with-its-drop)
+- [142. test_drop_cleanup.py: DROP takes a table's whole metadata with it, and a matview's options row](#142-test_drop_cleanuppy-drop-takes-a-tables-whole-metadata-with-it-and-a-matviews-options-row)
 - [143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it](#143-test_native_upgrade_convergepy-every-release-upgrades-to-a-fresh-catalog-and-the-window-before-it)
 - [144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen](#144-test_fk_referencingpy-a-foreign-key-referencing-a-columnar-table-is-refused-where-it-is-chosen)
 - [145. test_truncate_cleanup.py: TRUNCATE leaves no catalog rows behind, and keeps what it must](#145-test_truncate_cleanuppy-truncate-leaves-no-catalog-rows-behind-and-keeps-what-it-must)
@@ -7820,9 +7820,9 @@ The pytest twin of `test/phase5.sh`, every check by the shell's name (#432; the 
 | `test_disabling_the_custom_scan_falls_back_to_a_seq_scan` | disable custom scan -> seq scan |
 | `test_the_seq_scan_fallback_returns_the_right_rows` | seq-scan fallback returns correct rows |
 
-## 142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP
+## 142. test_drop_cleanup.py: DROP takes a table's whole metadata with it, and a matview's options row
 
-Part of the pytest twin of `test/drop_cleanup.sh` (#1265, ported for #1341): its #1265 arms only, by the shell's names, and the pair is declared INCOMPLETE. The drop hook skipped anything that was not an ordinary table, so a matview's options row outlived it. The row is planted directly, so the hook is the only subject. REFRESH must keep the row, and an unrelated table's row is the control against a hook that deletes every row.
+The pytest twin of `test/drop_cleanup.sh` (#1265, #1341, #432), every check by the shell's name. A projection keeps its own storage, so a drop hook that deleted only the relation's own storage id left the projection's row groups, chunks, zone maps, blooms and projection rows behind. Each storage arm counts every catalog that hangs off a storage id, re-captured just before its own step, so it measures that step's increment; the last is absolute, for a standing leak no step increases. They run in a private database, so the absolute arm counts nothing another module left. A live table with a projection must still read correctly. The drop hook skipped anything that was not an ordinary table, so a matview's options row outlived it. The row is planted directly, so the hook is the only subject. REFRESH must keep the row, and an unrelated table's row is the control against a hook that deletes every row.
 
 ### Every test
 
@@ -7831,6 +7831,14 @@ Part of the pytest twin of `test/drop_cleanup.sh` (#1265, ported for #1341): its
 | `test_a_columnar_matview_takes_its_options_row_with_it` | a planted options row is gone after DROP MATERIALIZED VIEW |
 | `test_refresh_keeps_a_matviews_options_row` | a REFRESH that rewrote the matview leaves its set_options row in place |
 | `test_an_unrelated_options_row_survives` | another table's row survives a matview's DROP, and an ordinary columnar table still takes its own |
+| `test_a_plain_table_leaves_nothing_behind` | a plain table, with deletes, leaves every storage-keyed catalog where it was |
+| `test_the_projection_did_add_metadata` | premise-like: adding a projection and rows did grow the catalogs, so the next arm can fail |
+| `test_dropping_it_takes_the_projections_metadata_too` | dropping a table with a projection takes the projection's metadata too |
+| `test_two_projections_one_dropped_by_hand_leave_nothing` | two projections, one dropped by hand first, leave nothing |
+| `test_ten_create_and_drop_cycles_leave_nothing` | ten create-and-drop cycles leave nothing, where a leak of a few rows per drop shows |
+| `test_no_storage_row_refers_to_a_missing_relation` | absolute: no storage row names a relation pg_class no longer has |
+| `test_a_live_table_with_a_projection_still_reads_correctly` | a too-eager cleanup would break a live table: its count and sum match the generator |
+| `test_and_its_projection_is_still_readable` | and read_projection still returns all 3000 rows |
 
 ## 143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it
 

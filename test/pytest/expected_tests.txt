@@ -1237,4 +1237,6 @@ guard_tests 847
 # 18 checks in 18 new tests, by collection over the cluster files.
 # cluster_tests 4362 -> 4399 for #432's completed test_phase5.py, the twin of phase5.sh:
 # 37 checks in 37 new tests, by collection over the cluster files.
-cluster_tests 4399
+# cluster_tests 4399 -> 4407 for #432's completed test_drop_cleanup.py, the twin of drop_cleanup.sh:
+# 8 storage and catalog cleanup checks in 8 new tests, by collection over the cluster files.
+cluster_tests 4407
