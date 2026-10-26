@@ -326,7 +326,13 @@
 # which needs no cluster: 3 tests, by collection over NO_CLUSTER.
 # guard_tests 804 -> 806 for #1613's test_a_refused_comparison_is_counted_and_named in
 # test_check_records.py, serial and xdist, by collection over NO_CLUSTER.
-guard_tests 839
+# guard_tests 839 -> 840 for #1742's test_two_workers_taking_a_fixture_port_do_not_collide in
+# test_runshape.py, by collection over NO_CLUSTER.
+# guard_tests 840 -> 842 for #1749's review: every literal fixture slot fits a worker's block,
+# and the corpus's highest slot gets a port, in test_runshape.py, by collection over NO_CLUSTER.
+# guard_tests 842 -> 846 for #1341's test_capability_decline.py: duckdb joins the declinable
+# capabilities, held by four new tests, by collection over NO_CLUSTER.
+guard_tests 847
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1096,6 +1102,8 @@ guard_tests 839
 # 13 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 3207 -> 3222 for #1341's test_native_fetch_group_memo.py, the twin of native_fetch_group_memo.sh:
 # 15 checks in 15 tests, by collection over the cluster files.
+# cluster_tests 4282 -> 4293 for #1341's test_planner_choice_quality.py, the twin of planner_choice_quality.sh:
+# 11 checks in 11 tests, by collection over the cluster files.
 # cluster_tests 3201 -> 3207 for #1341's test_native_fold_skipguard.py, the twin of native_fold_skipguard.sh:
 # 6 checks in 6 tests, by collection over the cluster files.
 # cluster_tests 3194 -> 3201 for #1341's test_native_fetch_sort_context.py, the twin of native_fetch_sort_context.sh:
@@ -1210,4 +1218,16 @@ guard_tests 839
 # 54 tests, one per check, by collection over the cluster files.
 # cluster_tests 4225 -> 4226 for #1753's arm 5 in test_parallel_flush_optin.py (folded into #1746):
 # one structural test, by collection over the cluster files.
-cluster_tests 4231
+# cluster_tests 4231 -> 4249 for #1706: test_parquet_timestamp_zone.py, the twin of parquet_timestamp_zone.sh
+# (16 tests, one per check), and two mixed-kind hour() arms in test_iceberg_fdw.py, by collection.
+# cluster_tests 4249 -> 4258 for #1712's test_parquet_skip_cross_type.py, the twin of parquet_skip_cross_type.sh:
+# 9 tests, one per check, by collection over the cluster files.
+# cluster_tests 4258 -> 4261 for #1712's three soundness arms in test_parquet_export_stats.py
+# (parametrized), by collection over the cluster files.
+# cluster_tests 4261 -> 4268 for #1712's seven spring-forward arms in test_parquet_skip_cross_type.py,
+# one per check, by collection over the cluster files.
+# cluster_tests 4268 -> 4282 for #1341's test_parquet_export.py, the twin of parquet_export.sh:
+# 14 tests, one per check, by collection over the cluster files.
+# cluster_tests 4293 -> 4323 for #1743's test_objstore_export_open_uploads.py, the twin of objstore_export_open_uploads.sh:
+# 30 checks in 30 tests, by collection over the cluster files.
+cluster_tests 4323

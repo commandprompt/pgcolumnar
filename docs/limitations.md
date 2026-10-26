@@ -1091,9 +1091,14 @@ correct rows; these are the conditions under which it can skip at all:
   bytea, uuid, and boolean columns are filtered but never skipped, whatever their
   statistics. A `numeric` column follows its storage: one written as an INT32 or
   INT64 DECIMAL does skip, one written as a byte-array DECIMAL does not.
-- The constant's type must match the column's type exactly. A cross-type
-  comparison such as `ts >= DATE '2026-01-01'` against a `timestamp` column, or
-  `bigint_col > 5::int`, does not skip.
+- The constant may be of another type in the operator's family. So
+  `bigint_col > 5` skips, though `5` is an `int4`. So do `real_col < 0.4` and
+  `ts >= DATE '2026-01-01'` on a `timestamp` column. A comparison that casts the
+  column instead does not skip. An example is `bigint_col < 5.0`, where `5.0` is a
+  `numeric`. A `timestamp` column compared with a `timestamptz` constant does not
+  skip either. The comparison turns each wall time into an instant in the session's
+  time zone. Across a spring-forward gap that does not keep their order, so the
+  statistics would not bound the rows.
 - The row group's statistics must carry both a minimum and a maximum, and the
   interval must not be inverted. Two cases decode to an interval that the reader
   does not trust for skipping. The first is an unsigned Parquet column that

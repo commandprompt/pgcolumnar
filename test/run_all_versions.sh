@@ -237,6 +237,7 @@ SUITES=(
 	objstore_credentials
 	objstore_crlf
 	objstore_export_double_cancel
+	objstore_export_open_uploads
 	objstore_http_read
 	objstore_listing
 	objstore_module
@@ -261,6 +262,8 @@ SUITES=(
 	parquet_level_width
 	parquet_nested
 	parquet_nested_import
+	parquet_skip_cross_type
+	parquet_timestamp_zone
 	partition_lifecycle
 	partition_rows
 	partman_columnar

@@ -388,6 +388,11 @@ behaviour, the source of that number is named.
 - [340. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value](#340-test_decode_skip_interruptspy-the-thrift-and-avro-skip-loops-of-a-hostile-file-yield-to-a-cancel-per-skipped-value)
 - [341. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop](#341-test_native_cancelpy-a-scans-row-group-load-yields-to-statement_timeout-inside-the-decode-loop)
 - [342. test_objstore_export_double_cancel.py: a second cancel during a remote export's cleanup keeps the export's own error](#342-test_objstore_export_double_cancelpy-a-second-cancel-during-a-remote-exports-cleanup-keeps-the-exports-own-error)
+- [343. test_parquet_timestamp_zone.py: a Parquet timestamp read into the other timestamp type follows PostgreSQL's casts](#343-test_parquet_timestamp_zonepy-a-parquet-timestamp-read-into-the-other-timestamp-type-follows-postgresqls-casts)
+- [344. test_parquet_skip_cross_type.py: Parquet row-group skipping uses a constant of another type in the operator family](#344-test_parquet_skip_cross_typepy-parquet-row-group-skipping-uses-a-constant-of-another-type-in-the-operator-family)
+- [345. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap](#345-test_parquet_exportpy-pgcolumnarexport_parquet-writes-a-file-two-readers-read-back-equal-to-the-heap)
+- [346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined](#346-test_planner_choice_qualitypy-the-planners-chosen-plan-is-not-far-slower-than-the-plans-it-declined)
+- [347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open](#347-test_objstore_export_open_uploadspy-a-cancelled-remote-export-leaves-none-of-its-multipart-uploads-open)
 
 ## 1. How to read a test in here
 
@@ -1691,6 +1696,20 @@ This closes the part of `guard-as-teardown-fixture-still-reports-passed`
 (`VACUITY_MODES.md` 3.7) that is about **this layer's own guard placement**. It does not
 close the family: a guard anyone adds later in a teardown is still a guard that cannot
 fail its test, and nothing refuses that shape in general.
+
+### Two workers must not get one fixture port
+
+A twin that starts its own S3 or HTTP fixture server takes the port from
+`pick_port(slot)` in a module fixture. Under `-n`, a module's tests are split across
+workers, so every worker runs that fixture. When the port depended on the slot only,
+two workers probed the same free port and the second bind failed with `Address
+already in use` (#1742). CI runs the cluster files serially, so only `-n` runs met it.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_two_workers_taking_a_fixture_port_do_not_collide` | an inner `-n 2` run where each worker takes `pick_port(27)`, waits for the other, then binds it: two workers, two ports, inner run green | with the port independent of the worker (main before #1742), both workers get one port and the second bind fails |
+| `test_every_literal_fixture_slot_fits_a_workers_block` | every literal `pick_port(<n>)` in the corpus fits a worker's block of WORKER_STRIDE ports, naming any file that asks for more |
+| `test_the_highest_slot_in_the_corpus_gets_a_port` | the corpus's highest slot gets a port inside the AUX band, so the stride and the corpus cannot drift apart |
 
 ## 11. test_zonemap_boundaries.py: exact boundaries
 
@@ -4445,6 +4464,8 @@ carry are `pgc_skip`'s refusal names, which are structural and declared in
 | `test_the_year_table_reads_whole_and_keeps_the_boundary_file` | the boundary case stated alone |
 | `test_a_year_equality_prunes_to_one_file` | an equality narrows to the constant's own bucket |
 | `test_a_year_on_date_equality_prunes_to_one_file` | the same on a date column |
+| `test_an_hour_partition_over_a_naive_source_read_as_timestamptz_keeps_its_rows` | #1706: `byhour` (a naive source) declared `timestamptz` in New York returns `iceberg_scan`'s rows; its hour cells are wall times, so the FDW must not prune on them |
+| `test_an_hour_partition_over_a_timestamptz_source_read_as_timestamp_keeps_its_rows` | #1706: the reverse, `byhour_tz` declared `timestamp` |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 
@@ -6955,6 +6976,10 @@ Written red first: all seven failed before `pgc_vacuity` had the methods. The fo
 | `test_a_missing_dependency_of_pyarrow_fails_rather_than_declines` | a `pyarrow` that cannot import its own dependency raises `ModuleNotFoundError` naming that dependency, and fails rather than declines; shown red with `require_module`'s `.name` check deleted (OffgridwithJD, review of #1286) |
 | `test_every_unguarded_import_spelling_is_refused` | each of six spellings, `__import__` among them, is named and refused; a file using `require_module` is not |
 | `test_an_unguarded_import_is_refused_under_xdist_too` | under `-n 2` the controller names the unguarded import once and the run is refused, as the serial run is: workers ship their sites back through `workeroutput` (#1305) |
+| `test_the_declinable_capabilities_are_exactly_pyarrow_and_duckdb` | the closed list is `pyarrow` and `duckdb`, and nothing else; `duckdb` joined on OffgridwithJD's decision on #1341 |
+| `test_a_missing_duckdb_declines_by_name_and_the_run_stays_green` | a missing `duckdb` declines by name, with its capability, and the inner run exits 0 |
+| `test_pgc_require_turns_a_duckdb_decline_into_a_failure` | with `PGC_REQUIRE=pyarrow,duckdb` a missing `duckdb` fails, and says duckdb is required |
+| `test_an_unguarded_duckdb_import_is_refused` | a file that imports `duckdb` outside `require_module` is named and the run is refused |
 
 ## 92. test_tid_range_scan.py: a ctid range reads only the row groups that hold it
 
@@ -10369,26 +10394,26 @@ The bound and null-count oracles read the heap built from the generator, not the
 | `test_export_stats_date_predicate_skips` | a date predicate skips |
 | `test_export_stats_timestamp_predicate_skips` | a timestamp predicate skips |
 | `test_export_stats_matching_constant_type_skips` | control: the same column skips when the constant matches its type |
-| `test_export_stats_cross_type_constant_skips_nothing` | a cross-type constant skips nothing, on the identical predicate |
+| `test_export_stats_cross_type_constant_skips_like_the_matching_one` | a cross-type constant skips as the matching one does, on the identical predicate (since #1712; it skipped nothing) |
 | `test_export_stats_float_less_than_skips` | control: a float < predicate below every bound skips |
 | `test_export_stats_float_greater_equal_skips_nothing` | a float >= predicate above every bound still skips nothing |
 | `test_export_stats_quoted_bigint_literal_skips` | a quoted literal takes a bigint column's type and skips |
-| `test_export_stats_unquoted_bigint_literal_skips_nothing` | the same digits unquoted are an integer, and skip nothing |
+| `test_export_stats_unquoted_bigint_literal_skips_as_well` | the same digits unquoted are an integer, and skip as well |
 | `test_export_stats_wide_digits_skip_a_bigint` | digits too wide for an integer are a bigint, and skip |
 | `test_export_stats_decimal_literal_casts_the_column` | a decimal-point literal casts the column, not the constant |
 | `test_export_stats_quoted_literal_casts_the_constant` | control: the quoted form casts the constant to the column's type |
 | `test_export_stats_quoted_real_literal_skips` | a quoted literal takes a real column's type and skips |
-| `test_export_stats_unquoted_real_literal_skips_nothing` | the same literal unquoted is double precision, and skips nothing |
+| `test_export_stats_unquoted_real_literal_skips_as_well` | the same literal unquoted is double precision, and skips as well |
 | `test_export_stats_quoted_smallint_literal_skips` | a quoted literal takes a smallint column's type and skips |
-| `test_export_stats_unquoted_smallint_literal_skips_nothing` | the same digits unquoted are an integer, and skip nothing (int2) |
+| `test_export_stats_unquoted_smallint_literal_skips_as_well` | the same digits unquoted are an integer, and skip as well (int2) |
 | `test_export_stats_adorned_date_skips` | an adorned literal of the column's own type skips |
 | `test_export_stats_unadorned_date_skips` | the same date unadorned is unknown, takes the column's type and skips |
-| `test_export_stats_timestamp_adorned_date_skips_nothing` | the same date adorned as a timestamp does not skip |
+| `test_export_stats_timestamp_adorned_date_skips_as_well` | the same date adorned as a timestamp skips as well |
 | `test_export_stats_adorned_literal_keeps_its_type` | an adorned literal keeps its own type, not the column's |
 | `test_export_stats_unadorned_literal_takes_the_column_type` | control: the unadorned form resolves to the column's type instead |
 | `test_export_stats_integer_digits_prune_every_group` | control: a digit string that fits an integer prunes every group |
-| `test_export_stats_int4_column_refuses_wide_digits` | digits too wide for an integer are a bigint, so an int4 column refuses |
-| `test_export_stats_fdw_result_equals_the_oracle` | the FDW result equals the oracle for [P]: 20 tests, one per predicate the skip checks use |
+| `test_export_stats_int4_column_skips_wide_digits` | digits too wide for an integer are a bigint, and an int4 column skips as well |
+| `test_export_stats_fdw_result_equals_the_oracle` | the FDW result equals the oracle for [P]: 23 tests, one per predicate the skip checks use |
 | `test_export_stats_parser_finds_pyarrow_bounds` | control: the parser finds pyarrow's bounds |
 | `test_export_stats_parser_reports_deprecated_fields` | control: the parser reports the deprecated fields where they exist |
 
@@ -10986,6 +11011,7 @@ Every test makes one check, by the shell's name. Readings are computed once, in 
 | `test_meta_json_provides_version_is_the_version` | META.json provides.pgcolumnar.version is the version VERSION holds, in PGXN form |
 | `test_meta_json_names_a_base_script` | premise: META.json names a base install script |
 | `test_the_meta_json_script_ships` | the script META.json names is in the published distribution |
+| `test_meta_json_names_the_base_script_of_the_version` | META.json names the base install script of the version VERSION holds |
 | `test_the_tree_has_install_scripts` | premise: the tree has install scripts to check |
 | `test_every_install_script_ships` | every pgcolumnar--*.sql in the tree is in the published distribution |
 | `test_changelog_has_a_union_merge_driver` | CHANGELOG.md has a union merge driver, so two entries do not conflict |
@@ -12845,3 +12871,139 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | `test_no_completed_object_remains_at_the_prefix` | double cancel: no completed object remains at the prefix |
 | `test_the_server_survived` | double cancel: the server survived |
 
+## 343. test_parquet_timestamp_zone.py: a Parquet timestamp read into the other timestamp type follows PostgreSQL's casts
+
+The pytest twin of `test/parquet_timestamp_zone.sh` (#1706 item 2), every check by the shell's name. In a New York session: a naive Parquet timestamp read into `timestamptz` is its wall time in the session zone, and a UTC-adjusted one read into `timestamp` is the session-zone wall time of its instant, each equal to PostgreSQL's own cast; the same-kind reads are controls; an export and import round trip keeps both types (with #1707's exporter); and a row group spanning the 2024-03-10 spring-forward gap is not skipped on its converted min and max, which need not bound its converted rows. The naive file is read again in Tokyo, so a reader that hard-codes a zone fails; the repeated hour of the 2024-11-03 fall-back resolves as the cast resolves it; and `test/fixtures/parquet/legacy_timestamp_micros.parquet`, written by pgcolumnar's own exporter before #1707 with only the `TIMESTAMP_MICROS` converted type, reads as the instant the Parquet spec defines it to be. The files are written by `python3` with pyarrow, so no test imports pyarrow: each declines by the shell's skip name, then asks for the fixture. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_ptz_pyarrow_wrote_one_naive_and_one_adjusted_file` | premise: pyarrow wrote the naive file without isAdjustedToUTC and the other with it |
+| `test_ptz_a_naive_file_into_timestamptz_is_its_session_wall_time` | a naive file read into timestamptz is its wall time in the session zone |
+| `test_ptz_the_naive_read_equals_the_cast_from_timestamp` | and that is what PostgreSQL's cast from timestamp gives |
+| `test_ptz_an_adjusted_file_into_timestamp_is_the_session_wall_time` | an adjusted file read into timestamp is the session-zone wall time of its instant |
+| `test_ptz_the_adjusted_read_equals_the_cast_from_timestamptz` | and that is what PostgreSQL's cast from timestamptz gives |
+| `test_ptz_a_naive_file_into_timestamp_keeps_its_wall_time` | control: a naive file read into timestamp keeps its wall time |
+| `test_ptz_an_adjusted_file_into_timestamptz_keeps_its_instant` | control: an adjusted file read into timestamptz keeps its instant |
+| `test_ptz_an_export_import_round_trip_keeps_both_types` | an export and import round trip keeps timestamp and timestamptz in a non-UTC session |
+| `test_ptz_the_gap_wall_times_become_their_instants` | the gap file's wall times become, sorted, the instants 07:00Z, 07:00Z and 07:30Z |
+| `test_ptz_a_gap_spanning_group_is_not_skipped` | a row group spanning a spring-forward gap is not skipped on its converted min and max |
+| `test_ptz_the_legacy_fixture_carries_only_the_converted_type` | premise: the legacy fixture carries the TIMESTAMP_MICROS converted type and no logical type |
+| `test_ptz_a_naive_file_in_tokyo_is_its_wall_time_there` | a naive file read into timestamptz in Tokyo is its wall time there, as the cast gives |
+| `test_ptz_the_tokyo_reading_differs_from_new_york` | and the Tokyo reading is a different instant from the New York one |
+| `test_ptz_a_fall_back_wall_time_is_what_the_cast_gives` | a naive wall time in the fall-back hour read into timestamptz is what the cast gives |
+| `test_ptz_a_legacy_file_into_timestamp_is_the_session_wall_time` | a legacy TIMESTAMP_MICROS file read into timestamp is the session-zone wall time of its instant |
+| `test_ptz_a_legacy_file_into_timestamptz_keeps_its_instant` | a legacy TIMESTAMP_MICROS file read into timestamptz keeps its instant |
+
+## 344. test_parquet_skip_cross_type.py: Parquet row-group skipping uses a constant of another type in the operator family
+
+The pytest twin of `test/parquet_skip_cross_type.sh` (#1712), every check by the shell's name. Over a file of 200,000 ascending rows in 4 row groups, each arm reads the skip count from EXPLAIN (ANALYZE): an int4 constant on the int8 column (greater-than, equality, and on the left of the operator), and a float4 constant below every row on the float8 column; the answers are compared with the same query in the column's own type, and a float4 NaN constant must still find a NaN row its group's statistics leave out. A second file, a naive timestamp column whose first row group spans New York's 2024-03-10 spring-forward gap, is read in New York: a timestamptz constant must find the rows a heap copy finds, because converting wall-time statistics to instants does not keep their order across the gap, and a timestamp constant must still skip. Before #1712 a constant of another type skipped nothing. The files are written by `python3` with pyarrow, so no test imports pyarrow. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_pxt_the_file_holds_four_row_groups` | premise: the file holds 4 row groups (pyarrow's own count) |
+| `test_pxt_an_int8_constant_skips_three_groups` | control: an int8 constant on the int8 column skips 3 of the 4 row groups |
+| `test_pxt_an_int4_constant_skips_three_groups` | an int4 constant on the int8 column skips 3 of the 4 row groups |
+| `test_pxt_the_int4_constant_returns_the_int8_rows` | and returns the rows the int8 constant returns |
+| `test_pxt_an_int4_equality_skips_three_groups` | an int4 constant in an equality on the int8 column skips 3 of the 4 row groups |
+| `test_pxt_a_constant_on_the_left_is_compared_the_same_way` | a constant on the left of the operator is compared the same way |
+| `test_pxt_a_float4_constant_below_every_row_skips_all_groups` | a float4 constant below every row skips all 4 row groups of the float8 column -- negative, because a float4 misread as float8 is a tiny positive number |
+| `test_pxt_the_float4_constant_returns_the_float8_rows` | and returns the rows the float8 constant returns |
+| `test_pxt_a_float4_nan_still_finds_the_nan_row` | a float4 NaN constant still finds the float8 column's NaN row |
+| `test_pxt_the_gap_file_holds_two_row_groups` | premise: the gap file holds 2 row groups (pyarrow's own count) |
+| `test_pxt_the_heap_finds_row_one_for_each_gap_predicate` | premise: in New York the heap copy finds row 1 for ts > 07:15Z, ts >= 07:15Z and ts = 07:30Z |
+| `test_pxt_a_timestamptz_constant_after_a_gap_finds_the_heap_row_gt` | a timestamptz constant after a spring-forward gap finds the timestamp column's row the heap finds (>) |
+| `test_pxt_a_timestamptz_constant_after_a_gap_finds_the_heap_row_ge` | a timestamptz constant after a spring-forward gap finds the timestamp column's row the heap finds (>=) |
+| `test_pxt_a_timestamptz_equality_after_a_gap_finds_the_heap_row` | a timestamptz constant equal to a row's instant after a spring-forward gap finds that row, as the heap does |
+| `test_pxt_a_timestamp_constant_skips_one_gap_group` | control: a timestamp constant on the timestamp column skips 1 of the 2 row groups |
+| `test_pxt_the_timestamp_constant_returns_the_heap_rows` | and returns the rows the heap returns |
+
+## 345. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap
+
+The pytest twin of `test/parquet_export.sh` (ported for #1341), every check by the shell's name. A mixed-type columnar table of 80003 rows, more than one row group, is exported and read back by pyarrow and by DuckDB; an empty table, two refusals and the extended types (date, time, timestamps, uuid, numeric, json) follow. On a private database.
+
+### Every test
+
+Each value comparison needs the generator's ids on both sides and the file's row count, so two empty readings cannot agree. DuckDB's non-null count of b is held to the generator's 80002, not to the table under test. Each refusal must carry its own message. Without pyarrow every test declines. DuckDB is the `duckdb` Python package, pinned in `requirements-test.txt`, reached only through `require_module`; without it the four DuckDB tests decline by the shell's check names, as the shell skips them by name without the `duckdb` CLI. CI sets `PGC_REQUIRE=pyarrow,duckdb`, so there either decline fails.
+
+| test | what it holds |
+| --- | --- |
+| `test_export_parquet_reports_every_row` | export_parquet rows written |
+| `test_parquet_values_match_the_heap_oracle` | parquet values match heap oracle |
+| `test_the_parquet_schema_has_the_expected_types` | parquet schema |
+| `test_duckdb_counts_every_parquet_row` | duckdb row count |
+| `test_duckdb_counts_the_generators_non_null_b` | duckdb non-null count(b) |
+| `test_an_empty_table_exports_no_parquet_rows` | empty export rows written |
+| `test_an_empty_table_writes_a_readable_parquet_file` | empty parquet readable |
+| `test_parquet_export_refuses_a_heap_table` | reject non-columnar table |
+| `test_parquet_export_refuses_an_unsupported_type` | reject unsupported type |
+| `test_the_extended_parquet_export_reports_every_row` | extended export rows written |
+| `test_extended_parquet_values_match_the_heap_oracle` | extended values match heap oracle |
+| `test_the_extended_parquet_types_are_the_mapped_ones` | extended parquet types |
+| `test_duckdb_reads_the_parquet_decimal` | duckdb reads decimal |
+| `test_duckdb_counts_every_extended_parquet_row` | duckdb extended row count |
+
+## 346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined
+
+The twin of `test/planner_choice_quality.sh` (#433, #434). On 200,000 wide rows whose payload does not compress, with an index on a correlated key, two queries run the planner's own choice and then two forced alternatives (indexes off; the custom scan and the sequential scan off). The chosen plan must run to completion, and must be no more than PLAN_BOUND (3) times slower than the fastest forced alternative that is a different plan. A forced alternative that fails fails the comparison instead of counting as the fastest plan.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database with serial planning, as the shell's cluster runs. Each arm runs its EXPLAIN, a warming run and the timed run in one session, so the plan named is the plan timed. An error, a statement-timeout cancel or a lost connection is a failure by name, never a short time. With PGC_SKIP_TIMING=1 nothing executes, the fixture is 20,000 rows, and the two measured tests per query are declared unrunnable under the shell's names, so the session does not end green; the shell's driver does not run the suite at all under that flag.
+
+| test | what it holds |
+| --- | --- |
+| `test_planner_choice_fixture_rows` | fixture rows |
+| `test_planner_choice_payload_did_not_compress` | premise: the payload did not compress, so the fetch path is exercised |
+| `test_planner_choice_index_key_is_correlated` | premise: the index key is correlated, which is the case that misprices |
+| `test_range_aggregate_chosen_plan_was_identified` | premise: [range scan with aggregate] the chosen plan was identified |
+| `test_range_aggregate_forcing_produced_a_different_plan` | [range scan with aggregate] forcing produced a different plan |
+| `test_range_aggregate_chosen_plan_ran_to_completion` | [range scan with aggregate] the chosen plan ran to completion |
+| `test_range_aggregate_chosen_plan_is_not_far_slower` | [range scan with aggregate] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
+| `test_wide_range_count_chosen_plan_was_identified` | premise: [wide range, narrow projection] the chosen plan was identified |
+| `test_wide_range_count_forcing_produced_a_different_plan` | [wide range, narrow projection] forcing produced a different plan |
+| `test_wide_range_count_chosen_plan_ran_to_completion` | [wide range, narrow projection] the chosen plan ran to completion |
+| `test_wide_range_count_chosen_plan_is_not_far_slower` | [wide range, narrow projection] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
+## 347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open
+
+The twin of `test/objstore_export_open_uploads.sh` (#1743, #1722), every check by the shell's name. A `parallel_export_parquet` to `s3://` is ended while its workers' multipart uploads are open, and the dispatcher's cleanup must list the uploads under the prefix and abort each one whose key is one of the export's own part names. Two foreign uploads seeded under each prefix, `part-0004.parquet` (one past a 4-worker export's last part) and `notes.parquet`, must stay open. Five arms: a cancel while every worker sends parts; a cancel while every worker waits for the answer to CreateMultipartUpload, which the fixture server's `__uploads_delay__` hook holds after the upload exists; the workers terminated in that same window; a cancel there followed by a second cancel while the first cancel's cleanup deletes a part key (`__delete_delay__` holds each DELETE 3 s), where the export must still report the first cancel and leave none of its uploads open (#1741); and a cancel there while the store does not answer the listing, where the cleanup's bounded wait must give up and the export still report its own cancel within 30 s. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole scenario once, and makes one `expect` call by the shell's check name. Open uploads are read from the fixture server's `__open_uploads__` record; survival also reads the server log's crash count.
+
+| test | what it holds |
+| --- | --- |
+| `test_open_uploads_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_the_foreign_uploads_were_open_before_the_exports` | premise: the foreign uploads were open before the exports |
+| `test_parts_cancel_landed_while_every_worker_sent_parts` | premise: parts: every worker was sending parts when the cancel landed |
+| `test_parts_reports_its_own_cancel` | parts: the export reports its own cancel (57014) |
+| `test_parts_leaves_no_upload_of_the_export_open` | parts: no upload of this export is left open |
+| `test_parts_leaves_the_foreign_uploads_open` | parts: the foreign uploads under the prefix are left open |
+| `test_parts_the_server_survived` | parts: the server survived |
+| `test_cancel_landed_while_every_create_was_unanswered` | premise: cancel: every worker's CreateMultipartUpload was unanswered when the cancel landed |
+| `test_cancel_reports_its_own_cancel` | cancel: the export reports its own cancel (57014) |
+| `test_cancel_leaves_no_upload_of_the_export_open` | cancel: no upload of this export is left open |
+| `test_cancel_leaves_the_foreign_uploads_open` | cancel: the foreign uploads under the prefix are left open |
+| `test_cancel_leaves_no_completed_object` | cancel: no completed object remains at the prefix |
+| `test_cancel_the_server_survived` | cancel: the server survived |
+| `test_terminate_landed_while_every_create_was_unanswered` | premise: terminate: every worker's CreateMultipartUpload was unanswered when the workers were terminated |
+| `test_terminate_reports_that_a_worker_failed` | terminate: the export reports that a worker failed |
+| `test_terminate_leaves_no_upload_of_the_export_open` | terminate: no upload of this export is left open |
+| `test_terminate_leaves_the_foreign_uploads_open` | terminate: the foreign uploads under the prefix are left open |
+| `test_terminate_the_server_survived` | terminate: the server survived |
+| `test_double_cancel_first_cancel_landed_while_every_create_was_unanswered` | premise: double cancel: every worker's CreateMultipartUpload was unanswered when the first cancel landed |
+| `test_double_cancel_second_cancel_landed_in_a_part_delete` | premise: double cancel: the first cancel's cleanup was deleting a part when the second cancel landed |
+| `test_double_cancel_reports_the_exports_own_cancel` | double cancel: the export reports its own cancel (57014) |
+| `test_double_cancel_logs_no_errstart` | double cancel: the server log has no 'errstart was not called' |
+| `test_double_cancel_leaves_no_upload_of_the_export_open` | double cancel: no upload of this export is left open |
+| `test_double_cancel_leaves_the_foreign_uploads_open` | double cancel: the foreign uploads under the prefix are left open |
+| `test_double_cancel_the_server_survived` | double cancel: the server survived |
+| `test_silent_listing_cancel_landed_while_every_create_was_unanswered` | premise: silent listing: every worker's CreateMultipartUpload was unanswered when the cancel landed |
+| `test_silent_listing_the_cleanup_asked_for_open_uploads` | silent listing: the cleanup asked the store for its open uploads |
+| `test_silent_listing_reports_its_own_cancel` | silent listing: the export reports its own cancel (57014) |
+| `test_silent_listing_returned_promptly` | silent listing: the export returned within 30 s of the cancel |
+| `test_silent_listing_the_server_survived` | silent listing: the server survived |

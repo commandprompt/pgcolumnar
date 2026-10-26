@@ -612,7 +612,11 @@ check_num "a date predicate skips" \
 	"$(skipped_for "WHERE d < DATE '2000-01-05'")" "3"
 check_num "a timestamp predicate skips" \
 	"$(skipped_for "WHERE ts < TIMESTAMP '2000-01-01 00:30:00'")" "3"
-# Documented refusals, reachable from our own exported files for the first time.
+# CROSS-TYPE CONSTANTS. These arms measured a documented refusal: a constant whose
+# type was not the column's skipped nothing. Since #1712 the reader compares through
+# the operator family's cross-type function, so each now skips exactly as its
+# same-type twin beside it does, and the soundness arms below cover every one.
+# The comments that follow describe how each pair was built.
 #
 # Each runs beside a predicate that differs in ONE respect and does skip. Without
 # that pair the checks are worthless: every group's max(i8) exceeds 5 and every
@@ -621,8 +625,8 @@ check_num "a timestamp predicate skips" \
 # not evidence of a refusal.
 check_num "control: the same column skips when the constant matches its type" \
 	"$(skipped_for "WHERE i8 < 5::bigint")" "$NGROUPS"
-check_num "a cross-type constant skips nothing, on the identical predicate" \
-	"$(skipped_for "WHERE i8 < 5::int")" "0"
+check_num "a cross-type constant skips as the matching one does, on the identical predicate" \
+	"$(skipped_for "WHERE i8 < 5::int")" "$NGROUPS"
 check_num "control: a float < predicate below every bound skips" \
 	"$(skipped_for "WHERE f4 < 0.4::real")" "$NGROUPS"
 # The reader refuses > and >= on a float column outright, because Parquet
@@ -644,8 +648,8 @@ check_num "a float >= predicate above every bound still skips nothing" \
 # constant cannot produce, which is what the pair is for.
 check_num "a quoted literal takes a bigint column's type and skips" \
 	"$(skipped_for "WHERE i8 < '5'")" "$NGROUPS"
-check_num "the same digits unquoted are an integer, and skip nothing" \
-	"$(skipped_for "WHERE i8 < 5")" "0"
+check_num "the same digits unquoted are an integer, and skip as well" \
+	"$(skipped_for "WHERE i8 < 5")" "$NGROUPS"
 check_num "digits too wide for an integer are a bigint, and skip" \
 	"$(skipped_for "WHERE i8 < 5000000000")" "3"
 # A decimal-point literal is a `numeric`, and PostgreSQL resolves
@@ -665,12 +669,12 @@ check_num "control: the quoted form casts the constant to the column's type" \
 	"$(filter_has "WHERE i8 < '5'" '::bigint')" "1"
 check_num "a quoted literal takes a real column's type and skips" \
 	"$(skipped_for "WHERE f4 < '0.4'")" "$NGROUPS"
-check_num "the same literal unquoted is double precision, and skips nothing" \
-	"$(skipped_for "WHERE f4 < 0.4")" "0"
+check_num "the same literal unquoted is double precision, and skips as well" \
+	"$(skipped_for "WHERE f4 < 0.4")" "$NGROUPS"
 check_num "a quoted literal takes a smallint column's type and skips" \
 	"$(skipped_for "WHERE i2 < '500'")" "1"
-check_num "the same digits unquoted are an integer, and skip nothing (int2)" \
-	"$(skipped_for "WHERE i2 < 500")" "0"
+check_num "the same digits unquoted are an integer, and skip as well (int2)" \
+	"$(skipped_for "WHERE i2 < 500")" "1"
 
 # ADORNED is not the same as quoted. A literal that names its own type is that
 # type, not `unknown`, so it does not take the column's and the exact-type
@@ -682,16 +686,12 @@ check_num "an adorned literal of the column's own type skips" \
 	"$(skipped_for "WHERE d < DATE '2000-01-05'")" "3"
 check_num "the same date unadorned is unknown, takes the column's type and skips" \
 	"$(skipped_for "WHERE d < '2000-01-05'")" "3"
-check_num "the same date adorned as a timestamp does not skip" \
-	"$(skipped_for "WHERE d < TIMESTAMP '2000-01-05 00:00:00'")" "0"
-# That last arm is a documented-behaviour guard rather than evidence, and the
-# distinction is worth stating rather than leaving for a reader to discover.
-# No mutation in this suite's ledger reddens it: with the reader's
-# exact-constant-type refusal deleted, the timestamp datum read as a date lands
-# outside this fixture's range in the direction that prunes nothing, so the arm
-# still reports 0 for a second reason. What IS falsifiable is the typing the
-# sentence rests on, and the planner will say it: an adorned literal keeps its
-# own type beside a bare Var, while the unadorned form resolves to the column's.
+check_num "the same date adorned as a timestamp skips as well" \
+	"$(skipped_for "WHERE d < TIMESTAMP '2000-01-05 00:00:00'")" "3"
+# The typing the pair rests on is falsifiable, and the planner will say it: an
+# adorned literal keeps its own type beside a bare Var, while the unadorned form
+# resolves to the column's. Since #1712 both forms skip, through different
+# comparison functions.
 check_num "an adorned literal keeps its own type, not the column's" \
 	"$(filter_has "WHERE d < TIMESTAMP '2000-01-05 00:00:00'" '::timestamp')" "1"
 check_num "control: the unadorned form resolves to the column's type instead" \
@@ -704,8 +704,8 @@ check_num "control: the unadorned form resolves to the column's type instead" \
 # and the other prunes none.
 check_num "control: a digit string that fits an integer prunes every group" \
 	"$(skipped_for "WHERE id < -1")" "$NGROUPS"
-check_num "digits too wide for an integer are a bigint, so an int4 column refuses" \
-	"$(skipped_for "WHERE id < -5000000000")" "0"
+check_num "digits too wide for an integer are a bigint, and an int4 column skips as well" \
+	"$(skipped_for "WHERE id < -5000000000")" "$NGROUPS"
 
 # Soundness. A skipped group emits nothing, and the executor's recheck cannot
 # recover a row that never arrived, so every predicate above must return exactly
@@ -755,6 +755,12 @@ fdw_vs_oracle "the FDW result equals the oracle for [id < -5000000000]" \
 	"id < -5000000000"
 fdw_vs_oracle "the FDW result equals the oracle for [alln IS NULL]" \
 	"alln IS NULL"
+fdw_vs_oracle "the FDW result equals the oracle for [i8 < 5::int]" \
+	"i8 < 5::int"
+fdw_vs_oracle "the FDW result equals the oracle for [i8 < 5]" \
+	"i8 < 5"
+fdw_vs_oracle "the FDW result equals the oracle for [f4 < 0.4]" \
+	"f4 < 0.4"
 
 # ---- the other direction: the instrument can report a bound that IS there ---
 #

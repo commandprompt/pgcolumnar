@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 27
+suites_not_covered 25
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -7056,4 +7056,128 @@ suites_not_covered 27
 #     never         4520 + 15 = 4535
 #     dated         3443 + 2 = 3445
 #     4535 + 3445 == 7980
-checks_never_observed_red 4535
+#
+# #1706 item 2, parquet_timestamp_zone seeded, with its twin (jdatcmd): 4535 -> 4538. A new
+# suite, so suites_not_covered does not move: it is registered and covered in the same change.
+# It enters with 16 checks from five-major runs (all green on each of 15-19, shell and twin
+# alike). 13 are dated by seven mutations, each reddening the same names in both twins: the
+# reader ignoring isAdjustedToUTC (6), not converting an adjusted column read into
+# timestamp (2), skipping a converted column's row groups on their converted statistics
+# (the spring-forward group, 1), main's exporter before #1707 (the round trip, 1), the
+# conversion pinned to New York instead of the session zone (the Tokyo pair, 2), a legacy
+# TIMESTAMP_MICROS column read as naive (the legacy pair, 2), and the zone offset taken at
+# the wall time read as UTC (the fall-back hour, with the two gap checks, 1 new). The two
+# premises and the adjusted-into-timestamptz control arrive never. iceberg_fdw's two new
+# mixed-kind hour() checks add no rows: that suite is not yet seeded.
+#
+#     ledger rows   7980 + 16 = 7996
+#     never         4535 + 3 = 4538
+#     dated         3445 + 13 = 3458
+#     4538 + 3458 == 7996
+#
+# #1712, parquet_skip_cross_type seeded, with its twin (jdatcmd): 4538 -> 4541. A new suite,
+# so suites_not_covered does not move: it is registered and covered in the same change. It
+# enters with 9 checks from five-major runs (all green on each of 15-19, shell and twin
+# alike). 6 are dated by three mutations, each reddening the same names in both twins: the
+# comparison function called with the constant first (4), the column type's own function
+# used for a constant of another type (the negative float4 arm, 1), and the NaN check
+# reading the constant as the column's type (1). The premise and the two answer controls
+# arrive never.
+#
+#     ledger rows   7996 + 9 = 8005
+#     never         4538 + 3 = 4541
+#     dated         3458 + 6 = 3464
+#     4541 + 3464 == 8005
+#
+# #1712, parquet_export_stats follows the new rule (jdatcmd): 4541 -> 4544. Six arms measured
+# the refusal of a cross-type constant (it skipped nothing); each is renamed for what it now
+# asserts, the skip its same-type twin gets, and keeps its row's history. Three soundness
+# arms are added for the predicates that had none, [i8 < 5::int], [i8 < 5] and [f4 < 0.4],
+# and arrive never, like the other oracle arms. suites_not_covered does not move.
+#
+#     ledger rows   8005 + 3 = 8008
+#     never         4541 + 3 = 4544
+#     dated         3464 + 0 = 3464
+#     4544 + 3464 == 8008
+#
+# #1712, parquet_skip_cross_type's spring-forward arms, with its twin (jdatcmd): 4544 -> 4548.
+# OffgridwithJD's review measured a timestamp column against a timestamptz constant: the
+# cross-type comparison converts each wall-time statistic to a session-zone instant, which
+# is not monotonic across a spring-forward gap, so in New York `ts > '2024-03-10 07:15+00'`
+# skipped the group holding 02:30 (07:30Z). The reader now refuses that pair. 7 checks are
+# added, green on each of 15-19 in shell and twin alike. 3 are dated by one mutation, the
+# guard deleted, which reddens the same three names in both twins: the >, >= and = arms
+# against the heap copy. The two premises, the same-type skip control and its answer
+# arrive never. suites_not_covered does not move.
+#
+#     ledger rows   8008 + 7 = 8015
+#     never         4544 + 4 = 4548
+#     dated         3464 + 3 = 3467
+#     4548 + 3467 == 8015
+#
+#     ledger rows   8015 + 14 = 8029
+#     never         4548 + 0 = 4548
+#     dated         3467 + 14 = 3481
+#     4548 + 3481 == 8029
+#
+# #1341, planner_choice_quality seeded, with its twin (jdatcmd): 4548 -> 4553, and
+# suites_not_covered 26 -> 25. The suite had no rows. It enters with 11 checks from
+# five-major runs (all green on each of 15-19, shell and twin alike), after two fixes.
+# psql prints "Time:" after a statement that errored, so a chosen plan that raised an
+# error in 2 ms was read as a plan that answered in 2 ms: with the custom scan or the
+# grouped aggregate raising at execution, main's shell passed every check. The chosen
+# plan must now run to completion, by psql's exit status, and a forced alternative that
+# fails fails the comparison. And the ratio check's name carried the node that won, so
+# it had one name green and another red; the names now carry only the query's label.
+# "forcing produced a different plan" lost its premise prefix (#1339): with
+# pgcolumnar.enable_custom_scan ignored it is the check that goes red. 6 are dated by
+# five mutations, each reddening the same names in both twins. 5 arrive never: fixture
+# rows and four premises. The suite stays out of CI's suites job under PGC_SKIP_TIMING;
+# its twin declares the two measured checks per query unrunnable under that flag.
+#
+#     ledger rows   8029 + 11 = 8040
+#     never         4548 + 5 = 4553
+#     dated         3481 + 6 = 3487
+#     4553 + 3487 == 8040
+#
+# #1743, a cancelled remote export's open uploads, objstore_export_open_uploads seeded
+# with its twin (jdatcmd): 4553 -> 4571. A new suite, registered with its rows, so
+# suites_not_covered stays 34. A parallel_export_parquet to s3:// is ended while its
+# workers' multipart uploads are open: cancelled while they send parts; cancelled while
+# every CreateMultipartUpload is held unanswered by the fixture server's new
+# __uploads_delay__ hook; its workers terminated in that window; cancelled there and
+# cancelled again while the cleanup's part DELETE is held by #1741's __delete_delay__;
+# and cancelled there while the store does not answer the listing. 30 checks: 12 are
+# dated by four mutations of the dispatcher's new cleanup (no listing, every listed key
+# aborted, the part match off by one, and the cleanup run with the handled error still
+# on the stack, which reports "errstart was not called" as #1741 did), each reddening
+# the same names in both twins on PG17. 18 arrive never: eight premises, three reported
+# errors, the empty prefix, five survival checks, and "parts: no upload of this export
+# is left open": on this base #1727's worker exit callback aborts a sending worker's
+# upload, so dropping the listing alone no longer reddens it. A fifth mutation, the
+# listing's deadline dropped, reddens "silent listing: the export returned within 30 s
+# of the cancel" only, which was already dated.
+#
+#     ledger rows   8040 + 30 = 8070
+#     never         4553 + 18 = 4571
+#     dated         3487 + 12 = 3499
+#     4571 + 3499 == 8070
+#
+# #1339, product-side batch (jdatcmd): 4571 -> 4566. Five parallel_scan_cost checks
+# lose their `premise: ` prefix in both twins and are dated, because a one-line change
+# to columnar_customscan.c reddens each (#1236): the scan's CustomName changed to
+# PgColumnarScanX reddens the three "columnar scan" checks, the partial path planned
+# with one worker reddens "the parallel plan has Gather", and with workers + 1
+# reddens "the parallel plan uses two workers". partition_lifecycle gains one check,
+# "a NULL width or a NULL lead is refused before any DDL", from five-major runs (all
+# green on each of 15-19, shell and twin alike); partition_create_ahead without the
+# NULL halves of its guard reddens it in both twins. docs_style gains one, "META.json
+# names the base install script of the version VERSION holds", dated by META.json
+# naming the alpha4 -> alpha5 upgrade script, which reddens it in both twins.
+# suites_not_covered does not move.
+#
+#     ledger rows   8070 + 2 = 8072
+#     never         4571 - 5 = 4566
+#     dated         3499 + 7 = 3506
+#     4566 + 3506 == 8072
+checks_never_observed_red 4566

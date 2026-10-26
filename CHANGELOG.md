@@ -236,6 +236,19 @@ true until the next version shipped.
   over a failed attempt's file is allowed.
 
 ### Changed
+- **A Parquet timestamp read into the other PostgreSQL timestamp type is
+  converted in the session's time zone.** The reader ignored the file's
+  `isAdjustedToUTC` flag. A wall-time column read into `timestamptz` was taken as
+  UTC (12:00 read as 08:00-04 in a New York session), and a UTC-adjusted column
+  read into `timestamp` kept its UTC wall time. Both now follow PostgreSQL's casts.
+  Same-type reads are unchanged, and so is any read in a UTC session (#1706).
+  A legacy `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS` column with no logical type,
+  as pgcolumnar's own exporter wrote before #1707, is read as UTC-adjusted, as
+  the Parquet format defines it. The Iceberg foreign table no longer prunes on a
+  `year()`, `month()`, `day()` or `hour()` partition whose source column is the
+  other timestamp type: its partition values are in the source's type, so they
+  no longer bound the converted rows.
+  `test/parquet_timestamp_zone.sh`, `test/iceberg_fdw.sh` and their twins.
 
 - `GROUP BY` is vectorized by default (#1292).
   `pgcolumnar.enable_group_vectorization` is now `on`. The planner takes the
@@ -431,6 +444,30 @@ true until the next version shipped.
   ended the cleanup early: the segments stayed pinned until the server restarted, and
   the second cancel was reported instead of the first. The cleanup now finishes
   whatever arrives, in the time a single cancel already took (#1745).
+- **Parquet row-group skipping now uses a constant of another integer or float
+  type.** A bare integer literal is `int4`, so `WHERE id > 150000` on a `bigint`
+  column of a Parquet foreign table read every row group; only `150000::int8`
+  skipped. The check now compares through the operator family's cross-type
+  comparison, as the native columnar scan already did. Answers were always correct;
+  this only reads less (#1712). A `timestamp` column compared with a `timestamptz`
+  constant still does not skip: across a spring-forward gap the session zone's
+  conversion does not keep the statistics' order. `test/parquet_skip_cross_type.sh`
+  and `test_parquet_skip_cross_type.py`.
+- **A cancelled `parallel_export_parquet` to `s3://` no longer leaves its multipart
+  uploads open.** A worker learns its upload id only from the answer to
+  CreateMultipartUpload, and the store creates the upload when the request
+  arrives. A worker that ended while it waited for that answer left an upload
+  open on the store that nothing could abort, billed until a lifecycle rule
+  removed it. The dispatcher's cleanup now lists the uploads under the export's
+  prefix and aborts each one whose key is one of the export's own part names.
+  Uploads under the same prefix with any other key are left alone. The aborts run
+  inside the cleanup that #1741 made safe from a second cancel, so a second cancel
+  during the cleanup does not skip them. The cleanup holds interrupts only while
+  it waits, and those waits are bounded: 5 s for the workers to stop, then 10 s
+  for the listing and the aborts. The object-store module gains two entries for
+  this, `list_uploads` and `abort_upload` (module ABI 6), so the module and the
+  extension must come from the same build (#1743, #1722).
+  `test/objstore_export_open_uploads.sh` and `test_objstore_export_open_uploads.py`.
 - **`export_parquet` no longer marks a `timestamp` column as a UTC instant.** Both
   `timestamp` and `timestamptz` were written as the converted type `TIMESTAMP_MICROS`,
   which the Parquet spec defines as adjusted to UTC. Every other reader (pyarrow,
