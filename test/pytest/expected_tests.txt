@@ -1237,4 +1237,6 @@ guard_tests 847
 # 18 checks in 18 new tests, by collection over the cluster files.
 # cluster_tests 4362 -> 4399 for #432's completed test_phase5.py, the twin of phase5.sh:
 # 37 checks in 37 new tests, by collection over the cluster files.
-cluster_tests 4399
+# cluster_tests 4399 -> 4400 for #432's test_a_chunk_over_1gb_is_refused in test_large_values.py, the
+# shell's opt-in arm, by collection over the cluster files.
+cluster_tests 4400

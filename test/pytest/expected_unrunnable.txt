@@ -202,3 +202,11 @@
 16 test_audit.py::test_audit_reject_set_options_on_a_partitioned_parent
 16 test_audit.py::test_audit_nothing_was_recorded_for_the_partitioned_parent
 16 test_audit.py::test_audit_the_partition_itself_is_still_accepted
+
+# Every major: test_large_values.py's chunk-over-1-GB arm needs PGC_RUN_OVER_1GB=1 and
+# several GB of memory, so it is opt-in, as the shell's is, and declines without it (#432).
+15 test_large_values.py::test_a_chunk_over_1gb_is_refused
+16 test_large_values.py::test_a_chunk_over_1gb_is_refused
+17 test_large_values.py::test_a_chunk_over_1gb_is_refused
+18 test_large_values.py::test_a_chunk_over_1gb_is_refused
+19 test_large_values.py::test_a_chunk_over_1gb_is_refused
