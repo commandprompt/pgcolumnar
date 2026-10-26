@@ -1,7 +1,16 @@
-"""A partitioned parent carrying the columnar access method has no storage, and is
+"""The pytest twin of `test/inheritance.sh`, every check by the shell's name (#432).
+
+A legacy INHERITS parent must plan as an Append of its children, not as a custom scan
+or a vectorized aggregate of the parent's own storage: PgColumnarSetRelPathlist and
+the ungrouped vector-aggregate path both run on the inheritance appendrel
+(RELKIND_RELATION with rte->inh set), and a scan added there reads only the parent's
+file. Measured before the fix: parent 1 row, child 5000, count(*) from the parent 1
+where the heap mirror said 5001. A declarative partition is a different RTE and must
+still get the custom scan (#436). The heap tree beside the columnar one is the oracle.
+
+A partitioned parent carrying the columnar access method has no storage, and is
 refused rather than read; a columnar materialized view is still columnar (#1259,
-#1341). Part of the pytest twin of `test/inheritance.sh`: these arms only, by the
-shell's names, and the pair is declared INCOMPLETE.
+#1341).
 
 From PostgreSQL 17 a partitioned table may carry relam = pgcolumnar as the default for
 its future partitions. It has no storage of its own, relfilenode 0, and
@@ -12,6 +21,7 @@ and on a release build a failure to open ".../0/0", 58P01. So a refusal here is
 since a crashed cluster restarts and a later connection succeeds.
 """
 import psycopg
+import pytest
 
 from pgc_vacuity import query_error
 
@@ -51,9 +61,165 @@ def _one(conn, sql):
         return cur.fetchone()[0]
 
 
+def _first_line(exc):
+    return str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+
+
+def _q(conn, sql):
+    """-> the first column of the first row, or a failed reading."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+    except psycopg.Error as exc:
+        return query_error(_first_line(exc))
+    return row[0] if row else query_error("no row")
+
+
+def _rows(conn, sql):
+    """-> every row, or a failed reading."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return cur.fetchall()
+    except psycopg.Error as exc:
+        return query_error(_first_line(exc))
+
+
+def _count_in_plan(conn, sql, needle):
+    """-> how many lines of the statement's plan contain `needle`, as the shell's grep -c."""
+    plan = _rows(conn, f"EXPLAIN (COSTS OFF) {sql}")
+    return plan if isinstance(plan, str) else sum(needle in r[0] for r in plan)
+
+
+TREE_DB = "pgc_inheritance_tree"
+
+
+@pytest.fixture(scope="module")
+def tree(pgc_cluster):
+    """Every reading the inheritance-tree arms assert, in the shell's order: a heap
+    INHERITS tree as the oracle beside a columnar one, a one-row parent and child,
+    then a 4991-row child, then a declarative partition. One test per check reads it,
+    so a red on one arm does not hide the next."""
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {TREE_DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {TREE_DB}")
+    r = {}
+    try:
+        with psycopg.connect(pgc_cluster.dsn(dbname=TREE_DB), autocommit=True) as conn:
+            def build(*stmts):
+                try:
+                    for sql in stmts:
+                        conn.execute(sql)
+                except psycopg.Error as exc:
+                    print(f"-- fixture build failed: {_first_line(exc)}")
+
+            build("CREATE EXTENSION IF NOT EXISTS pgcolumnar",
+                  "CREATE TABLE inh_h (id int, v text)",
+                  "CREATE TABLE inh_hc () INHERITS (inh_h)",
+                  "INSERT INTO inh_h VALUES (1, 'parent')",
+                  "INSERT INTO inh_hc VALUES (2, 'child')",
+                  "CREATE TABLE inh_p (id int, v text) USING pgcolumnar",
+                  "CREATE TABLE inh_c () INHERITS (inh_p) USING pgcolumnar",
+                  "INSERT INTO inh_p VALUES (1, 'parent')",
+                  "INSERT INTO inh_c VALUES (2, 'child')")
+            r["heap"] = _q(conn, "SELECT count(*) FROM inh_h")
+            r["columnar"] = _q(conn, "SELECT count(*) FROM inh_p")
+            r["only"] = _q(conn, "SELECT count(*) FROM ONLY inh_p")
+            child = _rows(conn, "SELECT v FROM inh_p WHERE id = 2")
+            # no row is the bug's answer, so it is a reading to fail on, not a failed one
+            r["child"] = child if isinstance(child, str) else (child[0][0] if child else "(no row)")
+            r["ids"] = (_rows(conn, "SELECT id, v FROM inh_p"), _rows(conn, "SELECT id, v FROM inh_h"))
+            r["star_appends"] = _count_in_plan(conn, "SELECT * FROM inh_p", "Append")
+            r["count_appends"] = _count_in_plan(conn, "SELECT count(*) FROM inh_p", "Append")
+
+            # A cheap parent and a large child is the shape that made the custom scan
+            # win: the appendrel is costed from the parent's empty-looking storage.
+            build("INSERT INTO inh_c SELECT g, 'c' || g FROM generate_series(10, 5000) g",
+                  "INSERT INTO inh_hc SELECT g, 'c' || g FROM generate_series(10, 5000) g",
+                  "ANALYZE inh_p", "ANALYZE inh_c", "ANALYZE inh_h", "ANALYZE inh_hc")
+            r["large"] = (_q(conn, "SELECT count(*) FROM inh_p"), _q(conn, "SELECT count(*) FROM inh_h"))
+            r["filtered"] = (_rows(conn, "SELECT id FROM inh_p WHERE id > 100"),
+                             _rows(conn, "SELECT id FROM inh_h WHERE id > 100"))
+            build("SET pgcolumnar.enable_ungrouped_vector_agg = on")
+            vec = _q(conn, "SELECT count(*) FROM inh_p")
+            build("RESET pgcolumnar.enable_ungrouped_vector_agg")
+            r["vector"] = (vec, _q(conn, "SELECT count(*) FROM inh_h"))
+
+            # Declarative partitions were the #436 case: the custom scan MUST still
+            # fire on the partition, or the refusal of rte->inh would put it back on
+            # a seqscan.
+            build("CREATE TABLE inh_prt (id int, v text) PARTITION BY RANGE (id)",
+                  "CREATE TABLE inh_prt1 PARTITION OF inh_prt FOR VALUES FROM (0) TO (100000)"
+                  " USING pgcolumnar",
+                  "INSERT INTO inh_prt SELECT g, 'p' || g FROM generate_series(1, 2000) g")
+            r["partitioned"] = _q(conn, "SELECT count(*) FROM inh_prt")
+            r["partition_scans"] = _count_in_plan(conn, "SELECT * FROM inh_prt",
+                                                  "Custom Scan (PgColumnarScan)")
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {TREE_DB} WITH (FORCE)")
+
+
+def test_the_heap_parent_includes_its_child(tree, expect):
+    expect.num(tree["heap"], 2, "INHERITS parent includes the child (heap oracle)")
+
+
+def test_the_columnar_parent_includes_its_child(tree, expect):
+    expect.num(tree["columnar"], 2, "INHERITS parent includes the child (columnar)")
+
+
+def test_only_the_parent_is_just_the_parent(tree, expect):
+    expect.num(tree["only"], 1, "ONLY parent is still just the parent")
+
+
+def test_the_child_is_visible_through_the_parent(tree, expect):
+    expect.text(tree["child"], "child", "the child is visible through the parent")
+
+
+def test_the_row_identities_match_the_heap(tree, expect):
+    got, want = tree["ids"]
+    expect.row_set(got, want, "row identities match the heap")
+
+
+def test_select_star_from_the_parent_plans_an_append(tree, expect):
+    expect.num(tree["star_appends"], 1, "SELECT * from an INHERITS parent plans an Append")
+
+
+def test_count_from_the_parent_plans_an_append(tree, expect):
+    expect.num(tree["count_appends"], 1, "count(*) from an INHERITS parent plans an Append")
+
+
+def test_a_large_child_is_visible_through_the_parent(tree, expect):
+    got, want = tree["large"]
+    expect.num(got, want, "a large child is still visible through the parent")
+
+
+def test_the_filtered_rows_match_the_heap(tree, expect):
+    got, want = tree["filtered"]
+    expect.row_set(got, want, "filtered rows match the heap")
+
+
+def test_ungrouped_vector_aggregation_sees_the_child_rows(tree, expect):
+    got, want = tree["vector"]
+    expect.num(got, want, "ungrouped vector aggregation also sees the child rows")
+
+
+def test_a_partitioned_parent_returns_every_row(tree, expect):
+    expect.num(tree["partitioned"], 2000, "a partitioned parent still returns every row")
+
+
+def test_the_partition_is_still_a_pgcolumnar_scan(tree, expect):
+    expect.num(tree["partition_scans"], 1, "and the partition is still a PgColumnarScan (#436)")
+
+
 def test_a_partitioned_parent_is_refused_and_its_leaf_is_not(pgc_conn, pgc_cluster, expect):
     conn = pgc_conn
-    major = int(_one(conn, "SHOW server_version_num")) // 10000
+    vnum = _one(conn, "SHOW server_version_num")
+    expect.text("a number" if vnum.isdigit() else f"not a number: {vnum!r}", "a number",
+                "premise: the server major is known, so the PG17 floor can be applied")
+    major = int(vnum) // 10000
     if major < 17:
         # PostgreSQL 15 and 16 refuse PARTITION BY ... USING outright, so the fixture
         # cannot exist and every "is refused" arm would pass on a missing relation.

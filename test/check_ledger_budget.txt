@@ -7196,4 +7196,20 @@ suites_not_covered 25
 #     never         4566 + 1 = 4567
 #     dated         3506 + 8 = 3514
 #     4567 + 3514 == 8081
-checks_never_observed_red 4567
+#
+# #432, inheritance's twin completed (OffgridwithJD): 4567 -> 4558. The twin held the
+# #1259 arms only; it now holds every check, the inheritance-tree arms one test each,
+# by the shell's names. The suite already had its 26 rows, so none is added. 9 never
+# rows are dated by three mutations, each reddening the same names in both twins: the
+# ungrouped vector-aggregate path no longer stepping aside for an INHERITS parent (4),
+# PgColumnarSetRelPathlist no longer stepping aside for one (4 more of its 8), and the
+# custom scan admitting RELOPT_BASEREL only, the #436 revert (1). The heap oracle, ONLY
+# on the parent and the partitioned parent's row count stay never: no one-line
+# pgcolumnar mutant reaches them, and each was seen red under a changed expectation.
+# suites_not_covered does not move.
+#
+#     ledger rows   8081 + 0 = 8081
+#     never         4567 - 9 = 4558
+#     dated         3514 + 9 = 3523
+#     4558 + 3523 == 8081
+checks_never_observed_red 4558

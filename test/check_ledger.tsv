@@ -3362,22 +3362,22 @@ index_only	index_only	vm bit round-trips on columnar rel (block 0)	15;16;17;18;1
 index_only	index_only	vm bit round-trips on columnar rel (block 171)	15;16;17;18;19	never	-
 index_only	index_only	vm bit round-trips on columnar rel (block 3)	15;16;17;18;19	never	-
 index_only	index_only	vm bit round-trips on columnar rel (block 50)	15;16;17;18;19	never	-
-inheritance	inheritance	INHERITS parent includes the child (columnar)	15;16;17;18;19	never	-
+inheritance	inheritance	INHERITS parent includes the child (columnar)	15;16;17;18;19	2026-10-26	columnar_vector.c: the ungrouped vector-aggregate path no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so count(*) reads the parent's own storage alone
 inheritance	inheritance	INHERITS parent includes the child (heap oracle)	15;16;17;18;19	never	-
 inheritance	inheritance	ONLY parent is still just the parent	15;16;17;18;19	never	-
-inheritance	inheritance	SELECT * from an INHERITS parent plans an Append	15;16;17;18;19	never	-
+inheritance	inheritance	SELECT * from an INHERITS parent plans an Append	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarSetRelPathlist no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so a Custom Scan reads the parent's own storage in place of the Append
 inheritance	inheritance	a columnar materialized view is still recognised as columnar	15;16;17;18;19	2026-09-24	the predicate narrowed to `relkind == RELKIND_RELATION` instead of RELKIND_HAS_STORAGE -- the obvious wrong fix, which also excludes RELKIND_MATVIEW and stops a columnar materialized view being recognised at all 31 call sites
-inheritance	inheritance	a large child is still visible through the parent	15;16;17;18;19	never	-
+inheritance	inheritance	a large child is still visible through the parent	15;16;17;18;19	2026-10-26	columnar_vector.c: the ungrouped vector-aggregate path no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so count(*) reads the parent's own storage alone
 inheritance	inheritance	a partitioned parent still returns every row	15;16;17;18;19	never	-
 inheritance	inheritance	add_projection on the parent is refused rather than aborting the backend	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarIsColumnarRelation answers from relam alone again, the #1259 predicate reverted
 inheritance	inheritance	and it still returns its rows	15;16;17;18;19	never	-
 inheritance	inheritance	and the cluster is still up after it	15;16;17;18;19	never	-
 inheritance	inheritance	and the cluster is still up after that too	15;16;17;18;19	never	-
-inheritance	inheritance	and the partition is still a PgColumnarScan (#436)	15;16;17;18;19	never	-
+inheritance	inheritance	and the partition is still a PgColumnarScan (#436)	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarSetRelPathlist admits RELOPT_BASEREL only again, so a declarative partition (RELOPT_OTHER_MEMBER_REL) falls back to a sequential scan (#436 reverted)
 inheritance	inheritance	control: add_projection on the LEAF still works	15;16;17;18;19	never	-
 inheritance	inheritance	control: get_storage_id on the LEAF still returns an id	15;16;17;18;19	never	-
-inheritance	inheritance	count(*) from an INHERITS parent plans an Append	15;16;17;18;19	never	-
-inheritance	inheritance	filtered rows match the heap	15;16;17;18;19	never	-
+inheritance	inheritance	count(*) from an INHERITS parent plans an Append	15;16;17;18;19	2026-10-26	columnar_vector.c: the ungrouped vector-aggregate path no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so count(*) reads the parent's own storage alone
+inheritance	inheritance	filtered rows match the heap	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarSetRelPathlist no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so a Custom Scan reads the parent's own storage in place of the Append
 inheritance	inheritance	get_storage_id on the parent is refused rather than reading storage	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarIsColumnarRelation answers from relam alone again, the #1259 predicate reverted
 inheritance	inheritance	premise: a materialized view is relkind m	15;16;17;18;19	never	-
 inheritance	inheritance	premise: and it carries the columnar access method	15;16;17;18;19	never	-
@@ -3385,9 +3385,9 @@ inheritance	inheritance	premise: and it is partitioned	15;16;17;18;19	never	-
 inheritance	inheritance	premise: so it has no storage of its own	15;16;17;18;19	never	-
 inheritance	inheritance	premise: the parent carries the columnar access method	15;16;17;18;19	never	-
 inheritance	inheritance	premise: while its leaf is an ordinary relation	15;16;17;18;19	never	-
-inheritance	inheritance	row identities match the heap	15;16;17;18;19	never	-
-inheritance	inheritance	the child is visible through the parent	15;16;17;18;19	never	-
-inheritance	inheritance	ungrouped vector aggregation also sees the child rows	15;16;17;18;19	never	-
+inheritance	inheritance	row identities match the heap	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarSetRelPathlist no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so a Custom Scan reads the parent's own storage in place of the Append
+inheritance	inheritance	the child is visible through the parent	15;16;17;18;19	2026-10-26	columnar_customscan.c: PgColumnarSetRelPathlist no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so a Custom Scan reads the parent's own storage in place of the Append
+inheritance	inheritance	ungrouped vector aggregation also sees the child rows	15;16;17;18;19	2026-10-26	columnar_vector.c: the ungrouped vector-aggregate path no longer steps aside for an INHERITS parent (if (rte->inh) -> if (false && rte->inh)), so count(*) reads the parent's own storage alone
 int8_agg_int128	int8_agg_int128	a large NEGATIVE sum agrees	15;16;17;18;19	2026-10-21	the int128 to numeric rebuild drops the low half past int64
 int8_agg_int128	int8_agg_int128	a sum past int64 agrees with the scalar path and with heap	15;16;17;18;19	2026-10-21	the int128 to numeric rebuild drops the low half past int64
 int8_agg_int128	int8_agg_int128	and its avg agrees	15;16;17;18;19	2026-10-21	the int128 to numeric rebuild drops the low half past int64

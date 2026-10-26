@@ -89,6 +89,7 @@ COMPLETE = ["advisory_lock_class",
             "projection_rewrite",
             "audit",
             "server_file_privilege",
+            "inheritance",
             "smoke",
             "sort_status",
             "sort_status_privilege",
@@ -391,9 +392,6 @@ COMPLETE = ["advisory_lock_class",
 INCOMPLETE = {
     # #1341 item 29 ported the arms four fixes added with shell arms only. Each
     # pair below holds that fix's arms and nothing else of its shell suite.
-    "inheritance": "the #1259 arms (a partitioned columnar parent is refused with "
-                   "42809 and nothing crashes, its leaf and a columnar matview are "
-                   "accepted) are ported; the inheritance-tree arms are not",
     "parquet_import": "the #1263 arms (a partitioned columnar parent is refused with "
                       "42809 and nothing crashes, a leaf and a heap target import) "
                       "are ported; the page-version, type and round-trip arms are not",
