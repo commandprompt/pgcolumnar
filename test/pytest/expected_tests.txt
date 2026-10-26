@@ -1231,4 +1231,6 @@ guard_tests 847
 # cluster_tests 4293 -> 4323 for #1743's test_objstore_export_open_uploads.py, the twin of objstore_export_open_uploads.sh:
 # 30 checks in 30 tests, by collection over the cluster files.
 # cluster_tests 4323 -> 4332 for #1339's nine rewrite-form tests in test_rewrite_storage_oid.py, by collection.
-cluster_tests 4332
+# cluster_tests 4332 -> 4344 for #432's completed test_inheritance.py, the twin of inheritance.sh:
+# 12 inheritance-tree checks in 12 new tests, by collection over the cluster files.
+cluster_tests 4344

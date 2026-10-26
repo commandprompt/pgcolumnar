@@ -184,7 +184,7 @@ behaviour, the source of that number is named.
 - [136. test_recovery.py: committed writes survive a crash, uncommitted ones leave nothing](#136-test_recoverypy-committed-writes-survive-a-crash-uncommitted-ones-leave-nothing)
 - [137. test_native_backend_crash.py: one backend dies and committed data is intact](#137-test_native_backend_crashpy-one-backend-dies-and-committed-data-is-intact)
 - [138. test_corruption.py: a corrupt catalog row is refused cleanly and no backend dies](#138-test_corruptionpy-a-corrupt-catalog-row-is-refused-cleanly-and-no-backend-dies)
-- [139. test_inheritance.py: a partitioned columnar parent is refused, a columnar matview is not](#139-test_inheritancepy-a-partitioned-columnar-parent-is-refused-a-columnar-matview-is-not)
+- [139. test_inheritance.py: an INHERITS parent plans an Append, a partitioned columnar parent is refused](#139-test_inheritancepy-an-inherits-parent-plans-an-append-a-partitioned-columnar-parent-is-refused)
 - [140. test_parquet_import.py: a partitioned columnar parent is refused by import_parquet](#140-test_parquet_importpy-a-partitioned-columnar-parent-is-refused-by-import_parquet)
 - [141. test_phase5.py: set_options and reset_options agree](#141-test_phase5py-set_options-and-reset_options-agree)
 - [142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP](#142-test_drop_cleanuppy-a-columnar-matviews-options-row-goes-with-its-drop)
@@ -7722,15 +7722,27 @@ A crash is read from the server log, counted from the test's start, since a clie
 | `test_a_negative_column_index` | `column_index = -1`: no crash |
 | `test_a_corrupt_bloom_header_is_no_filter` | a huge nbits over a short buffer: an absent value is 0 rows, a held value is still found, no crash |
 
-## 139. test_inheritance.py: a partitioned columnar parent is refused, a columnar matview is not
+## 139. test_inheritance.py: an INHERITS parent plans an Append, a partitioned columnar parent is refused
 
-Part of the pytest twin of `test/inheritance.sh` (#1259, ported for #1341): its #1259 arms only, by the shell's names, and the pair is declared INCOMPLETE. From PostgreSQL 17 a partitioned table may carry relam = pgcolumnar and has no storage. `get_storage_id` and `add_projection` on it must be refused with 42809, not any error: with the fix reverted a release build fails with 58P01 opening relfilenode 0. Liveness is read from the server log. PostgreSQL 15 and 16 cannot build the fixture, so that test declines there.
+The pytest twin of `test/inheritance.sh`, every check by the shell's name (#432; the #1259 arms were ported for #1341). A legacy INHERITS parent is a RELKIND_RELATION with `rte->inh` set, and the custom scan and the ungrouped vector aggregate both ran on that appendrel and read only the parent's storage: a one-row parent over a 5000-row child counted 1. A heap INHERITS tree beside the columnar one is the oracle, for counts, `ONLY`, row identities and a filtered read, and both plans must be an Append; a declarative partition must still get the custom scan (#436). The fixture is built once per module in a private database and each check is its own test, so one red does not hide the next. From PostgreSQL 17 a partitioned table may carry relam = pgcolumnar and has no storage. `get_storage_id` and `add_projection` on it must be refused with 42809, not any error: with the fix reverted a release build fails with 58P01 opening relfilenode 0. Liveness is read from the server log. PostgreSQL 15 and 16 cannot build that fixture, so that test declines there.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_a_partitioned_parent_is_refused_and_its_leaf_is_not` | the parent is refused with 42809 by both calls and no backend crashed; its leaf is accepted by both |
+| `test_the_heap_parent_includes_its_child` | INHERITS parent includes the child (heap oracle) |
+| `test_the_columnar_parent_includes_its_child` | INHERITS parent includes the child (columnar) |
+| `test_only_the_parent_is_just_the_parent` | ONLY parent is still just the parent |
+| `test_the_child_is_visible_through_the_parent` | the child is visible through the parent -- no row is a reading to fail on, not a failed query |
+| `test_the_row_identities_match_the_heap` | row identities match the heap |
+| `test_select_star_from_the_parent_plans_an_append` | SELECT * from an INHERITS parent plans an Append |
+| `test_count_from_the_parent_plans_an_append` | count(*) from an INHERITS parent plans an Append |
+| `test_a_large_child_is_visible_through_the_parent` | a large child is still visible through the parent |
+| `test_the_filtered_rows_match_the_heap` | filtered rows match the heap |
+| `test_ungrouped_vector_aggregation_sees_the_child_rows` | ungrouped vector aggregation also sees the child rows |
+| `test_a_partitioned_parent_returns_every_row` | a partitioned parent still returns every row |
+| `test_the_partition_is_still_a_pgcolumnar_scan` | and the partition is still a PgColumnarScan (#436) |
+| `test_a_partitioned_parent_is_refused_and_its_leaf_is_not` | the server major is a number; the parent is refused with 42809 by both calls and no backend crashed; its leaf is accepted by both |
 | `test_a_columnar_materialized_view_is_still_columnar` | a columnar matview is still recognised and returns its rows |
 
 ## 140. test_parquet_import.py: a partitioned columnar parent is refused by import_parquet
