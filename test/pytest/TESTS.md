@@ -2953,6 +2953,10 @@ which falls as suites are seeded.
 
 `check_ledger_budget.txt` holds its header, the two numbers and nothing after the census line (#1431). A derivation line (`ledger rows`, or a `never`/`dated` arithmetic line) anywhere refuses, and so does a paragraph that opens with `# #NNNN` or `# MERGED`. The derivation belongs in the commit message's `Ledger-census` trailer. Same three check names as `test/selftest/410-a-check-must-have-been-red.sh`.
 
+### `test_each_ledger_commit_carries_its_census`
+
+`pgc_ledger.py census-commits` over a throwaway repository, one branch per case (#1431). It passes a commit whose `Ledger-census` trailer matches its tsv and a commit that leaves the tsv alone. It refuses a stale trailer (naming the commit and both censuses), a missing one, one outside the final trailer block, two, and one whose `dated` is not `rows - never`. A range with no merge base is an integrity failure. The runner must call it. Same check names as `test/selftest/410-a-check-must-have-been-red.sh`.
+
 ### `test_the_gate_refuses_a_census_that_contradicts_its_own_ledger`
 
 The arm above asserts the two committed files agree. This one asserts the **tool

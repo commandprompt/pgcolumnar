@@ -27,6 +27,7 @@ import os
 import pathlib
 import re
 import subprocess
+import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TOOL = REPO / "test" / "pgc_ledger.py"
@@ -1784,3 +1785,95 @@ def test_the_prior_ceiling_is_resolved_rather_than_assumed(tmp_path, expect):
     expect.num(out.count("was raised from 7 to 99"), 1,
                "and a raise against the base ref is refused, naming both values")
     expect.num(rc, 1, "and the gate fails on it")
+
+
+class _CensusRepo:
+    """A throwaway repository for `census-commits` (#1431): `base` holds one never row,
+    and each scenario is a branch from it."""
+
+    def __init__(self, root):
+        self.root = root
+        (root / "test").mkdir(parents=True)
+        self.tsv = root / "test" / "check_ledger.tsv"
+        self.git("init", "-q", ".")
+        self.git("checkout", "-q", "-b", "main")
+        self.commit("base", 1, 0)
+        self.git("tag", "base")
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.root), "-c", "user.email=t@t",
+                               "-c", "user.name=t", *args],
+                              capture_output=True, text=True).stdout.strip()
+
+    def commit(self, message, never=None, dated=None):
+        if never is None:
+            (self.root / "README").write_text(str(time.monotonic_ns()))
+        else:
+            self.tsv.write_text(
+                "".join(f"demo\tpart1\tn{i}\t18\tnever\t-\n" for i in range(1, never + 1))
+                + "".join(f"demo\tpart1\td{i}\t18\t2026-10-01\tm\n" for i in range(1, dated + 1)))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+
+    def on(self, branch):
+        self.git("checkout", "-q", "-B", branch, "base")
+
+    def gate(self):
+        return _run("census-commits", "--tsv", str(self.tsv), "--against", "base")
+
+
+def test_each_ledger_commit_carries_its_census(tmp_path, expect):
+    """#1431. The derivation left the budget for the commit message, so a restate that
+    keeps a stale message would record a census its own tsv contradicts. Every commit
+    from the merge base to HEAD that changes the tsv needs exactly one `Ledger-census:`
+    trailer in its final trailer block, equal to that commit's tsv and consistent with
+    itself. No merge base is an integrity failure: passing would enforce nothing."""
+    r = _CensusRepo(tmp_path / "repo")
+
+    r.on("good")
+    r.commit("add a dated row\n\nLedger-census: rows=2 never=1 dated=1", 1, 1)
+    r.commit("touch the readme, no trailer")
+    expect.num(r.gate()[1], 0, "a commit whose trailer matches its tsv passes the census-commit gate")
+    expect.num(r.gate()[0].count("census commits: 1 change test/check_ledger.tsv"), 1,
+               "the good range holds one tsv commit, so its pass checked something")
+
+    r.on("notsv")
+    r.commit("touch the readme, no trailer")
+    expect.num(r.gate()[1], 0, "a commit that leaves the tsv alone needs no trailer")
+
+    r.on("stale")
+    r.commit("add a dated row\n\nLedger-census: rows=1 never=1 dated=0", 1, 1)
+    out, rc = r.gate()
+    expect.num(rc, 1, "a stale trailer is refused")
+    named = re.compile(re.escape(r.git("rev-parse", "--short=8", "HEAD"))
+                       + r".*rows=1 never=1 dated=0.*rows=2 never=1 dated=1")
+    expect.num(len([l for l in out.splitlines() if named.search(l)]), 1,
+               "and the refusal names the commit and both censuses")
+
+    r.on("missing")
+    r.commit("add a dated row, and say nothing", 1, 1)
+    expect.num(r.gate()[1], 1, "a missing trailer is refused")
+
+    r.on("buried")
+    r.commit("add a dated row\n\nLedger-census: rows=2 never=1 dated=1\n\n"
+             "A paragraph after it, so it is not the final trailer block.", 1, 1)
+    expect.num(r.gate()[1], 1, "a trailer outside the final trailer block is refused as missing")
+
+    r.on("twice")
+    r.commit("add a dated row\n\nLedger-census: rows=2 never=1 dated=1\n"
+             "Ledger-census: rows=2 never=1 dated=1", 1, 1)
+    expect.num(r.gate()[1], 1, "two trailers are refused")
+
+    r.on("selfinc")
+    r.commit("add a dated row\n\nLedger-census: rows=2 never=1 dated=2", 1, 1)
+    out, rc = r.gate()
+    expect.num(rc, 1, "a self-inconsistent trailer is refused")
+    expect.num(out.count("dated must be rows - never = 1"), 1,
+               "and for being inconsistent, not only for disagreeing with the tsv")
+
+    r.git("checkout", "-q", "--orphan", "unrelated")
+    r.commit("an unrelated root\n\nLedger-census: rows=1 never=1 dated=0", 1, 0)
+    expect.num(r.gate()[1], 2, "a range with no merge base is an integrity failure")
+
+    calls = [l for l in RUNNER.read_text().splitlines() if 'pgc_ledger.py" census-commits' in l]
+    expect.num(len(calls), 1, "the runner calls the census-commit gate with the ledger gate's prior")

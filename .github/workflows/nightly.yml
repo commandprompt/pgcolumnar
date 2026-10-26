@@ -86,16 +86,20 @@ jobs:
       # Measured: at depth 1 `git rev-parse HEAD~1` fails, at depth 2 it resolves.
       # `upgrade-guard` already takes 0 for its tags, and it was the only job
       # running this matrix that passed the night this broke.
+      #
+      # fetch-depth: 0 since #1431: census-commits reads every commit from HEAD~1 to
+      # HEAD, and for a merge commit those are the merged PR's own commits, which a
+      # depth-2 checkout cuts at its shallow boundary.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       # THE RELEASE TAGS, FOR native_upgrade_converge'S FIXTURE ARMS (#1341). Each
       # released fixture must be byte-identical to what its tag shipped, compared by
       # blob id against `v<version>:pgcolumnar--<version>.sql`. actions/checkout
       # fetches no tags, so these arms used to skip on every CI run. Depth 1 is
       # enough: only the file at each tagged commit is read, and it leaves the
-      # checkout's own history as it was (HEAD~1 still resolves at fetch-depth 2).
+      # checkout's own history as it was.
       - name: fetch the release tags, for the fixture-blob comparisons
         run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
 
@@ -777,7 +781,7 @@ jobs:
       # blob id against `v<version>:pgcolumnar--<version>.sql`. actions/checkout
       # fetches no tags, so these arms used to skip on every CI run. Depth 1 is
       # enough: only the file at each tagged commit is read, and it leaves the
-      # checkout's own history as it was (HEAD~1 still resolves at fetch-depth 2).
+      # checkout's own history as it was.
       - name: fetch the release tags, for the fixture-blob comparisons
         run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
 

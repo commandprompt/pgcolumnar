@@ -589,7 +589,13 @@ jobs:
       matrix:
         pg: ['17', '18']
     steps:
+      # FULL HISTORY, because census-commits (#1431) reads every commit this PR adds,
+      # from its merge base with the base branch. At depth 1 the PR's own commits are
+      # absent and the gate stops the run rather than checking fewer than it reports.
+      # Measured: 3909 commits, a 40 MB pack.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # THE LEDGER GATE NEEDS THE BASE BRANCH TO EXIST (#918). It compares the
       # tracked ceiling in `test/check_ledger_budget.txt` against the one already
@@ -598,12 +604,13 @@ jobs:
       #
       # actions/checkout fetches one ref at depth 1, so without this the base is
       # absent and the gate stops the run -- correctly, but for a reason that is
-      # this workflow's to fix rather than the author's. Depth 1 is enough: only
-      # the file at that commit is read.
+      # this workflow's to fix rather than the author's. Not shallow: the checkout
+      # above is full, and census-commits needs the base's history to find the
+      # merge base, which a --depth=1 fetch would cut.
       - name: fetch the PR base, for the ledger ceiling comparison
         if: github.base_ref != ''
         run: |
-          git fetch --depth=1 origin \
+          git fetch origin \
             "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
 
       # THE RELEASE TAGS, FOR native_upgrade_converge'S FIXTURE ARMS (#1341). Each

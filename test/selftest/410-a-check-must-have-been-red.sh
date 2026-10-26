@@ -1439,3 +1439,75 @@ check "and it is named, so the reviewer knows which row" \
 	"$(_led_run gate --ledger "$_r1236/dated.tsv" --budget "$_r1236/b.txt" --registered "$_lw/registered" "$_r1236/p.log" \
 		| grep -c 'a premise the ledger has seen go red: demo	part1	premise: the fixture holds rows')" "1"
 unset _r1236
+
+# ---- #1431: each ledger commit carries its census, checked at that commit ----
+#
+# The derivation left the budget for the commit message, so the message is now
+# the record, and a restate that keeps a stale one would record a census the
+# commit's own tsv contradicts. `census-commits` checks every commit between the
+# merge base and HEAD that changes the tsv: exactly one `Ledger-census:` trailer,
+# read by `git interpret-trailers --parse` (so only the final trailer block
+# counts), equal to that commit's tsv, and consistent with itself. A commit that
+# leaves the tsv alone needs none. No merge base is an integrity failure (rc 2):
+# the gate cannot say what the PR added, and passing would enforce nothing.
+
+_cc="$PGC_WORKDIR/r1431"; rm -rf "$_cc"; mkdir -p "$_cc/repo/test"
+_ccg() { git -C "$_cc/repo" -c user.email=t@t -c user.name=t "$@" >/dev/null 2>&1; }
+_cc_tsv() {  # rows written as N never then M dated
+	: > "$_cc/repo/test/check_ledger.tsv"
+	for _i in $(seq 1 "$1"); do printf 'demo\tpart1\tn%s\t18\tnever\t-\n' "$_i" >> "$_cc/repo/test/check_ledger.tsv"; done
+	for _i in $(seq 1 "$2"); do printf 'demo\tpart1\td%s\t18\t2026-10-01\tm\n' "$_i" >> "$_cc/repo/test/check_ledger.tsv"; done
+}
+_cc_commit() {  # branch-base message [never dated]
+	if [ $# -ge 4 ]; then _cc_tsv "$3" "$4"; else date +%s%N > "$_cc/repo/README"; fi
+	_ccg add -A && _ccg commit -q -m "$2"
+}
+_cc_on() { _ccg checkout -q -B "$1" base; }
+_cc_rc()  { _led_rc census-commits --tsv "$_cc/repo/test/check_ledger.tsv" --against base; }
+_cc_run() { _led_run census-commits --tsv "$_cc/repo/test/check_ledger.tsv" --against base; }
+
+_ccg init -q . && _ccg checkout -q -b main
+_cc_commit main "base" 1 0 && _ccg tag base
+
+_cc_on good
+_cc_commit good "$(printf 'add a dated row\n\nLedger-census: rows=2 never=1 dated=1')" 1 1
+_cc_commit good "touch the readme, no trailer"
+check "a commit whose trailer matches its tsv passes the census-commit gate" "$(_cc_rc)" "0"
+check "the good range holds one tsv commit, so its pass checked something" \
+	"$(_cc_run | grep -c 'census commits: 1 change test/check_ledger.tsv')" "1"
+
+_cc_on notsv
+_cc_commit notsv "touch the readme, no trailer"
+check "a commit that leaves the tsv alone needs no trailer" "$(_cc_rc)" "0"
+
+_cc_on stale
+_cc_commit stale "$(printf 'add a dated row\n\nLedger-census: rows=1 never=1 dated=0')" 1 1
+check "a stale trailer is refused" "$(_cc_rc)" "1"
+check "and the refusal names the commit and both censuses" \
+	"$(_cc_run | grep -c "$(git -C "$_cc/repo" rev-parse --short=8 HEAD).*rows=1 never=1 dated=0.*rows=2 never=1 dated=1")" "1"
+
+_cc_on missing
+_cc_commit missing "add a dated row, and say nothing" 1 1
+check "a missing trailer is refused" "$(_cc_rc)" "1"
+
+_cc_on buried
+_cc_commit buried "$(printf 'add a dated row\n\nLedger-census: rows=2 never=1 dated=1\n\nA paragraph after it, so it is not the final trailer block.')" 1 1
+check "a trailer outside the final trailer block is refused as missing" "$(_cc_rc)" "1"
+
+_cc_on twice
+_cc_commit twice "$(printf 'add a dated row\n\nLedger-census: rows=2 never=1 dated=1\nLedger-census: rows=2 never=1 dated=1')" 1 1
+check "two trailers are refused" "$(_cc_rc)" "1"
+
+_cc_on selfinc
+_cc_commit selfinc "$(printf 'add a dated row\n\nLedger-census: rows=2 never=1 dated=2')" 1 1
+check "a self-inconsistent trailer is refused" "$(_cc_rc)" "1"
+check "and for being inconsistent, not only for disagreeing with the tsv" \
+	"$(_cc_run | grep -c 'dated must be rows - never = 1')" "1"
+
+_ccg checkout -q --orphan unrelated
+_cc_commit unrelated "$(printf 'an unrelated root\n\nLedger-census: rows=1 never=1 dated=0')" 1 0
+check "a range with no merge base is an integrity failure" "$(_cc_rc)" "2"
+
+check "the runner calls the census-commit gate with the ledger gate's prior" \
+	"$(grep -cE 'pgc_ledger\.py" census-commits' "$_rv")" "1"
+unset _cc
