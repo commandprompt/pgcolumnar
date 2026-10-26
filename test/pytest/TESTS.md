@@ -12553,7 +12553,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open.
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
 
 ### Every test
 
@@ -12599,6 +12599,8 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_no_success_marker_remains_after_the_cancel` | cancel: no _SUCCESS marker at the prefix |
 | `test_no_upload_stays_open_after_the_cancel` | cancel: the server holds no open upload under the prefix -- #1722: the workers the cancel terminates abort their uploads on the way out |
 | `test_terminated_workers_exit_while_the_store_is_silent` | terminate: export workers exit within 75 s while the store is silent -- #1727: each wait slice times out, so the 60 s quiet limit ends a worker's abort |
+| `test_integration_a_multipart_export_to_real_s3_succeeds` | opt-in: integration: multipart export to real S3 succeeds |
+| `test_integration_the_real_s3_read_back_equals_the_source` | opt-in: integration: real S3 read-back == source |
 
 ## 332. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable
 

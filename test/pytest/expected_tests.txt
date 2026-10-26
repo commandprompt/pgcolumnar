@@ -1240,4 +1240,6 @@ guard_tests 852
 # 37 checks in 37 new tests, by collection over the cluster files.
 # cluster_tests 4399 -> 4400 for #432's test_a_chunk_over_1gb_is_refused in test_large_values.py, the
 # shell's opt-in arm, by collection over the cluster files.
-cluster_tests 4400
+# cluster_tests 4400 -> 4402 for #432's two real-S3 integration arms in test_objstore_sink_write.py,
+# opt-in as the shell's are, by collection over the cluster files.
+cluster_tests 4402

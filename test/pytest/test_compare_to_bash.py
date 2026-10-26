@@ -247,6 +247,7 @@ COMPLETE = ["advisory_lock_class",
             "native_batch_fold_projection",
             "native_bloom",
             "large_values",
+            "objstore_sink_write",
             "native_cancel",
             "native_chunk_length_bound",
             "native_ctas",
@@ -398,11 +399,6 @@ INCOMPLETE = {
     "drop_cleanup": "the #1265 arms (a columnar matview's options row goes with its "
                     "DROP and survives its REFRESH, with an unrelated row as the "
                     "control) are ported; the storage and catalog cleanup arms are not",
-    # #1341's remote sink: the opt-in real-S3 arms (PGC_S3_INTEGRATION_ENDPOINT, never
-    # set in CI) need an S3 implementation this layer does not start, and it has no
-    # SKIP verdict for an arm a run chooses not to make.
-    "objstore_sink_write": "every arm against the SigV4 fixture server is ported; the "
-                           "two opt-in real-S3 integration arms are not",
 }
 
 
