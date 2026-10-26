@@ -485,6 +485,11 @@ one of those eight measurements exited 0.
 | `test_an_expected_unrunnable_test_leaves_the_run_green` | #1163. The same declaration the three arms above exit 67 for, listed for this major, exits 0, so the difference is the list and not the declaration |
 | `test_an_unlisted_unrunnable_test_is_named_and_refused` | the control beside it: an empty list refuses the same run, and names the test rather than counting it |
 | `test_a_listed_test_that_runs_makes_the_list_stale` | the other direction. A feature arriving is a fact the list must stop claiming, and nothing else would notice: the test simply starts passing |
+| `test_a_conditional_row_lets_the_arm_decline_while_its_condition_is_unmet` | a row `MAJOR NODEID unless-env VAR=VALUE` covers an opt-in arm's decline while VAR does not have VALUE (#1767); the inner arm is `test_optin_flag` |
+| `test_a_conditional_row_lets_the_arm_run_once_its_condition_is_met` | with the condition met, the arm runs and the run exits 0, not as a stale list |
+| `test_a_conditional_row_refuses_a_decline_once_its_condition_is_met` | the control: with the condition met, an arm that still declines is refused (67); the inner arm is `test_optin_declines` |
+| `test_a_bare_variable_condition_is_met_by_any_value` | `unless-env VAR` is met by any non-empty value, for an opt-in variable that names an endpoint; the inner arm is `test_optin_endpoint` |
+| `test_a_row_with_any_other_suffix_is_refused` | fail closed: an unknown suffix raises, naming the forms a row may take, rather than leaving the row dead |
 | `test_a_listed_test_the_run_never_collected_is_not_a_stale_row` | and the premise that direction owes (#1204). `allowed - actual` reads as "listed, did not decline", which is only answerable for a test the run COLLECTED. A one-file run on PG 15-17 collected none of the others and exited 67 while its own file passed, telling the reader to edit a list that was correct |
 | `test_the_list_is_read_for_the_running_major_only` | a row for 15 does not excuse a decline on 18, which is what a flat set would do |
 | `test_an_unreadable_pg_config_fails_closed` | no major means no judgement, and no judgement means the old behaviour. The dangerous reading is the other one: unknown major treated as expect-anything |
