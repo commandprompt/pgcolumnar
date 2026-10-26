@@ -607,10 +607,26 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           .github/scripts/apt-retry.sh 100 3 update
 
+      # SEEDED FROM ci.yml's BUILD JOB CACHE, READ-ONLY, as the cluster-test job is
+      # (#1758). Uncached, this job downloads ~100 MB, most of it the LLVM toolchain
+      # postgresql-server-dev-18 depends on, and that download stalls: the
+      # capability sweep failed all three 200-second attempts on 2026-10-23 (run
+      # 39944578717) and 2026-10-26 (run 40367661645). It derives no key and never
+      # saves; a miss falls back to the full download.
+      - name: Restore the build job's PostgreSQL 18 packages, if any
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: apt-pgdev-codecs-pg18-${{ runner.os }}-${{ runner.arch }}-
+          restore-keys: |
+            apt-pgdev-codecs-pg18-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Install PostgreSQL 18 and the codec headers
         run: |
           set -euo pipefail
-          .github/scripts/apt-retry.sh 200 3 install -y --no-install-recommends \
+          mkdir -p "$HOME/apt-archives/partial"
+          .github/scripts/apt-retry.sh 200 3 \
+            -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-18 postgresql-server-dev-18 \
             liblz4-dev libzstd-dev zlib1g-dev
 
@@ -692,10 +708,26 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           .github/scripts/apt-retry.sh 100 3 update
 
+      # SEEDED FROM ci.yml's BUILD JOB CACHE, READ-ONLY, as the cluster-test job is
+      # (#1758). Uncached, this job downloads ~100 MB, most of it the LLVM toolchain
+      # postgresql-server-dev-18 depends on, and that download stalls: the
+      # capability sweep failed all three 200-second attempts on 2026-10-23 (run
+      # 39944578717) and 2026-10-26 (run 40367661645). It derives no key and never
+      # saves; a miss falls back to the full download.
+      - name: Restore the build job's PostgreSQL 18 packages, if any
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: apt-pgdev-codecs-pg18-${{ runner.os }}-${{ runner.arch }}-
+          restore-keys: |
+            apt-pgdev-codecs-pg18-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Install PostgreSQL 18, the codec headers, and pyarrow
         run: |
           set -euo pipefail
-          .github/scripts/apt-retry.sh 200 3 install -y --no-install-recommends \
+          mkdir -p "$HOME/apt-archives/partial"
+          .github/scripts/apt-retry.sh 200 3 \
+            -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-18 postgresql-server-dev-18 \
             liblz4-dev libzstd-dev zlib1g-dev python3-pip
           sudo pip3 install --break-system-packages --quiet pyarrow \
