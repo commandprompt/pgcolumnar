@@ -4128,7 +4128,9 @@ native_gap	native_gap	parity after post-gap insert	15;16;17;18;19	2026-10-16	col
 native_gap	native_gap	premise: the indexed lookup reads n_id	15;16;17;18;19	never	-
 native_gap	native_gap	row count after gapped insert	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData does not fill a gap beyond EOF (6a165821 reverted), so the write lands short of its block and errors
 native_groupagg	native_groupagg	a NULL key counts as a group in the bucket bound: four groups under a cap of 3 are declined and all answered	15;16;17;18;19	2026-10-16	the bucket bound left out the NULL group and the runtime cap was off, so the node took the query and answered it (mutation, #1339)
-native_groupagg	native_groupagg	a cached plan run under a lower cap stops at the runtime cap, with its hint	15;16;17;18;19	never	-
+native_groupagg	native_groupagg	a cached plan made under the default cap is a Partial grouped node under a core Finalize	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_groupagg_handoff_path never offers the Partial node under a Finalize, so the bare serial node runs (#1300)
+native_groupagg	native_groupagg	a cached plan run under a lower cap hands off at the cap and answers what heap answers	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_groupagg_handoff_path never offers the Partial node under a Finalize, so the bare serial node runs (#1300);columnar_vector.c: pgcolumnar_groupagg_lookup errors at the cap in a partial node instead of flushing to the Finalize (#1300)
+native_groupagg	native_groupagg	a cached plan whose aggregates cannot hand off still stops at the runtime cap, with its hint	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_handoff_agg_ok admits sum(int8), whose state the node cannot emit, so its plan gains a Finalize and loses the runtime cap (#1300)
 native_groupagg	native_groupagg	a date_bin key is bounded as a truncating key is	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	a five-minute bucket query over more rows than the cap still takes the grouped path	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	a lookalike function with the same signature gets NO bound	15;16;17;18;19	never	-
@@ -4136,15 +4138,20 @@ native_groupagg	native_groupagg	a mixed timestamp/timestamptz predicate never na
 native_groupagg	native_groupagg	a non-time expression key gets no bound either	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	a plain key over more rows than the cap is declined	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	a skewed key whose estimate is far too low is declined under a cap of 30,000, and answers every group	15;16;17;18;19	never	-
+native_groupagg	native_groupagg	a table grown past the cap under a cached plan hands off and answers what heap answers	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_groupagg_handoff_path never offers the Partial node under a Finalize, so the bare serial node runs (#1300);columnar_vector.c: pgcolumnar_groupagg_lookup errors at the cap in a partial node instead of flushing to the Finalize (#1300)
 native_groupagg	native_groupagg	an informed estimate (plain column) is not replaced	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	and a date_bin key with no time bound is bounded from the zone maps	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	and it is an UPPER bound: the true group count is at or below it	15;16;17;18;19	2026-10-16	the bucket bound dropped its two partial buckets, 10 for 11 true groups (mutation, #1339)
+native_groupagg	native_groupagg	and its EXPLAIN ANALYZE reports the group table flushed at the cap	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_groupagg_handoff_path never offers the Partial node under a Finalize, so the bare serial node runs (#1300);columnar_vector.c: pgcolumnar_groupagg_lookup errors at the cap in a partial node instead of flushing to the Finalize (#1300)
 native_groupagg	native_groupagg	and the declined query answers what heap answers	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	answer: non-deterministic collation grouping is case-insensitive (10 groups)	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	avg(float8) overflow errors like core	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	avg(float8) overflow: node fires	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	by default a five-minute bucket query takes the grouped path	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	empty table: grouped scan yields 0 rows	15;16;17;18;19	never	-
+native_groupagg	native_groupagg	min and max hand off over float8 NaN: a cached plan under a lower cap answers what heap answers	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_agg_emit_partial emits a NULL min/max state for a group that saw values and its extreme for one that saw none
+native_groupagg	native_groupagg	min and max hand off over text under an ICU collation: a cached plan under a lower cap answers what heap answers	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_agg_emit_partial emits a NULL min/max state for a group that saw values and its extreme for one that saw none;columnar_vector.c: the min/max comparator in pgcolumnar_apply_one compares under the C collation instead of the column's
+native_groupagg	native_groupagg	min and max hand off too: a cached min/max plan under a lower cap answers what heap answers	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_agg_emit_partial emits a NULL min/max state for a group that saw values and its extreme for one that saw none;columnar_vector.c: pgcolumnar_groupagg_handoff_path never offers the Partial node under a Finalize, so the bare serial node runs (#1300);columnar_vector.c: pgcolumnar_groupagg_lookup errors at the cap in a partial node instead of flushing to the Finalize (#1300);columnar_vector.c: pgcolumnar_handoff_agg_ok leaves out min and max, so a min/max plan keeps the serial node and errors at the cap (#1300)
 native_groupagg	native_groupagg	oracle exact: GROUP BY added column	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	oracle exact: GROUP BY added column [node fires]	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	oracle exact: GROUP BY host	15;16;17;18;19	never	-
@@ -4161,7 +4168,7 @@ native_groupagg	native_groupagg	oracle exact: GROUP BY integer expr key	15;16;17
 native_groupagg	native_groupagg	oracle exact: GROUP BY integer expr key [node fires]	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	oracle exact: GROUP BY region, host (two text keys)	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	oracle exact: GROUP BY region, host (two text keys) [node fires]	15;16;17;18;19	never	-
-native_groupagg	native_groupagg	oracle exact: GROUP BY smallint column key	15;16;17;18;19	never	-
+native_groupagg	native_groupagg	oracle exact: GROUP BY smallint column key	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_agg_emit_partial emits a NULL min/max state for a group that saw values and its extreme for one that saw none
 native_groupagg	native_groupagg	oracle exact: GROUP BY smallint column key [node fires]	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	oracle exact: NULL ts group folds like heap	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	oracle exact: NULL ts group folds like heap [node fires]	15;16;17;18;19	never	-
@@ -4184,6 +4191,7 @@ native_groupagg	native_groupagg	planning a bucketed GROUP BY scans zone_map once
 native_groupagg	native_groupagg	premise: ANALYZE estimates the skewed key's 40,001 groups below 3,000	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	premise: and so is ten, so the two costs are comparable	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	premise: one aggregate is costed as the grouped node	15;16;17;18;19	never	-
+native_groupagg	native_groupagg	premise: the cached plan is still the grouped node after the table grew	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	premise: the cost fixture holds the rows the 450.00 is computed from	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	premise: the fixture has many row groups, so one scan and one per group differ	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	premise: the grouped path is costed at all (non-empty estimate)	15;16;17;18;19	never	-
@@ -4214,10 +4222,11 @@ native_groupagg	native_groupagg	toggle float/avg: GROUP BY hour, host	15;16;17;1
 native_groupagg	native_groupagg	toggle float/avg: GROUP BY hour, host [node fires]	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	toggle float/avg: WHERE + GROUP BY region, host	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	toggle float/avg: WHERE + GROUP BY region, host [node fires]	15;16;17;18;19	never	-
-native_groupagg	native_groupagg	toggle min/max numeric display-scale tie	15;16;17;18;19	never	-
+native_groupagg	native_groupagg	toggle min/max numeric display-scale tie	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_agg_emit_partial emits a NULL min/max state for a group that saw values and its extreme for one that saw none
 native_groupagg	native_groupagg	toggle min/max numeric display-scale tie [node fires]	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	toggle sum signed-zero (-0 preserved)	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	toggle sum signed-zero (-0 preserved) [node fires]	15;16;17;18;19	never	-
+native_groupagg	native_groupagg	under a cap of 1,000, ten times the distinct keys keep the node's peak memory within twice	15;16;17;18;19	2026-10-26	columnar_vector.c: pgcolumnar_groupagg_flush empties the hash array only, so the flushed keys and states stay held in keyContext and specContext (#1764 review)
 native_groupagg	native_groupagg	while a matching-type predicate still gets one	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	with no time bound at all, a truncating key is bounded from the zone maps	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	with only a lower time bound, a truncating key is still bounded	15;16;17;18;19	never	-

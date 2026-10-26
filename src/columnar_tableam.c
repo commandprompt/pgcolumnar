@@ -4421,15 +4421,17 @@ _PG_init(void)
 							 NULL, NULL, NULL);
 
 	DefineCustomIntVariable("pgcolumnar.groupagg_max_groups",
-							"Cap on the actual group count the grouped vectorized "
-							"aggregate builds before it stops with an error.",
-							"Enforced at execution against the real number of groups: "
-							"over the cap the query errors rather than falling back, "
-							"since the plan is fixed by then. The planner takes the "
-							"grouped path only when an upper bound on the group count "
-							"is within it, so the error means it fell, or the table "
-							"grew, after planning. Raise it, or turn off "
-							"pgcolumnar.enable_group_vectorization.",
+							"Cap on the group count the grouped vectorized aggregate "
+							"holds in its table at once.",
+							"Enforced at execution against the real number of groups. "
+							"When every aggregate has a partial state, the node runs "
+							"under a core Finalize and, at the cap, hands its groups "
+							"to it and carries on, so the query still answers. "
+							"Otherwise over the cap the query errors, since the plan "
+							"is fixed by then. The planner takes the grouped path "
+							"only when an upper bound on the group count is within "
+							"it, so the cap is reached only when it fell, or the "
+							"table grew, after planning.",
 							&pgcolumnar_groupagg_max_groups,
 							1000000, 1, INT_MAX,
 							PGC_USERSET,
