@@ -89,6 +89,9 @@ COMPLETE = ["advisory_lock_class",
             "projection_rewrite",
             "audit",
             "server_file_privilege",
+            "inheritance",
+            "parquet_import",
+            "phase5",
             "smoke",
             "sort_status",
             "sort_status_privilege",
@@ -245,6 +248,9 @@ COMPLETE = ["advisory_lock_class",
             "native_bloom",
             "native_sketch",
             "native_sketch_agg",
+            "drop_cleanup",
+            "large_values",
+            "objstore_sink_write",
             "native_cancel",
             "native_chunk_length_bound",
             "native_ctas",
@@ -391,30 +397,6 @@ COMPLETE = ["advisory_lock_class",
 # about the PORT rather than a licence: the standing arm does not grade it, so the
 # reason is the only thing standing between a declared gap and a forgotten one.
 INCOMPLETE = {
-    # #1341 item 29 ported the arms four fixes added with shell arms only. Each
-    # pair below holds that fix's arms and nothing else of its shell suite.
-    "inheritance": "the #1259 arms (a partitioned columnar parent is refused with "
-                   "42809 and nothing crashes, its leaf and a columnar matview are "
-                   "accepted) are ported; the inheritance-tree arms are not",
-    "parquet_import": "the #1263 arms (a partitioned columnar parent is refused with "
-                      "42809 and nothing crashes, a leaf and a heap target import) "
-                      "are ported; the page-version, type and round-trip arms are not",
-    "phase5": "the #1265 arms (set_options and reset_options agree on every relkind, "
-              "accept a columnar matview and refuse a partitioned parent) are "
-              "ported; the projection, pushdown, compression and vacuum arms are not",
-    "drop_cleanup": "the #1265 arms (a columnar matview's options row goes with its "
-                    "DROP and survives its REFRESH, with an unrelated row as the "
-                    "control) are ported; the storage and catalog cleanup arms are not",
-    # #1341's megabyte values: every arm is ported except the opt-in chunk over 1 GB
-    # (PGC_RUN_OVER_1GB=1), which needs several GB of memory and which this layer,
-    # having no SKIP verdict for an arm a run chooses not to make, does not carry.
-    "large_values": "the 1 MB to 200 MB round trips and the TOASTed-update arms are "
-                    "ported; the opt-in chunk-over-1-GB refusal is not",
-    # #1341's remote sink: the opt-in real-S3 arms (PGC_S3_INTEGRATION_ENDPOINT, never
-    # set in CI) need an S3 implementation this layer does not start, and it has no
-    # SKIP verdict for an arm a run chooses not to make.
-    "objstore_sink_write": "every arm against the SigV4 fixture server is ported; the "
-                           "two opt-in real-S3 integration arms are not",
 }
 
 

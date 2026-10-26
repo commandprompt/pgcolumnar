@@ -105,7 +105,18 @@ four round-trips, each failure in a different registry from the one just fixed.
    already covered: the gate cannot refuse a check in a suite it has never seen.
    New rows arrive as `never`, so `checks_never_observed_red` MOVES and has to
    match the census. Regenerate with one log per gated major in a single `merge`,
-   because a row covers only the majors it was merged from.
+   because a row covers only the majors it was merged from. Write the derivation
+   in the commit message, not the budget, which holds only its two numbers. The
+   commit that changes the tsv ends with this trailer, in the same final block as
+   any `Co-Authored-By:` line, derived from the tsv in that commit:
+
+   ```
+   Ledger-census: rows=8096 never=4567 dated=3529
+   ```
+
+   `pgc_ledger.py census-commits` refuses a missing, stale or self-inconsistent
+   trailer (#1431). A restate re-derives it for each commit rather than carrying
+   the old one.
 
 4. **`expected_unrunnable.txt`**, per major. A test that declines for an entirely
    correct reason still reddens until its reason is written down for each major

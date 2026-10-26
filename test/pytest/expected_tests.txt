@@ -332,7 +332,10 @@
 # and the corpus's highest slot gets a port, in test_runshape.py, by collection over NO_CLUSTER.
 # guard_tests 842 -> 846 for #1341's test_capability_decline.py: duckdb joins the declinable
 # capabilities, held by four new tests, by collection over NO_CLUSTER.
-guard_tests 847
+# guard_tests 847 -> 849 for #1431's test_the_budget_holds_no_history and
+# test_each_ledger_commit_carries_its_census in test_mutation_ledger.py, by collection over NO_CLUSTER.
+# guard_tests 849 -> 854 for #1767's five conditional-row tests in test_layer.py, merged from main.
+guard_tests 854
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1231,8 +1234,20 @@ guard_tests 847
 # cluster_tests 4293 -> 4323 for #1743's test_objstore_export_open_uploads.py, the twin of objstore_export_open_uploads.sh:
 # 30 checks in 30 tests, by collection over the cluster files.
 # cluster_tests 4323 -> 4332 for #1339's nine rewrite-form tests in test_rewrite_storage_oid.py, by collection.
-# cluster_tests 4332 -> 4366 for #1309's test_native_sketch.py, the twin of native_sketch.sh:
+# cluster_tests 4332 -> 4344 for #432's completed test_inheritance.py, the twin of inheritance.sh:
+# 12 inheritance-tree checks in 12 new tests, by collection over the cluster files.
+# cluster_tests 4344 -> 4362 for #432's completed test_parquet_import.py, the twin of parquet_import.sh:
+# 18 checks in 18 new tests, by collection over the cluster files.
+# cluster_tests 4362 -> 4399 for #432's completed test_phase5.py, the twin of phase5.sh:
+# 37 checks in 37 new tests, by collection over the cluster files.
+# cluster_tests 4399 -> 4400 for #432's test_a_chunk_over_1gb_is_refused in test_large_values.py, the
+# shell's opt-in arm, by collection over the cluster files.
+# cluster_tests 4400 -> 4402 for #432's two real-S3 integration arms in test_objstore_sink_write.py,
+# opt-in as the shell's are, by collection over the cluster files.
+# cluster_tests 4402 -> 4410 for #432's completed test_drop_cleanup.py, the twin of drop_cleanup.sh:
+# 8 storage and catalog cleanup checks in 8 new tests, by collection over the cluster files.
+# cluster_tests 4410 -> 4444 for #1309's test_native_sketch.py, the twin of native_sketch.sh:
 # 34 checks in 34 tests, by collection over the cluster files.
-# cluster_tests 4366 -> 4385 for #1309's test_native_sketch_agg.py, the twin of native_sketch_agg.sh:
+# cluster_tests 4444 -> 4463 for #1309's test_native_sketch_agg.py, the twin of native_sketch_agg.sh:
 # 19 checks in 19 tests, by collection over the cluster files.
-cluster_tests 4385
+cluster_tests 4463

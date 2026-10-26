@@ -184,10 +184,10 @@ behaviour, the source of that number is named.
 - [136. test_recovery.py: committed writes survive a crash, uncommitted ones leave nothing](#136-test_recoverypy-committed-writes-survive-a-crash-uncommitted-ones-leave-nothing)
 - [137. test_native_backend_crash.py: one backend dies and committed data is intact](#137-test_native_backend_crashpy-one-backend-dies-and-committed-data-is-intact)
 - [138. test_corruption.py: a corrupt catalog row is refused cleanly and no backend dies](#138-test_corruptionpy-a-corrupt-catalog-row-is-refused-cleanly-and-no-backend-dies)
-- [139. test_inheritance.py: a partitioned columnar parent is refused, a columnar matview is not](#139-test_inheritancepy-a-partitioned-columnar-parent-is-refused-a-columnar-matview-is-not)
-- [140. test_parquet_import.py: a partitioned columnar parent is refused by import_parquet](#140-test_parquet_importpy-a-partitioned-columnar-parent-is-refused-by-import_parquet)
-- [141. test_phase5.py: set_options and reset_options agree](#141-test_phase5py-set_options-and-reset_options-agree)
-- [142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP](#142-test_drop_cleanuppy-a-columnar-matviews-options-row-goes-with-its-drop)
+- [139. test_inheritance.py: an INHERITS parent plans an Append, a partitioned columnar parent is refused](#139-test_inheritancepy-an-inherits-parent-plans-an-append-a-partitioned-columnar-parent-is-refused)
+- [140. test_parquet_import.py: import_parquet round-trips both page versions and keeps the indexes](#140-test_parquet_importpy-import_parquet-round-trips-both-page-versions-and-keeps-the-indexes)
+- [141. test_phase5.py: the custom scan, pushdown, projection, options and vacuum](#141-test_phase5py-the-custom-scan-pushdown-projection-options-and-vacuum)
+- [142. test_drop_cleanup.py: DROP takes a table's whole metadata with it, and a matview's options row](#142-test_drop_cleanuppy-drop-takes-a-tables-whole-metadata-with-it-and-a-matviews-options-row)
 - [143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it](#143-test_native_upgrade_convergepy-every-release-upgrades-to-a-fresh-catalog-and-the-window-before-it)
 - [144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen](#144-test_fk_referencingpy-a-foreign-key-referencing-a-columnar-table-is-refused-where-it-is-chosen)
 - [145. test_truncate_cleanup.py: TRUNCATE leaves no catalog rows behind, and keeps what it must](#145-test_truncate_cleanuppy-truncate-leaves-no-catalog-rows-behind-and-keeps-what-it-must)
@@ -487,6 +487,11 @@ one of those eight measurements exited 0.
 | `test_an_expected_unrunnable_test_leaves_the_run_green` | #1163. The same declaration the three arms above exit 67 for, listed for this major, exits 0, so the difference is the list and not the declaration |
 | `test_an_unlisted_unrunnable_test_is_named_and_refused` | the control beside it: an empty list refuses the same run, and names the test rather than counting it |
 | `test_a_listed_test_that_runs_makes_the_list_stale` | the other direction. A feature arriving is a fact the list must stop claiming, and nothing else would notice: the test simply starts passing |
+| `test_a_conditional_row_lets_the_arm_decline_while_its_condition_is_unmet` | a row `MAJOR NODEID unless-env VAR=VALUE` covers an opt-in arm's decline while VAR does not have VALUE (#1767); the inner arm is `test_optin_flag` |
+| `test_a_conditional_row_lets_the_arm_run_once_its_condition_is_met` | with the condition met, the arm runs and the run exits 0, not as a stale list |
+| `test_a_conditional_row_refuses_a_decline_once_its_condition_is_met` | the control: with the condition met, an arm that still declines is refused (67); the inner arm is `test_optin_declines` |
+| `test_a_bare_variable_condition_is_met_by_any_value` | `unless-env VAR` is met by any non-empty value, for an opt-in variable that names an endpoint; the inner arm is `test_optin_endpoint` |
+| `test_a_row_with_any_other_suffix_is_refused` | fail closed: an unknown suffix raises, naming the forms a row may take, rather than leaving the row dead |
 | `test_a_listed_test_the_run_never_collected_is_not_a_stale_row` | and the premise that direction owes (#1204). `allowed - actual` reads as "listed, did not decline", which is only answerable for a test the run COLLECTED. A one-file run on PG 15-17 collected none of the others and exited 67 while its own file passed, telling the reader to edit a list that was correct |
 | `test_the_list_is_read_for_the_running_major_only` | a row for 15 does not excuse a decline on 18, which is what a flat set would do |
 | `test_an_unreadable_pg_config_fails_closed` | no major means no judgement, and no judgement means the old behaviour. The dangerous reading is the other one: unknown major treated as expect-anything |
@@ -2950,6 +2955,14 @@ references in `.github/`, zero in the runner.
 If they disagree, one was edited by hand. `suites_not_covered` is 250 of 251, so the
 gate cannot refuse a new check in 250 suites — a real limit, counted rather than hidden,
 which falls as suites are seeded.
+
+### `test_the_budget_holds_no_history`
+
+`check_ledger_budget.txt` holds its header, the two numbers and nothing after the census line (#1431). A derivation line (`ledger rows`, or a `never`/`dated` arithmetic line) anywhere refuses, and so does a paragraph that opens with `# #NNNN` or `# MERGED`. The derivation belongs in the commit message's `Ledger-census` trailer. Same three check names as `test/selftest/410-a-check-must-have-been-red.sh`.
+
+### `test_each_ledger_commit_carries_its_census`
+
+`pgc_ledger.py census-commits` over a throwaway repository, one branch per case (#1431). It passes a commit whose `Ledger-census` trailer matches its tsv and a commit that leaves the tsv alone. It refuses a stale trailer (naming the commit and both censuses), a missing one, one outside the final trailer block, two, and one whose `dated` is not `rows - never`. A range with no merge base is an integrity failure. The runner must call it. Same check names as `test/selftest/410-a-check-must-have-been-red.sh`.
 
 ### `test_the_gate_refuses_a_census_that_contradicts_its_own_ledger`
 
@@ -7414,13 +7427,14 @@ The pytest twin of `test/settings_reference.sh` (#1341 items 42, 57 and 83), eve
 
 ## 117. test_large_values.py: megabyte-scale values are stored exactly
 
-The pytest twin of `test/large_values.sh` (#1341), every check by the shell's name but one. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. The shell's opt-in arm for a chunk over 1 GB (`PGC_RUN_OVER_1GB=1`, refused with 54000, nothing committed, server up) is not ported, and `test_compare_to_bash.py` declares the pair incomplete for it.
+The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. A chunk over 1 GB is refused with 54000, commits nothing, and leaves the server up; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_megabyte_values_are_stored_exactly` | the four values and the TOASTed update against heap, and the rows the update left alone |
+| `test_a_chunk_over_1gb_is_refused` | opt-in: about 1.1 GB of incompressible text in one chunk group is refused with 54000, nothing committed, the server up, each read on a fresh connection |
 
 ## 118. test_recovery_minimal_wal.py: tables that skip WAL survive a crash
 
@@ -7724,40 +7738,107 @@ A crash is read from the server log, counted from the test's start, since a clie
 | `test_a_negative_column_index` | `column_index = -1`: no crash |
 | `test_a_corrupt_bloom_header_is_no_filter` | a huge nbits over a short buffer: an absent value is 0 rows, a held value is still found, no crash |
 
-## 139. test_inheritance.py: a partitioned columnar parent is refused, a columnar matview is not
+## 139. test_inheritance.py: an INHERITS parent plans an Append, a partitioned columnar parent is refused
 
-Part of the pytest twin of `test/inheritance.sh` (#1259, ported for #1341): its #1259 arms only, by the shell's names, and the pair is declared INCOMPLETE. From PostgreSQL 17 a partitioned table may carry relam = pgcolumnar and has no storage. `get_storage_id` and `add_projection` on it must be refused with 42809, not any error: with the fix reverted a release build fails with 58P01 opening relfilenode 0. Liveness is read from the server log. PostgreSQL 15 and 16 cannot build the fixture, so that test declines there.
+The pytest twin of `test/inheritance.sh`, every check by the shell's name (#432; the #1259 arms were ported for #1341). A legacy INHERITS parent is a RELKIND_RELATION with `rte->inh` set, and the custom scan and the ungrouped vector aggregate both ran on that appendrel and read only the parent's storage: a one-row parent over a 5000-row child counted 1. A heap INHERITS tree beside the columnar one is the oracle, for counts, `ONLY`, row identities and a filtered read, and both plans must be an Append; a declarative partition must still get the custom scan (#436). The fixture is built once per module in a private database and each check is its own test, so one red does not hide the next. From PostgreSQL 17 a partitioned table may carry relam = pgcolumnar and has no storage. `get_storage_id` and `add_projection` on it must be refused with 42809, not any error: with the fix reverted a release build fails with 58P01 opening relfilenode 0. Liveness is read from the server log. PostgreSQL 15 and 16 cannot build that fixture, so that test declines there.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_a_partitioned_parent_is_refused_and_its_leaf_is_not` | the parent is refused with 42809 by both calls and no backend crashed; its leaf is accepted by both |
+| `test_the_heap_parent_includes_its_child` | INHERITS parent includes the child (heap oracle) |
+| `test_the_columnar_parent_includes_its_child` | INHERITS parent includes the child (columnar) |
+| `test_only_the_parent_is_just_the_parent` | ONLY parent is still just the parent |
+| `test_the_child_is_visible_through_the_parent` | the child is visible through the parent -- no row is a reading to fail on, not a failed query |
+| `test_the_row_identities_match_the_heap` | row identities match the heap |
+| `test_select_star_from_the_parent_plans_an_append` | SELECT * from an INHERITS parent plans an Append |
+| `test_count_from_the_parent_plans_an_append` | count(*) from an INHERITS parent plans an Append |
+| `test_a_large_child_is_visible_through_the_parent` | a large child is still visible through the parent |
+| `test_the_filtered_rows_match_the_heap` | filtered rows match the heap |
+| `test_ungrouped_vector_aggregation_sees_the_child_rows` | ungrouped vector aggregation also sees the child rows |
+| `test_a_partitioned_parent_returns_every_row` | a partitioned parent still returns every row |
+| `test_the_partition_is_still_a_pgcolumnar_scan` | and the partition is still a PgColumnarScan (#436) |
+| `test_a_partitioned_parent_is_refused_and_its_leaf_is_not` | the server major is a number; the parent is refused with 42809 by both calls and no backend crashed; its leaf is accepted by both |
 | `test_a_columnar_materialized_view_is_still_columnar` | a columnar matview is still recognised and returns its rows |
 
-## 140. test_parquet_import.py: a partitioned columnar parent is refused by import_parquet
+## 140. test_parquet_import.py: import_parquet round-trips both page versions and keeps the indexes
 
-Part of the pytest twin of `test/parquet_import.sh` (#1263, ported for #1341): its #1263 arms only, by the shell's names, and the pair is declared INCOMPLETE. Handed a partitioned parent, import_parquet used to SIGSEGV. The file is exported first, so the import reaches the relation; a leaf and a heap target must still import; the parent must be refused with 42809, and no backend may crash, read from the server log. It declines on PostgreSQL 15 and 16.
+The pytest twin of `test/parquet_import.sh`, every check by the shell's name (#432; the #1263 arms were ported for #1341). pyarrow writes the files from data this module generates, and the same data is loaded into a heap table by COPY FROM STDIN as the oracle: nine types with nulls in five, a snappy dictionary file per data-page version, and an uncompressed PLAIN one. A file that is not Parquet and a target with a column the file lacks are refused, each by its SQLSTATE and message; the shell read "psql failed", which passed on a crash. Imported rows must reach the indexes (#153): an index scan, asserted to be one, agrees with a sequential scan, a unique index refuses a second import and leaves the count alone, and a partial index holds its rows. The fixture is built once per module in a private database and each check is its own test. Without pyarrow every test but the last declines. Handed a partitioned parent, import_parquet used to SIGSEGV; it must be refused with 42809 and no backend may crash, read from the server log. That test declines on PostgreSQL 15 and 16.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
+| `test_every_row_is_imported[v1]` | v1 rows imported |
+| `test_every_row_is_imported[v2]` | v2 rows imported |
+| `test_the_row_count_matches_the_oracle[v1]` | v1 row count matches oracle |
+| `test_the_row_count_matches_the_oracle[v2]` | v2 row count matches oracle |
+| `test_the_contents_match_the_heap_oracle[v1]` | v1 contents match heap oracle |
+| `test_the_contents_match_the_heap_oracle[v2]` | v2 contents match heap oracle |
+| `test_a_plain_file_imports_every_row` | plain import rows |
+| `test_a_plain_file_imports_its_ids` | plain import sum(id) |
+| `test_a_plain_file_imports_its_text` | plain import first s -- no row is a reading to fail on, not a failed query |
+| `test_a_file_that_is_not_parquet_is_refused_by_import` | reject non-parquet file -- XX001 and its message |
+| `test_a_target_with_a_column_the_file_lacks_is_refused` | reject column-count mismatch -- 42804 and its message |
+| `test_the_index_scan_check_uses_the_index` | the index-scan check really uses the index |
+| `test_the_index_and_sequential_scans_agree` | import into an indexed table: both scans agree |
+| `test_the_imported_rows_are_there` | import into an indexed table: the rows are there |
+| `test_an_index_point_lookup_finds_its_row` | import into an indexed table: a point lookup finds its row |
+| `test_a_unique_index_refuses_the_second_import` | importing the same keys twice raises unique_violation -- 23505 and its message |
+| `test_the_refused_import_left_the_row_count_alone` | the failed second import left the row count alone |
+| `test_a_partial_index_covers_its_rows` | partial index covers its rows after import |
 | `test_a_partitioned_parent_is_refused` | the file exists, a leaf and a heap target import 50 rows each, and the parent is refused with 42809 and no crash |
 
-## 141. test_phase5.py: set_options and reset_options agree
+## 141. test_phase5.py: the custom scan, pushdown, projection, options and vacuum
 
-Part of the pytest twin of `test/phase5.sh` (#1265, ported for #1341): its #1265 arms only, by the shell's names, and the pair is declared INCOMPLETE. reset_options had no guard, so it reported success where set_options refused. The property is parity on a columnar table, a heap table, a partitioned parent and a columnar matview, with an ordinary columnar table as the control both must accept, and the settled verdicts named: both accept the matview and refuse the partitioned parent.
+The pytest twin of `test/phase5.sh`, every check by the shell's name (#432; the #1265 arms were ported for #1341). The custom scan is the plan for a plain and a filtered SELECT; a narrow range reads one chunk group of five and skips four, while an unfiltered count(*) or sum is answered from zone-map metadata; results agree with qual pushdown on and off; only the referenced columns are projected; the compression, chunk_group_row_limit and stripe_row_limit options take effect for later writes and reset_options restores the default; vacuum compacts five stripes into one and rebuilds the index, whose lookups switch off both the sequential and the custom scan and assert an index-scan plan (with enable_seqscan alone the point lookup was a PgColumnarScan and could not see a missing reindex); vacuum_full keeps the data; the default plan is the serial custom scan, and disabling it falls back to a sequential scan with the same answer. The fixture is built once per module in a private database and each check is its own test. set_options and reset_options must reach the same verdict on every relkind, with the settled verdicts named: both accept a columnar matview and refuse a partitioned parent.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_set_and_reset_options_agree` | the four fixtures' kinds, the control, parity on each, and the matview and partitioned-parent verdicts |
+| `test_a_plain_select_uses_the_custom_scan` | plain select uses custom scan |
+| `test_a_filtered_select_uses_the_custom_scan` | filtered select uses custom scan |
+| `test_a_covering_count_skips_the_scan` | covering count(*) skips the scan |
+| `test_an_unfiltered_sum_is_answered_from_metadata` | unfiltered sum answered from metadata |
+| `test_a_narrow_range_reads_one_group` | filtered reads one group |
+| `test_a_narrow_range_skips_four_groups` | filtered skips four groups |
+| `test_a_filtered_count_also_scans_one_group` | filtered count(*) also scans one group |
+| `test_the_pushdown_on_count` | pushdown-on count |
+| `test_the_pushdown_count_matches_off` | pushdown matches off |
+| `test_the_pushdown_sum_matches_off` | pushdown-on sum matches off |
+| `test_an_equality_on_a_low_cardinality_column_returns_every_match` | equality full result |
+| `test_one_referenced_column_is_projected` | projects one column |
+| `test_the_table_has_three_columns` | table has three columns |
+| `test_select_star_projects_every_column` | select star projects all |
+| `test_two_referenced_columns_are_projected` | projects two columns |
+| `test_the_default_compression_is_zstd` | default uses zstd |
+| `test_compression_none_stores_uncompressed` | option none disables compression |
+| `test_the_chunk_group_limit_applies` | chunk group limit applied |
+| `test_reset_restores_the_default_limit` | reset restores default limit |
+| `test_the_vacuum_table_starts_with_five_stripes` | v starts with five stripes |
+| `test_the_live_rows_after_delete` | v live rows after delete |
+| `test_the_deleted_rows_are_tracked` | v deleted rows tracked |
+| `test_vacuum_compacts_to_one_stripe` | v compacts to one stripe |
+| `test_vacuum_leaves_no_deleted_rows` | v no deleted rows after vacuum |
+| `test_the_rows_are_right_after_vacuum` | v rows correct after vacuum |
+| `test_the_sum_is_right_after_vacuum` | v sum correct after vacuum |
+| `test_a_value_is_intact_after_vacuum` | v value intact after vacuum |
+| `test_the_indexed_table_count_after_vacuum` | vi count after vacuum |
+| `test_the_point_lookup_uses_the_index` | the vi point lookup really uses the index |
+| `test_an_index_point_lookup_after_vacuum` | vi index point after vacuum |
+| `test_the_index_sees_the_deletion_after_vacuum` | vi index sees deletion after vacuum |
+| `test_the_index_finds_the_survivors_after_vacuum` | vi index survivor after vacuum |
+| `test_vacuum_full_keeps_the_data` | vacuum_full keeps data |
+| `test_the_default_plan_is_the_custom_scan` | columnar default uses custom scan, not seqscan |
+| `test_the_default_plan_is_not_parallel` | columnar default plan is not parallel |
+| `test_disabling_the_custom_scan_falls_back_to_a_seq_scan` | disable custom scan -> seq scan |
+| `test_the_seq_scan_fallback_returns_the_right_rows` | seq-scan fallback returns correct rows |
 
-## 142. test_drop_cleanup.py: a columnar matview's options row goes with its DROP
+## 142. test_drop_cleanup.py: DROP takes a table's whole metadata with it, and a matview's options row
 
-Part of the pytest twin of `test/drop_cleanup.sh` (#1265, ported for #1341): its #1265 arms only, by the shell's names, and the pair is declared INCOMPLETE. The drop hook skipped anything that was not an ordinary table, so a matview's options row outlived it. The row is planted directly, so the hook is the only subject. REFRESH must keep the row, and an unrelated table's row is the control against a hook that deletes every row.
+The pytest twin of `test/drop_cleanup.sh` (#1265, #1341, #432), every check by the shell's name. A projection keeps its own storage, so a drop hook that deleted only the relation's own storage id left the projection's row groups, chunks, zone maps, blooms and projection rows behind. Each storage arm counts every catalog that hangs off a storage id, re-captured just before its own step, so it measures that step's increment; the last is absolute, for a standing leak no step increases. They run in a private database, so the absolute arm counts nothing another module left. A live table with a projection must still read correctly. The drop hook skipped anything that was not an ordinary table, so a matview's options row outlived it. The row is planted directly, so the hook is the only subject. REFRESH must keep the row, and an unrelated table's row is the control against a hook that deletes every row.
 
 ### Every test
 
@@ -7766,6 +7847,14 @@ Part of the pytest twin of `test/drop_cleanup.sh` (#1265, ported for #1341): its
 | `test_a_columnar_matview_takes_its_options_row_with_it` | a planted options row is gone after DROP MATERIALIZED VIEW |
 | `test_refresh_keeps_a_matviews_options_row` | a REFRESH that rewrote the matview leaves its set_options row in place |
 | `test_an_unrelated_options_row_survives` | another table's row survives a matview's DROP, and an ordinary columnar table still takes its own |
+| `test_a_plain_table_leaves_nothing_behind` | a plain table, with deletes, leaves every storage-keyed catalog where it was |
+| `test_the_projection_did_add_metadata` | premise-like: adding a projection and rows did grow the catalogs, so the next arm can fail |
+| `test_dropping_it_takes_the_projections_metadata_too` | dropping a table with a projection takes the projection's metadata too |
+| `test_two_projections_one_dropped_by_hand_leave_nothing` | two projections, one dropped by hand first, leave nothing |
+| `test_ten_create_and_drop_cycles_leave_nothing` | ten create-and-drop cycles leave nothing, where a leak of a few rows per drop shows |
+| `test_no_storage_row_refers_to_a_missing_relation` | absolute: no storage row names a relation pg_class no longer has |
+| `test_a_live_table_with_a_projection_still_reads_correctly` | a too-eager cleanup would break a live table: its count and sum match the generator |
+| `test_and_its_projection_is_still_readable` | and read_projection still returns all 3000 rows |
 
 ## 143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it
 
@@ -12482,7 +12571,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open.
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
 
 ### Every test
 
@@ -12528,6 +12617,8 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_no_success_marker_remains_after_the_cancel` | cancel: no _SUCCESS marker at the prefix |
 | `test_no_upload_stays_open_after_the_cancel` | cancel: the server holds no open upload under the prefix -- #1722: the workers the cancel terminates abort their uploads on the way out |
 | `test_terminated_workers_exit_while_the_store_is_silent` | terminate: export workers exit within 75 s while the store is silent -- #1727: each wait slice times out, so the 60 s quiet limit ends a worker's abort |
+| `test_integration_a_multipart_export_to_real_s3_succeeds` | opt-in: integration: multipart export to real S3 succeeds |
+| `test_integration_the_real_s3_read_back_equals_the_source` | opt-in: integration: real S3 read-back == source |
 
 ## 332. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable
 
