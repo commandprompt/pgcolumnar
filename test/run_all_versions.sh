@@ -146,6 +146,7 @@ SUITES=(
 	maintenance_rollback
 	native_agg
 	native_agg_addcolumn
+	native_agg_collation
 	native_agg_deletes
 	native_backend_crash
 	native_batch_fold_projection

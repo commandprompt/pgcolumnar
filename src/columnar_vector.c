@@ -432,6 +432,16 @@ pgcolumnar_classify_aggref(Aggref *agg, int expectedVarno, bool allowExtended,
 
 		if (!OidIsValid(tce->cmp_proc_finfo.fn_oid))
 			return false;
+
+		/*
+		 * The comparison runs under the column's collation (spec->collation and
+		 * the zone maps both use attcollation), so an aggregate whose input
+		 * collation differs -- min(t COLLATE "C") over an ICU column -- would
+		 * answer in the wrong order (#1771). Decline it, and core aggregates
+		 * under the collation the query asked for.
+		 */
+		if (agg->inputcollid != argVar->varcollid)
+			return false;
 		spec->kind = (name[1] == 'i') ? COLUMNAR_AGG_MIN : COLUMNAR_AGG_MAX;
 		return true;
 	}

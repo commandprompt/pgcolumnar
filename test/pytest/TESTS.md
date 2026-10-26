@@ -393,7 +393,8 @@ behaviour, the source of that number is named.
 - [345. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap](#345-test_parquet_exportpy-pgcolumnarexport_parquet-writes-a-file-two-readers-read-back-equal-to-the-heap)
 - [346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined](#346-test_planner_choice_qualitypy-the-planners-chosen-plan-is-not-far-slower-than-the-plans-it-declined)
 - [347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open](#347-test_objstore_export_open_uploadspy-a-cancelled-remote-export-leaves-none-of-its-multipart-uploads-open)
-- [348. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does](#348-test_native_sketchpy-a-named-column-gets-one-distinct-count-sketch-per-row-group-and-nothing-else-does)
+- [348. test_native_agg_collation.py: min and max under a COLLATE override answer under that collation](#348-test_native_agg_collationpy-min-and-max-under-a-collate-override-answer-under-that-collation)
+- [349. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does](#349-test_native_sketchpy-a-named-column-gets-one-distinct-count-sketch-per-row-group-and-nothing-else-does)
 
 ## 1. How to read a test in here
 
@@ -13102,7 +13103,21 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | `test_silent_listing_returned_promptly` | silent listing: the export returned within 30 s of the cancel |
 | `test_silent_listing_the_server_survived` | silent listing: the server survived |
 
-## 348. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does
+## 348. test_native_agg_collation.py: min and max under a COLLATE override answer under that collation
+
+The twin of `test/native_agg_collation.sh` (#1771), every check by the shell's name. The grouped node and the ungrouped vectorized aggregate compared min/max under the column's collation and ignored the Aggref's input collation, so on an ICU column `min(t COLLATE "C")` answered in ICU order; they now decline such an aggregate and core answers it. Every group mixes values the two collations order differently, a heap mirror is the oracle, and a control holds that min/max under the column's own collation still take the grouped node. A private database; it declines as `MISSING_DEPENDENCY` where the server has no ICU.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_groups_mix_both_orderings` | premise: the groups mix values the two collations order differently |
+| `test_the_columns_own_collation_takes_the_grouped_node` | control: min and max under the column's own collation take the grouped node |
+| `test_the_columns_own_collation_answers_like_heap` | and answer what heap answers |
+| `test_grouped_min_max_under_collate_c_answer_like_heap` | grouped min and max under a C-collation override answer what heap answers |
+| `test_ungrouped_min_max_under_collate_c_answer_like_heap` | ungrouped min and max under a C-collation override answer what heap answers |
+
+## 349. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does
 
 The twin of `test/native_sketch.sh` (#1309 phase 1), every check by the shell's name. A column named in `set_options(sketch_columns => ...)` gets one HyperLogLog sketch per row group in `pgcolumnar.sketch`: 2048 one-byte registers from the type's extended hash (seed 0) of each non-NULL value. The option refuses an unknown column (42703), a type with no extended hash and a nondeterministic collation (0A000). A group of one value sets one register and an all-NULL group none. The registers of a fixed group are pinned by digest, and recomputed independently in SQL from `hashint8extended`. A parallel flush writes the same sketch; a projection's storage gets none; vacuum, compact_rewrite, TRUNCATE and DROP leave no sketch whose row group is gone, checked over every storage; `reset_options` stops new sketches. A kept flush (#1360) rewritten after its subtransaction aborts still sketches every row, a column rename follows into `sketch_columns`, and a group written before the option was set has no sketch row. A private database.
 
