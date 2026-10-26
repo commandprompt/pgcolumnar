@@ -1246,8 +1246,9 @@ guard_tests 854
 # opt-in as the shell's are, by collection over the cluster files.
 # cluster_tests 4402 -> 4410 for #432's completed test_drop_cleanup.py, the twin of drop_cleanup.sh:
 # 8 storage and catalog cleanup checks in 8 new tests, by collection over the cluster files.
-# cluster_tests 4410 -> 4444 for #1309's test_native_sketch.py, the twin of native_sketch.sh:
-# 34 checks in 34 tests, by collection over the cluster files.
-# cluster_tests 4444 -> 4463 for #1309's test_native_sketch_agg.py, the twin of native_sketch_agg.sh:
-# 19 checks in 19 tests, by collection over the cluster files.
-cluster_tests 4463
+# cluster_tests 4410 -> 4415 for #1771's test_native_agg_collation.py, the twin of native_agg_collation.sh:
+# 5 checks in 5 tests, by collection over the cluster files.
+# cluster_tests 4415 -> 4450 for #1309's test_native_sketch.py, the twin of native_sketch.sh (34), and
+# test_catalog_natts.py's new [sketch] case, which Natts_sketch adds (1), by collection over the cluster files.
+# cluster_tests 4450 -> 4469 for #1309's test_native_sketch_agg.py, the twin of native_sketch_agg.sh, by collection.
+cluster_tests 4469
