@@ -20,9 +20,9 @@ import pytest
 from pgc_vacuity import query_error
 
 DB = "pgc_native_sketch_agg"
+# no debug_parallel_query: PostgreSQL 15 calls it force_parallel_mode (see the shell)
 PAR = ("SET max_parallel_workers_per_gather = 4", "SET parallel_setup_cost = 0",
-       "SET parallel_tuple_cost = 0", "SET min_parallel_table_scan_size = 0",
-       "SET debug_parallel_query = on")
+       "SET parallel_tuple_cost = 0", "SET min_parallel_table_scan_size = 0")
 DIST = ("SELECT sqrt(avg(e * e)) AS rms, avg(e) AS bias FROM ("
         "SELECT (pgcolumnar.approx_count_distinct(g) - 20000) / 20000.0 AS e "
         "FROM generate_series(1, 50) k, LATERAL generate_series(k * 1000000::bigint, "

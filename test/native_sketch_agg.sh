@@ -108,9 +108,13 @@ check "an all-NULL input estimates 0" \
 # Forced workers over the heap copy, so the partial states travel serialized and the
 # combine (register-wise max) merges them. The register max does not depend on which
 # worker saw which value, so the answer must be the serial one exactly.
+#
+# NO debug_parallel_query: PostgreSQL 15 calls it force_parallel_mode, so on 15 the
+# SET failed and the arm read psql's echoed SET as its value (@OffgridwithJD on
+# #1770). The costs at zero choose the Gather on every major, and the premise below
+# proves the plan ran in workers rather than assuming it.
 PAR="SET max_parallel_workers_per_gather = 4; SET parallel_setup_cost = 0;
-	SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
-	SET debug_parallel_query = on;"
+	SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;"
 check "premise: the parallel plan runs a partial aggregate in workers" \
 	"$(q "$PAR EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
 		SELECT pgcolumnar.approx_count_distinct(a) FROM akh;" | grep -cE 'Partial Aggregate|Workers Launched: [1-9]' )" "2"
