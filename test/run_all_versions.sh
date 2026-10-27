@@ -222,6 +222,7 @@ SUITES=(
 	native_sketch
 	native_sketch_agg
 	native_sketch_fold
+	native_sketch_rewrite
 	native_skip
 	native_sort_by
 	native_toasted_write

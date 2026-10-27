@@ -396,7 +396,8 @@ behaviour, the source of that number is named.
 - [348. test_native_agg_collation.py: min and max under a COLLATE override answer under that collation](#348-test_native_agg_collationpy-min-and-max-under-a-collate-override-answer-under-that-collation)
 - [349. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does](#349-test_native_sketchpy-a-named-column-gets-one-distinct-count-sketch-per-row-group-and-nothing-else-does)
 - [350. test_native_sketch_agg.py: approx_count_distinct estimates what count(DISTINCT) counts, within its theory](#350-test_native_sketch_aggpy-approx_count_distinct-estimates-what-countdistinct-counts-within-its-theory)
-- [351. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe](#351-test_native_sketch_foldpy-approx_count_distinct-folds-the-stored-sketches-and-scans-only-what-they-cannot-describe)
+- [351. test_native_sketch_rewrite.py: every rewrite rebuilds the distinct-count sketches, and keeps the table's options](#351-test_native_sketch_rewritepy-every-rewrite-rebuilds-the-distinct-count-sketches-and-keeps-the-tables-options)
+- [352. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe](#352-test_native_sketch_foldpy-approx_count_distinct-folds-the-stored-sketches-and-scans-only-what-they-cannot-describe)
 
 ## 1. How to read a test in here
 
@@ -13204,7 +13205,33 @@ The twin of `test/native_sketch_agg.sh` (#1309 phase 2), every check by the shel
 | `test_the_aggregate_refuses_a_type_with_no_extended_hash` | a type with no extended hash is refused |
 | `test_the_aggregate_refuses_a_nondeterministic_collation` | a nondeterministic collation is refused |
 
-## 351. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe
+## 351. test_native_sketch_rewrite.py: every rewrite rebuilds the distinct-count sketches, and keeps the table's options
+
+Port of `native_sketch_rewrite.sh` (#1309 phase 4). Each rewrite starts from the same
+table: `sketch_columns => a`, five row groups of 1,000 rows, a third of them deleted.
+Afterwards the base storage must have a sketch for every row group, no sketch row may
+name a row group that does not exist, and the union of the sketches must equal the
+registers recomputed in SQL from the live rows. The rewriting `ALTER TABLE` forms and
+`REFRESH MATERIALIZED VIEW` fill a transient relation (`pg_temp_<oid>`) whose own OID
+has no options row, so the rewritten rows lost the table's sketches, its stripe limit
+and its compression; those arms read all three.
+
+| test | what it holds |
+| --- | --- |
+| `test_before_any_rewrite` | before any rewrite each row group has its sketch, and the deleted rows are still in them |
+| `test_pgcolumnar_vacuum` | after `pgcolumnar.vacuum` every row group has its sketch, none outlives its group, and the sketches describe exactly the live rows |
+| `test_compact_rewrite` | the same after `compact_rewrite` |
+| `test_recluster` | the same after `recluster` |
+| `test_vacuum_sorted` | the same after `vacuum_sorted` |
+| `test_truncate_and_reinsert` | the same after `TRUNCATE` and a reinsert |
+| `test_alter_column_type` | the same after a type change, and the rewrite keeps the table's `stripe_row_limit` |
+| `test_add_column_with_a_volatile_default` | the same after `ADD COLUMN` with a volatile default, and the stripe limit holds |
+| `test_set_access_method_heap_and_back` | the same after `SET ACCESS METHOD heap` and back, and the stripe limit holds |
+| `test_alter_column_type_keeps_compression` | a table set to `compression => 'none'` stays uncompressed through a type change |
+| `test_refresh_materialized_view` | the same three for a materialized view's `REFRESH` |
+| `test_refresh_materialized_view_concurrently` | the sketches are whole and describe the live rows after `REFRESH ... CONCURRENTLY`, which builds its transient under `ExclusiveLock` |
+| `test_a_user_table_named_like_a_transient_borrows_nothing` | a user table named `pg_temp_<oid>`, whose creator holds no `ExclusiveLock` on that relation, keeps its own defaults: one row group and no sketch (#1775 review) |
+## 352. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe
 
 The twin of `test/native_sketch_fold.sh` (#1309 phase 3), every check by the shell's name. An ungrouped, unfiltered `pgcolumnar.approx_count_distinct` over a column named in `sketch_columns` folds each clean row group's stored sketch by a register-wise max, and reads and hashes only a group with deletes or with no sketch row. A register union is exactly the registers of the union, so every answer must equal the same query with `pgcolumnar.enable_custom_scan` off; EXPLAIN ANALYZE's `Columnar Sketch Groups Folded` and `Scanned` tell a fold from a scan that agrees. A WHERE, a GROUP BY, an aggregate the metadata cannot answer, and a COLLATE override each decline the fold. The deleted rows hold values no other row has, so a fold that ignored them would disagree. A private database.
 
