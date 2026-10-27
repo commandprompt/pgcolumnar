@@ -6811,6 +6811,11 @@ pgcolumnar_spec_merge(PgColumnarAggSpec *dst, PgColumnarAggSpec *src)
 					dst->extreme = src->extreme;
 			}
 			break;
+
+		case COLUMNAR_AGG_APPROX_DISTINCT:
+			/* never planned grouped: pgcolumnar_groupagg_outmap refuses it (#1309) */
+			elog(ERROR, "approx_count_distinct has no grouped state here");
+			break;
 	}
 }
 
