@@ -3797,6 +3797,71 @@ pgcolumnar_compression_from_name(const char *name)
 }
 
 /*
+ * pgcolumnar_options_relid
+ *		The relation whose options row governs writes into relid: relid itself, or,
+ *		for the transient relation a rewriting statement fills, the relation it is
+ *		rewriting (#1309 phase 4).
+ *
+ *		A rewriting ALTER TABLE (a type change, ADD COLUMN with a volatile default,
+ *		SET ACCESS METHOD) and REFRESH MATERIALIZED VIEW write the new contents into
+ *		a transient that make_new_heap builds, named pg_temp_<OID of the old heap>,
+ *		then swap its storage in under the old OID. Options are keyed by that old
+ *		OID, so a writer that looked up the transient's own OID found none, and the
+ *		rewritten rows fell back to every default: measured on 3,334 live rows
+ *		under a stripe_row_limit of 1,000, one row group instead of four, and no
+ *		sketch for any of them.
+ *
+ *		The name is core's own convention (cluster.c, "pg_temp_%u" of OIDOldHeap,
+ *		the same on 15 through 19). It is taken only when all of these hold:
+ *		- the name is exactly pg_temp_<oid>, and that OID is an existing relation
+ *		  other than relid;
+ *		- relid was created in this transaction;
+ *		- this transaction holds at least ExclusiveLock on that relation. Every
+ *		  caller of make_new_heap does: ALTER TABLE and REFRESH hold
+ *		  AccessExclusiveLock, and REFRESH CONCURRENTLY holds ExclusiveLock.
+ *
+ *		A user table named pg_temp_<oid> therefore borrows nothing unless its
+ *		creator also holds that lock on the other relation. Without the lock check
+ *		it did: CREATE TABLE pg_temp_<oid> AS SELECT took the other table's stripe
+ *		limit, compression and sketches for the rows it wrote (@jdatcmd, #1775
+ *		review).
+ */
+static Oid
+pgcolumnar_options_relid(Oid relid)
+{
+	char	   *name = get_rel_name(relid);
+	unsigned int old;
+	char		tail;
+	Relation	r;
+	bool		transient = false;
+
+	if (name == NULL)
+		return relid;
+	if (sscanf(name, "pg_temp_%u%c", &old, &tail) == 1 &&
+		OidIsValid((Oid) old) && (Oid) old != relid &&
+		get_rel_relkind((Oid) old) != '\0')
+	{
+		r = RelationIdGetRelation(relid);
+		if (RelationIsValid(r))
+		{
+			transient = (r->rd_createSubid != InvalidSubTransactionId);
+			RelationClose(r);
+		}
+		if (transient)
+		{
+			Relation	o = RelationIdGetRelation((Oid) old);
+
+			transient = RelationIsValid(o) &&
+				CheckRelationLockedByMe(o, ExclusiveLock, true);
+			if (RelationIsValid(o))
+				RelationClose(o);
+		}
+	}
+	pfree(name);
+	return transient ? (Oid) old : relid;
+}
+
+/*
  * PgColumnarReadOptions
  *		Load the per-table options row for a relation (spec 7.4) into *opts,
  *		setting a per-field "set" flag for each column that is present (not
@@ -3817,6 +3882,7 @@ PgColumnarReadOptions(Oid relid, PgColumnarOptions *opts)
 	bool		found = false;
 
 	memset(opts, 0, sizeof(PgColumnarOptions));
+	relid = pgcolumnar_options_relid(relid);
 
 	base = ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
 	snapshot = PgColumnarCatalogSnapshot(base);
@@ -4177,6 +4243,7 @@ PgColumnarReadSketchColumns(Oid relid)
 	Snapshot	snapshot;
 	List	   *names = NIL;
 
+	relid = pgcolumnar_options_relid(relid);
 	if (tupdesc->natts < Anum_options_sketch_columns)
 	{
 		table_close(rel, AccessShareLock);
