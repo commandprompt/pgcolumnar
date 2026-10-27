@@ -1248,4 +1248,6 @@ guard_tests 854
 # 8 storage and catalog cleanup checks in 8 new tests, by collection over the cluster files.
 # cluster_tests 4410 -> 4415 for #1771's test_native_agg_collation.py, the twin of native_agg_collation.sh:
 # 5 checks in 5 tests, by collection over the cluster files.
-cluster_tests 4415
+# cluster_tests 4415 -> 4419 for #1300's hand-off tests in test_native_groupagg.py (the hand-off, min/max over
+# float8 NaN and over ICU text, and the memory bound), by collection.
+cluster_tests 4419

@@ -60,7 +60,7 @@ disk. It never changes the values that a table returns.
 | `pgcolumnar.enable_qual_pushdown` | boolean | `on` | Push scan qualifiers down so per-chunk min and max values can skip chunk groups. |
 | `pgcolumnar.enable_vectorization` | boolean | `on` | Use the vectorized aggregate path for supported ungrouped aggregates. |
 | `pgcolumnar.enable_group_vectorization` | boolean | `on` | Use the vectorized aggregate path for `GROUP BY` queries on a columnar table. The planner takes it only when the group count cannot exceed `pgcolumnar.groupagg_max_groups`; see [how the grouped path stays safe on by default](#how-the-grouped-path-stays-safe-on-by-default). |
-| `pgcolumnar.groupagg_max_groups` | integer | `1000000` | Cap on the group count the grouped vectorized aggregate builds. Over the cap the query errors. The planner takes the grouped path only when the group count cannot exceed this. Range 1 to INT_MAX. |
+| `pgcolumnar.groupagg_max_groups` | integer | `1000000` | Cap on the group count the grouped vectorized aggregate holds in its table at once. At the cap the node hands its groups to a core `Finalize` and carries on, when every aggregate has a partial state; otherwise the query errors. The planner takes the grouped path only when the group count cannot exceed this. Range 1 to INT_MAX. |
 | `pgcolumnar.enable_bloom_filter` | boolean | `on` | Skip chunk groups on equality filters using per-chunk bloom filters. |
 | `pgcolumnar.enable_join_runtime_filter` | boolean | `on` | Wrap a serial inner Hash Join so the build keys can skip fact-table groups and reject non-matching rows. Direct columnar scan only. Group skip needs the fact table clustered on the join key. On by default. |
 | `pgcolumnar.enable_read_stream` | boolean | `on` | Prefetch block reads with the read stream API. Effective on PostgreSQL 17 and later. |
@@ -229,9 +229,19 @@ plan and succeeds. An estimate could not be the gate. On a key where one value
 fills half the table and the rest are unique, a fresh `ANALYZE` estimated 29,356
 groups for 2,000,001.
 
-The error remains possible only when something changes after planning: the cap
-is lowered, or the table grows past it. A prepared statement can see this. To keep larger
-tables on the fast path, raise `pgcolumnar.groupagg_max_groups`.
+The cap is reached only when something changes after planning: the cap is
+lowered, or the table grows past it. A prepared statement can see this. Since
+1.0-alpha5 most such queries no longer error (#1300). The grouped node runs under
+a core `Finalize HashAggregate` when every aggregate has a partial state. These
+are `count`, `min`, `max`, and `sum` and `avg` over integer and float columns.
+At the cap the node hands its groups to the `Finalize` and empties its table.
+Then it carries on. The `Finalize` combines the groups, and it spills to disk
+within `work_mem`. `EXPLAIN ANALYZE` reports each hand-off in
+`Columnar Group Table Flushes`. It reports the most the table held at once in
+`Columnar Group Table Peak Memory`. Other aggregates keep the serial node. An
+example is `sum` over `bigint` or `numeric`. Those queries still stop with the
+error above. To keep larger tables on the fast path, raise
+`pgcolumnar.groupagg_max_groups`.
 
 ### Encode effort
 

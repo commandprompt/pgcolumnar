@@ -42,6 +42,7 @@
 #include <math.h>
 
 #include "miscadmin.h"
+#include "optimizer/prep.h"
 #include "port/atomics.h"
 #include "access/parallel.h"
 #include "access/relation.h"
@@ -87,6 +88,7 @@
 #include "access/tupmacs.h"
 #include "common/hashfn.h"
 #include "utils/rel.h"
+#include "utils/tuplestore.h"
 #include "utils/typcache.h"
 
 /* GUC: use the vectorized aggregate path (spec 8.3 scan control) */
@@ -779,6 +781,34 @@ typedef struct PgColumnarGroupAggScanState
 	bool		isPartial;
 	pg_atomic_uint32 *parallelCounter;
 
+	/*
+	 * A partial node is parallel only when its plan is parallel-aware. The
+	 * hand-off's partial node (#1300) is serial: no counter, and every row group
+	 * is its own to fold.
+	 */
+	bool		parallelAware;
+
+	/*
+	 * The hand-off past the cap (#1300). A partial node that reaches maxGroups
+	 * writes every group's partial state here, empties its table and carries on;
+	 * the core Finalize above it combines the duplicates. The store spills past
+	 * work_mem, so the cap bounds this node's table, not the answer. Emission
+	 * drains the store before the table that is left. NULL until the first flush.
+	 */
+	Tuplestorestate *flushed;
+	TupleTableSlot *flushSlot;	/* minimal-tuple slot the store is read into */
+	bool		flushedDrained;
+	uint64		flushes;		/* EXPLAIN ANALYZE: times the table was emptied */
+
+	/*
+	 * The bound the hand-off exists for, measured (#1764 review): the most the
+	 * table's three contexts held at once, sampled where it peaks, just before a
+	 * flush empties it and when the build ends. A flush that emptied the table but
+	 * kept its keys or states would answer the same, so only this shows the cap
+	 * still bounds the node's memory.
+	 */
+	Size		peakBytes;
+
 	/* EXPLAIN */
 	int			npreds;
 	int			nscankeys;
@@ -818,6 +848,17 @@ static bool pgcolumnar_groupagg_simple_key(Oid typ);
 #define COLUMNAR_GROUPAGG_JUMP	64
 
 static int pgcolumnar_groupagg_size_hint(CustomScanState *node, int maxGroups);
+static void pgcolumnar_groupagg_flush(PgColumnarGroupAggScanState *state);
+static void pgcolumnar_groupagg_reset_table(PgColumnarGroupAggScanState *state);
+static bool pgcolumnar_groupagg_handoff_path(PlannerInfo *root,
+										   RelOptInfo *input_rel,
+										   RelOptInfo *output_rel,
+										   GroupPathExtraData *gpe,
+										   CustomPath *cpath, List *groupKeys,
+										   double dNumGroups);
+static void pgcolumnar_groupagg_fill_slot(PgColumnarGroupAggScanState *state,
+										PgColumnarGroupEntry *e,
+										TupleTableSlot *slot);
 static bool pgcolumnar_groupagg_batch_eligible(PgColumnarGroupAggScanState *state,
 											 TupleDesc tupdesc, ScanKey *keysOut,
 											 int *nkeysOut);
@@ -982,6 +1023,20 @@ pgcolumnar_parallel_agg_ok(PgColumnarAggKind kind)
 		default:
 			return false;
 	}
+}
+
+/*
+ * pgcolumnar_handoff_agg_ok
+ *		The kinds the serial grouped node can hand to a core Finalize past its cap
+ *		(#1300): the parallel kinds, plus min and max, whose partial state is the
+ *		running extreme itself and whose strict combine (int4smaller, text_smaller,
+ *		...) treats a NULL state as absent. The parallel arms keep their own list.
+ */
+static bool
+pgcolumnar_handoff_agg_ok(PgColumnarAggKind kind)
+{
+	return pgcolumnar_parallel_agg_ok(kind) ||
+		kind == COLUMNAR_AGG_MIN || kind == COLUMNAR_AGG_MAX;
 }
 
 /*
@@ -2974,8 +3029,185 @@ PgColumnarTryGroupAggPath(PlannerInfo *root, RelOptInfo *input_rel,
 	 * path. Offering both makes turning the GUC on a strict addition to the
 	 * planner's choices, which is the only form in which an opt-in accelerator can
 	 * be safe to enable.
+	 *
+	 * THE HAND-OFF (#1300) replaces the serial node rather than joining it. When
+	 * every aggregate has a partial state the node can emit, the serial node runs
+	 * as a Partial node under a core Finalize, so that past groupagg_max_groups it
+	 * flushes its table to the Finalize instead of erroring (see
+	 * pgcolumnar_groupagg_lookup). Offered beside the bare node, it would never be
+	 * chosen: it costs the bare node plus the Finalize, and the case it exists for,
+	 * a plan outliving its bound, is one the planner cannot see. Measured on #1300
+	 * (P0, 10M rows, 10 to 1M groups), the Finalize adds nothing measurable: the
+	 * median ratio to the bare node is 0.97 to 1.02 at every group count.
 	 */
+	if (pgcolumnar_groupagg_handoff_path(root, input_rel, output_rel,
+									   (GroupPathExtraData *) extra, cpath,
+									   groupKeys, dNumGroups))
+		return;
 	add_path(output_rel, &cpath->path);
+}
+
+/*
+ * pgcolumnar_partial_grouping_target
+ *		Core's make_partial_grouping_target, which is static in planner.c, for a
+ *		query with no HAVING (the grouped path refuses one): the grouping columns,
+ *		then every Aggref the target uses, each marked AGGSPLIT_INITIAL_SERIAL.
+ *		Built the same way core builds it so that setrefs matches the Finalize's
+ *		combining Aggrefs to these by equal(). Used when core built no partial
+ *		grouping rel of its own, which is whenever the query is not parallel.
+ */
+static PathTarget *
+pgcolumnar_partial_grouping_target(PlannerInfo *root, PathTarget *grouping_target)
+{
+	PathTarget *partial_target = create_empty_pathtarget();
+	List	   *non_group_cols = NIL;
+	List	   *non_group_exprs;
+	ListCell   *lc;
+	int			i = 0;
+#if PG_VERSION_NUM >= 160000
+	List	   *groupClause = root->processed_groupClause;
+#else
+	List	   *groupClause = root->parse->groupClause;
+#endif
+
+	foreach(lc, grouping_target->exprs)
+	{
+		Expr	   *expr = (Expr *) lfirst(lc);
+		Index		sgref = get_pathtarget_sortgroupref(grouping_target, i);
+
+		if (sgref && get_sortgroupref_clause_noerr(sgref, groupClause) != NULL)
+			add_column_to_pathtarget(partial_target, expr, sgref);
+		else
+			non_group_cols = lappend(non_group_cols, expr);
+		i++;
+	}
+
+	non_group_exprs = pull_var_clause((Node *) non_group_cols,
+									  PVC_INCLUDE_AGGREGATES |
+									  PVC_RECURSE_WINDOWFUNCS |
+									  PVC_INCLUDE_PLACEHOLDERS);
+	add_new_columns_to_pathtarget(partial_target, non_group_exprs);
+
+	foreach(lc, partial_target->exprs)
+	{
+		Expr	   *expr = (Expr *) lfirst(lc);
+
+		if (IsA(expr, Aggref))
+		{
+			Aggref	   *newaggref = makeNode(Aggref);
+
+			memcpy(newaggref, expr, sizeof(Aggref));
+			mark_partial_aggref(newaggref, AGGSPLIT_INITIAL_SERIAL);
+			lfirst(lc) = newaggref;
+		}
+	}
+
+	list_free(non_group_exprs);
+	list_free(non_group_cols);
+
+	return set_pathtarget_cost_width(root, partial_target);
+}
+
+/*
+ * pgcolumnar_groupagg_handoff_path
+ *		Add the serial grouped node as a Partial node under a core Finalize (#1300)
+ *		and return true, or add nothing and return false when an aggregate has no
+ *		partial state the node can emit (pgcolumnar_handoff_agg_ok) or core cannot
+ *		combine one (GROUPING_CAN_PARTIAL_AGG). The Partial node is cpath with the
+ *		partial grouping target and its own output map.
+ *
+ *		THE PAIR COSTS WHAT cpath COSTS. Core would charge the Finalize a hash
+ *		aggregation over every group, which on a small table, where the groups
+ *		approach the rows, is nearly what core's own whole aggregation costs, and
+ *		the pair then lost plans the bare node wins today. Measured on #1300 (P0),
+ *		the Finalize adds nothing: the median runtime ratio to the bare node is 0.97
+ *		to 1.02 from 10 to 1M groups. The Finalize also takes over the finishing
+ *		the bare node did per group, so this moves work rather than adding it.
+ *		Pricing the pair as the bare node keeps every plan choice what it was.
+ *
+ *		Not with enable_hashagg off: the Finalize is a HashAggregate, and a plan
+ *		the user disabled is not offered under another name. The bare node runs
+ *		then, with the runtime cap as its backstop.
+ */
+static bool
+pgcolumnar_groupagg_handoff_path(PlannerInfo *root, RelOptInfo *input_rel,
+							   RelOptInfo *output_rel, GroupPathExtraData *gpe,
+							   CustomPath *cpath, List *groupKeys,
+							   double dNumGroups)
+{
+	RelOptInfo *pgr;
+	PathTarget *ptarget;
+	List	   *handoffMap = NIL;
+	int			handoffAggs = 0;
+	CustomPath *hpath;
+	AggClauseCosts finalCosts;
+	ListCell   *lc;
+#if PG_VERSION_NUM >= 160000
+	List	   *groupClause = root->processed_groupClause;
+#else
+	List	   *groupClause = root->parse->groupClause;
+#endif
+
+	if (gpe == NULL || (gpe->flags & GROUPING_CAN_PARTIAL_AGG) == 0 ||
+		!enable_hashagg)
+		return false;
+
+	foreach(lc, output_rel->reltarget->exprs)
+	{
+		PgColumnarAggSpec spec;
+
+		if (!IsA(lfirst(lc), Aggref))
+			continue;
+		if (!pgcolumnar_classify_aggref((Aggref *) lfirst(lc),
+									  (int) input_rel->relid, true, false,
+									  &spec) ||
+			!pgcolumnar_handoff_agg_ok(spec.kind))
+			return false;
+	}
+
+	/*
+	 * Core's partial grouping target when it built one (a parallel-capable
+	 * query), so a parallel arm and this one share it; ours otherwise. A rel
+	 * fetch_upper_rel has only just created has an empty target, not NULL.
+	 */
+	pgr = fetch_upper_rel(root, UPPERREL_PARTIAL_GROUP_AGG, output_rel->relids);
+	ptarget = (pgr->reltarget != NULL && pgr->reltarget->exprs != NIL)
+		? pgr->reltarget
+		: pgcolumnar_partial_grouping_target(root, output_rel->reltarget);
+	if (!pgcolumnar_groupagg_outmap(ptarget->exprs, groupKeys, input_rel->relid,
+								  true, &handoffMap, &handoffAggs))
+		return false;
+
+	hpath = makeNode(CustomPath);
+	memcpy(hpath, cpath, sizeof(CustomPath));
+	hpath->path.parent = pgr;
+	hpath->path.pathtarget = ptarget;
+	hpath->custom_private = list_make5(linitial(cpath->custom_private),
+									   lsecond(cpath->custom_private),
+									   lthird(cpath->custom_private),
+									   groupKeys,
+									   handoffMap);
+
+	if (gpe->partial_costs_set)
+		finalCosts = gpe->agg_final_costs;
+	else
+	{
+		MemSet(&finalCosts, 0, sizeof(AggClauseCosts));
+		get_agg_clause_costs(root, AGGSPLIT_FINAL_DESERIAL, &finalCosts);
+	}
+
+	{
+		AggPath    *final = create_agg_path(root, output_rel, &hpath->path,
+											output_rel->reltarget,
+											AGG_HASHED, AGGSPLIT_FINAL_DESERIAL,
+											groupClause, NIL, &finalCosts,
+											dNumGroups);
+
+		final->path.startup_cost = cpath->path.startup_cost;
+		final->path.total_cost = cpath->path.total_cost;
+		add_path(output_rel, (Path *) final);
+	}
+	return true;
 }
 
 /* -------------------------------------------------------------------------
@@ -3622,6 +3854,20 @@ pgcolumnar_agg_emit_partial(PgColumnarAggSpec *spec, bool *isnull)
 													   FLOAT8PASSBYVAL,
 													   TYPALIGN_DOUBLE));
 			}
+
+		case COLUMNAR_AGG_MIN:
+		case COLUMNAR_AGG_MAX:
+
+			/*
+			 * min/max: the transition type is the input type and the state is the
+			 * running extreme, NULL until a value is seen (#1300).
+			 */
+			if (!spec->sawValue)
+			{
+				*isnull = true;
+				return (Datum) 0;
+			}
+			return spec->extreme;
 
 		case COLUMNAR_AGG_AVG_INT:
 			{
@@ -5261,6 +5507,7 @@ PgColumnarCreateGroupAggScanState(CustomScan *cscan)
 			((Aggref *) tle->expr)->aggsplit != AGGSPLIT_SIMPLE)
 			state->isPartial = true;
 	}
+	state->parallelAware = cscan->scan.plan.parallel_aware;
 	state->css.methods = state->isPartial
 		? &pgcolumnar_groupagg_parallel_exec_methods
 		: &pgcolumnar_groupagg_exec_methods;
@@ -5820,6 +6067,12 @@ pgcolumnar_groupagg_lookup(PgColumnarGroupAggScanState *state,
 		hash = hash_combine(hash, h);
 	}
 
+	/*
+	 * The grow above keeps a free slot, and the probe below ends only at one, so a
+	 * table that has none would spin here past any statement timeout (#1764
+	 * review).
+	 */
+	Assert(state->nGroups < state->capacity);
 	idx = hash & (uint32) (state->capacity - 1);
 	for (;;)
 	{
@@ -5834,9 +6087,18 @@ pgcolumnar_groupagg_lookup(PgColumnarGroupAggScanState *state,
 
 	/*
 	 * A new group. Bounding the actual group count keeps this no-spill hash table
-	 * from growing without limit; over the cap we stop with guidance rather than
-	 * exhaust memory, since the plan cannot fall back mid-scan.
+	 * from growing without limit. A partial node hands off (#1300): it writes
+	 * every group's partial state out, empties the table, and looks the key up
+	 * again in the empty table, where it is a new group under the cap. The core
+	 * Finalize above combines the duplicates. A serial node has no Finalize to
+	 * combine them, so over the cap it stops with guidance rather than exhaust
+	 * memory, since the plan cannot fall back mid-scan.
 	 */
+	if (state->nGroups >= state->maxGroups && state->isPartial)
+	{
+		pgcolumnar_groupagg_flush(state);
+		return pgcolumnar_groupagg_lookup(state, keyvals, keynulls);
+	}
 	if (state->nGroups >= state->maxGroups)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
@@ -5923,9 +6185,117 @@ pgcolumnar_groupagg_batch_eligible(PgColumnarGroupAggScanState *state,
 }
 
 /*
+ * pgcolumnar_groupagg_fill_slot
+ *		Store one group's output tuple in slot: its keys, and per aggregate either
+ *		the finished value or, in a partial node, the transition state.
+ */
+static void
+pgcolumnar_groupagg_fill_slot(PgColumnarGroupAggScanState *state,
+							PgColumnarGroupEntry *e, TupleTableSlot *slot)
+{
+	int			p;
+
+	ExecClearTuple(slot);
+	for (p = 0; p < state->nout; p++)
+	{
+		int			m = state->outMap[p];
+
+		if (m >= 0)
+		{
+			slot->tts_values[p] = e->keys[m];
+			slot->tts_isnull[p] = e->keyNulls[m];
+		}
+		else
+		{
+			int			a = -(m) - 1;
+
+			/*
+			 * A partial node hands the core Finalize this worker's transition
+			 * state for the group rather than the finished value; the Finalize
+			 * combines the states of every worker that saw the same key
+			 * (#349). A worker that claimed no row groups has an empty hash
+			 * table and so emits nothing at all, which is what the Finalize
+			 * expects -- not one empty group.
+			 */
+			slot->tts_values[p] = state->isPartial
+				? pgcolumnar_agg_emit_partial(&e->specs[a], &slot->tts_isnull[p])
+				: pgcolumnar_agg_finalize(&e->specs[a], &slot->tts_isnull[p]);
+		}
+	}
+	ExecStoreVirtualTuple(slot);
+}
+
+/*
+ * pgcolumnar_groupagg_note_memory
+ *		Raise peakBytes to what the table's keys, states and slots hold now.
+ */
+static void
+pgcolumnar_groupagg_note_memory(PgColumnarGroupAggScanState *state)
+{
+	Size		held = MemoryContextMemAllocated(state->keyContext, true) +
+		MemoryContextMemAllocated(state->specContext, true) +
+		MemoryContextMemAllocated(state->hashContext, true);
+
+	if (held > state->peakBytes)
+		state->peakBytes = held;
+}
+
+/*
+ * pgcolumnar_groupagg_flush
+ *		The hand-off at the cap (#1300): write every group's partial state to the
+ *		node's tuplestore and empty the table. Each tuple is copied into the store,
+ *		so the keys and states it points at can go with the table. Only a partial
+ *		node gets here, because only a partial node has a Finalize above it to
+ *		combine a key that now appears more than once.
+ */
+static void
+pgcolumnar_groupagg_flush(PgColumnarGroupAggScanState *state)
+{
+	TupleTableSlot *slot = state->css.ss.ss_ScanTupleSlot;
+	MemoryContext tupCxt;
+	int			i;
+
+	Assert(state->isPartial);
+
+	if (state->flushed == NULL)
+	{
+		MemoryContext oldc =
+			MemoryContextSwitchTo(state->css.ss.ps.state->es_query_cxt);
+
+		state->flushed = tuplestore_begin_heap(false, false, work_mem);
+		MemoryContextSwitchTo(oldc);
+	}
+
+	/* the avg states are built per tuple; reclaim them as each is stored */
+	tupCxt = AllocSetContextCreate(CurrentMemoryContext,
+								   "columnar groupagg flush",
+								   ALLOCSET_SMALL_SIZES);
+	for (i = 0; i < state->capacity; i++)
+	{
+		PgColumnarGroupEntry *e = &state->entries[i];
+		MemoryContext oldc;
+
+		if (!e->used)
+			continue;
+		oldc = MemoryContextSwitchTo(tupCxt);
+		pgcolumnar_groupagg_fill_slot(state, e, slot);
+		tuplestore_puttupleslot(state->flushed, slot);
+		MemoryContextSwitchTo(oldc);
+		MemoryContextReset(tupCxt);
+	}
+	ExecClearTuple(slot);
+	MemoryContextDelete(tupCxt);
+
+	pgcolumnar_groupagg_note_memory(state);
+	state->flushes++;
+	pgcolumnar_groupagg_reset_table(state);
+}
+
+/*
  * pgcolumnar_groupagg_reset_table
  *		Drop everything the fold accumulated, so the row path can redo the whole
- *		scan from an empty hash table. Used only on the mid-scan fall-back below.
+ *		scan from an empty hash table. Used on the mid-scan fall-back below, and
+ *		by the hand-off, which carries on from an empty table.
  */
 static void
 pgcolumnar_groupagg_reset_table(PgColumnarGroupAggScanState *state)
@@ -6020,7 +6390,7 @@ pgcolumnar_groupagg_batch_fold(PgColumnarGroupAggScanState *state, Relation rel,
 	 */
 	if (state->parallelCounter != NULL)
 		PgColumnarReadSetParallelCounter(rs, state->parallelCounter);
-	else if (state->isPartial)
+	else if (state->isPartial && state->parallelAware)
 	{
 		PgColumnarEndRead(rs);
 		elog(ERROR, "parallel columnar grouped aggregate ran without a shared group counter");
@@ -6071,7 +6441,16 @@ pgcolumnar_groupagg_batch_fold(PgColumnarGroupAggScanState *state, Relation rel,
 				 */
 				PgColumnarEndRead(rs);
 				pgcolumnar_groupagg_reset_table(state);
-				if (state->isPartial)
+
+				/*
+				 * The row path redoes the whole scan, so whatever the hand-off
+				 * already wrote out (#1300) must go too, or the Finalize would
+				 * combine those rows twice.
+				 */
+				if (state->flushed != NULL)
+					tuplestore_clear(state->flushed);
+				state->flushes = 0;
+				if (state->isPartial && state->parallelAware)
 					elog(ERROR, "parallel columnar grouped aggregate cannot fold a "
 						 "relation with a column added after some row groups; "
 						 "set pgcolumnar.enable_parallel_vector_agg = off");
@@ -6346,6 +6725,7 @@ PgColumnarExecGroupAggScan(CustomScanState *node)
 		MemoryContext oldCxt = MemoryContextSwitchTo(buildCxt);
 
 		pgcolumnar_groupagg_build(state);
+		pgcolumnar_groupagg_note_memory(state);
 
 		MemoryContextSwitchTo(oldCxt);
 		MemoryContextDelete(buildCxt);
@@ -6354,45 +6734,36 @@ PgColumnarExecGroupAggScan(CustomScanState *node)
 		state->emitPos = 0;
 	}
 
+	/* what the hand-off wrote out at the cap comes first (#1300) */
+	if (state->flushed != NULL && !state->flushedDrained)
+	{
+		if (state->flushSlot == NULL)
+			state->flushSlot =
+				MakeSingleTupleTableSlot(scanSlot->tts_tupleDescriptor,
+										 &TTSOpsMinimalTuple);
+		ResetExprContext(econtext);
+		if (tuplestore_gettupleslot(state->flushed, true, false, state->flushSlot))
+		{
+			ExecCopySlot(scanSlot, state->flushSlot);
+			if (node->ss.ps.ps_ProjInfo != NULL)
+			{
+				econtext->ecxt_scantuple = scanSlot;
+				return ExecProject(node->ss.ps.ps_ProjInfo);
+			}
+			return scanSlot;
+		}
+		state->flushedDrained = true;
+	}
+
 	while (state->emitPos < state->capacity)
 	{
 		PgColumnarGroupEntry *e = &state->entries[state->emitPos++];
-		int			p;
 
 		if (!e->used)
 			continue;
 
 		ResetExprContext(econtext);
-		ExecClearTuple(scanSlot);
-		for (p = 0; p < state->nout; p++)
-		{
-			int			m = state->outMap[p];
-
-			if (m >= 0)
-			{
-				scanSlot->tts_values[p] = e->keys[m];
-				scanSlot->tts_isnull[p] = e->keyNulls[m];
-			}
-			else
-			{
-				int			a = -(m) - 1;
-
-				/*
-				 * A partial node hands the core Finalize this worker's transition
-				 * state for the group rather than the finished value; the Finalize
-				 * combines the states of every worker that saw the same key
-				 * (#349). A worker that claimed no row groups has an empty hash
-				 * table and so emits nothing at all, which is what the Finalize
-				 * expects -- not one empty group.
-				 */
-				scanSlot->tts_values[p] = state->isPartial
-					? pgcolumnar_agg_emit_partial(&e->specs[a],
-											   &scanSlot->tts_isnull[p])
-					: pgcolumnar_agg_finalize(&e->specs[a],
-											&scanSlot->tts_isnull[p]);
-			}
-		}
-		ExecStoreVirtualTuple(scanSlot);
+		pgcolumnar_groupagg_fill_slot(state, e, scanSlot);
 
 		if (node->ss.ps.ps_ProjInfo != NULL)
 		{
@@ -6413,6 +6784,13 @@ PgColumnarEndGroupAggScan(CustomScanState *node)
 	if (state->baseSlot != NULL)
 		ExecDropSingleTupleTableSlot(state->baseSlot);
 	state->baseSlot = NULL;
+	if (state->flushSlot != NULL)
+		ExecDropSingleTupleTableSlot(state->flushSlot);
+	state->flushSlot = NULL;
+	/* its temp files, if it spilled, close here rather than at resowner cleanup */
+	if (state->flushed != NULL)
+		tuplestore_end(state->flushed);
+	state->flushed = NULL;
 	/* the memory contexts are children of es_query_cxt and freed with it */
 }
 
@@ -6428,6 +6806,12 @@ PgColumnarReScanGroupAggScan(CustomScanState *node)
 	state->entries = NULL;
 	state->haveStats = false;
 	state->batchFolded = false;
+	if (state->flushed != NULL)
+		tuplestore_end(state->flushed);
+	state->flushed = NULL;
+	state->flushedDrained = false;
+	state->flushes = 0;
+	state->peakBytes = 0;
 	MemoryContextReset(state->keyContext);
 	MemoryContextReset(state->specContext);
 	MemoryContextReset(state->hashContext);
@@ -6477,6 +6861,18 @@ PgColumnarExplainGroupAggScan(CustomScanState *node, List *ancestors,
 							   state->hashRehashed, es);
 		ExplainPropertyInteger("Columnar Group Table Capacity", NULL,
 							   state->peakCapacity, es);
+
+		/*
+		 * The hand-off's work-done line (#1300). A query that crossed the cap
+		 * answers the same whether it flushed or the cap was high enough not to,
+		 * so only this shows the hand-off ran. A partial node only: a serial one
+		 * cannot flush.
+		 */
+		if (state->isPartial)
+			ExplainPropertyInteger("Columnar Group Table Flushes", NULL,
+								   (int64) state->flushes, es);
+		ExplainPropertyInteger("Columnar Group Table Peak Memory", "kB",
+							   (int64) ((state->peakBytes + 1023) / 1024), es);
 
 		gs.usableSkipPredicates = state->usablePreds;
 		gs.groupsTotal = state->groupsTotal;
