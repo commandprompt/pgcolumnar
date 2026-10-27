@@ -726,6 +726,7 @@ catalog_natts	catalog_natts	Natts_projection matches the width of pgcolumnar.pro
 catalog_natts	catalog_natts	Natts_projection_declaration matches the width of pgcolumnar.projection_declaration	15;16;17;18;19	never	-
 catalog_natts	catalog_natts	Natts_retired_group matches the width of pgcolumnar.retired_group	15;16;17;18;19	never	-
 catalog_natts	catalog_natts	Natts_row_group matches the width of pgcolumnar.row_group	15;16;17;18;19	never	-
+catalog_natts	catalog_natts	Natts_sketch matches the width of pgcolumnar.sketch	15;16;17;18;19	2026-10-27	columnar_metadata.c: Natts_sketch is 3, one short of pgcolumnar.sketch's width (mutation, #1309)
 catalog_natts	catalog_natts	Natts_zone_map matches the width of pgcolumnar.zone_map	15;16;17;18;19	never	-
 catalog_natts	catalog_natts	premise: every constant found was swept	15;16;17;18;19	never	-
 catalog_natts	catalog_natts	premise: heap_modify_tuple is still called here (the consumer of those arrays)	15;16;17;18;19	never	-
