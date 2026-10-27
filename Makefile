@@ -9,6 +9,7 @@ OBJS = \
 	src/columnar_metadata.o \
 	src/columnar_extent.o \
 	src/columnar_write_state.o \
+	src/columnar_sketch.o \
 	src/columnar_compression.o \
 	src/columnar_encoding.o \
 	src/columnar_bloom.o \

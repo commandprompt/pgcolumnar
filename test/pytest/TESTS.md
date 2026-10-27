@@ -395,6 +395,7 @@ behaviour, the source of that number is named.
 - [347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open](#347-test_objstore_export_open_uploadspy-a-cancelled-remote-export-leaves-none-of-its-multipart-uploads-open)
 - [348. test_native_agg_collation.py: min and max under a COLLATE override answer under that collation](#348-test_native_agg_collationpy-min-and-max-under-a-collate-override-answer-under-that-collation)
 - [349. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does](#349-test_native_sketchpy-a-named-column-gets-one-distinct-count-sketch-per-row-group-and-nothing-else-does)
+- [350. test_native_sketch_agg.py: approx_count_distinct estimates what count(DISTINCT) counts, within its theory](#350-test_native_sketch_aggpy-approx_count_distinct-estimates-what-countdistinct-counts-within-its-theory)
 
 ## 1. How to read a test in here
 
@@ -13173,3 +13174,31 @@ Every test reads one value from a module fixture that runs the shell's scenario 
 | `test_a_group_after_a_rename_gets_its_sketch` | a row group written after a rename still gets its sketch |
 | `test_a_group_from_before_the_option_has_no_sketch` | a row group written before the option was set has no sketch row |
 | `test_no_sketch_outlives_its_row_group` | no sketch outlives its row group |
+
+## 350. test_native_sketch_agg.py: approx_count_distinct estimates what count(DISTINCT) counts, within its theory
+
+The twin of `test/native_sketch_agg.sh` (#1309 phase 2), every check by the shell's name. `pgcolumnar.approx_count_distinct` is a HyperLogLog over the type's extended hash (seed 0), with the writer's 2048 registers and register rule and a fixed estimator (the raw estimate, or linear counting at most 5m/2 with a zero register). One dataset is held within 4 standard errors (9.2%) and to a pinned value, each pin recomputed independently in SQL from core's extended hash; over 50 disjoint sets the RMS relative error must sit between 0.5 and 1.5 standard errors and the mean bias within 3 standard errors of the mean. NULLs are not counted (ten values and 500 NULLs, where one extra value would show), empty and all-NULL input estimate 0, a forced parallel plan returns the serial answer, and a type with no extended hash and a nondeterministic collation are refused with 0A000. A private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_table_holds_100000_distinct_values` | premise: the table holds 100000 distinct values |
+| `test_100000_bigints_are_within_4_standard_errors` | approx_count_distinct of 100000 distinct bigints is within 4 standard errors of the exact count |
+| `test_100000_bigints_equal_the_pin` | and equals its pinned value |
+| `test_a_text_column_is_within_4_standard_errors` | a text column is within 4 standard errors too |
+| `test_the_text_column_equals_the_pin` | and equals its pinned value, the recomputation's |
+| `test_a_heap_table_gives_the_columnar_answer` | a heap table gives the columnar table's answer |
+| `test_the_rms_error_matches_the_theory` | over 50 sets the RMS relative error is between 0.5 and 1.5 standard errors |
+| `test_the_mean_bias_is_small` | and the mean bias is within 3 standard errors of the mean |
+| `test_ten_distinct_values_estimate_ten` | ten distinct values estimate ten |
+| `test_1000_values_are_within_4_standard_errors` | 1000 distinct values are within 4 standard errors (linear counting) |
+| `test_9000_values_are_within_4_standard_errors` | 9000 distinct values are within 4 standard errors (the raw estimate) |
+| `test_the_small_counts_equal_their_pins` | and the small counts equal their pinned values |
+| `test_nulls_are_not_counted` | NULLs are not counted |
+| `test_an_empty_input_estimates_0` | an empty input estimates 0 |
+| `test_an_all_null_input_estimates_0` | an all-NULL input estimates 0 |
+| `test_the_parallel_plan_runs_workers` | premise: the parallel plan runs a partial aggregate in workers |
+| `test_a_parallel_plan_returns_the_serial_answer` | a parallel plan returns the serial answer |
+| `test_the_aggregate_refuses_a_type_with_no_extended_hash` | a type with no extended hash is refused |
+| `test_the_aggregate_refuses_a_nondeterministic_collation` | a nondeterministic collation is refused |

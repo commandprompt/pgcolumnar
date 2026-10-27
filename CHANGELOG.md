@@ -18,6 +18,13 @@ true until the next version shipped.
 
 ### Added
 
+- `pgcolumnar.approx_count_distinct(value)` estimates the number of distinct
+  non-NULL values with a HyperLogLog of 2048 registers, a standard error of about
+  2.3% (#1309, phase 2). It works on any table and in parallel plans. It uses the
+  same hash and register rule as the per-row-group sketches `sketch_columns`
+  writes, which a later phase will fold instead of scanning. A type with no
+  extended hash function, or a nondeterministic collation, is refused with
+  SQLSTATE 0A000. `test/native_sketch_agg.sh` and `test_native_sketch_agg.py`.
 - `set_options(t, sketch_columns => ARRAY[...])` gives each named column a
   distinct-count sketch in every row group it writes from then on (#1309, phase 1):
   a HyperLogLog of 2048 one-byte registers in the new catalog `pgcolumnar.sketch`,

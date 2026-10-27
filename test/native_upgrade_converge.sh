@@ -40,6 +40,10 @@
 # kind, ACL, and comment; every column's type, NOT NULL, and comment; every
 # non-base type; every foreign-data wrapper's handler and validator; and every
 # column default, index definition, constraint, row-level-security flag and policy.
+# AN AGGREGATE HAS NO pg_get_functiondef: it raises "is an aggregate function", and the
+# whole snapshot with it, so the fresh install read as having nothing to compare
+# (#1309's approx_count_distinct). An aggregate is snapshotted by its pg_aggregate row,
+# whose function columns print as names, so it compares across installs.
 # Convergence = an empty diff on all of it. The comment (pg_description) is in the
 # snapshot on purpose: pg_get_functiondef does NOT emit COMMENT, so without this a
 # generator that diffs only function definitions is blind to a missing comment,
@@ -270,7 +274,7 @@ P() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres 
 # Comprehensive catalog snapshot of the pgcolumnar schema, one line per object.
 snap() {
 	P -d "$1" -F'|' -c "
-	  SELECT 'FN|'||p.oid::regprocedure||'|'||md5(pg_get_functiondef(p.oid))||'|'||coalesce(p.proacl::text,'(def)')||'|'||md5(coalesce(obj_description(p.oid,'pg_proc'),''))
+	  SELECT 'FN|'||p.oid::regprocedure||'|'||CASE WHEN p.prokind='a' THEN md5((SELECT ag::text FROM pg_aggregate ag WHERE ag.aggfnoid=p.oid)) ELSE md5(pg_get_functiondef(p.oid)) END||'|'||coalesce(p.proacl::text,'(def)')||'|'||md5(coalesce(obj_description(p.oid,'pg_proc'),''))
 	    FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pgcolumnar'
 	  UNION ALL SELECT 'REL|'||c.relkind::text||'|'||c.relname||'|'||coalesce(c.relacl::text,'(def)')||'|'||md5(coalesce(obj_description(c.oid,'pg_class'),''))
 	    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar'

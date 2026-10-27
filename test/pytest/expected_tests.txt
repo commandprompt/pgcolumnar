@@ -1253,4 +1253,5 @@ guard_tests 854
 # cluster_tests 4419 -> 4427 for #1300 D''s eight merge tests in test_native_groupagg.py, by collection.
 # cluster_tests 4427 -> 4462 for #1309's test_native_sketch.py, the twin of native_sketch.sh (34), and
 # test_catalog_natts.py's new [sketch] case, which Natts_sketch adds (1), by collection over the cluster files.
-cluster_tests 4462
+# cluster_tests 4462 -> 4481 for #1309's test_native_sketch_agg.py, the twin of native_sketch_agg.sh, by collection.
+cluster_tests 4481
