@@ -88,6 +88,8 @@ extern void PgColumnarForgetRollup(Oid viewOid);
 extern List *PgColumnarReadSortBy(Oid relid);
 extern List *PgColumnarReadSketchColumns(Oid relid);
 extern bool PgColumnarSketchCatalogPresent(void);
+extern bool PgColumnarReadSketch(uint64 storageId, uint64 groupNumber, int columnIndex,
+								 Snapshot snapshot, uint8 *out);
 extern void PgColumnarInsertSketchRow(uint64 storageId, uint64 groupNumber, int columnIndex,
 									  const uint8 *registers, int nregisters);
 

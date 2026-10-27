@@ -47,6 +47,7 @@
 #include "access/relation.h"
 #include "access/table.h"
 #include "storage/shm_toc.h"
+#include "catalog/namespace.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_type.h"
@@ -274,7 +275,8 @@ typedef enum PgColumnarAggKind
 	COLUMNAR_AGG_SUM_NUMERIC,	/* sum(numeric) -> numeric */
 	COLUMNAR_AGG_AVG_INT8,		/* avg(int8) -> numeric */
 	COLUMNAR_AGG_AVG_FLOAT,		/* avg(float4/float8) -> float8 */
-	COLUMNAR_AGG_AVG_NUMERIC	/* avg(numeric) -> numeric */
+	COLUMNAR_AGG_AVG_NUMERIC,	/* avg(numeric) -> numeric */
+	COLUMNAR_AGG_APPROX_DISTINCT	/* pgcolumnar.approx_count_distinct -> int8 (#1309) */
 } PgColumnarAggKind;
 
 typedef struct PgColumnarAggSpec
@@ -301,6 +303,10 @@ typedef struct PgColumnarAggSpec
 #ifdef HAVE_INT128
 	int128		i128sum;		/* sum/avg over int8: 128-bit running total (#785) */
 #endif
+
+	/* approx_count_distinct (#1309): the extended hash and the registers */
+	FmgrInfo	hashFn;
+	uint8	   *regs;			/* PGC_SKETCH_REGISTERS bytes, in resultContext */
 } PgColumnarAggSpec;
 
 /*
@@ -335,7 +341,8 @@ pgcolumnar_classify_aggref(Aggref *agg, int expectedVarno, bool allowExtended,
 		return false;
 
 	nsp = get_func_namespace(agg->aggfnoid);
-	if (nsp != PG_CATALOG_NAMESPACE)
+	if (nsp != PG_CATALOG_NAMESPACE &&
+		nsp != get_namespace_oid("pgcolumnar", true))
 		return false;
 	name = get_func_name(agg->aggfnoid);
 	if (name == NULL)
@@ -355,6 +362,35 @@ pgcolumnar_classify_aggref(Aggref *agg, int expectedVarno, bool allowExtended,
 
 	memset(spec, 0, sizeof(*spec));
 	spec->attidx = -1;
+
+	/*
+	 * pgcolumnar.approx_count_distinct (#1309), the one aggregate of our own: a
+	 * plain column under its own collation (as min/max, #1771), a deterministic
+	 * one, and a type with an extended hash, the same predicate the aggregate and
+	 * the writer's sketches apply. Never as a partial: its state is the
+	 * registers, which no core Finalize combines here.
+	 */
+	if (nsp != PG_CATALOG_NAMESPACE)
+	{
+		TypeCacheEntry *tce;
+
+		if (strcmp(name, "approx_count_distinct") != 0 || agg->aggsplit != AGGSPLIT_SIMPLE)
+			return false;
+		if (argVar == NULL || argVar->varattno < 1)
+			return false;
+		if (expectedVarno >= 0 && argVar->varno != (Index) expectedVarno)
+			return false;
+		if (agg->inputcollid != argVar->varcollid ||
+			!PgColumnarCollationIsDeterministic(argVar->varcollid))
+			return false;
+		tce = lookup_type_cache(argVar->vartype, TYPECACHE_HASH_EXTENDED_PROC_FINFO);
+		if (!OidIsValid(tce->hash_extended_proc_finfo.fn_oid))
+			return false;
+		spec->attidx = argVar->varattno - 1;
+		spec->inputType = argVar->vartype;
+		spec->kind = COLUMNAR_AGG_APPROX_DISTINCT;
+		return true;
+	}
 
 	if (strcmp(name, "count") == 0)
 	{
@@ -662,6 +698,10 @@ typedef struct PgColumnarAggScanState
 	char	   *joinFoldOccupied;
 	uint32	   *joinFoldHashes;
 	Datum	   *joinFoldKeys;
+	/* approx_count_distinct's metadata fold (#1309), for EXPLAIN ANALYZE */
+	bool		anySketch;		/* some aggregate is approx_count_distinct */
+	int64		sketchFolded;	/* row groups folded from their sketches */
+	int64		sketchScanned;	/* row groups read and hashed instead */
 } PgColumnarAggScanState;
 
 static AttrNumber pgcolumnar_join_fold_key_resno(Plan *plan, Index varno,
@@ -937,6 +977,7 @@ pgcolumnar_agg_metadata_answerable(PgColumnarAggKind kind)
 		case COLUMNAR_AGG_AVG_INT:
 		case COLUMNAR_AGG_MIN:
 		case COLUMNAR_AGG_MAX:
+		case COLUMNAR_AGG_APPROX_DISTINCT:	/* from the stored sketches (#1309) */
 			return true;
 		case COLUMNAR_AGG_SUM_INT8:
 		case COLUMNAR_AGG_SUM_FLOAT:
@@ -2033,7 +2074,8 @@ pgcolumnar_groupagg_outmap(List *exprs, List *groupKeys, Index scanrelid,
 			PgColumnarAggSpec spec;
 
 			if (!pgcolumnar_classify_aggref((Aggref *) oexpr, (int) scanrelid,
-										  true, allowPartial, &spec))
+										  true, allowPartial, &spec) ||
+				spec.kind == COLUMNAR_AGG_APPROX_DISTINCT)	/* ungrouped only (#1309) */
 				return false;
 			outMap = lappend(outMap, makeInteger(-(aggIdx + 1)));
 			aggIdx++;
@@ -3038,6 +3080,8 @@ PgColumnarCreateAggScanState(CustomScan *cscan)
 		 * allowPartial accepts the partial arm's INITIAL_SERIAL aggrefs. */
 		(void) pgcolumnar_classify_aggref((Aggref *) tle->expr, -1, true, true,
 										&state->specs[i]);
+		if (state->specs[i].kind == COLUMNAR_AGG_APPROX_DISTINCT)
+			state->anySketch = true;
 		i++;
 	}
 
@@ -3229,6 +3273,17 @@ PgColumnarBeginAggScan(CustomScanState *node, EState *estate, int eflags)
 			spec->byval = att->attbyval;
 			spec->typlen = att->attlen;
 		}
+		else if (spec->kind == COLUMNAR_AGG_APPROX_DISTINCT)
+		{
+			/* the planner checked the extended hash and the collation (#1309) */
+			Form_pg_attribute att = TupleDescAttr(tupdesc, spec->attidx);
+			TypeCacheEntry *tce = lookup_type_cache(att->atttypid,
+													TYPECACHE_HASH_EXTENDED_PROC_FINFO);
+
+			fmgr_info_copy(&spec->hashFn, &tce->hash_extended_proc_finfo,
+						   estate->es_query_cxt);
+			spec->collation = att->attcollation;
+		}
 	}
 
 	/*
@@ -3340,6 +3395,18 @@ pgcolumnar_apply_one(MemoryContext resultContext, PgColumnarAggSpec *spec,
 {
 	switch (spec->kind)
 	{
+		case COLUMNAR_AGG_APPROX_DISTINCT:
+			/* the writer's rule, so a scanned group merges with a stored sketch (#1309) */
+			if (!isnull)
+			{
+				if (spec->regs == NULL)
+					spec->regs = MemoryContextAllocZero(resultContext, PGC_SKETCH_REGISTERS);
+				pgc_sketch_add(spec->regs,
+							   DatumGetUInt64(FunctionCall2Coll(&spec->hashFn, spec->collation,
+																val, Int64GetDatum(0))));
+			}
+			break;
+
 		case COLUMNAR_AGG_COUNT_STAR:
 			spec->count++;
 			break;
@@ -3561,6 +3628,11 @@ pgcolumnar_agg_emit_partial(PgColumnarAggSpec *spec, bool *isnull)
 
 	switch (spec->kind)
 	{
+		case COLUMNAR_AGG_APPROX_DISTINCT:
+			/* never planned as a partial: pgcolumnar_classify_aggref refuses one */
+			elog(ERROR, "approx_count_distinct has no partial state here");
+			break;
+
 		case COLUMNAR_AGG_COUNT_STAR:
 		case COLUMNAR_AGG_COUNT_COL:
 			/* transtype int8: the running count is the partial state */
@@ -3667,6 +3739,12 @@ pgcolumnar_agg_finalize(PgColumnarAggSpec *spec, bool *isnull)
 
 	switch (spec->kind)
 	{
+		case COLUMNAR_AGG_APPROX_DISTINCT:
+			/* the aggregate's own estimator; no register set means no value: 0 */
+			if (spec->regs == NULL)
+				return Int64GetDatum(0);
+			return Int64GetDatum((int64) llround(pgc_sketch_estimate(spec->regs)));
+
 		case COLUMNAR_AGG_COUNT_STAR:
 		case COLUMNAR_AGG_COUNT_COL:
 			return Int64GetDatum(spec->count);
@@ -3794,6 +3872,7 @@ pgcolumnar_fill_native_metadata_agg(PgColumnarAggScanState *state, int *ndirty)
 	List	   *groups;
 	ListCell   *lc;
 	bool		needZones = false;
+	bool		sketchFold = false;
 	bool		anyDeletes;
 	uint64	   *dirty;
 	int			na;
@@ -3809,10 +3888,15 @@ pgcolumnar_fill_native_metadata_agg(PgColumnarAggScanState *state, int *ndirty)
 	for (na = 0; na < state->naggs; na++)
 	{
 		if (state->specs[na].kind != COLUMNAR_AGG_COUNT_STAR)
-		{
 			needZones = true;
-			break;
-		}
+
+		/*
+		 * Decided here from the specs, not from a flag set elsewhere: the fold
+		 * below dereferences each approx_count_distinct's sketch, so whether
+		 * there is one must not depend on another function having noticed.
+		 */
+		if (state->specs[na].kind == COLUMNAR_AGG_APPROX_DISTINCT)
+			sketchFold = true;
 	}
 
 	PgColumnarFlushWriteStateForRelation(state->relid);
@@ -3838,6 +3922,7 @@ pgcolumnar_fill_native_metadata_agg(PgColumnarAggScanState *state, int *ndirty)
 	{
 		NativeRowGroupMetadata *rg = (NativeRowGroupMetadata *) lfirst(lc);
 		NativeZoneMapMetadata **byCol = NULL;
+		uint8	  **sketches = NULL;
 		uint64		deleted = 0;
 		int			a;
 
@@ -3938,6 +4023,33 @@ pgcolumnar_fill_native_metadata_agg(PgColumnarAggScanState *state, int *ndirty)
 			}
 		}
 
+		/*
+		 * approx_count_distinct (#1309): a clean group folds only from a stored
+		 * sketch. A group with none -- written before the column was named in
+		 * sketch_columns, or by a rewrite that wrote none -- is read and hashed,
+		 * never counted as empty, which would undercount.
+		 */
+		if (sketchFold)
+		{
+			bool		noSketch = false;
+
+			sketches = palloc0(sizeof(uint8 *) * state->naggs);
+			for (a = 0; a < state->naggs && !noSketch; a++)
+			{
+				if (state->specs[a].kind != COLUMNAR_AGG_APPROX_DISTINCT)
+					continue;
+				sketches[a] = palloc(PGC_SKETCH_REGISTERS);
+				if (!PgColumnarReadSketch(storageId, rg->groupNumber,
+										  state->specs[a].attidx, snap, sketches[a]))
+					noSketch = true;
+			}
+			if (noSketch)
+			{
+				dirty[(*ndirty)++] = rg->groupNumber;
+				continue;
+			}
+		}
+
 		for (a = 0; a < state->naggs; a++)
 		{
 			PgColumnarAggSpec *spec = &state->specs[a];
@@ -4005,6 +4117,19 @@ pgcolumnar_fill_native_metadata_agg(PgColumnarAggScanState *state, int *ndirty)
 						MemoryContextSwitchTo(oldcx);
 					}
 					break;
+				case COLUMNAR_AGG_APPROX_DISTINCT:
+					{
+						/* a register union is exactly the registers of the union */
+						int			j;
+
+						if (spec->regs == NULL)
+							spec->regs = MemoryContextAllocZero(state->resultContext,
+																PGC_SKETCH_REGISTERS);
+						for (j = 0; j < PGC_SKETCH_REGISTERS; j++)
+							if (sketches[a][j] > spec->regs[j])
+								spec->regs[j] = sketches[a][j];
+					}
+					break;
 				default:
 
 					/*
@@ -4018,6 +4143,12 @@ pgcolumnar_fill_native_metadata_agg(PgColumnarAggScanState *state, int *ndirty)
 		}
 	}
 
+	if (sketchFold)
+	{
+		state->anySketch = true;
+		state->sketchScanned = *ndirty;
+		state->sketchFolded = list_length(groups) - *ndirty;
+	}
 	table_close(rel, AccessShareLock);
 	return dirty;
 }
@@ -4360,7 +4491,10 @@ pgcolumnar_agg_specs_reset(PgColumnarAggScanState *state)
 #ifdef HAVE_INT128
 		spec->i128sum = 0;
 #endif
+		spec->regs = NULL;		/* it lived in resultContext, reset above */
 	}
+	state->sketchFolded = 0;
+	state->sketchScanned = 0;
 }
 
 /*
@@ -5086,6 +5220,20 @@ PgColumnarExplainAggScan(CustomScanState *node, List *ancestors, ExplainState *e
 
 	ExplainPropertyInteger("Columnar Vectorized Aggregates", NULL,
 						   state->naggs, es);
+
+	/*
+	 * approx_count_distinct's fold (#1309): how many row groups the stored
+	 * sketches answered and how many were read instead, so a fold is told apart
+	 * from a scan that happens to agree. Metadata mode only: the scan-fold path
+	 * reads every group.
+	 */
+	if (es->analyze && state->anySketch && !state->scanFold)
+	{
+		ExplainPropertyInteger("Columnar Sketch Groups Folded", NULL,
+							   state->sketchFolded, es);
+		ExplainPropertyInteger("Columnar Sketch Groups Scanned", NULL,
+							   state->sketchScanned, es);
+	}
 	if (state->joinFactAttno > 0)
 		ExplainPropertyText("Columnar Join Fold", "yes", es);
 	PgColumnarExplainPushedDown(state->nscankeys, es);

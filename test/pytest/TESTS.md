@@ -396,6 +396,7 @@ behaviour, the source of that number is named.
 - [348. test_native_agg_collation.py: min and max under a COLLATE override answer under that collation](#348-test_native_agg_collationpy-min-and-max-under-a-collate-override-answer-under-that-collation)
 - [349. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does](#349-test_native_sketchpy-a-named-column-gets-one-distinct-count-sketch-per-row-group-and-nothing-else-does)
 - [350. test_native_sketch_agg.py: approx_count_distinct estimates what count(DISTINCT) counts, within its theory](#350-test_native_sketch_aggpy-approx_count_distinct-estimates-what-countdistinct-counts-within-its-theory)
+- [351. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe](#351-test_native_sketch_foldpy-approx_count_distinct-folds-the-stored-sketches-and-scans-only-what-they-cannot-describe)
 
 ## 1. How to read a test in here
 
@@ -13190,3 +13191,28 @@ The twin of `test/native_sketch_agg.sh` (#1309 phase 2), every check by the shel
 | `test_a_parallel_plan_returns_the_serial_answer` | a parallel plan returns the serial answer |
 | `test_the_aggregate_refuses_a_type_with_no_extended_hash` | a type with no extended hash is refused |
 | `test_the_aggregate_refuses_a_nondeterministic_collation` | a nondeterministic collation is refused |
+
+## 351. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe
+
+The twin of `test/native_sketch_fold.sh` (#1309 phase 3), every check by the shell's name. An ungrouped, unfiltered `pgcolumnar.approx_count_distinct` over a column named in `sketch_columns` folds each clean row group's stored sketch by a register-wise max, and reads and hashes only a group with deletes or with no sketch row. A register union is exactly the registers of the union, so every answer must equal the same query with `pgcolumnar.enable_custom_scan` off; EXPLAIN ANALYZE's `Columnar Sketch Groups Folded` and `Scanned` tell a fold from a scan that agrees. A WHERE, a GROUP BY, an aggregate the metadata cannot answer, and a COLLATE override each decline the fold. The deleted rows hold values no other row has, so a fold that ignored them would disagree. A private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_every_group_carries_its_sketches` | premise: ten row groups, each with a sketch for a and for t |
+| `test_a_clean_table_folds_every_group` | on a clean table every row group is folded from its sketch |
+| `test_the_fold_answers_the_plain_aggregate` | and the fold answers what the plain aggregate answers |
+| `test_a_text_column_folds_to_the_plain_answer` | a text column folds to the plain answer too |
+| `test_count_star_beside_it_folds` | count(*) beside it folds and counts every row |
+| `test_a_group_with_deletes_is_scanned` | a row group with deletes is scanned, the others folded |
+| `test_the_answer_with_deletes_is_the_plain_one` | and the answer is the plain aggregate's over the live rows |
+| `test_a_group_with_no_sketch_is_scanned` | a row group with no sketch row is scanned, not counted as empty |
+| `test_the_answer_without_sketches_is_the_plain_one` | and the answer is the plain aggregate's |
+| `test_a_where_declines_the_fold` | a WHERE declines the fold |
+| `test_the_where_answer_is_the_plain_one` | and still answers what the plain aggregate answers |
+| `test_a_group_by_declines_the_fold` | a GROUP BY declines the fold |
+| `test_the_group_by_answer_is_the_plain_one` | and answers what the plain aggregate answers |
+| `test_an_unanswerable_aggregate_beside_it_declines` | an aggregate the metadata cannot answer beside it declines the fold |
+| `test_a_collate_override_declines_the_fold` | a COLLATE override declines the fold |
+| `test_the_collate_answer_is_the_plain_one` | and the override answers what the plain aggregate answers |
