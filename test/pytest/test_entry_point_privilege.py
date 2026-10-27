@@ -34,7 +34,12 @@ EXEMPT = {"columnar_handler", "parquet_fdw_handler", "parquet_fdw_validator", "i
           "iceberg_rest_tables", "read_avro_manifest", "read_manifest_list", "row_tid",
           # A trigger function (#1376): never called directly, it runs on writes to
           # pgcolumnar.rollup and checks SELECT on the source itself (test_rollup.py).
-          "rollup_record_dependencies"}
+          "rollup_record_dependencies",
+          # The aggregate and its support functions (#1309): they take values and
+          # registers, never a relation; core checks SELECT on the values' table.
+          "approx_count_distinct", "approx_count_distinct_transfn", "approx_count_distinct_combinefn",
+          "approx_count_distinct_serialfn", "approx_count_distinct_deserialfn",
+          "approx_count_distinct_finalfn"}
 # Relation-taking entry points with no privilege check of any kind: none, and a
 # name added here is a claim that something is ungated.
 KNOWN_UNGUARDED: set = set()
