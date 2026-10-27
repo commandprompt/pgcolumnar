@@ -943,27 +943,6 @@ def test_past_the_cap_the_node_hands_off_to_a_core_finalize(pgc_conn, expect):
     expect.rows(grown, _rows(conn, "SELECT k, count(*), sum(i) FROM ho_gh GROUP BY k"),
                 "a table grown past the cap under a cached plan hands off and answers what heap answers")
 
-    # sum(int8) is a numeric sum, with no partial state the node emits.
-    _exec(conn, "CREATE TABLE ho_b (k int, b bigint) USING pgcolumnar")
-    _exec(conn, "INSERT INTO ho_b SELECT g % 200000, g FROM generate_series(1, 400000) g")
-    _exec(conn, "ANALYZE ho_b")
-    sum8 = "SELECT k, sum(b) FROM ho_b GROUP BY k"
-    _exec(conn, f"PREPARE gk8 AS {sum8}")
-    plan8 = _plan_text(conn, "EXECUTE gk8")
-    got = "no error"
-    try:
-        _rows(conn, "EXECUTE gk8")
-        _exec(conn, "SET pgcolumnar.groupagg_max_groups = 1000")
-        _rows(conn, "EXECUTE gk8")
-    except psycopg.Error as exc:
-        d = exc.diag
-        got = ("1" if "exceeded pgcolumnar.groupagg_max_groups (1000)" in (d.message_primary or "") else "0") + "|" + \
-              ("1" if (d.message_hint or "").startswith("Raise pgcolumnar.groupagg_max_groups") else "0")
-    _exec(conn, "RESET pgcolumnar.groupagg_max_groups")
-    _exec(conn, "DEALLOCATE gk8")
-    expect.text(f"{int(MARKER in plan8)}|{int(chr(34) + 'Finalize' + chr(34) in plan8)}|{got}", "1|0|1|1",
-                "a cached plan whose aggregates cannot hand off still stops at the runtime cap, with its hint")
-
 
 def _planned_under_cap(conn, name, sql, cap=1000):
     """-> (1 when the cached plan is the grouped node, its rows under `cap`), planned at a
@@ -1050,6 +1029,125 @@ def test_the_cap_bounds_the_nodes_memory(pgc_conn, expect):
     ok = isinstance(a, int) and isinstance(b, int) and a > 0 and b <= 2 * a
     expect.text("yes" if ok else f"no ({a} kB at 20,000 keys, {b} kB at 200,000)", "yes",
                 "under a cap of 1,000, ten times the distinct keys keep the node's peak memory within twice")
+
+
+def _dp_table(conn, name, columns, select_list):
+    """A columnar table of 30,000 rows whose keys run in fives, 3,000 apart, so under a
+    cap of 1,000 every group spans flushes; and its heap mirror, <name>_h."""
+    _exec(conn, f"CREATE TABLE {name} ({columns}) USING pgcolumnar")
+    _exec(conn, f"INSERT INTO {name} SELECT {select_list} FROM generate_series(1, 30000) g")
+    _exec(conn, f"CREATE TABLE {name}_h AS SELECT * FROM {name}")
+    _exec(conn, f"ANALYZE {name}")
+
+
+def _dp_run(conn, table, query):
+    """-> (1 when the cached plan is the grouped node, its rows under a cap of 1,000,
+    heap's rows)."""
+    planned, got = _planned_under_cap(conn, f"p_{table}", query.format(table))
+    return planned, got, _rows(conn, query.format(f"{table}_h"))
+
+
+# #1300, D': an aggregate with no partial state the node can emit (sum and avg over
+# int8 and numeric) keeps the serial node, and past the cap it writes each group's
+# accumulators to a sort and merges each key's runs, in flush order, at the end. The
+# shell's section 12; each arm is its own test so a mutant shows each red.
+
+
+def test_merge_a_group_null_in_early_runs_and_an_all_null_group(pgc_conn, expect):
+    conn = pgc_conn
+    _dp_table(conn, "tdpn", "k int, b bigint",
+              "CASE WHEN g % 997 = 0 THEN -1 ELSE (g / 5) % 3000 END,"
+              " CASE WHEN g <= 15000 OR g % 997 = 0 THEN NULL ELSE g END")
+    planned, got, want = _dp_run(conn, "tdpn", "SELECT k, sum(b), avg(b), count(b) FROM {} GROUP BY k")
+    expect.text(str(planned), "1", "premise: the tdpn plan is the grouped node")
+    expect.rows(got, want, "merge: a group NULL in its early runs sums its later ones, and an all-NULL group is NULL, not a division by zero")
+    _exec(conn, "PREPARE pf AS SELECT k, sum(b), avg(b), count(b) FROM tdpn GROUP BY k")
+    try:
+        _rows(conn, "EXECUTE pf")
+        _exec(conn, "SET pgcolumnar.groupagg_max_groups = 1000")
+        with conn.cursor() as cur:
+            cur.execute("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) EXECUTE pf")
+            analyzed = json.dumps(cur.fetchone()[0])
+    except psycopg.Error as exc:
+        analyzed = query_error(exc.diag.message_primary)
+    finally:
+        _exec(conn, "RESET pgcolumnar.groupagg_max_groups")
+        _exec(conn, "DEALLOCATE pf")
+    m = re.search(r'"Columnar Group Table Flushes": (\d+)', analyzed)
+    finalize = '"Partial Mode": "Finalize"' in analyzed
+    expect.text(f"{int(finalize)}|{'flushed' if m and int(m.group(1)) > 0 else 'none'}", "0|flushed",
+                "merge: the int8 plan is the serial node, and EXPLAIN ANALYZE reports it flushed")
+
+
+def test_merge_numeric_nan_and_infinity_across_runs(pgc_conn, expect):
+    conn = pgc_conn
+    _dp_table(conn, "tdpi", "k int, n numeric",
+              "(g / 5) % 3000, CASE WHEN (g / 5) % 3 = 0 AND g <= 15000 THEN 'NaN'::numeric"
+              " WHEN (g / 5) % 3 = 0 THEN 'Infinity'::numeric"
+              " WHEN (g / 5) % 3 = 1 AND g <= 15000 THEN 'Infinity'::numeric"
+              " WHEN (g / 5) % 3 = 1 THEN '-Infinity'::numeric ELSE g::numeric END")
+    planned, got, want = _dp_run(conn, "tdpi", "SELECT k, sum(n), avg(n) FROM {} GROUP BY k")
+    expect.text(str(planned), "1", "premise: the tdpi plan is the grouped node")
+    expect.rows(got, want, "merge: NaN in one run and Infinity in another is NaN, and +Infinity with -Infinity is NaN, for sum and avg")
+
+
+def test_merge_int8_runs_past_2_63(pgc_conn, expect):
+    conn = pgc_conn
+    _dp_table(conn, "tdpo", "k int, b bigint", "(g / 5) % 3000, 4611686018427387904 - g")
+    planned, got, want = _dp_run(conn, "tdpo", "SELECT k, sum(b), avg(b) FROM {} GROUP BY k")
+    expect.text(str(planned), "1", "premise: the tdpo plan is the grouped node")
+    expect.rows(got, want, "merge: int8 runs whose total passes 2^63 sum exactly, as core's numeric sum does")
+
+
+def _dps(conn):
+    _dp_table(conn, "tdps", "k int, n numeric, i int",
+              "(g / 5) % 3000, CASE WHEN g <= 10000 THEN (3 + g % 10)::numeric"
+              " WHEN g <= 20000 THEN 1.5 + g % 10 ELSE 2.25 + g % 10 END, g % 1000")
+
+
+def test_merge_numeric_scales_across_runs(pgc_conn, expect):
+    conn = pgc_conn
+    _dps(conn)
+    planned, got, want = _dp_run(conn, "tdps", "SELECT k, sum(n), avg(n) FROM {} GROUP BY k")
+    expect.text(str(planned), "1", "premise: the tdps plan is the grouped node")
+    expect.rows(got, want, "merge: runs of different numeric scales give core's scale for sum, and avg's comes from the total")
+
+
+def test_merge_avg_int4_beside_numeric(pgc_conn, expect):
+    conn = pgc_conn
+    _dps(conn)
+    planned, got, want = _dp_run(conn, "tdps", "SELECT k, avg(i), sum(n), count(*), min(n), max(n) FROM {} GROUP BY k")
+    expect.text(str(planned), "1", "premise: the tdps plan is the grouped node")
+    expect.rows(got, want, "merge: avg over int4 beside sum and min over numeric answers as core does")
+
+
+def test_merge_exact_float_sums(pgc_conn, expect):
+    conn = pgc_conn
+    _dp_table(conn, "tdpf", "k int, f float8, b bigint", "(g / 5) % 3000, (g % 64) / 8.0, g")
+    planned, got, want = _dp_run(conn, "tdpf", "SELECT k, sum(f), avg(f), sum(b) FROM {} GROUP BY k")
+    expect.text(str(planned), "1", "premise: the tdpf plan is the grouped node")
+    expect.rows(got, want, "merge: float sums of exactly representable values merge to core's")
+
+
+def test_merge_a_key_equal_but_not_identical(pgc_conn, expect):
+    """numeric 3 and 3.00 are one group; core shows the first seen, and runs merge in
+    flush order, so the earlier run's key is shown."""
+    conn = pgc_conn
+    _dp_table(conn, "tdpk", "nk numeric, b bigint",
+              "CASE WHEN g <= 15000 THEN ((g / 5) % 3000)::numeric"
+              " ELSE ((g / 5) % 3000)::numeric(10,2) END, g")
+    planned, got, want = _dp_run(conn, "tdpk", "SELECT nk, sum(b), count(*) FROM {} GROUP BY nk")
+    expect.text(str(planned), "1", "premise: the tdpk plan is the grouped node")
+    expect.rows(got, want, "merge: a key seen as 3 and later as 3.00 is one group, shown as core shows it")
+
+
+def test_merge_a_key_with_no_btree_ordering_gets_no_serial_node(pgc_conn, expect):
+    conn = pgc_conn
+    _exec(conn, "CREATE TABLE tdpx (x xid, b bigint) USING pgcolumnar")
+    _exec(conn, "INSERT INTO tdpx SELECT (g % 50)::text::xid, g FROM generate_series(1, 1000) g")
+    _exec(conn, "ANALYZE tdpx")
+    expect.text(str(int(MARKER in _plan_text(conn, "SELECT x, sum(b) FROM tdpx GROUP BY x"))), "0",
+                "merge: a key with no btree ordering gets no serial grouped node")
 
 
 def test_a_null_key_counts_as_a_group_in_the_bucket_bound(pgc_conn, expect):

@@ -747,17 +747,68 @@ check "a table grown past the cap under a cached plan hands off and answers what
 	"$(grep -E '^[0-9]+\|' <<<"$gr_out" | tail -n 5500 | LC_ALL=C sort | md5sum | cut -c1-32)" \
 	"$(srt_md5 -c "SELECT k, count(*), sum(i) FROM gate_grh GROUP BY k")"
 
-# An aggregate with no partial state the node can emit keeps the serial node, and
-# the runtime cap stays its backstop: sum(int8) is a numeric sum.
-psql_run "CREATE TABLE gate_b (k int, b bigint) USING pgcolumnar;
-	INSERT INTO gate_b SELECT g % 200000, g FROM generate_series(1, 400000) g;
-	ANALYZE gate_b;"
-SUM8K="SELECT k, sum(b) FROM gate_b GROUP BY k"
-rc_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -q \
-	-c "PREPARE gk8 AS $SUM8K" -c "EXPLAIN (COSTS OFF) EXECUTE gk8" -c "EXECUTE gk8" \
-	-c "SET pgcolumnar.groupagg_max_groups = 1000" -c "EXECUTE gk8" 2>&1 || true)"
-check "a cached plan whose aggregates cannot hand off still stops at the runtime cap, with its hint" \
-	"$(grep -c 'Columnar Vectorized Group Keys' <<<"$rc_out")|$(grep -c '^Finalize' <<<"$rc_out")|$(grep -c 'exceeded pgcolumnar.groupagg_max_groups (1000)' <<<"$rc_out")|$(grep -c 'HINT:  Raise pgcolumnar.groupagg_max_groups' <<<"$rc_out")" "1|0|1|1"
+# ---- 12. past the cap, a serial node merges its runs (#1300, D') ------------
+# An aggregate with no partial state the node can emit (sum and avg over int8 and
+# numeric) keeps the serial node. Past the cap it writes each group's accumulators
+# to a sort, empties its table and carries on; at the end each run of equal keys
+# merges, in flush order, and is finished once. Every table below puts a key's rows
+# in runs of five, 3,000 keys apart, so under a cap of 1,000 every group spans
+# flushes. Each is compared with a heap mirror holding the same rows.
+dp_table() {	# NAME COLUMNS SELECT-LIST -> the columnar table and its heap mirror
+	psql_run "CREATE TABLE $1 ($2) USING pgcolumnar;
+		INSERT INTO $1 SELECT $3 FROM generate_series(1, 30000) g;
+		CREATE TABLE $1_h AS SELECT * FROM $1;
+		ANALYZE $1;"
+}
+dp_check() {	# NAME TABLE QUERY-WITH-%T -> the check that a cached plan under 1,000 answers as heap
+	check "$1" "$(planned_md5 "p_$2" "${3//%T/$2}")" "1|$(srt_md5 -c "${3//%T/${2}_h}")"
+}
+dp_table dpn "k int, b bigint" "CASE WHEN g % 997 = 0 THEN -1 ELSE (g / 5) % 3000 END,
+	CASE WHEN g <= 15000 OR g % 997 = 0 THEN NULL ELSE g END"
+DPN="SELECT k, sum(b), avg(b), count(b) FROM %T GROUP BY k"
+dp_check "merge: a group NULL in its early runs sums its later ones, and an all-NULL group is NULL, not a division by zero" dpn "$DPN"
+dpn_flush="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -q \
+	-c "PREPARE pf AS ${DPN//%T/dpn}" -c '\o /dev/null' -c "EXECUTE pf" -c '\o' \
+	-c "SET pgcolumnar.groupagg_max_groups = 1000" \
+	-c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) EXECUTE pf" 2>&1)"
+check "merge: the int8 plan is the serial node, and EXPLAIN ANALYZE reports it flushed" \
+	"$(grep -c '^Finalize' <<<"$dpn_flush")|$([ "$(sed -n 's/^ *Columnar Group Table Flushes: //p' <<<"$dpn_flush")" -gt 0 ] 2>/dev/null && echo flushed || echo none)" "0|flushed"
+dp_table dpi "k int, n numeric" "(g / 5) % 3000,
+	CASE WHEN (g / 5) % 3 = 0 AND g <= 15000 THEN 'NaN'::numeric
+	     WHEN (g / 5) % 3 = 0 THEN 'Infinity'::numeric
+	     WHEN (g / 5) % 3 = 1 AND g <= 15000 THEN 'Infinity'::numeric
+	     WHEN (g / 5) % 3 = 1 THEN '-Infinity'::numeric
+	     ELSE g::numeric END"
+dp_check "merge: NaN in one run and Infinity in another is NaN, and +Infinity with -Infinity is NaN, for sum and avg" dpi \
+	"SELECT k, sum(n), avg(n) FROM %T GROUP BY k"
+dp_table dpo "k int, b bigint" "(g / 5) % 3000, 4611686018427387904 - g"
+dp_check "merge: int8 runs whose total passes 2^63 sum exactly, as core's numeric sum does" dpo \
+	"SELECT k, sum(b), avg(b) FROM %T GROUP BY k"
+dp_table dps "k int, n numeric, i int" "(g / 5) % 3000,
+	CASE WHEN g <= 10000 THEN (3 + g % 10)::numeric WHEN g <= 20000 THEN 1.5 + g % 10 ELSE 2.25 + g % 10 END,
+	g % 1000"
+dp_check "merge: runs of different numeric scales give core's scale for sum, and avg's comes from the total" dps \
+	"SELECT k, sum(n), avg(n) FROM %T GROUP BY k"
+dp_check "merge: avg over int4 beside sum and min over numeric answers as core does" dps \
+	"SELECT k, avg(i), sum(n), count(*), min(n), max(n) FROM %T GROUP BY k"
+dp_table dpf "k int, f float8, b bigint" "(g / 5) % 3000, (g % 64) / 8.0, g"
+dp_check "merge: float sums of exactly representable values merge to core's" dpf \
+	"SELECT k, sum(f), avg(f), sum(b) FROM %T GROUP BY k"
+# A key that is equal under its btree but not identical: numeric 3 and 3.00. Core's
+# hash aggregation shows the first one it saw, and runs merge in flush order, so the
+# first run's key, the earlier one, is the one shown.
+dp_table dpk "nk numeric, b bigint" "CASE WHEN g <= 15000 THEN ((g / 5) % 3000)::numeric
+	ELSE ((g / 5) % 3000)::numeric(10,2) END, g"
+dp_check "merge: a key seen as 3 and later as 3.00 is one group, shown as core shows it" dpk \
+	"SELECT nk, sum(b), count(*) FROM %T GROUP BY nk"
+# A key with no btree ordering cannot be sorted for the merge, so the bare node is
+# not offered for it: xid hashes but does not order.
+psql_run "CREATE TABLE dpx (x xid, b bigint) USING pgcolumnar;
+	INSERT INTO dpx SELECT (g % 50)::text::xid, g FROM generate_series(1, 1000) g;
+	ANALYZE dpx;"
+check "merge: a key with no btree ordering gets no serial grouped node" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -q \
+		-c "EXPLAIN (COSTS OFF) SELECT x, sum(b) FROM dpx GROUP BY x" 2>&1 | grep -c 'Columnar Vectorized Group Keys')" "0"
 
 # A NULL key is one more group, and the bucket bound must count it. @OffgridwithJD's
 # shape on #1330: buckets at 00:00:59, 00:01:30 and 00:02:00 fill the bound of 3

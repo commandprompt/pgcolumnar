@@ -4424,14 +4424,14 @@ _PG_init(void)
 							"Cap on the group count the grouped vectorized aggregate "
 							"holds in its table at once.",
 							"Enforced at execution against the real number of groups. "
-							"When every aggregate has a partial state, the node runs "
-							"under a core Finalize and, at the cap, hands its groups "
-							"to it and carries on, so the query still answers. "
-							"Otherwise over the cap the query errors, since the plan "
-							"is fixed by then. The planner takes the grouped path "
-							"only when an upper bound on the group count is within "
-							"it, so the cap is reached only when it fell, or the "
-							"table grew, after planning.",
+							"At the cap the node empties its table and carries on, "
+							"so the query still answers: when every aggregate has a "
+							"partial state it hands its groups to a core Finalize, "
+							"and otherwise it sorts them aside and merges each "
+							"group's runs at the end. The planner takes the grouped "
+							"path only when an upper bound on the group count is "
+							"within it, so the cap is reached only when it fell, or "
+							"the table grew, after planning.",
 							&pgcolumnar_groupagg_max_groups,
 							1000000, 1, INT_MAX,
 							PGC_USERSET,
