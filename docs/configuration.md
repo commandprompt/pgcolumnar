@@ -247,6 +247,17 @@ is the one core gives. A group key whose type has no ordering cannot be sorted,
 so such a query runs the ordinary plan. The error above is no longer reached.
 To keep larger tables on the fast path, raise `pgcolumnar.groupagg_max_groups`.
 
+Size the cap to the memory you can give the node. Each group it holds takes
+about 650 bytes, so the default of 1,000,000 groups is about 650 MB. That holds
+whatever `work_mem` says. It is also per grouped node and per parallel worker.
+So plan on 650 bytes times the cap, times the workers plus one. Past the cap the
+node's memory stays the same, but rows move to disk. So lowering the cap trades
+memory for time spent spilling. Measured on
+10,000,000 rows with 100,000 groups and a cap of 1,000, the hand-off spilled
+24 MB and ran 3.3 times longer. The merge wrote about 1.5 GB of temporary files
+and ran 4.9 times longer. Those keys rarely repeat between hand-offs, which is
+the worst case. A cap near the real group count costs almost nothing.
+
 ### Encode effort
 
 `encode_effort = fast` does not do the FSST substring search. This applies when
