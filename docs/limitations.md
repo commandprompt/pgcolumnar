@@ -386,6 +386,21 @@ returning no rows.
   therefore skip fewer groups than the natural insertion order permits. Sort by
   the key that your selective queries filter on.
 
+## Distinct-count sketches
+
+- `pgcolumnar.approx_count_distinct` has a standard error of about 2.3%, from
+  2,048 registers. Between about 5,000 and 10,000 distinct values the raw
+  estimator is biased upward, which HyperLogLog++ corrects and pgColumnar does
+  not. Answers there can sit a few percent above the true count.
+- A sketch costs about 2 KB per row group for each column named in
+  `sketch_columns`. Only the base storage gets sketches. A projection's storage
+  gets none.
+- A row group written before a column was named in `sketch_columns` has no
+  sketch for it. A rewrite fills that gap, because every rewrite writes a
+  sketch for each row group it writes. The rewrites are `pgcolumnar.vacuum`,
+  `compact_rewrite`, `recluster`, `vacuum_sorted`, a rewriting `ALTER TABLE`,
+  `REFRESH MATERIALIZED VIEW` and `TRUNCATE`.
+
 ## Parallel scans
 
 A columnar scan can run in parallel, and the planner builds a parallel path for

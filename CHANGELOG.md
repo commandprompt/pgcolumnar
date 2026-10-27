@@ -460,6 +460,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
+  default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
+  table's own pgColumnar options for the rows they rewrite (#1309). They write
+  into a transient relation that core names `pg_temp_<oid>`, and the options
+  were looked up under the transient's OID, so they were found missing:
+  `stripe_row_limit`, `chunk_group_row_limit`, `compression`, `encode_effort`
+  and `sketch_columns` all fell back to the defaults. Measured: one row group
+  of 3,334 rows under a `stripe_row_limit` of 1,000, chunks compressed on a
+  table set to `compression => 'none'`, and no distinct-count sketch for any
+  rewritten row group. The rewrite now reads the options of the relation it is
+  rewriting.
+
 - `min` and `max` with a `COLLATE` override answer under that collation (#1771).
   The grouped and the ungrouped vectorized aggregate compared values under the
   column's collation, so on an ICU column `min(t COLLATE "C")` returned the ICU

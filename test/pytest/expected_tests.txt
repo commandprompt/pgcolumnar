@@ -1254,4 +1254,6 @@ guard_tests 854
 # cluster_tests 4427 -> 4462 for #1309's test_native_sketch.py, the twin of native_sketch.sh (34), and
 # test_catalog_natts.py's new [sketch] case, which Natts_sketch adds (1), by collection over the cluster files.
 # cluster_tests 4462 -> 4481 for #1309's test_native_sketch_agg.py, the twin of native_sketch_agg.sh, by collection.
-cluster_tests 4481
+# cluster_tests 4481 -> 4494 for #1309 phase 4's test_native_sketch_rewrite.py, the twin of
+# native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
+cluster_tests 4494
