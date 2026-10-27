@@ -257,6 +257,24 @@ true until the next version shipped.
   `git show 6ae11a38:test/check_ledger_budget.txt`.
   `test/selftest/410-a-check-must-have-been-red.sh` and
   `test_mutation_ledger.py`.
+- Past `pgcolumnar.groupagg_max_groups`, a grouped vectorized aggregate whose
+  aggregates all have a partial state no longer errors (#1300). The node runs as
+  a Partial node under a core `Finalize HashAggregate`; at the cap it hands its
+  groups' partial states to the `Finalize`, empties its table and carries on, and
+  `EXPLAIN ANALYZE` counts the hand-offs as `Columnar Group Table Flushes`, and
+  reports the most the table held at once as `Columnar Group Table Peak Memory`. This
+  covers `count`, `sum` and `avg` over integer and float columns, and `min` and
+  `max`. A plan that outlives its bound (the cap lowered under a prepared
+  statement, or the table grown past it) now answers what core answers. The
+  other aggregates, `sum` and `avg` over `bigint` and `numeric`, keep the
+  serial node, which at the cap writes its groups to a sort (spilling within
+  `work_mem`), empties its table, and at the end merges each group's parts and
+  finishes them once, so the value and scale are core's. A group key with no
+  ordering gets the ordinary plan. The `groupagg_max_groups` error is no longer
+  reached. The `Finalize` is priced as
+  free, measured on #1300: 0.97 to 1.02 of the bare node's runtime from 10 to 1M
+  groups, so no plan choice changes.
+
 - **A Parquet timestamp read into the other PostgreSQL timestamp type is
   converted in the session's time zone.** The reader ignored the file's
   `isAdjustedToUTC` flag. A wall-time column read into `timestamptz` was taken as
