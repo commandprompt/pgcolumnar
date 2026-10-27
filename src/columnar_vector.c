@@ -42,6 +42,7 @@
 #include <math.h>
 
 #include "miscadmin.h"
+#include "optimizer/prep.h"
 #include "port/atomics.h"
 #include "access/parallel.h"
 #include "access/relation.h"
@@ -88,6 +89,9 @@
 #include "access/tupmacs.h"
 #include "common/hashfn.h"
 #include "utils/rel.h"
+#include "catalog/pg_operator_d.h"
+#include "utils/tuplesort.h"
+#include "utils/tuplestore.h"
 #include "utils/typcache.h"
 
 /* GUC: use the vectorized aggregate path (spec 8.3 scan control) */
@@ -819,6 +823,53 @@ typedef struct PgColumnarGroupAggScanState
 	bool		isPartial;
 	pg_atomic_uint32 *parallelCounter;
 
+	/*
+	 * A partial node is parallel only when its plan is parallel-aware. The
+	 * hand-off's partial node (#1300) is serial: no counter, and every row group
+	 * is its own to fold.
+	 */
+	bool		parallelAware;
+
+	/*
+	 * The hand-off past the cap (#1300). A partial node that reaches maxGroups
+	 * writes every group's partial state here, empties its table and carries on;
+	 * the core Finalize above it combines the duplicates. The store spills past
+	 * work_mem, so the cap bounds this node's table, not the answer. Emission
+	 * drains the store before the table that is left. NULL until the first flush.
+	 */
+	Tuplestorestate *flushed;
+	TupleTableSlot *flushSlot;	/* minimal-tuple slot the store is read into */
+	bool		flushedDrained;
+	uint64		flushes;		/* EXPLAIN ANALYZE: times the table was emptied */
+
+	/*
+	 * The bound the hand-off exists for, measured (#1764 review): the most the
+	 * table's three contexts held at once, sampled where it peaks, just before a
+	 * flush empties it and when the build ends. A flush that emptied the table but
+	 * kept its keys or states would answer the same, so only this shows the cap
+	 * still bounds the node's memory.
+	 */
+	Size		peakBytes;
+
+	/*
+	 * THE MERGE PAST THE CAP (#1300, D'). A serial node has no Finalize above it,
+	 * so at the cap it writes each group's raw accumulators, with its keys and the
+	 * flush's sequence number, to mergeSort, empties its table and carries on. At
+	 * the end the remaining table goes into the sort too, and emission merges
+	 * each run of equal keys, in flush order, into one accumulator and finishes
+	 * it once: the same value, and the same scale, as one table holding every
+	 * group would give. Only a node whose keys all sort (the planner refuses
+	 * the bare node otherwise) merges.
+	 */
+	bool		merging;
+	Tuplesortstate *mergeSort;
+	TupleDesc	mergeDesc;		/* keys, then per aggregate (fixed, extreme, nsum), then seq */
+	TupleTableSlot *mergeInSlot;	/* virtual slot a flushed group is formed in */
+	TupleTableSlot *mergePending;	/* the next run's first tuple, read ahead */
+	bool		mergeStarted;
+	bool		mergeHavePending;
+	MemoryContext runContext;	/* one run's merged accumulators and output */
+
 	/* EXPLAIN */
 	int			npreds;
 	int			nscankeys;
@@ -858,6 +909,21 @@ static bool pgcolumnar_groupagg_simple_key(Oid typ);
 #define COLUMNAR_GROUPAGG_JUMP	64
 
 static int pgcolumnar_groupagg_size_hint(CustomScanState *node, int maxGroups);
+static void pgcolumnar_groupagg_flush(PgColumnarGroupAggScanState *state);
+static void pgcolumnar_groupagg_merge_put_all(PgColumnarGroupAggScanState *state);
+static TupleTableSlot *pgcolumnar_groupagg_merge_next(PgColumnarGroupAggScanState *state);
+static void pgcolumnar_groupagg_merge_end(PgColumnarGroupAggScanState *state);
+static bool pgcolumnar_groupagg_keys_sortable(List *groupKeys);
+static void pgcolumnar_groupagg_reset_table(PgColumnarGroupAggScanState *state);
+static bool pgcolumnar_groupagg_handoff_path(PlannerInfo *root,
+										   RelOptInfo *input_rel,
+										   RelOptInfo *output_rel,
+										   GroupPathExtraData *gpe,
+										   CustomPath *cpath, List *groupKeys,
+										   double dNumGroups);
+static void pgcolumnar_groupagg_fill_slot(PgColumnarGroupAggScanState *state,
+										PgColumnarGroupEntry *e,
+										TupleTableSlot *slot);
 static bool pgcolumnar_groupagg_batch_eligible(PgColumnarGroupAggScanState *state,
 											 TupleDesc tupdesc, ScanKey *keysOut,
 											 int *nkeysOut);
@@ -1023,6 +1089,20 @@ pgcolumnar_parallel_agg_ok(PgColumnarAggKind kind)
 		default:
 			return false;
 	}
+}
+
+/*
+ * pgcolumnar_handoff_agg_ok
+ *		The kinds the serial grouped node can hand to a core Finalize past its cap
+ *		(#1300): the parallel kinds, plus min and max, whose partial state is the
+ *		running extreme itself and whose strict combine (int4smaller, text_smaller,
+ *		...) treats a NULL state as absent. The parallel arms keep their own list.
+ */
+static bool
+pgcolumnar_handoff_agg_ok(PgColumnarAggKind kind)
+{
+	return pgcolumnar_parallel_agg_ok(kind) ||
+		kind == COLUMNAR_AGG_MIN || kind == COLUMNAR_AGG_MAX;
 }
 
 /*
@@ -3016,8 +3096,194 @@ PgColumnarTryGroupAggPath(PlannerInfo *root, RelOptInfo *input_rel,
 	 * path. Offering both makes turning the GUC on a strict addition to the
 	 * planner's choices, which is the only form in which an opt-in accelerator can
 	 * be safe to enable.
+	 *
+	 * THE HAND-OFF (#1300) replaces the serial node rather than joining it. When
+	 * every aggregate has a partial state the node can emit, the serial node runs
+	 * as a Partial node under a core Finalize, so that past groupagg_max_groups it
+	 * flushes its table to the Finalize instead of erroring (see
+	 * pgcolumnar_groupagg_lookup). Offered beside the bare node, it would never be
+	 * chosen: it costs the bare node plus the Finalize, and the case it exists for,
+	 * a plan outliving its bound, is one the planner cannot see. Measured on #1300
+	 * (P0, 10M rows, 10 to 1M groups), the Finalize adds nothing measurable: the
+	 * median ratio to the bare node is 0.97 to 1.02 at every group count.
 	 */
+	if (pgcolumnar_groupagg_handoff_path(root, input_rel, output_rel,
+									   (GroupPathExtraData *) extra, cpath,
+									   groupKeys, dNumGroups))
+		return;
+
+	/*
+	 * The bare node merges past the cap by sorting its runs on the group keys
+	 * (#1300, D'), so a key with no btree ordering would leave it the error. Such
+	 * a query gets no grouped path at all, and the ordinary plan runs: a release
+	 * build can then never reach a merge it cannot sort.
+	 */
+	if (!pgcolumnar_groupagg_keys_sortable(groupKeys))
+		return;
 	add_path(output_rel, &cpath->path);
+}
+
+/*
+ * pgcolumnar_partial_grouping_target
+ *		Core's make_partial_grouping_target, which is static in planner.c, for a
+ *		query with no HAVING (the grouped path refuses one): the grouping columns,
+ *		then every Aggref the target uses, each marked AGGSPLIT_INITIAL_SERIAL.
+ *		Built the same way core builds it so that setrefs matches the Finalize's
+ *		combining Aggrefs to these by equal(). Used when core built no partial
+ *		grouping rel of its own, which is whenever the query is not parallel.
+ */
+static PathTarget *
+pgcolumnar_partial_grouping_target(PlannerInfo *root, PathTarget *grouping_target)
+{
+	PathTarget *partial_target = create_empty_pathtarget();
+	List	   *non_group_cols = NIL;
+	List	   *non_group_exprs;
+	ListCell   *lc;
+	int			i = 0;
+#if PG_VERSION_NUM >= 160000
+	List	   *groupClause = root->processed_groupClause;
+#else
+	List	   *groupClause = root->parse->groupClause;
+#endif
+
+	foreach(lc, grouping_target->exprs)
+	{
+		Expr	   *expr = (Expr *) lfirst(lc);
+		Index		sgref = get_pathtarget_sortgroupref(grouping_target, i);
+
+		if (sgref && get_sortgroupref_clause_noerr(sgref, groupClause) != NULL)
+			add_column_to_pathtarget(partial_target, expr, sgref);
+		else
+			non_group_cols = lappend(non_group_cols, expr);
+		i++;
+	}
+
+	non_group_exprs = pull_var_clause((Node *) non_group_cols,
+									  PVC_INCLUDE_AGGREGATES |
+									  PVC_RECURSE_WINDOWFUNCS |
+									  PVC_INCLUDE_PLACEHOLDERS);
+	add_new_columns_to_pathtarget(partial_target, non_group_exprs);
+
+	foreach(lc, partial_target->exprs)
+	{
+		Expr	   *expr = (Expr *) lfirst(lc);
+
+		if (IsA(expr, Aggref))
+		{
+			Aggref	   *newaggref = makeNode(Aggref);
+
+			memcpy(newaggref, expr, sizeof(Aggref));
+			mark_partial_aggref(newaggref, AGGSPLIT_INITIAL_SERIAL);
+			lfirst(lc) = newaggref;
+		}
+	}
+
+	list_free(non_group_exprs);
+	list_free(non_group_cols);
+
+	return set_pathtarget_cost_width(root, partial_target);
+}
+
+/*
+ * pgcolumnar_groupagg_handoff_path
+ *		Add the serial grouped node as a Partial node under a core Finalize (#1300)
+ *		and return true, or add nothing and return false when an aggregate has no
+ *		partial state the node can emit (pgcolumnar_handoff_agg_ok) or core cannot
+ *		combine one (GROUPING_CAN_PARTIAL_AGG). The Partial node is cpath with the
+ *		partial grouping target and its own output map.
+ *
+ *		THE PAIR COSTS WHAT cpath COSTS. Core would charge the Finalize a hash
+ *		aggregation over every group, which on a small table, where the groups
+ *		approach the rows, is nearly what core's own whole aggregation costs, and
+ *		the pair then lost plans the bare node wins today. Measured on #1300 (P0),
+ *		the Finalize adds nothing: the median runtime ratio to the bare node is 0.97
+ *		to 1.02 from 10 to 1M groups. The Finalize also takes over the finishing
+ *		the bare node did per group, so this moves work rather than adding it.
+ *		Pricing the pair as the bare node keeps every plan choice what it was.
+ *
+ *		Not with enable_hashagg off: the Finalize is a HashAggregate, and a plan
+ *		the user disabled is not offered under another name. The bare node runs
+ *		then, with the runtime cap as its backstop.
+ */
+static bool
+pgcolumnar_groupagg_handoff_path(PlannerInfo *root, RelOptInfo *input_rel,
+							   RelOptInfo *output_rel, GroupPathExtraData *gpe,
+							   CustomPath *cpath, List *groupKeys,
+							   double dNumGroups)
+{
+	RelOptInfo *pgr;
+	PathTarget *ptarget;
+	List	   *handoffMap = NIL;
+	int			handoffAggs = 0;
+	CustomPath *hpath;
+	AggClauseCosts finalCosts;
+	ListCell   *lc;
+#if PG_VERSION_NUM >= 160000
+	List	   *groupClause = root->processed_groupClause;
+#else
+	List	   *groupClause = root->parse->groupClause;
+#endif
+
+	if (gpe == NULL || (gpe->flags & GROUPING_CAN_PARTIAL_AGG) == 0 ||
+		!enable_hashagg)
+		return false;
+
+	foreach(lc, output_rel->reltarget->exprs)
+	{
+		PgColumnarAggSpec spec;
+
+		if (!IsA(lfirst(lc), Aggref))
+			continue;
+		if (!pgcolumnar_classify_aggref((Aggref *) lfirst(lc),
+									  (int) input_rel->relid, true, false,
+									  &spec) ||
+			!pgcolumnar_handoff_agg_ok(spec.kind))
+			return false;
+	}
+
+	/*
+	 * Core's partial grouping target when it built one (a parallel-capable
+	 * query), so a parallel arm and this one share it; ours otherwise. A rel
+	 * fetch_upper_rel has only just created has an empty target, not NULL.
+	 */
+	pgr = fetch_upper_rel(root, UPPERREL_PARTIAL_GROUP_AGG, output_rel->relids);
+	ptarget = (pgr->reltarget != NULL && pgr->reltarget->exprs != NIL)
+		? pgr->reltarget
+		: pgcolumnar_partial_grouping_target(root, output_rel->reltarget);
+	if (!pgcolumnar_groupagg_outmap(ptarget->exprs, groupKeys, input_rel->relid,
+								  true, &handoffMap, &handoffAggs))
+		return false;
+
+	hpath = makeNode(CustomPath);
+	memcpy(hpath, cpath, sizeof(CustomPath));
+	hpath->path.parent = pgr;
+	hpath->path.pathtarget = ptarget;
+	hpath->custom_private = list_make5(linitial(cpath->custom_private),
+									   lsecond(cpath->custom_private),
+									   lthird(cpath->custom_private),
+									   groupKeys,
+									   handoffMap);
+
+	if (gpe->partial_costs_set)
+		finalCosts = gpe->agg_final_costs;
+	else
+	{
+		MemSet(&finalCosts, 0, sizeof(AggClauseCosts));
+		get_agg_clause_costs(root, AGGSPLIT_FINAL_DESERIAL, &finalCosts);
+	}
+
+	{
+		AggPath    *final = create_agg_path(root, output_rel, &hpath->path,
+											output_rel->reltarget,
+											AGG_HASHED, AGGSPLIT_FINAL_DESERIAL,
+											groupClause, NIL, &finalCosts,
+											dNumGroups);
+
+		final->path.startup_cost = cpath->path.startup_cost;
+		final->path.total_cost = cpath->path.total_cost;
+		add_path(output_rel, (Path *) final);
+	}
+	return true;
 }
 
 /* -------------------------------------------------------------------------
@@ -3694,6 +3960,20 @@ pgcolumnar_agg_emit_partial(PgColumnarAggSpec *spec, bool *isnull)
 													   FLOAT8PASSBYVAL,
 													   TYPALIGN_DOUBLE));
 			}
+
+		case COLUMNAR_AGG_MIN:
+		case COLUMNAR_AGG_MAX:
+
+			/*
+			 * min/max: the transition type is the input type and the state is the
+			 * running extreme, NULL until a value is seen (#1300).
+			 */
+			if (!spec->sawValue)
+			{
+				*isnull = true;
+				return (Datum) 0;
+			}
+			return spec->extreme;
 
 		case COLUMNAR_AGG_AVG_INT:
 			{
@@ -5409,6 +5689,7 @@ PgColumnarCreateGroupAggScanState(CustomScan *cscan)
 			((Aggref *) tle->expr)->aggsplit != AGGSPLIT_SIMPLE)
 			state->isPartial = true;
 	}
+	state->parallelAware = cscan->scan.plan.parallel_aware;
 	state->css.methods = state->isPartial
 		? &pgcolumnar_groupagg_parallel_exec_methods
 		: &pgcolumnar_groupagg_exec_methods;
@@ -5456,6 +5737,8 @@ PgColumnarCreateGroupAggScanState(CustomScan *cscan)
 		state->outMap[i++] = intVal(lfirst(lc));
 
 	state->maxGroups = pgcolumnar_groupagg_max_groups;
+	/* a serial node merges past the cap when its keys sort (#1300, D') */
+	state->merging = !state->isPartial && pgcolumnar_groupagg_keys_sortable(groupKeys);
 	state->capacity = 0;
 	state->hashResizes = 0;
 	state->hashRehashed = 0;
@@ -5968,6 +6251,12 @@ pgcolumnar_groupagg_lookup(PgColumnarGroupAggScanState *state,
 		hash = hash_combine(hash, h);
 	}
 
+	/*
+	 * The grow above keeps a free slot, and the probe below ends only at one, so a
+	 * table that has none would spin here past any statement timeout (#1764
+	 * review).
+	 */
+	Assert(state->nGroups < state->capacity);
 	idx = hash & (uint32) (state->capacity - 1);
 	for (;;)
 	{
@@ -5982,8 +6271,23 @@ pgcolumnar_groupagg_lookup(PgColumnarGroupAggScanState *state,
 
 	/*
 	 * A new group. Bounding the actual group count keeps this no-spill hash table
-	 * from growing without limit; over the cap we stop with guidance rather than
-	 * exhaust memory, since the plan cannot fall back mid-scan.
+	 * from growing without limit. A partial node hands off (#1300): it writes
+	 * every group's partial state out, empties the table, and looks the key up
+	 * again in the empty table, where it is a new group under the cap. The core
+	 * Finalize above combines the duplicates. A serial node has no Finalize to
+	 * combine them, so over the cap it stops with guidance rather than exhaust
+	 * memory, since the plan cannot fall back mid-scan.
+	 */
+	if (state->nGroups >= state->maxGroups && (state->isPartial || state->merging))
+	{
+		pgcolumnar_groupagg_flush(state);
+		return pgcolumnar_groupagg_lookup(state, keyvals, keynulls);
+	}
+	/*
+	 * NOT REACHED since #1300: a partial node hands off and a serial one merges,
+	 * and a serial node whose keys cannot sort is never planned. Kept as the
+	 * backstop it was, so a plan from some future path that does neither stops
+	 * here rather than growing a no-spill table without limit.
 	 */
 	if (state->nGroups >= state->maxGroups)
 		ereport(ERROR,
@@ -6071,9 +6375,567 @@ pgcolumnar_groupagg_batch_eligible(PgColumnarGroupAggScanState *state,
 }
 
 /*
+ * pgcolumnar_groupagg_fill_slot
+ *		Store one group's output tuple in slot: its keys, and per aggregate either
+ *		the finished value or, in a partial node, the transition state.
+ */
+static void
+pgcolumnar_groupagg_fill_slot(PgColumnarGroupAggScanState *state,
+							PgColumnarGroupEntry *e, TupleTableSlot *slot)
+{
+	int			p;
+
+	ExecClearTuple(slot);
+	for (p = 0; p < state->nout; p++)
+	{
+		int			m = state->outMap[p];
+
+		if (m >= 0)
+		{
+			slot->tts_values[p] = e->keys[m];
+			slot->tts_isnull[p] = e->keyNulls[m];
+		}
+		else
+		{
+			int			a = -(m) - 1;
+
+			/*
+			 * A partial node hands the core Finalize this worker's transition
+			 * state for the group rather than the finished value; the Finalize
+			 * combines the states of every worker that saw the same key
+			 * (#349). A worker that claimed no row groups has an empty hash
+			 * table and so emits nothing at all, which is what the Finalize
+			 * expects -- not one empty group.
+			 */
+			slot->tts_values[p] = state->isPartial
+				? pgcolumnar_agg_emit_partial(&e->specs[a], &slot->tts_isnull[p])
+				: pgcolumnar_agg_finalize(&e->specs[a], &slot->tts_isnull[p]);
+		}
+	}
+	ExecStoreVirtualTuple(slot);
+}
+
+/*
+ * pgcolumnar_groupagg_note_memory
+ *		Raise peakBytes to what the table's keys, states and slots hold now.
+ */
+static void
+pgcolumnar_groupagg_note_memory(PgColumnarGroupAggScanState *state)
+{
+	Size		held = MemoryContextMemAllocated(state->keyContext, true) +
+		MemoryContextMemAllocated(state->specContext, true) +
+		MemoryContextMemAllocated(state->hashContext, true);
+
+	if (held > state->peakBytes)
+		state->peakBytes = held;
+}
+
+/*
+ * pgcolumnar_groupagg_flush
+ *		The hand-off at the cap (#1300): write every group's partial state to the
+ *		node's tuplestore and empty the table. Each tuple is copied into the store,
+ *		so the keys and states it points at can go with the table. Only a partial
+ *		node gets here, because only a partial node has a Finalize above it to
+ *		combine a key that now appears more than once.
+ */
+static void
+pgcolumnar_groupagg_flush(PgColumnarGroupAggScanState *state)
+{
+	TupleTableSlot *slot = state->css.ss.ss_ScanTupleSlot;
+	MemoryContext tupCxt;
+	int			i;
+
+	if (state->merging)
+	{
+		pgcolumnar_groupagg_note_memory(state);
+		pgcolumnar_groupagg_merge_put_all(state);
+		state->flushes++;
+		pgcolumnar_groupagg_reset_table(state);
+		return;
+	}
+
+	Assert(state->isPartial);
+
+	if (state->flushed == NULL)
+	{
+		MemoryContext oldc =
+			MemoryContextSwitchTo(state->css.ss.ps.state->es_query_cxt);
+
+		state->flushed = tuplestore_begin_heap(false, false, work_mem);
+		MemoryContextSwitchTo(oldc);
+	}
+
+	/* the avg states are built per tuple; reclaim them as each is stored */
+	tupCxt = AllocSetContextCreate(CurrentMemoryContext,
+								   "columnar groupagg flush",
+								   ALLOCSET_SMALL_SIZES);
+	for (i = 0; i < state->capacity; i++)
+	{
+		PgColumnarGroupEntry *e = &state->entries[i];
+		MemoryContext oldc;
+
+		if (!e->used)
+			continue;
+		oldc = MemoryContextSwitchTo(tupCxt);
+		pgcolumnar_groupagg_fill_slot(state, e, slot);
+		tuplestore_puttupleslot(state->flushed, slot);
+		MemoryContextSwitchTo(oldc);
+		MemoryContextReset(tupCxt);
+	}
+	ExecClearTuple(slot);
+	MemoryContextDelete(tupCxt);
+
+	pgcolumnar_groupagg_note_memory(state);
+	state->flushes++;
+	pgcolumnar_groupagg_reset_table(state);
+}
+
+/* ----------------------------------------------------------------------------
+ * The merge past the cap (#1300, D').
+ *
+ * A group's accumulators travel as three columns per aggregate: a bytea of the
+ * fixed fields (PgcMergeFixed), the running extreme of min/max in the input type,
+ * and the numeric running sum. A tuple is the keys, those columns, and the
+ * sequence number of the flush that wrote it. The sort orders by the keys and then
+ * the sequence, so the runs of one key merge in scan order. That keeps core's tie
+ * rules: min and max take the later of two equal values, and a key that is equal
+ * under its btree but not identical (numeric 1.0 and 1.00) shows the first one
+ * seen, as core's hash aggregation does.
+ * --------------------------------------------------------------------------- */
+typedef struct PgcMergeFixed
+{
+	int64		count;
+	int64		sum;
+	float8		fsum;
+	float8		fsxx;
+	bool		sawValue;
+	bool		nsumSet;
+#ifdef HAVE_INT128
+	int128		i128sum;
+#endif
+} PgcMergeFixed;
+
+#define PGC_MERGE_COLS_PER_AGG 3
+
+static bool
+pgcolumnar_groupagg_keys_sortable(List *groupKeys)
+{
+	ListCell   *lc;
+
+	foreach(lc, groupKeys)
+	{
+		TypeCacheEntry *tce = lookup_type_cache(exprType((Node *) lfirst(lc)),
+												TYPECACHE_LT_OPR | TYPECACHE_CMP_PROC);
+
+		if (!OidIsValid(tce->lt_opr) || !OidIsValid(tce->cmp_proc))
+			return false;
+	}
+	return true;
+}
+
+/* build the sort's tuple descriptor and the sort itself, at the first flush */
+static void
+pgcolumnar_groupagg_merge_begin(PgColumnarGroupAggScanState *state)
+{
+	EState	   *estate = state->css.ss.ps.state;
+	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
+	int			ncols = state->nkeys + PGC_MERGE_COLS_PER_AGG * state->naggs + 1;
+	TupleDesc	desc = CreateTemplateTupleDesc(ncols);
+	AttrNumber *attNums = palloc(sizeof(AttrNumber) * (state->nkeys + 1));
+	Oid		   *sortOps = palloc(sizeof(Oid) * (state->nkeys + 1));
+	Oid		   *sortColls = palloc(sizeof(Oid) * (state->nkeys + 1));
+	bool	   *nullsFirst = palloc(sizeof(bool) * (state->nkeys + 1));
+	int			k,
+				a,
+				col = 1;
+
+	for (k = 0; k < state->nkeys; k++, col++)
+	{
+		PgColumnarGroupKey *key = &state->keys[k];
+		TypeCacheEntry *tce = lookup_type_cache(key->type, TYPECACHE_LT_OPR);
+
+		if (!OidIsValid(tce->lt_opr))
+			elog(ERROR, "columnar grouped aggregate merge: key type %s has no ordering",
+				 format_type_be(key->type));
+		TupleDescInitEntry(desc, col, NULL, key->type, -1, 0);
+		TupleDescInitEntryCollation(desc, col, key->collation);
+		attNums[k] = col;
+		sortOps[k] = tce->lt_opr;
+		sortColls[k] = key->collation;
+		nullsFirst[k] = false;
+	}
+	for (a = 0; a < state->naggs; a++)
+	{
+		PgColumnarAggSpec *t = &state->aggTemplate[a];
+		bool		minmax = (t->kind == COLUMNAR_AGG_MIN || t->kind == COLUMNAR_AGG_MAX);
+
+		TupleDescInitEntry(desc, col++, NULL, BYTEAOID, -1, 0);
+		TupleDescInitEntry(desc, col++, NULL, minmax ? t->inputType : INT4OID, -1, 0);
+		TupleDescInitEntry(desc, col++, NULL, NUMERICOID, -1, 0);
+	}
+	TupleDescInitEntry(desc, col, NULL, INT8OID, -1, 0);
+#if PG_VERSION_NUM >= 190000
+	/* PG19 asserts a hand-built descriptor was finalized before it forms tuples */
+	TupleDescFinalize(desc);
+#endif
+	attNums[state->nkeys] = col;
+	sortOps[state->nkeys] = Int8LessOperator;
+	sortColls[state->nkeys] = InvalidOid;
+	nullsFirst[state->nkeys] = false;
+
+	state->mergeDesc = desc;
+	state->mergeSort = tuplesort_begin_heap(desc, state->nkeys + 1, attNums, sortOps,
+											sortColls, nullsFirst, work_mem, NULL,
+											TUPLESORT_NONE);
+	state->mergeInSlot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+	state->mergePending = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+	state->runContext = AllocSetContextCreate(estate->es_query_cxt,
+											  "columnar groupagg merge run",
+											  ALLOCSET_DEFAULT_SIZES);
+	MemoryContextSwitchTo(old);
+}
+
+/* write every group in the table to the sort, under this flush's sequence number */
+static void
+pgcolumnar_groupagg_merge_put_all(PgColumnarGroupAggScanState *state)
+{
+	TupleTableSlot *slot;
+	MemoryContext tupCxt;
+	int			i;
+
+	if (state->mergeSort == NULL)
+		pgcolumnar_groupagg_merge_begin(state);
+	slot = state->mergeInSlot;
+	tupCxt = AllocSetContextCreate(CurrentMemoryContext, "columnar groupagg merge put",
+								   ALLOCSET_SMALL_SIZES);
+	for (i = 0; i < state->capacity; i++)
+	{
+		PgColumnarGroupEntry *e = &state->entries[i];
+		MemoryContext old;
+		int			k,
+					a,
+					col = 0;
+
+		if (!e->used)
+			continue;
+		old = MemoryContextSwitchTo(tupCxt);
+		ExecClearTuple(slot);
+		for (k = 0; k < state->nkeys; k++, col++)
+		{
+			slot->tts_values[col] = e->keys[k];
+			slot->tts_isnull[col] = e->keyNulls[k];
+		}
+		for (a = 0; a < state->naggs; a++)
+		{
+			PgColumnarAggSpec *sp = &e->specs[a];
+			PgcMergeFixed f;
+			bytea	   *b = (bytea *) palloc(VARHDRSZ + sizeof(PgcMergeFixed));
+			bool		minmax = (sp->kind == COLUMNAR_AGG_MIN || sp->kind == COLUMNAR_AGG_MAX);
+
+			memset(&f, 0, sizeof(f));
+			f.count = sp->count;
+			f.sum = sp->sum;
+			f.fsum = sp->fsum;
+			f.fsxx = sp->fsxx;
+			f.sawValue = sp->sawValue;
+			f.nsumSet = sp->nsumSet;
+#ifdef HAVE_INT128
+			f.i128sum = sp->i128sum;
+#endif
+			SET_VARSIZE(b, VARHDRSZ + sizeof(PgcMergeFixed));
+			memcpy(VARDATA(b), &f, sizeof(PgcMergeFixed));
+			slot->tts_values[col] = PointerGetDatum(b);
+			slot->tts_isnull[col++] = false;
+			slot->tts_values[col] = (minmax && sp->sawValue) ? sp->extreme : (Datum) 0;
+			slot->tts_isnull[col++] = !(minmax && sp->sawValue);
+			slot->tts_values[col] = sp->nsumSet && sp->kind != COLUMNAR_AGG_SUM_INT8 &&
+				sp->kind != COLUMNAR_AGG_AVG_INT8 ? sp->nsum : (Datum) 0;
+#ifndef HAVE_INT128
+			if (sp->nsumSet && (sp->kind == COLUMNAR_AGG_SUM_INT8 ||
+								sp->kind == COLUMNAR_AGG_AVG_INT8))
+				slot->tts_values[col] = sp->nsum;
+#endif
+			slot->tts_isnull[col] = (slot->tts_values[col] == (Datum) 0);
+			col++;
+		}
+		slot->tts_values[col] = Int64GetDatum((int64) state->flushes);
+		slot->tts_isnull[col] = false;
+		ExecStoreVirtualTuple(slot);
+		tuplesort_puttupleslot(state->mergeSort, slot);
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(tupCxt);
+	}
+	ExecClearTuple(slot);
+	MemoryContextDelete(tupCxt);
+}
+
+/* a spec for aggregate a, from the template, with the accumulators in slot */
+static void
+pgcolumnar_groupagg_merge_read(PgColumnarGroupAggScanState *state, TupleTableSlot *slot,
+							 int a, PgColumnarAggSpec *sp)
+{
+	int			col = state->nkeys + PGC_MERGE_COLS_PER_AGG * a;
+	bool		isnull;
+	bytea	   *b;
+	PgcMergeFixed f;
+	Datum		d;
+
+	*sp = state->aggTemplate[a];
+	b = DatumGetByteaPP(slot_getattr(slot, col + 1, &isnull));
+	memcpy(&f, VARDATA_ANY(b), sizeof(PgcMergeFixed));
+	sp->count = f.count;
+	sp->sum = f.sum;
+	sp->fsum = f.fsum;
+	sp->fsxx = f.fsxx;
+	sp->sawValue = f.sawValue;
+	sp->nsumSet = f.nsumSet;
+#ifdef HAVE_INT128
+	sp->i128sum = f.i128sum;
+#endif
+	d = slot_getattr(slot, col + 2, &isnull);
+	sp->extreme = isnull ? (Datum) 0 : datumCopy(d, sp->byval, sp->typlen);
+	d = slot_getattr(slot, col + 3, &isnull);
+	sp->nsum = isnull ? (Datum) 0 : datumCopy(d, false, -1);
+}
+
+/*
+ * pgcolumnar_spec_merge
+ *		Fold src, a later run of the same group, into dst: as if dst's table had
+ *		gone on to see src's rows. Exact for every kind but the float sums, whose
+ *		addition is not associative, so a merged float sum can differ from core's
+ *		scan-order one in the last bits, as core's own parallel plans can.
+ */
+static void
+pgcolumnar_spec_merge(PgColumnarAggSpec *dst, PgColumnarAggSpec *src)
+{
+	switch (dst->kind)
+	{
+		case COLUMNAR_AGG_COUNT_STAR:
+		case COLUMNAR_AGG_COUNT_COL:
+			dst->count += src->count;
+			break;
+
+		case COLUMNAR_AGG_SUM_INT:
+			dst->sum += src->sum;
+			dst->sawValue |= src->sawValue;
+			break;
+
+		case COLUMNAR_AGG_AVG_INT:
+			dst->sum += src->sum;
+			dst->count += src->count;
+			break;
+
+		case COLUMNAR_AGG_SUM_FLOAT:
+			if (!src->sawValue)
+				break;
+			if (!dst->sawValue)
+				dst->fsum = src->fsum;
+			else if (dst->inputType == FLOAT4OID)
+				dst->fsum = (float8) pgcolumnar_float4_pl((float4) dst->fsum,
+														 (float4) src->fsum);
+			else
+				dst->fsum = pgcolumnar_float8_pl(dst->fsum, src->fsum);
+			dst->sawValue = true;
+			break;
+
+		case COLUMNAR_AGG_AVG_FLOAT:
+			if (src->count == 0)
+				break;
+			if (dst->count == 0)
+			{
+				dst->count = src->count;
+				dst->fsum = src->fsum;
+				dst->fsxx = src->fsxx;
+				dst->sawValue = true;
+				break;
+			}
+			else
+			{
+				/* float8_combine's Youngs-Cramer merge, and its overflow check */
+				float8		n1 = (float8) dst->count,
+							n2 = (float8) src->count,
+							n = n1 + n2;
+				float8		sx = dst->fsum + src->fsum;
+				float8		tmp = dst->fsum / n1 - src->fsum / n2;
+				float8		sxx = dst->fsxx + src->fsxx + n1 * n2 * tmp * tmp / n;
+
+				if ((isinf(sx) && !isinf(dst->fsum) && !isinf(src->fsum)) ||
+					(isinf(sxx) && !isinf(dst->fsxx) && !isinf(src->fsxx)))
+					ereport(ERROR,
+							(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+							 errmsg("value out of range: overflow")));
+				dst->count += src->count;
+				dst->fsum = sx;
+				dst->fsxx = sxx;
+			}
+			break;
+
+		case COLUMNAR_AGG_SUM_INT8:
+		case COLUMNAR_AGG_AVG_INT8:
+		case COLUMNAR_AGG_SUM_NUMERIC:
+		case COLUMNAR_AGG_AVG_NUMERIC:
+			dst->count += src->count;
+			dst->sawValue |= src->sawValue;
+			if (!src->nsumSet)
+				break;
+#ifdef HAVE_INT128
+			if (dst->kind == COLUMNAR_AGG_SUM_INT8 || dst->kind == COLUMNAR_AGG_AVG_INT8)
+			{
+				dst->i128sum += src->i128sum;
+				dst->nsumSet = true;
+				break;
+			}
+#endif
+			dst->nsum = dst->nsumSet
+				? DirectFunctionCall2(numeric_add, dst->nsum, src->nsum)
+				: src->nsum;
+			dst->nsumSet = true;
+			break;
+
+		case COLUMNAR_AGG_MIN:
+		case COLUMNAR_AGG_MAX:
+			if (!src->sawValue)
+				break;
+			if (!dst->sawValue)
+			{
+				dst->extreme = src->extreme;
+				dst->sawValue = true;
+			}
+			else
+			{
+				int32		cmp = DatumGetInt32(FunctionCall2Coll(&dst->cmpFn, dst->collation,
+																 src->extreme, dst->extreme));
+
+				/* src is the later run: on a tie it wins, as the row-at-a-time rule does */
+				if ((dst->kind == COLUMNAR_AGG_MIN) ? (cmp <= 0) : (cmp >= 0))
+					dst->extreme = src->extreme;
+			}
+			break;
+	}
+}
+
+/* do slot a and b hold the same group, by each key type's own equality */
+static bool
+pgcolumnar_groupagg_merge_same(PgColumnarGroupAggScanState *state,
+							 Datum *keys, bool *nulls, TupleTableSlot *b)
+{
+	int			k;
+
+	for (k = 0; k < state->nkeys; k++)
+	{
+		bool		bn;
+		Datum		bv = slot_getattr(b, k + 1, &bn);
+
+		if (nulls[k] != bn)
+			return false;
+		if (!bn && !DatumGetBool(FunctionCall2Coll(&state->keys[k].eqFn,
+												   state->keys[k].collation,
+												   keys[k], bv)))
+			return false;
+	}
+	return true;
+}
+
+/*
+ * pgcolumnar_groupagg_merge_next
+ *		The next merged group in the scan slot, or NULL at the end. The run's first
+ *		tuple was read ahead into mergePending; its keys, the first seen, are the
+ *		group's.
+ */
+static TupleTableSlot *
+pgcolumnar_groupagg_merge_next(PgColumnarGroupAggScanState *state)
+{
+	TupleTableSlot *scanSlot = state->css.ss.ss_ScanTupleSlot;
+	MemoryContext old;
+	PgColumnarAggSpec *run;
+	PgColumnarAggSpec next;
+	Datum	   *keys;
+	bool	   *nulls;
+	int			k,
+				a,
+				p;
+
+	if (!state->mergeStarted)
+	{
+		pgcolumnar_groupagg_merge_put_all(state);
+		tuplesort_performsort(state->mergeSort);
+		state->mergeHavePending = tuplesort_gettupleslot(state->mergeSort, true, true,
+														 state->mergePending, NULL);
+		state->mergeStarted = true;
+	}
+	ExecClearTuple(scanSlot);
+	MemoryContextReset(state->runContext);
+	if (!state->mergeHavePending)
+		return NULL;
+
+	old = MemoryContextSwitchTo(state->runContext);
+	keys = palloc(sizeof(Datum) * Max(state->nkeys, 1));
+	nulls = palloc(sizeof(bool) * Max(state->nkeys, 1));
+	for (k = 0; k < state->nkeys; k++)
+	{
+		Datum		v = slot_getattr(state->mergePending, k + 1, &nulls[k]);
+
+		keys[k] = nulls[k] ? (Datum) 0
+			: datumCopy(v, state->keys[k].byval, state->keys[k].typlen);
+	}
+	run = palloc(sizeof(PgColumnarAggSpec) * Max(state->naggs, 1));
+	for (a = 0; a < state->naggs; a++)
+		pgcolumnar_groupagg_merge_read(state, state->mergePending, a, &run[a]);
+
+	for (;;)
+	{
+		/*
+		 * Read ahead in the caller's context, not the run's: the copy lands in the
+		 * current context, and the next run starts by resetting runContext, which
+		 * would free the tuple that run begins with.
+		 */
+		MemoryContextSwitchTo(old);
+		state->mergeHavePending = tuplesort_gettupleslot(state->mergeSort, true, true,
+														 state->mergePending, NULL);
+		MemoryContextSwitchTo(state->runContext);
+		if (!state->mergeHavePending ||
+			!pgcolumnar_groupagg_merge_same(state, keys, nulls, state->mergePending))
+			break;
+		for (a = 0; a < state->naggs; a++)
+		{
+			pgcolumnar_groupagg_merge_read(state, state->mergePending, a, &next);
+			pgcolumnar_spec_merge(&run[a], &next);
+		}
+	}
+
+	for (p = 0; p < state->nout; p++)
+	{
+		int			m = state->outMap[p];
+
+		if (m >= 0)
+		{
+			scanSlot->tts_values[p] = keys[m];
+			scanSlot->tts_isnull[p] = nulls[m];
+		}
+		else
+			scanSlot->tts_values[p] = pgcolumnar_agg_finalize(&run[-(m) - 1],
+															 &scanSlot->tts_isnull[p]);
+	}
+	MemoryContextSwitchTo(old);
+	ExecStoreVirtualTuple(scanSlot);
+	return scanSlot;
+}
+
+static void
+pgcolumnar_groupagg_merge_end(PgColumnarGroupAggScanState *state)
+{
+	if (state->mergeSort != NULL)
+		tuplesort_end(state->mergeSort);
+	state->mergeSort = NULL;
+	state->mergeStarted = false;
+	state->mergeHavePending = false;
+}
+
+/*
  * pgcolumnar_groupagg_reset_table
  *		Drop everything the fold accumulated, so the row path can redo the whole
- *		scan from an empty hash table. Used only on the mid-scan fall-back below.
+ *		scan from an empty hash table. Used on the mid-scan fall-back below, and
+ *		by the hand-off, which carries on from an empty table.
  */
 static void
 pgcolumnar_groupagg_reset_table(PgColumnarGroupAggScanState *state)
@@ -6168,7 +7030,7 @@ pgcolumnar_groupagg_batch_fold(PgColumnarGroupAggScanState *state, Relation rel,
 	 */
 	if (state->parallelCounter != NULL)
 		PgColumnarReadSetParallelCounter(rs, state->parallelCounter);
-	else if (state->isPartial)
+	else if (state->isPartial && state->parallelAware)
 	{
 		PgColumnarEndRead(rs);
 		elog(ERROR, "parallel columnar grouped aggregate ran without a shared group counter");
@@ -6219,7 +7081,17 @@ pgcolumnar_groupagg_batch_fold(PgColumnarGroupAggScanState *state, Relation rel,
 				 */
 				PgColumnarEndRead(rs);
 				pgcolumnar_groupagg_reset_table(state);
-				if (state->isPartial)
+
+				/*
+				 * The row path redoes the whole scan, so whatever the hand-off
+				 * already wrote out (#1300) must go too, or the Finalize would
+				 * combine those rows twice.
+				 */
+				if (state->flushed != NULL)
+					tuplestore_clear(state->flushed);
+				pgcolumnar_groupagg_merge_end(state);
+				state->flushes = 0;
+				if (state->isPartial && state->parallelAware)
 					elog(ERROR, "parallel columnar grouped aggregate cannot fold a "
 						 "relation with a column added after some row groups; "
 						 "set pgcolumnar.enable_parallel_vector_agg = off");
@@ -6494,6 +7366,7 @@ PgColumnarExecGroupAggScan(CustomScanState *node)
 		MemoryContext oldCxt = MemoryContextSwitchTo(buildCxt);
 
 		pgcolumnar_groupagg_build(state);
+		pgcolumnar_groupagg_note_memory(state);
 
 		MemoryContextSwitchTo(oldCxt);
 		MemoryContextDelete(buildCxt);
@@ -6502,45 +7375,54 @@ PgColumnarExecGroupAggScan(CustomScanState *node)
 		state->emitPos = 0;
 	}
 
+	/*
+	 * A serial node that flushed merges its runs instead of emitting its table
+	 * (#1300, D'): the table is only the last run.
+	 */
+	if (state->merging && state->flushes > 0)
+	{
+		TupleTableSlot *m = pgcolumnar_groupagg_merge_next(state);
+
+		if (m == NULL)
+			return NULL;
+		if (node->ss.ps.ps_ProjInfo != NULL)
+		{
+			econtext->ecxt_scantuple = m;
+			return ExecProject(node->ss.ps.ps_ProjInfo);
+		}
+		return m;
+	}
+
+	/* what the hand-off wrote out at the cap comes first (#1300) */
+	if (state->flushed != NULL && !state->flushedDrained)
+	{
+		if (state->flushSlot == NULL)
+			state->flushSlot =
+				MakeSingleTupleTableSlot(scanSlot->tts_tupleDescriptor,
+										 &TTSOpsMinimalTuple);
+		ResetExprContext(econtext);
+		if (tuplestore_gettupleslot(state->flushed, true, false, state->flushSlot))
+		{
+			ExecCopySlot(scanSlot, state->flushSlot);
+			if (node->ss.ps.ps_ProjInfo != NULL)
+			{
+				econtext->ecxt_scantuple = scanSlot;
+				return ExecProject(node->ss.ps.ps_ProjInfo);
+			}
+			return scanSlot;
+		}
+		state->flushedDrained = true;
+	}
+
 	while (state->emitPos < state->capacity)
 	{
 		PgColumnarGroupEntry *e = &state->entries[state->emitPos++];
-		int			p;
 
 		if (!e->used)
 			continue;
 
 		ResetExprContext(econtext);
-		ExecClearTuple(scanSlot);
-		for (p = 0; p < state->nout; p++)
-		{
-			int			m = state->outMap[p];
-
-			if (m >= 0)
-			{
-				scanSlot->tts_values[p] = e->keys[m];
-				scanSlot->tts_isnull[p] = e->keyNulls[m];
-			}
-			else
-			{
-				int			a = -(m) - 1;
-
-				/*
-				 * A partial node hands the core Finalize this worker's transition
-				 * state for the group rather than the finished value; the Finalize
-				 * combines the states of every worker that saw the same key
-				 * (#349). A worker that claimed no row groups has an empty hash
-				 * table and so emits nothing at all, which is what the Finalize
-				 * expects -- not one empty group.
-				 */
-				scanSlot->tts_values[p] = state->isPartial
-					? pgcolumnar_agg_emit_partial(&e->specs[a],
-											   &scanSlot->tts_isnull[p])
-					: pgcolumnar_agg_finalize(&e->specs[a],
-											&scanSlot->tts_isnull[p]);
-			}
-		}
-		ExecStoreVirtualTuple(scanSlot);
+		pgcolumnar_groupagg_fill_slot(state, e, scanSlot);
 
 		if (node->ss.ps.ps_ProjInfo != NULL)
 		{
@@ -6561,6 +7443,19 @@ PgColumnarEndGroupAggScan(CustomScanState *node)
 	if (state->baseSlot != NULL)
 		ExecDropSingleTupleTableSlot(state->baseSlot);
 	state->baseSlot = NULL;
+	if (state->flushSlot != NULL)
+		ExecDropSingleTupleTableSlot(state->flushSlot);
+	state->flushSlot = NULL;
+	/* its temp files, if it spilled, close here rather than at resowner cleanup */
+	if (state->flushed != NULL)
+		tuplestore_end(state->flushed);
+	state->flushed = NULL;
+	pgcolumnar_groupagg_merge_end(state);
+	if (state->mergeInSlot != NULL)
+		ExecDropSingleTupleTableSlot(state->mergeInSlot);
+	if (state->mergePending != NULL)
+		ExecDropSingleTupleTableSlot(state->mergePending);
+	state->mergeInSlot = state->mergePending = NULL;
 	/* the memory contexts are children of es_query_cxt and freed with it */
 }
 
@@ -6576,6 +7471,13 @@ PgColumnarReScanGroupAggScan(CustomScanState *node)
 	state->entries = NULL;
 	state->haveStats = false;
 	state->batchFolded = false;
+	if (state->flushed != NULL)
+		tuplestore_end(state->flushed);
+	state->flushed = NULL;
+	state->flushedDrained = false;
+	pgcolumnar_groupagg_merge_end(state);
+	state->flushes = 0;
+	state->peakBytes = 0;
 	MemoryContextReset(state->keyContext);
 	MemoryContextReset(state->specContext);
 	MemoryContextReset(state->hashContext);
@@ -6625,6 +7527,18 @@ PgColumnarExplainGroupAggScan(CustomScanState *node, List *ancestors,
 							   state->hashRehashed, es);
 		ExplainPropertyInteger("Columnar Group Table Capacity", NULL,
 							   state->peakCapacity, es);
+
+		/*
+		 * The hand-off's work-done line (#1300). A query that crossed the cap
+		 * answers the same whether it flushed or the cap was high enough not to,
+		 * so only this shows the hand-off ran. A partial node only: a serial one
+		 * cannot flush.
+		 */
+		if (state->isPartial || state->merging)
+			ExplainPropertyInteger("Columnar Group Table Flushes", NULL,
+								   (int64) state->flushes, es);
+		ExplainPropertyInteger("Columnar Group Table Peak Memory", "kB",
+							   (int64) ((state->peakBytes + 1023) / 1024), es);
 
 		gs.usableSkipPredicates = state->usablePreds;
 		gs.groupsTotal = state->groupsTotal;
