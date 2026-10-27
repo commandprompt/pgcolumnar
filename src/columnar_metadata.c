@@ -3287,6 +3287,62 @@ PgColumnarReadBloomForColumn(uint64 storageId, uint64 groupNumber,
 	return b;
 }
 
+/*
+ * PgColumnarReadSketch
+ *		Copy one row group's sketch registers for one column into out (exactly
+ *		PGC_SKETCH_REGISTERS bytes), and return true; false when the group has no
+ *		sketch for the column, or the catalog predates sketches (#1309). A row of
+ *		the wrong length is refused rather than folded.
+ */
+bool
+PgColumnarReadSketch(uint64 storageId, uint64 groupNumber, int columnIndex,
+					 Snapshot snapshot, uint8 *out)
+{
+	Relation	rel;
+	TupleDesc	tupdesc;
+	ScanKeyData key[3];
+	SysScanDesc scan;
+	Oid			idxOid;
+	HeapTuple	tuple;
+	bool		found = false;
+
+	if (!PgColumnarSketchCatalogPresent())
+		return false;
+	rel = open_columnar_table("sketch", AccessShareLock);
+	tupdesc = RelationGetDescr(rel);
+	ScanKeyInit(&key[0], Anum_sketch_storage_id, BTEqualStrategyNumber,
+				F_INT8EQ, Int64GetDatum((int64) storageId));
+	ScanKeyInit(&key[1], Anum_sketch_group_number, BTEqualStrategyNumber,
+				F_INT8EQ, Int64GetDatum((int64) groupNumber));
+	ScanKeyInit(&key[2], Anum_sketch_column_index, BTEqualStrategyNumber,
+				F_INT2EQ, Int16GetDatum((int16) columnIndex));
+	idxOid = pgcolumnar_index_oid("sketch_pkey");
+	scan = systable_beginscan(rel, idxOid, OidIsValid(idxOid), snapshot, 3, key);
+	tuple = systable_getnext(scan);
+	if (HeapTupleIsValid(tuple))
+	{
+		bool		isnull;
+		Datum		d = heap_getattr(tuple, Anum_sketch_registers, tupdesc, &isnull);
+
+		if (!isnull)
+		{
+			bytea	   *r = DatumGetByteaPP(d);
+
+			if (VARSIZE_ANY_EXHDR(r) != PGC_SKETCH_REGISTERS)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("pgcolumnar sketch of row group %llu column %d is %zu bytes, want %d",
+								(unsigned long long) groupNumber, columnIndex,
+								(size_t) VARSIZE_ANY_EXHDR(r), PGC_SKETCH_REGISTERS)));
+			memcpy(out, VARDATA_ANY(r), PGC_SKETCH_REGISTERS);
+			found = true;
+		}
+	}
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+	return found;
+}
+
 static NativeZoneMapMetadata *zonemap_from_tuple(HeapTuple tuple,
 					TupleDesc tupdesc, uint64 storageId,
 					uint64 groupNumber, int32 vecIndex);

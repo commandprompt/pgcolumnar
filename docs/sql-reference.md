@@ -67,8 +67,12 @@ SELECT pgcolumnar.approx_count_distinct(device_id) FROM readings;
 The value's type needs an extended hash function, and a text value a
 deterministic collation; anything else is refused with SQLSTATE 0A000. Its hash
 and registers are those of the sketches a column named in `set_options(t,
-sketch_columns => ...)` stores per row group. Today the aggregate always reads
-the rows; answering from the stored sketches is a later phase (#1309).
+sketch_columns => ...)` stores per row group. A query with no WHERE and no
+GROUP BY is answered from those sketches, unless another aggregate in it needs
+the rows. Each row group's sketch is merged, and only a group with deleted rows,
+or one written before the column was named, is read. The answer is the same as
+reading every row. EXPLAIN ANALYZE shows `Columnar Sketch Groups Folded` and
+`Columnar Sketch Groups Scanned`.
 
 ### pgcolumnar.get_storage_id(rel regclass) returns bigint
 

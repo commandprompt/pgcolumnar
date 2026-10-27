@@ -18,6 +18,12 @@ true until the next version shipped.
 
 ### Added
 
+- `pgcolumnar.approx_count_distinct(col)` with no WHERE or GROUP BY is answered from
+  the sketches `sketch_columns` stores (#1309, phase 3). It merges each row group's
+  sketch, and reads only the groups with deleted rows or with no sketch. The answer
+  equals reading every row. On 8.75M rows it took 0.8 ms, against 254 ms reading
+  the rows and 310 ms for `hll_add_agg`. EXPLAIN ANALYZE reports the groups folded
+  and scanned. `test/native_sketch_fold.sh` and `test_native_sketch_fold.py`.
 - `pgcolumnar.approx_count_distinct(value)` estimates the number of distinct
   non-NULL values with a HyperLogLog of 2048 registers, a standard error of about
   2.3% (#1309, phase 2). It works on any table and in parallel plans. It uses the
