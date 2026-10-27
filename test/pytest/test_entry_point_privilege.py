@@ -76,7 +76,10 @@ BAR_ASSERTED_IN = {
 }
 # Relation-taking, with no bar to assert: they return what pg_inherits and the
 # partition bounds already tell any role, and the plan's statements run as their caller.
-NO_BAR_NEEDED = {"partition_drop_candidates", "partition_drop_plan"}
+# check_sketch_column (#1309) reads only the named column's type and collation, which
+# pg_attribute shows any role, and writes nothing; set_options, its caller, is
+# catalog-governed.
+NO_BAR_NEEDED = {"partition_drop_candidates", "partition_drop_plan", "check_sketch_column"}
 FILE_SIBLINGS = ("export_arrow", "export_parquet", "import_arrow", "import_parquet")
 
 
