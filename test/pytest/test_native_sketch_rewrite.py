@@ -10,6 +10,8 @@ forms and REFRESH MATERIALIZED VIEW fill a transient relation (pg_temp_<oid>), a
 the writer looked up the transient's own OID in pgcolumnar.options and found none:
 no sketches, and one row group under a limit of 1,000.
 """
+import re
+
 import psycopg
 
 from pgc_vacuity import query_error
@@ -77,6 +79,38 @@ def _groups(conn, rel):
                           f" WHERE r.storage_id = pgcolumnar.get_storage_id('{rel}')"))
 
 
+def _fold_counts(conn, rel):
+    """-> "folded|scanned" from the plan, "none" for a line it does not print."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) "
+                        f"SELECT pgcolumnar.approx_count_distinct(a) FROM {rel}")
+            plan = "\n".join(r[0] for r in cur.fetchall())
+    except psycopg.Error as exc:
+        return query_error(exc.diag.message_primary)
+    f = re.search(r"Columnar Sketch Groups Folded: (\d+)", plan)
+    sc = re.search(r"Columnar Sketch Groups Scanned: (\d+)", plan)
+    return f"{f.group(1) if f else 'none'}|{sc.group(1) if sc else 'none'}"
+
+
+def _folds_all(conn, rel):
+    """-> "yes" when approx_count_distinct folds every row group from its sketch and
+    scans none (#1309 phase 3's EXPLAIN ANALYZE lines), else "no (folded|scanned of N)"."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) "
+                        f"SELECT pgcolumnar.approx_count_distinct(a) FROM {rel}")
+            plan = "\n".join(r[0] for r in cur.fetchall())
+    except psycopg.Error as exc:
+        return query_error(exc.diag.message_primary)
+    f = re.search(r"Columnar Sketch Groups Folded: (\d+)", plan)
+    sc = re.search(r"Columnar Sketch Groups Scanned: (\d+)", plan)
+    g = _groups(conn, rel)
+    if f and sc and f.group(1) == g and sc.group(1) == "0":
+        return "yes"
+    return f"no ({f and f.group(1)}|{sc and sc.group(1)} of {g})"
+
+
 def _rewritten(conn, rel, *verbs):
     """the base table, then each statement of the rewrite"""
     _base_table(conn, rel)
@@ -88,6 +122,9 @@ def test_before_any_rewrite(pgc_conn, expect):
     _base_table(pgc_conn, "tsr_ctl")
     expect.text(f"{_whole(pgc_conn, 'tsr_ctl')}|{_union_is_live(pgc_conn, 'tsr_ctl')}", "yes|f",
                 "before any rewrite each row group has its sketch, and the deleted rows are still in them")
+    # exact: all five groups have deletes; a plan with no fold prints neither line
+    expect.text(_fold_counts(pgc_conn, "tsr_ctl"), "0|5",
+                "before any rewrite approx_count_distinct scans the row groups with deletes rather than folding them")
 
 
 def test_pgcolumnar_vacuum(pgc_conn, expect):
@@ -96,6 +133,8 @@ def test_pgcolumnar_vacuum(pgc_conn, expect):
                 "pgcolumnar.vacuum: every row group has its sketch, and no sketch outlives its row group")
     expect.text(_union_is_live(pgc_conn, "tsr_vac"), "t",
                 "pgcolumnar.vacuum: the sketches describe exactly the live rows")
+    expect.text(_folds_all(pgc_conn, "tsr_vac"), "yes",
+                "pgcolumnar.vacuum: approx_count_distinct folds every row group from its sketch and scans none")
 
 
 def test_compact_rewrite(pgc_conn, expect):
@@ -104,6 +143,8 @@ def test_compact_rewrite(pgc_conn, expect):
                 "compact_rewrite: every row group has its sketch, and no sketch outlives its row group")
     expect.text(_union_is_live(pgc_conn, "tsr_cr"), "t",
                 "compact_rewrite: the sketches describe exactly the live rows")
+    expect.text(_folds_all(pgc_conn, "tsr_cr"), "yes",
+                "compact_rewrite: approx_count_distinct folds every row group from its sketch and scans none")
 
 
 def test_recluster(pgc_conn, expect):
@@ -112,6 +153,8 @@ def test_recluster(pgc_conn, expect):
                 "recluster: every row group has its sketch, and no sketch outlives its row group")
     expect.text(_union_is_live(pgc_conn, "tsr_rc"), "t",
                 "recluster: the sketches describe exactly the live rows")
+    expect.text(_folds_all(pgc_conn, "tsr_rc"), "yes",
+                "recluster: approx_count_distinct folds every row group from its sketch and scans none")
 
 
 def test_vacuum_sorted(pgc_conn, expect):
@@ -120,6 +163,8 @@ def test_vacuum_sorted(pgc_conn, expect):
                 "vacuum_sorted: every row group has its sketch, and no sketch outlives its row group")
     expect.text(_union_is_live(pgc_conn, "tsr_vs"), "t",
                 "vacuum_sorted: the sketches describe exactly the live rows")
+    expect.text(_folds_all(pgc_conn, "tsr_vs"), "yes",
+                "vacuum_sorted: approx_count_distinct folds every row group from its sketch and scans none")
 
 
 def test_truncate_and_reinsert(pgc_conn, expect):
@@ -129,6 +174,8 @@ def test_truncate_and_reinsert(pgc_conn, expect):
                 "TRUNCATE and reinsert: every row group has its sketch, and no sketch outlives its row group")
     expect.text(_union_is_live(pgc_conn, "tsr_tr"), "t",
                 "TRUNCATE and reinsert: the sketches describe exactly the live rows")
+    expect.text(_folds_all(pgc_conn, "tsr_tr"), "yes",
+                "TRUNCATE and reinsert: approx_count_distinct folds every row group from its sketch and scans none")
 
 
 def test_alter_column_type(pgc_conn, expect):
@@ -137,6 +184,8 @@ def test_alter_column_type(pgc_conn, expect):
                 "ALTER COLUMN TYPE: every row group has its sketch, and no sketch outlives its row group")
     expect.text(_union_is_live(pgc_conn, "tsr_at"), "t",
                 "ALTER COLUMN TYPE: the sketches describe exactly the live rows")
+    expect.text(_folds_all(pgc_conn, "tsr_at"), "yes",
+                "ALTER COLUMN TYPE: approx_count_distinct folds every row group from its sketch and scans none")
     expect.text(_groups(pgc_conn, "tsr_at"), "4",
                 "ALTER COLUMN TYPE: the rewrite keeps the table's stripe_row_limit")
 
@@ -147,6 +196,8 @@ def test_add_column_with_a_volatile_default(pgc_conn, expect):
                 "ADD COLUMN with a volatile default: every row group has its sketch, and no sketch outlives its row group")
     expect.text(_union_is_live(pgc_conn, "tsr_ac"), "t",
                 "ADD COLUMN with a volatile default: the sketches describe exactly the live rows")
+    expect.text(_folds_all(pgc_conn, "tsr_ac"), "yes",
+                "ADD COLUMN with a volatile default: approx_count_distinct folds every row group from its sketch and scans none")
     expect.text(_groups(pgc_conn, "tsr_ac"), "4",
                 "ADD COLUMN with a volatile default: the rewrite keeps the table's stripe_row_limit")
 
@@ -158,6 +209,8 @@ def test_set_access_method_heap_and_back(pgc_conn, expect):
                 "SET ACCESS METHOD heap and back: every row group has its sketch, and no sketch outlives its row group")
     expect.text(_union_is_live(pgc_conn, "tsr_am"), "t",
                 "SET ACCESS METHOD heap and back: the sketches describe exactly the live rows")
+    expect.text(_folds_all(pgc_conn, "tsr_am"), "yes",
+                "SET ACCESS METHOD heap and back: approx_count_distinct folds every row group from its sketch and scans none")
     expect.text(_groups(pgc_conn, "tsr_am"), "4",
                 "SET ACCESS METHOD heap and back: the rewrite keeps the table's stripe_row_limit")
 

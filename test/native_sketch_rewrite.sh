@@ -79,10 +79,40 @@ whole() {	# relation
 	[ -n "$g" ] && [ "$g" -gt 0 ] && [ "$g" = "$k" ] && [ "$o" = 0 ] && echo yes || echo "no ($s)"
 }
 
+# "yes" when approx_count_distinct folds every row group of the relation from its
+# sketch and scans none, read from EXPLAIN ANALYZE (#1309 phase 3's lines); else
+# "no (folded|scanned)"
+folds_all() {	# relation
+	local plan f sc g
+	plan="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		-c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+			SELECT pgcolumnar.approx_count_distinct(a) FROM $1" 2>&1)"
+	f="$(sed -n 's/^ *Columnar Sketch Groups Folded: //p' <<<"$plan")"
+	sc="$(sed -n 's/^ *Columnar Sketch Groups Scanned: //p' <<<"$plan")"
+	g="$(q "SELECT count(*) FROM pgcolumnar.row_group r WHERE r.storage_id = pgcolumnar.get_storage_id('$1');")"
+	[ -n "$f" ] && [ "$f" = "$g" ] && [ "$sc" = 0 ] && echo yes || echo "no (${f:-none}|${sc:-none} of $g)"
+}
+
+# "folded|scanned" from the plan, "none" for a line it does not print
+fold_counts() {	# relation
+	local plan f sc
+	plan="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		-c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+			SELECT pgcolumnar.approx_count_distinct(a) FROM $1" 2>&1)"
+	f="$(sed -n 's/^ *Columnar Sketch Groups Folded: //p' <<<"$plan")"
+	sc="$(sed -n 's/^ *Columnar Sketch Groups Scanned: //p' <<<"$plan")"
+	echo "${f:-none}|${sc:-none}"
+}
+
 # --- 0. the starting point -----------------------------------------------------
 base_table sr_ctl
 check "before any rewrite each row group has its sketch, and the deleted rows are still in them" \
 	"$(whole sr_ctl)|$(union_is_live sr_ctl)" "yes|f"
+# Exact, not "anything but folded": every one of the five groups has deletes, so the
+# plan must say folded 0, scanned 5. A plan with no fold at all prints neither line,
+# and that reads "none|none" here, not a pass (@jdatcmd, #1777 review).
+check "before any rewrite approx_count_distinct scans the row groups with deletes rather than folding them" \
+	"$(fold_counts sr_ctl)" "0|5"
 
 # --- 1. the pgColumnar rewrites ------------------------------------------------
 # Each check is named in full, not built from a variable: the twin grader reads
@@ -98,19 +128,24 @@ groups_of() {	# relation -> its base storage's row groups
 rewritten sr_vac "SELECT pgcolumnar.vacuum('sr_vac');"
 check "pgcolumnar.vacuum: every row group has its sketch, and no sketch outlives its row group" "$(whole sr_vac)" "yes"
 check "pgcolumnar.vacuum: the sketches describe exactly the live rows" "$(union_is_live sr_vac)" "t"
+check "pgcolumnar.vacuum: approx_count_distinct folds every row group from its sketch and scans none" "$(folds_all sr_vac)" "yes"
 rewritten sr_cr "SELECT pgcolumnar.compact_rewrite('sr_cr', 0.0);"
 check "compact_rewrite: every row group has its sketch, and no sketch outlives its row group" "$(whole sr_cr)" "yes"
 check "compact_rewrite: the sketches describe exactly the live rows" "$(union_is_live sr_cr)" "t"
+check "compact_rewrite: approx_count_distinct folds every row group from its sketch and scans none" "$(folds_all sr_cr)" "yes"
 rewritten sr_rc "SELECT pgcolumnar.recluster('sr_rc', 'b');"
 check "recluster: every row group has its sketch, and no sketch outlives its row group" "$(whole sr_rc)" "yes"
 check "recluster: the sketches describe exactly the live rows" "$(union_is_live sr_rc)" "t"
+check "recluster: approx_count_distinct folds every row group from its sketch and scans none" "$(folds_all sr_rc)" "yes"
 rewritten sr_vs "SELECT pgcolumnar.vacuum_sorted('sr_vs', 'b');"
 check "vacuum_sorted: every row group has its sketch, and no sketch outlives its row group" "$(whole sr_vs)" "yes"
 check "vacuum_sorted: the sketches describe exactly the live rows" "$(union_is_live sr_vs)" "t"
+check "vacuum_sorted: approx_count_distinct folds every row group from its sketch and scans none" "$(folds_all sr_vs)" "yes"
 rewritten sr_tr "TRUNCATE sr_tr;
 	INSERT INTO sr_tr SELECT g, g FROM generate_series(1, 5000) g WHERE g % 3 <> 0;"
 check "TRUNCATE and reinsert: every row group has its sketch, and no sketch outlives its row group" "$(whole sr_tr)" "yes"
 check "TRUNCATE and reinsert: the sketches describe exactly the live rows" "$(union_is_live sr_tr)" "t"
+check "TRUNCATE and reinsert: approx_count_distinct folds every row group from its sketch and scans none" "$(folds_all sr_tr)" "yes"
 
 # --- 2. the rewriting ALTER forms ----------------------------------------------
 # 3,334 live rows under a stripe_row_limit of 1,000 are four row groups; a rewrite
@@ -118,15 +153,18 @@ check "TRUNCATE and reinsert: the sketches describe exactly the live rows" "$(un
 rewritten sr_at "ALTER TABLE sr_at ALTER COLUMN b TYPE bigint;"
 check "ALTER COLUMN TYPE: every row group has its sketch, and no sketch outlives its row group" "$(whole sr_at)" "yes"
 check "ALTER COLUMN TYPE: the sketches describe exactly the live rows" "$(union_is_live sr_at)" "t"
+check "ALTER COLUMN TYPE: approx_count_distinct folds every row group from its sketch and scans none" "$(folds_all sr_at)" "yes"
 check "ALTER COLUMN TYPE: the rewrite keeps the table's stripe_row_limit" "$(groups_of sr_at)" "4"
 rewritten sr_ac "ALTER TABLE sr_ac ADD COLUMN c float8 DEFAULT random();"
 check "ADD COLUMN with a volatile default: every row group has its sketch, and no sketch outlives its row group" "$(whole sr_ac)" "yes"
 check "ADD COLUMN with a volatile default: the sketches describe exactly the live rows" "$(union_is_live sr_ac)" "t"
+check "ADD COLUMN with a volatile default: approx_count_distinct folds every row group from its sketch and scans none" "$(folds_all sr_ac)" "yes"
 check "ADD COLUMN with a volatile default: the rewrite keeps the table's stripe_row_limit" "$(groups_of sr_ac)" "4"
 rewritten sr_am "ALTER TABLE sr_am SET ACCESS METHOD heap;
 	ALTER TABLE sr_am SET ACCESS METHOD pgcolumnar;"
 check "SET ACCESS METHOD heap and back: every row group has its sketch, and no sketch outlives its row group" "$(whole sr_am)" "yes"
 check "SET ACCESS METHOD heap and back: the sketches describe exactly the live rows" "$(union_is_live sr_am)" "t"
+check "SET ACCESS METHOD heap and back: approx_count_distinct folds every row group from its sketch and scans none" "$(folds_all sr_am)" "yes"
 check "SET ACCESS METHOD heap and back: the rewrite keeps the table's stripe_row_limit" "$(groups_of sr_am)" "4"
 
 # The options are the table's for every setting, not only the sketch: a table set to
@@ -139,7 +177,10 @@ check "ALTER COLUMN TYPE: the rewrite keeps the table's compression" \
 	"$(q "SELECT string_agg(DISTINCT block_codec::text, ',') FROM pgcolumnar.column_chunk c
 		WHERE c.storage_id = pgcolumnar.get_storage_id('sr_cz');")" "0"
 
-# A materialized view refreshes the same way: into a transient, then a swap.
+# A materialized view refreshes the same way: into a transient, then a swap. Its
+# sketches are checked but not its fold: a query on a materialized view takes no
+# vectorized aggregate path at all (even count(*) is a plain Seq Scan), so the
+# stored sketches have no reader there yet.
 psql_run "CREATE TABLE sr_src (a bigint, b int);
 	INSERT INTO sr_src SELECT g, g FROM generate_series(1, 5000) g WHERE g % 3 <> 0;
 	CREATE MATERIALIZED VIEW sr_mv USING pgcolumnar AS SELECT a, b FROM sr_src WITH NO DATA;

@@ -13216,6 +13216,8 @@ registers recomputed in SQL from the live rows. The rewriting `ALTER TABLE` form
 has no options row, so the rewritten rows lost the table's sketches, its stripe limit
 and its compression; those arms read all three.
 
+After each rewrite of a table, `approx_count_distinct` must fold every row group from its sketch and scan none, read from #1309 phase 3's `Columnar Sketch Groups Folded / Scanned` lines; before any rewrite, the groups with deletes are scanned. A materialized view's fold is not asserted: no vectorized aggregate path reads a materialized view.
+
 | test | what it holds |
 | --- | --- |
 | `test_before_any_rewrite` | before any rewrite each row group has its sketch, and the deleted rows are still in them |

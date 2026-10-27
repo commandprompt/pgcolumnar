@@ -400,6 +400,9 @@ returning no rows.
   sketch for each row group it writes. The rewrites are `pgcolumnar.vacuum`,
   `compact_rewrite`, `recluster`, `vacuum_sorted`, a rewriting `ALTER TABLE`,
   `REFRESH MATERIALIZED VIEW` and `TRUNCATE`.
+- On a materialized view the sketches are written but not read. A query on a
+  materialized view takes no vectorized aggregate path, so
+  `approx_count_distinct` reads its rows there. The answer is the same.
 
 ## Parallel scans
 
