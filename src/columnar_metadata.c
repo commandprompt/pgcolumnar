@@ -49,12 +49,18 @@
 #define Anum_options_sort_by 7
 #define Anum_options_ttl_column 8
 #define Anum_options_ttl_interval 9
+/*
+ * #1309. A NULLABLE column added by the alpha5 upgrade, so an options catalog
+ * that has not been upgraded has nine attributes; every read is guarded by
+ * tupdesc->natts, as zone_map.max_upper's is.
+ */
+#define Anum_options_sketch_columns 10
 /* Nine, not seven: ttl_column and ttl_interval (#403 item 5a) widened the table
  * and this constant was left behind. It sizes the values/nulls/replace arrays
  * handed to heap_modify_tuple, which iterates tupdesc->natts, so a short value
  * here reads past three stack arrays at once. test/catalog_natts.sh pins every
  * Natts_* against the width the server reports. */
-#define Natts_options 9
+#define Natts_options 10
 
 /* attribute numbers for columnar.projection (gap 26, format 2.2) */
 #define Anum_projection_declaration_rel 1
@@ -125,6 +131,13 @@
 #define Anum_bloom_column_index 3
 #define Anum_bloom_filter 4
 #define Natts_bloom 4
+
+/* pgcolumnar.sketch (#1309): one HyperLogLog register array per row group and column */
+#define Anum_sketch_storage_id 1
+#define Anum_sketch_group_number 2
+#define Anum_sketch_column_index 3
+#define Anum_sketch_registers 4
+#define Natts_sketch 4
 
 /* pgcolumnar.load_fingerprint (#403 item 7) */
 #define Anum_load_fingerprint_relation_oid 1
@@ -1048,6 +1061,9 @@ PgColumnarRetireGroup(uint64 storageId, uint64 groupNumber)
 					  Anum_zone_map_group_number, storageId, groupNumber);
 	delete_group_rows("bloom", "bloom_pkey", Anum_bloom_storage_id,
 					  Anum_bloom_group_number, storageId, groupNumber);
+	if (PgColumnarSketchCatalogPresent())
+		delete_group_rows("sketch", "sketch_pkey", Anum_sketch_storage_id,
+						  Anum_sketch_group_number, storageId, groupNumber);
 	delete_group_rows("row_group", "row_group_pkey", Anum_row_group_storage_id,
 					  Anum_row_group_group_number, storageId, groupNumber);
 
@@ -2047,6 +2063,9 @@ PgColumnarDeleteMetadata(uint64 storageId)
 	delete_rows_by_storage_id("column_chunk", Anum_column_chunk_storage_id, storageId);
 	delete_rows_by_storage_id("zone_map", Anum_zone_map_storage_id, storageId);
 	delete_rows_by_storage_id("bloom", Anum_bloom_storage_id, storageId);
+	/* #1309, present only once the SQL is at 1.0-alpha5, as column_extent below */
+	if (PgColumnarSketchCatalogPresent())
+		delete_rows_by_storage_id("sketch", Anum_sketch_storage_id, storageId);
 	delete_rows_by_storage_id("free_space", Anum_free_space_storage_id, storageId);
 	delete_rows_by_storage_id("retired_group", Anum_retired_group_storage_id, storageId);
 	/*
@@ -2525,19 +2544,35 @@ PgColumnarRenameDeclaredSortByColumn(Oid relid, const char *oldName,
 	}
 	if (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		bool		isnull;
-		Datum		d = heap_getattr(tuple, Anum_options_sort_by, tupdesc, &isnull);
+		/*
+		 * #1309: sketch_columns holds names for the same reason sort_by does, so
+		 * a rename follows into it too, or the writer would stop sketching the
+		 * column without a word. Both arrays change in the one tuple update.
+		 */
+		int			attnos[2] = {Anum_options_sort_by, Anum_options_sketch_columns};
+		int			nattnos = (tupdesc->natts >= Anum_options_sketch_columns) ? 2 : 1;
+		Datum		values[Natts_options];
+		bool		nulls[Natts_options];
+		bool		replace[Natts_options];
+		bool		any = false;
+		int			a;
 
-		if (!isnull)
+		memset(values, 0, sizeof(values));
+		memset(nulls, false, sizeof(nulls));
+		memset(replace, false, sizeof(replace));
+		for (a = 0; a < nattnos; a++)
 		{
-			ArrayType  *arr = DatumGetArrayTypeP(d);
+			bool		isnull;
+			Datum		d = heap_getattr(tuple, attnos[a], tupdesc, &isnull);
 			Datum	   *elems;
 			bool	   *elnulls;
 			int			n;
 			int			i;
 			bool		hit = false;
 
-			deconstruct_array(arr, NAMEOID, NAMEDATALEN, false, 'c',
+			if (isnull)
+				continue;
+			deconstruct_array(DatumGetArrayTypeP(d), NAMEOID, NAMEDATALEN, false, 'c',
 							  &elems, &elnulls, &n);
 			for (i = 0; i < n; i++)
 			{
@@ -2550,27 +2585,24 @@ PgColumnarRenameDeclaredSortByColumn(Oid relid, const char *oldName,
 					hit = true;
 				}
 			}
-
-			/* a rename touching no declared column must not rewrite the row */
 			if (hit)
 			{
-				Datum		values[Natts_options];
-				bool		nulls[Natts_options];
-				bool		replace[Natts_options];
-				HeapTuple	newTuple;
-
-				memset(values, 0, sizeof(values));
-				memset(nulls, false, sizeof(nulls));
-				memset(replace, false, sizeof(replace));
-				values[Anum_options_sort_by - 1] =
+				values[attnos[a] - 1] =
 					PointerGetDatum(construct_array(elems, n, NAMEOID,
 													NAMEDATALEN, false,
 													TYPALIGN_CHAR));
-				replace[Anum_options_sort_by - 1] = true;
-				newTuple = heap_modify_tuple(tuple, tupdesc, values, nulls, replace);
-				CatalogTupleUpdate(rel, &newTuple->t_self, newTuple);
-				heap_freetuple(newTuple);
+				replace[attnos[a] - 1] = true;
+				any = true;
 			}
+		}
+
+		/* a rename touching no declared column must not rewrite the row */
+		if (any)
+		{
+			HeapTuple	newTuple = heap_modify_tuple(tuple, tupdesc, values, nulls, replace);
+
+			CatalogTupleUpdate(rel, &newTuple->t_self, newTuple);
+			heap_freetuple(newTuple);
 		}
 	}
 	systable_endscan(scan);
@@ -3080,6 +3112,37 @@ PgColumnarInsertBloomRow(const NativeBloomMetadata *b)
 	values[Anum_bloom_group_number - 1] = Int64GetDatum((int64) b->groupNumber);
 	values[Anum_bloom_column_index - 1] = Int16GetDatum((int16) b->columnIndex);
 	values[Anum_bloom_filter - 1] = PointerGetDatum(filt);
+
+	tuple = heap_form_tuple(tupdesc, values, nulls);
+	metadata_flush_insert(rel, tuple);
+	heap_freetuple(tuple);
+	metadata_flush_close(rel, RowExclusiveLock);
+}
+
+/*
+ * PgColumnarInsertSketchRow
+ *		Record one row group's HyperLogLog registers for one column (#1309).
+ */
+void
+PgColumnarInsertSketchRow(uint64 storageId, uint64 groupNumber, int columnIndex,
+						  const uint8 *registers, int nregisters)
+{
+	Relation	rel = open_columnar_table("sketch", RowExclusiveLock);
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	Datum		values[Natts_sketch];
+	bool		nulls[Natts_sketch];
+	HeapTuple	tuple;
+	bytea	   *regs;
+
+	memset(nulls, false, sizeof(nulls));
+	regs = (bytea *) palloc(VARHDRSZ + nregisters);
+	SET_VARSIZE(regs, VARHDRSZ + nregisters);
+	memcpy(VARDATA(regs), registers, nregisters);
+
+	values[Anum_sketch_storage_id - 1] = Int64GetDatum((int64) storageId);
+	values[Anum_sketch_group_number - 1] = Int64GetDatum((int64) groupNumber);
+	values[Anum_sketch_column_index - 1] = Int16GetDatum((int16) columnIndex);
+	values[Anum_sketch_registers - 1] = PointerGetDatum(regs);
 
 	tuple = heap_form_tuple(tupdesc, values, nulls);
 	metadata_flush_insert(rel, tuple);
@@ -4084,6 +4147,75 @@ PgColumnarReadTtl(Oid relid, char **column, Interval **interval)
 	table_close(rel, AccessShareLock);
 
 	return found;
+}
+
+/*
+ * PgColumnarSketchCatalogPresent
+ *		Whether pgcolumnar.sketch exists (#1309): a library ahead of its SQL, at
+ *		1.0-alpha4, must still write, drop and truncate.
+ */
+bool
+PgColumnarSketchCatalogPresent(void)
+{
+	return OidIsValid(get_relname_relid("sketch", pgcolumnar_schema_oid()));
+}
+
+/*
+ * PgColumnarReadSketchColumns
+ *		The column names a relation's options row names in sketch_columns
+ *		(#1309), or NIL. NIL too when the options catalog predates the column.
+ */
+List *
+PgColumnarReadSketchColumns(Oid relid)
+{
+	Relation	rel = open_columnar_table("options", AccessShareLock);
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	Snapshot	base;
+	Snapshot	snapshot;
+	List	   *names = NIL;
+
+	if (tupdesc->natts < Anum_options_sketch_columns)
+	{
+		table_close(rel, AccessShareLock);
+		return NIL;
+	}
+
+	base = ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
+	snapshot = PgColumnarCatalogSnapshot(base);
+
+	ScanKeyInit(&key[0], Anum_options_regclass, BTEqualStrategyNumber,
+				F_OIDEQ, ObjectIdGetDatum(relid));
+	{
+		Oid			optIdx = pgcolumnar_scan_index_oid(rel, "options_pkey");
+
+		scan = systable_beginscan(rel, optIdx, OidIsValid(optIdx), snapshot, 1, key);
+	}
+	if (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		bool		isnull;
+		Datum		d = heap_getattr(tuple, Anum_options_sketch_columns, tupdesc, &isnull);
+
+		if (!isnull)
+		{
+			Datum	   *elems;
+			bool	   *elnulls;
+			int			n;
+			int			i;
+
+			deconstruct_array(DatumGetArrayTypeP(d), NAMEOID, NAMEDATALEN, false, 'c',
+							  &elems, &elnulls, &n);
+			for (i = 0; i < n; i++)
+				if (!elnulls[i])
+					names = lappend(names, pstrdup(NameStr(*DatumGetName(elems[i]))));
+		}
+	}
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+	return names;
 }
 
 List *

@@ -86,6 +86,10 @@ extern void PgColumnarDeleteOptions(Oid relid);
 extern void PgColumnarForgetRollup(Oid viewOid);
 
 extern List *PgColumnarReadSortBy(Oid relid);
+extern List *PgColumnarReadSketchColumns(Oid relid);
+extern bool PgColumnarSketchCatalogPresent(void);
+extern void PgColumnarInsertSketchRow(uint64 storageId, uint64 groupNumber, int columnIndex,
+									  const uint8 *registers, int nregisters);
 
 extern void PgColumnarRecordProjectionDeclaration(Oid relid, const char *name,
 												ArrayType *columns,

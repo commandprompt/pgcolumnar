@@ -318,7 +318,11 @@ partition_create_ahead:partition_lifecycle
 #   partition_drop_candidates, partition_drop_plan  return what pg_inherits and the
 #     partition bounds already tell any role, and the plan is text: the statements
 #     it lists run as whoever runs them, under core's own privilege checks.
-NO_BAR_NEEDED="partition_drop_candidates partition_drop_plan"
+#   check_sketch_column                             reads only the named column's type
+#                                                   and collation, which pg_attribute shows
+#                                                   any role, and writes nothing (#1309);
+#                                                   set_options, its caller, is catalog-governed
+NO_BAR_NEEDED="partition_drop_candidates partition_drop_plan check_sketch_column"
 bar_home() { awk -v f="$1" -F: '$1 == f { print $2 }' <<<"$BAR_ASSERTED_IN"; }
 unhomed="" badhome="" stalehome=""
 for fn in $relfns; do

@@ -394,6 +394,7 @@ behaviour, the source of that number is named.
 - [346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined](#346-test_planner_choice_qualitypy-the-planners-chosen-plan-is-not-far-slower-than-the-plans-it-declined)
 - [347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open](#347-test_objstore_export_open_uploadspy-a-cancelled-remote-export-leaves-none-of-its-multipart-uploads-open)
 - [348. test_native_agg_collation.py: min and max under a COLLATE override answer under that collation](#348-test_native_agg_collationpy-min-and-max-under-a-collate-override-answer-under-that-collation)
+- [349. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does](#349-test_native_sketchpy-a-named-column-gets-one-distinct-count-sketch-per-row-group-and-nothing-else-does)
 
 ## 1. How to read a test in here
 
@@ -13127,3 +13128,48 @@ The twin of `test/native_agg_collation.sh` (#1771), every check by the shell's n
 | `test_the_columns_own_collation_answers_like_heap` | and answer what heap answers |
 | `test_grouped_min_max_under_collate_c_answer_like_heap` | grouped min and max under a C-collation override answer what heap answers |
 | `test_ungrouped_min_max_under_collate_c_answer_like_heap` | ungrouped min and max under a C-collation override answer what heap answers |
+
+## 349. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does
+
+The twin of `test/native_sketch.sh` (#1309 phase 1), every check by the shell's name. A column named in `set_options(sketch_columns => ...)` gets one HyperLogLog sketch per row group in `pgcolumnar.sketch`: 2048 one-byte registers from the type's extended hash (seed 0) of each non-NULL value. The option refuses an unknown column (42703), a type with no extended hash and a nondeterministic collation (0A000). A group of one value sets one register and an all-NULL group none. The registers of a fixed group are pinned by digest, and recomputed independently in SQL from `hashint8extended`. A parallel flush writes the same sketch; a projection's storage gets none; vacuum, compact_rewrite, TRUNCATE and DROP leave no sketch whose row group is gone, checked over every storage; `reset_options` stops new sketches. A kept flush (#1360) rewritten after its subtransaction aborts still sketches every row, a column rename follows into `sketch_columns`, and a group written before the option was set has no sketch row. A private database.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the shell's scenario once, and makes one `expect` call by the shell's check name. Counts read the base storage by `pgcolumnar.get_storage_id`, because a projection's storage row carries the table's oid too.
+
+| test | what it holds |
+| --- | --- |
+| `test_set_options_accepts_sketch_columns` | set_options accepts sketch_columns naming a column |
+| `test_the_options_row_records_it` | and the options row records it |
+| `test_an_unknown_column_is_refused` | an unknown column is refused |
+| `test_a_type_with_no_extended_hash_is_refused` | a column whose type has no extended hash is refused |
+| `test_a_nondeterministic_collation_is_refused` | a column with a nondeterministic collation is refused |
+| `test_the_refusals_left_the_option_alone` | the refusals left the recorded option alone |
+| `test_the_insert_wrote_three_row_groups` | premise: the insert wrote three row groups |
+| `test_each_row_group_gets_one_sketch` | each row group gets one sketch for the named column |
+| `test_a_column_not_named_gets_no_sketch` | a column not named gets no sketch |
+| `test_each_sketch_holds_2048_registers` | each sketch holds 2048 registers |
+| `test_a_table_naming_no_column_has_no_sketch` | a table that names no column has no sketch rows |
+| `test_one_group_of_a_value_and_one_of_nulls` | one group of a single value and one of NULLs was written |
+| `test_one_distinct_value_sets_one_register` | a row group of one distinct value sets exactly one register |
+| `test_an_all_null_group_sets_no_register` | an all-NULL row group sets no register |
+| `test_the_sketch_of_a_fixed_group_is_pinned` | the sketch of a fixed row group is pinned |
+| `test_the_registers_follow_the_stated_rule` | the registers follow the stated rule, recomputed in SQL |
+| `test_the_parallel_insert_used_a_worker` | premise: the parallel insert flushed columns in a worker |
+| `test_a_parallel_flush_writes_the_same_sketch` | a parallel flush writes the same sketch as a serial one |
+| `test_the_projection_storage_holds_groups` | premise: the projection's storage holds row groups |
+| `test_a_projection_gets_no_sketch` | a projection's storage gets no sketch |
+| `test_a_rewrite_leaves_one_sketch_per_group` | a rewrite leaves one sketch per surviving row group |
+| `test_compact_rewrite_rewrote_groups` | premise: compact_rewrite rewrote row groups |
+| `test_compact_rewrite_leaves_one_sketch_per_group` | compact_rewrite leaves one sketch per surviving row group |
+| `test_reset_options_clears_sketch_columns` | reset_options clears sketch_columns |
+| `test_the_insert_after_the_reset_wrote_a_group` | premise: the insert after the reset wrote a row group |
+| `test_a_group_after_the_reset_gets_no_sketch` | a row group written after the reset gets no sketch |
+| `test_truncate_leaves_no_sketch` | TRUNCATE leaves no sketch for the old storage |
+| `test_drop_leaves_no_sketch` | DROP TABLE leaves no sketch behind |
+| `test_the_insert_around_the_aborted_block_wrote_every_row` | premise: the insert around the aborted block wrote 1000 distinct rows |
+| `test_a_kept_flush_loses_no_row_from_the_sketch` | a kept flush whose subtransaction aborted loses no row from the sketch |
+| `test_a_rename_follows_into_sketch_columns` | a rename follows into sketch_columns |
+| `test_a_group_after_a_rename_gets_its_sketch` | a row group written after a rename still gets its sketch |
+| `test_a_group_from_before_the_option_has_no_sketch` | a row group written before the option was set has no sketch row |
+| `test_no_sketch_outlives_its_row_group` | no sketch outlives its row group |
