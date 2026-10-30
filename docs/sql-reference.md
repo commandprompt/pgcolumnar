@@ -1363,10 +1363,15 @@ object-store module, since only it can issue the listing.
 
 On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes one
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`
-marker beside them on completion. A trailing slash on the prefix makes no
-difference: `s3://bucket/out/` and `s3://bucket/out` both write
-`out/part-0000.parquet` and `out/_SUCCESS`. Every other write function writes a
-single object at the exact key.
+marker beside them on completion. Trailing slashes on the prefix make no
+difference: `s3://bucket/out/`, `s3://bucket/out//` and `s3://bucket/out` all
+write `out/part-0000.parquet` and `out/_SUCCESS`. Before it writes the marker,
+the export deletes any `part-NNNN.parquet` under `out/` that a larger earlier
+run left behind. It looks only under `out/`, so objects under `outer/` or
+`out2/` are never touched. The prefix must name something under the bucket:
+`s3://bucket/` and `s3://bucket` are refused before any worker starts, with
+SQLSTATE 22023. Every other write function writes a single object at the exact
+key.
 
 Remote paths carry the same privilege as local ones. A read needs
 `pg_read_server_files` and a write needs `pg_write_server_files`, over and above

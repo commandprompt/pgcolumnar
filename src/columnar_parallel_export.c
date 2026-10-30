@@ -374,13 +374,20 @@ static void
 pexport_remove_stale_remote_parts(const char *dir, int nkeys)
 {
 	const PgColumnarObjStoreApi *api = PgColumnarObjStoreGet();
+	char		prefix[MAXPGPATH];
 	char	  **keys;
 	int			n = 0;
 	int			i;
 
 	if (api == NULL || api->list_objects == NULL)
 		return;
-	keys = api->list_objects(dir, NULL, &n);
+	/*
+	 * List "<dir>/", not "<dir>": a listing matches leading characters, so
+	 * "out" would also return "outer/..." and "out2/...", and their parts would
+	 * be deleted (#1782).
+	 */
+	snprintf(prefix, sizeof(prefix), "%s/", dir);
+	keys = api->list_objects(prefix, NULL, &n);
 	for (i = 0; i < n; i++)
 	{
 		const char *slash = strrchr(keys[i], '/');
@@ -756,12 +763,18 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	dir = text_to_cstring(PG_GETARG_TEXT_PP(1));
 
 	/*
-	 * Every key below is built as "<dir>/...". A remote prefix written in the
-	 * documented "s3://bucket/prefix/" form would otherwise give keys such as
+	 * Every key below is built as "<dir>/...", and every listing of the prefix
+	 * as "<dir>/". A remote prefix written in the documented
+	 * "s3://bucket/prefix/" form would otherwise give keys such as
 	 * "prefix//part-0000.parquet", which S3 stores as a different key and the
-	 * documented glob never matches (#1782). Strip trailing slashes, but never
-	 * into the bucket: stop at the first '/' after "scheme://". A local path is
-	 * left as given, since the filesystem already collapses "//".
+	 * documented glob never matches (#1782). So strip every trailing slash,
+	 * down to the first '/' after "scheme://" and never past it.
+	 *
+	 * What is left must name a prefix under the bucket. "s3://bucket/" and
+	 * "s3://bucket" name none: the parts would go to the bucket root and the
+	 * reconcile would list the whole bucket. Refuse them here, before any
+	 * worker starts. A local path is left as given, since the filesystem
+	 * already collapses "//".
 	 */
 	if (PgColumnarPathIsRemote(dir))
 	{
@@ -770,8 +783,15 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 		size_t		len = strlen(dir);
 
 		if (slash != NULL)
-			while (len > (size_t) (slash - dir) && dir[len - 1] == '/')
+			while (len > (size_t) (slash - dir) + 1 && dir[len - 1] == '/')
 				dir[--len] = '\0';
+		if (slash == NULL || slash[1] == '\0')
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("columnar: \"%s\" names no prefix under the bucket",
+							dir),
+					 errhint("parallel_export_parquet writes its parts under a "
+							 "prefix, as in s3://bucket/prefix/.")));
 	}
 
 	workers = PG_ARGISNULL(2) ? pexport_auto_workers() : PG_GETARG_INT32(2);
