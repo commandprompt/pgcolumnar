@@ -196,11 +196,12 @@ recovered
 # ---- a delete ENTRY inside a data manifest is refused too (#1341 item 49) --
 # The arm above stops at the manifest LIST. A data manifest (content 0 in the
 # list) can still hold an entry the lister must not return: a position or
-# equality delete file (entry content 1 or 2), or a removed file (status 2,
-# DELETED). Returning a removed file would read rows a commit took out. Each
-# variant below is the same crafted table with one (status, content) pair; the
-# (1, 0) control is listed, so a refusal is the entry's doing, not a fault in
-# the crafted Avro.
+# equality delete file (entry content 1 or 2), which it refuses, or a removed
+# file (status 2, DELETED), which it skips (#1791). Returning a removed file
+# would read rows a commit took out; refusing it would refuse every table after
+# a copy-on-write delete, which has no delete files. Each variant below is the
+# same crafted table with one (status, content) pair; the (1, 0) control is
+# listed, so a refusal is the entry's doing, not a fault in the crafted Avro.
 entry_tbl() {  # $1 name, $2 status, $3 content; echoes the metadata path
 	local d="$PGC_WORKDIR/entry_$1/db/t"
 	mkdir -p "$d/metadata"
@@ -270,10 +271,50 @@ check "a position-delete entry in a data manifest is refused (0A000)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl pos 1 1)')")" "0A000"
 check "an equality-delete entry in a data manifest is refused (0A000)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl eq 1 2)')")" "0A000"
-check "a DELETED (status 2) data entry is refused, not listed (0A000)" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl gone 2 0)')")" "0A000"
+check "a DELETED (status 2) data entry is skipped, not listed and not refused" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$(entry_tbl gone 2 0)')")" "0"
 check "backend still up after the entry refusals" "$(q 'SELECT 1')" "1"
 recovered
+
+# ---- a copy-on-write delete: the removed file is skipped (#1791) -----------
+# A real table written by pyiceberg (gen_iceberg_cow.py, warehouse_cow): ids 0..9
+# appended, then a copy-on-write delete. The delete rewrites the file and records
+# the old one as a DELETED (status 2) entry in the current snapshot. The table
+# has no delete files, so the lister must list exactly the live files that
+# pyiceberg's own scan planning lists. The premise arm proves the fixture really
+# carries a status-2 entry, so the listing arms cannot pass on a table without one.
+CW="$PGC_WORKDIR/cow_relocated"
+rm -rf "$CW"; mkdir -p "$CW"
+cp -r "$FX/warehouse_cow/db" "$CW/db"
+chmod -R a+rX "$CW"
+COW_ORACLE="$FX/warehouse_cow/expected_files.json"
+cow_md() {  # $1 table -> its current metadata.json under the relocated copy
+	python3 - "$COW_ORACLE" "$1" "$CW" <<'PY'
+import json, sys
+o = json.load(open(sys.argv[1]))["tables"][sys.argv[2]]
+print("%s/db/%s/metadata/%s" % (sys.argv[3], sys.argv[2], o["metadata_basename"]))
+PY
+}
+COW_PREMISE="$(python3 - "$COW_ORACLE" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1]))["tables"]
+print(all(any(e["status"] == 2 and e["content"] == 0 for e in t[k]["entries"])
+          for k in ("cow", "cow_all")))
+PY
+)"
+check "premise: each copy-on-write fixture's current snapshot carries a DELETED (status 2) data entry" \
+	"$COW_PREMISE" "True"
+COW_EXPECT="$(python3 - "$COW_ORACLE" <<'PY'
+import json, sys
+o = json.load(open(sys.argv[1]))["tables"]["cow"]
+print("\n".join(sorted("%d|%s" % (r["record_count"], r["file_basename"]) for r in o["live_files"])))
+PY
+)"
+check "after a copy-on-write delete, data files == pyiceberg plan_files (record_count|basename)" \
+	"$(q "SELECT record_count || '|' || (regexp_match(file_path,'[^/]+\$'))[1]
+	      FROM pgcolumnar.iceberg_data_files('$(cow_md cow)') ORDER BY 1")" "$COW_EXPECT"
+check "after a copy-on-write delete of every row, no data files are listed" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$(cow_md cow_all)')")" "0"
 
 # ---- no current snapshot: zero rows ----------------------------------------
 NOSNAP="$PGC_WORKDIR/no_current.metadata.json"

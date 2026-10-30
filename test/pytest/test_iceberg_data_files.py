@@ -13,11 +13,16 @@ What it refuses:
   the location that targets a file outside it), with 22023 and never XX001, which
   would mean the backend opened the file;
 - a snapshot whose manifest list carries a delete manifest (0A000);
-- a delete or removed ENTRY inside a data manifest (0A000), with an added and an
-  existing entry as controls (#1341 item 49);
+- a delete ENTRY inside a data manifest (0A000), with an added and an existing entry
+  as controls (#1341 item 49);
 - a caller without pg_read_server_files (42501).
 
 No available writer emits the delete shapes, so those tables are crafted Avro.
+
+What it skips: a removed (DELETED, status 2) entry is not live, so it is neither listed
+nor refused (#1791). A crafted entry shows it alone, and a real pyiceberg table after a
+copy-on-write delete (test/fixtures/iceberg/warehouse_cow, gen_iceberg_cow.py) shows it
+against pyiceberg's own scan planning.
 
 THE PORT OF test/iceberg_data_files.sh, BY NAME (#1341). The two names the shell
 records only when it skips ("iceberg warehouse fixture is missing", "python3 (json,
@@ -43,6 +48,7 @@ from pgc_vacuity import query_error
 
 FX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "iceberg"
 WH = FX / "warehouse"
+COW = FX / "warehouse_cow"           # copy-on-write deletes, written by pyiceberg (#1791)
 RECORDED = "/tmp/pgc_ice_wh"
 LOC = f"file://{RECORDED}/db/t"     # the crafted tables' recorded location
 
@@ -323,9 +329,31 @@ def ice(pgc_cluster, tmp_path_factory):
     got["alive delete"] = _recovered(pgc_cluster, _alive(pgc_cluster))
     got["entry ctl"] = _one(dsn, lst.format("count(*)"), str(entries["ctl"]))
     got["entry kept"] = _one(dsn, lst.format("count(*)"), str(entries["kept"]))
-    for k in ("pos", "eq", "gone"):
+    for k in ("pos", "eq"):
         got[f"entry {k}"] = _sqlstate(dsn, entries[k])
+    got["entry gone"] = _one(dsn, lst.format("count(*)"), str(entries["gone"]))
     got["alive entries"] = _recovered(pgc_cluster, _alive(pgc_cluster))
+
+    # a copy-on-write delete, relocated as the main warehouse is
+    cow_oracle = json.loads((COW / "expected_files.json").read_text())["tables"]
+    cow_root = root / "cow_relocated"
+    shutil.copytree(COW / "db", cow_root / "db")
+    _open_to_the_server(cow_root)
+    cow_md = {k: cow_root / "db" / k / "metadata" / cow_oracle[k]["metadata_basename"]
+              for k in ("cow", "cow_all")}
+    got["cow premise"] = str(all(any(e["status"] == 2 and e["content"] == 0
+                                     for e in cow_oracle[k]["entries"])
+                                 for k in ("cow", "cow_all")))
+    got["cow expect"] = "\n".join(sorted("%d|%s" % (r["record_count"], r["file_basename"])
+                                         for r in cow_oracle["cow"]["live_files"]))
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            got["cow listed"] = "\n".join(r[0] for r in c.execute(
+                lst.format("record_count || '|' || (regexp_match(file_path,'[^/]+$'))[1]")
+                + " ORDER BY 1", (str(cow_md["cow"]),)).fetchall())
+    except psycopg.Error as exc:
+        got["cow listed"] = _failed(exc)
+    got["cow all"] = _one(dsn, lst.format("count(*)"), str(cow_md["cow_all"]))
     got["no snapshot"] = _one(dsn, lst.format("count(*)"), str(nosnap))
     got["unprivileged"] = _run(dsn, *MAKE_UNPRIV) or _gate_refusal(dsn, md, "icedf_unpriv")
     try:
@@ -446,7 +474,6 @@ def test_an_existing_entry_is_listed(ice, expect):
 ENTRY_REFUSALS = [
     ("a position-delete entry in a data manifest is refused (0A000)", "entry pos"),
     ("an equality-delete entry in a data manifest is refused (0A000)", "entry eq"),
-    ("a DELETED (status 2) data entry is refused, not listed (0A000)", "entry gone"),
 ]
 
 
@@ -456,9 +483,40 @@ def test_a_delete_entry_is_refused(ice, expect, name, reading):
         expect.text(ice[reading], "0A000", name)
 
 
+def test_a_deleted_entry_is_skipped(ice, expect):
+    """Status 2 is DELETED: a file the current snapshot removed. It is not live, so the
+    lister neither returns it nor refuses the table over it (#1791)."""
+    if _need(ice, expect):
+        expect.num(ice["entry gone"], 0,
+                   "a DELETED (status 2) data entry is skipped, not listed and not refused")
+
+
 def test_the_backend_survives_the_entry_refusals(ice, expect):
     if _need(ice, expect):
         expect.num(ice["alive entries"], 1, "backend still up after the entry refusals")
+
+
+# ---- a copy-on-write delete: the removed file is skipped (#1791) ---------------------
+
+def test_the_copy_on_write_fixture_carries_a_deleted_entry(ice, expect):
+    """The listing arms below cannot pass on a table that has no status-2 entry."""
+    if _need(ice, expect):
+        expect.text(ice["cow premise"], "True",
+                    "premise: each copy-on-write fixture's current snapshot carries a "
+                    "DELETED (status 2) data entry")
+
+
+def test_a_copy_on_write_delete_lists_the_live_files(ice, expect):
+    if _need(ice, expect):
+        expect.text(ice["cow listed"], ice["cow expect"],
+                    "after a copy-on-write delete, data files == pyiceberg plan_files "
+                    "(record_count|basename)")
+
+
+def test_a_copy_on_write_delete_of_every_row_lists_nothing(ice, expect):
+    if _need(ice, expect):
+        expect.num(ice["cow all"], 0,
+                   "after a copy-on-write delete of every row, no data files are listed")
 
 
 # ---- no current snapshot, and the privilege ------------------------------------------

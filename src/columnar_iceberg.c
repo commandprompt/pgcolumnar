@@ -697,11 +697,11 @@ typedef void (*IceDataFileCb) (void *ctx, PgColumnarAvroManifestEntry *e,
  * parsed once per call), reads its manifest list and each manifest (opening both
  * through ice_open_path's path boundary).
  *
- * When `collect_deletes` is false (the lister), any delete file or removed entry
- * is refused loudly (0A000). When true (the scan), position-delete (content 1)
- * and equality-delete (content 2) entries are passed to `cb` alongside data
- * entries (content 0), and removed entries (status 2) are skipped. Does nothing
- * when there is no current snapshot.
+ * Removed entries (status 2) are skipped in both modes. When `collect_deletes`
+ * is false (the lister), any delete manifest or delete file is refused loudly
+ * (0A000). When true (the scan), position-delete (content 1) and
+ * equality-delete (content 2) entries are passed to `cb` alongside data entries
+ * (content 0). Does nothing when there is no current snapshot.
  */
 static void
 ice_walk_data_files(const char *path, JsonbContainer *root,
@@ -785,14 +785,19 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 
 			if (!collect_deletes)
 			{
-				/* the lister refuses any delete file or removed entry */
-				if (e->content != 0 || e->status == 2)
+				/* the lister refuses any delete file. A removed entry (status
+				 * 2, DELETED) is a data file this snapshot took out, such as
+				 * the old file of a copy-on-write delete: it is not live, so
+				 * the lister skips it, as the scan does (#1791) */
+				if (e->content != 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("iceberg: snapshot " INT64_FORMAT " has delete files; reading tables with deletes is not supported",
 									cur),
 							 errdetail("Entry \"%s\" has content %d, status %d.",
 									   e->file_path, e->content, e->status)));
+				if (e->status == 2)
+					continue;
 			}
 			else
 			{
