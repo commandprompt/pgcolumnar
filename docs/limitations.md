@@ -1180,5 +1180,8 @@ table at its current snapshot. It has these limits:
   position-delete position, and a `current-schema-id` that names no schema.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet.
+- A promoted column (`int` to `long`, `float` to `double`, or a wider `decimal`)
+  reads as its current type. Files from before the promotion are widened.
+  Declaring it with a narrower type than a live file stores is refused.
 - The reader does not write or commit to an Iceberg table, and it reads only the
   current snapshot. Time travel to an older snapshot is not supported.
