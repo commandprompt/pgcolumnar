@@ -1177,7 +1177,8 @@ mint a bearer by the client-credentials grant. The request goes to
 `oauth_token_uri` when set, otherwise to `{catalog_uri}/v1/oauth/tokens`, with an
 optional `oauth_scope`. The client secret travels in the request body, never a
 URL or a log line. A mapping that sets only one of the pair is refused before any
-request is made.
+request is made, even when it also sets a static `token`. A mapping that sets a
+`token` and the complete pair uses the token and mints no bearer.
 
 Multi-level namespaces are given dot-separated, and the function requires the
 `pg_read_server_files` role, like the other Iceberg functions.
