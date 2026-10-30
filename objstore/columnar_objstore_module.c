@@ -2472,8 +2472,11 @@ os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 		 * the connection (RFC 9112 section 6.3, rule 8). Every request on the
 		 * generic HTTP path sends Connection: close, and the Apache Iceberg
 		 * REST catalog answers a reply over about 32 KB this way (#1787).
-		 * os_fill returns false at end of stream and raises on a read error,
-		 * so a reset connection is refused rather than read as a short body.
+		 * Over plain TCP, os_fill returns false only on an orderly close (FIN)
+		 * and raises on a read error, so a reset connection is refused rather
+		 * than read as a short body. Over TLS, os_fill also returns false on
+		 * EOF without close_notify, so a body cut off that way is accepted as
+		 * complete; that is existing behaviour and is not changed here.
 		 */
 		for (;;)
 		{
