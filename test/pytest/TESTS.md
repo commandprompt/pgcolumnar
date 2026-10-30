@@ -10847,7 +10847,7 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 
 ## 273. test_iceberg_rest.py: the Iceberg REST catalog resolves a table, keeps its token out of every log, and refuses what it must
 
-The twin of `test/iceberg_rest.sh`. A private cluster is restarted with the bearer token in its postmaster environment (and with a wrong one, and with none) against the shell's own REST fixture server, which verifies the Authorization header. The table resolves to its metadata location, the token reaches neither the server log nor the catalog's request log, and each refusal comes from its own guard.
+The twin of `test/iceberg_rest.sh`. A private cluster is restarted with the bearer token in its postmaster environment (and with a wrong one, and with none) against the shell's own REST fixture server, which verifies the Authorization header. The table resolves to its metadata location, also when the catalog ends the reply by closing the connection, the token reaches neither the server log nor the catalog's request log, and each refusal comes from its own guard.
 
 ### Every test
 
@@ -10866,6 +10866,8 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_a_catalog_endpoint_off_the_allow_list_is_refused` | a catalog endpoint off the allow-list is refused (42501) |
 | `test_a_link_local_catalog_host_is_refused_even_if_allow_listed` | a link-local catalog host is refused even if allow-listed (42501) |
 | `test_an_over_cap_catalog_response_is_refused` | an over-cap catalog response is refused (54000) |
+| `test_a_close_delimited_loadtable_reply_resolves` | a close-delimited loadTable reply resolves the metadata-location (#1787: Connection: close, no Content-Length, no chunking, padded past one 64 KB read) |
+| `test_an_over_cap_close_delimited_catalog_response_is_refused` | an over-cap close-delimited catalog response is refused (54000) |
 | `test_an_unknown_rest_table_surfaces_a_clean_not_found` | an unknown table surfaces a clean not-found (42P01) |
 | `test_a_non_object_catalog_config_is_refused` | a non-object catalog config is refused, not walked (XX001) |
 | `test_the_backend_is_still_up_after_the_rest_refusals` | backend still up after the REST refusals |
