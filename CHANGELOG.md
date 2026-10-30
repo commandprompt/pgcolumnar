@@ -466,6 +466,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `iceberg_scan`, `iceberg_data_files` and the `pgcolumnar_iceberg` foreign
+  table now refuse a manifest whose `content` or `status` value is outside the
+  Iceberg spec, with `XX001` and a message that names the file and the value
+  (#1823). A data file `content` other than 0, 1 or 2 was treated as an
+  equality delete. When that file was the oldest in the snapshot, the delete was
+  skipped as never applicable, so the file's rows dropped out of the result with
+  no error. A newer one failed with a misleading `has no equality_ids`, and the
+  lister called it a delete file (`0A000`). An entry `status` other than 0, 1 or
+  2 was read as a live entry, and a manifest list `content` other than 0 or 1
+  was read as a data manifest. `test/iceberg_malformed.sh` and
+  `test_iceberg_malformed.py`.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write

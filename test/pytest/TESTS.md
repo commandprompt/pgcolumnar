@@ -10543,7 +10543,7 @@ The pytest twin of `test/catalog_filter_reads.sh` (#1637), every check by the sh
 
 ## 265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging
 
-The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, and a dangling current-schema-id. Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
+The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, a dangling current-schema-id, and a `data_file.content`, `manifest_entry.status` or `manifest_file.content` outside the spec, in both the scan and the lister, each refusal naming the value (#1823). Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
 
 ### Every test
 
@@ -10584,6 +10584,17 @@ One module fixture copies the fixtures into `server_dir`, builds the FIFOs there
 | `test_a_resolvable_current_schema_id_reads_amount` | control: a resolvable current-schema-id reads the correct amount column |
 | `test_a_legacy_only_schema_table_still_reads` | control: a legacy-only-schema table still reads (5 rows) |
 | `test_the_legacy_table_binds_amount` | control: the legacy table binds amount correctly (10..50) |
+| `test_two_valid_data_entries_scan_as_ten_rows` | control: two valid data entries scan as ten rows (ids 1..10) |
+| `test_two_valid_data_entries_list_two_files` | control: two valid data entries list two data files |
+| `test_content_3_on_the_oldest_file_is_refused_by_the_scan` | data_file.content 3 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows |
+| `test_content_minus_1_on_the_oldest_file_is_refused_by_the_scan` | data_file.content -1 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows |
+| `test_content_3_on_the_newest_file_is_refused_naming_the_value` | data_file.content 3 on the newest file is refused naming the value, not as an equality delete with no ids |
+| `test_the_lister_refuses_content_3_as_corrupt` | iceberg_data_files refuses data_file.content 3 as corrupt (XX001), not as a delete file (0A000) |
+| `test_status_3_is_refused_by_the_scan` | manifest_entry.status 3 is refused by iceberg_scan (XX001), not read as a live entry |
+| `test_the_lister_refuses_status_3` | iceberg_data_files refuses manifest_entry.status 3 (XX001), not listed |
+| `test_manifest_content_5_is_refused_by_the_scan` | manifest_file.content 5 is refused by iceberg_scan (XX001), not read as a data manifest |
+| `test_the_lister_refuses_manifest_content_5_as_corrupt` | iceberg_data_files refuses manifest_file.content 5 as corrupt (XX001), not as a delete manifest (0A000) |
+| `test_the_backend_survives_the_enum_refusals` | backend still up after the enum refusals |
 
 ## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping
 
