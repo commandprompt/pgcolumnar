@@ -237,6 +237,23 @@ check "shrink: parts 0002/0003 from the larger run are gone" \
 check "shrink: _SUCCESS certifies the reconciled prefix" \
 	"$([ -f "$PGC_WORKDIR/$BUCKET/sr/_SUCCESS" ] && echo yes)" "yes"
 
+# #1782: the documented prefix form ends in a slash. The keys must not gain an
+# empty segment ("sl//part-0000.parquet"): S3 stores that as a different key,
+# and the documented glob then matches nothing. This fixture stores objects as
+# files, which collapse "//", so only the request log shows the defect.
+: > "$S3_LOG"
+check_num "trailing slash: parallel export to an s3:// prefix ending in / succeeds" \
+	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sl/', 4)")" "$PARROWS"
+check "trailing slash: every worker PUT went to sl/part- (one slash)" \
+	"$([ "$(logn '^PUT /pgc-bucket/sl/part-')" -ge 4 ] && echo yes)" "yes"
+check "trailing slash: the marker went to sl/_SUCCESS (one slash)" \
+	"$([ "$(logn '^PUT /pgc-bucket/sl/_SUCCESS')" -ge 1 ] && echo yes)" "yes"
+check_num "trailing slash: no request named a key with an empty segment (//)" \
+	"$(logn '^[A-Z]+ /pgc-bucket/[^ ]*//')" "0"
+check "trailing slash: the documented glob read-back equals the source" \
+	"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('s3://$BUCKET/sl/*.parquet') AS t(id int8, v int)")" \
+	"$(pgc_set_hash "$GEN_PAR")"
+
 # cancel mid-run: the dispatcher removes the completed keys it wrote. Big table
 # + small parts so a worker is mid-multipart when the cancel lands.
 psql_run "DROP TABLE IF EXISTS es_parbig;

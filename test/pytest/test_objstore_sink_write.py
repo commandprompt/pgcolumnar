@@ -402,6 +402,20 @@ def osw(pgc_cluster):
             not (sr / "part-0003.parquet").exists() else "present"
         r["sr marker"] = "yes" if (sr / "_SUCCESS").is_file() else "no"
 
+        # #1782: a prefix ending in '/' must not put an empty segment in the keys.
+        # The fixture stores files, which collapse '//', so only the log shows it.
+        open(s3log, "w").close()
+        r["sl export"] = _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                   f"'es_par'::regclass, 's3://{BUCKET}/sl/', 4)")
+        n = _logn(s3log, r"^PUT /pgc-bucket/sl/part-")
+        r["sl puts"] = ("yes" if n >= 4 else "no") if isinstance(n, int) else n
+        n = _logn(s3log, r"^PUT /pgc-bucket/sl/_SUCCESS")
+        r["sl marker put"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
+        n = _logn(s3log, r"^[A-Z]+ /pgc-bucket/[^ ]*//")
+        r["sl empty segment"] = str(n)
+        r["sl glob back"] = _set_hash(dsn, f"SELECT * FROM pgcolumnar.read_parquet("
+                                           f"'s3://{BUCKET}/sl/*.parquet') AS t(id int8, v int)")
+
         # cancel mid-run
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("DROP TABLE IF EXISTS es_parbig")
@@ -567,6 +581,29 @@ def test_the_larger_runs_stale_parts_are_gone(osw, expect):
 
 def test_the_marker_certifies_the_reconciled_prefix(osw, expect):
     expect.text(osw["sr marker"], "yes", "shrink: _SUCCESS certifies the reconciled prefix")
+
+
+def test_a_parallel_export_to_a_prefix_ending_in_a_slash_succeeds(osw, expect):
+    expect.text(osw["sl export"], "80000",
+                "trailing slash: parallel export to an s3:// prefix ending in / succeeds")
+
+
+def test_a_trailing_slash_prefix_puts_parts_with_one_slash(osw, expect):
+    expect.text(osw["sl puts"], "yes", "trailing slash: every worker PUT went to sl/part- (one slash)")
+
+
+def test_a_trailing_slash_prefix_puts_the_marker_with_one_slash(osw, expect):
+    expect.text(osw["sl marker put"], "yes", "trailing slash: the marker went to sl/_SUCCESS (one slash)")
+
+
+def test_a_trailing_slash_prefix_names_no_key_with_an_empty_segment(osw, expect):
+    expect.text(osw["sl empty segment"], "0",
+                "trailing slash: no request named a key with an empty segment (//)")
+
+
+def test_a_trailing_slash_export_reads_back_through_the_documented_glob(osw, expect):
+    expect.text(osw["sl glob back"], osw["par gen"],
+                "trailing slash: the documented glob read-back equals the source")
 
 
 def test_a_worker_was_uploading_before_the_cancel(osw, expect):

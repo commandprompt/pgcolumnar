@@ -754,6 +754,26 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 				 errmsg("target and path must not be null")));
 	relid = PG_GETARG_OID(0);
 	dir = text_to_cstring(PG_GETARG_TEXT_PP(1));
+
+	/*
+	 * Every key below is built as "<dir>/...". A remote prefix written in the
+	 * documented "s3://bucket/prefix/" form would otherwise give keys such as
+	 * "prefix//part-0000.parquet", which S3 stores as a different key and the
+	 * documented glob never matches (#1782). Strip trailing slashes, but never
+	 * into the bucket: stop at the first '/' after "scheme://". A local path is
+	 * left as given, since the filesystem already collapses "//".
+	 */
+	if (PgColumnarPathIsRemote(dir))
+	{
+		const char *sep = strstr(dir, "://");
+		const char *slash = sep ? strchr(sep + 3, '/') : NULL;
+		size_t		len = strlen(dir);
+
+		if (slash != NULL)
+			while (len > (size_t) (slash - dir) && dir[len - 1] == '/')
+				dir[--len] = '\0';
+	}
+
 	workers = PG_ARGISNULL(2) ? pexport_auto_workers() : PG_GETARG_INT32(2);
 	if (workers < 1)
 		ereport(ERROR,

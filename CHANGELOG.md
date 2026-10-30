@@ -466,6 +466,13 @@ true until the next version shipped.
 
 ### Fixed
 
+- `parallel_export_parquet` to an `s3://` prefix that ends in `/` now writes
+  `prefix/part-NNNN.parquet` and `prefix/_SUCCESS` (#1782). It used to write
+  `prefix//part-NNNN.parquet`, which S3 stores as a different key, so the
+  documented read-back `read_parquet('s3://bucket/prefix/*.parquet')` found
+  nothing. The export now strips trailing slashes from a remote prefix, never
+  into the bucket name. A local directory is unchanged.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write
