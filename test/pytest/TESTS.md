@@ -7605,7 +7605,7 @@ The port of `test/iceberg_data_files.sh`, by name, one check per test (#1341). T
 - **The oracle is pyiceberg's own view,** committed as `expected_files.json`, so pyiceberg is not needed at test time.
 - **A manifest list outside the table's location is refused with 22023, by four routes:** a foreign absolute path, a `..` traversal, a sibling sharing the byte prefix, and a symlink under the location that targets a file outside it. XX001 would mean the backend opened the file.
 - **Deletes are refused, not ignored:** a delete manifest in the list, and a delete entry inside a data manifest (#1341 item 49). Each table is crafted Avro, because no available writer emits these shapes. The added and the EXISTING entry must be listed, so a refusal comes from the entry, and a lister that keeps only ADDED entries fails.
-- **A removed entry is skipped, not refused (#1791).** A DELETED (status 2) entry is a data file the current snapshot took out, so it is not live. A crafted entry shows it alone. A real pyiceberg table after a copy-on-write delete (`warehouse_cow`, written by `gen_iceberg_cow.py`) shows it against pyiceberg's own `plan_files`, and a second table whose delete removed every row lists nothing. A premise confirms both tables carry a status-2 entry.
+- **A removed entry is skipped, not refused (#1791).** A DELETED (status 2) entry is a data file the current snapshot took out, so it is not live. A crafted entry shows it alone. A real pyiceberg table after a copy-on-write delete (`warehouse_cow`, written by `gen_iceberg_cow.py`) shows it against pyiceberg's own `plan_files`, and a second table whose delete removed every row lists nothing. A premise counts the status-2 entries of both tables in the committed Avro manifests, read with json and zlib only, and in the oracle, and shows both counts, so an oracle that drifted from the fixture fails it.
 - **The privilege** is read under `SET ROLE` to a role without `pg_read_server_files`.
 
 The shell's two skip names, "iceberg warehouse fixture is missing" and "python3 (json, zlib) is needed", are carried as the same declines.
@@ -7621,7 +7621,7 @@ The shell's two skip names, "iceberg warehouse fixture is missing" and "python3 
 | `test_a_snapshot_with_a_delete_manifest_is_refused`, `test_the_backend_survives_the_delete_refusal` | a delete manifest in the list, refused with 0A000 |
 | `test_the_control_entry_is_listed`, `test_an_existing_entry_is_listed`, `test_a_delete_entry_is_refused`, `test_the_backend_survives_the_entry_refusals` | an added and an existing entry are listed; a position-delete and an equality-delete entry are refused with 0A000 |
 | `test_a_deleted_entry_is_skipped` | a DELETED (status 2) entry is neither listed nor refused (#1791) |
-| `test_the_copy_on_write_fixture_carries_a_deleted_entry` | **premise**: both copy-on-write tables carry a DELETED (status 2) data entry |
+| `test_the_copy_on_write_fixture_carries_a_deleted_entry` | **premise**: both copy-on-write tables carry a DELETED (status 2) data entry, counted in the committed Avro manifests and in the oracle |
 | `test_a_copy_on_write_delete_lists_the_live_files`, `test_a_copy_on_write_delete_of_every_row_lists_nothing` | after a copy-on-write delete, the live files equal pyiceberg's `plan_files`; after deleting every row, nothing is listed (#1791) |
 | `test_a_table_with_no_current_snapshot_yields_no_data_files`, `test_an_unprivileged_role_is_refused` | no current snapshot lists nothing; a caller without `pg_read_server_files` gets 42501 |
 

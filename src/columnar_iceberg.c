@@ -908,9 +908,11 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_data_files);
  * rows for a table with no current snapshot.
  *
  * Deletes are refused, not ignored: a snapshot that carries any delete manifest
- * (manifest_file.content != 0) or any delete/removed entry (data_file.content
- * != 0, or a DELETED status) raises feature_not_supported (0A000). A reader that
- * silently dropped deletes would return rows the table says are gone.
+ * (manifest_file.content != 0) or any delete-file entry (data_file.content != 0)
+ * raises feature_not_supported (0A000). A reader that silently dropped deletes
+ * would return rows the table says are gone. A removed entry (status 2, DELETED)
+ * is a data file this snapshot took out, such as the file a copy-on-write delete
+ * rewrote. It is not live, so it is skipped: neither listed nor refused (#1791).
  */
 Datum
 pgcolumnar_iceberg_data_files(PG_FUNCTION_ARGS)

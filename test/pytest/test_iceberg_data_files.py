@@ -40,6 +40,7 @@ import pathlib
 import shutil
 import stat
 import time
+import zlib
 
 import psycopg
 import pytest
@@ -115,6 +116,113 @@ DELETE_LIST = {"type": "record", "name": "manifest_file", "fields": [
     {"name": "added_rows_count", "type": "long"},
     {"name": "existing_rows_count", "type": "long"},
     {"name": "deleted_rows_count", "type": "long"}]}
+
+
+# ---- reading the committed Avro (json and zlib only) -----------------------------------
+
+def _avro_records(path):
+    """Every record of an Avro object container file (codec null or deflate)."""
+    data, at = pathlib.Path(path).read_bytes(), [0]
+
+    def raw(n):
+        v = data[at[0]:at[0] + n]
+        at[0] += n
+        return v
+
+    def num():
+        n = shift = 0
+        while True:
+            c = raw(1)[0]
+            n |= (c & 0x7F) << shift
+            shift += 7
+            if not c & 0x80:
+                return (n >> 1) ^ -(n & 1)
+
+    def blocks(read_one):  # Avro arrays and maps: counted blocks, 0 ends them
+        out = []
+        while True:
+            n = num()
+            if n == 0:
+                return out
+            if n < 0:
+                num()
+                n = -n
+            out.extend(read_one() for _ in range(n))
+
+    named = {}
+
+    def value(t):
+        if isinstance(t, list):
+            return value(t[num()])
+        if isinstance(t, dict):
+            kind = t["type"]
+            if "name" in t:
+                named[t["name"]] = t
+            if kind == "record":
+                return {f["name"]: value(f["type"]) for f in t["fields"]}
+            if kind == "enum":
+                return t["symbols"][num()]
+            if kind == "fixed":
+                return raw(t["size"])
+            if kind == "array":
+                return blocks(lambda: value(t["items"]))
+            if kind == "map":
+                return dict(blocks(lambda: (raw(num()).decode(), value(t["values"]))))
+            return value(kind)
+        if t == "null":
+            return None
+        if t == "boolean":
+            return raw(1) != b"\0"
+        if t in ("int", "long"):
+            return num()
+        if t == "float":
+            return raw(4)
+        if t == "double":
+            return raw(8)
+        if t == "bytes":
+            return raw(num())
+        if t == "string":
+            return raw(num()).decode()
+        return value(named[t])
+
+    if raw(4) != b"Obj\x01":
+        raise ValueError(f"{path} is not an Avro container file")
+    meta = dict(blocks(lambda: (raw(num()).decode(), raw(num()))))
+    schema = json.loads(meta["avro.schema"])
+    codec = meta.get("avro.codec", b"null")
+    sync = raw(16)
+    file_data, records = data, []
+    while at[0] < len(file_data):
+        count, block = num(), raw(num())
+        if raw(16) != sync:
+            raise ValueError(f"{path}: bad sync marker")
+        if codec == b"deflate":
+            block = zlib.decompress(block, -15)
+        elif codec != b"null":
+            raise ValueError(f"{path}: codec {codec!r}")
+        data, saved = block, at[0]
+        at[0] = 0
+        records.extend(value(schema) for _ in range(count))
+        data, at[0] = file_data, saved
+    return records
+
+
+def _cow_premise(oracle):
+    """Count the DELETED (status 2) data (content 0) entries of each copy-on-write
+    table's current snapshot twice: in the committed Avro manifests, and in the oracle.
+    Both counts are shown, so an oracle that drifted from the fixture fails the arm."""
+    out = []
+    for name in ("cow", "cow_all"):
+        md_dir = COW / "db" / name / "metadata"
+        md = json.loads((md_dir / oracle[name]["metadata_basename"]).read_text())
+        snap = [s for s in md["snapshots"] if s["snapshot-id"] == md["current-snapshot-id"]][0]
+        in_avro = 0
+        for mf in _avro_records(md_dir / os.path.basename(snap["manifest-list"])):
+            for e in _avro_records(md_dir / os.path.basename(mf["manifest_path"])):
+                in_avro += e["status"] == 2 and e["data_file"]["content"] == 0
+        in_oracle = sum(e["status"] == 2 and e["content"] == 0 for e in oracle[name]["entries"])
+        out.append("%s: avro=%d oracle=%d" % (name, in_avro, in_oracle))
+    return "; ".join(out)
 
 
 def _metadata(manifest_list):
@@ -341,9 +449,10 @@ def ice(pgc_cluster, tmp_path_factory):
     _open_to_the_server(cow_root)
     cow_md = {k: cow_root / "db" / k / "metadata" / cow_oracle[k]["metadata_basename"]
               for k in ("cow", "cow_all")}
-    got["cow premise"] = str(all(any(e["status"] == 2 and e["content"] == 0
-                                     for e in cow_oracle[k]["entries"])
-                                 for k in ("cow", "cow_all")))
+    try:
+        got["cow premise"] = _cow_premise(cow_oracle)
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        got["cow premise"] = f"unreadable: {exc!r}"
     got["cow expect"] = "\n".join(sorted("%d|%s" % (r["record_count"], r["file_basename"])
                                          for r in cow_oracle["cow"]["live_files"]))
     try:
@@ -499,9 +608,10 @@ def test_the_backend_survives_the_entry_refusals(ice, expect):
 # ---- a copy-on-write delete: the removed file is skipped (#1791) ---------------------
 
 def test_the_copy_on_write_fixture_carries_a_deleted_entry(ice, expect):
-    """The listing arms below cannot pass on a table that has no status-2 entry."""
+    """The listing arms below cannot pass on a table that has no status-2 entry. The
+    count comes from the committed Avro manifests and from the oracle, both shown."""
     if _need(ice, expect):
-        expect.text(ice["cow premise"], "True",
+        expect.text(ice["cow premise"], "cow: avro=1 oracle=1; cow_all: avro=1 oracle=1",
                     "premise: each copy-on-write fixture's current snapshot carries a "
                     "DELETED (status 2) data entry")
 
