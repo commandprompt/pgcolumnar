@@ -262,6 +262,68 @@ def _silent_run(dsn, s3log, bucket, srv, r):
         r["hs exit"] = f"slow ({n_workers} workers, {left} left after {dt}s)"
 
 
+def _plain_run(dsn, work, r, procs):
+    """The shell's #1779 arm: exports to an allow-listed http:// target, served by a
+    second fixture server WITHOUT the --sigv4-* options. An http:// handle has no region
+    or credentials, and signing it read a NULL region and killed the backend (signal
+    11). Writes now go unsigned, as reads do: one PUT, the multipart protocol and the
+    abort are each read back or read from the server. The server process goes into
+    `procs` at once, so the fixture stops it even when this arm raises."""
+    from pgc_cluster import pick_port
+
+    pdir = work / "plain"
+    (pdir / "pb").mkdir(parents=True)
+    plog = str(work / "plain.log")
+    out = work / "plain_server.out"
+    port = pick_port(32)
+    proc = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(pdir),
+                             "--port", str(port), "--log", plog],
+                            stdout=open(out, "w"), stderr=subprocess.STDOUT)
+    procs.append(proc)
+    for _ in range(50):
+        if out.is_file() and "READY" in out.read_text(errors="replace"):
+            break
+        time.sleep(0.1)
+    r["plain up"] = str(out.read_text(errors="replace").count("READY") if out.is_file() else 0)
+    url = f"http://127.0.0.1:{port}/pb"
+
+    open(plog, "w").close()
+    r["plain small"] = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_small', '{url}/small.parquet')")
+    n = _logn(plog, r"^PUT /pb/small.parquet -")
+    r["plain small put"] = str(n) if isinstance(n, int) else n
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE FOREIGN TABLE fh_small (id int, t text) SERVER wsrv "
+                      f"OPTIONS (path '{url}/small.parquet')")
+    except psycopg.Error as exc:
+        print(f"-- fh_small: {_message(exc)}")
+    r["plain small back"] = _set_hash(dsn, "SELECT * FROM fh_small")
+
+    open(plog, "w").close()
+    r["plain big"] = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_big', '{url}/big.parquet')", setup=[PART])
+    starts = _logn(plog, r"^POST /pb/big.parquet uploads=")
+    parts = _logn(plog, r"^PUT /pb/big.parquet partNumber=")
+    completes = _logn(plog, r"^POST /pb/big.parquet uploadId=")
+    r["plain big multipart"] = ("yes" if starts >= 1 and parts >= 2 and completes == 1 else "no") \
+        if all(isinstance(x, int) for x in (starts, parts, completes)) \
+        else query_error(f"{starts} / {parts} / {completes}")
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE FOREIGN TABLE fh_big (id int8, pad text) SERVER wsrv "
+                      f"OPTIONS (path '{url}/big.parquet')")
+    except psycopg.Error as exc:
+        print(f"-- fh_big: {_message(exc)}")
+    r["plain big back"] = _set_hash(dsn, "SELECT * FROM fh_big")
+
+    open(plog, "w").close()
+    r["plain inject"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', '{url}/fail.parquet')",
+                                 "export write failed (injected fault)", " by the injected fault",
+                                 setup=[PART, "SET pgcolumnar.sink_fail_after = 900000"])
+    n = _logn(plog, r"^POST /pb/fail.parquet uploads=")
+    r["plain inject started"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
+    r["plain inject open"] = _open_uploads(pdir, r"^pb/fail\.parquet$")
+
+
 @pytest.fixture(scope="module")
 def osw(pgc_cluster):
     from pgc_cluster import Cluster, pick_port
@@ -273,6 +335,7 @@ def osw(pgc_cluster):
     bucket.chmod(0o777)
     r = {}
     srv = None
+    plain = []
     cluster = None
     datadir = work / "data"
     try:
@@ -411,6 +474,7 @@ def osw(pgc_cluster):
                       "FROM generate_series(1,3000000) g")
         _cancel_run(dsn, s3log, bucket, r)
         _silent_run(dsn, s3log, bucket, srv, r)
+        _plain_run(dsn, work, r, plain)
 
         # optional: a real S3 implementation, the shell's last arm. The endpoint's host
         # replaces the fixture's in the allow-list, and the cluster restarts with its
@@ -441,9 +505,10 @@ def osw(pgc_cluster):
     finally:
         if cluster is not None:
             _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
-        if srv is not None:
-            srv.kill()
-            srv.wait()
+        for proc in [srv] + plain:
+            if proc is not None:
+                proc.kill()
+                proc.wait()
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -602,6 +667,49 @@ def test_terminated_workers_exit_while_the_store_is_silent(osw, expect):
     # #1727 review: the exit callback's abort waits in slices that time out, so the 60 s
     # quiet limit ends it; a silent store cannot hold a terminated worker
     expect.text(osw["hs exit"], "bounded", "terminate: export workers exit within 75 s while the store is silent")
+
+
+def test_the_unsigned_http_fixture_server_is_up(osw, expect):
+    expect.text(osw["plain up"], "1", "premise: unsigned http fixture server is up")
+
+
+def test_a_small_export_to_http_succeeds_unsigned(osw, expect):
+    # #1779: the backend crashed here with signal 11 (a NULL region in the signer)
+    expect.text(osw["plain small"], "1000", "http:// small export succeeds unsigned (no crash)")
+
+
+def test_a_small_http_object_goes_as_one_plain_put(osw, expect):
+    expect.text(osw["plain small put"], "1", "http:// small object went as ONE plain PUT")
+
+
+def test_the_small_http_object_reads_back_as_the_generator(osw, expect):
+    expect.text(osw["plain small back"], osw["small gen"], "http:// small round trip: read-back == source")
+
+
+def test_a_large_export_to_http_succeeds_unsigned(osw, expect):
+    expect.text(osw["plain big"], "400000", "http:// large export succeeds unsigned (no crash)")
+
+
+def test_the_large_http_export_took_the_multipart_protocol(osw, expect):
+    expect.text(osw["plain big multipart"], "yes", "premise: the http:// large export took the multipart protocol")
+
+
+def test_the_large_http_object_reads_back_as_the_generator(osw, expect):
+    expect.text(osw["plain big back"], osw["big gen"], "http:// large round trip: read-back == source")
+
+
+def test_an_injected_failure_on_http_surfaces_as_disk_full(osw, expect):
+    expect.text(osw["plain inject"], "53100 by the injected fault",
+                "http:// inject: mid-upload failure surfaces as disk-full (53100)")
+
+
+def test_the_injected_http_fault_landed_mid_multipart(osw, expect):
+    expect.text(osw["plain inject started"], "yes",
+                "premise: the http:// fault landed mid-multipart (an upload was started)")
+
+
+def test_the_injected_http_failure_leaves_no_open_upload(osw, expect):
+    expect.text(osw["plain inject open"], "0", "http:// inject: the server holds no open upload for the key")
 
 
 _NO_REAL_S3 = ("PGC_S3_INTEGRATION_ENDPOINT names no real S3 implementation, so the shell "

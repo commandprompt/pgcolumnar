@@ -1341,6 +1341,11 @@ recognized:
 | `http://host[:port]/path` | A plain-HTTP object. For a trusted network only, because a plain-HTTP request carries any credential in clear. |
 | `https://host[:port]/path` | An HTTPS object. Available when the object-store module was built with OpenSSL. The server certificate is verified. |
 
+Requests to an `http://` or `https://` URL are not signed, for reads and for
+exports alike. An export sends a plain `PUT`, or the multipart `POST` and `PUT`
+requests for a large object, with no `Authorization` header. Use those schemes for a
+server that accepts unsigned writes, and `s3://` for a store that needs credentials.
+
 S3 requests use path-style addressing (`endpoint/bucket/key`) by default. Set
 `pgcolumnar.objstore_s3_addressing` to `virtual` for virtual-host addressing
 (`bucket.endpoint/key`), which is what AWS now prefers; the endpoint allow-list
