@@ -466,6 +466,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- `iceberg_rest_table_location` and `iceberg_rest_scan` read a catalog reply
+  that ends when the server closes the connection (#1787). Such a reply carries
+  neither `Content-Length` nor chunked framing, which HTTP/1.1 allows, and the
+  client refused it with `listing has no length`. The Apache Iceberg REST
+  catalog sends every reply over about 32 KB this way, so a table with about 41
+  or more snapshots could not be read through it. Measured against Apache
+  Iceberg 1.12.0: a 60-snapshot table now resolves, and `iceberg_rest_scan`
+  returns its 60 rows. The 64 MB response cap still applies, and an over-cap
+  reply is refused with SQLSTATE 54000 and the message `response from "..."
+  exceeded ... bytes`, which used to say `object listing from`.
+  `test/iceberg_rest.sh` and `test_iceberg_rest.py`.
+
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write

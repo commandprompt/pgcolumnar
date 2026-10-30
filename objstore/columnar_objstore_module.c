@@ -2423,7 +2423,7 @@ os_list_parse_page(const char *body, int64 blen, const char *bucket,
 }
 
 /* Read the whole response body into a palloc'd NUL-terminated buffer, bounded by
- * cap; handles chunked and content-length framing. */
+ * cap; handles chunked, content-length and close-delimited framing. */
 static char *
 os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 			  int64 *outlen)
@@ -2456,7 +2456,7 @@ os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 			if ((int64) s.len + sz > cap)
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("columnar: object listing from \"%s\" exceeded %lld bytes",
+						 errmsg("columnar: response from \"%s\" exceeded %lld bytes",
 								h->url, (long long) cap)));
 			enlargeStringInfo(&s, (int) sz);
 			os_read_exact(h, (uint8 *) s.data + s.len, sz);
@@ -2465,18 +2465,46 @@ os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 			os_read_line(h, line, sizeof(line));	/* chunk-terminating CRLF */
 		}
 	}
+	else if (resp->content_length < 0)
+	{
+		/*
+		 * Neither chunked nor a length: the body ends when the server closes
+		 * the connection (RFC 9112 section 6.3, rule 8). Every request on the
+		 * generic HTTP path sends Connection: close, and the Apache Iceberg
+		 * REST catalog answers a reply over about 32 KB this way (#1787).
+		 * Over plain TCP, os_fill returns false only on an orderly close (FIN)
+		 * and raises on a read error, so a reset connection is refused rather
+		 * than read as a short body. Over TLS, os_fill also returns false on
+		 * EOF without close_notify, so a body cut off that way is accepted as
+		 * complete; that is existing behaviour and is not changed here.
+		 */
+		for (;;)
+		{
+			int64		avail = h->rb_len - h->rb_off;
+
+			if ((int64) s.len + avail > cap)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("columnar: response from \"%s\" exceeded %lld bytes",
+								h->url, (long long) cap)));
+			if (avail > 0)
+			{
+				enlargeStringInfo(&s, (int) avail);
+				s.len += (int) os_take(h, (uint8 *) s.data + s.len, avail);
+				s.data[s.len] = '\0';
+			}
+			if (!os_fill(h))
+				break;
+		}
+	}
 	else
 	{
 		int64		cl = resp->content_length;
 
-		if (cl < 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg("columnar: \"%s\" listing has no length", h->url)));
 		if (cl > cap)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("columnar: object listing from \"%s\" exceeded %lld bytes",
+					 errmsg("columnar: response from \"%s\" exceeded %lld bytes",
 							h->url, (long long) cap)));
 		enlargeStringInfo(&s, (int) cl);
 		os_read_exact(h, (uint8 *) s.data, cl);
@@ -2545,7 +2573,8 @@ os_list_request(PgColumnarObjHandle *h, const char *rawQuery, int64 *outlen)
 	{
 		char	   *body = os_slurp_body(h, &resp, OS_LIST_MAX_BODY, outlen);
 
-		if (resp.conn_close)
+		/* a close-delimited body leaves the connection at end of stream */
+		if (resp.conn_close || (!resp.chunked && resp.content_length < 0))
 			os_disconnect(h);
 		else
 			h->served++;
