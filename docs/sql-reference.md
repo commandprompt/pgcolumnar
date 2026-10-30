@@ -1046,8 +1046,12 @@ location. That location is taken from where `metadata.json` sits. A table copied
 to a new directory therefore still reads. A recorded path that points outside
 the table location is refused, not read.
 
+A data file that the current snapshot removed is not live, so it is skipped. A
+copy-on-write delete or a filtered overwrite records the file it replaced this
+way, as a manifest entry with status 2 (DELETED).
+
 Delete files are refused, not ignored. A snapshot that carries any delete
-manifest or delete entry raises an error here. It does not return rows the table
+manifest or delete file raises an error here. It does not return rows the table
 says are gone. To read a table that uses deletes, use `iceberg_scan`, which
 applies position, equality, and deletion-vector deletes.
 
