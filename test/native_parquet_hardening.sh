@@ -5,7 +5,10 @@
 # The Parquet reader binds several PostgreSQL types to a wider physical type,
 # because Parquet has no narrower one: int2 and date ride on INT32, time and the
 # timestamps on INT64. A value outside the target type's range must raise, not
-# wrap into a different value. Separately, the row-group column-chunk list is
+# wrap into a different value. An unsigned column (UINT_32, UINT_64) is the same
+# rule from the other side: its upper half has the sign bit set, so it must read
+# as the stored value into bigint or numeric, and refuse a narrower type, never
+# come back negative (#1814). Separately, the row-group column-chunk list is
 # indexed by the schema's leaf count, so a row group that carries a different
 # number of chunks must be rejected at parse time rather than read out of bounds.
 #
@@ -130,6 +133,62 @@ psql_run "CREATE TABLE imp_bad (c int2);"
 check "import_parquet also raises 22003" \
 	"$(sqlstate "SELECT pgcolumnar.import_parquet('imp_bad'::regclass, '$W/i2_bad.parquet')")" "22003: value out of range for type smallint"
 check_num "import_parquet left no wrapped rows" "$(qw 'SELECT count(*) FROM imp_bad;')" "0"
+
+# ---- unsigned integers: read as unsigned, never as a wrapped negative (#1814) ----
+# pyarrow writes uint32 as INT32 and uint64 as INT64, marked UINT_32/UINT_64. The
+# reader used to drop the mark, so 2^31 read as -2147483648 and 2^64-1 as -1, with
+# no error, through the very types parquet_schema advised. A wider target (bigint
+# for UINT_32, numeric for UINT_64) must now read the stored value, and a narrower
+# one must refuse with 22003 rather than wrap.
+check "premise: pyarrow reads the unsigned file's values unsigned" \
+	"$(python3 -c "import sys, pyarrow.parquet as pq; t = pq.read_table(sys.argv[1]); print(' '.join(str(v) for c in ('u32', 'u64') for v in t.column(c).to_pylist()))" "$W/unsigned.parquet" 2>&1)" \
+	"1 2147483648 4294967295 1 9223372036854775808 18446744073709551615"
+psql_run "CREATE FOREIGN TABLE f_u32_i8  (c int8)    SERVER pq OPTIONS (path '$W/u32.parquet');"
+psql_run "CREATE FOREIGN TABLE f_u32_i4  (c int4)    SERVER pq OPTIONS (path '$W/u32.parquet');"
+psql_run "CREATE FOREIGN TABLE f_u64_num (c numeric) SERVER pq OPTIONS (path '$W/u64.parquet');"
+psql_run "CREATE FOREIGN TABLE f_u64_i8  (c int8)    SERVER pq OPTIONS (path '$W/u64.parquet');"
+psql_run "CREATE FOREIGN TABLE f_u32max_i2 (c int2)  SERVER pq OPTIONS (path '$W/u32_max.parquet');"
+
+check "parquet_schema advises a type that holds every unsigned value" \
+	"$(qw "SELECT string_agg(column_name || ' ' || data_type, '|' ORDER BY column_name) FROM pgcolumnar.parquet_schema('$W/unsigned.parquet');")" \
+	"u16 integer|u32 bigint|u64 numeric(20,0)|u8 integer"
+check "UINT_32 reads into bigint as unsigned" \
+	"$(qw "SELECT string_agg(c::text, ' ' ORDER BY c) FROM f_u32_i8;")" "1 2147483648 4294967295"
+check "UINT_64 reads into numeric as unsigned" \
+	"$(qw "SELECT string_agg(c::text, ' ' ORDER BY c) FROM f_u64_num;")" "1 9223372036854775808 18446744073709551615"
+check "UINT_32 into bigint: WHERE c > 0 counts every row" \
+	"$(qw "SELECT count(*) FROM f_u32_i8 WHERE c > 0;")" "3"
+check "UINT_32 at or above 2^31 into integer -> 22003" \
+	"$(sqlstate 'SELECT * FROM f_u32_i4')" "22003: value out of range for type integer"
+check "UINT_64 at or above 2^63 into bigint -> 22003" \
+	"$(sqlstate 'SELECT * FROM f_u64_i8')" "22003: value out of range for type bigint"
+check "UINT_32 2^32-1 into smallint -> 22003, not -1" \
+	"$(sqlstate 'SELECT * FROM f_u32max_i2')" "22003: value out of range for type smallint"
+# the DETAIL names the value the file stores, not its signed reading
+u64_detail="$(errfull 'SELECT * FROM f_u64_i8;')"
+case "$u64_detail" in
+	*"DETAIL:  The Parquet file stores 9223372036854775808, which cannot be represented as bigint."*)
+		u64_detail="names 9223372036854775808" ;;
+	*) u64_detail="$(printf '%s' "$u64_detail" | grep -m1 -E '^(ERROR|DETAIL):' || echo "NO ERROR")" ;;
+esac
+check "the UINT_64 refusal names the stored value" "$u64_detail" "names 9223372036854775808"
+check "read_parquet reads every unsigned width at its advised type" \
+	"$(qw "SELECT string_agg(u8 || '|' || u16 || '|' || u32 || '|' || u64, ' ' ORDER BY u64) FROM pgcolumnar.read_parquet('$W/unsigned.parquet') AS t(u8 int, u16 int, u32 bigint, u64 numeric);")" \
+	"1|1|1|1 200|40000|2147483648|9223372036854775808 255|65535|4294967295|18446744073709551615"
+check "read_parquet UINT_64 into bigint -> 22003" \
+	"$(sqlstate "SELECT * FROM pgcolumnar.read_parquet('$W/u64.parquet') AS t(c bigint)")" "22003: value out of range for type bigint"
+# pyarrow writes both spellings of the mark; the crafter keeps one in each of these
+check "UINT_32 marked only by its LogicalType reads into bigint as unsigned" \
+	"$(qw "SELECT string_agg(c::text, ' ' ORDER BY c) FROM pgcolumnar.read_parquet('$W/u32_logical_only.parquet') AS t(c bigint);")" "1 2147483648 4294967295"
+check "UINT_32 marked only by its ConvertedType reads into bigint as unsigned" \
+	"$(qw "SELECT string_agg(c::text, ' ' ORDER BY c) FROM pgcolumnar.read_parquet('$W/u32_converted_only.parquet') AS t(c bigint);")" "1 2147483648 4294967295"
+psql_run "CREATE TABLE imp_u (u8 int, u16 int, u32 bigint, u64 numeric);"
+psql_run "CREATE TABLE imp_u32_i4 (c int4);"
+check "import_parquet reads UINT_32 into bigint and UINT_64 into numeric" \
+	"$(qw "SELECT pgc_value(\$q\$SELECT pgcolumnar.import_parquet('imp_u'::regclass, '$W/unsigned.parquet')\$q\$);"):$(qw "SELECT string_agg(u32 || '|' || u64, ' ' ORDER BY u64) FROM imp_u;")" \
+	"3:1|1 2147483648|9223372036854775808 4294967295|18446744073709551615"
+check "import_parquet UINT_32 into integer -> 22003" \
+	"$(sqlstate "SELECT pgcolumnar.import_parquet('imp_u32_i4'::regclass, '$W/u32.parquet')")" "22003: value out of range for type integer"
 
 # ---- malformed row-group chunk list ----------------------------------------
 # The crafter cut the column-chunk list of a valid two-column file so its row group
