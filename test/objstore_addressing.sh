@@ -172,6 +172,34 @@ rm -f "$PGC_WORKDIR/__part_status__"
 check "and its virtual-host upload cleanup listed the uploads at the bucket root" \
 	"$(lists uploads)" "1 to /, 0 elsewhere"
 
+# The listing is only the means: the cleanup must abort the upload left open. A worker
+# terminated while its CreateMultipartUpload is unanswered (__uploads_delay__) never
+# learns the upload id, so only the dispatcher's cleanup can abort that upload. Under
+# virtual-host the abort is a DELETE of the key alone, ?uploadId=..., and the fixture
+# then drops the upload from __open_uploads__. Before the fix the listing got a 404,
+# the cleanup discarded it, and the upload stayed open (#1783).
+OPEN="$PGC_WORKDIR/__open_uploads__"
+mv_open() { grep -c "^$BUCKET/mv/part-0000\.parquet\$" "$OPEN" 2>/dev/null | tr -d ' '; }
+mv_parts() { grep -cE "^PUT /$BUCKET/mv/part-0000\.parquet .*partNumber=" "$S3_LOG" | tr -d ' '; }
+mv_aborts() { grep -cE "^DELETE /mv/part-0000\.parquet [^ ]*uploadId=" "$S3_LOG" | tr -d ' '; }
+: > "$S3_LOG"
+echo 20 > "$PGC_WORKDIR/__uploads_delay__"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "SET pgcolumnar.objstore_s3_addressing='virtual'" \
+	-c "SELECT pgcolumnar.parallel_export_parquet('mp_big'::regclass, 's3://$BUCKET/mv', 1)" \
+	> "$PGC_WORKDIR/mv.out" 2>&1 &
+mv_pid=$!
+for _ in $(seq 1 300); do [ "$(mv_open)" = 1 ] && break; sleep 0.1; done
+check "premise: a worker's upload is open and its id unanswered when the worker is terminated" \
+	"$(mv_open) open, $(mv_parts) parts" "1 open, 0 parts"
+q "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity
+   WHERE backend_type = 'pgcolumnar parallel_export worker'" >/dev/null
+wait "$mv_pid" 2>/dev/null || true
+rm -f "$PGC_WORKDIR/__uploads_delay__"
+check "and the virtual-host upload cleanup aborted the upload the worker left open" \
+	"$(mv_open) open, $(mv_aborts) aborted by DELETE /mv/part-0000.parquet?uploadId=" \
+	"0 open, 1 aborted by DELETE /mv/part-0000.parquet?uploadId="
+
 # removal proof of the addressing switch: path-style (default) keeps the bucket
 : > "$S3_LOG"
 check "removal proof: with addressing=path the bucket is back in the path" \

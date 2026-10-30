@@ -118,6 +118,27 @@ def _lists(log, want):
     return f"{root} to /, {other} elsewhere"
 
 
+def _mv_open(work):
+    """-> how many uploads at pgc-bucket/mv/part-0000.parquet the fixture's
+    __open_uploads__ lists, as the shell's mv_open counts them (0 when absent)."""
+    try:
+        lines = (work / "__open_uploads__").read_text(errors="replace").splitlines()
+    except OSError:
+        return 0
+    return sum(1 for l in lines if l == f"{BUCKET}/mv/part-0000.parquet")
+
+
+def _mv_count(log, method, path, query_key):
+    """-> how many logged `method` requests went to `path` with `query_key` in their
+    query, as the shell's mv_parts and mv_aborts count them."""
+    try:
+        lines = pathlib.Path(log).read_text(errors="replace").splitlines()
+    except OSError:
+        return 0
+    return sum(1 for f in (l.split() for l in lines)
+               if len(f) > 2 and f[0] == method and f[1] == path and query_key in f[2])
+
+
 def _error_has(dsn, sqls, phrase):
     """Run `sqls` on one connection -> "1" when the last one raised with `phrase` in
     its message, else what happened instead."""
@@ -266,6 +287,32 @@ def osa(pgc_cluster):
             "parallel_export_parquet worker 0 failed")
         (work / "__part_status__").unlink()
         r["vhost uploads list"] = _lists(s3log, "uploads")
+
+        # A worker terminated while its CreateMultipartUpload is unanswered never
+        # learns the upload id: only the dispatcher's cleanup can abort that upload.
+        pathlib.Path(s3log).write_text("")
+        (work / "__uploads_delay__").write_text("20\n")
+        bg = subprocess.Popen(
+            [os.path.join(cluster.bindir, "psql"), "-h", "127.0.0.1", "-p", str(cluster.port),
+             "-U", "postgres", "-d", "postgres", "-Atq", "-c", VIRTUAL,
+             "-c", f"SELECT pgcolumnar.parallel_export_parquet('mp_big'::regclass, 's3://{BUCKET}/mv', 1)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(300):
+            if _mv_open(work) == 1:
+                break
+            time.sleep(0.1)
+        r["mv premise"] = f"{_mv_open(work)} open, {_mv_count(s3log, 'PUT', f'/{BUCKET}/mv/part-0000.parquet', 'partNumber=')} parts"
+        _row(dsn, "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity "
+                  "WHERE backend_type = 'pgcolumnar parallel_export worker'")
+        try:
+            bg.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            bg.kill()
+            bg.wait()
+        (work / "__uploads_delay__").unlink()
+        r["mv aborted"] = (f"{_mv_open(work)} open, "
+                           f"{_mv_count(s3log, 'DELETE', '/mv/part-0000.parquet', 'uploadId=')}"
+                           " aborted by DELETE /mv/part-0000.parquet?uploadId=")
         logged("path again read", PATH, RD + vh)
         r["path again sent"] = _sent(s3log, f"/{BUCKET}/vh.parquet")
 
@@ -423,6 +470,22 @@ def test_the_virtual_host_upload_cleanup_lists_at_the_bucket_root(osa, expect):
         return
     expect.text(osa["vhost uploads list"], "1 to /, 0 elsewhere",
                 "and its virtual-host upload cleanup listed the uploads at the bucket root")
+
+
+def test_a_terminated_workers_upload_is_open_and_unanswered(osa, expect):
+    if _declined(osa, expect):
+        return
+    expect.text(osa["mv premise"], "1 open, 0 parts",
+                "premise: a worker's upload is open and its id unanswered when the worker is terminated")
+
+
+def test_the_virtual_host_upload_cleanup_aborts_the_open_upload(osa, expect):
+    """#1783: the cleanup's listing got a 404, which the cleanup discards, so the
+    upload the terminated worker left stayed open."""
+    if _declined(osa, expect):
+        return
+    expect.text(osa["mv aborted"], "0 open, 1 aborted by DELETE /mv/part-0000.parquet?uploadId=",
+                "and the virtual-host upload cleanup aborted the upload the worker left open")
 
 
 def test_addressing_path_puts_the_bucket_back_in_the_path(osa, expect):
