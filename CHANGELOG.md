@@ -466,6 +466,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- Prefix and pattern reads of `s3://` paths now work under
+  `pgcolumnar.objstore_s3_addressing = 'virtual'` (#1783). The listing request put
+  the bucket in the path although the bucket was already in the host name, so S3
+  read it as a fetch of an object named after the bucket and answered HTTP 404:
+  `LIST to "s3://bucket/_" returned HTTP 404`. Exact-key reads were not affected.
+  The cleanup listing a failed `parallel_export_parquet` runs to abort its
+  unfinished multipart uploads had the same fault. That cleanup discards its
+  errors, so the uploads it should have aborted could stay open. Under virtual-host addressing both listings now
+  go to the bucket root, `/`. Path-style addressing is unchanged.
+  `test/objstore_addressing.sh` and `test_objstore_addressing.py`.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write

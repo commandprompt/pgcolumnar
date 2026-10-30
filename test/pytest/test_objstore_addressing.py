@@ -7,7 +7,10 @@ proves the signer signed the bytes the endpoint expects. The answer alone does n
 prove the addressing: the fixture serves the same object either way, so every
 addressing check also reads the request path the server LOGGED -- the bucket in the
 path under path-style, the key alone under virtual-host -- and a key with a space,
-'+' and '=' must arrive URI-encoded exactly once.
+'+' and '=' must arrive URI-encoded exactly once. A prefix or pattern read, and a
+failed parallel export's upload cleanup, list the bucket: under virtual-host that LIST
+must go to the bucket root, "/", and the fixture answers any other path with the 404
+S3 gives (#1783).
 
 A REFUSAL IS NOT ANY ERROR: with no endpoint, s3:// must be refused 28000 naming
 AWS_ENDPOINT_URL, and gs:// must reach its default host, which this cluster's
@@ -96,6 +99,37 @@ def _sent(log, want, unwanted=None):
     return f"no: the server received {paths}"
 
 
+def _lists(log, want):
+    """-> "<n> to /, <m> elsewhere": the request paths of the logged GETs whose query
+    carries `want` (list-type=2 for ListObjectsV2, uploads for ListMultipartUploads),
+    as the shell's lists() counts them, or a query_error()."""
+    try:
+        lines = pathlib.Path(log).read_text(errors="replace").splitlines()
+    except OSError as exc:
+        return query_error(f"request log unreadable: {exc}")
+    root = other = 0
+    for f in (l.split() for l in lines):
+        if len(f) > 2 and f[0] == "GET" and any(
+                p == want or p.startswith(want + "=") for p in f[2].split("&")):
+            if f[1] == "/":
+                root += 1
+            else:
+                other += 1
+    return f"{root} to /, {other} elsewhere"
+
+
+def _error_has(dsn, sqls, phrase):
+    """Run `sqls` on one connection -> "1" when the last one raised with `phrase` in
+    its message, else what happened instead."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            for sql in sqls:
+                conn.execute(sql)
+    except psycopg.Error as exc:
+        return "1" if phrase in str(exc) else query_error(_message(exc))
+    return "no error"
+
+
 def _resolves(host):
     try:
         return bool(socket.getaddrinfo(host, None))
@@ -151,8 +185,11 @@ def osa(pgc_cluster):
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-osa-"))
     os.chmod(work, 0o777)
     (work / BUCKET / "dir sp").mkdir(parents=True)
+    (work / BUCKET / "pfx").mkdir()
     wrote = _write_parquet(work / BUCKET / "vh.parquet", [1, 2, 3, 4]) or \
-        _write_parquet(work / BUCKET / ENCKEY, [5, 6, 7])
+        _write_parquet(work / BUCKET / ENCKEY, [5, 6, 7]) or \
+        _write_parquet(work / BUCKET / "pfx" / "a.parquet", [10, 20]) or \
+        _write_parquet(work / BUCKET / "pfx" / "b.parquet", [30])
     if wrote is not None:
         shutil.rmtree(work, ignore_errors=True)
         yield {"absent": wrote}
@@ -183,7 +220,8 @@ def osa(pgc_cluster):
     try:
         cluster.initdb()
         with open(datadir / "postgresql.conf", "a") as fh:
-            fh.write("\npgcolumnar.objstore_allowed_endpoints='s3.local'\n")
+            fh.write("\npgcolumnar.objstore_allowed_endpoints='s3.local'\n"
+                     "pgcolumnar.objstore_part_size=262144\n")
         started = _pg_ctl(cluster, ["-D", str(datadir), "-l", log, "-w", "start"], {})
         if started.returncode != 0:
             raise RuntimeError(f"the private cluster did not start: {started.stderr}")
@@ -209,6 +247,25 @@ def osa(pgc_cluster):
         r["vhost sent"] = _sent(s3log, "/vh.parquet", unwanted=f"/{BUCKET}/vh.parquet")
         logged("vhost enc read", VIRTUAL, RD + enc)
         r["vhost enc sent"] = _sent(s3log, "/dir%20sp/a%2Bb%3Dc.parquet")
+
+        pfx, pat = f"('s3://{BUCKET}/pfx/') AS t(id int8)", f"('s3://{BUCKET}/pfx/*.parquet') AS t(id int8)"
+        logged("path prefix read", RD + pfx)
+        r["path prefix list"] = _lists(s3log, "list-type=2")
+        logged("vhost prefix read", VIRTUAL, RD + pfx)
+        r["vhost prefix list"] = _lists(s3log, "list-type=2")
+        logged("vhost pattern read", VIRTUAL, RD + pat)
+        r["vhost pattern list"] = _lists(s3log, "list-type=2")
+
+        _row(dsn, "CREATE TABLE mp_big (id int8, pad text) USING pgcolumnar",
+             "INSERT INTO mp_big SELECT g, md5(g::text)||md5((g+1)::text) "
+             "FROM generate_series(1,60000) g RETURNING 1")
+        pathlib.Path(s3log).write_text("")
+        (work / "__part_status__").write_text("500 2\n")
+        r["vhost export fails"] = _error_has(
+            dsn, [VIRTUAL, f"SELECT pgcolumnar.parallel_export_parquet('mp_big'::regclass, 's3://{BUCKET}/mp', 1)"],
+            "parallel_export_parquet worker 0 failed")
+        (work / "__part_status__").unlink()
+        r["vhost uploads list"] = _lists(s3log, "uploads")
         logged("path again read", PATH, RD + vh)
         r["path again sent"] = _sent(s3log, f"/{BUCKET}/vh.parquet")
 
@@ -311,6 +368,61 @@ def test_the_virtual_host_request_path_is_the_key_alone_encoded_once(osa, expect
         return
     expect.text(osa["vhost enc sent"], "yes",
                 "and its virtual-host request path is the key alone, URI-encoded once")
+
+
+def test_an_s3_prefix_read_path_style(osa, expect):
+    if _declined(osa, expect):
+        return
+    expect.text(osa["path prefix read"], "3 60", "s3:// prefix read, path-style")
+
+
+def test_the_path_style_list_puts_the_bucket_in_the_path(osa, expect):
+    if _declined(osa, expect):
+        return
+    expect.text(osa["path prefix list"], "0 to /, 1 elsewhere",
+                "and its path-style LIST put the bucket in the request path")
+
+
+def test_an_s3_prefix_read_virtual_host(osa, expect):
+    """#1783: the LIST went to /pgc-bucket on the bucket's host name, a GetObject of
+    the key "pgc-bucket" to S3, and the read failed with HTTP 404."""
+    if _declined(osa, expect):
+        return
+    expect.text(osa["vhost prefix read"], "3 60", "s3:// prefix read, virtual-host")
+
+
+def test_the_virtual_host_list_goes_to_the_bucket_root(osa, expect):
+    if _declined(osa, expect):
+        return
+    expect.text(osa["vhost prefix list"], "1 to /, 0 elsewhere",
+                "and its virtual-host LIST went to the bucket root")
+
+
+def test_an_s3_pattern_read_virtual_host(osa, expect):
+    if _declined(osa, expect):
+        return
+    expect.text(osa["vhost pattern read"], "3 60", "s3:// pattern read, virtual-host")
+
+
+def test_the_pattern_read_virtual_host_list_goes_to_the_bucket_root(osa, expect):
+    if _declined(osa, expect):
+        return
+    expect.text(osa["vhost pattern list"], "1 to /, 0 elsewhere",
+                "and the pattern read's virtual-host LIST went to the bucket root")
+
+
+def test_the_virtual_host_export_fails_in_a_worker(osa, expect):
+    if _declined(osa, expect):
+        return
+    expect.text(osa["vhost export fails"], "1", "premise: the virtual-host export fails in a worker")
+
+
+def test_the_virtual_host_upload_cleanup_lists_at_the_bucket_root(osa, expect):
+    """#1783: the dispatcher's ListMultipartUploads carried the same bucket segment."""
+    if _declined(osa, expect):
+        return
+    expect.text(osa["vhost uploads list"], "1 to /, 0 elsewhere",
+                "and its virtual-host upload cleanup listed the uploads at the bucket root")
 
 
 def test_addressing_path_puts_the_bucket_back_in_the_path(osa, expect):
