@@ -2925,15 +2925,32 @@ pq_has_parquet_ext(const char *name)
 
 /*
  * Mirror the local directory walk's skip of `_SUCCESS`, `_temporary`, and
- * dot-hidden names (#619): a listed key whose any path segment begins with '_'
- * or '.' is excluded, so a Spark staging directory does not fold into a read.
- * The `//` in a scheme prefix is not a segment start and never matches.
+ * dot-hidden names (#619) for a listed prefix: a key is excluded when a path
+ * segment BELOW the prefix the user named begins with '_' or '.', so a Spark
+ * staging directory does not fold into a read. The prefix itself is not judged
+ * (#1784): the local walk tests only the entries it finds below the directory
+ * you name, so s3://b/_landing/ reads like /data/_landing/ does.
+ *
+ * `listUrl` ends in '/'. Its scheme is compared without case, because the
+ * module accepts S3:// and returns keys as s3://. A key that does not start
+ * with `listUrl` (the endpoint answered outside the prefix) is judged whole.
  */
 static bool
-pq_remote_key_hidden(const char *key)
+pq_remote_key_hidden(const char *key, const char *listUrl)
 {
+	size_t		llen = strlen(listUrl);
+	const char *sep = strstr(listUrl, "://");
+	size_t		slen = (sep != NULL) ? (size_t) (sep - listUrl) + 3 : 0;
 	const char *p = key;
 
+	if (strlen(key) >= llen &&
+		pg_strncasecmp(key, listUrl, slen) == 0 &&
+		strncmp(key + slen, listUrl + slen, llen - slen) == 0)
+	{
+		p = key + llen;
+		if (p[0] == '_' || p[0] == '.')
+			return true;
+	}
 	while ((p = strchr(p, '/')) != NULL)
 	{
 		if (p[1] == '_' || p[1] == '.')
@@ -2941,6 +2958,23 @@ pq_remote_key_hidden(const char *key)
 		p++;
 	}
 	return false;
+}
+
+/*
+ * Does a listed key match the remote pattern the user wrote? The scheme is
+ * compared without case, as pq_remote_key_hidden does, because the module
+ * accepts S3:// and returns keys as s3://. The rest is matched by fnmatch()
+ * segment by segment, as the local glob() matches (#1784).
+ */
+static bool
+pq_remote_glob_match(const char *pattern, const char *key)
+{
+	const char *sep = strstr(pattern, "://");
+	size_t		slen = (sep != NULL) ? (size_t) (sep - pattern) + 3 : 0;
+
+	if (strlen(key) < slen || pg_strncasecmp(key, pattern, slen) != 0)
+		return false;
+	return fnmatch(pattern + slen, key + slen, FNM_PATHNAME | FNM_PERIOD) == 0;
 }
 
 /*
@@ -3139,10 +3173,21 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		keys = api->list_objects(listUrl, cfg, &nkeys);
 		for (i = 0; i < nkeys; i++)
 		{
-			if (!pq_has_parquet_ext(keys[i]) || pq_remote_key_hidden(keys[i]))
+			if (!pq_has_parquet_ext(keys[i]))
 				continue;
-			/* a glob applies segment by segment, as the local glob() does */
-			if (hasGlob && fnmatch(path, keys[i], FNM_PATHNAME) != 0)
+
+			/*
+			 * A glob matches segment by segment, as the local glob() does: a '_'
+			 * name matches, and a '.' name matches only when the pattern spells
+			 * the dot (FNM_PERIOD), with no hidden-name skip of its own (#1784).
+			 * A prefix skips hidden names below it, as the local walk does.
+			 */
+			if (hasGlob)
+			{
+				if (!pq_remote_glob_match(path, keys[i]))
+					continue;
+			}
+			else if (pq_remote_key_hidden(keys[i], listUrl))
 				continue;
 			files = lappend(files, keys[i]);
 		}

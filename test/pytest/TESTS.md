@@ -12392,7 +12392,7 @@ Every test makes one check under the shell's name, on a private database. Every 
 
 ## 324. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused
 
-The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, an exact key is read with no LIST, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard, and the backend survives.
+The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, the hidden-name skip applies only below the prefix the user named and a remote glob matches `_` and dot names as a local glob does (#1784), an exact key is read with no LIST, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard, and the backend survives.
 
 ### Every test
 
@@ -12406,6 +12406,7 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_fdw_over_a_prefix_reads_what_read_parquet_reads` | FDW over a prefix == read_parquet over the prefix |
 | `test_hidden_and_non_parquet_objects_are_excluded_from_the_listing` | hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded |
 | `test_a_remote_glob_matches_only_the_top_level_parts` | glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/ |
+| `test_hidden_names_are_judged_below_the_named_prefix_and_globs_match_as_local` | #1784, ten parameters, one check each: a prefix the user names may itself start with `_` or `.` (`_landing/`, `.dir/`, and a glob under each) and still reads, with `_temporary/` below it skipped; a glob matches `_` names and a dot name only when it spells the dot (`glb/*.parquet`, `glb/_*.parquet`, `glb/.*.parquet`), as a local glob does; the `glb/` prefix still skips both below it; an upper-case scheme (`S3://.../_landing/` and `S3://.../_landing/*.parquet`) reads as `s3://` does, for a prefix and a pattern |
 | `test_an_exact_key_read_returns_its_rows` | exact-key read returns its rows |
 | `test_an_exact_key_read_issues_no_list` | an exact-key read issues no ListObjectsV2 |
 | `test_the_exact_key_read_reached_the_request_log` | and the request log recorded the exact-key read |

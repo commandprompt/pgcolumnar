@@ -86,11 +86,23 @@ survived() {	# survived BEFORE -> "1" when the server answers and no backend die
 	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
 }
 
+# qe SQL -> the rows as q prints them, or the first ERROR line, so a failed reading
+# says why rather than comparing as empty.
+qe() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1)"
+	if grep -q '^ERROR:' <<<"$out"; then grep -m1 '^ERROR:' <<<"$out"; else echo "$out"; fi
+}
+
 # ---- fixtures on disk: a prefix of parts, a nested part, hidden + non-parquet,
-#      and a Hive-partitioned layout ------------------------------------------
+#      a Hive-partitioned layout, and #1784's named hidden directories ---------
 mkdir -p "$PGC_WORKDIR/$BUCKET/lst/sub" \
          "$PGC_WORKDIR/$BUCKET/hive/dt=2026-01-01" \
-         "$PGC_WORKDIR/$BUCKET/hive/dt=2026-01-02"
+         "$PGC_WORKDIR/$BUCKET/hive/dt=2026-01-02" \
+         "$PGC_WORKDIR/$BUCKET/_landing/_temporary" \
+         "$PGC_WORKDIR/$BUCKET/.dir" \
+         "$PGC_WORKDIR/$BUCKET/glb"
 python3 - "$PGC_WORKDIR/$BUCKET" <<'PYEOF'
 import sys, os
 import pyarrow as pa, pyarrow.parquet as pq
@@ -108,6 +120,15 @@ open(os.path.join(B, "lst/notes.txt"), "w").write("not parquet\n")
 # Hive: two partitions, each one object
 one(os.path.join(B, "hive/dt=2026-01-01/part.parquet"), [1, 2, 3])
 one(os.path.join(B, "hive/dt=2026-01-02/part.parquet"), [4, 5, 6])
+# #1784: a prefix the user names may itself start with '_' or '.'; the hidden
+# rule applies only below it (_temporary/ under _landing/ is still skipped)
+one(os.path.join(B, "_landing/a.parquet"), [1, 2, 3])
+one(os.path.join(B, "_landing/_temporary/t.parquet"), [99])
+one(os.path.join(B, ".dir/a.parquet"), [4, 5, 6])
+# a glob matches '_' names, and a dot name only when the pattern spells the dot
+one(os.path.join(B, "glb/a.parquet"), [1, 2, 3])
+one(os.path.join(B, "glb/_b.parquet"), [10, 11, 12, 13, 14])
+one(os.path.join(B, "glb/.h.parquet"), [100])
 PYEOF
 
 # page size 2 forces the continuation-token loop for the 4-object prefix
@@ -147,6 +168,36 @@ check "hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded" \
 check "glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/" \
 	"$(q "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/*.parquet') AS t(id int8);" | tr '|' ' ')" \
 	"9 99"
+
+# ---- #1784: the hidden rule applies below the named prefix only, and a glob
+#      matches as a local glob() does ----------------------------------------
+# A local directory skips '_' and '.' names it finds below the path you named, not
+# the path itself; a local glob matches '_' names and skips a dot name unless the
+# pattern spells the dot. Remote reads give the same answer.
+rpq() { qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('s3://$BUCKET/$1') AS t(id int8);" | tr '|' ' '; }
+check "a prefix whose own name starts with _ lists the objects below it, still skipping _temporary/" \
+	"$(rpq _landing/)" "3 6"
+check "a prefix whose own name starts with . lists the objects below it" \
+	"$(rpq .dir/)" "3 15"
+check "glob under a named _ directory (_landing/*.parquet) matches" \
+	"$(rpq '_landing/*.parquet')" "3 6"
+check "glob under a named . directory (.dir/*.parquet) matches" \
+	"$(rpq '.dir/*.parquet')" "3 15"
+check "glob glb/*.parquet matches _b.parquet but not .h.parquet, as a local glob does" \
+	"$(rpq 'glb/*.parquet')" "8 66"
+check "glob glb/_*.parquet matches the _ file it spells" \
+	"$(rpq 'glb/_*.parquet')" "5 60"
+check "glob glb/.*.parquet matches the dot file it spells" \
+	"$(rpq 'glb/.*.parquet')" "1 100"
+check "prefix glb/ still skips _b.parquet and .h.parquet below it" \
+	"$(rpq glb/)" "3 6"
+# The module accepts an upper-case scheme and lists keys back as s3://, so the
+# scheme is compared without case, for a prefix and for a pattern alike.
+rpqu() { qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('S3://$BUCKET/$1') AS t(id int8);" | tr '|' ' '; }
+check "an upper-case scheme prefix S3://.../_landing/ reads as s3:// does" \
+	"$(rpqu _landing/)" "3 6"
+check "an upper-case scheme glob S3://.../_landing/*.parquet matches as s3:// does" \
+	"$(rpqu '_landing/*.parquet')" "3 6"
 
 # ---- an exact key is still one GET, no LIST ---------------------------------
 : > "$S3_LOG"
