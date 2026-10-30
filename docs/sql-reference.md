@@ -947,8 +947,10 @@ old name, and columns are selected by id.
 The file must carry field ids. A file written without them is an error that
 directs you to the positional form above. Each requested id must match exactly
 one scalar column of a compatible type. An absent id is an error. So is an id
-that matches more than one column, or an array or composite output column. None
-is a silent wrong column. Read the ids a file carries with `parquet_schema`.
+that matches more than one column, or an array or composite output column. An
+id that belongs to a struct, list or map is refused as nested, whatever the
+output column's type (#1788). None is a silent wrong column. Read the ids a file
+carries with `parquet_schema`.
 
 ```sql
 -- the file has columns alpha (id 7), beta (id 3), gamma (id 12);
@@ -1084,6 +1086,12 @@ bound to the field id whose mapping lists its name. A file that carries field
 ids ignores the mapping. An id-less file with no such property is refused,
 because the specification defines no positional fallback, and the error names
 the property. The mapping is read for top-level scalar columns.
+
+Only top-level primitive columns can be read. An output column that names a
+struct, list or map field is an error (SQLSTATE `0A000`). This holds whatever
+type the column definition list gives it. The error names the column and its
+kind (#1788). The same holds for `iceberg_rest_scan` and the
+`pgcolumnar_iceberg` foreign-data wrapper.
 
 A projected column that the file does not carry reads as null. This covers a
 column added to the schema after the file was written. It also covers a column

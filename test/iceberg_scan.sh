@@ -6,7 +6,9 @@
 # output column name to a schema field id and reading every data file projected
 # by those ids. The headline property: a column read by a name the schema gives
 # but the data file does NOT physically carry still reads, because Iceberg
-# selects by field id, not name.
+# selects by field id, not name. A struct, list or map column declared with a
+# scalar type is refused, through iceberg_scan and the foreign-data wrapper,
+# instead of reading as null on every row (#1788).
 #
 # Usage:  test/iceberg_scan.sh [PG_CONFIG]
 
@@ -20,6 +22,23 @@ sqlstate_of() {
 \\set VERBOSITY sqlstate
 $1;
 SQLEOF
+}
+
+# refusal SQL REGEX LABEL -> "<SQLSTATE> (LABEL)" when SQL raised an error whose
+# primary message matches REGEX, "<SQLSTATE>: <message>" for any other error, or
+# "no error" (then the rows it returned follow, so a red shows what was read).
+refusal() {
+	local out line state msg
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	line="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): /\1|/p' <<<"$out" | head -1)"
+	if [ -z "$line" ]; then echo "no error: $(tr '\n' ' ' <<<"$out")"; return; fi
+	state="${line%%|*}"; msg="${line#*|}"
+	if grep -qE -- "$2" <<<"$msg"; then echo "$state ($3)"; else echo "$state: $msg"; fi
 }
 
 FX="$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg"
@@ -87,6 +106,52 @@ check "a column renamed in the schema still reads by field id (amt2 = amount)" \
 # ---- a name absent from the schema is refused ------------------------------
 check "an output column not in the schema is refused (42703)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_scan('$MD') AS t(nosuch int)")" "42703"
+
+# ---- a struct, list or map column declared scalar is refused (#1788) -------
+# A copy of the metadata whose current schema also has a struct, a list and a
+# map, added after the data files were written (so the files lack them). Their
+# field ids (4, 6, 8) are those of the nested fields themselves. Declared with a
+# scalar type, each read as null on every row instead of being refused; a file
+# that does carry the column read as null the same way. Declared as a record or
+# an array it is refused, and now so is every declaration: only top-level
+# primitive columns can be read.
+NEST="$MDDIR/nested.metadata.json"
+python3 - "$MD" "$NEST" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+sid = m["current-schema-id"]
+sch = [s for s in m["schemas"] if s["schema-id"] == sid][0]
+sch["fields"] += [
+    {"id": 4, "name": "st", "required": False, "type": {"type": "struct", "fields": [
+        {"id": 5, "name": "a", "required": False, "type": "int"}]}},
+    {"id": 6, "name": "li", "required": False, "type": {
+        "type": "list", "element-id": 7, "element": "int", "element-required": False}},
+    {"id": 8, "name": "mp", "required": False, "type": {
+        "type": "map", "key-id": 9, "key": "string", "value-id": 10, "value": "long",
+        "value-required": False}},
+]
+m["last-column-id"] = 10
+json.dump(m, open(sys.argv[2], "w"))
+PY
+chmod 644 "$NEST"
+check "iceberg_scan still reads the scalar columns beside nested fields" \
+	"$(q "SELECT string_agg(id::text, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$NEST') AS t(id bigint)")" "1,2,3,4,5"
+check "iceberg_scan refuses a struct column declared text (0A000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$NEST') AS t(id bigint, st text)" \
+	   'output column "st" is a struct field' 'struct')" "0A000 (struct)"
+check "iceberg_scan refuses a list column declared int4 (0A000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$NEST') AS t(id bigint, li int4)" \
+	   'output column "li" is a list field' 'list')" "0A000 (list)"
+check "iceberg_scan refuses a map column declared int8 (0A000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$NEST') AS t(id bigint, mp int8)" \
+	   'output column "mp" is a map field' 'map')" "0A000 (map)"
+psql_run "CREATE SERVER icescan_nest FOREIGN DATA WRAPPER pgcolumnar_iceberg;
+	CREATE FOREIGN TABLE icescan_fnest (id bigint, st text)
+	  SERVER icescan_nest OPTIONS (metadata_path '$NEST');"
+check "a pgcolumnar_iceberg foreign table refuses a struct column declared text (0A000)" \
+	"$(refusal "SELECT * FROM icescan_fnest" 'output column "st" is a struct field' 'struct')" \
+	"0A000 (struct)"
 
 # deletes (apply position, refuse equality) are covered by iceberg_deletes.sh
 

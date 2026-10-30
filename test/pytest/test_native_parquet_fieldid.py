@@ -4,7 +4,10 @@ the requested field id (#388 phase 3c). The pytest twin of
 
 pyarrow, an independent writer, writes a file whose field ids are out of order and
 disjoint from position (alpha=7, beta=3, gamma=12), so a reader that bound by position
-or by name could not pass the projection arms. The refusal arms each want their own
+or by name could not pass the projection arms. A second file has the shape Iceberg
+writes for a struct, a list and a map, with their field ids on group nodes; asking for
+one of those ids is refused as nested, naming the column and its kind, and not as an
+id the file lacks (#1788). The refusal arms each want their own
 guard's message, not only the SQLSTATE: four of them share 22023, and with the "no
 field ids" guard removed an id-less file fell through to the absent-id refusal and
 still passed. Every reading waits for the server first, and survival also reads the
@@ -30,8 +33,8 @@ DB = "pgc_native_parquet_fieldid"
 
 # the same writer the shell runs
 WRITER = r'''
-import sys, pyarrow as pa, pyarrow.parquet as pq
-fid, noid, dup = sys.argv[1], sys.argv[2], sys.argv[3]
+import re, sys, pyarrow as pa, pyarrow.parquet as pq
+fid, noid, dup, nest, groups = sys.argv[1:6]
 schema = pa.schema([
     pa.field("alpha", pa.int32(),  metadata={b"PARQUET:field_id": b"7"}),
     pa.field("beta",  pa.string(), metadata={b"PARQUET:field_id": b"3"}),
@@ -49,6 +52,20 @@ dschema = pa.schema([
 ])
 pq.write_table(pa.table({"p": pa.array([1], pa.int32()),
                          "q": pa.array([2], pa.int32())}, schema=dschema), dup)
+F = lambda i: {b"PARQUET:field_id": str(i).encode()}
+nschema = pa.schema([
+    pa.field("id", pa.int64(), metadata=F(1)),
+    pa.field("st", pa.struct([pa.field("a", pa.int32(), metadata=F(5)),
+                              pa.field("b", pa.string(), metadata=F(6))]), metadata=F(2)),
+    pa.field("li", pa.list_(pa.field("element", pa.int32(), metadata=F(7))), metadata=F(3)),
+    pa.field("mp", pa.map_(pa.field("key", pa.string(), nullable=False, metadata=F(8)),
+                           pa.field("value", pa.int64(), metadata=F(9))), metadata=F(4)),
+])
+pq.write_table(pa.Table.from_pylist(
+    [{"id": 1, "st": {"a": 1, "b": "x"}, "li": [1, None, 3], "mp": [("k", 1)]}],
+    schema=nschema), nest)
+found = re.findall(r"group field_id=(\d+) (\w+)", str(pq.ParquetFile(nest).schema))
+open(groups, "w").write(" ".join(f"{n}={i}" for i, n in found) + "\n")
 '''
 
 # the refusal each arm wants, matched against the primary message as the shell does
@@ -58,6 +75,9 @@ SCALAR = (r"supports only scalar columns", "not scalar")
 COUNT = (r"field_ids has 2 element\(s\) but the column definition list has 1 column", "count mismatch")
 NOIDS = (r"carries no field ids", "no field ids")
 DUPREQ = (r"field id 7 is requested more than once", "requested twice")
+NSTRUCT = (r'field id 2 \(requested for output column "st"\) is a nested struct column', "nested struct")
+NLIST = (r'field id 3 \(requested for output column "li"\) is a nested list column', "nested list")
+NMAP = (r'field id 4 \(requested for output column "mp"\) is a nested map column', "nested map")
 
 
 def _message(exc):
@@ -143,9 +163,11 @@ def pfid(pgc_cluster, server_dir):
         w.mkdir(exist_ok=True)
         w.chmod(0o777)
         fid, noid, dup = w / "fieldid.parquet", w / "noid.parquet", w / "dup.parquet"
-        subprocess.run([sys.executable, "-c", WRITER, str(fid), str(noid), str(dup)],
+        nest, groups = w / "nested.parquet", w / "nested_groups.txt"
+        subprocess.run([sys.executable, "-c", WRITER, str(fid), str(noid), str(dup),
+                        str(nest), str(groups)],
                                  capture_output=True, text=True)
-        for f in (fid, noid, dup):
+        for f in (fid, noid, dup, nest):
             if f.exists():
                 f.chmod(0o644)
         with psycopg.connect(dsn, autocommit=True) as conn:
@@ -165,6 +187,17 @@ def pfid(pgc_cluster, server_dir):
         dupreq = f"SELECT * FROM pgcolumnar.read_parquet('{fid}', ARRAY[7,7]) AS t(a1 int, a2 int)"
         r["dup req"] = _refusal(dsn, dupreq, DUPREQ)
         r["names id"] = _names_the_id(dsn, dupreq)
+        r["nest leaves"] = _rows(dsn, f"SELECT string_agg(field_id::text, ',' ORDER BY field_id) "
+                                      f"FROM pgcolumnar.parquet_schema('{nest}')")
+        try:
+            r["nest groups"] = groups.read_text().strip()
+        except OSError as exc:
+            r["nest groups"] = query_error(f"the group-id record is unreadable: {exc}")
+        r["nest scalar"] = _rows(dsn, f"SELECT id FROM pgcolumnar.read_parquet('{nest}', ARRAY[1]) AS t(id int8)")
+        r["nest struct"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{nest}', ARRAY[1,2]) "
+                                         f"AS t(id int8, st text)", NSTRUCT)
+        r["nest list"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{nest}', ARRAY[3]) AS t(li int4)", NLIST)
+        r["nest map"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{nest}', ARRAY[4]) AS t(mp int8)", NMAP)
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -240,6 +273,48 @@ def test_the_duplicate_requested_id_error_names_the_id(request, expect):
         return
     r = request.getfixturevalue("pfid")
     expect.text(r["names id"], "1", "the duplicate-requested-id error names the id, not the file")
+
+
+def test_the_nested_files_leaves_carry_only_the_child_ids(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow is needed to write the field-id fixture") is None:
+        return
+    r = request.getfixturevalue("pfid")
+    expect.text(r["nest leaves"], "1,5,6,7,8,9", "premise: the nested file's leaves carry ids 1,5,6,7,8,9 and none of 2,3,4")
+
+
+def test_the_nested_files_groups_carry_the_nested_ids(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow is needed to write the field-id fixture") is None:
+        return
+    r = request.getfixturevalue("pfid")
+    expect.text(r["nest groups"], "st=2 li=3 mp=4", "premise: the nested file's groups carry ids st=2 li=3 mp=4")
+
+
+def test_a_scalar_beside_nested_columns_still_reads_by_field_id_premise(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow is needed to write the field-id fixture") is None:
+        return
+    r = request.getfixturevalue("pfid")
+    expect.text(r["nest scalar"], "1", "premise: a scalar beside nested columns still reads by field id")
+
+
+def test_a_struct_field_id_read_as_text_is_refused_as_nested(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow is needed to write the field-id fixture") is None:
+        return
+    r = request.getfixturevalue("pfid")
+    expect.text(r["nest struct"], "0A000 (nested struct)", "a struct field id read as text is refused as nested (0A000)")
+
+
+def test_a_list_field_id_read_as_int4_is_refused_as_nested(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow is needed to write the field-id fixture") is None:
+        return
+    r = request.getfixturevalue("pfid")
+    expect.text(r["nest list"], "0A000 (nested list)", "a list field id read as int4 is refused as nested (0A000)")
+
+
+def test_a_map_field_id_read_as_int8_is_refused_as_nested(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow is needed to write the field-id fixture") is None:
+        return
+    r = request.getfixturevalue("pfid")
+    expect.text(r["nest map"], "0A000 (nested map)", "a map field id read as int8 is refused as nested (0A000)")
 
 
 def test_the_backend_survives_the_fieldid_refusals(request, expect):

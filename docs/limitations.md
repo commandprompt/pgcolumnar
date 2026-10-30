@@ -1180,5 +1180,7 @@ table at its current snapshot. It has these limits:
   position-delete position, and a `current-schema-id` that names no schema.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet.
+- Only top-level primitive columns can be read. A column that names a struct,
+  list or map field is an error, whatever type it is declared with (#1788).
 - The reader does not write or commit to an Iceberg table, and it reads only the
   current snapshot. Time travel to an older snapshot is not supported.

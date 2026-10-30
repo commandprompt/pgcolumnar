@@ -2704,7 +2704,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
  * Scope: flat top-level scalars. A requested id must resolve to exactly one
  * non-repeated scalar leaf of a compatible physical type; a nested/array output,
  * an absent id, a duplicate id, or a file with no ids at all is refused rather
- * than silently mis-bound. Reuses the same ImpTop/ImpLeaf output as the
+ * than silently mis-bound, and so is an id carried by a group (a struct, list
+ * or map: #1788). Reuses the same ImpTop/ImpLeaf output as the
  * positional binder, so pq_read_rows is unchanged.
  *
  * Name mapping (Iceberg schema.name-mapping.default): when a leaf carries no
@@ -2832,6 +2833,26 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 		}
 		if (found < 0)
 		{
+			/*
+			 * A struct, list or map carries its field id on a group, not a leaf
+			 * (#1788). The file has the column, so it is neither absent nor null:
+			 * it is nested, and field-id projection reads only scalars.
+			 */
+			for (j = 1; j < pf->nelems; j++)
+			{
+				PqSchemaCol *g = &pf->elems[j];
+
+				if (g->num_children > 0 && g->field_id == req)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("field id %d (requested for output column \"%s\") is a nested %s column; field-id projection supports only scalar columns",
+									req, NameStr(att->attname),
+									g->converted_type == PQ_CT_LIST ? "list" :
+									(g->converted_type == PQ_CT_MAP ||
+									 g->converted_type == PQ_CT_MAP_KEY_VALUE) ? "map" :
+									"struct")));
+			}
+
 			/*
 			 * The projected field id is not present in this file. Under
 			 * Column Projection (Iceberg data files) that is not an error: the

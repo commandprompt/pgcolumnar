@@ -466,6 +466,14 @@ true until the next version shipped.
 
 ### Fixed
 
+- `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign-data
+  wrapper now refuse a struct, list or map column declared with a scalar type
+  (#1788). Such a column used to read as null on every row, with no error, even
+  when the data file held values for it. The error is `0A000` and names the
+  column and its kind. `read_parquet(path, field_ids)` now refuses an id that a
+  struct, list or map carries the same way. It used to say the file had no
+  column with that id. `test/iceberg_scan.sh`, `test/native_parquet_fieldid.sh`
+  and their pytest twins.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write

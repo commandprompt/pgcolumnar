@@ -5,7 +5,10 @@ check by the shell's name (#1341).
 The warehouse is relocated so its recorded root differs from where it lies. The scan
 reads the current snapshot's five rows, projects and reorders by field id, reads a
 subset, and still reads a column the schema renamed, because it selects by id and not
-by name; a name the schema lacks is refused with 42703. A role with USAGE on the
+by name; a name the schema lacks is refused with 42703. A struct, list or map column
+declared with a scalar type is refused with 0A000, naming the column and its kind,
+through iceberg_scan and through a pgcolumnar_iceberg foreign table, instead of
+reading as null on every row (#1788). A role with USAGE on the
 schema but without pg_read_server_files is refused with 42501, and a non-superuser
 holding that role reads every row.
 
@@ -16,6 +19,7 @@ shell's pgc_skip message, as pgc_skip does, and the rest decline unnamed.
 """
 import json
 import pathlib
+import re
 import shutil
 
 import psycopg
@@ -51,6 +55,21 @@ def _sqlstate(dsn, sql, user=None, port=None):
     return "no error"
 
 
+def _refusal(dsn, sql, regex, label):
+    """-> "<SQLSTATE> (<label>)" when the statement raised an error whose primary
+    message matches `regex`, "<SQLSTATE>: <message>" for any other error, or
+    "no error: <rows>" with what it read instead."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            rows = conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        msg = exc.diag.message_primary or ""
+        return f"{exc.sqlstate} ({label})" if re.search(regex, msg) else f"{exc.sqlstate}: {msg}"
+    return "no error: " + " ".join("|".join("" if v is None else str(v) for v in r) for r in rows)
+
+
 def _lines(v):
     return v if isinstance(v, str) else "\n".join(str(x) for x in v)
 
@@ -74,6 +93,23 @@ def isc(pgc_cluster, server_dir):
     ren = md.parent / "renamed.metadata.json"
     ren.write_text(json.dumps(m))
     ren.chmod(0o666)
+    # #1788: the current schema also gets a struct, a list and a map, added after
+    # the data files were written, as the shell's nested.metadata.json does
+    m = json.loads(md.read_text())
+    sch = next(s for s in m["schemas"] if s["schema-id"] == m["current-schema-id"])
+    sch["fields"] += [
+        {"id": 4, "name": "st", "required": False, "type": {"type": "struct", "fields": [
+            {"id": 5, "name": "a", "required": False, "type": "int"}]}},
+        {"id": 6, "name": "li", "required": False, "type": {
+            "type": "list", "element-id": 7, "element": "int", "element-required": False}},
+        {"id": 8, "name": "mp", "required": False, "type": {
+            "type": "map", "key-id": 9, "key": "string", "value-id": 10, "value": "long",
+            "value-required": False}},
+    ]
+    m["last-column-id"] = 10
+    nest = md.parent / "nested.metadata.json"
+    nest.write_text(json.dumps(m))
+    nest.chmod(0o666)
     admin = pgc_cluster.dsn()
     with psycopg.connect(admin, autocommit=True) as a:
         a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
@@ -87,6 +123,9 @@ def isc(pgc_cluster, server_dir):
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
             c.execute(f"GRANT USAGE ON SCHEMA pgcolumnar TO {UNPRIV}, {READER}")
+            c.execute("CREATE SERVER icescan_nest FOREIGN DATA WRAPPER pgcolumnar_iceberg")
+            c.execute("CREATE FOREIGN TABLE icescan_fnest (id bigint, st text) "
+                      f"SERVER icescan_nest OPTIONS (metadata_path '{nest}')")
         scan = "pgcolumnar.iceberg_scan('{}')"
         r = {
             "ids": _rows(dsn, f"SELECT string_agg(field_id::text, ',' ORDER BY field_id) "
@@ -98,6 +137,16 @@ def isc(pgc_cluster, server_dir):
             "subset": _rows(dsn, f"SELECT string_agg(region, ',' ORDER BY region) FROM {scan.format(md)} AS t(region text)"),
             "renamed": _rows(dsn, f"SELECT string_agg(amt2::text, ',' ORDER BY amt2) FROM {scan.format(ren)} AS t(amt2 int)"),
             "nosuch": _sqlstate(dsn, f"SELECT * FROM {scan.format(md)} AS t(nosuch int)"),
+            "nest scalar": _rows(dsn, f"SELECT string_agg(id::text, ',' ORDER BY id) FROM {scan.format(nest)} "
+                                      "AS t(id bigint)"),
+            "nest struct": _refusal(dsn, f"SELECT * FROM {scan.format(nest)} AS t(id bigint, st text)",
+                                    r'output column "st" is a struct field', "struct"),
+            "nest list": _refusal(dsn, f"SELECT * FROM {scan.format(nest)} AS t(id bigint, li int4)",
+                                  r'output column "li" is a list field', "list"),
+            "nest map": _refusal(dsn, f"SELECT * FROM {scan.format(nest)} AS t(id bigint, mp int8)",
+                                 r'output column "mp" is a map field', "map"),
+            "fdw struct": _refusal(dsn, "SELECT * FROM icescan_fnest",
+                                   r'output column "st" is a struct field', "struct"),
             "unpriv": _sqlstate(dsn, f"SELECT * FROM {scan.format(md)} AS t(id bigint)", UNPRIV, pgc_cluster.port),
             "reader": _rows(dsn, f"SELECT count(*) FROM {scan.format(md)} AS t(id bigint)", READER, pgc_cluster.port),
         }
@@ -167,3 +216,35 @@ def test_a_pg_read_server_files_member_may_scan(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["reader"]), "5", "a pg_read_server_files member who is not superuser may scan")
+
+
+def test_iceberg_scan_reads_the_scalars_beside_nested_fields(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["nest scalar"]), "1,2,3,4,5",
+                "iceberg_scan still reads the scalar columns beside nested fields")
+
+
+def test_iceberg_scan_refuses_a_struct_column_declared_text(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(isc["nest struct"], "0A000 (struct)", "iceberg_scan refuses a struct column declared text (0A000)")
+
+
+def test_iceberg_scan_refuses_a_list_column_declared_int4(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(isc["nest list"], "0A000 (list)", "iceberg_scan refuses a list column declared int4 (0A000)")
+
+
+def test_iceberg_scan_refuses_a_map_column_declared_int8(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(isc["nest map"], "0A000 (map)", "iceberg_scan refuses a map column declared int8 (0A000)")
+
+
+def test_an_iceberg_foreign_table_refuses_a_struct_column_declared_text(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(isc["fdw struct"], "0A000 (struct)",
+                "a pgcolumnar_iceberg foreign table refuses a struct column declared text (0A000)")
