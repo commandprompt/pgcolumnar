@@ -466,6 +466,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- `parallel_export_parquet` to a remote prefix now obeys the calling session's
+  `pgcolumnar.objstore_allowed_endpoints`, `objstore_s3_addressing` and
+  `objstore_part_size` (#1780). Its background workers started from
+  `postgresql.conf` and ignored a `SET`. A session that set the allow-list to
+  `''` still had its workers upload `part-0000.parquet`; the call then failed
+  and left the part behind. The dispatcher now checks the endpoint against the
+  session's list before any worker starts, and passes the three settings to
+  the workers. `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write

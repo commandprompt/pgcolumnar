@@ -72,6 +72,7 @@
 #define PEXPORT_KEY_HEADER	0
 #define PEXPORT_KEY_SLOTS	1
 #define PEXPORT_KEY_LEAVES	2
+#define PEXPORT_KEY_GUCS	3
 #define PEXPORT_MAX_WORKERS 32
 
 typedef enum PexportState
@@ -118,6 +119,21 @@ typedef struct PexportSpawn
 } PexportSpawn;
 
 PGDLLEXPORT void pgcolumnar_parallel_export_worker(Datum main_arg);
+
+/*
+ * The settings the object-store module reads by name (#1780). A background
+ * worker starts from postgresql.conf and ALTER SYSTEM only, so without these
+ * a worker ignored the caller's SET: it uploaded to an endpoint the session
+ * had refused, and ignored its part size and addressing. The dispatcher copies
+ * the caller's values into the segment, in this order, each ending in a NUL,
+ * and every worker applies them before it writes.
+ */
+static const char *const pexport_session_gucs[] = {
+	"pgcolumnar.objstore_allowed_endpoints",
+	"pgcolumnar.objstore_s3_addressing",
+	"pgcolumnar.objstore_part_size",
+};
+#define PEXPORT_NGUCS lengthof(pexport_session_gucs)
 
 /* ------------------------------------------------------------------------- */
 
@@ -226,6 +242,20 @@ pexport_prepare_dir(const char *dir)
 					 errhint("A remote prefix must be new or empty; "
 							 "pgcolumnar cannot verify this without a bucket "
 							 "listing.")));
+
+		/*
+		 * Check the endpoint against this session's allow-list before any
+		 * worker starts (#1780), so a refused endpoint fails once, before any
+		 * upload, as export_parquet does. The module checks the list before it
+		 * connects; listing the prefix is the one request with no side effect.
+		 * The run lists the prefix again after the workers finish.
+		 */
+		if (api->list_objects != NULL)
+		{
+			int			n = 0;
+
+			(void) api->list_objects(dir, NULL, &n);
+		}
 		return;
 	}
 
@@ -618,6 +648,18 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
 
+	/* the caller's object-store settings (#1780); the caller could SET each */
+	{
+		const char *v = (const char *) shm_toc_lookup(toc, PEXPORT_KEY_GUCS, false);
+		int			g;
+
+		for (g = 0; g < (int) PEXPORT_NGUCS; g++)
+		{
+			SetConfigOption(pexport_session_gucs[g], v, PGC_SUSET, PGC_S_SESSION);
+			v += strlen(v) + 1;
+		}
+	}
+
 	/*
 	 * Adopt the dispatcher's exact snapshot. ImportSnapshot requires a
 	 * repeatable-read (or serializable) transaction with no snapshot taken yet,
@@ -736,6 +778,9 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	PexportHeader *hdr;
 	PexportWorkerSlot *slots;
 	Oid		   *leafchunk;
+	char	   *gucvals[PEXPORT_NGUCS];
+	Size		gucsize;
+	char	   *gucchunk;
 	uint32		dsmh;
 	BackgroundWorker bw;
 	BackgroundWorkerHandle **handles;
@@ -882,7 +927,14 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	shm_toc_estimate_chunk(&est, sizeof(PexportHeader));
 	shm_toc_estimate_chunk(&est, mul_size(sizeof(PexportWorkerSlot), workers));
 	shm_toc_estimate_chunk(&est, mul_size(sizeof(Oid), Max(npart, 1)));
-	shm_toc_estimate_keys(&est, 3);
+	gucsize = 0;
+	for (i = 0; i < (int) PEXPORT_NGUCS; i++)
+	{
+		gucvals[i] = pstrdup(GetConfigOption(pexport_session_gucs[i], false, false));
+		gucsize = add_size(gucsize, strlen(gucvals[i]) + 1);
+	}
+	shm_toc_estimate_chunk(&est, gucsize);
+	shm_toc_estimate_keys(&est, 4);
 	segsize = shm_toc_estimate(&est);
 
 	seg = dsm_create(segsize, 0);
@@ -896,6 +948,15 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	shm_toc_insert(toc, PEXPORT_KEY_LEAVES, leafchunk);
 	for (i = 0; i < npart; i++)
 		leafchunk[i] = leafoids[i];
+	gucchunk = (char *) shm_toc_allocate(toc, gucsize);
+	shm_toc_insert(toc, PEXPORT_KEY_GUCS, gucchunk);
+	for (i = 0; i < (int) PEXPORT_NGUCS; i++)
+	{
+		size_t		len = strlen(gucvals[i]) + 1;
+
+		memcpy(gucchunk, gucvals[i], len);
+		gucchunk += len;
+	}
 	dsmh = dsm_segment_handle(seg);
 
 	hdr->dbid = MyDatabaseId;

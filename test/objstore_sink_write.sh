@@ -237,6 +237,40 @@ check "shrink: parts 0002/0003 from the larger run are gone" \
 check "shrink: _SUCCESS certifies the reconciled prefix" \
 	"$([ -f "$PGC_WORKDIR/$BUCKET/sr/_SUCCESS" ] && echo yes)" "yes"
 
+# #1780: the workers obey the calling session's settings, not only the system's. A
+# background worker starts from postgresql.conf, so before the fix a session that SET
+# the allow-list to '' still had its workers upload part-0000, and the error came only
+# afterwards, from the dispatcher, with the part left behind.
+: > "$S3_LOG"
+check "session allow-list: a SET to '' refuses parallel_export_parquet 42501" \
+	"$(refusal_of "SET pgcolumnar.objstore_allowed_endpoints = ''; SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sa', 2)" \
+		"is not in pgcolumnar.objstore_allowed_endpoints" " by the allow-list")" "42501 by the allow-list"
+check "session allow-list: nothing reached the refused prefix (no PUT, no POST)" \
+	"$(logn '^(PUT|POST) /pgc-bucket/sa/') requests, $(ls "$PGC_WORKDIR/$BUCKET/sa/" 2>/dev/null | wc -l | tr -d ' ') objects" \
+	"0 requests, 0 objects"
+# the reverse: the system list is empty and the session SETs the endpoint
+sys_list_is() {  # sys_list_is VALUE: wait up to 10 s for a new session to see VALUE
+	for _ in $(seq 1 50); do
+		[ "$(q "SELECT current_setting('pgcolumnar.objstore_allowed_endpoints') = '$1'")" = t ] && return 0
+		sleep 0.2
+	done
+}
+psql_run "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = ''"
+psql_run "SELECT pg_reload_conf()" >/dev/null
+sys_list_is ""
+check "session allow-list: a session SET widens an empty system list for the workers" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-c "SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'" \
+		-c "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sw', 2)" 2>&1 | tail -1)" "80000"
+psql_run "ALTER SYSTEM RESET pgcolumnar.objstore_allowed_endpoints"
+psql_run "SELECT pg_reload_conf()" >/dev/null
+sys_list_is "127.0.0.1"
+# a part far below each worker's object forces multipart only if the workers read it
+: > "$S3_LOG"
+q "SET pgcolumnar.objstore_part_size = 16384; SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/pz', 2)" >/dev/null
+check "parallel: a session SET of objstore_part_size reaches the workers (multipart)" \
+	"$([ "$(logn '^POST /pgc-bucket/pz/part-0000.parquet uploads=')" -ge 1 ] && echo yes || echo no)" "yes"
+
 # cancel mid-run: the dispatcher removes the completed keys it wrote. Big table
 # + small parts so a worker is mid-multipart when the cancel lands.
 psql_run "DROP TABLE IF EXISTS es_parbig;
