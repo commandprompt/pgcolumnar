@@ -10,7 +10,7 @@ request: a server-name call authenticates with the mapping token and with no tok
 the environment; the token and the OAuth2 client secret never reach the server log; a
 wrong token, a missing one, and a wrong OAuth2 secret are each refused by their own
 message; a half OAuth2 credential is refused before any request, even beside a static
-token; secrets are rejected on a SERVER and catalog_uri on a USER MAPPING; an
+token; a static token wins over a complete pair, with no token request; secrets are rejected on a SERVER and catalog_uri on a USER MAPPING; an
 oauth_token_uri off the endpoint allow-list (link-local or any other host) is refused
 by the allow-list itself; the URI form works with the environment token; and a
 non-superuser never borrows the environment token unless a superuser marked its
@@ -319,6 +319,19 @@ def irs(pgc_cluster):
                   f" OPTIONS (DROP token, DROP oauth_client_secret, ADD oauth_client_id '{OCID}')")
         r["oauth on mapping"] = _sqlstate(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat"
                                                " OPTIONS (ADD oauth_scope 'catalog')")
+        # a token wins over a complete pair and mints no bearer. The secret is wrong, so
+        # a mint would be refused; the catalog takes only the fixture's minted bearer,
+        # given here as the static token. "no error" means the static token was sent;
+        # the count is the requests to the token endpoint.
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat"
+                  f" OPTIONS (ADD token '{OATOKEN}', ADD oauth_client_secret 'wrong-secret')")
+        tw0 = _lines(olog)
+        won = _refusal(dsn, LOCATE.format("ocat"), "@@ no refusal is expected @@")
+        tw1 = _lines(olog)
+        r["token wins"] = (f"{won}|{sum(1 for l in tw1[len(tw0):] if 'POST /v1/oauth/tokens' in l)}"
+                           if isinstance(tw0, list) and isinstance(tw1, list)
+                           else query_error(f"fixture log unreadable: {tw0} / {tw1}"))
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (DROP token, DROP oauth_client_secret)")
         r["oauth on server"] = _sqlstate(dsn, "CREATE SERVER bad2 FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog"
                                               f" OPTIONS (catalog_uri '{ocat}', oauth_client_secret 'x')")
 
@@ -516,6 +529,13 @@ def test_oauth_options_are_accepted_on_a_mapping(irs, expect):
     if _declined(irs, expect):
         return
     expect.text(irs["oauth on mapping"], "ok", "oauth options are accepted on a USER MAPPING (no error)")
+
+
+def test_a_static_token_wins_over_a_complete_oauth_pair(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["token wins"], "no error|0",
+                "a static token and a complete OAuth2 pair read by the token, with no token request")
 
 
 def test_an_oauth_option_on_the_server_is_rejected(irs, expect):

@@ -10915,7 +10915,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 ## 276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else
 
-The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request and even beside a static token; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; and a non-superuser borrows the environment token only when a superuser waived its credentials.
+The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request and even beside a static token; a static token wins over a complete pair, with no token request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; and a non-superuser borrows the environment token only when a superuser waived its credentials.
 
 ### Every test
 
@@ -10946,6 +10946,7 @@ Every test makes one check under the shell's name. An "accepted" arm reads `ok` 
 | `test_a_half_oauth_id_is_refused_even_with_a_static_token` | a half OAuth2 credential (id, no secret) is refused even with a static token (28000) |
 | `test_a_half_oauth_secret_is_refused_even_with_a_static_token` | a half OAuth2 credential (secret, no id) is refused even with a static token (28000) |
 | `test_oauth_options_are_accepted_on_a_mapping` | oauth options are accepted on a USER MAPPING (no error) |
+| `test_a_static_token_wins_over_a_complete_oauth_pair` | a static token and a complete OAuth2 pair read by the token, with no token request |
 | `test_an_oauth_option_on_the_server_is_rejected` | an oauth option on the SERVER is rejected (HV00D) |
 | `test_a_link_local_token_uri_is_refused_by_the_allow_list` | a link-local oauth_token_uri is refused by the allow-list (42501) |
 | `test_an_off_list_token_uri_host_is_refused` | an off-allow-list oauth_token_uri host is refused (42501) |

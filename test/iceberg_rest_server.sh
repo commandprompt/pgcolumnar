@@ -282,6 +282,18 @@ q "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (DROP token, DROP oauth_c
 check "oauth options are accepted on a USER MAPPING (no error)" \
 	"$(sqlstate_of "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (ADD oauth_scope 'catalog')")" \
 	"ok"
+# A token wins over a complete pair, and no bearer is minted. The secret here is
+# wrong, so a mint would be refused by the token endpoint; the catalog takes only
+# the bearer this fixture mints, given here as the static token. So "no error"
+# means the static token was sent, and the count is the requests to the token
+# endpoint. With the token ignored, the mint runs: 28000 and 1 request.
+q "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (ADD token '$OATOKEN', ADD oauth_client_secret 'wrong-secret')" >/dev/null
+_irs_obefore="$(wc -l < "$OLOG")"
+_irs_tw="$(refusal "SELECT pgcolumnar.iceberg_rest_table_location('ocat','db','events')" "@@ no refusal is expected @@")"
+check "a static token and a complete OAuth2 pair read by the token, with no token request" \
+	"$_irs_tw|$(tail -n +$(( _irs_obefore + 1 )) "$OLOG" | grep -c 'POST /v1/oauth/tokens')" \
+	"no error|0"
+q "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (DROP token, DROP oauth_client_secret)" >/dev/null
 check "an oauth option on the SERVER is rejected (HV00D)" \
 	"$(sqlstate_of "CREATE SERVER bad2 FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog OPTIONS (catalog_uri '$OCAT', oauth_client_secret 'x')")" \
 	"HV00D"
