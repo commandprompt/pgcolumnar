@@ -466,6 +466,12 @@ true until the next version shipped.
 
 ### Fixed
 
+- A user mapping for an Iceberg REST catalog server that sets a static `token`
+  and only one of `oauth_client_id` and `oauth_client_secret` is now refused
+  (#1794), as the docs say. Before, the static token was used and the stray half
+  of the pair was ignored without a word. The call now fails with SQLSTATE 28000,
+  `incomplete OAuth2 credential`, before any request reaches the catalog.
+  `test/iceberg_rest_server.sh` and `test_iceberg_rest_server.py` check both halves.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write

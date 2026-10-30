@@ -265,6 +265,20 @@ _irs_obefore="$(wc -l < "$OLOG")"
 check "a half OAuth2 credential (id, no secret) is refused before any request (28000)" \
 	"$(refusal "SELECT pgcolumnar.iceberg_rest_table_location('ocat','db','events')" "incomplete OAuth2 credential")|$(( $(wc -l < "$OLOG") - _irs_obefore ))" \
 	"28000|0"
+# A static token does not excuse a half pair (#1794): the docs refuse a mapping
+# that sets only one of the pair, with no condition on the token. Both halves are
+# checked, then the mapping returns to id-only for the steps below.
+q "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (ADD token 'static-tok')" >/dev/null
+_irs_obefore="$(wc -l < "$OLOG")"
+check "a half OAuth2 credential (id, no secret) is refused even with a static token (28000)" \
+	"$(refusal "SELECT pgcolumnar.iceberg_rest_table_location('ocat','db','events')" "incomplete OAuth2 credential")|$(( $(wc -l < "$OLOG") - _irs_obefore ))" \
+	"28000|0"
+q "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (DROP oauth_client_id, ADD oauth_client_secret '$OCSEC')" >/dev/null
+_irs_obefore="$(wc -l < "$OLOG")"
+check "a half OAuth2 credential (secret, no id) is refused even with a static token (28000)" \
+	"$(refusal "SELECT pgcolumnar.iceberg_rest_table_location('ocat','db','events')" "incomplete OAuth2 credential")|$(( $(wc -l < "$OLOG") - _irs_obefore ))" \
+	"28000|0"
+q "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (DROP token, DROP oauth_client_secret, ADD oauth_client_id '$OCID')" >/dev/null
 check "oauth options are accepted on a USER MAPPING (no error)" \
 	"$(sqlstate_of "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (ADD oauth_scope 'catalog')")" \
 	"ok"
