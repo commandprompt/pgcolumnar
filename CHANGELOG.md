@@ -466,6 +466,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote prefix or pattern that names a directory beginning with `_` or `.`,
+  such as `s3://bucket/_landing/` or `s3://bucket/.staging/*.parquet`, now reads
+  the objects under it (#1784). Before, it raised `no objects under ... match`,
+  because the hidden-name skip judged every segment of the key, including the
+  prefix you named. The skip now applies only below the prefix, as it does for a
+  local directory. A remote pattern now matches as a local glob does: `*.parquet`
+  returns `_b.parquet`, `_*.parquet` matches at all, and a name beginning with `.`
+  matches only when the pattern spells the dot. Measured against Garage S3: each
+  of 8 remote reads returns the same count as the same local read.
+  `test/objstore_listing.sh` and `test_objstore_listing.py`.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write

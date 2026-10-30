@@ -50,6 +50,12 @@ open(os.path.join(B, "lst/_SUCCESS"), "w").close()
 open(os.path.join(B, "lst/notes.txt"), "w").write("not parquet\n")
 one(os.path.join(B, "hive/dt=2026-01-01/part.parquet"), [1, 2, 3])
 one(os.path.join(B, "hive/dt=2026-01-02/part.parquet"), [4, 5, 6])
+one(os.path.join(B, "_landing/a.parquet"), [1, 2, 3])
+one(os.path.join(B, "_landing/_temporary/t.parquet"), [99])
+one(os.path.join(B, ".dir/a.parquet"), [4, 5, 6])
+one(os.path.join(B, "glb/a.parquet"), [1, 2, 3])
+one(os.path.join(B, "glb/_b.parquet"), [10, 11, 12, 13, 14])
+one(os.path.join(B, "glb/.h.parquet"), [100])
 '''
 
 STUCK = ('<?xml version="1.0"?><ListBucketResult><IsTruncated>true</IsTruncated>'
@@ -175,7 +181,7 @@ def osl(pgc_cluster):
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-objlist-"))
     os.chmod(work, 0o777)
     bucket = work / BUCKET
-    for d in ("lst/sub", "hive/dt=2026-01-01", "hive/dt=2026-01-02"):
+    for d in ("lst/sub", "hive/dt=2026-01-01", "hive/dt=2026-01-02", "_landing/_temporary", ".dir", "glb"):
         (bucket / d).mkdir(parents=True)
     r = {}
     srv = None
@@ -236,6 +242,13 @@ def osl(pgc_cluster):
         r["excluded"] = _row(dsn, "SELECT count(*) FROM fprefix")
         r["glob"] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
                               f"'s3://{BUCKET}/lst/*.parquet') AS t(id int8)")
+
+        # #1784: the hidden rule applies below the named prefix only, and a glob
+        # matches as a local glob() does
+        for sub in ("_landing/", ".dir/", "_landing/*.parquet", ".dir/*.parquet",
+                    "glb/*.parquet", "glb/_*.parquet", "glb/.*.parquet", "glb/"):
+            r["named " + sub] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                          f"'s3://{BUCKET}/{sub}') AS t(id int8)")
 
         open(s3log, "w").close()
         with psycopg.connect(dsn, autocommit=True) as c:
@@ -321,6 +334,24 @@ def test_a_remote_glob_matches_only_the_top_level_parts(request, expect):
     r = _readings(request, expect)
     if r is not None:
         expect.text(r["glob"], "9 99", "glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/")
+
+
+@pytest.mark.parametrize("sub, want, name", [
+    ("_landing/", "3 6",
+     "a prefix whose own name starts with _ lists the objects below it, still skipping _temporary/"),
+    (".dir/", "3 15", "a prefix whose own name starts with . lists the objects below it"),
+    ("_landing/*.parquet", "3 6", "glob under a named _ directory (_landing/*.parquet) matches"),
+    (".dir/*.parquet", "3 15", "glob under a named . directory (.dir/*.parquet) matches"),
+    ("glb/*.parquet", "8 66", "glob glb/*.parquet matches _b.parquet but not .h.parquet, as a local glob does"),
+    ("glb/_*.parquet", "5 60", "glob glb/_*.parquet matches the _ file it spells"),
+    ("glb/.*.parquet", "1 100", "glob glb/.*.parquet matches the dot file it spells"),
+    ("glb/", "3 6", "prefix glb/ still skips _b.parquet and .h.parquet below it"),
+])
+def test_hidden_names_are_judged_below_the_named_prefix_and_globs_match_as_local(request, expect, sub, want, name):
+    """#1784: a prefix or glob the user names may itself start with '_' or '.'."""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["named " + sub], want, name)
 
 
 def test_an_exact_key_read_returns_its_rows(request, expect):
