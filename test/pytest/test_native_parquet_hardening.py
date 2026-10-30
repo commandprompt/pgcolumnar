@@ -11,6 +11,14 @@ reads the out-of-range file itself, which must refuse. Every reading waits for t
 server first, and survival also reads the server log's count of killed backends, since
 SELECT 1 answers again after crash recovery.
 
+STRING CELLS (#1821). A Parquet STRING is UTF-8 by the spec, and a cell holding
+invalid UTF-8 or an embedded NUL must be refused with 22021 and a message that names
+the column, wherever the decoder is reached: read_parquet (PLAIN and dictionary), the
+Parquet foreign table, import_parquet and iceberg_scan. Those readings run in a second
+private database created as UTF8, since the check is against the server encoding and a
+SQL_ASCII cluster accepts any byte but NUL. The Iceberg FDW must read, not prune, a
+file whose manifest partition value is not valid text.
+
 ON A PRIVATE DATABASE. The shell skips whole without pyarrow, so every test declines
 under the shell's skip name before it asks for the fixture. The files are written by
 `test/craft_parquet_hardening.py`, the shell's own crafter, run as a subprocess so this
@@ -27,7 +35,10 @@ import pytest
 from pgc_vacuity import query_error
 
 DB = "pgc_native_parquet_hardening"
+DB8 = "pgc_native_parquet_hardening_utf8"
 CRAFTER = pathlib.Path(__file__).resolve().parent.parent / "craft_parquet_hardening.py"
+WAREHOUSE = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "iceberg" / "warehouse"
+ENC_MSG = '22021: invalid byte sequence for encoding "UTF8" in Parquet column "name"'
 SKIP = "pyarrow not available; Parquet hardening suite needs it"
 
 TABLES = [
@@ -129,12 +140,15 @@ def pqh(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
         a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
         a.execute(f"CREATE DATABASE {DB}")
+        a.execute(f"DROP DATABASE IF EXISTS {DB8} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {DB8} TEMPLATE template0 ENCODING 'UTF8' LOCALE 'C'")
     try:
         dsn = pgc_cluster.dsn(dbname=DB)
         w = server_dir / "pqh"
         w.mkdir(exist_ok=True)
         w.chmod(0o777)
-        subprocess.run([sys.executable, str(CRAFTER), str(w)], capture_output=True, text=True)
+        subprocess.run([sys.executable, str(CRAFTER), str(w), str(WAREHOUSE)],
+                       capture_output=True, text=True)
         for f in w.glob("*.parquet"):
             f.chmod(0o644)
         r = {}
@@ -177,11 +191,60 @@ def pqh(pgc_cluster, server_dir):
         r["schema"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.parquet_schema('{w}/short_chunks.parquet')")
         r["two"] = _value(dsn, f"SELECT string_agg(a || '|' || b, ' ' ORDER BY a) FROM "
                                f"pgcolumnar.read_parquet('{w}/two.parquet') AS t(a int4, b int4)")
+
+        # ---- string cells, in the UTF8 database (#1821) ----
+        d8 = pgc_cluster.dsn(dbname=DB8)
+        ice_bad = sorted((w / "ice_bad" / "db" / "events" / "metadata").glob("*.metadata.json"))
+        ice_part = sorted((w / "ice_part" / "db" / "events" / "metadata").glob("*.metadata.json"))
+        ice_bad_md = ice_bad[-1] if ice_bad else w / "ice_bad-missing"
+        ice_part_md = ice_part[-1] if ice_part else w / "ice_part-missing"
+        for stmt in [
+            "CREATE EXTENSION pgcolumnar",
+            "CREATE SERVER pq FOREIGN DATA WRAPPER pgcolumnar_parquet",
+            "CREATE FUNCTION pgc_try(q text) RETURNS text LANGUAGE plpgsql AS $$ "
+            "BEGIN EXECUTE q; RETURN 'NO ERROR'; "
+            "EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ': ' || SQLERRM; END $$",
+            f"CREATE FOREIGN TABLE f_str_dict (id bigint, name text) SERVER pq "
+            f"OPTIONS (path '{w}/str_dict_bad.parquet')",
+            "CREATE TABLE imp_str (id bigint, name text)",
+            "CREATE TABLE heap_str (id bigint, name text) USING heap",
+            "CREATE SERVER ice FOREIGN DATA WRAPPER pgcolumnar_iceberg",
+            f"CREATE FOREIGN TABLE ev_part (id bigint, region text, amount int) "
+            f"SERVER ice OPTIONS (metadata_path '{ice_part_md}')",
+        ]:
+            _exec(d8, stmt)
+        r["s enc"] = _value(d8, "SELECT pg_encoding_to_char(encoding) FROM pg_database "
+                                "WHERE datname = current_database()")
+
+        def rp(f, typ="text"):
+            return f"SELECT * FROM pgcolumnar.read_parquet('{w}/{f}.parquet') AS t(id bigint, name {typ})"
+
+        r["s plain"] = _sqlstate(d8, rp("str_plain_bad"))
+        r["s dict"] = _sqlstate(d8, rp("str_dict_bad"))
+        r["s nul"] = _sqlstate(d8, rp("str_nul"))
+        r["s varchar"] = _sqlstate(d8, rp("str_plain_bad", "varchar"))
+        r["s fdw"] = _sqlstate(d8, "SELECT * FROM f_str_dict")
+        r["s imp"] = _sqlstate(d8, f"SELECT pgcolumnar.import_parquet('imp_str'::regclass, "
+                                   f"'{w}/str_plain_bad.parquet')")
+        r["s imp rows"] = _value(d8, "SELECT count(*) FROM imp_str")
+        _sqlstate(d8, "INSERT INTO heap_str " + rp("str_nul"))
+        r["s heap rows"] = _value(d8, "SELECT count(*) FROM heap_str")
+        r["s ok"] = _value(d8, f"SELECT string_agg(name || ':' || octet_length(name), ' ' ORDER BY id) "
+                               f"FROM pgcolumnar.read_parquet('{w}/str_ok.parquet') AS t(id bigint, name text)")
+        r["s ok dict"] = _value(d8, f"SELECT string_agg(name, ' ' ORDER BY id) "
+                                    f"FROM pgcolumnar.read_parquet('{w}/str_ok_dict.parquet') AS t(id bigint, name text)")
+        r["s ice"] = _sqlstate(d8, f"SELECT * FROM pgcolumnar.iceberg_scan('{ice_bad_md}') "
+                                   f"AS t(id bigint, region text)")
+        r["s part all"] = _value(d8, "SELECT string_agg(id || region, ',' ORDER BY id) FROM ev_part")
+        r["s part eu"] = _value(d8, "SELECT string_agg(id::text, ',' ORDER BY id) FROM ev_part "
+                                    "WHERE region = 'eu'")
+        r["s survived"] = _survived(d8, pgc_cluster, before)
         yield r
     finally:
         _wait_up(pgc_cluster.dsn())
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {DB8} WITH (FORCE)")
 
 
 def test_parquet_hardening_int2_out_of_range_raises_22003(request, expect):
@@ -308,3 +371,108 @@ def test_parquet_hardening_a_valid_two_column_file_still_reads(request, expect):
         return
     r = request.getfixturevalue("pqh")
     expect.text(r["two"], "1|4 2|5 3|6", "valid two-column file still reads")
+
+
+def test_parquet_hardening_strings_run_in_a_utf8_database(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s enc"], "UTF8", "premise: the string arms run in a UTF8 database")
+
+
+def test_parquet_hardening_read_parquet_plain_string_not_utf8_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s plain"], ENC_MSG + ": 0xff", "read_parquet PLAIN string not UTF-8 -> 22021 naming the column")
+
+
+def test_parquet_hardening_read_parquet_dictionary_string_not_utf8_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s dict"], ENC_MSG + ": 0xc0 0xaf", "read_parquet dictionary string not UTF-8 -> 22021 naming the column")
+
+
+def test_parquet_hardening_read_parquet_embedded_nul_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s nul"], ENC_MSG + ": 0x00", "read_parquet string with an embedded NUL -> 22021")
+
+
+def test_parquet_hardening_varchar_output_column_is_checked_too(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s varchar"], ENC_MSG + ": 0xff", "varchar output column is checked too -> 22021")
+
+
+def test_parquet_hardening_parquet_foreign_table_string_not_utf8_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s fdw"], ENC_MSG + ": 0xc0 0xaf", "parquet foreign table string not UTF-8 -> 22021")
+
+
+def test_parquet_hardening_import_parquet_string_not_utf8_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s imp"], ENC_MSG + ": 0xff", "import_parquet string not UTF-8 -> 22021")
+
+
+def test_parquet_hardening_import_parquet_stored_no_row_of_the_invalid_file(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.num(_int(r["s imp rows"]), 0, "import_parquet stored no row of the invalid file")
+
+
+def test_parquet_hardening_insert_select_read_parquet_stored_no_row_of_the_invalid_file(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.num(_int(r["s heap rows"]), 0, "INSERT SELECT read_parquet stored no row of the invalid file")
+
+
+def test_parquet_hardening_valid_multibyte_utf8_still_reads_plain(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s ok"], "ok:2 caf\u00e9:5 \u65e5\u672c:6", "valid multibyte UTF-8 still reads (PLAIN)")
+
+
+def test_parquet_hardening_valid_multibyte_utf8_still_reads_dictionary(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s ok dict"], "caf\u00e9 caf\u00e9 caf\u00e9 ok", "valid multibyte UTF-8 still reads (dictionary)")
+
+
+def test_parquet_hardening_iceberg_scan_data_file_string_not_utf8_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s ice"], '22021: invalid byte sequence for encoding "UTF8" in Parquet column "region": 0xff', "iceberg_scan data file string not UTF-8 -> 22021 naming the column")
+
+
+def test_parquet_hardening_patched_manifest_table_reads_all_five_rows(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s part all"], "1eu,2eu,3us,4us,5us", "premise: the patched-manifest table reads all five rows")
+
+
+def test_parquet_hardening_iceberg_fdw_reads_a_file_whose_partition_value_is_not_valid_text(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s part eu"], "1,2", "iceberg FDW reads, not prunes, a file whose partition value is not valid text")
+
+
+def test_parquet_hardening_backend_survives_the_string_arms(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s survived"], "1", "backend survived the string arms")
