@@ -2345,11 +2345,20 @@ pq_ts_shift(int shift, Timestamp in, Timestamp *out)
 }
 
 /*
+ * pq_want_phys_for's answer for a supported target type that this particular
+ * column cannot hold: not -1, which means the target type is unsupported, and
+ * equal to no physical type, so the bind's compatibility check refuses it.
+ */
+#define PQ_PHYS_NO_MATCH	INT_MAX
+
+/*
  * The Parquet physical type a target PostgreSQL type must be stored as, for one
- * specific source column. Only `time` is column-dependent: Parquet spells
+ * specific source column. `time` is column-dependent: Parquet spells
  * TIME_MILLIS as INT32 and TIME_MICROS/TIME_NANOS as INT64, so the same
  * PostgreSQL type binds to either width depending on the unit the file declares.
- * Everything else is a fixed mapping and falls through to pq_want_phys().
+ * So are uuid (an FLBA of width 16 only), bytea (a BYTE_ARRAY or any FLBA) and
+ * a DECIMAL's numeric. Everything else is a fixed mapping and falls through to
+ * pq_want_phys().
  */
 static int
 pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
@@ -2359,8 +2368,17 @@ pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
 		if (typid == TIMEOID &&
 			sc->time_unit == PQ_TU_MILLIS && !sc->is_timestamp)
 			return PQ_INT32;
-		/* uuid is a 16-byte fixed-length binary */
+		/* uuid is a 16-byte fixed-length binary. An FLBA of any other width
+		 * cannot hold one, so the bind refuses it as incompatible rather than
+		 * leaving the decoder to fail on the first value (#1792). */
 		if (typid == UUIDOID)
+			return (sc->phys_type == PQ_FIXED_LEN_BYTE_ARRAY &&
+					sc->type_length != UUID_LEN)
+				? PQ_PHYS_NO_MATCH : PQ_FIXED_LEN_BYTE_ARRAY;
+		/* bytea holds raw bytes of any width, so a fixed-length binary --
+		 * Iceberg's fixed(L), for which parquet_schema advises bytea -- reads
+		 * as one, its flen bytes copied as they are (#1792) */
+		if (typid == BYTEAOID && sc->phys_type == PQ_FIXED_LEN_BYTE_ARRAY)
 			return PQ_FIXED_LEN_BYTE_ARRAY;
 		/* DECIMAL as fixed or variable big-endian two's-complement bytes, or as
 		 * an INT32/INT64 holding the unscaled integer (what writers use for small

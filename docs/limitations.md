@@ -1012,7 +1012,10 @@ listed are rejected.
 | composite of the above | yes | yes | yes | yes |
 
 The reader imports `uuid` from a fixed-length binary column of 16 bytes. It
-imports `numeric` from a DECIMAL column with a precision up to 38. That column
+refuses `uuid` over a fixed-length column of any other width. It imports
+`bytea` from a binary column of variable or fixed length. Iceberg writes
+`fixed(L)` as a fixed-length column. `parquet_schema` reports one as `bytea`,
+or as `uuid` when it is 16 bytes wide. It imports `numeric` from a DECIMAL column with a precision up to 38. That column
 holds big-endian bytes, of fixed or variable length. The reader also imports
 `numeric` from an INT32 or an INT64 that holds the unscaled integer. Writers use
 that form for a small precision.
