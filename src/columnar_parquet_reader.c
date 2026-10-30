@@ -2961,6 +2961,23 @@ pq_remote_key_hidden(const char *key, const char *listUrl)
 }
 
 /*
+ * Does a listed key match the remote pattern the user wrote? The scheme is
+ * compared without case, as pq_remote_key_hidden does, because the module
+ * accepts S3:// and returns keys as s3://. The rest is matched by fnmatch()
+ * segment by segment, as the local glob() matches (#1784).
+ */
+static bool
+pq_remote_glob_match(const char *pattern, const char *key)
+{
+	const char *sep = strstr(pattern, "://");
+	size_t		slen = (sep != NULL) ? (size_t) (sep - pattern) + 3 : 0;
+
+	if (strlen(key) < slen || pg_strncasecmp(key, pattern, slen) != 0)
+		return false;
+	return fnmatch(pattern + slen, key + slen, FNM_PATHNAME | FNM_PERIOD) == 0;
+}
+
+/*
  * Whether a path produced by a directory listing or a glob expansion should be
  * handed to the reader.
  *
@@ -3167,7 +3184,7 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 			 */
 			if (hasGlob)
 			{
-				if (fnmatch(path, keys[i], FNM_PATHNAME | FNM_PERIOD) != 0)
+				if (!pq_remote_glob_match(path, keys[i]))
 					continue;
 			}
 			else if (pq_remote_key_hidden(keys[i], listUrl))

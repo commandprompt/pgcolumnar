@@ -191,6 +191,13 @@ check "glob glb/.*.parquet matches the dot file it spells" \
 	"$(rpq 'glb/.*.parquet')" "1 100"
 check "prefix glb/ still skips _b.parquet and .h.parquet below it" \
 	"$(rpq glb/)" "3 6"
+# The module accepts an upper-case scheme and lists keys back as s3://, so the
+# scheme is compared without case, for a prefix and for a pattern alike.
+rpqu() { qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('S3://$BUCKET/$1') AS t(id int8);" | tr '|' ' '; }
+check "an upper-case scheme prefix S3://.../_landing/ reads as s3:// does" \
+	"$(rpqu _landing/)" "3 6"
+check "an upper-case scheme glob S3://.../_landing/*.parquet matches as s3:// does" \
+	"$(rpqu '_landing/*.parquet')" "3 6"
 
 # ---- an exact key is still one GET, no LIST ---------------------------------
 : > "$S3_LOG"

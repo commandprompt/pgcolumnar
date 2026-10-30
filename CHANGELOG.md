@@ -473,9 +473,18 @@ true until the next version shipped.
   prefix you named. The skip now applies only below the prefix, as it does for a
   local directory. A remote pattern now matches as a local glob does: `*.parquet`
   returns `_b.parquet`, `_*.parquet` matches at all, and a name beginning with `.`
-  matches only when the pattern spells the dot. Measured against Garage S3: each
-  of 8 remote reads returns the same count as the same local read.
+  matches only when the pattern spells the dot. The scheme is compared without
+  case for a pattern as for a prefix, so `S3://bucket/_landing/*.parquet` reads
+  as `s3://bucket/_landing/*.parquet` does; before, the pattern raised
+  `no objects ... match`. Measured against Garage S3: each of 8 remote reads
+  returns the same count as the same local read.
   `test/objstore_listing.sh` and `test_objstore_listing.py`.
+
+  **Behaviour change:** a remote pattern no longer skips `_` names below the
+  literal prefix. Before, `s3://bucket/out/*/*.parquet` skipped
+  `out/_temporary/x.parquet`. Now it reads it, as a local glob of
+  `/data/out/*/*.parquet` does. To skip Spark staging output, read the prefix
+  `s3://bucket/out/` instead, or a pattern such as `s3://bucket/out/[!_]*/*.parquet`.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write

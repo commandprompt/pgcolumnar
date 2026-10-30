@@ -249,6 +249,9 @@ def osl(pgc_cluster):
                     "glb/*.parquet", "glb/_*.parquet", "glb/.*.parquet", "glb/"):
             r["named " + sub] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
                                           f"'s3://{BUCKET}/{sub}') AS t(id int8)")
+        for sub in ("_landing/", "_landing/*.parquet"):
+            r["named S3://" + sub] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                               f"'S3://{BUCKET}/{sub}') AS t(id int8)")
 
         open(s3log, "w").close()
         with psycopg.connect(dsn, autocommit=True) as c:
@@ -346,6 +349,9 @@ def test_a_remote_glob_matches_only_the_top_level_parts(request, expect):
     ("glb/_*.parquet", "5 60", "glob glb/_*.parquet matches the _ file it spells"),
     ("glb/.*.parquet", "1 100", "glob glb/.*.parquet matches the dot file it spells"),
     ("glb/", "3 6", "prefix glb/ still skips _b.parquet and .h.parquet below it"),
+    ("S3://_landing/", "3 6", "an upper-case scheme prefix S3://.../_landing/ reads as s3:// does"),
+    ("S3://_landing/*.parquet", "3 6",
+     "an upper-case scheme glob S3://.../_landing/*.parquet matches as s3:// does"),
 ])
 def test_hidden_names_are_judged_below_the_named_prefix_and_globs_match_as_local(request, expect, sub, want, name):
     """#1784: a prefix or glob the user names may itself start with '_' or '.'."""

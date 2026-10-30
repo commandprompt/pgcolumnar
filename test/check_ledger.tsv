@@ -5403,6 +5403,8 @@ objstore_listing	objstore_listing	a prefix whose own name starts with . lists th
 objstore_listing	objstore_listing	a prefix whose own name starts with _ lists the objects below it, still skipping _temporary/	15;16;17;18;19	never	-
 objstore_listing	objstore_listing	a truncated page with no keys is refused, not looped	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the truncated-page-with-no-keys refusal removed
 objstore_listing	objstore_listing	an exact-key read issues no ListObjectsV2	15;16;17;18;19	never	-
+objstore_listing	objstore_listing	an upper-case scheme glob S3://.../_landing/*.parquet matches as s3:// does	15;16;17;18;19	2026-10-30	pattern matched with case-sensitive fnmatch over the whole URL, before pq_remote_glob_match (#1784);scheme compared with strncmp instead of pg_strncasecmp in pq_remote_key_hidden (#1784)
+objstore_listing	objstore_listing	an upper-case scheme prefix S3://.../_landing/ reads as s3:// does	15;16;17;18;19	2026-10-30	scheme compared with strncmp instead of pg_strncasecmp in pq_remote_key_hidden (#1784)
 objstore_listing	objstore_listing	and the request log recorded the exact-key read	15;16;17;18;19	never	-
 objstore_listing	objstore_listing	backend still up after the listing refusals	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the non-advancing token refusal (the backend crashes)
 objstore_listing	objstore_listing	exact-key read returns its rows	15;16;17;18;19	never	-

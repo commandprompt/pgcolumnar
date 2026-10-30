@@ -1362,7 +1362,8 @@ local glob. Listing is a paged ListObjectsV2 call. Below a prefix, `_SUCCESS`,
 below a local directory. The prefix you name may itself begin with `_` or `.`,
 such as `s3://bucket/_landing/`. A pattern matches names as a local glob does.
 It matches a name that begins with `_`. It matches a name that begins with `.`
-only when the pattern spells the dot, such as `.*.parquet`. Hive
+only when the pattern spells the dot, such as `.*.parquet`. The scheme is
+compared without case, so `S3://` reads as `s3://` does. Hive
 `partition_columns` work over a remote prefix. A pattern or a prefix requires the
 object-store module, since only it can issue the listing.
 
