@@ -191,6 +191,12 @@ static const char *const map[][2] = {
 	{"local64", "64:ff9b:1:0:a9:fea9:fe00::"},
 	{"over48", "64:ff9b:1:aa9:fe:500::"},
 	{"ctl96", "64:ff9b:1::a00:5"},
+	{"loop6", "::ffff:127.0.0.1"},
+	{"ula", "fd00:ec3::254"},
+	{"n64ok", "64:ff9b::a9ff:a9fe"},
+	{"n64wide", "64:ff9b::1:a9fe:a9fe"},
+	{"local2", "64:ff9b:2::a9fe:a9fe"},
+	{"compat9", "::1:0:a9fe:a9fe"},
 };
 
 int
@@ -290,7 +296,9 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
                       "'ok.pgc-shim.invalid, imds6.pgc-shim.invalid, nat64.pgc-shim.invalid, "
                       "nat64local.pgc-shim.invalid, mapped.pgc-shim.invalid, compat.pgc-shim.invalid, "
                       "gcp6.pgc-shim.invalid, local48.pgc-shim.invalid, local56.pgc-shim.invalid, "
-                      "local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid'")
+                      "local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid, "
+                      "loop6.pgc-shim.invalid, ula.pgc-shim.invalid, n64ok.pgc-shim.invalid, "
+                      "n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid'")
             c.execute("SELECT pg_reload_conf()")
         time.sleep(0.5)
 
@@ -337,6 +345,31 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
         ctl = "connect tried" if ctl in ("08006", "57014") else (ctl or "no error")
         expect.text(ctl, "connect tried",
                     "NAT64 local-use /96 10.0.0.5 (64:ff9b:1::a00:5): not refused, a connect is tried")
+        # Near misses: each address sits just outside a refused range, so it is not
+        # refused and the read reaches connect(). Without these, a guard that refused
+        # too much (every IPv6 address, all of fc00::/7, 169.0.0.0/8, 64:ff9b::/32)
+        # would pass every check above. The first reads the fixture over IPv6; the rest
+        # prove a connect was tried (08006 or 57014). Anything else prints.
+        def connect_tried(name):
+            st = shim_read(name)[0]
+            return "connect tried" if st in ("08006", "57014") else (st or "no error")
+
+        loop6 = (f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                 f"'http://loop6.pgc-shim.invalid:{port}/fixture.parquet') AS (a int8)")
+        st, _, val = _state(cluster, loop6)
+        # A failed read prints its SQLSTATE, so the failure shows what refused it.
+        expect.num(val if val is not None else f"error {st}", 1000,
+                   "IPv4-mapped loopback ::ffff:127.0.0.1: not refused, the read works")
+        expect.text(connect_tried("ula"), "connect tried",
+                    "ULA fd00:ec3::254 (outside fd00:ec2::/32): not refused, a connect is tried")
+        expect.text(connect_tried("n64ok"), "connect tried",
+                    "NAT64 64:ff9b::a9ff:a9fe (169.255.169.254): not refused, a connect is tried")
+        expect.text(connect_tried("n64wide"), "connect tried",
+                    "64:ff9b::1:a9fe:a9fe (outside 64:ff9b::/96): not refused, a connect is tried")
+        expect.text(connect_tried("local2"), "connect tried",
+                    "64:ff9b:2::a9fe:a9fe (outside 64:ff9b:1::/48): not refused, a connect is tried")
+        expect.text(connect_tried("compat9"), "connect tried",
+                    "::1:0:a9fe:a9fe (outside ::/96): not refused, a connect is tried")
         # The range when the DETAIL names it, else the whole error as the measurement.
         try:
             with psycopg.connect(cluster.dsn(), autocommit=True) as c:

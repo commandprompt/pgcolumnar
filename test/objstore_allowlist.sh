@@ -153,6 +153,12 @@ static const char *const map[][2] = {
 	{"local64", "64:ff9b:1:0:a9:fea9:fe00::"},
 	{"over48", "64:ff9b:1:aa9:fe:500::"},
 	{"ctl96", "64:ff9b:1::a00:5"},
+	{"loop6", "::ffff:127.0.0.1"},
+	{"ula", "fd00:ec3::254"},
+	{"n64ok", "64:ff9b::a9ff:a9fe"},
+	{"n64wide", "64:ff9b::1:a9fe:a9fe"},
+	{"local2", "64:ff9b:2::a9fe:a9fe"},
+	{"compat9", "::1:0:a9fe:a9fe"},
 };
 
 int
@@ -220,7 +226,7 @@ check "premise: the server restarts with the resolver shim" \
 shim_read() {  # shim_read <name> -> the SQLSTATE of a read from that name, port 1
 	sqlstate_of "SET statement_timeout = '3s'; SELECT count(*) FROM pgcolumnar.read_parquet('http://$1.pgc-shim.invalid:1/x.parquet') AS (a int8)"
 }
-set_list "ok.pgc-shim.invalid, imds6.pgc-shim.invalid, nat64.pgc-shim.invalid, nat64local.pgc-shim.invalid, mapped.pgc-shim.invalid, compat.pgc-shim.invalid, gcp6.pgc-shim.invalid, local48.pgc-shim.invalid, local56.pgc-shim.invalid, local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid"
+set_list "ok.pgc-shim.invalid, imds6.pgc-shim.invalid, nat64.pgc-shim.invalid, nat64local.pgc-shim.invalid, mapped.pgc-shim.invalid, compat.pgc-shim.invalid, gcp6.pgc-shim.invalid, local48.pgc-shim.invalid, local56.pgc-shim.invalid, local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid, loop6.pgc-shim.invalid, ula.pgc-shim.invalid, n64ok.pgc-shim.invalid, n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid"
 check_num "premise: a shim name that maps to 127.0.0.1 reads the fixture" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('http://ok.pgc-shim.invalid:$HTTP_PORT/fixture.parquet') AS (a int8)")" "1000"
 check "IPv6 IMDS fd00:ec2::254: refused 42501 despite being listed" "$(shim_read imds6)" "42501"
@@ -243,6 +249,26 @@ check "NAT64 local-use /48 10.169.254.5 (64:ff9b:1:aa9:fe:500::): refused 42501,
 CTL96="$(shim_read ctl96)"
 case "$CTL96" in 08006|57014) CTL96="connect tried" ;; "") CTL96="no error" ;; esac
 check "NAT64 local-use /96 10.0.0.5 (64:ff9b:1::a00:5): not refused, a connect is tried" "$CTL96" "connect tried"
+# Near misses: each address sits just outside a refused range, so it is not refused
+# and the read reaches connect(). Without these, a guard that refused too much (every
+# IPv6 address, all of fc00::/7, 169.0.0.0/8, 64:ff9b::/32) would pass every check
+# above. The first reads the fixture over IPv6; the rest prove a connect was tried
+# (08006 or 57014). Any other SQLSTATE, or none, prints as the measurement.
+connect_tried() {  # connect_tried <name> -> "connect tried", or what the read gave
+	local st
+	st="$(shim_read "$1")"
+	case "$st" in 08006|57014) echo "connect tried" ;; "") echo "no error" ;; *) echo "$st" ;; esac
+}
+LOOP6_Q="SELECT count(*) FROM pgcolumnar.read_parquet('http://loop6.pgc-shim.invalid:$HTTP_PORT/fixture.parquet') AS (a int8)"
+LOOP6="$(q "$LOOP6_Q")"
+# A failed read prints its SQLSTATE, so the FAIL line shows what refused it.
+[ -n "$LOOP6" ] || LOOP6="error $(sqlstate_of "$LOOP6_Q")"
+check_num "IPv4-mapped loopback ::ffff:127.0.0.1: not refused, the read works" "$LOOP6" "1000"
+check "ULA fd00:ec3::254 (outside fd00:ec2::/32): not refused, a connect is tried" "$(connect_tried ula)" "connect tried"
+check "NAT64 64:ff9b::a9ff:a9fe (169.255.169.254): not refused, a connect is tried" "$(connect_tried n64ok)" "connect tried"
+check "64:ff9b::1:a9fe:a9fe (outside 64:ff9b::/96): not refused, a connect is tried" "$(connect_tried n64wide)" "connect tried"
+check "64:ff9b:2::a9fe:a9fe (outside 64:ff9b:1::/48): not refused, a connect is tried" "$(connect_tried local2)" "connect tried"
+check "::1:0:a9fe:a9fe (outside ::/96): not refused, a connect is tried" "$(connect_tried compat9)" "connect tried"
 IMDS6_OUT="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
 	-c "SET statement_timeout = '3s'" \
 	-c "SELECT count(*) FROM pgcolumnar.read_parquet('http://imds6.pgc-shim.invalid:1/x.parquet') AS (a int8)" 2>&1)"
