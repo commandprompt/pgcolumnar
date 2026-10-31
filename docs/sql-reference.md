@@ -1364,7 +1364,11 @@ object-store module, since only it can issue the listing.
 On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes one
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`
 marker beside them on completion. Every other write function writes a single
-object at the exact key.
+object at the exact key. The workers use the calling session's values of
+`pgcolumnar.objstore_allowed_endpoints`, `pgcolumnar.objstore_s3_addressing` and
+`pgcolumnar.objstore_part_size`, including any set with `SET`. The endpoint is
+checked against the session's allow-list before any worker starts, so a refused
+endpoint fails before anything is uploaded.
 
 Remote paths carry the same privilege as local ones. A read needs
 `pg_read_server_files` and a write needs `pg_write_server_files`, over and above

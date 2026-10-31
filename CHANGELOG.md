@@ -466,6 +466,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- `parallel_export_parquet` to a remote prefix now obeys the calling session's
+  `pgcolumnar.objstore_allowed_endpoints`, `objstore_s3_addressing` and
+  `objstore_part_size` (#1780). Its background workers started from
+  `postgresql.conf` and ignored a `SET`. A session that set the allow-list to
+  `''` still had its workers upload their parts (two objects with two
+  workers); the call then failed and left them behind. The dispatcher now checks the endpoint against the
+  session's list before any worker starts, and passes the three settings to
+  the workers. The check sends no request: the object-store module gains the
+  entry `check_endpoint` (module ABI 7), so the module and the extension must
+  come from the same build. `test/objstore_sink_write.sh` and
+  `test_objstore_sink_write.py`.
+
 - Prefix and pattern reads of `s3://` paths now work under
   `pgcolumnar.objstore_s3_addressing = 'virtual'` (#1783). The listing request put
   the bucket in the path although the bucket was already in the host name, so S3

@@ -3072,6 +3072,36 @@ objstore_http_request(const char *url, const char *method,
 	return result;
 }
 
+/*
+ * The allow-list check with no request (#1780). See columnar_objstore.h. An
+ * s3:// or gs:// URL resolves from a dummy key in its bucket, as
+ * objstore_list_objects does, so a bare or empty prefix resolves too.
+ */
+static void
+objstore_check_endpoint(const char *url, const PgColumnarObjStoreConfig *cfg)
+{
+	PgColumnarObjHandle *h;
+	char	   *target = (char *) url;
+
+	if (pg_strncasecmp(url, "s3://", 5) == 0 || pg_strncasecmp(url, "gs://", 5) == 0)
+	{
+		const char *bstart = url + 5;
+		const char *slash = strchr(bstart, '/');
+		int			blen = (slash != NULL) ? (int) (slash - bstart) : (int) strlen(bstart);
+
+		if (blen == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("columnar: \"%s\" names no bucket", url)));
+		target = psprintf("%.5s%.*s/_", url, blen, bstart);
+	}
+	h = os_write_handle(target, cfg);
+	os_check_endpoint_allowed(h);
+	os_free_handle(h);
+	if (target != url)
+		pfree(target);
+}
+
 static const PgColumnarObjStoreApi objstore_api = {
 	.abi_version = PGCOLUMNAR_OBJSTORE_ABI,
 	.handles_url = objstore_handles_url,
@@ -3087,6 +3117,7 @@ static const PgColumnarObjStoreApi objstore_api = {
 	.http_request = objstore_http_request,
 	.list_uploads = objstore_list_uploads,
 	.abort_upload = objstore_abort_upload,
+	.check_endpoint = objstore_check_endpoint,
 };
 
 const PgColumnarObjStoreApi *

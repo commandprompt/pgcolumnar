@@ -1264,4 +1264,6 @@ guard_tests 854
 # test_objstore_addressing.py, by collection over the cluster files.
 # cluster_tests 4524 -> 4526 for #1783's two tests in test_objstore_addressing.py that an upload a
 # terminated worker left open is aborted under virtual-host addressing, by collection over the cluster files.
-cluster_tests 4526
+# cluster_tests 4526 -> 4532 for #1780's test_objstore_sink_write.py, the twin of objstore_sink_write.sh:
+# 6 checks in 6 new tests (4, then 2 after review), by collection over the cluster files.
+cluster_tests 4532
