@@ -1260,4 +1260,7 @@ guard_tests 854
 # 16 checks in 16 tests, by collection over the cluster files.
 # cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
 # that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
-cluster_tests 4516
+# cluster_tests 4516 -> 4537 for #1790's declared-typmod checks: 11 in test_native_read_parquet.py,
+# 3 in test_native_parquet_fdw.py, 4 in test_iceberg_scan.py and 3 in test_iceberg_fdw.py (the 3 in
+# test_native_parquet_pushdown.py join an existing test), by collection: `4537 tests collected`.
+cluster_tests 4537

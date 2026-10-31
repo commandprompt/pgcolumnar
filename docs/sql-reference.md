@@ -909,6 +909,18 @@ relation, in sorted order. It can also be a glob pattern. A local `path` can be
 any of these; an object-storage URL must be a single object key. See
 [Object storage](#object-storage).
 
+The readers return each value as the declared column type, including its type
+modifier. They apply it as PostgreSQL's input functions do. A `numeric(p,s)`
+column rounds each value to scale `s`. A value with more than `p - s` digits
+before the point is an error, SQLSTATE 22003 (`numeric field overflow`). A
+`varchar(n)` column refuses a longer value with SQLSTATE 22001 (`value too long`),
+unless the extra characters are spaces; those it drops. A `timestamp(p)` or
+`time(p)` column rounds to `p` fractional digits. This holds for `read_parquet`,
+`import_parquet`, `iceberg_scan` and both foreign-data wrappers, and for array
+elements and composite fields. So `CREATE TABLE AS` or `INSERT ... SELECT` from a
+reader never stores a value that breaks the declared type. A row that an Iceberg
+delete removes is not checked.
+
 ### pgcolumnar.read_parquet(path text) returns setof record
 
 Returns the rows of a Parquet file. You must supply a column definition list. It
@@ -1318,6 +1330,13 @@ of source values. So a file whose bucket equals the predicate constant's bucket
 is read, not skipped, and the row filter runs on it. A `timestamp with time zone`
 value is compared as its UTC instant, matching the catalog. Metrics pruning
 covers integer and boolean columns; other column types are read in full.
+
+A column whose type modifier can change a value is never used to prune. Examples
+are `varchar(2)`, which reads a stored `'eu  '` as `'eu'`, and `timestamp(0)`,
+which reads `00:59:59.7` as `01:00:00`. The manifest holds the stored value, so
+it does not describe the value the scan returns. For the same reason, the
+`pgcolumnar_parquet` wrapper skips no row group on a `numeric(p,s)` column whose
+scale differs from the file's DECIMAL scale.
 
 ```sql
 CREATE SERVER ice FOREIGN DATA WRAPPER pgcolumnar_iceberg;

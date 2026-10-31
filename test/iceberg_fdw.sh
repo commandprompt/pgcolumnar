@@ -378,6 +378,45 @@ if [ -n "${MD_th:-}" ] && ftmpx hn byhour_tz "tt timestamp"; then
 		        WHERE tt <= TIMESTAMP '2021-02-28 20:00:00'")"
 fi
 
+# ---- a declared typmod applies, and pruning respects it (#1790) ---------------
+# The foreign table returns each value as its declared type, typmod included. A
+# typmod can change a value: varchar(2) reads the stored 'eu  ' as 'eu', and
+# timestamp(0) reads 00:59:59.7 as 01:00:00. The partition value in the manifest
+# is the stored one, so a file pruned on it could hold a row the query must
+# return. warehouse_typmod (fixtures/iceberg/gen_iceberg_typmod.py) holds exactly
+# those two values, each in its own partition.
+q "CREATE FOREIGN TABLE ev_v1 (id bigint, region varchar(1), amount int)
+   SERVER ice OPTIONS (metadata_path '$MD')" >/dev/null
+# tm_state SQL -> the SQLSTATE SQL raised, or "no error (<first output line>)"
+tm_state() {
+	local out state
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	echo "${state:-no error ($(head -1 <<<"$out"))}"
+}
+check "typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001)" \
+	"$(tm_state "SELECT string_agg(region, ',' ORDER BY region) FROM ev_v1")" "22001"
+TMWH="$PGC_WORKDIR/tmwh"
+rm -rf "$TMWH"; mkdir -p "$TMWH"
+cp -r "$FX/warehouse_typmod/db" "$TMWH/db"
+chmod -R u+rwX "$TMWH"
+MD_PAD="$(ls "$TMWH"/db/byregion_pad/metadata/*.metadata.json | sort | tail -1)"
+MD_FRAC="$(ls "$TMWH"/db/byhour_frac/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE pad2 (id bigint, region varchar(2))
+   SERVER ice OPTIONS (metadata_path '$MD_PAD')" >/dev/null
+q "CREATE FOREIGN TABLE frac0 (id bigint, ts timestamp(0))
+   SERVER ice OPTIONS (metadata_path '$MD_FRAC')" >/dev/null
+check "typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  '" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM pad2 WHERE region = 'eu'")" "1"
+check "typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM frac0
+	      WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'")" "1,2"
+
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1

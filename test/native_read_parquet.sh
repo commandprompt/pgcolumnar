@@ -186,4 +186,68 @@ check "import parity rows" "$(rp_q "SELECT pgcolumnar.import_parquet('imp', '$SC
 check "read_parquet == import_parquet" \
 	"$(rp_scalar)" "$(rp_hash "SELECT * FROM imp")"
 
+# ---- a declared typmod applies to every value (#1790) -------------------------
+# read_parquet returns each value as the declared column type, typmod included, as
+# PostgreSQL's input functions do for json_to_record: numeric(p,s) rounds to scale s
+# and refuses an overflow (22003), and varchar(n) refuses a longer value (22001)
+# unless the excess is spaces, which it drops. CREATE TABLE AS and INSERT ... SELECT
+# take the function's typmod as already applied, so nothing else checks it.
+psql_run "CREATE TABLE tm_big (d numeric(10,3), s text) USING pgcolumnar;"
+psql_run "INSERT INTO tm_big VALUES (12345.678, 'hello'), (1.005, 'ab');"
+psql_run "CREATE TABLE tm_fit (d numeric(10,3), s text) USING pgcolumnar;"
+psql_run "INSERT INTO tm_fit VALUES (1.005, 'ab'), (2.5, 'abc  ');"
+TM_BIG="$PGC_WORKDIR/tm_big.parquet"
+TM_FIT="$PGC_WORKDIR/tm_fit.parquet"
+rp_q "SELECT pgcolumnar.export_parquet('tm_big', '$TM_BIG');" >/dev/null
+rp_q "SELECT pgcolumnar.export_parquet('tm_fit', '$TM_FIT');" >/dev/null
+check "typmod: a declared typmod that holds every value reads them unchanged" \
+	"$(rp_q "SELECT string_agg(d || '|' || s, ',' ORDER BY d)
+	   FROM pgcolumnar.read_parquet('$TM_BIG') AS x(d numeric(10,3), s varchar(5));")" \
+	"1.005|ab,12345.678|hello"
+check "typmod: numeric(5,2) refuses 12345.678 with numeric field overflow" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.read_parquet('$TM_BIG') AS x(d numeric(5,2), s text)" \
+	   "numeric field overflow" " (overflow)")" \
+	"22003 (overflow)"
+check "typmod: numeric(5,2) rounds 1.005 and 2.500 to the declared scale" \
+	"$(rp_q "SELECT string_agg(d::text, ',' ORDER BY d)
+	   FROM pgcolumnar.read_parquet('$TM_FIT') AS x(d numeric(5,2), s text);")" \
+	"1.01,2.50"
+check "typmod: varchar(3) refuses 'hello' with value too long" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.read_parquet('$TM_BIG') AS x(d numeric(10,3), s varchar(3))" \
+	   "value too long for type character varying(3)" " (too long)")" \
+	"22001 (too long)"
+check "typmod: varchar(3) drops the excess trailing spaces of 'abc  '" \
+	"$(rp_q "SELECT string_agg(s || ':' || octet_length(s), ',' ORDER BY s)
+	   FROM pgcolumnar.read_parquet('$TM_FIT') AS x(d numeric(10,3), s varchar(3));")" \
+	"ab:2,abc:3"
+check "typmod: CREATE TABLE AS of an overflowing value fails with numeric field overflow" \
+	"$(refusal_of "CREATE TABLE tm_ctas AS SELECT * FROM pgcolumnar.read_parquet('$TM_BIG')
+	   AS x(d numeric(5,2), s varchar(3))" "numeric field overflow" " (overflow)")" \
+	"22003 (overflow)"
+check "typmod: the failed CREATE TABLE AS left no table" \
+	"$(rp_q "SELECT coalesce(to_regclass('tm_ctas')::text, 'none');")" "none"
+psql_run "CREATE TABLE tm_heap (d numeric(5,2), s varchar(3));"
+psql_run "INSERT INTO tm_heap SELECT * FROM pgcolumnar.read_parquet('$TM_FIT')
+          AS x(d numeric(5,2), s varchar(3));"
+check "typmod: INSERT ... SELECT into a numeric(5,2) heap table stores the rounded values" \
+	"$(rp_q "SELECT string_agg(d || '|' || s, ',' ORDER BY d) FROM tm_heap;")" \
+	"1.01|ab,2.50|abc"
+psql_run "CREATE TABLE tm_imp (d numeric(5,2), s varchar(3)) USING pgcolumnar;"
+rp_q "SELECT pgcolumnar.import_parquet('tm_imp', '$TM_FIT');" >/dev/null
+check "typmod: import_parquet into a numeric(5,2) table stores the rounded values" \
+	"$(rp_q "SELECT string_agg(d || '|' || s, ',' ORDER BY d) FROM tm_imp;")" \
+	"1.01|ab,2.50|abc"
+# the nested file's ta holds 'a1' .. 'a3000', and c.y holds 'c1' .. 'c3000'
+check "typmod: an array element typmod applies, varchar(3)[] refuses 'a1000'" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.read_parquet('$NESTED')
+	   AS t(id int, ia int[], ta varchar(3)[], c rp_npc)" \
+	   "value too long for type character varying(3)" " (too long)")" \
+	"22001 (too long)"
+psql_run "CREATE TYPE rp_npc3 AS (x int, y varchar(3));"
+check "typmod: a composite field typmod applies, y varchar(3) refuses 'c1000'" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.read_parquet('$NESTED')
+	   AS t(id int, ia int[], ta text[], c rp_npc3)" \
+	   "value too long for type character varying(3)" " (too long)")" \
+	"22001 (too long)"
+
 pgc_summary

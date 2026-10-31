@@ -88,6 +88,45 @@ check "a column renamed in the schema still reads by field id (amt2 = amount)" \
 check "an output column not in the schema is refused (42703)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_scan('$MD') AS t(nosuch int)")" "42703"
 
+# ---- a declared typmod applies to every value (#1790) -------------------------
+# iceberg_scan returns each value as the declared type, typmod included:
+# varchar(n) refuses a longer value (22001) unless the excess is spaces, which it
+# drops, and timestamp(0) rounds to whole seconds. warehouse_typmod (written by
+# fixtures/iceberg/gen_iceberg_typmod.py) holds 'eu  ' with two trailing spaces
+# and the timestamp 2021-03-01 00:59:59.7.
+# tm_state SQL -> the SQLSTATE SQL raised, or "no error (<first output line>)"
+tm_state() {
+	local out state
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	echo "${state:-no error ($(head -1 <<<"$out"))}"
+}
+check "typmod: iceberg_scan refuses 'eu' as varchar(1) (22001)" \
+	"$(tm_state "SELECT * FROM pgcolumnar.iceberg_scan('$MD') AS t(region varchar(1))")" "22001"
+check "typmod: iceberg_scan reads region as varchar(2) unchanged" \
+	"$(q "SELECT string_agg(region, ',' ORDER BY region)
+	      FROM pgcolumnar.iceberg_scan('$MD') AS t(region varchar(2))")" \
+	"eu,eu,us,us,us"
+TMWH="$PGC_WORKDIR/tmwh"
+rm -rf "$TMWH"; mkdir -p "$TMWH"
+cp -r "$FX/warehouse_typmod/db" "$TMWH/db"
+chmod -R u+rwX "$TMWH"
+MD_PAD="$(ls "$TMWH"/db/byregion_pad/metadata/*.metadata.json | sort | tail -1)"
+MD_FRAC="$(ls "$TMWH"/db/byhour_frac/metadata/*.metadata.json | sort | tail -1)"
+check "typmod: iceberg_scan drops the excess trailing spaces of 'eu  ' as varchar(2)" \
+	"$(q "SELECT string_agg(id || ':' || region || ':' || octet_length(region), ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MD_PAD') AS t(id bigint, region varchar(2))")" \
+	"1:eu:2,2:us:2"
+check "typmod: iceberg_scan rounds 00:59:59.7 to 01:00:00 as timestamp(0)" \
+	"$(q "SELECT string_agg(id || '|' || ts, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MD_FRAC') AS t(id bigint, ts timestamp(0))")" \
+	"1|2021-03-01 01:00:00,2|2021-03-01 05:00:00"
+
 # deletes (apply position, refuse equality) are covered by iceberg_deletes.sh
 
 # ---- privilege -------------------------------------------------------------

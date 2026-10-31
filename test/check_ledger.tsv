@@ -3104,6 +3104,85 @@ iceberg_dv	iceberg_dv	backend still up after the audit arms	15;16;17;18;19	2026-
 iceberg_dv	iceberg_dv	supersede is per data file, not global	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies to every data file, not only the one it references
 iceberg_dv	iceberg_dv	two DV blobs in one Puffin file each apply to their own data file	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies to every data file, not only the one it references
 iceberg_dv	iceberg_dv	two DV entries for one data file are refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: two DVs for one data file are not refused
+iceberg_fdw	iceberg_fdw	a bucket-pruned equality matches iceberg_scan (murmur3 oracle)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	a date partition prunes nothing in this release (Files Pruned: 0)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	a date-partitioned FDW reads the whole table (4 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	a day()-pruned query matches iceberg_scan (epoch cross-check)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	a metrics-pruned query matches iceberg_scan (same oracle)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	a truncate-pruned query matches iceberg_scan (same oracle)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount < 100 returns ids 1,2	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount < 100 truncate-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount < 15 prunes the us file by metrics (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount < 15 returns only id 1	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 100 prunes both files by metrics (Files Pruned: 2)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 100 returns no rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 130 returns id 3	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 130 truncate-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 30 prunes the eu file, keeps us (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 30 returns id 3	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount > 25 prunes the eu file by metrics (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount > 25 still returns the right rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount >= 200 truncate-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	an unknown table option is refused (FDW_INVALID_OPTION_NAME)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	day()-on-timestamp: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	day()-on-timestamptz prunes the Mar-01 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	day()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt < 2020-01-02 day-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt < 2020-01-02 returns id 1	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt = 2020-01-02 day-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt = 2020-01-02 returns id 2	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt >= 2020-02-01 day-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt='2020-01-01' returns its rows, not over-pruned to zero	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	hour() on a naive source read as timestamptz in New York matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	hour() on a timestamptz source read as timestamp in New York matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	hour()-on-timestamptz prunes the 00h file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	hour()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	hour(): boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 1 keeps only its bucket file (Files Pruned: 4)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 1 returns row 1	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 3 returns row 3	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 4 keeps only its bucket file (Files Pruned: 4)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 4 returns row 4	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 5 bucket-prunes past metrics (Files Pruned: 4)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 5 returns row 5	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id > 4 prunes by metrics not bucket, correctly (Files Pruned: 2)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id > 4 still returns the right rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	month()-on-date prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	month()-on-date: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	month()-on-timestamptz prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	month()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	month(): boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	no predicate prunes no files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='eu' prunes the us file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='eu' returns the eu rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='us' prunes the eu file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='us' returns the three us rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='zz' prunes both files (Files Pruned: 2)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='zz' returns no rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the FDW matches iceberg_scan under the same predicate (same oracle)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the FDW reads the whole table (5 rows, no predicate)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the bucket FDW reads the whole table (8 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the date FDW matches iceberg_scan under the same predicate	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the day() FDW reads the whole table (3 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the truncate FDW reads the whole table (5 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the year() FDW reads the whole table (3 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts = 2021-06-01 returns id 2	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts = 2021-06-01 year-prunes to one file (Files Pruned: 2)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts > 2021-01-01 keeps the boundary-year file, returns ids 2,3	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts > 2021-01-01 year-prunes the 2020 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts >= 2021-02-01 month-prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts >= 2021-03-01 01:00 hour-prunes the 00h file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts >= 2021-03-02 day-prunes the Mar-01 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_fdw	iceberg_fdw	typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  '	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_fdw	iceberg_fdw	typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_fdw	iceberg_fdw	year()-on-date equality prunes to one file (Files Pruned: 2)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-date equality returns id 2	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-date prunes the 2020 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-date: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-timestamptz prunes the 2020 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year(): boundary read matches iceberg_scan (no over-prune)	15;16;17;18;19	never	-
 iceberg_fdw_estimate	iceberg_fdw_estimate	a filtered scan estimates fewer rows than the whole table (selectivity applied)	15;16;17;18;19	2026-10-21	the Iceberg FDW sets rows directly, so the scan's selectivity never applies
 iceberg_fdw_estimate	iceberg_fdw_estimate	backend alive	15;16;17;18;19	never	-
 iceberg_fdw_estimate	iceberg_fdw_estimate	the FDW estimates a positive row count from the manifests	15;16;17;18;19	never	-
@@ -3263,6 +3342,10 @@ iceberg_scan	iceberg_scan	iceberg_scan projects and reorders by field id (amount
 iceberg_scan	iceberg_scan	iceberg_scan reads a subset (region only)	15;16;17;18;19	2026-10-21	iceberg_scan resolves output columns by position rather than field id
 iceberg_scan	iceberg_scan	iceberg_scan reads the current snapshot's rows	15;16;17;18;19	never	-
 iceberg_scan	iceberg_scan	premise: the data file carries field ids (id=1,region=2,amount=3)	15;16;17;18;19	never	-
+iceberg_scan	iceberg_scan	typmod: iceberg_scan drops the excess trailing spaces of 'eu  ' as varchar(2)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_scan	iceberg_scan	typmod: iceberg_scan reads region as varchar(2) unchanged	15;16;17;18;19	never	-
+iceberg_scan	iceberg_scan	typmod: iceberg_scan refuses 'eu' as varchar(1) (22001)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_scan	iceberg_scan	typmod: iceberg_scan rounds 00:59:59.7 to 01:00:00 as timestamp(0)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
 import_deferred	import_deferred	SET CONSTRAINTS IMMEDIATE is honoured mid-transaction	15;16;17;18;19	2026-10-21	the deferred-constraint recheck is never queued
 import_deferred	import_deferred	a partial unique index accepts rows it does not cover	15;16;17;18;19	2026-10-21	both importers take the rewrite path, which enforces no constraint
 import_deferred	import_deferred	a rewrite of a uniquely-indexed table still succeeds	15;16;17;18;19	2026-10-21	the rewrites route through the enforcing index path
@@ -4548,6 +4631,9 @@ native_parquet_fdw	native_parquet_fdw	scan with incompatible declared type error
 native_parquet_fdw	native_parquet_fdw	scan without path option errors (HV00J)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scan's missing-path refusal removed (the backend crashes)
 native_parquet_fdw	native_parquet_fdw	skip export rows	15;16;17;18;19	never	-
 native_parquet_fdw	native_parquet_fdw	the skip file has four row groups	15;16;17;18;19	2026-10-22	columnar_parquet.c: the exporter writes 131072-row groups instead of 65536
+native_parquet_fdw	native_parquet_fdw	typmod: a numeric(5,2) foreign column refuses 12345.678 (22003)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_parquet_fdw	native_parquet_fdw	typmod: a numeric(5,2) foreign column rounds 1.005 and 2.500 to scale 2	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_parquet_fdw	native_parquet_fdw	typmod: a varchar(3) foreign column refuses 'hello' (22001)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
 native_parquet_fieldid	native_parquet_fieldid	a duplicate field id in the file is refused (42702)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	a duplicate requested field id is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	a field_ids/column-count mismatch is refused (22023)	15;16;17;18;19	never	-
@@ -4718,6 +4804,9 @@ native_parquet_pushdown	native_parquet_pushdown	row-group edge [id = 50000] == o
 native_parquet_pushdown	native_parquet_pushdown	row-group edge [id > 49998] == oracle	15;16;17;18;19	never	-
 native_parquet_pushdown	native_parquet_pushdown	row-group edge [id >= 49999] == oracle	15;16;17;18;19	2026-10-16	col >= const skipping a group whose max equals const (mutation, #1496 review)
 native_parquet_pushdown	native_parquet_pushdown	spanning predicate skips 0	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: col < const skips the row groups that do hold matches
+native_parquet_pushdown	native_parquet_pushdown	typmod: a numeric(18,1) column returns every row that rounds to 100.0	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_parquet_pushdown	native_parquet_pushdown	typmod: a numeric(18,1) column skips no group for d = 100.0	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_parquet_pushdown	native_parquet_pushdown	typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	OPTIONAL column reports nullable=t	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	REQUIRED column reports nullable=f	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports every column nullable
 native_parquet_schema	native_parquet_schema	REQUIRED int32 maps to integer	15;16;17;18;19	never	-
@@ -4821,6 +4910,17 @@ native_read_parquet	native_read_parquet	reject non-parquet file	15;16;17;18;19	n
 native_read_parquet	native_read_parquet	scalar export rows	15;16;17;18;19	never	-
 native_read_parquet	native_read_parquet	scalar read_parquet row count	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
 native_read_parquet	native_read_parquet	scalar round-trip: read_parquet == the generated rows	15;16;17;18;19	2026-10-22	columnar_reader.c: the columnar reader returns int4 777 as 778 (store_att_byval), so the source table and the file agree on the wrong value
+native_read_parquet	native_read_parquet	typmod: CREATE TABLE AS of an overflowing value fails with numeric field overflow	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: INSERT ... SELECT into a numeric(5,2) heap table stores the rounded values	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: a composite field typmod applies, y varchar(3) refuses 'c1000'	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: a declared typmod that holds every value reads them unchanged	15;16;17;18;19	never	-
+native_read_parquet	native_read_parquet	typmod: an array element typmod applies, varchar(3)[] refuses 'a1000'	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: import_parquet into a numeric(5,2) table stores the rounded values	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: numeric(5,2) refuses 12345.678 with numeric field overflow	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: numeric(5,2) rounds 1.005 and 2.500 to the declared scale	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: the failed CREATE TABLE AS left no table	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: varchar(3) drops the excess trailing spaces of 'abc  '	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: varchar(3) refuses 'hello' with value too long	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
 native_reclaim	native_reclaim	and every live row is still there, once	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 0.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac <= 0.0
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 1.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac >= 1.0

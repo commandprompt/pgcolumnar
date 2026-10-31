@@ -169,3 +169,15 @@ def test_an_int64_backed_decimal_is_skippable(pgc_conn, server_dir, expect):
         expect.num(cur.fetchone()[0], 1001, "INT64-backed DECIMAL: skipping did not drop rows")
         expect.text(_counter(cur, "ftdec", "d >= 0", "Row Groups Skipped"), "0",
                     "INT64-backed DECIMAL: unfiltered scan skips nothing")
+        # a declared typmod that rounds (#1790): numeric(18,1) reads 99.95 .. 99.99, in
+        # the first group whose stored max is 99.99, as 100.0, so it must not skip;
+        # the file's own typmod changes nothing and keeps skipping
+        cur.execute(f"CREATE FOREIGN TABLE ftdec1 (d numeric(18,1)) SERVER pq_dec OPTIONS (path '{path}')")
+        cur.execute(f"CREATE FOREIGN TABLE ftdec2 (d numeric(18,2)) SERVER pq_dec OPTIONS (path '{path}')")
+        cur.execute("SELECT count(*) FROM ftdec1 WHERE d = 100.0")
+        expect.num(cur.fetchone()[0], 10,
+                   "typmod: a numeric(18,1) column returns every row that rounds to 100.0")
+        expect.text(_counter(cur, "ftdec1", "d = 100.0", "Row Groups Skipped"), "0",
+                    "typmod: a numeric(18,1) column skips no group for d = 100.0")
+        expect.text(_counter(cur, "ftdec2", "d BETWEEN 120.00 AND 130.00", "Row Groups Skipped"), "3",
+                    "typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups")
