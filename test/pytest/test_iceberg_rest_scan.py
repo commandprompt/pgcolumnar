@@ -6,7 +6,9 @@ for the metadata location the catalog reports: the catalog changes how a table i
 NAMED, never its rows. The shell's own REST fixture (test/iceberg_rest_server.py),
 which verifies the Authorization: Bearer header, points loadTable at the committed
 warehouse, relocated into a work directory. Projection by field id flows through the
-REST path, namespaces and tables list, and an unknown table is the catalog's own 404
+REST path, a table promoted int -> long, float -> double and decimal(10,2) ->
+decimal(20,2) reads its old and new files as the promoted types (#1789, from a second
+fixture server), namespaces and tables list, and an unknown table is the catalog's own 404
 (42P01, read by its message).
 
 A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED: survival also reads the
@@ -32,6 +34,7 @@ from pgc_vacuity import query_error
 
 TEST = pathlib.Path(__file__).resolve().parents[1]
 WH = TEST / "fixtures" / "iceberg" / "warehouse"
+WHP = TEST / "fixtures" / "iceberg" / "warehouse_promo"
 TOKEN = "rest-scan-token-shh"
 TOKEN_ENV = "PGCOLUMNAR_ICEBERG_REST_TOKEN"
 
@@ -145,6 +148,10 @@ def irs(pgc_cluster):
         p.chmod(0o777 if p.is_dir() else 0o666)
     md = sorted((dest / "db" / "events" / "metadata").glob("*.metadata.json"))[-1]
     mdloc = f"file://{md}"
+    pdest = work / "promo"
+    shutil.copytree(WHP / "db", pdest / "db")
+    for p in [pdest, *pdest.rglob("*")]:
+        p.chmod(0o777 if p.is_dir() else 0o666)
 
     rest_port = pick_port(34)
     out = work / "rest_server.out"
@@ -157,13 +164,26 @@ def irs(pgc_cluster):
             break
         time.sleep(0.1)
     cat = f"http://127.0.0.1:{rest_port}"
+    # a second fixture server names warehouse_promo's mixed snapshot db.promo (#1789)
+    promo_port = pick_port(38)
+    promo_out = work / "rest_promo.out"
+    promo_srv = subprocess.Popen([sys.executable, str(TEST / "iceberg_rest_server.py"), "--port", str(promo_port),
+                                  "--log", str(work / "rest_promo.log"), "--token", TOKEN, "--namespace", "db",
+                                  "--table", "promo", "--metadata-location",
+                                  f"file://{pdest}/db/t/metadata/mixed.metadata.json"],
+                                 stdout=open(promo_out, "w"), stderr=subprocess.STDOUT)
+    for _ in range(50):
+        if promo_out.is_file() and "READY" in promo_out.read_text(errors="replace"):
+            break
+        time.sleep(0.1)
 
     datadir = work / "data"
     datadir.mkdir()
     log = str(work / "server.log")
     cluster = Cluster(pgc_cluster.pg_config, "icerestscan", datadir, pick_port(35))
     fx_srvs = []
-    r = {"server up": out.read_text(errors="replace").count("READY") if out.is_file() else 0, "mdloc": mdloc}
+    r = {"server up": out.read_text(errors="replace").count("READY") if out.is_file() else 0, "mdloc": mdloc,
+         "promo server up": promo_out.read_text(errors="replace").count("READY") if promo_out.is_file() else 0}
     try:
         cluster.initdb()
         with open(datadir / "postgresql.conf", "a") as fh:
@@ -185,6 +205,9 @@ def irs(pgc_cluster):
                                    f"pgcolumnar.iceberg_rest_scan('{cat}','db','events') {cols} ORDER BY id")
         r["projected"] = _rows(dsn, f"SELECT amount || '|' || id FROM pgcolumnar.iceberg_rest_scan('{cat}','db','events') "
                                     f"AS t(amount int, id bigint) ORDER BY id")
+        r["promo"] = _rows(dsn, "SELECT id || '|' || k || '|' || f || '|' || d FROM "
+                                f"pgcolumnar.iceberg_rest_scan('http://127.0.0.1:{promo_port}','db','promo') "
+                                "AS t(id bigint, k bigint, f double precision, d numeric(20,2)) ORDER BY id")
         r["namespaces"] = _rows(dsn, f"SELECT string_agg(ns, ',' ORDER BY ns) "
                                      f"FROM pgcolumnar.iceberg_rest_namespaces('{cat}') AS ns")
         r["tables"] = _rows(dsn, f"SELECT string_agg(t, ',' ORDER BY t) "
@@ -201,7 +224,7 @@ def irs(pgc_cluster):
                                       "the REST catalog has no such table", " by the catalog's 404")
         # #1793: one fixture per catalog behaviour, as the shell starts them.
         def start_fx(name, *args):
-            port = pick_port(36 + len(fx_srvs) % 12)  # pick_port walks past a busy port
+            port = pick_port(39 + len(fx_srvs) % 9)  # slots 39-47; pick_port walks past a busy port
             fout = work / f"{name}.out"
             fx_srvs.append(subprocess.Popen(
                 [sys.executable, str(TEST / "iceberg_rest_server.py"), "--port", str(port),
@@ -293,6 +316,8 @@ def irs(pgc_cluster):
         _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
         srv.kill()
         srv.wait()
+        promo_srv.kill()
+        promo_srv.wait()
         for fx in fx_srvs:
             fx.kill()
             fx.wait()
@@ -348,6 +373,22 @@ def test_iceberg_rest_scan_projects_and_reorders_by_field_id(irs, expect):
         return
     expect.text(irs["projected"], "10|1\n20|2\n30|3\n40|4\n50|5",
                 "iceberg_rest_scan projects and reorders by field id (amount, id)")
+
+
+def test_the_promoted_table_rest_server_is_up(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(str(irs["promo server up"]), "1", "premise: the promoted-table rest fixture server is up")
+
+
+def test_iceberg_rest_scan_reads_a_promoted_tables_old_and_new_files(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["promo"],
+                "1|-2147483648|1.5|1.25\n2|-1|-2.25|-3.50\n3|0|0.5|0.00\n4|2|1024.75|99999999.99\n"
+                "5|2147483647|3.4028234663852886e+38|-0.01\n6|7|-0.125|10.10\n7|2|2|2.00\n"
+                "8|5000000000|3.25|123456789012345678.90\n9|2|0.1|-1.00",
+                "iceberg_rest_scan reads a promoted table's old and new files as the promoted types")
 
 
 def test_iceberg_rest_namespaces_lists_the_catalogs_namespaces(irs, expect):

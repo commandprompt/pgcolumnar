@@ -36,6 +36,7 @@
 #include "fmgr.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/cost.h"
@@ -69,6 +70,7 @@ typedef enum IceTemporalKind
 	ICE_TEMPORAL_HOUR
 }			IceTemporalKind;
 
+#include "columnar.h"
 #include "columnar_avro.h"
 #include "columnar_compat.h"
 #include "columnar_iceberg.h"
@@ -446,6 +448,14 @@ ice_fdw_cell_datum(const PgColumnarAvroPartCell *c, Oid typid, bool *ok)
 		case VARCHAROID:
 			if (!c->is_bytes)
 				break;
+			/*
+			 * The manifest's bytes are not known to be valid text (#1821). A
+			 * value that is not valid in the server encoding is undecidable,
+			 * not unequal: compared as raw bytes it matches nothing, and the
+			 * file would be pruned with rows in it that the qual keeps.
+			 */
+			if (!pg_verify_mbstr(GetDatabaseEncoding(), c->bytes, c->blen, true))
+				break;
 			return PointerGetDatum(cstring_to_text_with_len(c->bytes, c->blen));
 		case INT2OID:
 			if (c->is_bytes)
@@ -689,7 +699,8 @@ ice_fdw_metric_quals(ForeignScanState *node, TupleDesc tupdesc,
  * Compile "bucket-source-column = const" predicates into IceBucketQuals. A
  * bucket[N] partition stores the bucket of the source value; an equality
  * predicate on the source column can prune a file whose stored bucket differs
- * from bucket(const, N). Only "=" prunes (the hash destroys order).
+ * from bucket(const, N). Only "=" prunes (the hash destroys order), and only
+ * under a deterministic collation, where equal values are equal bytes.
  */
 static List *
 ice_fdw_bucket_quals(ForeignScanState *node, TupleDesc tupdesc,
@@ -745,6 +756,15 @@ ice_fdw_bucket_quals(ForeignScanState *node, TupleDesc tupdesc,
 		}
 		if (strategy != BTEqualStrategyNumber)
 			continue;			/* bucket prunes on equality only */
+
+		/*
+		 * Iceberg buckets a string by its bytes. Under a nondeterministic
+		 * collation two equal values need not share bytes, nor a bucket, so
+		 * bucket(const) cannot rule a file out (#1818): read it, and let the
+		 * executor's filter decide.
+		 */
+		if (!PgColumnarCollationIsDeterministic(op->inputcollid))
+			continue;
 
 		/* is this Var the source column of a bucket partition field? */
 		for (bi = 0; bi < bcount; bi++)

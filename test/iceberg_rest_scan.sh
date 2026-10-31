@@ -42,9 +42,11 @@ REST_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
 REST_LOG="$PGC_WORKDIR/rest.log"
 SRV_PID=""
 FX_PIDS=()
+PROMO_PID=""
 
 rest_teardown() {
 	[ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
+	[ -n "$PROMO_PID" ] && kill "$PROMO_PID" 2>/dev/null
 	local _p
 	for _p in "${FX_PIDS[@]}"; do kill "$_p" 2>/dev/null; done
 	pgc_teardown
@@ -114,6 +116,40 @@ check "iceberg_rest_scan projects and reorders by field id (amount, id)" \
 	      FROM pgcolumnar.iceberg_rest_scan('$CAT','db','events') AS t(amount int, id bigint)
 	      ORDER BY id")" \
 	"$(printf '10|1\n20|2\n30|3\n40|4\n50|5')"
+
+# ---- a promoted table reads through the REST path (#1789) --------------------
+# warehouse_promo's mixed snapshot: two files written before an int -> long,
+# float -> double and decimal(10,2) -> decimal(20,2) promotion and one after.
+# A second fixture server names it db.promo; every file reads as the current
+# schema's types.
+DESTP="$PGC_WORKDIR/promo"
+rm -rf "$DESTP"; mkdir -p "$DESTP"
+cp -r "$FX/warehouse_promo/db" "$DESTP/db"
+chmod -R u+rwX "$DESTP"
+PROMO_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
+python3 "$(dirname "${BASH_SOURCE[0]}")/iceberg_rest_server.py" \
+	--port "$PROMO_PORT" --log "$PGC_WORKDIR/rest_promo.log" --token "$TOKEN" \
+	--namespace db --table promo \
+	--metadata-location "file://$DESTP/db/t/metadata/mixed.metadata.json" \
+	> "$PGC_WORKDIR/rest_promo.out" 2>&1 &
+PROMO_PID=$!
+for _ in $(seq 1 50); do grep -q READY "$PGC_WORKDIR/rest_promo.out" 2>/dev/null && break; sleep 0.1; done
+check "premise: the promoted-table rest fixture server is up" \
+	"$(grep -c READY "$PGC_WORKDIR/rest_promo.out" 2>/dev/null)" "1"
+check_text "iceberg_rest_scan reads a promoted table's old and new files as the promoted types" \
+	"$(q "SELECT id || '|' || k || '|' || f || '|' || d
+	      FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$PROMO_PORT','db','promo')
+	        AS t(id bigint, k bigint, f double precision, d numeric(20,2)) ORDER BY id")" \
+	'1|-2147483648|1.5|1.25
+2|-1|-2.25|-3.50
+3|0|0.5|0.00
+4|2|1024.75|99999999.99
+5|2147483647|3.4028234663852886e+38|-0.01
+6|7|-0.125|10.10
+7|2|2|2.00
+8|5000000000|3.25|123456789012345678.90
+9|2|0.1|-1.00'
+kill "$PROMO_PID" 2>/dev/null
 
 # ---- listing ----------------------------------------------------------------
 check "iceberg_rest_namespaces lists the catalog's namespaces" \

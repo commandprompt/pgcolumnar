@@ -35,6 +35,9 @@
 
 /* ConvertedType (parquet.thrift ConvertedType); -1 means none */
 #define PQ_CT_UTF8				0
+#define PQ_CT_MAP				1
+#define PQ_CT_MAP_KEY_VALUE		2
+#define PQ_CT_LIST				3
 #define PQ_CT_ENUM				4
 #define PQ_CT_DECIMAL			5
 #define PQ_CT_DATE				6
@@ -42,6 +45,10 @@
 #define PQ_CT_TIME_MICROS		8
 #define PQ_CT_TIMESTAMP_MILLIS	9
 #define PQ_CT_TIMESTAMP_MICROS	10
+#define PQ_CT_UINT_8			11
+#define PQ_CT_UINT_16			12
+#define PQ_CT_UINT_32			13
+#define PQ_CT_UINT_64			14
 #define PQ_CT_INT_8				15
 #define PQ_CT_INT_16			16
 #define PQ_CT_INT_32			17
@@ -55,6 +62,7 @@
 /* LogicalType union field ids (parquet.thrift LogicalType) */
 #define PQ_LT_TIME				7
 #define PQ_LT_TIMESTAMP			8
+#define PQ_LT_INTEGER			10
 
 /* TimeUnit union field ids (parquet.thrift TimeUnit) */
 #define PQ_TUNIT_MILLIS			1
