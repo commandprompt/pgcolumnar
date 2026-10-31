@@ -1155,7 +1155,9 @@ twice. A probe pass computes the row ordinals to drop.
 
 A malformed manifest is refused, not read as far as it parses. A manifest entry
 that records no data-file path is an error, as is a manifest whose embedded Avro
-schema is not well formed.
+schema is not well formed. An enum value outside the Iceberg spec is refused with
+`XX001` and the value in the message. A data file `content` or an entry
+`status` must be 0, 1 or 2. A manifest list `content` must be 0 or 1.
 
 ```sql
 SELECT id, region, sum(amount)
