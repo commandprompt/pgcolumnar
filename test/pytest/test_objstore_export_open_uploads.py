@@ -23,7 +23,9 @@ one upload, while their own POST ?uploads is held: cancelled (both) and terminat
 cancel export_parquet while the store holds the answer to the request that commits the
 object, CompleteMultipartUpload (__complete_delay__) or a single PUT (__put_delay__),
 after it wrote the object over an earlier one. What the export reports must match what
-the key holds.
+the key holds. The complete-drop arm (#1846) has the store close the connection with
+no answer after it applied the complete and the cancel arrived: the export must not send
+the request again, and must say the object may be written.
 
 A PRIVATE CLUSTER, because the postmaster starts with AWS_* in its environment, which
 the shared cluster cannot do: every AWS_* variable of this process is removed and the
@@ -225,6 +227,8 @@ def _report_matches_store(got, path, old):
     outcome = got.get("outcome", "the export did not return")
     failed = not outcome.startswith("no error")
     warned = sum(1 for w in got.get("warnings", []) if "before the interrupt took effect" in w)
+    if "after sending the request that commits the object" in outcome:
+        warned += 1
     if state == "the new" and (not failed or warned >= 1):
         return "truthful"
     if state == "the earlier" and failed:
@@ -472,6 +476,40 @@ def ou(pgc_cluster):
                 if got["warnings"] else query_error("no WARNING")
             r[f"{pfx} own"] = _key_open(work, pfx, "obj.parquet")
             r[f"{pfx} survived"] = _survived(dsn, log, crashes0)
+
+        # complete drop (#1846): the store applies the complete, the cancel lands
+        # while its answer is awaited, and the store closes with no answer
+        pfx = "cd"
+        path = work / BUCKET / pfx / "obj.parquet"
+        url = f"s3://{BUCKET}/{pfx}/obj.parquet"
+        pat = rf"^POST /{BUCKET}/{pfx}/obj\.parquet .*uploadId="
+        got = {}
+        _start_serial(dsn, "export_parquet", "ou_small", url, got).join(300)
+        old = _md5(path)
+        r[f"{pfx} earlier"] = "yes" if old else f"no: {got.get('outcome')}"
+        s3log.write_text("")
+        (work / "__complete_drop__").write_text("5\n")
+        got = {}
+        t = _start_serial(dsn, "export_parquet", "ou_big", url, got)
+        for _ in range(300):
+            now = _md5(path)
+            if now is not None and now != old:
+                break
+            time.sleep(0.1)
+
+        def commits():
+            return sum(1 for ln in s3log.read_text(errors="replace").splitlines()
+                       if re.match(pat, ln))
+        state = "new" if _md5(path) != old else "earlier"
+        r[f"{pfx} held"] = f"{commits()} commit requests, {state} object"
+        _signal_serial(dsn, "pg_cancel_backend")
+        t.join(300)
+        (work / "__complete_drop__").unlink()
+        r[f"{pfx} truthful"] = _report_matches_store(got, path, old)
+        r[f"{pfx} commits"] = commits()
+        r[f"{pfx} outcome"] = got.get("outcome", "the export did not return") \
+            .replace(f"s3://{BUCKET}/", "s3://B/")
+        r[f"{pfx} survived"] = _survived(dsn, log, crashes0)
         yield r
     finally:
         _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
@@ -701,3 +739,33 @@ def test_commit_leaves_no_upload_at_the_key_open(ou, expect, arm, pfx):
 @pytest.mark.parametrize("arm,pfx", COMMIT_ARMS, ids=[a[1] for a in COMMIT_ARMS])
 def test_commit_the_server_survived(ou, expect, arm, pfx):
     expect.text(ou[f"{pfx} survived"], "1", f"{arm}: the server survived")
+
+
+def test_complete_drop_an_earlier_object_is_at_the_key(ou, expect):
+    expect.text(ou["cd earlier"], "yes", "premise: complete drop: an earlier object is at the key")
+
+
+def test_complete_drop_answer_was_held_when_the_cancel_landed(ou, expect):
+    expect.text(ou["cd held"], "1 commit requests, new object",
+                "premise: complete drop: the store had written the new object and held the "
+                "answer when the cancel landed")
+
+
+def test_complete_drop_report_matches_the_object_at_the_key(ou, expect):
+    expect.text(ou["cd truthful"], "truthful",
+                "complete drop: what the export reports matches the object at the key")
+
+
+def test_complete_drop_sent_the_commit_request_once(ou, expect):
+    expect.num(ou["cd commits"], 1, "complete drop: the export sent the commit request once")
+
+
+def test_complete_drop_says_the_store_may_have_written_the_object(ou, expect):
+    expect.text(ou["cd outcome"],
+                '08006: columnar: lost the connection to "s3://B/cd/obj.parquet" '
+                "after sending the request that commits the object",
+                "complete drop: the export says the store may have written the object")
+
+
+def test_complete_drop_the_server_survived(ou, expect):
+    expect.text(ou["cd survived"], "1", "complete drop: the server survived")

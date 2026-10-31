@@ -1438,21 +1438,29 @@ cannot widen its own reach.
 `export_parquet` and `export_arrow` write to an `s3://` URL as well as a local
 path. A small object goes in one request. A large one is written as a multipart
 upload. It becomes visible at its final name only when the upload completes, so a
-reader never sees a partial object. A failed export removes what it wrote,
-including an incomplete multipart upload.
+reader never sees a partial object. An export that fails before its last request
+removes what it wrote, including an incomplete multipart upload. The last request
+is different, as the next paragraphs explain.
 
-This holds when you cancel or terminate the export while it waits for the store
-to start the upload. The export then has no id for that upload. It lists the
-open uploads for its own key and aborts each one, within 10 seconds. Uploads at
-other keys stay open. An upload that another writer started at the same key is
-aborted too.
+This cleanup holds when you cancel or terminate the export while it waits for the
+store to start the upload. The export then has no id for that upload. It lists
+the open uploads for its own key and aborts each one, within 10 seconds. Uploads
+at other keys stay open. An upload that another writer started at the same key is
+aborted too. This listing works for `s3://` only. A `gs://` export cancelled at
+that moment leaves the upload open (#1854).
 
 The last request commits the object. It is the single request of a small object,
 or the request that completes a multipart upload. Once the store has that whole
-request, a cancel or terminate waits for its answer. If the store accepted it,
-the export issues a warning that it wrote the object. The statement can still end
-with the cancel error. The new object is then at the key and has replaced any
-earlier object there. A store cannot take a committed object back.
+request, a cancel or terminate waits for its answer. The wait ends when the answer
+arrives, or when the store sends nothing for 60 seconds. A store that keeps
+sending slowly can make it wait longer. If the store accepted the request, the
+export issues a warning that it wrote the object. The statement can still end with
+the cancel error. The new object is then at the key and has replaced any earlier
+object there. A store cannot take a committed object back.
+
+If the connection closes during that wait, the export does not send the request
+again. It fails with an error that says the store may have written the object.
+Check the key to see whether it holds the new object.
 
 A backend killed with `SIGKILL`, or a lost connection to the store, can still
 leave an incomplete multipart upload. To reclaim one, set a bucket lifecycle rule

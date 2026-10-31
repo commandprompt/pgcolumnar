@@ -48,6 +48,10 @@
 # export reports must match what the key then holds: the earlier object and an
 # error, or the new object and either success or a warning that says so.
 #
+# The complete-drop arm (#1846) has the store close the connection, with no
+# answer, after it applied CompleteMultipartUpload and the cancel arrived. The
+# export must not send the request again and must say the object may be written.
+#
 # Usage:  test/objstore_export_open_uploads.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -371,6 +375,7 @@ report_matches_store() {
 	if [ -z "$now" ]; then state="no"; elif [ "$now" = "$old" ]; then state="the earlier"; else state="the new"; fi
 	err="$(grep -m1 -E '^(ERROR|FATAL):' "$out")"
 	warn="$(grep -c 'before the interrupt took effect' "$out" | tr -d ' ')"
+	case "$err" in *"after sending the request that commits the object"*) warn=$(( warn + 1 )) ;; esac
 	if [ "$state" = "the new" ] && { [ -z "$err" ] || [ "$warn" -ge 1 ]; }; then echo truthful
 	elif [ "$state" = "the earlier" ] && [ -n "$err" ]; then echo truthful
 	else echo "untruthful: the key holds $state object ($(size_of "$file") bytes); the export reported [${err:-no error}] with $warn commit warnings"
@@ -409,5 +414,38 @@ commit_arm() {
 }
 commit_arm "complete cancel" cc ou_big __complete_delay__ "^POST /$BUCKET/cc/obj\.parquet .*uploadId="
 commit_arm "put cancel" pc ou_mid __put_delay__ "^PUT /$BUCKET/pc/obj\.parquet "
+
+# ---- complete drop (#1846): the store applies CompleteMultipartUpload, the
+# cancel lands while its answer is awaited, and the store then closes the
+# connection with no answer. The export must not send the request again, and
+# must say that the store may have written the object.
+pfx=cd; file="$PGC_WORKDIR/$BUCKET/$pfx/obj.parquet"
+start_serial export_parquet ou_small "s3://$BUCKET/$pfx/obj.parquet" "$PGC_WORKDIR/$pfx-0.out"
+wait "$bgpid" 2>/dev/null || true
+old="$(md5_of "$file")"
+check "premise: complete drop: an earlier object is at the key" \
+	"$( [ -n "$old" ] && echo yes || echo "no: $(cat "$PGC_WORKDIR/$pfx-0.out")")" "yes"
+: > "$S3_LOG"
+echo 5 > "$PGC_WORKDIR/__complete_drop__"
+start_serial export_parquet ou_big "s3://$BUCKET/$pfx/obj.parquet" "$PGC_WORKDIR/$pfx.out"
+for _ in $(seq 1 300); do
+	[ -n "$(md5_of "$file")" ] && [ "$(md5_of "$file")" != "$old" ] && break
+	sleep 0.1
+done
+pat="^POST /$BUCKET/$pfx/obj\.parquet .*uploadId="
+check "premise: complete drop: the store had written the new object and held the answer when the cancel landed" \
+	"$(grep -cE "$pat" "$S3_LOG" | tr -d ' ') commit requests, $( [ "$(md5_of "$file")" != "$old" ] && echo new || echo earlier) object" \
+	"1 commit requests, new object"
+signal_serial pg_cancel_backend
+wait "$bgpid" 2>/dev/null || true
+rm -f "$PGC_WORKDIR/__complete_drop__"
+check "complete drop: what the export reports matches the object at the key" \
+	"$(report_matches_store "$PGC_WORKDIR/$pfx.out" "$file" "$old")" "truthful"
+check_num "complete drop: the export sent the commit request once" \
+	"$(grep -cE "$pat" "$S3_LOG" | tr -d ' ')" "1"
+check "complete drop: the export says the store may have written the object" \
+	"$(grep -m1 -E '^(ERROR|FATAL):' "$PGC_WORKDIR/$pfx.out" | sed "s#s3://$BUCKET/#s3://B/#")" \
+	"ERROR:  08006: columnar: lost the connection to \"s3://B/$pfx/obj.parquet\" after sending the request that commits the object"
+check "complete drop: the server survived" "$(survived "$crashes0")" "1"
 
 pgc_summary

@@ -53,6 +53,10 @@
 #   __put_delay__         a number of seconds (#1813): a single-request PUT
 #                         (no partNumber) writes the object at once and answers
 #                         only after that long, for the same window.
+#   __complete_drop__     a number of seconds (#1846): CompleteMultipartUpload
+#                         writes the object at once, waits that long, and then
+#                         closes the connection with no answer, as a store
+#                         that applied the request and lost the connection.
 # --seed-upload KEY (repeatable) opens an upload at KEY ("bucket/key") before
 # the first request: an upload some other writer left, which a client must not
 # abort as its own.
@@ -555,6 +559,10 @@ class Handler(BaseHTTPRequestHandler):
             with open(local, "wb") as f:
                 for n, _ in listed:
                     f.write(up["parts"][n])
+            if os.path.exists(os.path.join(self.server.rootdir, "__complete_drop__")):
+                _hook_sleep(self.server.rootdir, "__complete_drop__")
+                self.close_connection = True
+                return
             _hook_sleep(self.server.rootdir, "__complete_delay__")
             body = b"<?xml version=\"1.0\"?><CompleteMultipartUploadResult/>"
             self.send_response(200)
