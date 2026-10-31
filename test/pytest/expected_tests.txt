@@ -1377,8 +1377,16 @@ guard_tests 854
 # (an S3:// prefix and an S3:// pattern), 2 parameters of the same test, by collection over the cluster files.
 # cluster_tests 4655 -> 4656 for #1784's S3://.../glb/[A_]*.parquet check in test_objstore_listing.py (only the
 # scheme ignores case), 1 parameter of the same test, by collection over the cluster files (`4527 tests collected` after the merge of main).
-# cluster_tests 4656 -> 4658 for #1817's two tests in test_iceberg_deletes.py: many equality-delete
+# cluster_tests 4573 -> 4584 for #1793's test_iceberg_rest_scan.py: eleven checks for nested namespaces,
+# a multi-segment prefix, a prefix in defaults and a warehouse server, by collection: `5405 tests collected`
+# after the merge of main, minus guard_tests 854.
+# cluster_tests 4584 -> 4595 for #1793's PR #1859 review in test_iceberg_rest_scan.py: eleven checks for a
+# top level that lists nested namespaces, ?parent= ignored or refused, config precedence, invalid separator
+# and prefix, the 64-level bound and page-token cycles, by collection: `5416 tests collected`, minus 854.
+# cluster_tests 4656 -> 4678 at the merge of origin/main (b9c0884c) into fix/1793-rest-namespaces: main's 4623
+# plus this branch's 22 checks in test_iceberg_rest_scan.py, by collection: `5499 tests collected`, minus 854.
+# cluster_tests 4678 -> 4680 for #1817's two tests in test_iceberg_deletes.py: many equality-delete
 # rows drop the matching rows, and the probe's comparison count stays bounded, by collection.
-# cluster_tests 4658 -> 4659 for #1817's zero-row equality-delete test in test_iceberg_deletes.py
+# cluster_tests 4680 -> 4681 for #1817's zero-row equality-delete test in test_iceberg_deletes.py
 # (review of #1860), by collection.
-cluster_tests 4659
+cluster_tests 4681
