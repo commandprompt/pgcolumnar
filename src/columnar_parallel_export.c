@@ -122,8 +122,9 @@ PGDLLEXPORT void pgcolumnar_parallel_export_worker(Datum main_arg);
 
 /*
  * The settings the object-store module reads by name (#1780). A background
- * worker starts from postgresql.conf and ALTER SYSTEM only, so without these
- * a worker ignored the caller's SET: it uploaded to an endpoint the session
+ * worker gets postgresql.conf, ALTER SYSTEM, and the ALTER ROLE and ALTER
+ * DATABASE settings applied when it connects, but never the caller's SET, so
+ * without these a worker ignored the caller's SET: it uploaded to an endpoint the session
  * had refused, and ignored its part size and addressing. The dispatcher copies
  * the caller's values into the segment, in this order, each ending in a NUL,
  * and every worker applies them before it writes.

@@ -470,8 +470,8 @@ true until the next version shipped.
   `pgcolumnar.objstore_allowed_endpoints`, `objstore_s3_addressing` and
   `objstore_part_size` (#1780). Its background workers started from
   `postgresql.conf` and ignored a `SET`. A session that set the allow-list to
-  `''` still had its workers upload `part-0000.parquet`; the call then failed
-  and left the part behind. The dispatcher now checks the endpoint against the
+  `''` still had its workers upload their parts (two objects with two
+  workers); the call then failed and left them behind. The dispatcher now checks the endpoint against the
   session's list before any worker starts, and passes the three settings to
   the workers. The check sends no request: the object-store module gains the
   entry `check_endpoint` (module ABI 7), so the module and the extension must
