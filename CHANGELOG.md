@@ -466,6 +466,24 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Iceberg reader now reads gzip-compressed table metadata (#1815). A writer
+  makes it when `write.metadata.compression-codec` is `gzip`, and names it
+  `*.gz.metadata.json` or `*.metadata.json.gz`. Before, every Iceberg function
+  failed on it with `22P02 invalid input syntax for type json`, which did not name
+  the cause. The reader detects gzip by its first two bytes. The 64 MiB cap holds
+  on the inflated size (SQLSTATE 54000), and a cut-short stream is refused as
+  corrupt (XX001). `test/iceberg_scan.sh` and `test_iceberg_scan.py`.
+- `iceberg_scan` now reads a data file whose `file_format` is `parquet`, the
+  spelling the Iceberg spec uses (#1825). It compared the value with `PARQUET`
+  case-sensitively, for data, position-delete, and equality-delete files.
+- The Iceberg reader treats `s3a://` and `s3n://` paths as `s3://` (#1825). Before,
+  an `s3a://` metadata path was opened as a local file and failed with "could not
+  open file". A table whose location used `s3://` while its files used `s3a://`
+  was refused as "not under the table location". `test/iceberg_objstore.sh` covers
+  the metadata path over S3, and `test/iceberg_scan.sh` the mixed schemes.
+- docs/limitations.md now lists the Avro codecs a manifest may use (`null` and
+  `deflate`) and the URL schemes the Iceberg reader accepts (#1825). `zstandard`
+  and `snappy` manifests are still refused.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write

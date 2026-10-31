@@ -17,6 +17,8 @@ shell's pgc_skip message, as pgc_skip does, and the rest decline unnamed.
 import json
 import pathlib
 import shutil
+import subprocess
+import sys
 
 import psycopg
 import pytest
@@ -25,6 +27,10 @@ from pgc_vacuity import query_error
 
 DB = "pgc_iceberg_scan"
 WH = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "iceberg" / "warehouse"
+VARIANTS = WH.parent / "gen_iceberg_variants.py"
+ROWS5 = "1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50"
+SNAPCOLS = ("snapshot_id || '|' || coalesce(parent_snapshot_id::text, '-') || '|' || "
+            "sequence_number || '|' || manifest_list")
 UNPRIV, READER = "pgc_icescan_unpriv", "pgc_icescan_reader"
 
 
@@ -51,6 +57,30 @@ def _sqlstate(dsn, sql, user=None, port=None):
     return "no error"
 
 
+def _refusal(dsn, sql, phrase, label):
+    """-> "<SQLSTATE><label>" when `sql` raised with `phrase` in its message, else
+    "<SQLSTATE>: <message>", or "no error"."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        msg = exc.diag.message_primary or _message(exc)
+        return exc.sqlstate + label if phrase in msg else f"{exc.sqlstate}: {msg}"
+    return "no error"
+
+
+def _variants(dest):
+    """-> {name: path} from gen_iceberg_variants.py, or {} with the failure under "error"."""
+    run = subprocess.run([sys.executable, str(VARIANTS), str(dest)],
+                         capture_output=True, text=True)
+    out = dict(line.split("=", 1) for line in run.stdout.splitlines() if "=" in line)
+    if run.returncode != 0:
+        out["error"] = (run.stdout + run.stderr).strip()
+    return out
+
+
 def _lines(v):
     return v if isinstance(v, str) else "\n".join(str(x) for x in v)
 
@@ -65,6 +95,12 @@ def isc(pgc_cluster, server_dir):
     for p in [dest, *dest.rglob("*")]:
         p.chmod(0o777 if p.is_dir() else 0o666)
     md = sorted((dest / "db" / "events" / "metadata").glob("*.metadata.json"))[-1]
+    var = _variants(dest)
+    for p in [dest, *dest.rglob("*")]:
+        p.chmod(0o777 if p.is_dir() else 0o666)
+
+    def vpath(name):
+        return var.get(name, f"no variant {name}: {var.get('error', var)}")
     df = sorted((dest / "db" / "events" / "data").glob("*/*.parquet"))[0]
     m = json.loads(md.read_text())
     sch = next(s for s in m["schemas"] if s["schema-id"] == m["current-schema-id"])
@@ -98,9 +134,20 @@ def isc(pgc_cluster, server_dir):
             "subset": _rows(dsn, f"SELECT string_agg(region, ',' ORDER BY region) FROM {scan.format(md)} AS t(region text)"),
             "renamed": _rows(dsn, f"SELECT string_agg(amt2::text, ',' ORDER BY amt2) FROM {scan.format(ren)} AS t(amt2 int)"),
             "nosuch": _sqlstate(dsn, f"SELECT * FROM {scan.format(md)} AS t(nosuch int)"),
+            "plain snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{md}')"),
+            "gz_infix snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_infix')}')"),
+            "gz_suffix snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_suffix')}')"),
+            "gz_bomb": _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_bomb')}')",
+                                "inflates past", " past the cap"),
+            "gz_trunc": _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_trunc')}')",
+                                 "gzip", " naming gzip"),
             "unpriv": _sqlstate(dsn, f"SELECT * FROM {scan.format(md)} AS t(id bigint)", UNPRIV, pgc_cluster.port),
             "reader": _rows(dsn, f"SELECT count(*) FROM {scan.format(md)} AS t(id bigint)", READER, pgc_cluster.port),
         }
+        for name in ("gz_infix", "gz_suffix", "lower", "mixed"):
+            r[name + " rows"] = _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM "
+                                           f"{scan.format(vpath(name))} AS t(id bigint, region text, amount int) "
+                                           "ORDER BY id")
         yield r
     finally:
         with psycopg.connect(admin, autocommit=True) as a:
@@ -167,3 +214,63 @@ def test_a_pg_read_server_files_member_may_scan(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["reader"]), "5", "a pg_read_server_files member who is not superuser may scan")
+
+
+def _plain_snapshot(isc):
+    return _lines(isc["plain snap"]) or "no snapshot from the plain file"
+
+
+def test_iceberg_current_snapshot_reads_a_gz_metadata_json_file(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["gz_infix snap"]), _plain_snapshot(isc),
+                "iceberg_current_snapshot reads a .gz.metadata.json file as it reads the plain file")
+
+
+def test_iceberg_current_snapshot_reads_a_metadata_json_gz_file(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["gz_suffix snap"]), _plain_snapshot(isc),
+                "iceberg_current_snapshot reads a .metadata.json.gz file as it reads the plain file")
+
+
+def test_iceberg_scan_reads_a_table_whose_metadata_is_gz_metadata_json(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["gz_infix rows"]), ROWS5,
+                "iceberg_scan reads the rows of a table whose metadata is .gz.metadata.json")
+
+
+def test_iceberg_scan_reads_a_table_whose_metadata_is_metadata_json_gz(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["gz_suffix rows"]), ROWS5,
+                "iceberg_scan reads the rows of a table whose metadata is .metadata.json.gz")
+
+
+def test_a_gzip_metadata_file_past_the_cap_is_refused(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["gz_bomb"]), "54000 past the cap",
+                "a gzip metadata file that inflates past the 64 MiB cap is refused (54000)")
+
+
+def test_a_cut_short_gzip_metadata_file_is_refused(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["gz_trunc"]), "XX001 naming gzip",
+                "a cut-short gzip metadata file is refused as corrupt gzip (XX001)")
+
+
+def test_iceberg_scan_reads_a_lowercase_parquet_file_format(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["lower rows"]), ROWS5,
+                "iceberg_scan reads a data file whose file_format is lowercase parquet")
+
+
+def test_iceberg_scan_reads_mixed_s3_and_s3a_paths(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["mixed rows"]), ROWS5,
+                "iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a://")

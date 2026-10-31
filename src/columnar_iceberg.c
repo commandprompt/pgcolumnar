@@ -25,6 +25,10 @@
  */
 #include "postgres.h"
 
+#ifdef HAVE_LIBZ
+#include <zlib.h>
+#endif
+
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
@@ -122,22 +126,130 @@ ice_slurp_remote(const char *url, int64 *outlen,
 }
 
 /*
+ * s3a:// and s3n:// are the Hadoop names for an S3 store, and Spark and Hive
+ * write them into table metadata. Return the s3:// form of such a path, which
+ * the object-store module reads, and any other path unchanged (#1825).
+ */
+static const char *
+ice_s3_alias(const char *path)
+{
+	if (path != NULL &&
+		(pg_strncasecmp(path, "s3a://", 6) == 0 ||
+		 pg_strncasecmp(path, "s3n://", 6) == 0))
+		return psprintf("s3://%s", path + 6);
+	return path;
+}
+
+/*
+ * Inflate a gzip-compressed metadata.json (#1815). Iceberg writes one when the
+ * table property write.metadata.compression-codec is gzip, and names it
+ * *.gz.metadata.json (older writers: *.metadata.json.gz). The caller detects it
+ * by the gzip magic bytes, not by the name, so a file of either name, or of a
+ * name that does not say, reads the same. The inflated size is held to the same
+ * cap as a plain file, so a small file cannot make the backend allocate without
+ * bound. Returns a palloc'd, NUL-terminated buffer.
+ */
+static char *
+ice_gunzip(const char *path, const uint8 *in, int64 inlen)
+{
+#ifdef HAVE_LIBZ
+	z_stream	zs;
+	int64		cap = Min(Max(inlen * 8, (int64) 64 * 1024), ICE_MAX_METADATA);
+	char	   *out = palloc(cap + 1);
+	int			rc;
+
+	memset(&zs, 0, sizeof(zs));
+	if (inflateInit2(&zs, 15 + 16) != Z_OK)	/* 15 + 16: the gzip wrapper */
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("iceberg: could not start inflating \"%s\"", path)));
+	zs.next_in = (Bytef *) in;
+	zs.avail_in = (uInt) inlen;
+	zs.next_out = (Bytef *) out;
+	zs.avail_out = (uInt) cap;
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+		rc = inflate(&zs, Z_NO_FLUSH);
+		if (rc == Z_STREAM_END)
+		{
+			/* a gzip file may hold several members, read back to back */
+			if (zs.avail_in == 0)
+				break;
+			if (inflateReset(&zs) != Z_OK)
+				rc = Z_DATA_ERROR;
+			else
+				continue;
+		}
+		if (rc == Z_OK && zs.avail_out == 0)
+		{
+			int64		used = (int64) zs.total_out;
+
+			if (cap >= ICE_MAX_METADATA)
+			{
+				inflateEnd(&zs);
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("iceberg: gzip-compressed metadata \"%s\" inflates past %d MiB",
+								path, (int) (ICE_MAX_METADATA / (1024 * 1024))),
+						 errdetail("pgcolumnar reads a metadata.json of at most %d MiB, compressed or not.",
+								   (int) (ICE_MAX_METADATA / (1024 * 1024)))));
+			}
+			cap = Min(cap * 2, ICE_MAX_METADATA);
+			out = repalloc(out, cap + 1);
+			zs.next_out = (Bytef *) out + used;
+			zs.avail_out = (uInt) (cap - used);
+			continue;
+		}
+		if (rc == Z_OK && zs.avail_in > 0)
+			continue;
+		/* Z_OK with all input used and room left: the stream was cut short */
+		inflateEnd(&zs);
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" starts as gzip but is not a complete gzip stream",
+						path),
+				 errdetail("zlib reported: %s.",
+						   rc == Z_OK || rc == Z_BUF_ERROR ? "unexpected end of input" :
+						   (zs.msg != NULL ? zs.msg : "invalid data"))));
+	}
+	out[zs.total_out] = '\0';
+	inflateEnd(&zs);
+	return out;
+#else
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("iceberg: \"%s\" is gzip-compressed metadata, and this build has no zlib",
+					path),
+			 errhint("Rebuild pgcolumnar with the zlib development files installed.")));
+	return NULL;				/* keep the compiler quiet */
+#endif
+}
+
+/*
  * slurp a whole (small) file into a palloc'd, NUL-terminated string so jsonb_in
  * can parse it. A local path is read with AllocateFile; a remote URL (s3://,
- * http(s)://) through the object-store module.
+ * http(s)://) through the object-store module. A gzip-compressed file is
+ * inflated first (#1815).
  */
 static char *
 ice_slurp_text(const char *path, const PgColumnarObjStoreConfig *cfg)
 {
 	int64		flen;
+	char	   *buf;
 
+	path = ice_s3_alias(path);
 	if (PgColumnarPathIsRemote(path))
-		return (char *) ice_slurp_remote(path, &flen, cfg);
-
-	/* Race-free local open (rejects a FIFO without a stat-before-open window),
-	 * NUL-terminated so the JSON parser can treat it as a cstring. */
-	return PgColumnarSlurpLocalRegularFile(path, ICE_MAX_METADATA,
-										   "Iceberg metadata", &flen);
+		buf = (char *) ice_slurp_remote(path, &flen, cfg);
+	else
+		/* Race-free local open (rejects a FIFO without a stat-before-open
+		 * window), NUL-terminated so the JSON parser can treat it as a cstring. */
+		buf = PgColumnarSlurpLocalRegularFile(path, ICE_MAX_METADATA,
+											  "Iceberg metadata", &flen);
+	/* the gzip magic, 1f 8b: no JSON text starts with either byte */
+	if (flen >= 2 && (uint8) buf[0] == 0x1f && (uint8) buf[1] == 0x8b)
+		return ice_gunzip(path, (const uint8 *) buf, flen);
+	return buf;
 }
 
 /* slurp a whole binary file (a manifest list, manifest, or Puffin file) into a
@@ -146,6 +258,7 @@ static uint8 *
 ice_slurp_bin(const char *path, int64 *outlen,
 			  const PgColumnarObjStoreConfig *cfg)
 {
+	path = ice_s3_alias(path);
 	if (PgColumnarPathIsRemote(path))
 		return ice_slurp_remote(path, outlen, cfg);
 
@@ -334,20 +447,22 @@ ice_dirname(const char *path)
 static char *
 ice_actual_location(const char *metadata_path)
 {
-	char	   *metadir = ice_dirname(metadata_path);
+	char	   *metadir = ice_dirname(ice_s3_alias(metadata_path));
 
 	return ice_dirname(metadir);
 }
 
 /* strip a leading "file://" scheme from a recorded root, in place-ish. A remote
  * scheme (s3://, http(s)://) is left intact, so a recorded remote key keeps its
- * scheme and the same containment logic applies to its key portion. */
+ * scheme and the same containment logic applies to its key portion. s3a:// and
+ * s3n:// become s3://, so a table may record its location under one of the three
+ * names and its files under another (#1825). */
 static const char *
 ice_strip_scheme(const char *path)
 {
 	if (strncmp(path, "file://", 7) == 0)
 		return path + 7;
-	return path;
+	return ice_s3_alias(path);
 }
 
 /* does a path segment sequence contain a ".." component? For object storage a
@@ -730,7 +845,7 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 	 * the actual root is the location derived lexically from the metadata URL,
 	 * and containment is the lexical key-prefix check in ice_rebase. */
 	recorded_root = ice_strip_scheme(ice_str_required(root, "location", path));
-	if (PgColumnarPathIsRemote(path))
+	if (PgColumnarPathIsRemote(ice_s3_alias(path)))
 		actual_root = ice_actual_location(path);
 	else
 	{
@@ -2237,7 +2352,7 @@ ice_read_pos_deletes(IceScanCtx *c)
 			continue;
 		/* v2 position deletes are Parquet; any other delete-file format is
 		 * refused here with a clear cause rather than a parse error */
-		if (pd->file_format != NULL && strcmp(pd->file_format, "PARQUET") != 0)
+		if (pd->file_format != NULL && pg_strcasecmp(pd->file_format, "PARQUET") != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("iceberg: position-delete file \"%s\" has format %s; only PARQUET position deletes are supported",
@@ -2614,7 +2729,7 @@ ice_read_eq_deletes(IceScanCtx *c, JsonbContainer *root, const char *path,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("iceberg: equality delete file \"%s\" has no equality_ids",
 							ed->file_path)));
-		if (ed->file_format != NULL && strcmp(ed->file_format, "PARQUET") != 0)
+		if (ed->file_format != NULL && pg_strcasecmp(ed->file_format, "PARQUET") != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("iceberg: equality-delete file \"%s\" has format %s; only PARQUET equality deletes are supported",
@@ -3017,7 +3132,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 			}
 		}
 
-		if (d->file_format != NULL && strcmp(d->file_format, "PARQUET") != 0)
+		if (d->file_format != NULL && pg_strcasecmp(d->file_format, "PARQUET") != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("iceberg: data file \"%s\" has format %s; only PARQUET is supported",

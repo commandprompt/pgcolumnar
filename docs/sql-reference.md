@@ -1015,7 +1015,8 @@ SELECT manifest_path, added_files_count, added_rows_count
 ### pgcolumnar.iceberg_current_snapshot(metadata_path text) returns table(snapshot_id bigint, parent_snapshot_id bigint, sequence_number bigint, timestamp_ms bigint, operation text, manifest_list text, schema_id int)
 
 Reads an Apache Iceberg table `metadata.json` and reports the current snapshot
-the table declares. The current snapshot is the one whose id equals the file's
+the table declares. The file may be plain or gzip-compressed (`*.gz.metadata.json`
+or `*.metadata.json.gz`). The current snapshot is the one whose id equals the file's
 `current-snapshot-id`. The row carries its sequence number, commit timestamp,
 and operation (`append`, `overwrite`, `delete`, `replace`). It also carries the
 manifest-list file the snapshot points at and its schema id. It returns one row,
