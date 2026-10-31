@@ -41,6 +41,17 @@ SQLEOF
 	printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
 }
 fifo_release() { exec 9<>"$1" 2>/dev/null; exec 9>&- 2>/dev/null; }
+# ai_outcome SQL -> what the statement printed, or "SQLSTATE message" of its
+# error. Either way the check shows what the server did, not just pass or fail.
+ai_outcome() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$1" 2>&1)"
+	case "$out" in
+		*ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p' <<<"$out" | head -1;;
+		*) printf '%s\n' "$out";;
+	esac
+}
 
 # WITHOUT pyarrow THIS SUITE SHRANK IN SILENCE (#1159). The three blocks below
 # need a file a foreign producer wrote, so they cannot run without pyarrow. They
@@ -169,10 +180,67 @@ PY
 	check "pyarrow import rows" "$nf" "4"
 	vals="$(q "SELECT string_agg(coalesce(a::text,'-')||'/'||coalesce(b::text,'-')||'/'||coalesce(c,'-'), ',' ORDER BY a NULLS LAST) FROM ri_for;")"
 	check "pyarrow values" "$vals" "1/1.5/x,2/-/y,4/4.5/-,-/3.5/z"
+
+	# The Arrow IPC FILE format (#1806): the "ARROW1" magic and 2 bytes of
+	# padding, then a stream, then a footer, its 4-byte length and "ARROW1"
+	# again. Feather v2 is the same format. The reader took "ARRO" as a message
+	# length (1330795073) and failed in palloc with "invalid memory alloc
+	# request size". It must read the stream inside the file instead.
+	PYFILE="$PGC_WORKDIR/foreign.arrow"
+	PYFEATHER="$PGC_WORKDIR/foreign.feather"
+	python3 - "$PYFILE" "$PYFEATHER" <<'PY'
+import sys, pyarrow as pa, pyarrow.ipc as ipc, pyarrow.feather as feather
+t = pa.table({
+    'a': pa.array([1, 2, None, 4], pa.int64()),
+    'b': pa.array([1.5, None, 3.5, 4.5], pa.float64()),
+    'c': pa.array(['x', 'y', 'z', None], pa.string()),
+})
+with ipc.new_file(pa.OSFile(sys.argv[1], 'wb'), t.schema) as w:
+    w.write_table(t)
+feather.write_feather(t, sys.argv[2], compression='uncompressed')
+PY
+	ai_file_rows() {	# ai_file_rows TABLE PATH -> "<import result>|<values>"
+		psql_run "CREATE TABLE $1 (a bigint, b float8, c text) USING pgcolumnar;"
+		printf '%s|%s\n' "$(ai_outcome "SELECT pgcolumnar.import_arrow('$1', '$2')")" \
+			"$(q "SELECT string_agg(coalesce(a::text,'-')||'/'||coalesce(b::text,'-')||'/'||coalesce(c,'-'), ',' ORDER BY a NULLS LAST) FROM $1;")"
+	}
+	check "an Arrow IPC file (ARROW1 magic) imports its rows (#1806)" \
+		"$(ai_file_rows ri_ipcfile "$PYFILE")" "4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z"
+	check "a Feather v2 file imports its rows too (#1806)" \
+		"$(ai_file_rows ri_feather "$PYFEATHER")" "4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z"
+	# The same file with its last 10 bytes (footer length and trailing magic)
+	# cut off: the reader cannot tell where the stream ends, so it refuses.
+	head -c "$(( $(stat -c %s "$PYFILE") - 10 ))" "$PYFILE" > "$PGC_WORKDIR/nofooter.arrow"
+	chmod 644 "$PGC_WORKDIR/nofooter.arrow"
+	psql_run "CREATE TABLE ri_nofooter (a bigint, b float8, c text) USING pgcolumnar;"
+	check "an Arrow IPC file without its trailing magic is refused as malformed (#1806)" \
+		"$(ai_outcome "SELECT pgcolumnar.import_arrow('ri_nofooter', '$PGC_WORKDIR/nofooter.arrow')")|$(q 'SELECT count(*) FROM ri_nofooter')" \
+		"XX001 columnar: malformed Arrow IPC file: the file starts with ARROW1 but does not end with it|0"
+	# The same file without the 8-byte end-of-stream marker before its footer
+	# (#1806). The marker is optional, so the reader must stop at the footer by
+	# counting the bytes it read, not by finding the marker. The builder prints
+	# the 8 bytes it removed, which must be the marker (ffffffff00000000).
+	NOEOS="$PGC_WORKDIR/noeos.arrow"
+	_ai_eos="$(python3 - "$PYFILE" "$NOEOS" <<'PY'
+import sys, struct
+d = open(sys.argv[1], 'rb').read()
+flen = struct.unpack_from('<i', d, len(d) - 10)[0]
+fstart = len(d) - 10 - flen
+open(sys.argv[2], 'wb').write(d[:fstart - 8] + d[fstart:])
+print(d[fstart - 8:fstart].hex())
+PY
+)"
+	chmod 644 "$NOEOS"
+	check "an Arrow IPC file without an end-of-stream marker before its footer imports its rows (#1806)" \
+		"$_ai_eos|$(ai_file_rows ri_noeos "$NOEOS")" "ffffffff00000000|4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z"
 else
 	for _ai_foreign in \
 			"pyarrow import rows" \
-			"pyarrow values"; do
+			"pyarrow values" \
+			"an Arrow IPC file (ARROW1 magic) imports its rows (#1806)" \
+			"a Feather v2 file imports its rows too (#1806)" \
+			"an Arrow IPC file without its trailing magic is refused as malformed (#1806)" \
+			"an Arrow IPC file without an end-of-stream marker before its footer imports its rows (#1806)"; do
 		check_skip "$_ai_foreign" \
 			"SKIP  $_ai_foreign (pyarrow not available)" \
 			"pyarrow not available"
@@ -333,6 +401,70 @@ check "reject non-columnar target" \
 psql_run "CREATE TABLE ri_wrong (a int) USING pgcolumnar;"
 check "reject column-count mismatch" \
 	"$(sqlstate_or_hang "SELECT pgcolumnar.import_arrow('ri_wrong', '$ARROW')")" "42804"
+
+# What export_arrow writes (#1806): the IPC STREAM format, whose first message
+# starts with the 0xFFFFFFFF continuation marker. The IPC FILE format would
+# start with "ARROW1" (41 52 52 4f 57 31). docs/how-to.md names this format.
+check "export_arrow writes the IPC stream format, not the ARROW1 file format (#1806)" \
+	"$(head -c 4 "$ARROW" | od -An -tx1 | tr -d ' \n')" "ffffffff"
+
+# Lengths larger than the file (#1806). The reader allocated whatever length
+# the file claimed before it read a byte, so a length of 1 GB or more failed in
+# palloc ("invalid memory alloc request size"), and a smaller one allocated
+# that much memory and only then found the file truncated. Both must be
+# refused as malformed before the allocation.
+BIGMETA="$PGC_WORKDIR/bigmeta.arrows"
+printf '\xff\xff\xff\xff\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00' > "$BIGMETA"
+chmod 644 "$BIGMETA"
+psql_run "CREATE TABLE ri_len (a int) USING pgcolumnar;"
+check "a metadata length larger than the file is refused before it is allocated (#1806)" \
+	"$(ai_outcome "SELECT pgcolumnar.import_arrow('ri_len', '$BIGMETA')")" \
+	"XX001 columnar: malformed Arrow IPC file: metadata length 1048576 is larger than the 8 bytes left in the file"
+# A one-row export, cut halfway through its only record-batch body: the batch's
+# bodyLength now claims more bytes than the file holds. With one batch, the
+# body runs from the end of its metadata to the 8-byte end-of-stream marker,
+# which gives the bodyLength the error must name.
+psql_run "CREATE TABLE ri_one (a int) USING pgcolumnar; INSERT INTO ri_one VALUES (7);"
+ONE="$PGC_WORKDIR/one.arrows"
+psql_run "SELECT pgcolumnar.export_arrow('ri_one', '$ONE');"
+BIGBODY="$PGC_WORKDIR/bigbody.arrows"
+BODYLEN="$(python3 -c '
+import sys, struct
+d = open(sys.argv[1], "rb").read()
+p = 0
+for _ in range(2):	# the Schema message, then the RecordBatch metadata
+    cont, mlen = struct.unpack_from("<Ii", d, p)
+    assert cont == 0xFFFFFFFF, cont
+    p += 8 + mlen
+body = len(d) - 8 - p
+open(sys.argv[2], "wb").write(d[:p + body // 2])
+print(body, body // 2)' "$ONE" "$BIGBODY")" || BODYLEN="(fixture-builder-failed) (fixture-builder-failed)"
+chmod 644 "$BIGBODY"
+psql_run "CREATE TABLE ri_body (a int) USING pgcolumnar;"
+check "a body length larger than the rest of the file is refused before it is allocated (#1806)" \
+	"$(ai_outcome "SELECT pgcolumnar.import_arrow('ri_body', '$BIGBODY')")|$(q 'SELECT count(*) FROM ri_body')" \
+	"XX001 columnar: malformed Arrow IPC file: body length ${BODYLEN% *} is larger than the ${BODYLEN#* } bytes left in the file|0"
+
+# An IPC file whose footer length is larger than the file, or negative (#1806).
+# Either one puts the end of the stream before its start. A reader that
+# accepts it reads nothing and returns 0 with no error, so a corrupt file
+# looks like an empty one. The files wrap the one-row export in the IPC file
+# layout: "ARROW1", 2 padding bytes, the stream, a 4-byte footer, the footer
+# length and "ARROW1". The builder prints the file size, which is the length.
+FOOTLONG="$PGC_WORKDIR/footlong.arrow"
+FOOTNEG="$PGC_WORKDIR/footneg.arrow"
+FOOTSIZE="$(python3 -c '
+import sys, struct
+w = b"ARROW1\0\0" + open(sys.argv[1], "rb").read() + bytes(4)
+size = len(w) + 10
+for path, flen in ((sys.argv[2], size), (sys.argv[3], -1)):
+    open(path, "wb").write(w + struct.pack("<i", flen) + b"ARROW1")
+print(size)' "$ONE" "$FOOTLONG" "$FOOTNEG")" || FOOTSIZE="(fixture-builder-failed)"
+chmod 644 "$FOOTLONG" "$FOOTNEG"
+psql_run "CREATE TABLE ri_foot (a int) USING pgcolumnar;"
+check "an Arrow IPC file whose footer length is negative or larger than the file is refused as malformed (#1806)" \
+	"$(ai_outcome "SELECT pgcolumnar.import_arrow('ri_foot', '$FOOTLONG')") / $(ai_outcome "SELECT pgcolumnar.import_arrow('ri_foot', '$FOOTNEG')")|$(q 'SELECT count(*) FROM ri_foot')" \
+	"XX001 columnar: malformed Arrow IPC file: footer length $FOOTSIZE is out of range / XX001 columnar: malformed Arrow IPC file: footer length -1 is out of range|0"
 
 if [ "$have_pyarrow" = 1 ]; then
 	DICTF="$PGC_WORKDIR/dict.arrows"

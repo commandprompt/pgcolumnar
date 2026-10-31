@@ -27,13 +27,16 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 S3_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
 S3_LOG="$PGC_WORKDIR/sink.log"
 SRV_PID=""
+PLAIN_PID=""
 AKID="PGCTESTKEYID"
 SECRET="pgctest-secret-shhh"
 REGION="pgc-test-1"
 BUCKET="pgc-bucket"
+DENIED_BUCKET="pgc-denied"   # the fixture checks this bucket's signatures against another secret
 
 objstore_sink_teardown() {
 	[ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
+	[ -n "$PLAIN_PID" ] && kill "$PLAIN_PID" 2>/dev/null
 	pgc_teardown
 }
 trap objstore_sink_teardown EXIT INT TERM
@@ -78,6 +81,7 @@ mkdir -p "$PGC_WORKDIR/$BUCKET"
 python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
 	--dir "$PGC_WORKDIR" --port "$S3_PORT" --log "$S3_LOG" \
 	--sigv4-key "$AKID" --sigv4-secret "$SECRET" --sigv4-region "$REGION" \
+	--tamper-bucket "$DENIED_BUCKET" \
 	> "$PGC_WORKDIR/sink_server.out" 2>&1 &
 SRV_PID=$!
 for _ in $(seq 1 50); do
@@ -297,6 +301,104 @@ check "shrink: parts 0002/0003 from the larger run are gone" \
 check "shrink: _SUCCESS certifies the reconciled prefix" \
 	"$([ -f "$PGC_WORKDIR/$BUCKET/sr/_SUCCESS" ] && echo yes)" "yes"
 
+# #1782: the documented prefix form ends in a slash. The keys must not gain an
+# empty segment ("sl//part-0000.parquet"): S3 stores that as a different key,
+# and the documented glob then matches nothing. This fixture stores objects as
+# files, which collapse "//", so only the request log shows the defect.
+#
+# The stale-part reconcile lists the prefix, and an S3 listing matches leading
+# characters, not folders: a listing of "sl" also returns "slx/..." and
+# "sl2/...". So each export below runs beside part objects under two sibling
+# prefixes, slx/ and sl2/, with indexes above the run's worker count, and every
+# form of the prefix must leave them where they are.
+plant_siblings() {
+	mkdir -p "$PGC_WORKDIR/$BUCKET/slx" "$PGC_WORKDIR/$BUCKET/sl2"
+	printf 'x' > "$PGC_WORKDIR/$BUCKET/slx/part-0007.parquet"
+	printf 'x' > "$PGC_WORKDIR/$BUCKET/sl2/part-0005.parquet"
+}
+# siblings_left -> which planted sibling objects are still there, or "none"
+siblings_left() {
+	local left
+	left="$(cd "$PGC_WORKDIR/$BUCKET" && ls slx/part-0007.parquet sl2/part-0005.parquet 2>/dev/null | sort | tr '\n' ' ')"
+	left="${left% }"
+	echo "${left:-none}"
+}
+SIBLINGS="sl2/part-0005.parquet slx/part-0007.parquet"
+# sl_put_keys -> how many distinct sl/part-NNNN.parquet keys (one slash) took a PUT
+sl_put_keys() { grep -oE '^PUT /pgc-bucket/sl/part-[0-9]+\.parquet' "$S3_LOG" | sort -u | wc -l | tr -d ' '; }
+sl_parts() { ls "$PGC_WORKDIR/$BUCKET/sl/" 2>/dev/null | grep -c 'part-.*\.parquet$'; }
+
+plant_siblings
+: > "$S3_LOG"
+check_num "trailing slash: parallel export to an s3:// prefix ending in / succeeds" \
+	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sl/', 4)")" "$PARROWS"
+check_num "trailing slash: every worker PUT went to sl/part- (one slash)" "$(sl_put_keys)" "4"
+check "trailing slash: the marker went to sl/_SUCCESS (one slash)" \
+	"$([ "$(logn '^PUT /pgc-bucket/sl/_SUCCESS')" -ge 1 ] && echo yes)" "yes"
+check_num "trailing slash: no request named a key with an empty segment (//)" \
+	"$(logn '^[A-Z]+ /pgc-bucket/[^ ]*//')" "0"
+check "trailing slash: the documented glob read-back equals the source" \
+	"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('s3://$BUCKET/sl/*.parquet') AS t(id int8, v int)")" \
+	"$(pgc_set_hash "$GEN_PAR")"
+check "trailing slash: an export to sl/ leaves the parts under slx/ and sl2/" \
+	"$(siblings_left)" "$SIBLINGS"
+
+# the same prefix without the slash, and fewer workers: the reconcile must drop
+# sl/part-0002 and 0003 and nothing outside sl/. A listing with no delimiter
+# also returns keys below sl/, so a part under sl/sub/ (another export's
+# prefix) is planted too, with an index above this run's 2 workers.
+plant_siblings
+mkdir -p "$PGC_WORKDIR/$BUCKET/sl/sub"
+printf 'x' > "$PGC_WORKDIR/$BUCKET/sl/sub/part-0009.parquet"
+check_num "no slash: a 2-worker re-run to s3://bucket/sl succeeds" \
+	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sl', 2)")" "$PARROWS"
+check_num "no slash: the re-run leaves exactly its own 2 parts under sl/" "$(sl_parts)" "2"
+check "no slash: a re-run to sl leaves the parts under slx/ and sl2/" \
+	"$(siblings_left)" "$SIBLINGS"
+check "no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet" \
+	"$(cd "$PGC_WORKDIR/$BUCKET" && ls sl/sub/part-0009.parquet 2>/dev/null || echo none)" \
+	"sl/sub/part-0009.parquet"
+
+# several trailing slashes strip to the one prefix
+plant_siblings
+: > "$S3_LOG"
+check_num "several slashes: a 3-worker export to s3://bucket/sl// succeeds" \
+	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sl//', 3)")" "$PARROWS"
+check_num "several slashes: every worker PUT went to sl/part- (one slash)" "$(sl_put_keys)" "3"
+check_num "several slashes: no request named a key with an empty segment (//)" \
+	"$(logn '^[A-Z]+ /pgc-bucket/[^ ]*//')" "0"
+check_num "several slashes: sl/ holds exactly this run's 3 parts" "$(sl_parts)" "3"
+check "several slashes: an export to sl// leaves the parts under slx/ and sl2/" \
+	"$(siblings_left)" "$SIBLINGS"
+
+# The scheme is matched in any case, so "S3://bucket/up/" names the same
+# prefix as "s3://bucket/up". The listing returns keys spelled "s3://...", so
+# a reconcile that compared them with the prefix as given dropped nothing for
+# "S3://", and the marker then certified a mixed set of parts. First 4 workers
+# with "s3://", then 2 with "S3://...up/": parts 0002 and 0003 must go.
+q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/up', 4)" >/dev/null
+: > "$S3_LOG"
+check_num "uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds" \
+	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 'S3://$BUCKET/up/', 2)")" "$PARROWS"
+check_num "uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts" \
+	"$(ls "$PGC_WORKDIR/$BUCKET/up/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "2"
+check "uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003" \
+	"$(grep -oE '^DELETE /pgc-bucket/up/part-000[23]\.parquet' "$S3_LOG" | sort -u | sed 's|^DELETE /pgc-bucket/||' | tr '\n' ' ' | sed 's/ $//')" \
+	"up/part-0002.parquet up/part-0003.parquet"
+
+# A bare bucket names no prefix. The export refuses it before any worker
+# starts, so nothing is written at the bucket root.
+: > "$S3_LOG"
+check "bare bucket: an export to s3://bucket/ is refused as naming no prefix" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/', 2)" \
+		"names no prefix under the bucket" " (no prefix)")" "22023 (no prefix)"
+check "bare bucket: an export to s3://bucket is refused as naming no prefix" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET', 2)" \
+		"names no prefix under the bucket" " (no prefix)")" "22023 (no prefix)"
+check_num "bare bucket: the refused exports sent no PUT" "$(logn '^PUT ')" "0"
+check_num "bare bucket: no part object at the bucket root" \
+	"$(ls -p "$PGC_WORKDIR/$BUCKET/" 2>/dev/null | grep -c '^part-.*\.parquet$')" "0"
+
 # #1780: the workers obey the calling session's settings, not only the system's. A
 # background worker starts from postgresql.conf, so before the fix a session that SET
 # the allow-list to '' still had its workers upload part-0000, and the error came only
@@ -358,6 +460,10 @@ check "parallel: a session SET of objstore_part_size reaches the workers (multip
 
 # cancel mid-run: the dispatcher removes the completed keys it wrote. Big table
 # + small parts so a worker is mid-multipart when the cancel lands.
+# The prefix ends in a slash (#1782), so the cancel-time DELETEs and the
+# multipart cleanup listing run on the stripped prefix as well. The premise
+# waits for "cx/+part-", so a build that keeps the "//" is still cancelled and
+# fails the DELETE and empty-segment checks rather than the premise.
 psql_run "DROP TABLE IF EXISTS es_parbig;
           CREATE TABLE es_parbig (id int8, pad text) USING pgcolumnar;
           SELECT pgcolumnar.set_options('es_parbig', stripe_row_limit => 4000);
@@ -367,12 +473,12 @@ psql_run "DROP TABLE IF EXISTS es_parbig;
 rm -rf "$PGC_WORKDIR/$BUCKET/cx"
 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
 	-c "SET pgcolumnar.objstore_part_size = 262144" \
-	-c "SELECT pgcolumnar.parallel_export_parquet('es_parbig'::regclass, 's3://$BUCKET/cx', 4)" \
+	-c "SELECT pgcolumnar.parallel_export_parquet('es_parbig'::regclass, 's3://$BUCKET/cx/', 4)" \
 	>"$PGC_WORKDIR/cx_bg.out" 2>&1 &
 bgpid=$!
 wrote=no
 for _ in $(seq 1 300); do
-	[ "$(logn '^PUT /pgc-bucket/cx/part-')" -ge 1 ] && { wrote=yes; break; }
+	[ "$(logn '^PUT /pgc-bucket/cx/+part-')" -ge 1 ] && { wrote=yes; break; }
 	sleep 0.1
 done
 check "premise: a worker was uploading before the cancel" "$wrote" "yes"
@@ -402,6 +508,8 @@ check "premise: the export was cancelled, not completed" \
 	"$(grep -qiE 'canceling statement|canceled on user request' "$PGC_WORKDIR/cx_bg.out" && echo cancelled || echo completed)" "cancelled"
 check "cancel: the dispatcher issued DELETE over the known keys" \
 	"$([ "$(logn '^DELETE /pgc-bucket/cx/part-')" -ge 1 ] && echo yes)" "yes"
+check_num "cancel: no request named a key with an empty segment (//)" \
+	"$(logn '^[A-Z]+ /pgc-bucket/[^ ]*//')" "0"
 check_num "cancel: no completed object remains at the prefix" \
 	"$(ls "$PGC_WORKDIR/$BUCKET/cx/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "0"
 # #394: a cancelled remote run writes no completion marker (it is written last,
@@ -452,6 +560,93 @@ check "terminate: export workers exit within 75 s while the store is silent" \
 	"$(if [ "$hwrote" != yes ]; then echo "no upload seen"
 	   elif [ "${hs_n:-0}" -ge 1 ] && [ "$hs_left" = 0 ] && [ "$hs_dt" -le 75 ]; then echo bounded
 	   else echo "slow (${hs_n:-?} workers, ${hs_left:-?} left after ${hs_dt}s)"; fi)" "bounded"
+
+# ---- #1779: an allow-listed http:// target is written unsigned --------------
+# The docs accept an object-storage URL, http:// included, wherever a local path
+# is accepted. os_write_request signed every write, and an http:// handle has no
+# region or credentials (only os_resolve_s3, for s3:// and gs://, sets them), so
+# the signer read a NULL region and the backend died with signal 11. Reads sign
+# only when the handle is an S3 one; writes now do the same. A second fixture
+# server WITHOUT the --sigv4-* options accepts the unsigned requests, and every
+# write arm is covered: one PUT, the multipart protocol, and the abort.
+PLAIN_DIR="$PGC_WORKDIR/plain"
+PLAIN_LOG="$PGC_WORKDIR/plain.log"
+mkdir -p "$PLAIN_DIR/pb"
+PLAIN_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
+python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
+	--dir "$PLAIN_DIR" --port "$PLAIN_PORT" --log "$PLAIN_LOG" \
+	> "$PGC_WORKDIR/plain_server.out" 2>&1 &
+PLAIN_PID=$!
+for _ in $(seq 1 50); do
+	grep -q READY "$PGC_WORKDIR/plain_server.out" 2>/dev/null && break
+	sleep 0.1
+done
+check "premise: unsigned http fixture server is up" \
+	"$(grep -c READY "$PGC_WORKDIR/plain_server.out" 2>/dev/null)" "1"
+PLAIN="http://127.0.0.1:$PLAIN_PORT/pb"
+plogn() { grep -cE "$1" "$PLAIN_LOG" | tr -d ' '; }
+
+: > "$PLAIN_LOG"
+check_num "http:// small export succeeds unsigned (no crash)" \
+	"$(q "SELECT pgcolumnar.export_parquet('es_small', '$PLAIN/small.parquet')")" "1000"
+check_num "http:// small object went as ONE plain PUT" \
+	"$(plogn '^PUT /pb/small.parquet -')" "1"
+psql_run "CREATE FOREIGN TABLE fh_small (id int, t text) SERVER wsrv OPTIONS (path '$PLAIN/small.parquet');"
+check "http:// small round trip: read-back == source" \
+	"$(pgc_set_hash "SELECT * FROM fh_small")" "$(pgc_set_hash "$GEN_SMALL")"
+# export_arrow shares the sink, and #1779 names it too: the object goes to the
+# http:// target and is imported back from the fixture server's directory.
+psql_run "CREATE TABLE eh_arrow_back (id int, t text) USING pgcolumnar;"
+q "SELECT pgcolumnar.export_arrow('es_small', '$PLAIN/small.arrow')" >/dev/null
+wait_up
+q "SELECT pgcolumnar.import_arrow('eh_arrow_back', '$PLAIN_DIR/pb/small.arrow')" >/dev/null
+check "http:// arrow export round-trips unsigned (no crash)" \
+	"$(pgc_set_hash "SELECT * FROM eh_arrow_back")" "$(pgc_set_hash "$GEN_SMALL")"
+
+: > "$PLAIN_LOG"
+wait_up   # a crash above leaves the cluster in recovery; read this arm on its own
+check_num "http:// large export succeeds unsigned (no crash)" \
+	"$(qset "SELECT pgcolumnar.export_parquet('es_big', '$PLAIN/big.parquet')")" "$BIGROWS"
+pb_s="$(plogn '^POST /pb/big.parquet uploads=')"; pb_p="$(plogn '^PUT /pb/big.parquet partNumber=')"; pb_c="$(plogn '^POST /pb/big.parquet uploadId=')"
+check "the http:// large export took the multipart protocol" \
+	"$(if [ "${pb_s:-0}" -ge 1 ] && [ "${pb_p:-0}" -ge 2 ] && [ "${pb_c:-0}" -eq 1 ]; then echo yes
+	   else echo "no (starts=${pb_s:-?} parts=${pb_p:-?} completes=${pb_c:-?})"; fi)" "yes"
+psql_run "CREATE FOREIGN TABLE fh_big (id int8, pad text) SERVER wsrv OPTIONS (path '$PLAIN/big.parquet');"
+check "http:// large round trip: read-back == source" \
+	"$(pgc_set_hash "SELECT * FROM fh_big")" "$(pgc_set_hash "$GEN_BIG")"
+
+: > "$PLAIN_LOG"
+check "http:// inject: mid-upload failure surfaces as disk-full (53100)" \
+	"$(refusal_of "$PART SET pgcolumnar.sink_fail_after = 900000; SELECT pgcolumnar.export_parquet('es_big', '$PLAIN/fail.parquet')" \
+		"export write failed (injected fault)" " by the injected fault")" "53100 by the injected fault"
+check "the http:// fault landed mid-multipart (an upload was started)" \
+	"$(pf_s="$(plogn '^POST /pb/fail.parquet uploads=')"; if [ "${pf_s:-0}" -ge 1 ]; then echo yes; else echo "no (starts=${pf_s:-?})"; fi)" "yes"
+check_num "http:// inject: the server holds no open upload for the key" \
+	"$(if [ -f "$PLAIN_DIR/__open_uploads__" ]; then grep -cE '^pb/fail\.parquet$' "$PLAIN_DIR/__open_uploads__" | tr -d ' '; else echo 0; fi)" "0"
+kill "$PLAIN_PID" 2>/dev/null
+PLAIN_PID=""
+
+# A 403 from an http(s):// target cannot be about AWS_* credentials: those
+# requests are never signed. The SigV4 fixture server refuses a request with no
+# Authorization header, so an http:// export to it draws the 403 an unsigned
+# target gives. The arm echoes the HINT itself, so a failure shows what it said.
+hint_of() {
+	local out
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA -c "$1" 2>&1)"
+	if grep -q '^HINT:  ' <<<"$out"; then sed -n 's/^HINT:  //p' <<<"$out" | head -1
+	else echo "no hint ($(head -1 <<<"$out"))"; fi
+}
+check "http:// 403: the hint says the request went unsigned, not to check AWS_* credentials" \
+	"$(hint_of "SELECT pgcolumnar.export_parquet('es_small', 'http://127.0.0.1:$S3_PORT/$BUCKET/denied.parquet')")" \
+	"Requests to http:// and https:// URLs are never signed. Use an s3:// or gs:// URL for a store that needs credentials."
+# The other side of that branch: an s3:// request IS signed, so its 403 keeps the
+# AWS_* hint. The fixture verifies the denied bucket against a different secret,
+# so this correctly signed export is refused as a wrong secret would be.
+check "s3:// 403: a signed request that is refused still hints to check AWS_* credentials" \
+	"$(hint_of "SELECT pgcolumnar.export_parquet('es_small', 's3://$DENIED_BUCKET/denied.parquet')")" \
+	"Check the AWS_* credential environment of the server process."
 
 # ---- optional: a real S3 implementation (Garage) ----------------------------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then

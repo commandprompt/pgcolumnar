@@ -28,6 +28,8 @@
 #include "columnar_objstore.h"
 #include "columnar_sink.h"
 
+#include <unistd.h>
+
 #include "fmgr.h"
 #include "funcapi.h"
 #include "access/htup_details.h"
@@ -1192,6 +1194,9 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
  * bounds.
  * ========================================================================= */
 
+/* the first 6 bytes, and the last 6, of an Arrow IPC file (not a stream) */
+#define ARROW_FILE_MAGIC "ARROW1"
+
 #define IMPORT_CORRUPT(msg) \
 	ereport(ERROR, \
 			(errcode(ERRCODE_DATA_CORRUPTED), \
@@ -2138,6 +2143,9 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	ImpNode    *tops;
 	int			totalBuffers = 0;
 	int			fd;
+	off_t		fileSize = 0;
+	int64		streamPos;		/* bytes of the file read so far */
+	int64		streamEnd;		/* where the stream ends: EOF, or an IPC file's footer */
 	TupleTableSlot *slot;
 	PgColumnarIndexInsertState *indexes;
 	CommandId	cid;
@@ -2219,7 +2227,49 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	 * survives a cancel/statement_timeout (a DoS). See #644 / #686. */
 	/* Race-free local open (rejects a FIFO without a stat-before-open window);
 	 * it raises on failure, and the RowExclusiveLock releases at abort. */
-	fd = PgColumnarOpenLocalRegularFile(path, NULL);
+	fd = PgColumnarOpenLocalRegularFile(path, &fileSize);
+
+	/*
+	 * The Arrow IPC file format (#1806) is the stream format wrapped in an
+	 * 8-byte header ("ARROW1" and two padding bytes) and a trailer (the
+	 * footer, its int32 length, and "ARROW1" again). Feather v2 is the same
+	 * format. The footer only indexes the messages that the stream already
+	 * holds, so read the stream between the header and the footer, and
+	 * ignore the footer. A file without the magic is read as a bare stream.
+	 */
+	{
+		char		head[8];
+
+		if (fileSize >= 8 && PgColumnarReadExact(fd, head, 8) &&
+			memcmp(head, ARROW_FILE_MAGIC, 6) == 0)
+		{
+			char		tail[10];
+			int32		footerLen;
+
+			if (fileSize < 8 + 10 ||
+				lseek(fd, fileSize - 10, SEEK_SET) < 0 ||
+				!PgColumnarReadExact(fd, tail, 10) ||
+				memcmp(tail + 4, ARROW_FILE_MAGIC, 6) != 0)
+				IMPORT_CORRUPT("the file starts with ARROW1 but does not end with it");
+			memcpy(&footerLen, tail, 4);
+			if (footerLen < 0 || (int64) footerLen > (int64) fileSize - 8 - 10)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("columnar: malformed Arrow IPC file: footer length %d is out of range",
+								footerLen)));
+			streamEnd = (int64) fileSize - 10 - footerLen;
+			streamPos = 8;
+		}
+		else
+		{
+			streamEnd = (int64) fileSize;
+			streamPos = 0;
+		}
+		if (lseek(fd, (off_t) streamPos, SEEK_SET) < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not seek in file \"%s\": %m", path)));
+	}
 
 	slot = table_slot_create(rel, NULL);
 	cid = GetCurrentCommandId(true);
@@ -2250,21 +2300,34 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 		uint8		headerType;
 
 		/* message framing: [0xFFFFFFFF] [metaLen] or [metaLen] (legacy) */
-		if (!PgColumnarReadExact(fd, &first, 4))
-			break;				/* clean EOF */
+		if (streamPos >= streamEnd || !PgColumnarReadExact(fd, &first, 4))
+			break;				/* clean EOF, or the start of an IPC file's footer */
+		streamPos += 4;
 		if (first == 0xFFFFFFFF)
 		{
 			if (!PgColumnarReadExact(fd, &metaLen, 4))
 				IMPORT_CORRUPT("truncated continuation");
+			streamPos += 4;
 		}
 		else
 			metaLen = first;
 		if (metaLen == 0)
 			break;				/* end-of-stream marker */
 
+		/*
+		 * Check each length against the bytes left before allocating it
+		 * (#1806): a length the file cannot hold would otherwise allocate up
+		 * to 1 GB, or fail in palloc with an error that names no file.
+		 */
+		if ((int64) metaLen > streamEnd - streamPos)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("columnar: malformed Arrow IPC file: metadata length %u is larger than the " INT64_FORMAT " bytes left in the file",
+							metaLen, Max(streamEnd - streamPos, 0))));
 		meta = palloc(metaLen);
 		if (!PgColumnarReadExact(fd, meta, metaLen))
 			IMPORT_CORRUPT("truncated metadata");
+		streamPos += metaLen;
 
 		msg = pgc_fb_indirect(meta, metaLen, 0);
 		pos = pgc_fb_field(meta, metaLen, msg, 1);	/* header_type (u8) */
@@ -2275,12 +2338,18 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 		bodyLength = pos ? fbr_i64(meta, metaLen, pos) : 0;
 		if (bodyLength < 0)
 			IMPORT_CORRUPT("negative body length");
+		if (bodyLength > streamEnd - streamPos)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("columnar: malformed Arrow IPC file: body length " INT64_FORMAT " is larger than the " INT64_FORMAT " bytes left in the file",
+							bodyLength, Max(streamEnd - streamPos, 0))));
 
 		if (bodyLength > 0)
 		{
 			body = palloc((Size) bodyLength);
 			if (!PgColumnarReadExact(fd, body, (size_t) bodyLength))
 				IMPORT_CORRUPT("truncated body");
+			streamPos += bodyLength;
 		}
 
 		if (headerType == ARROW_MSG_Schema)
