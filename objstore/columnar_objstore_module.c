@@ -1310,6 +1310,19 @@ os_reject_403(PgColumnarObjHandle *h, const OsResponse *resp, bool hasBody)
 		pfree(body);
 	}
 
+	/*
+	 * Only an s3:// or gs:// handle signs (h->sign). An http(s):// request
+	 * carries no credential, so pointing its reader at the AWS_* environment
+	 * would send them to settings the request never used (#1779).
+	 */
+	if (!h->sign)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+				 errmsg("columnar: access to \"%s\" was denied (HTTP 403%s%s)",
+						h->url, code[0] ? ": " : "", code),
+				 errhint("Requests to http:// and https:// URLs are never "
+						 "signed. Use an s3:// or gs:// URL for a store that "
+						 "needs credentials.")));
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 			 errmsg("columnar: access to \"%s\" was denied (HTTP 403%s%s)",
@@ -1948,13 +1961,14 @@ os_sign_write(PgColumnarObjHandle *h, const char *method, const char *canonPath,
 }
 
 /*
- * One signed write request (PUT/POST/DELETE) with an optional body, a single
- * reconnect on a stale keep-alive. `rawQuery` is the query as it goes on the
- * wire AND the canonical query the signature covers: the caller builds it with
- * keys already sorted (partNumber < uploadId; single-key queries are trivially
- * sorted) and any UploadId value already percent-encoded through
- * os_uriencode_query, so wire and canonical are byte-identical. The response
- * body, if any, is captured into *outBody (palloc'd) for the caller.
+ * One write request (PUT/POST/DELETE), signed when the handle is an S3 one,
+ * with an optional body and a single reconnect on a stale keep-alive.
+ * `rawQuery` is the query as it goes on the wire AND the canonical query the
+ * signature covers: the caller builds it with keys already sorted (partNumber
+ * < uploadId; single-key queries are trivially sorted) and any UploadId value
+ * already percent-encoded through os_uriencode_query, so wire and canonical
+ * are byte-identical. The response body, if any, is captured into *outBody
+ * (palloc'd) for the caller.
  */
 static void
 os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuery,
@@ -1983,7 +1997,15 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 						 method, h->abspath, rawQuery[0] ? "?" : "", rawQuery,
 						 h->host, h->port);
 		appendStringInfo(&req, "Content-Length: %lld\r\n", (long long) bodylen);
-		os_sign_write(h, method, h->abspath, rawQuery, payloadHex, &req);
+
+		/*
+		 * Sign only an S3 handle, as os_request does (#1779). An http(s)://
+		 * target has no region or credentials, so signing it read a NULL
+		 * region and crashed the backend; its write goes unsigned, like its
+		 * read.
+		 */
+		if (h->sign)
+			os_sign_write(h, method, h->abspath, rawQuery, payloadHex, &req);
 		appendStringInfoString(&req, "User-Agent: pgcolumnar-objstore/1\r\n\r\n");
 
 		if (os_send_all(h, req.data, req.len) &&

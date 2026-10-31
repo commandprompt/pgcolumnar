@@ -466,6 +466,20 @@ true until the next version shipped.
 
 ### Fixed
 
+- `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
+  URL now write the object instead of crashing the backend (#1779). Every write
+  request was signed, and a plain-HTTP target has no region or credentials, so the
+  signer read a NULL region: signal 11, and the postmaster restarted every session.
+  Writes are now signed only for `s3://` and `gs://`, as reads already were, so an
+  `http(s)://` export goes unsigned: one `PUT`, or a multipart upload for a large
+  object, and an abort on failure. `https://` takes the same code path but is not
+  tested. A 403 from an unsigned `http(s)://` target now hints that the request
+  was unsigned and that `s3://` or `gs://` is for a store that needs credentials; the hint
+  used to send the reader to the `AWS_*` credentials, which such a request never
+  carries. `test/objstore_sink_write.sh` and
+  `test_objstore_sink_write.py` export to an unsigned fixture server both ways and
+  read each object back.
+
 - `parallel_export_parquet` to an `s3://` prefix that ends in `/` now writes
   `prefix/part-NNNN.parquet` and `prefix/_SUCCESS` (#1782). It used to write
   `prefix//part-NNNN.parquet`, which S3 stores as a different key, so the

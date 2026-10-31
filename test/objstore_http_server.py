@@ -212,6 +212,12 @@ class Handler(BaseHTTPRequestHandler):
         """True when the request may proceed. Answers 403 itself otherwise."""
         srv = self.server
         if srv.sigv4_secret is None:
+            # Unsigned mode still reads a write's body (#1779): the PUT and
+            # POST handlers use self._body, which only the verifier below set,
+            # so an unsigned write killed the handler before any answer.
+            if self.command in ("PUT", "POST"):
+                clen = int(self.headers.get("Content-Length", "0") or "0")
+                self._body = self.rfile.read(clen) if clen else b""
             return True
         auth = self.headers.get("Authorization", "")
         m = AUTH_RE.match(auth)

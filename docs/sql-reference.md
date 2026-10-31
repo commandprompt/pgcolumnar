@@ -1444,8 +1444,21 @@ recognized:
 | --- | --- |
 | `s3://bucket/key` | An S3 or S3-compatible object. The request is signed with AWS Signature Version 4. |
 | `gs://bucket/key` | A Google Cloud Storage object, read and written through the interoperable XML API. It signs with the same Signature Version 4 as `s3://`, so a GCS HMAC key is given as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The endpoint defaults to `https://storage.googleapis.com` and the region to `auto`; set `AWS_ENDPOINT_URL` to override. |
-| `http://host[:port]/path` | A plain-HTTP object. For a trusted network only, because a plain-HTTP request carries any credential in clear. |
+| `http://host[:port]/path` | A plain-HTTP object. The request carries no credential, but the data crosses the network in clear, so use it on a trusted network only. |
 | `https://host[:port]/path` | An HTTPS object. Available when the object-store module was built with OpenSSL. The server certificate is verified. |
+
+Requests to an `http://` or `https://` URL are never signed and carry no
+credential, for reads and for exports alike. An export sends one `PUT`, or, for a
+large object, the multipart `POST` and `PUT` requests and the `DELETE` that aborts a
+failed upload. None of them has an `Authorization` header. Use these schemes for a
+server that accepts unsigned requests, and `s3://` or `gs://` for a store that needs
+credentials. If such a server refuses a request with HTTP 403, the error hint says
+the request was unsigned.
+
+Credentials go over plain HTTP only when an `s3://` or `gs://` URL has an `http://`
+`AWS_ENDPOINT_URL`. The request is then signed, and the signature, the access key ID
+and any `AWS_SESSION_TOKEN` cross the network in clear. The secret access key is
+never sent.
 
 S3 requests use path-style addressing (`endpoint/bucket/key`) by default. Set
 `pgcolumnar.objstore_s3_addressing` to `virtual` for virtual-host addressing
