@@ -208,6 +208,11 @@ check "typmod: numeric(5,2) refuses 12345.678 with numeric field overflow" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.read_parquet('$TM_BIG') AS x(d numeric(5,2), s text)" \
 	   "numeric field overflow" " (overflow)")" \
 	"22003 (overflow)"
+# the file's DECIMAL is (10,3): the same scale with a lower precision still coerces
+check "typmod: numeric(5,3), the file's scale with a lower precision, refuses 12345.678 (22003)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.read_parquet('$TM_BIG') AS x(d numeric(5,3), s text)" \
+	   "numeric field overflow" " (overflow)")" \
+	"22003 (overflow)"
 check "typmod: numeric(5,2) rounds 1.005 and 2.500 to the declared scale" \
 	"$(rp_q "SELECT string_agg(d::text, ',' ORDER BY d)
 	   FROM pgcolumnar.read_parquet('$TM_FIT') AS x(d numeric(5,2), s text);")" \

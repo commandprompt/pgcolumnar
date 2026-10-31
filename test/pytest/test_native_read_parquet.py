@@ -201,6 +201,8 @@ def rp(pgc_cluster, server_dir):
                                     f"FROM pgcolumnar.read_parquet('{tm_big}') AS x(d numeric(10,3), s varchar(5))")
         r["tm overflow"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{tm_big}') "
                                          "AS x(d numeric(5,2), s text)", "numeric field overflow", " (overflow)")
+        r["tm overflow p"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{tm_big}') "
+                                           "AS x(d numeric(5,3), s text)", "numeric field overflow", " (overflow)")
         r["tm round"] = _value(dsn, "SELECT string_agg(d::text, ',' ORDER BY d) "
                                     f"FROM pgcolumnar.read_parquet('{tm_fit}') AS x(d numeric(5,2), s text)")
         r["tm long"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{tm_big}') "
@@ -300,6 +302,11 @@ def test_a_typmod_that_holds_every_value_reads_them_unchanged(rp, expect):
 def test_numeric_5_2_refuses_an_overflow(rp, expect):
     expect.text(rp["tm overflow"], "22003 (overflow)",
                 "typmod: numeric(5,2) refuses 12345.678 with numeric field overflow")
+
+
+def test_numeric_5_3_same_scale_lower_precision_refuses_an_overflow(rp, expect):
+    expect.text(rp["tm overflow p"], "22003 (overflow)",
+                "typmod: numeric(5,3), the file's scale with a lower precision, refuses 12345.678 (22003)")
 
 
 def test_numeric_5_2_rounds_to_the_declared_scale(rp, expect):

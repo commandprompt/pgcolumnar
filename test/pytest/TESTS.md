@@ -12516,6 +12516,7 @@ Every test makes one check under the shell's name, on a private database. Every 
 | `test_read_parquet_agrees_with_import_parquet` | read_parquet == import_parquet |
 | `test_a_typmod_that_holds_every_value_reads_them_unchanged` | typmod: a declared typmod that holds every value reads them unchanged |
 | `test_numeric_5_2_refuses_an_overflow` | typmod: numeric(5,2) refuses 12345.678 with numeric field overflow |
+| `test_numeric_5_3_same_scale_lower_precision_refuses_an_overflow` | typmod: numeric(5,3), the file's scale with a lower precision, refuses 12345.678 (22003) |
 | `test_numeric_5_2_rounds_to_the_declared_scale` | typmod: numeric(5,2) rounds 1.005 and 2.500 to the declared scale |
 | `test_varchar_3_refuses_a_longer_value` | typmod: varchar(3) refuses 'hello' with value too long |
 | `test_varchar_3_drops_excess_trailing_spaces` | typmod: varchar(3) drops the excess trailing spaces of 'abc  ' |
