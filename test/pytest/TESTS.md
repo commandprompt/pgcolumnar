@@ -9709,11 +9709,11 @@ One module fixture runs the three scenarios in a private database; session 2's b
 
 ## 231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate
 
-The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row. Over `warehouse_promo` (#1789), files written before an int -> long, float -> double or decimal(10,2) -> decimal(20,2) promotion read as the current types: alone, mixed with a newer file, under equality deletes on the promoted column written on both sides of it, and through a `pgcolumnar_iceberg` foreign table. A narrower declared type, a date declared bigint and positional `read_parquet`'s bigint over INT32 are refused with 42804, and `read_parquet` by field id widens.
+The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row. Over a copy of the metadata whose schema also has a struct, a list and a map, it still reads the scalar columns, and refuses each nested column declared with a scalar type with 0A000 and a message naming the column and its kind, through `iceberg_scan` and through a `pgcolumnar_iceberg` foreign table (#1788). Over `warehouse_promo` (#1789), files written before an int -> long, float -> double or decimal(10,2) -> decimal(20,2) promotion read as the current types: alone, mixed with a newer file, under equality deletes on the promoted column written on both sides of it, and through a `pgcolumnar_iceberg` foreign table. A narrower declared type, a date declared bigint and positional `read_parquet`'s bigint over INT32 are refused with 42804, and `read_parquet` by field id widens.
 
 ### Every test
 
-One module fixture copies the warehouse into `server_dir`, writes the renamed metadata beside it, and reads every value from a private database; the two roles log in on their own and are dropped at teardown.
+One module fixture copies the warehouse into `server_dir`, writes the renamed and nested metadata beside it, and reads every value from a private database; the two roles log in on their own and are dropped at teardown.
 
 | test | what it holds |
 | --- | --- |
@@ -9725,6 +9725,11 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed me
 | `test_an_output_column_not_in_the_schema_is_refused` | an output column not in the schema is refused (42703) |
 | `test_an_unprivileged_role_is_refused_the_scan` | an unprivileged role is refused (42501) |
 | `test_a_pg_read_server_files_member_may_scan` | a pg_read_server_files member who is not superuser may scan |
+| `test_iceberg_scan_reads_the_scalars_beside_nested_fields` | iceberg_scan still reads the scalar columns beside nested fields |
+| `test_iceberg_scan_refuses_a_struct_column_declared_text` | iceberg_scan refuses a struct column declared text (0A000) |
+| `test_iceberg_scan_refuses_a_list_column_declared_int4` | iceberg_scan refuses a list column declared int4 (0A000) |
+| `test_iceberg_scan_refuses_a_map_column_declared_int8` | iceberg_scan refuses a map column declared int8 (0A000) |
+| `test_an_iceberg_foreign_table_refuses_a_struct_column_declared_text` | a pgcolumnar_iceberg foreign table refuses a struct column declared text (0A000) |
 | `test_the_promotion_fixture_stores_the_old_and_new_physical_types` | premise: the old files store k, f, d as INT32, FLOAT and decimal(10,2), the new file as INT64, DOUBLE and decimal(20,2) |
 | `test_a_promoted_int_column_reads_old_files_as_bigint` | a promoted int -> long column reads the pre-promotion files as bigint |
 | `test_a_promoted_float_column_reads_old_files_as_double` | a promoted float -> double column reads the pre-promotion files as double precision |
@@ -12152,7 +12157,7 @@ Every test makes one check under the shell's name, on a private database built o
 
 ## 314. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard
 
-The twin of `test/native_parquet_fieldid.sh`. pyarrow writes a file whose field ids are out of order and disjoint from position (alpha=7, beta=3, gamma=12), one with no field ids, and one where two columns share an id. read_parquet(path, field_ids) must bind and reorder by id, read a subset, leave the positional read alone, and refuse an absent id, a duplicate id in the file, a non-scalar output column, a count mismatch, an id-less file and a duplicate requested id, each with its own guard's message; the backend must survive.
+The twin of `test/native_parquet_fieldid.sh`. pyarrow writes a file whose field ids are out of order and disjoint from position (alpha=7, beta=3, gamma=12), one with no field ids, and one where two columns share an id. read_parquet(path, field_ids) must bind and reorder by id, read a subset, leave the positional read alone, and refuse an absent id, a duplicate id in the file, a non-scalar output column, a count mismatch, an id-less file and a duplicate requested id, each with its own guard's message. A fourth file has the shape Iceberg writes for a struct, a list and a map, with their field ids on group nodes: asking for one of those ids is refused with 0A000 as nested, naming the column and its kind, not as an id the file lacks (#1788). The backend must survive.
 
 ### Every test
 
@@ -12170,6 +12175,13 @@ Every test makes one check under the shell's name, on a private database. The wr
 | `test_a_parquet_file_with_no_field_ids_is_refused` | a file with no field ids is refused (22023) |
 | `test_a_duplicate_requested_field_id_is_refused` | a duplicate requested field id is refused (22023) |
 | `test_the_duplicate_requested_id_error_names_the_id` | the duplicate-requested-id error names the id, not the file |
+| `test_the_nested_files_leaves_carry_only_the_child_ids` | premise: the nested file's leaves carry ids 1,5,6,7,8,9 and none of 2,3,4 |
+| `test_the_nested_files_groups_carry_the_nested_ids` | premise: the nested file's groups carry ids st=2 li=3 mp=4 |
+| `test_a_scalar_beside_nested_columns_still_reads_by_field_id_premise` | premise: a scalar beside nested columns still reads by field id |
+| `test_a_struct_field_id_read_as_text_is_refused_as_nested` | a struct field id read as text is refused as nested (0A000) |
+| `test_a_list_field_id_read_as_int4_is_refused_as_nested` | a list field id read as int4 is refused as nested (0A000) |
+| `test_a_map_field_id_read_as_int8_is_refused_as_nested` | a map field id read as int8 is refused as nested (0A000) |
+| `test_field_id_minus_one_over_the_nested_file_is_refused_as_absent` | field id -1 over the nested file is refused as absent, not as a group without an id (22023) |
 | `test_the_backend_survives_the_fieldid_refusals` | backend still up after the refusals |
 
 ## 315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, an all-NULL column's empty dictionary page decodes, and a crafted page size is refused

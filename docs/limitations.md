@@ -1191,6 +1191,8 @@ table at its current snapshot. It has these limits:
   A file of unknown kind is never skipped as a delete.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet.
+- Only top-level primitive columns can be read. A column that names a struct,
+  list or map field is an error, whatever type it is declared with (#1788).
 - A promoted column (`int` to `long`, `float` to `double`, or a wider `decimal`)
   reads as its current type. Files from before the promotion are widened.
   Declaring it with a narrower type than a live file stores is refused.

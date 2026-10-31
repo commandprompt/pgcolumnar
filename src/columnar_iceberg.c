@@ -1064,6 +1064,11 @@ ice_current_schema_fields(JsonbContainer *root, const char *path)
  * A column name absent from the schema is an error. Name matching is exact and
  * case-sensitive against the schema (quote a mixed-case name in the column
  * definition list to preserve its case).
+ *
+ * So is a field whose type is nested -- a struct, list or map, written as a JSON
+ * object rather than a primitive's type string (#1788). Its id belongs to a
+ * Parquet group, not a leaf, so the reader would find no column to bind and
+ * return null on every row, whatever the output column's declared type.
  */
 static int *
 ice_field_ids_for_columns(JsonbContainer *root, TupleDesc tupdesc,
@@ -1106,6 +1111,20 @@ ice_field_ids_for_columns(JsonbContainer *root, TupleDesc tupdesc,
 			if ((int) strlen(nm) == fn->val.string.len &&
 				strncmp(nm, fn->val.string.val, fn->val.string.len) == 0)
 			{
+				JsonbValue *ft = ice_field(f->val.binary.data, "type");
+
+				if (ft != NULL && ft->type == jbvBinary)
+				{
+					JsonbValue *kind = ice_field(ft->val.binary.data, "type");
+
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("iceberg: output column \"%s\" is a %s field; only top-level primitive columns can be read",
+									nm,
+									kind != NULL && kind->type == jbvString
+									? pnstrdup(kind->val.string.val, kind->val.string.len)
+									: "nested")));
+				}
 				if (ice_num_int64(ice_field(f->val.binary.data, "id"), &fid))
 					found = (int) fid;
 				break;
