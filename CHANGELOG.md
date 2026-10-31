@@ -466,6 +466,22 @@ true until the next version shipped.
 
 ### Fixed
 
+- `parallel_export_parquet` now removes the run's parts when it fails after
+  every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
+  prefix, the export lists the prefix to remove stale parts, and then it PUTs
+  the marker. A failure in either step, such as a key that may write but not
+  list or a refused marker PUT, raised an ERROR and left every part, with no
+  marker, and with any earlier run's marker still in place. `read_parquet` read
+  those parts as a whole table. Now the dispatcher removes the parts and any
+  marker before the error is raised, as the documentation promises for a
+  failed run. The docs no longer say that no bucket listing is done, and they
+  say that a remote prefix needs list permission. They also say what a failed
+  listing cannot clean up: without it, the export cannot find a larger earlier
+  run's higher-numbered parts, so those remain with no marker, and a reader
+  should check for `_SUCCESS` before reading the prefix. A refused listing's
+  error now names the prefix it listed, not the dummy key `s3://<bucket>/_`
+  its connection was resolved from.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
 - `read_parquet`, `iceberg_scan` and the `pgcolumnar_parquet` and
   `pgcolumnar_iceberg` foreign tables now read a Parquet fixed-length binary
   column with no logical type into `bytea` (#1792). Iceberg writes `fixed(L)`

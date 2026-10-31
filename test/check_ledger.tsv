@@ -5689,6 +5689,14 @@ objstore_sink_write	objstore_sink_write	inject: the key does not exist	15;16;17;
 objstore_sink_write	objstore_sink_write	inject: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
 objstore_sink_write	objstore_sink_write	large export to s3:// succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	large round trip: s3 read-back == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last part is left out of the CompleteMultipartUpload list
+objstore_sink_write	objstore_sink_write	lister refused: no _SUCCESS marker certifies the failed run's prefix	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT re-throws without removing the run's parts (mutation, #1781)
+objstore_sink_write	objstore_sink_write	lister refused: no part object remains at the prefix	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT re-throws without removing the run's parts (mutation, #1781)
+objstore_sink_write	objstore_sink_write	lister refused: the export fails with the listing's 28000	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT removes the parts and swallows the error, reporting success (mutation, #1781)
+objstore_sink_write	objstore_sink_write	listing error: the refused listing names the prefix it listed, not a dummy key	15;16;17;18;19	2026-10-31	columnar_objstore_module.c: objstore_list_objects leaves the handle's URL as the dummy key s3://<bucket>/_ it resolved from, so a refused listing names it (mutation, #1781)
+objstore_sink_write	objstore_sink_write	listing refused after a larger run: no _SUCCESS marker remains at the prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	listing refused after a larger run: the earlier run's part-0002 and part-0003 remain, and nothing else	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	marker refused: no part object remains at the prefix	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT re-throws without removing the run's parts (mutation, #1781);columnar_parallel_export.c: the cleanup region covers the stale-part listing only, so a refused marker PUT leaves the parts (mutation, #1781)
+objstore_sink_write	objstore_sink_write	marker refused: the export fails with the marker PUT's 28000	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT removes the parts and swallows the error, reporting success (mutation, #1781)
 objstore_sink_write	objstore_sink_write	parallel export to an s3:// prefix succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: a _SUCCESS marker object exists at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: the marker went to the prefix as a PUT	15;16;17;18;19	never	-
@@ -5702,6 +5710,10 @@ objstore_sink_write	objstore_sink_write	part failure: the key does not exist	15;
 objstore_sink_write	objstore_sink_write	part failure: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
 objstore_sink_write	objstore_sink_write	premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: a worker was uploading before the cancel	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: lister refused: an earlier complete run left its marker at lf/	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: lister refused: both workers' parts were uploaded before the listing	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: listing refused after a larger run: the 4-worker run left 4 parts and its marker at lt/	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: marker refused: both workers' parts were uploaded before the marker	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the export was cancelled, not completed	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the fault landed mid-multipart (an upload was started)	15;16;17;18;19	never	-

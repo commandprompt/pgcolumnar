@@ -854,11 +854,12 @@ The `path` may also be an `s3://` prefix. Each worker writes one
 [Object storage](#object-storage) for the endpoint and credential rules, which
 are the same as for `export_parquet`. One difference applies to a remote prefix.
 The local path is created and checked for emptiness before the export. A remote
-prefix cannot be checked for emptiness without a bucket listing, which pgColumnar
-does not yet perform. The prefix must therefore be new or empty by the caller's
-own account. A stale higher-numbered object left in the prefix by a larger prior
-export would be read back by a later directory read. Read each object by its
-exact key until prefix reads land.
+prefix is not checked, so a re-run may write into a used prefix. Before it
+writes the `_SUCCESS` marker, the export lists the prefix to remove stale parts
+a larger prior run left. Its credentials therefore need list permission
+(`s3:ListBucket` on AWS) as well as write and delete. If the listing fails,
+those stale parts can remain, as described below under "A failed listing can
+leave a larger earlier run's parts".
 
 The target may be one of two kinds:
 
@@ -872,11 +873,23 @@ every worker imports it. The files together are the committed image of the table
 at call time. This holds even when the call runs inside a transaction with
 uncommitted rows. There is no coordinator and no shared write state. If any worker
 fails, or the statement is cancelled, the dispatcher removes the files it wrote.
-A partial directory is never left for `read_parquet` to union. Over an `s3://`
-prefix the dispatcher deletes the same objects by key. A worker terminated
-mid-upload can leave one incomplete multipart upload that the dispatcher cannot
-address. Set a bucket lifecycle rule that expires incomplete multipart uploads to
-reclaim it, as the object-storage notes recommend for `export_parquet`.
+It also removes them when every worker has finished but a later step fails:
+removing stale parts or writing the `_SUCCESS` marker. Over an `s3://` prefix
+the dispatcher deletes the same objects by key. A worker terminated mid-upload
+can leave one incomplete multipart upload that the dispatcher cannot address.
+Set a bucket lifecycle rule that expires incomplete multipart uploads to reclaim
+it, as the object-storage notes recommend for `export_parquet`.
+
+**A failed listing can leave a larger earlier run's parts.** The cleanup
+above removes a failed run's own parts. So a partial directory is never left for
+`read_parquet` to union, with one exception: a failed listing of a remote prefix.
+A key that may write but not list fails the run, and the dispatcher removes the
+parts this run wrote. Without the listing, though, the export cannot find the
+higher-numbered parts that a larger earlier run left in the prefix, so they
+remain. A run of 4 workers followed by a failed run of 2 leaves `part-0002` and
+`part-0003`, with no `_SUCCESS` marker. A later directory or prefix read would
+read those stale objects back as if they were a whole table. So check for
+`_SUCCESS` before you read a prefix, and read only a prefix that carries it.
 
 On success the function writes an empty `_SUCCESS` marker at the destination, the
 Hadoop and Spark convention. Its presence means a complete run's output is there;
