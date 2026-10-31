@@ -4847,8 +4847,17 @@ pqfdw_compute_needed(ForeignScanState *node, ImpTop *tops, int ntops,
 static void
 pqfdw_objstore_config(Oid foreigntableid, PgColumnarObjStoreConfig *cfg)
 {
-	ForeignTable *ft = GetForeignTable(foreigntableid);
-	ForeignServer *server = GetForeignServer(ft->serverid);
+	PgColumnarObjStoreConfigForServer(GetForeignTable(foreigntableid)->serverid, cfg);
+}
+
+/*
+ * The resolution itself, keyed by server, so the writer that tier_partition
+ * uses resolves exactly what a read of the foreign partition will (#1795).
+ */
+void
+PgColumnarObjStoreConfigForServer(Oid serverid, PgColumnarObjStoreConfig *cfg)
+{
+	ForeignServer *server = GetForeignServer(serverid);
 	HeapTuple	tp;
 	List	   *umoptions = NIL;
 	bool		credRequired = true;

@@ -633,6 +633,19 @@ Writes the live rows of `rel` to a Parquet file at `path`. Returns the number of
 rows written. `path` can be a local file or an `s3://` URL. See
 [Object storage](#object-storage).
 
+### pgcolumnar.export_parquet(rel regclass, path text, server name) returns bigint
+
+Writes the file as the two-argument form does, but a remote `path` is written
+with the settings of `server`. The endpoint and region come from the server. The
+credentials come from your user mapping on the server, or from its `PUBLIC`
+mapping. These are the settings that a foreign table of `server` reads with, so
+a foreign table on `path` can read the file back. The environment is used only
+where a read may use it: see [Endpoints and credentials](#endpoints-and-credentials).
+
+`server` must use the `pgcolumnar_parquet` wrapper (`42809`), and you need
+`USAGE` on it (`42501`). The function checks both before it writes anything. A
+local `path` ignores the server's settings.
+
 ### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
 
 Creates columnar partitions of `parent`, each `width` wide, until they reach now
@@ -710,6 +723,13 @@ attaches the file as a foreign table of `server`, which must use the
 `pgcolumnar_parquet` wrapper. The foreign table takes the partition's name,
 columns (with their collations and generated expressions), owner, bounds,
 grants and comment. Returns the number of rows moved.
+
+The function writes the file with the settings of `server`, as
+`export_parquet(partition, path, server)` does: the server's endpoint and
+region, and your user mapping on the server. A mapping that the object store
+rejects stops the move before anything is detached, and the rows stay in the
+columnar partition. Every role that queries the parent after the move needs a
+mapping on `server` that can read the file.
 
 The function runs as one transaction, at READ COMMITTED only (`25000`
 otherwise). It holds `ACCESS EXCLUSIVE` on the parent from the detach until
@@ -1376,7 +1396,9 @@ The endpoint and the credentials come from the server process environment, from
 the catalog, or from both.
 
 The function API (`read_parquet`, `export_parquet`, `export_arrow`,
-`import_parquet`, `parquet_schema`) has no server object. Its endpoint and
+`import_parquet`, `parquet_schema`) has no server object. The exceptions are
+`export_parquet(rel, path, server)` and `tier_partition`: they write with a
+server and a user mapping, as the foreign-data wrapper reads. Its endpoint and
 credentials come from the environment of the server process:
 
 | Variable | Meaning |

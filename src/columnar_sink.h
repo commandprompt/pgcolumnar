@@ -17,9 +17,18 @@
 #include "postgres.h"
 
 typedef struct PqSink PqSink;
+struct PgColumnarObjStoreConfig;
 
 /* Open a sink for `path`: local (temp-and-rename) or remote (#394) by scheme. */
 extern PqSink *PgColumnarSinkOpen(const char *path);
+
+/*
+ * The same, with the object-store configuration a remote write uses (#1795).
+ * NULL means the server process environment, as PgColumnarSinkOpen does. A
+ * local path ignores cfg.
+ */
+extern PqSink *PgColumnarSinkOpenWith(const char *path,
+									  const struct PgColumnarObjStoreConfig *cfg);
 
 /* The local implementation; PgColumnarSinkOpen dispatches to it for a path. */
 extern PqSink *PgColumnarSinkOpenLocal(const char *path);

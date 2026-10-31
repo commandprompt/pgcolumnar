@@ -119,6 +119,12 @@ PgColumnarSinkOpenLocal(const char *path)
 PqSink *
 PgColumnarSinkOpen(const char *path)
 {
+	return PgColumnarSinkOpenWith(path, NULL);
+}
+
+PqSink *
+PgColumnarSinkOpenWith(const char *path, const PgColumnarObjStoreConfig *cfg)
+{
 	if (PgColumnarPathIsRemote(path))
 	{
 		const PgColumnarObjStoreApi *api = PgColumnarObjStoreGet();
@@ -140,7 +146,7 @@ PgColumnarSinkOpen(const char *path)
 		snk = (PqSink *) palloc0(sizeof(PqSink));
 		snk->finalPath = pstrdup(path);
 		snk->api = api;
-		snk->rsink = api->sink_create(path, NULL);
+		snk->rsink = api->sink_create(path, cfg);
 		if (!sink_exit_registered)
 		{
 			before_shmem_exit(sink_abort_open_at_exit, (Datum) 0);

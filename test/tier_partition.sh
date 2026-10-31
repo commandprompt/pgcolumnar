@@ -24,6 +24,9 @@
 
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# The endpoint allow-list (#393) defaults to deny-all. The object-store section
+# at the end (#1795) writes to two local SigV4 fixture servers.
+export PGC_EXTRA_CONF="pgcolumnar.objstore_allowed_endpoints='127.0.0.1'"
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 W="$PGC_WORKDIR/tier"
@@ -463,5 +466,88 @@ for step in export detach drop create attach; do
 		"$(q "SELECT count(*) FROM pg_foreign_table t JOIN pg_class c ON c.oid = t.ftrelid
 		      WHERE c.relname LIKE 'f\\_%';")" "0"
 done
+
+
+# ---- the write uses the named server and the caller's mapping (#1795) --------
+#
+# The foreign partition reads with the server's endpoint and region and the
+# caller's user mapping. The write must use the same, or the move commits a
+# partition that cannot read its own file. Two SigV4-verifying fixture servers,
+# each with its own directory and secret: A is the one the postmaster environment
+# names, B is reachable only through a server and a mapping. Where an object
+# lands shows which identity wrote it.
+S3_REGION="pgc-test-1"; S3_KEY="PGCTESTKEYID"
+S3A_SECRET="pgctest-env-secret"; S3B_SECRET="pgctest-mapping-secret"
+S3_PIDS=""
+tier_s3_on_exit() {
+	local rc=$?
+	[ -n "$S3_PIDS" ] && kill $S3_PIDS 2>/dev/null
+	(exit $rc)
+	pgc_on_exit
+}
+trap tier_s3_on_exit EXIT
+# s3_start NAME SECRET VAR: start a fixture whose bucket is $PGC_WORKDIR/NAME/tierb and
+# set VAR to its port. Not run in $(...): the PID must reach S3_PIDS in this shell,
+# or the trap cannot stop the server, and a server left running keeps the
+# caller's lock file descriptor open.
+s3_start() {
+	local port out="$PGC_WORKDIR/$1.out"
+	mkdir -p "$PGC_WORKDIR/$1/tierb" && chmod -R 777 "$PGC_WORKDIR/$1"
+	port="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
+	python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
+		--dir "$PGC_WORKDIR/$1" --port "$port" --log "$PGC_WORKDIR/$1.log" \
+		--sigv4-key "$S3_KEY" --sigv4-secret "$2" --sigv4-region "$S3_REGION" >"$out" 2>&1 &
+	S3_PIDS="$S3_PIDS $!"
+	for _ in $(seq 1 50); do grep -q READY "$out" 2>/dev/null && break; sleep 0.1; done
+	printf -v "$3" '%s' "$port"
+}
+s3_start s3a "$S3A_SECRET" S3A_PORT
+s3_start s3b "$S3B_SECRET" S3B_PORT
+check "premise: both SigV4 fixture servers are up" \
+	"$(cat "$PGC_WORKDIR/s3a.out" "$PGC_WORKDIR/s3b.out" 2>/dev/null | grep -c READY)" "2"
+pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
+pgc_pg "AWS_ENDPOINT_URL=http://127.0.0.1:$S3A_PORT AWS_ACCESS_KEY_ID=$S3_KEY \
+	AWS_SECRET_ACCESS_KEY=$S3A_SECRET AWS_REGION=$S3_REGION \
+	pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
+for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && break; sleep 0.5; done
+# mdigest TABLE -> count|md5 of a mini table's rows, or the error that stopped the read
+mdigest() {
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At \
+		-v ON_ERROR_STOP=1 -c "SELECT count(*) || '|' || md5(string_agg(ts::text || v, ',' ORDER BY ts)) FROM $1;" 2>&1)
+	echo "$out" | sed -n 's/^ERROR: *//p;/^[0-9]*|/p' | head -1
+}
+objects() { (cd "$PGC_WORKDIR/$1/tierb" 2>/dev/null && ls | sort | tr '\n' ' ' | sed 's/ $//'); }
+mini sp
+check "premise: the postmaster environment writes to fixture A" \
+	"$(q "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/premise.parquet');")|$(objects s3a)" \
+	"100|premise.parquet"
+
+# The repro from #1795: the server names fixture A, the environment holds A's
+# valid keys, and the caller's mapping holds a wrong secret.
+psql_run "CREATE SERVER tier_s3a FOREIGN DATA WRAPPER pgcolumnar_parquet
+          OPTIONS (endpoint 'http://127.0.0.1:$S3A_PORT', region '$S3_REGION');
+          CREATE USER MAPPING FOR postgres SERVER tier_s3a
+          OPTIONS (access_key_id '$S3_KEY', secret_access_key 'pgctest-bogus');"
+mini sa
+sab="$(mdigest sa)"
+check "a mapping the object store rejects refuses the move (28000), not the environment's keys" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('sa_jan', 'tier_s3a', 's3://tierb/sa_jan.parquet')")" "28000"
+check "and the refused move leaves the rows local and attached, every row once" \
+	"$(mdigest sa)|$(jan_shape sa)" "$sab|r:pgcolumnar:$JAN_BOUND"
+check "and the environment's keys wrote no object" "$(objects s3a)" "premise.parquet"
+
+# The server names fixture B, which only the mapping's secret opens.
+psql_run "CREATE SERVER tier_s3b FOREIGN DATA WRAPPER pgcolumnar_parquet
+          OPTIONS (endpoint 'http://127.0.0.1:$S3B_PORT', region '$S3_REGION');
+          CREATE USER MAPPING FOR postgres SERVER tier_s3b
+          OPTIONS (access_key_id '$S3_KEY', secret_access_key '$S3B_SECRET');"
+mini sb
+sbb="$(mdigest sb)"
+check "a move through a server writes with its endpoint and the caller's mapping" \
+	"$(errtext "SELECT pgcolumnar.tier_partition('sb_jan', 'tier_s3b', 's3://tierb/sb_jan.parquet')")|A: $(objects s3a)|B: $(objects s3b)" \
+	"ok|A: premise.parquet|B: sb_jan.parquet"
+check "and the parent reads every row back through the foreign partition" \
+	"$(mdigest sb)|$(jan_shape sb)" "$sbb|f:-:$JAN_BOUND"
 
 pgc_summary

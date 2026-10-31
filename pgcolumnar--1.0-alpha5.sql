@@ -3036,6 +3036,17 @@ $rb$;
 COMMENT ON FUNCTION pgcolumnar.rebase_rollup(regclass)
 	IS 'record a rollup''s source row groups as folded without touching the rollup, after the source was rewritten; the caller asserts the rollup is current (#1294)';
 
+-- #1795: the same export, writing a remote path with a pgcolumnar_parquet
+-- server's endpoint and region and the caller's user mapping, as a foreign table
+-- of that server reads. tier_partition writes through it.
+CREATE FUNCTION pgcolumnar.export_parquet(rel regclass, path text, server name)
+	RETURNS bigint
+	LANGUAGE C
+	AS 'MODULE_PATHNAME', 'pgcolumnar_export_parquet';
+
+COMMENT ON FUNCTION pgcolumnar.export_parquet(regclass, text, name)
+	IS 'export a columnar table to a Parquet file, writing a remote path with the named pgcolumnar_parquet server and the caller''s user mapping (#1795); returns rows written';
+
 -- #1295: move a cold columnar partition to Parquet in one transaction.
 CREATE FUNCTION pgcolumnar.tier_partition(partition regclass, server name, path text,
 										  lock_wait interval DEFAULT '10 seconds')
@@ -3154,7 +3165,9 @@ BEGIN
 
 	-- Writes to the cold partition wait; reads go on.
 	EXECUTE format('LOCK TABLE %s IN SHARE MODE', partition);
-	moved := pgcolumnar.export_parquet(partition, path);
+	-- Through the server the foreign partition will read with, so the write
+	-- and every later read use one endpoint and one identity (#1795).
+	moved := pgcolumnar.export_parquet(partition, path, server);
 	-- Under the lock nothing can commit to the partition, so a statement taken
 	-- now sees what the export saw. A difference is an error, never a loss.
 	EXECUTE format('SELECT count(*) FROM %s', partition) INTO seen;

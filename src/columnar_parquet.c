@@ -22,6 +22,7 @@
  *-------------------------------------------------------------------------
  */
 #include "columnar.h"
+#include "columnar_objstore.h"
 #include "columnar_parquet_format.h"
 #include "columnar_sink.h"
 #include "columnar_thrift.h"
@@ -37,6 +38,8 @@
 #include "catalog/pg_type.h"
 #include "lib/stringinfo.h"
 #include "catalog/pg_authid_d.h"
+#include "catalog/pg_foreign_server.h"
+#include "foreign/foreign.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
 #include "storage/fd.h"
@@ -1175,7 +1178,16 @@ PgColumnarParquetCheckExportable(Relation rel)
  */
 int64
 PgColumnarWriteParquetFile(Relation rel, Snapshot snapshot, const char *filepath,
-						 const uint64 *restrictGroups, int nRestrictGroups)
+						   const uint64 *restrictGroups, int nRestrictGroups)
+{
+	return PgColumnarWriteParquetFileWith(rel, snapshot, filepath, restrictGroups,
+										  nRestrictGroups, NULL);
+}
+
+int64
+PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot, const char *filepath,
+							   const uint64 *restrictGroups, int nRestrictGroups,
+							   const PgColumnarObjStoreConfig *cfg)
 {
 	TupleDesc	tupdesc;
 	int			ntop;
@@ -1230,7 +1242,7 @@ PgColumnarWriteParquetFile(Relation rel, Snapshot snapshot, const char *filepath
 							format_type_be(att->atttypid))));
 	}
 
-	snk = PgColumnarSinkOpen(filepath);
+	snk = PgColumnarSinkOpenWith(filepath, cfg);
 	PG_TRY();
 	{
 	PgColumnarSinkWrite(snk, "PAR1", 4);	/* magic header */
@@ -1395,6 +1407,12 @@ PgColumnarWriteParquetFile(Relation rel, Snapshot snapshot, const char *filepath
  * pgcolumnar_export_parquet
  *		SQL: pgcolumnar.export_parquet(rel regclass, path text) -> bigint.
  *		Thin wrapper over PgColumnarWriteParquetFile for the whole table.
+ *
+ *		SQL: pgcolumnar.export_parquet(rel regclass, path text, server name)
+ *		writes a remote path with that pgcolumnar_parquet server's endpoint and
+ *		region and the caller's user mapping, the configuration a foreign table
+ *		of that server reads with (#1795). The two-argument form writes with the
+ *		server process environment.
  */
 Datum
 pgcolumnar_export_parquet(PG_FUNCTION_ARGS)
@@ -1404,6 +1422,8 @@ pgcolumnar_export_parquet(PG_FUNCTION_ARGS)
 	Relation	rel;
 	Snapshot	snapshot;
 	int64		total;
+	PgColumnarObjStoreConfig cfg;
+	PgColumnarObjStoreConfig *cfgp = NULL;
 
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
 		ereport(ERROR,
@@ -1416,6 +1436,40 @@ pgcolumnar_export_parquet(PG_FUNCTION_ARGS)
 
 	relid = PG_GETARG_OID(0);
 	path = text_to_cstring(PG_GETARG_TEXT_PP(1));
+
+	/*
+	 * The server is resolved before the file is opened, so a missing server,
+	 * a missing USAGE grant or half a credential stops the call with nothing
+	 * written.
+	 */
+	if (PG_NARGS() > 2)
+	{
+		ForeignServer *server;
+		AclResult	ac;
+
+		if (PG_ARGISNULL(2))
+			ereport(ERROR,
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+					 errmsg("server must not be null")));
+		server = GetForeignServerByName(NameStr(*PG_GETARG_NAME(2)), false);
+		if (strcmp(GetForeignDataWrapper(server->fdwid)->fdwname,
+				   "pgcolumnar_parquet") != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("server \"%s\" uses the %s wrapper, not pgcolumnar_parquet",
+							server->servername,
+							GetForeignDataWrapper(server->fdwid)->fdwname)));
+#if PG_VERSION_NUM >= 160000
+		ac = object_aclcheck(ForeignServerRelationId, server->serverid,
+							 GetUserId(), ACL_USAGE);
+#else
+		ac = pg_foreign_server_aclcheck(server->serverid, GetUserId(), ACL_USAGE);
+#endif
+		if (ac != ACLCHECK_OK)
+			aclcheck_error(ac, OBJECT_FOREIGN_SERVER, server->servername);
+		cfgp = &cfg;
+		PgColumnarObjStoreConfigForServer(server->serverid, cfgp);
+	}
 
 	/*
 	 * SELECT on the source, before the file is opened (#559). The server-file
@@ -1444,7 +1498,7 @@ pgcolumnar_export_parquet(PG_FUNCTION_ARGS)
 	}
 
 	snapshot = ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
-	total = PgColumnarWriteParquetFile(rel, snapshot, path, NULL, 0);
+	total = PgColumnarWriteParquetFileWith(rel, snapshot, path, NULL, 0, cfgp);
 
 	table_close(rel, AccessShareLock);
 	PG_RETURN_INT64(total);

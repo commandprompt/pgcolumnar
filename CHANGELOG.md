@@ -466,6 +466,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- `tier_partition` now writes the Parquet file with the server it names and
+  your user mapping on that server (#1795). Before, it wrote with the endpoint
+  and keys of the server process environment, but the foreign partition reads
+  with the server and the mapping. When the two differed, the move committed and
+  every query on the parent then failed (HTTP 403 or 400). Now a mapping the
+  object store rejects stops the move, and the rows stay in the columnar
+  partition. The write goes through a new form,
+  `export_parquet(rel, path, server)`, which you can also call directly.
+  `test/tier_partition.sh` and `test_tier_partition.py`.
 - `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
   read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
   or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that

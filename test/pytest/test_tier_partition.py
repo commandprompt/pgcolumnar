@@ -590,3 +590,137 @@ def test_tier_partition_runs_on_the_callers_own_privileges(pgc_own_db, pgc_clust
     expect.text(as_role("tier_own_py", f"SELECT pgcolumnar.tier_partition('pw_mar', 'tq', '{server_dir / 'pw_own.parquet'}')")
                 + f"|{_mar_shape(conn, 'pw')}", f"ok|f:-:{BOUND}",
                 "a non-superuser owner tiers its own partition")
+
+
+def _pg_ctl(cluster, args, extra_env):
+    """pg_ctl with an explicit environment: every AWS_* of this process removed, then
+    `extra_env` added. Dropped to postgres when running as root, as the harness does."""
+    import os
+    import subprocess
+    unset = [a for k in os.environ if k.startswith("AWS_") for a in ("-u", k)]
+    cmd = ["env"] + unset + [f"{k}={v}" for k, v in extra_env.items()] + \
+          [os.path.join(cluster.bindir, "pg_ctl")] + args
+    if os.geteuid() == 0:
+        cmd = ["runuser", "-u", "postgres", "--"] + cmd
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def test_tier_partition_writes_through_the_named_server(pgc_cluster, expect):
+    """The write uses the named server and the caller's mapping (#1795).
+
+    The foreign partition reads with the server's endpoint and region and the caller's
+    user mapping; before #1795 the write used the postmaster environment, and the move
+    committed a partition that could not read its own file. Two SigV4-verifying fixture
+    servers (test/objstore_http_server.py), each with its own directory and secret: A is
+    the one the postmaster environment names, B is reachable only through a server and a
+    mapping. Where an object lands shows which identity wrote it.
+
+    A PRIVATE CLUSTER, because the postmaster restarts with AWS_* in its environment."""
+    import os
+    import pathlib
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+    from pgc_cluster import Cluster, pick_port
+
+    key, region = "PGCTESTKEYID", "pgc-test-1"
+    secret_a, secret_b = "pgctest-env-secret", "pgctest-mapping-secret"
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-tier-s3-"))
+    os.chmod(work, 0o777)
+    servers, ports = [], {}
+    cluster = None
+    datadir = work / "data"
+    try:
+        for name, secret, slot in (("s3a", secret_a, 40), ("s3b", secret_b, 41)):
+            (work / name / "tierb").mkdir(parents=True)
+            for d in (work / name, work / name / "tierb"):
+                os.chmod(d, 0o777)
+            ports[name] = pick_port(slot)
+            out = work / f"{name}.out"
+            servers.append(subprocess.Popen(
+                [sys.executable, str(pathlib.Path(__file__).resolve().parents[1] / "objstore_http_server.py"),
+                 "--dir", str(work / name), "--port", str(ports[name]), "--log", str(work / f"{name}.log"),
+                 "--sigv4-key", key, "--sigv4-secret", secret, "--sigv4-region", region],
+                stdout=open(out, "w"), stderr=subprocess.STDOUT))
+        for _ in range(50):
+            if all((work / f"{n}.out").is_file() and "READY" in (work / f"{n}.out").read_text(errors="replace")
+                   for n in ports):
+                break
+            time.sleep(0.1)
+        ready = sum((work / f"{n}.out").read_text(errors="replace").count("READY") for n in ports)
+        expect.num(ready, 2, "premise: both SigV4 fixture servers are up")
+
+        datadir.mkdir()
+        log = str(work / "server.log")
+        cluster = Cluster(pgc_cluster.pg_config, "tiers3", datadir, pick_port(42))
+        cluster.initdb()
+        with open(datadir / "postgresql.conf", "a") as fh:
+            fh.write("\npgcolumnar.objstore_allowed_endpoints='127.0.0.1'\ntimezone='UTC'\n")
+        started = _pg_ctl(cluster, ["-D", str(datadir), "-l", log, "-w", "start"],
+                          {"AWS_ENDPOINT_URL": f"http://127.0.0.1:{ports['s3a']}", "AWS_ACCESS_KEY_ID": key,
+                           "AWS_SECRET_ACCESS_KEY": secret_a, "AWS_REGION": region})
+        if started.returncode != 0:
+            raise RuntimeError(f"the private cluster did not start: {started.stderr}")
+        conn = psycopg.connect(cluster.dsn(), autocommit=True)
+
+        def objects(name):
+            return " ".join(sorted(p.name for p in (work / name / "tierb").iterdir()))
+
+        def mini(t):
+            with conn.cursor() as cur:
+                cur.execute(f"CREATE TABLE {t} (at timestamptz NOT NULL, n int) PARTITION BY RANGE (at)")
+                cur.execute(f"CREATE TABLE {t}_mar PARTITION OF {t} FOR VALUES FROM ('2026-03-01')"
+                            " TO ('2026-04-01') USING pgcolumnar")
+                cur.execute(f"INSERT INTO {t} SELECT '2026-03-01'::timestamptz + g * interval '5 h', g * 3"
+                            " FROM generate_series(0, 120) g")
+
+        def mdigest(t):
+            try:
+                return _one(conn, f"SELECT count(*) || '|' || md5(string_agg(at::text || n, ',' ORDER BY at)) FROM {t}")
+            except psycopg.Error as e:
+                return str(e).splitlines()[0]
+
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        mini("sp")
+        try:
+            premise = _one(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/premise.parquet')")
+        except psycopg.Error as e:
+            premise = str(e).splitlines()[0]
+        expect.text(f"{premise}|{objects('s3a')}", "121|premise.parquet",
+                    "premise: the postmaster environment writes to fixture A")
+
+        # The repro from #1795: the server names fixture A, the environment holds A's
+        # valid keys, and the caller's mapping holds a wrong secret.
+        conn.execute(f"CREATE SERVER tier_s3a FOREIGN DATA WRAPPER pgcolumnar_parquet"
+                     f" OPTIONS (endpoint 'http://127.0.0.1:{ports['s3a']}', region '{region}')")
+        conn.execute(f"CREATE USER MAPPING FOR postgres SERVER tier_s3a"
+                     f" OPTIONS (access_key_id '{key}', secret_access_key 'pgctest-bogus')")
+        mini("sa")
+        before = mdigest("sa")
+        expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('sa_mar', 'tier_s3a', 's3://tierb/sa_mar.parquet')"),
+                    "28000", "a mapping the object store rejects refuses the move (28000), not the environment's keys")
+        expect.text(f"{mdigest('sa')}|{_mar_shape(conn, 'sa')}", f"{before}|r:pgcolumnar:{BOUND}",
+                    "and the refused move leaves the rows local and attached, every row once")
+        expect.text(objects("s3a"), "premise.parquet", "and the environment's keys wrote no object")
+
+        # The server names fixture B, which only the mapping's secret opens.
+        conn.execute(f"CREATE SERVER tier_s3b FOREIGN DATA WRAPPER pgcolumnar_parquet"
+                     f" OPTIONS (endpoint 'http://127.0.0.1:{ports['s3b']}', region '{region}')")
+        conn.execute(f"CREATE USER MAPPING FOR postgres SERVER tier_s3b"
+                     f" OPTIONS (access_key_id '{key}', secret_access_key '{secret_b}')")
+        mini("sb")
+        before = mdigest("sb")
+        moved = _errtext(conn, "SELECT pgcolumnar.tier_partition('sb_mar', 'tier_s3b', 's3://tierb/sb_mar.parquet')")
+        expect.text(f"{moved}|A: {objects('s3a')}|B: {objects('s3b')}", "ok|A: premise.parquet|B: sb_mar.parquet",
+                    "a move through a server writes with its endpoint and the caller's mapping")
+        expect.text(f"{mdigest('sb')}|{_mar_shape(conn, 'sb')}", f"{before}|f:-:{BOUND}",
+                    "and the parent reads every row back through the foreign partition")
+        conn.close()
+    finally:
+        if cluster is not None:
+            _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
+        for s in servers:
+            s.kill()
+            s.wait()
+        shutil.rmtree(work, ignore_errors=True)
