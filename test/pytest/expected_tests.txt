@@ -1385,15 +1385,27 @@ guard_tests 854
 # and prefix, the 64-level bound and page-token cycles, by collection: `5416 tests collected`, minus 854.
 # cluster_tests 4656 -> 4678 at the merge of origin/main (b9c0884c) into fix/1793-rest-namespaces: main's 4623
 # plus this branch's 22 checks in test_iceberg_rest_scan.py, by collection: `5499 tests collected`, minus 854.
-# cluster_tests 4516 -> 4521 for #1782's test_objstore_sink_write.py: 5 trailing-slash checks
+# cluster_tests 4678 -> 4681 for #1807's three parquet_schema advice tests in test_parquet_timestamp_zone.py, by collection.
+# cluster_tests 4596 -> 4623 for #1810's and #1813's serial and commit arms in
+# test_objstore_export_open_uploads.py: 27 checks in 27 tests, by collection over the cluster files.
+# cluster_tests 4623 -> 4629 for #1846's complete-drop arm in test_objstore_export_open_uploads.py:
+# 6 checks in 6 tests, by collection over the cluster files (`4549 tests collected` before main was merged).
+# cluster_tests 4629 -> 4642 for the #1846 review's serial double-cancel, put-refused and
+# earlier-export-warning checks in test_objstore_export_open_uploads.py: 13 checks in 13 tests,
+# by collection over the cluster files (`4562 tests collected` before main was merged).
+# cluster_tests 4606 at the merge of origin/main (6f88f973) into fix/1810-serial-export-cancel,
+# by collection: `4606 tests collected`.
+# cluster_tests 4645 + 46 = 4691 at the merge of origin/main (3fae8317) into fix/1810-serial-export-cancel:
+# this branch's 46 tests in test_objstore_export_open_uploads.py on main's 4645, by collection: `4691 tests collected`.
+# cluster_tests 4565 -> 4570 for #1782's test_objstore_sink_write.py: 5 trailing-slash checks
 # in 5 tests, by collection over the cluster files.
-# cluster_tests 4521 -> 4535 for #1782's test_objstore_sink_write.py review round: 14 checks in
+# cluster_tests 4570 -> 4584 for #1782's test_objstore_sink_write.py review round: 14 checks in
 # 14 tests (sibling prefixes, no slash, several slashes, bare bucket, cancel), by collection.
-# cluster_tests 4535 -> 4536 for #1782's test_objstore_sink_write.py re-review: 1 nested-prefix check
+# cluster_tests 4584 -> 4585 for #1782's test_objstore_sink_write.py re-review: 1 nested-prefix check
 # in 1 test, by collection over the cluster files.
-# cluster_tests 4536 -> 4539 for #1782's test_objstore_sink_write.py second re-review: 3 uppercase-scheme
+# cluster_tests 4585 -> 4588 for #1782's test_objstore_sink_write.py second re-review: 3 uppercase-scheme
 # checks in 3 tests, by collection over the cluster files.
-# cluster_tests 4678 -> 4701 at the merge of origin/fix/1793-rest-namespaces into fix/1782-pexport-trailing-slash:
+# cluster_tests 4727 -> 4750 at the merge of origin/fix/1793-rest-namespaces into fix/1782-pexport-trailing-slash:
 # that branch's 4678 plus this branch's 23 tests in test_objstore_sink_write.py (4516 -> 4539),
 # by collection over the cluster files: `4701 tests collected`.
-cluster_tests 4701
+cluster_tests 4750

@@ -33,6 +33,36 @@
 # the cleanup's bounded wait gives up and the export still reports its own
 # cancel, promptly.
 #
+# The serial arms (#1810) do the same for export_parquet and export_arrow,
+# which write one key through one multipart upload. They are cancelled, or
+# terminated, while their own POST ?uploads is held. The sink must then list
+# the uploads for its exact key and abort them. Two foreign uploads stay open:
+# notes.parquet under the same prefix, and one at the key plus ".old", which a
+# listing by the key as prefix also returns.
+#
+# The commit arms (#1813) cancel export_parquet while the store holds the
+# answer to the request that commits the object: CompleteMultipartUpload
+# (__complete_delay__) or the single PUT of a small object (__put_delay__). The
+# fixture writes the object before it holds the answer, as a store that has
+# already applied the request. An earlier object is at the key first. What the
+# export reports must match what the key then holds: the earlier object and an
+# error, or the new object and either success or a warning that says so.
+#
+# The complete-drop arm (#1846) has the store close the connection, with no
+# answer, after it applied CompleteMultipartUpload and the cancel arrived. The
+# export must not send the request again and must say the object may be written.
+#
+# The serial double-cancel arm (#1846) is the serial counterpart of the
+# parallel one: export_parquet is cancelled while its POST ?uploads is held,
+# and cancelled again while the store holds the listing its cleanup sent
+# (__list_uploads_delay__). The cleanup holds interrupts, so the second cancel
+# must not cut it short: no upload at the key may stay open.
+#
+# The put-refused arm (#1846) fails a small export_parquet before it sends any
+# POST ?uploads: the store refuses its single PUT (__put_status__). Another
+# writer's upload is open at the same key. The export sent no create, so it
+# must not list the uploads, and the other writer's upload must stay open.
+#
 # Usage:  test/objstore_export_open_uploads.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -143,6 +173,11 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
 	--seed-upload "$BUCKET/oc/part-0004.parquet" --seed-upload "$BUCKET/oc/notes.parquet" \
 	--seed-upload "$BUCKET/ot/part-0004.parquet" --seed-upload "$BUCKET/ot/notes.parquet" \
 	--seed-upload "$BUCKET/od/part-0004.parquet" --seed-upload "$BUCKET/od/notes.parquet" \
+	--seed-upload "$BUCKET/sc/notes.parquet" --seed-upload "$BUCKET/sc/out.parquet.old" \
+	--seed-upload "$BUCKET/sa/notes.parquet" --seed-upload "$BUCKET/sa/out.arrow.old" \
+	--seed-upload "$BUCKET/st/notes.parquet" --seed-upload "$BUCKET/st/out.parquet.old" \
+	--seed-upload "$BUCKET/sd/notes.parquet" --seed-upload "$BUCKET/sd/out.parquet.old" \
+	--seed-upload "$BUCKET/sf/out.parquet" \
 	> "$PGC_WORKDIR/ou_server.out" 2>&1 &
 SRV_PID=$!
 for _ in $(seq 1 50); do
@@ -265,13 +300,216 @@ cancel_export
 wait "$bgpid" 2>/dev/null || true
 t1="$(date +%s)"
 rm -f "$PGC_WORKDIR/__uploads_delay__" "$PGC_WORKDIR/__list_uploads_delay__"
+# Five listings: the dispatcher's, and since #1810 one from each of the 4
+# terminated workers, whose sink sent POST ?uploads and holds no upload id.
 check "silent listing: the cleanup asked the store for its open uploads" \
-	"$(grep -cE "^GET /$BUCKET .*uploads=" "$S3_LOG" | tr -d ' ')" "1"
+	"$(grep -cE "^GET /$BUCKET .*uploads=" "$S3_LOG" | tr -d ' ')" "5"
 check "silent listing: the export reports its own cancel (57014)" \
 	"$(grep -m1 '^ERROR:' "$PGC_WORKDIR/os.out")" \
 	"ERROR:  57014: canceling statement due to user request"
 check "silent listing: the export returned within 30 s of the cancel" \
 	"$( (( t1 - t0 <= 30 )) && echo yes || echo "no, after $(( t1 - t0 )) s")" "yes"
 check "silent listing: the server survived" "$(survived "$crashes0")" "1"
+
+# ---- serial exports (#1810): one key, one upload ----
+# The open uploads at exactly the key $1/$2: a number, or nothing when the
+# server's record is missing.
+key_open() {
+	[ -f "$OPEN" ] || return 0
+	grep -cxF "$BUCKET/$1/$2" "$OPEN" | tr -d ' '
+}
+# Every other open upload under prefix $1, sorted, space-separated.
+key_foreign() {
+	[ -f "$OPEN" ] || { echo "no record"; return 0; }
+	grep -E "^$BUCKET/$1/" "$OPEN" | grep -vxF "$BUCKET/$1/$2" |
+		sort | tr '\n' ' ' | sed 's/ $//'
+}
+key_parts() { grep -cE "^PUT /$BUCKET/$1/$2 .*partNumber=" "$S3_LOG" | tr -d ' '; }
+# Wait until the upload at $1/$2 is open; "1 open, 0 parts" means the export
+# waits for its upload id.
+wait_key_unanswered() {
+	for _ in $(seq 1 300); do
+		[ "$(key_open "$1" "$2")" = 1 ] && break
+		sleep 0.1
+	done
+	echo "$(key_open "$1" "$2") open, $(key_parts "$1" "$2") parts"
+}
+# start_serial FUNC TABLE URL OUTFILE: a serial export in the background, under
+# application_name pgc_serial; its pid is left in $bgpid.
+start_serial() {
+	env PATH="$PGC_BINDIR:$PATH" PGAPPNAME=pgc_serial \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-v VERBOSITY=verbose \
+		-c "SELECT pgcolumnar.$1('$2'::regclass, '$3')" >"$4" 2>&1 &
+	bgpid=$!
+}
+signal_serial() {	# signal_serial pg_cancel_backend|pg_terminate_backend
+	q "SELECT count($1(pid)) FROM pg_stat_activity
+	   WHERE application_name = 'pgc_serial' AND pid <> pg_backend_pid()" >/dev/null
+}
+
+# serial_create_arm ARM FUNC PREFIX KEY SIGNAL WANT
+serial_create_arm() {
+	local arm="$1" fn="$2" pfx="$3" key="$4" sig="$5" want="$6"
+	: > "$S3_LOG"
+	echo 20 > "$PGC_WORKDIR/__uploads_delay__"
+	start_serial "$fn" ou_big "s3://$BUCKET/$pfx/$key" "$PGC_WORKDIR/$pfx.out"
+	check "premise: $arm: the $fn CreateMultipartUpload was unanswered when the signal landed" \
+		"$(wait_key_unanswered "$pfx" "$key")" "1 open, 0 parts"
+	signal_serial "$sig"
+	wait "$bgpid" 2>/dev/null || true
+	rm -f "$PGC_WORKDIR/__uploads_delay__"
+	check "$arm: the export reports the signal" \
+		"$(grep -m1 -E '^(ERROR|FATAL):' "$PGC_WORKDIR/$pfx.out")" "$want"
+	check_num "$arm: no upload at the export's key is left open" "$(key_open "$pfx" "$key")" "0"
+	check_text "$arm: the foreign uploads under the prefix are left open" \
+		"$(key_foreign "$pfx" "$key")" "$BUCKET/$pfx/notes.parquet $BUCKET/$pfx/$key.old"
+	check "$arm: the server survived" "$(survived "$crashes0")" "1"
+}
+serial_create_arm "serial cancel" export_parquet sc out.parquet pg_cancel_backend \
+	"ERROR:  57014: canceling statement due to user request"
+serial_create_arm "arrow cancel" export_arrow sa out.arrow pg_cancel_backend \
+	"ERROR:  57014: canceling statement due to user request"
+serial_create_arm "serial terminate" export_parquet st out.parquet pg_terminate_backend \
+	"FATAL:  57P01: terminating connection due to administrator command"
+
+# ---- serial double cancel (#1846): a second cancel lands in the listing ----
+# The first cancel ends the wait for the create's answer. The cleanup then
+# lists the uploads at the key, and the store holds each listing page 3 s.
+# The second cancel lands while the listing is held.
+: > "$S3_LOG"
+echo 20 > "$PGC_WORKDIR/__uploads_delay__"
+echo 3 > "$PGC_WORKDIR/__list_uploads_delay__"
+start_serial export_parquet ou_big "s3://$BUCKET/sd/out.parquet" "$PGC_WORKDIR/sd.out"
+check "premise: serial double cancel: the export_parquet CreateMultipartUpload was unanswered when the first cancel landed" \
+	"$(wait_key_unanswered sd out.parquet)" "1 open, 0 parts"
+signal_serial pg_cancel_backend
+listing=no
+for _ in $(seq 1 100); do
+	grep -qE "^GET /$BUCKET .*uploads=" "$S3_LOG" && { listing=yes; break; }
+	sleep 0.1
+done
+check "premise: serial double cancel: the cleanup was listing the uploads when the second cancel landed" \
+	"$listing" "yes"
+signal_serial pg_cancel_backend
+wait "$bgpid" 2>/dev/null || true
+rm -f "$PGC_WORKDIR/__uploads_delay__" "$PGC_WORKDIR/__list_uploads_delay__"
+check "serial double cancel: the export reports its own cancel (57014)" \
+	"$(grep -m1 -E '^(ERROR|FATAL):' "$PGC_WORKDIR/sd.out")" \
+	"ERROR:  57014: canceling statement due to user request"
+check_num "serial double cancel: no upload at the export's key is left open" "$(key_open sd out.parquet)" "0"
+check_text "serial double cancel: the foreign uploads under the prefix are left open" \
+	"$(key_foreign sd out.parquet)" "$BUCKET/sd/notes.parquet $BUCKET/sd/out.parquet.old"
+check "serial double cancel: the server survived" "$(survived "$crashes0")" "1"
+
+# ---- commit (#1813): a cancel while the store holds the commit's answer ----
+psql_run "CREATE TABLE ou_small (id int8) USING pgcolumnar;
+          INSERT INTO ou_small SELECT g FROM generate_series(1,10) g;
+          CREATE TABLE ou_mid (id int8, pad text) USING pgcolumnar;
+          INSERT INTO ou_mid SELECT g, md5(g::text) FROM generate_series(1,500) g;" >/dev/null
+md5_of() { md5sum "$1" 2>/dev/null | cut -d' ' -f1; }
+size_of() { stat -c %s "$1" 2>/dev/null || echo "?"; }
+# report_matches_store OUT FILE OLDMD5: "truthful" when what the export reported
+# matches what the key holds; otherwise the key's state and the report.
+report_matches_store() {
+	local out="$1" file="$2" old="$3" now state err warn
+	now="$(md5_of "$file")"
+	if [ -z "$now" ]; then state="no"; elif [ "$now" = "$old" ]; then state="the earlier"; else state="the new"; fi
+	err="$(grep -m1 -E '^(ERROR|FATAL):' "$out")"
+	warn="$(grep -c 'before the interrupt took effect' "$out" | tr -d ' ')"
+	case "$err" in *"after sending the request that commits the object"*) warn=$(( warn + 1 )) ;; esac
+	if [ "$state" = "the new" ] && { [ -z "$err" ] || [ "$warn" -ge 1 ]; }; then echo truthful
+	elif [ "$state" = "the earlier" ] && [ -n "$err" ]; then echo truthful
+	else echo "untruthful: the key holds $state object ($(size_of "$file") bytes); the export reported [${err:-no error}] with $warn commit warnings"
+	fi
+}
+# commit_arm ARM PREFIX TABLE HOOK LOGPATTERN
+commit_arm() {
+	local arm="$1" pfx="$2" tbl="$3" hook="$4" pat="$5" file old sent
+	file="$PGC_WORKDIR/$BUCKET/$pfx/obj.parquet"
+	start_serial export_parquet ou_small "s3://$BUCKET/$pfx/obj.parquet" "$PGC_WORKDIR/$pfx-0.out"
+	wait "$bgpid" 2>/dev/null || true
+	old="$(md5_of "$file")"
+	check "premise: $arm: an earlier object is at the key" \
+		"$( [ -n "$old" ] && echo yes || echo "no: $(cat "$PGC_WORKDIR/$pfx-0.out")")" "yes"
+	check_num "$arm: the earlier export issued no commit warning" \
+		"$(grep -c '^WARNING:' "$PGC_WORKDIR/$pfx-0.out" | tr -d ' ')" "0"
+	: > "$S3_LOG"
+	echo 5 > "$PGC_WORKDIR/$hook"
+	start_serial export_parquet "$tbl" "s3://$BUCKET/$pfx/obj.parquet" "$PGC_WORKDIR/$pfx.out"
+	for _ in $(seq 1 300); do
+		[ -n "$(md5_of "$file")" ] && [ "$(md5_of "$file")" != "$old" ] && break
+		sleep 0.1
+	done
+	sent="$(grep -cE "$pat" "$S3_LOG" | tr -d ' ')"
+	check "premise: $arm: the store had written the new object and held the answer when the cancel landed" \
+		"$sent commit requests, $( [ "$(md5_of "$file")" != "$old" ] && echo new || echo earlier) object" \
+		"1 commit requests, new object"
+	signal_serial pg_cancel_backend
+	wait "$bgpid" 2>/dev/null || true
+	rm -f "$PGC_WORKDIR/$hook"
+	check "$arm: what the export reports matches the object at the key" \
+		"$(report_matches_store "$PGC_WORKDIR/$pfx.out" "$file" "$old")" "truthful"
+	check "$arm: the export warns that it wrote the object before the cancel took effect" \
+		"$(grep -m1 '^WARNING:' "$PGC_WORKDIR/$pfx.out" | sed "s#s3://$BUCKET/#s3://B/#")" \
+		"WARNING:  01000: columnar: the export wrote \"s3://B/$pfx/obj.parquet\" before the interrupt took effect"
+	check_num "$arm: no upload at the export's key is left open" "$(key_open "$pfx" obj.parquet)" "0"
+	check "$arm: the server survived" "$(survived "$crashes0")" "1"
+}
+commit_arm "complete cancel" cc ou_big __complete_delay__ "^POST /$BUCKET/cc/obj\.parquet .*uploadId="
+commit_arm "put cancel" pc ou_mid __put_delay__ "^PUT /$BUCKET/pc/obj\.parquet "
+
+# ---- complete drop (#1846): the store applies CompleteMultipartUpload, the
+# cancel lands while its answer is awaited, and the store then closes the
+# connection with no answer. The export must not send the request again, and
+# must say that the store may have written the object.
+pfx=cd; file="$PGC_WORKDIR/$BUCKET/$pfx/obj.parquet"
+start_serial export_parquet ou_small "s3://$BUCKET/$pfx/obj.parquet" "$PGC_WORKDIR/$pfx-0.out"
+wait "$bgpid" 2>/dev/null || true
+old="$(md5_of "$file")"
+check "premise: complete drop: an earlier object is at the key" \
+	"$( [ -n "$old" ] && echo yes || echo "no: $(cat "$PGC_WORKDIR/$pfx-0.out")")" "yes"
+: > "$S3_LOG"
+echo 5 > "$PGC_WORKDIR/__complete_drop__"
+start_serial export_parquet ou_big "s3://$BUCKET/$pfx/obj.parquet" "$PGC_WORKDIR/$pfx.out"
+for _ in $(seq 1 300); do
+	[ -n "$(md5_of "$file")" ] && [ "$(md5_of "$file")" != "$old" ] && break
+	sleep 0.1
+done
+pat="^POST /$BUCKET/$pfx/obj\.parquet .*uploadId="
+check "premise: complete drop: the store had written the new object and held the answer when the cancel landed" \
+	"$(grep -cE "$pat" "$S3_LOG" | tr -d ' ') commit requests, $( [ "$(md5_of "$file")" != "$old" ] && echo new || echo earlier) object" \
+	"1 commit requests, new object"
+signal_serial pg_cancel_backend
+wait "$bgpid" 2>/dev/null || true
+rm -f "$PGC_WORKDIR/__complete_drop__"
+check "complete drop: what the export reports matches the object at the key" \
+	"$(report_matches_store "$PGC_WORKDIR/$pfx.out" "$file" "$old")" "truthful"
+check_num "complete drop: the export sent the commit request once" \
+	"$(grep -cE "$pat" "$S3_LOG" | tr -d ' ')" "1"
+check "complete drop: the export says the store may have written the object" \
+	"$(grep -m1 -E '^(ERROR|FATAL):' "$PGC_WORKDIR/$pfx.out" | sed "s#s3://$BUCKET/#s3://B/#")" \
+	"ERROR:  08006: columnar: lost the connection to \"s3://B/$pfx/obj.parquet\" after sending the request that commits the object"
+check "complete drop: the server survived" "$(survived "$crashes0")" "1"
+
+# ---- put refused (#1846): the export fails before it sends any create ----
+# Another writer's upload is open at the key. The store refuses the small
+# export's single PUT, so the sink never sent POST ?uploads and has no upload
+# id. Its abort must not list the uploads at the key, nor abort that upload.
+: > "$S3_LOG"
+echo "500 $BUCKET/sf/out.parquet" > "$PGC_WORKDIR/__put_status__"
+start_serial export_parquet ou_small "s3://$BUCKET/sf/out.parquet" "$PGC_WORKDIR/sf.out"
+wait "$bgpid" 2>/dev/null || true
+rm -f "$PGC_WORKDIR/__put_status__"
+check "premise: put refused: the export failed on the store's refusal of its single PUT" \
+	"$(grep -m1 -E '^(ERROR|FATAL):' "$PGC_WORKDIR/sf.out" | sed "s#s3://$BUCKET/#s3://B/#")" \
+	"ERROR:  58030: columnar: writing \"s3://B/sf/out.parquet\" failed (HTTP 500)"
+check_num "premise: put refused: the export sent no CreateMultipartUpload" \
+	"$(grep -cE "^POST /$BUCKET/sf/out\.parquet .*uploads=" "$S3_LOG" | tr -d ' ')" "0"
+check_num "put refused: the export asked the store for no open uploads" \
+	"$(grep -cE "^GET /$BUCKET .*uploads=" "$S3_LOG" | tr -d ' ')" "0"
+check_num "put refused: the other writer's upload at the key is left open" \
+	"$(key_open sf out.parquet)" "1"
+check "put refused: the server survived" "$(survived "$crashes0")" "1"
 
 pgc_summary
