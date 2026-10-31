@@ -1277,4 +1277,6 @@ guard_tests 854
 # by collection over the cluster files.
 # cluster_tests 4540 -> 4543 for #1805's three tests in test_objstore_http_read.py (the overwrite
 # pair premise, the mid-read overwrite refusal, the weak ETag), by collection: `4543 tests collected`.
-cluster_tests 4543
+# cluster_tests 4543 -> 4546 for #1805's review: three tests in test_objstore_http_read.py (the 79-character
+# ETag pin, the 80-character ETag not sent cut short, the per-request ETag refusal), by collection.
+cluster_tests 4546

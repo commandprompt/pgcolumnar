@@ -63,14 +63,16 @@ SWAP_WRITER = """
 import os, sys
 import pyarrow as pa, pyarrow.parquet as pq
 G, RPG = %d, %d
-for path, sign in ((sys.argv[1], 1), (sys.argv[1] + ".next", -1)):
-    c0 = pa.array([sign * v - (sign < 0) for v in range(G * RPG)], pa.int64())
-    pq.write_table(pa.table({"c0": c0}), path, row_group_size=RPG,
-                   compression="NONE", use_dictionary=False, write_statistics=False)
-assert os.path.getsize(sys.argv[1]) == os.path.getsize(sys.argv[1] + ".next")
+for first in sys.argv[1:]:
+    for path, sign in ((first, 1), (first + ".next", -1)):
+        c0 = pa.array([sign * v - (sign < 0) for v in range(G * RPG)], pa.int64())
+        pq.write_table(pa.table({"c0": c0}), path, row_group_size=RPG,
+                       compression="NONE", use_dictionary=False, write_statistics=False)
+    assert os.path.getsize(first) == os.path.getsize(first + ".next")
 """ % (G, ROWS_PER_GROUP)
 SWAP_SQL = ("SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || "
             "count(*) FILTER (WHERE c0 < 0) FROM fswap")
+SWAP79_SQL = SWAP_SQL.replace("fswap", "fswap79")
 
 
 def _message(exc):
@@ -175,11 +177,12 @@ def ohr(pgc_cluster):
         yield {"absent": wrote}
         return
     fixture.chmod(0o644)
-    swap = work / "swap.parquet"
-    subprocess.run([sys.executable, "-c", SWAP_WRITER, str(swap)], check=True,
+    swap, swap79 = work / "swap.parquet", work / "swap79.parquet"
+    subprocess.run([sys.executable, "-c", SWAP_WRITER, str(swap), str(swap79)], check=True,
                    capture_output=True, text=True)
     swap_sizes = (swap.with_name("swap.parquet.next").stat().st_size, swap.stat().st_size)
-    for f in (swap, swap.with_name("swap.parquet.next")):
+    for f in (swap, swap.with_name("swap.parquet.next"),
+              swap79, swap79.with_name("swap79.parquet.next")):
         f.chmod(0o644)
 
     port = pick_port(31)
@@ -220,11 +223,15 @@ def ohr(pgc_cluster):
                                ("fdropka", f"{base}/dropka/fixture.parquet"),
                                ("fhangup", f"{base}/hangup/fixture.parquet"),
                                ("fstall", f"{base}/stall/fixture.parquet"),
-                               ("fweak", f"{base}/weak/fixture.parquet")):
+                               ("fweak", f"{base}/weak/fixture.parquet"),
+                               ("flongetag", f"{base}/longetag/fixture.parquet"),
+                               ("ffickle", f"{base}/fickle/fixture.parquet")):
                 c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.{name} ({COLDEFS}) SERVER ohr_srv "
                           f"OPTIONS (path '{path}')")
             c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.fswap (c0 int8) SERVER ohr_srv "
                       f"OPTIONS (path '{base}/swap/swap.parquet')")
+            c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.fswap79 (c0 int8) SERVER ohr_srv "
+                      f"OPTIONS (path '{base}/swap79/swap79.parquet')")
         r["crashes0"] = _crashes(plog)
 
         r["A full"] = (_set_hash(dsn, "SELECT * FROM fhttp"), _set_hash(dsn, "SELECT * FROM flocal"))
@@ -264,6 +271,11 @@ def ohr(pgc_cluster):
         _await_server(dsn)
         r["C weak"] = (_set_hash(dsn, "SELECT c3, c7 FROM fweak"),
                        _set_hash(dsn, "SELECT c3, c7 FROM flocal"))
+        r["C swap79"] = _refusal(dsn, SWAP79_SQL, "changed while it was being read")
+        r["C longetag"] = _refusal(dsn, "SELECT 'rows=' || count(*) FROM flongetag",
+                                   "changed while it was being read")
+        r["C fickle"] = _refusal(dsn, "SELECT 'rows=' || count(*) FROM ffickle",
+                                 "changed while it was being read")
 
         _await_server(dsn)
         t0 = time.monotonic()
@@ -457,6 +469,27 @@ def test_a_weak_etag_is_not_sent_as_if_match(ohr, expect):
     if _declined(ohr, expect):
         return
     expect.hash(*ohr["C weak"], "C: a weak ETag is not sent as If-Match (http == local)")
+
+
+def test_a_79_character_etag_still_pins_the_read(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C swap79"], "55000: changed while it was being read",
+                "C: a 79-character ETag still pins the read")
+
+
+def test_an_80_character_etag_is_not_sent_cut_short(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C longetag"], f"no error: rows={G * ROWS_PER_GROUP}",
+                "C: an 80-character ETag is not sent cut short as If-Match")
+
+
+def test_a_server_whose_etag_changes_on_every_request_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C fickle"], "55000: changed while it was being read",
+                "C: a server whose ETag changes on every request is refused")
 
 
 def test_a_stalled_transfer_is_cancelled(ohr, expect):

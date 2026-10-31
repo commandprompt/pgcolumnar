@@ -15,8 +15,10 @@
 #      silent whole-object read; a short 206 body and EOF mid-body are refused;
 #      a keep-alive connection the server dropped is retried once, and a fresh
 #      connection the server hangs up on is not; an object overwritten
-#      mid-read is refused, and a weak ETag is not used as a pin (#1805). Many guards share 08006 and
-#      08P01, so each refusal must also carry its own guard's message.
+#      mid-read is refused, a weak ETag or one longer than 79 characters is not
+#      used as a pin, and a server whose ETag changes per request is refused
+#      (#1805). Many guards share 08006 and 08P01, so each refusal must also
+#      carry its own guard's message.
 #   D  cancel: statement_timeout fires within bound while the server stalls
 #      mid-body. Removal proof: with the module's WaitLatchOrSocket wait arm
 #      deleted, this check hangs or reds.
@@ -78,15 +80,17 @@ check "premise: fixture written" "$([ -s "$PGC_WORKDIR/fixture.parquet" ] && ech
 # layout and byte length, so every offset in one footer is valid in the other.
 # The first has c0 >= 0 in every row, the second c0 < 0 in every row, so a read
 # that mixes them shows both signs. /swap/ moves .next over the first mid-read.
-python3 - "$PGC_WORKDIR/swap.parquet" <<PYEOF
+# swap79.parquet is a second, identical pair for /swap79/, which swaps it once too.
+python3 - "$PGC_WORKDIR/swap.parquet" "$PGC_WORKDIR/swap79.parquet" <<PYEOF
 import os, sys
 import pyarrow as pa, pyarrow.parquet as pq
 G, RPG = $G, $ROWS_PER_GROUP
-for path, sign in ((sys.argv[1], 1), (sys.argv[1] + ".next", -1)):
-    c0 = pa.array([sign * v - (sign < 0) for v in range(G * RPG)], pa.int64())
-    pq.write_table(pa.table({"c0": c0}), path, row_group_size=RPG,
-                   compression="NONE", use_dictionary=False, write_statistics=False)
-assert os.path.getsize(sys.argv[1]) == os.path.getsize(sys.argv[1] + ".next")
+for first in sys.argv[1:]:
+    for path, sign in ((first, 1), (first + ".next", -1)):
+        c0 = pa.array([sign * v - (sign < 0) for v in range(G * RPG)], pa.int64())
+        pq.write_table(pa.table({"c0": c0}), path, row_group_size=RPG,
+                       compression="NONE", use_dictionary=False, write_statistics=False)
+    assert os.path.getsize(first) == os.path.getsize(first + ".next")
 PYEOF
 check "premise: the overwrite pair has one byte length" \
 	"$(stat -c %s "$PGC_WORKDIR/swap.parquet.next" 2>&1)" "$(stat -c %s "$PGC_WORKDIR/swap.parquet" 2>&1)"
@@ -226,6 +230,9 @@ psql_run "CREATE FOREIGN TABLE fdropka ($COLDEFS) SERVER osrv OPTIONS (path '$BA
 psql_run "CREATE FOREIGN TABLE fhangup ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/hangup/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/swap/swap.parquet');"
 psql_run "CREATE FOREIGN TABLE fweak ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/weak/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fswap79 (c0 int8) SERVER osrv OPTIONS (path '$BASE/swap79/swap79.parquet');"
+psql_run "CREATE FOREIGN TABLE flongetag ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/longetag/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE ffickle ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/fickle/fixture.parquet');"
 
 check "C: unreachable endpoint SQLSTATE" \
 	"$(refusal_of "SELECT count(*) FROM fdead" "could not connect to")" "08006: could not connect to"
@@ -260,6 +267,21 @@ check "C: an object overwritten mid-read is refused" \
 await_server >/dev/null
 check "C: a weak ETag is not sent as If-Match (http == local)" \
 	"$(pgc_set_hash "SELECT c3, c7 FROM fweak")" "$(pgc_set_hash "SELECT c3, c7 FROM flocal")"
+# The client keeps an ETag of up to 79 characters. At 79 the read is pinned, so
+# the overwrite is refused; at 80 the client keeps none, because a cut-down ETag
+# matches nothing and every GET would fail. Then the read is unpinned, and rows
+# come back.
+check "C: a 79-character ETag still pins the read" \
+	"$(refusal_of "SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM fswap79" \
+		"changed while it was being read")" "55000: changed while it was being read"
+check "C: an 80-character ETag is not sent cut short as If-Match" \
+	"$(refusal_of "SELECT 'rows=' || count(*) FROM flongetag" "changed while it was being read")" \
+	"no error: rows=$((G * ROWS_PER_GROUP))"
+# A server that sends a new ETag on every request for the same bytes looks like
+# an overwrite, so the read is refused: the client cannot tell the two apart.
+check "C: a server whose ETag changes on every request is refused" \
+	"$(refusal_of "SELECT 'rows=' || count(*) FROM ffickle" "changed while it was being read")" \
+	"55000: changed while it was being read"
 
 # ---- arm D: cancel while the server stalls mid-body ------------------------
 psql_run "CREATE FOREIGN TABLE fstall ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/stall/fixture.parquet');"

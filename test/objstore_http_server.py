@@ -30,6 +30,12 @@
 #                    (open = 1 HEAD + 3 GETs), so the footer is the old object's.
 #   /weak/<file>     send a weak ETag (W/"..."): If-Match compares strongly, so a
 #                    weak ETag never matches and any If-Match is answered 412.
+#   /swap79/<file>   as /swap/, with a strong ETag of 79 characters: the longest
+#                    the client keeps, so the read is still pinned.
+#   /longetag/<file> send a strong ETag of 80 characters: one too long for the
+#                    client's buffer, which must keep none rather than a cut one.
+#   /fickle/<file>   send a different strong ETag on every request for the same
+#                    bytes, as nodes behind a load balancer can (#1805 review).
 #
 # Every HEAD and GET of an object sends ETag: "<md5 of the current bytes>", and a
 # GET whose If-Match names any other ETag is answered 412, as S3 does (#1805).
@@ -180,7 +186,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.unquote(self.path.partition("?")[0])
         mode = "normal"
         for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/",
-                       "/swap/", "/weak/"):
+                       "/swap/", "/weak/", "/swap79/", "/longetag/", "/fickle/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -265,11 +271,19 @@ class Handler(BaseHTTPRequestHandler):
             return -1
         return os.path.getsize(local)
 
-    @staticmethod
-    def _etag(local, mode):
+    def _etag(self, local, mode):
         with open(local, "rb") as f:
-            tag = '"%s"' % hashlib.md5(f.read()).hexdigest()
-        return "W/" + tag if mode == "weak" else tag
+            md5 = hashlib.md5(f.read()).hexdigest()
+        if mode == "weak":
+            return 'W/"%s"' % md5
+        if mode in ("swap79", "longetag"):
+            width = 79 if mode == "swap79" else 80
+            return '"%s"' % (md5 + "x" * (width - 2 - len(md5)))
+        if mode == "fickle":
+            with self.server.uploads_lock:
+                self.server.fickle_seq += 1
+                return '"%s-%d"' % (md5, self.server.fickle_seq)
+        return '"%s"' % md5
 
     def do_HEAD(self):
         self._log_line()
@@ -489,7 +503,7 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(300)                      # the suite cancels long before
             return
         self.wfile.write(body)
-        if mode == "swap":
+        if mode in ("swap", "swap79"):
             with self.server.uploads_lock:
                 seen = self.server.swap_gets.get(local, 0) + 1
                 self.server.swap_gets[local] = seen
@@ -685,6 +699,7 @@ def main():
     srv.uploads = {}
     srv.uploads_lock = threading.Lock()
     srv.swap_gets = {}
+    srv.fickle_seq = 0
     srv.upload_seq = 0
     for key in args.seed_upload:
         srv.upload_seq += 1

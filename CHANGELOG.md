@@ -473,8 +473,11 @@ true until the next version shipped.
   versions without an error. The reader now keeps the ETag from the HEAD and sends
   it as `If-Match` on every ranged GET. After an overwrite the server answers 412,
   and the query fails with `"<url>" changed while it was being read` (SQLSTATE
-  55000). A server that sends no strong ETag is not pinned; docs/limitations.md
-  says so. `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+  55000). The reader pins only a strong ETag of at most 79 characters. A server
+  that sends no ETag, a weak one or a longer one is not pinned, and a server that
+  sends a new ETag for the same bytes on each request is refused (#1866 asks for
+  an opt-out); docs/limitations.md says so. `test/objstore_http_read.sh` and
+  `test_objstore_http_read.py`.
 - `pgcolumnar.iceberg_data_files` lists an Iceberg table after a copy-on-write
   delete or a filtered overwrite, instead of refusing it with "has delete files"
   (#1791). Such a commit records the data file it replaced as a removed entry
