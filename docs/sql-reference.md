@@ -1365,7 +1365,8 @@ On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes o
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`
 marker beside them on completion. Trailing slashes on the prefix make no
 difference: `s3://bucket/out/`, `s3://bucket/out//` and `s3://bucket/out` all
-write `out/part-0000.parquet` and `out/_SUCCESS`. Before it writes the marker,
+write `out/part-0000.parquet` and `out/_SUCCESS`. The scheme may be written in
+any case, so `S3://bucket/out` writes the same keys. Before it writes the marker,
 the export deletes any `part-NNNN.parquet` directly under `out/` that a larger
 earlier run left behind. It looks only directly under `out/`, so objects under
 `outer/`, `out2/` or a deeper prefix such as `out/sub/` are never touched. The prefix must name something under the bucket:

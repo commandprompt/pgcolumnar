@@ -307,6 +307,21 @@ check_num "several slashes: sl/ holds exactly this run's 3 parts" "$(sl_parts)" 
 check "several slashes: an export to sl// leaves the parts under slx/ and sl2/" \
 	"$(siblings_left)" "$SIBLINGS"
 
+# The scheme is matched in any case, so "S3://bucket/up/" names the same
+# prefix as "s3://bucket/up". The listing returns keys spelled "s3://...", so
+# a reconcile that compared them with the prefix as given dropped nothing for
+# "S3://", and the marker then certified a mixed set of parts. First 4 workers
+# with "s3://", then 2 with "S3://...up/": parts 0002 and 0003 must go.
+q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/up', 4)" >/dev/null
+: > "$S3_LOG"
+check_num "uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds" \
+	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 'S3://$BUCKET/up/', 2)")" "$PARROWS"
+check_num "uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts" \
+	"$(ls "$PGC_WORKDIR/$BUCKET/up/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "2"
+check "uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003" \
+	"$(grep -oE '^DELETE /pgc-bucket/up/part-000[23]\.parquet' "$S3_LOG" | sort -u | sed 's|^DELETE /pgc-bucket/||' | tr '\n' ' ' | sed 's/ $//')" \
+	"up/part-0002.parquet up/part-0003.parquet"
+
 # A bare bucket names no prefix. The export refuses it before any worker
 # starts, so nothing is written at the bucket root.
 : > "$S3_LOG"

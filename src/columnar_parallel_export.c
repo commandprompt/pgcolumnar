@@ -374,7 +374,7 @@ static void
 pexport_remove_stale_remote_parts(const char *dir, int nkeys)
 {
 	const PgColumnarObjStoreApi *api = PgColumnarObjStoreGet();
-	char		prefix[MAXPGPATH];
+	char	   *prefix;
 	size_t		plen;
 	char	  **keys;
 	int			n = 0;
@@ -392,7 +392,7 @@ pexport_remove_stale_remote_parts(const char *dir, int nkeys)
 	 * accepts only "part-NNNN.parquet", so a name with a further '/' is never
 	 * one of this export's parts.
 	 */
-	snprintf(prefix, sizeof(prefix), "%s/", dir);
+	prefix = psprintf("%s/", dir);	/* never truncated, so always ends in '/' */
 	plen = strlen(prefix);
 	keys = api->list_objects(prefix, NULL, &n);
 	for (i = 0; i < n; i++)
@@ -793,9 +793,21 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	 */
 	if (PgColumnarPathIsRemote(dir))
 	{
-		const char *sep = strstr(dir, "://");
-		const char *slash = sep ? strchr(sep + 3, '/') : NULL;
-		size_t		len = strlen(dir);
+		const char *sep;
+		const char *slash;
+		size_t		len;
+
+		/*
+		 * The scheme is matched in any case, but a listing returns every key
+		 * spelled "s3://". Spell the scheme that way here, so the reconcile and
+		 * the upload cleanup, which compare listed keys with "<dir>/", match
+		 * them for "S3://bucket/prefix" too (#1782).
+		 */
+		if (pg_strncasecmp(dir, "s3://", 5) == 0)
+			memcpy(dir, "s3", 2);
+		sep = strstr(dir, "://");
+		slash = sep ? strchr(sep + 3, '/') : NULL;
+		len = strlen(dir);
 
 		if (slash != NULL)
 			while (len > (size_t) (slash - dir) + 1 && dir[len - 1] == '/')

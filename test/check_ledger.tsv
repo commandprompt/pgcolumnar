@@ -5478,7 +5478,7 @@ objstore_sink_write	objstore_sink_write	large round trip: s3 read-back == source
 objstore_sink_write	objstore_sink_write	no slash: a 2-worker re-run to s3://bucket/sl succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet	15;16;17;18;19	2026-10-31	the stale-part reconcile matching any key under <dir>/ by basename, at any depth, as at 9bdc4391 (#1782)
 objstore_sink_write	objstore_sink_write	no slash: a re-run to sl leaves the parts under slx/ and sl2/	15;16;17;18;19	2026-10-30	the stale-part listing of <dir> without the closing / and no bare-bucket refusal, as at 087960ba (#1782)
-objstore_sink_write	objstore_sink_write	no slash: the re-run leaves exactly its own 2 parts under sl/	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	no slash: the re-run leaves exactly its own 2 parts under sl/	15;16;17;18;19	2026-10-31	the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
 objstore_sink_write	objstore_sink_write	parallel export to an s3:// prefix succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: a _SUCCESS marker object exists at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: the marker went to the prefix as a PUT	15;16;17;18;19	never	-
@@ -5499,10 +5499,10 @@ objstore_sink_write	objstore_sink_write	several slashes: a 3-worker export to s3
 objstore_sink_write	objstore_sink_write	several slashes: an export to sl// leaves the parts under slx/ and sl2/	15;16;17;18;19	2026-10-30	the stale-part listing of <dir> without the closing / and no bare-bucket refusal, as at 087960ba (#1782)
 objstore_sink_write	objstore_sink_write	several slashes: every worker PUT went to sl/part- (one slash)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
 objstore_sink_write	objstore_sink_write	several slashes: no request named a key with an empty segment (//)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
-objstore_sink_write	objstore_sink_write	several slashes: sl/ holds exactly this run's 3 parts	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	several slashes: sl/ holds exactly this run's 3 parts	15;16;17;18;19	2026-10-31	the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
 objstore_sink_write	objstore_sink_write	shrink: _SUCCESS certifies the reconciled prefix	15;16;17;18;19	never	-
-objstore_sink_write	objstore_sink_write	shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped)	15;16;17;18;19	never	-
-objstore_sink_write	objstore_sink_write	shrink: parts 0002/0003 from the larger run are gone	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped)	15;16;17;18;19	2026-10-31	the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
+objstore_sink_write	objstore_sink_write	shrink: parts 0002/0003 from the larger run are gone	15;16;17;18;19	2026-10-31	the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
 objstore_sink_write	objstore_sink_write	shrink: the 4-worker run wrote 4 parts + marker	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	small export to s3:// succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	small object went as ONE plain PUT (no multipart)	15;16;17;18;19	never	-
@@ -5514,6 +5514,9 @@ objstore_sink_write	objstore_sink_write	trailing slash: no request named a key w
 objstore_sink_write	objstore_sink_write	trailing slash: parallel export to an s3:// prefix ending in / succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	trailing slash: the documented glob read-back equals the source	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	trailing slash: the marker went to sl/_SUCCESS (one slash)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
+objstore_sink_write	objstore_sink_write	uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts	15;16;17;18;19	2026-10-31	the S3:// scheme normalisation in pgcolumnar_parallel_export_parquet removed, as at d0fd4f8a (#1782);the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
+objstore_sink_write	objstore_sink_write	uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003	15;16;17;18;19	2026-10-31	the S3:// scheme normalisation in pgcolumnar_parallel_export_parquet removed, as at d0fd4f8a (#1782);the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
 objstore_stash_recovery	objstore_stash_recovery	and the installed module is still the one that was there, not the debris	15;16;17;18;19	2026-10-22	objstore_module.sh start guard with no debris branch: every stash restored over the installed module
 objstore_stash_recovery	objstore_stash_recovery	and the module left installed is still valid	15;16;17;18;19	never	-
 objstore_stash_recovery	objstore_stash_recovery	and the stash is cleared	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix

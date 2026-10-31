@@ -465,6 +465,21 @@ def osw(pgc_cluster):
         r["ss parts"] = str(_parts(sl))
         r["ss siblings"] = siblings_left()
 
+        # The scheme is matched in any case, but the listing returns keys spelled
+        # "s3://...": the reconcile must still drop the stale tail for "S3://".
+        _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/up', 4)")
+        open(s3log, "w").close()
+        r["up export"] = _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                   f"'es_par'::regclass, 'S3://{BUCKET}/up/', 2)")
+        r["up parts"] = str(_parts(bucket / "up"))
+        try:
+            lines = pathlib.Path(s3log).read_text(errors="replace").splitlines()
+            r["up deletes"] = " ".join(sorted({m.group(1) for m in
+                                               (re.match(r"^DELETE /pgc-bucket/(up/part-000[23]\.parquet)", ln)
+                                                for ln in lines) if m}))
+        except OSError as exc:
+            r["up deletes"] = query_error(f"request log unreadable: {exc}")
+
         # a bare bucket names no prefix: refused before any worker starts
         open(s3log, "w").close()
         for key, prefix in (("bb slash", "/"), ("bb bare", "")):
@@ -709,6 +724,21 @@ def test_several_slashes_leave_exactly_this_runs_parts(osw, expect):
 def test_several_slashes_leave_the_sibling_prefixes_parts(osw, expect):
     expect.text(osw["ss siblings"], SIBLINGS,
                 "several slashes: an export to sl// leaves the parts under slx/ and sl2/")
+
+
+def test_an_uppercase_scheme_rerun_succeeds(osw, expect):
+    expect.text(osw["up export"], "80000",
+                "uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds")
+
+
+def test_an_uppercase_scheme_rerun_leaves_exactly_its_own_parts(osw, expect):
+    expect.text(osw["up parts"], "2",
+                "uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts")
+
+
+def test_an_uppercase_scheme_rerun_deletes_the_stale_parts(osw, expect):
+    expect.text(osw["up deletes"], "up/part-0002.parquet up/part-0003.parquet",
+                "uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003")
 
 
 def test_a_bare_bucket_with_a_slash_is_refused(osw, expect):
