@@ -1352,7 +1352,12 @@ without it reads and writes local files as before, and a remote URL reports that
 the module is required.
 
 A remote path is read as an exact key, a prefix, or a pattern. An `s3://` URL
-that names an object reads that one object with a single GET, no listing. An
+that names an object reads that one object, with no listing. The read is one
+HEAD and then one ranged GET for each footer or column chunk. Every GET carries
+the ETag that the HEAD returned, in an `If-Match` header. If another client
+overwrites the object during the read, the server answers 412 and the query fails
+with `changed while it was being read`. It never returns rows from two versions.
+Run the statement again to read the new version. An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a

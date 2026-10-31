@@ -13,7 +13,9 @@ C  A REFUSAL IS NOT ANY ERROR. Many guards share 08006 and 08P01, so each refusa
    carry its own guard's SQLSTATE AND message: an unreachable port, a 404, a server
    that ignores Range, a short 206 body, EOF mid-body, and a fresh connection the
    server hangs up on (asked once, never retried). A keep-alive connection the server
-   dropped is the one failure that is retried, and the read equals the local one.
+   dropped is the one failure that is retried, and the read equals the local one. An
+   object overwritten between two ranged GETs is refused, and a weak ETag is never
+   sent as If-Match (#1805).
 D  statement_timeout cancels a transfer the server wedged mid-body, within 10 s.
 Survival: the server answers and the server log's "terminated by signal" count has
 not moved -- waited for first, since a crashed server comes back.
@@ -54,6 +56,21 @@ pq.write_table(pa.table(cols), sys.argv[1], row_group_size=RPG, data_page_size=1
                compression="NONE", use_dictionary=False)
 assert pq.ParquetFile(sys.argv[1]).metadata.num_row_groups == G
 """ % (G, NCOLS, ROWS_PER_GROUP)
+
+# The overwrite pair (#1805), as the shell writes it: one layout and byte length,
+# c0 >= 0 in every row of the first and c0 < 0 in every row of the second.
+SWAP_WRITER = """
+import os, sys
+import pyarrow as pa, pyarrow.parquet as pq
+G, RPG = %d, %d
+for path, sign in ((sys.argv[1], 1), (sys.argv[1] + ".next", -1)):
+    c0 = pa.array([sign * v - (sign < 0) for v in range(G * RPG)], pa.int64())
+    pq.write_table(pa.table({"c0": c0}), path, row_group_size=RPG,
+                   compression="NONE", use_dictionary=False, write_statistics=False)
+assert os.path.getsize(sys.argv[1]) == os.path.getsize(sys.argv[1] + ".next")
+""" % (G, ROWS_PER_GROUP)
+SWAP_SQL = ("SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || "
+            "count(*) FILTER (WHERE c0 < 0) FROM fswap")
 
 
 def _message(exc):
@@ -105,13 +122,14 @@ def _refusal(dsn, sql, phrase):
     _await_server(dsn)
     try:
         with _connect(dsn) as conn:
-            conn.execute(sql).fetchall()
+            rows = conn.execute(sql).fetchall()
     except psycopg.Error as exc:
         if not exc.sqlstate:
             return query_error(_message(exc))
         primary = exc.diag.message_primary or ""
         return f"{exc.sqlstate}: " + (phrase if phrase in primary else primary)
-    return "no error"
+    out = " ".join(" ".join(str(v) for v in row) for row in rows)
+    return f"no error: {out[:200]}"
 
 
 def _requests(log):
@@ -157,6 +175,12 @@ def ohr(pgc_cluster):
         yield {"absent": wrote}
         return
     fixture.chmod(0o644)
+    swap = work / "swap.parquet"
+    subprocess.run([sys.executable, "-c", SWAP_WRITER, str(swap)], check=True,
+                   capture_output=True, text=True)
+    swap_sizes = (swap.with_name("swap.parquet.next").stat().st_size, swap.stat().st_size)
+    for f in (swap, swap.with_name("swap.parquet.next")):
+        f.chmod(0o644)
 
     port = pick_port(31)
     out, hlog = work / "http_server.out", str(work / "http.log")
@@ -171,7 +195,8 @@ def ohr(pgc_cluster):
     dsn, plog = pgc_cluster.dsn(), pgc_cluster.datadir / "server.log"
     base = f"http://127.0.0.1:{port}"
     r = {"absent": None, "fixture": "yes" if fixture.stat().st_size > 0 else "no",
-         "server up": out.read_text(errors="replace").count("READY") if out.is_file() else 0}
+         "server up": out.read_text(errors="replace").count("READY") if out.is_file() else 0,
+         "swap sizes": swap_sizes}
 
     def logged(sql):
         """Truncate the request log, run `sql`, -> how many requests it logged."""
@@ -194,9 +219,12 @@ def ohr(pgc_cluster):
                                ("ftrunc", f"{base}/trunc/fixture.parquet"),
                                ("fdropka", f"{base}/dropka/fixture.parquet"),
                                ("fhangup", f"{base}/hangup/fixture.parquet"),
-                               ("fstall", f"{base}/stall/fixture.parquet")):
+                               ("fstall", f"{base}/stall/fixture.parquet"),
+                               ("fweak", f"{base}/weak/fixture.parquet")):
                 c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.{name} ({COLDEFS}) SERVER ohr_srv "
                           f"OPTIONS (path '{path}')")
+            c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.fswap (c0 int8) SERVER ohr_srv "
+                      f"OPTIONS (path '{base}/swap/swap.parquet')")
         r["crashes0"] = _crashes(plog)
 
         r["A full"] = (_set_hash(dsn, "SELECT * FROM fhttp"), _set_hash(dsn, "SELECT * FROM flocal"))
@@ -231,6 +259,11 @@ def ohr(pgc_cluster):
         pathlib.Path(hlog).write_text("")
         r["C hangup"] = _refusal(dsn, "SELECT count(*) FROM fhangup", "failed before a response")
         r["C hangup asked"] = _count(hlog)
+        _await_server(dsn)
+        r["C swap"] = _refusal(dsn, SWAP_SQL, "changed while it was being read")
+        _await_server(dsn)
+        r["C weak"] = (_set_hash(dsn, "SELECT c3, c7 FROM fweak"),
+                       _set_hash(dsn, "SELECT c3, c7 FROM flocal"))
 
         _await_server(dsn)
         t0 = time.monotonic()
@@ -405,6 +438,25 @@ def test_a_fresh_connection_is_not_retried(ohr, expect):
     if _declined(ohr, expect):
         return
     expect.num(ohr["C hangup asked"], 1, "C: and that fresh connection is not retried (one request logged)")
+
+
+def test_the_overwrite_pair_has_one_byte_length(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(*(str(n) for n in ohr["swap sizes"]), "premise: the overwrite pair has one byte length")
+
+
+def test_an_object_overwritten_mid_read_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C swap"], "55000: changed while it was being read",
+                "C: an object overwritten mid-read is refused")
+
+
+def test_a_weak_etag_is_not_sent_as_if_match(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.hash(*ohr["C weak"], "C: a weak ETag is not sent as If-Match (http == local)")
 
 
 def test_a_stalled_transfer_is_cancelled(ohr, expect):

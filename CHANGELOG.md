@@ -466,6 +466,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote `read_parquet` or `pgcolumnar_parquet` foreign table no longer mixes
+  two versions of an object (#1805). The reader sends one HEAD and then one ranged
+  GET per footer or column chunk. When another client overwrote the key during
+  the read, later GETs read the new object, and one query returned rows from both
+  versions without an error. The reader now keeps the ETag from the HEAD and sends
+  it as `If-Match` on every ranged GET. After an overwrite the server answers 412,
+  and the query fails with `"<url>" changed while it was being read` (SQLSTATE
+  55000). A server that sends no strong ETag is not pinned; docs/limitations.md
+  says so. `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
 - `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
   read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
   or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that

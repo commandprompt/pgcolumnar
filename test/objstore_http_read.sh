@@ -14,7 +14,8 @@
 #      the URL and produce no rows; a Range-ignoring server is an error, never a
 #      silent whole-object read; a short 206 body and EOF mid-body are refused;
 #      a keep-alive connection the server dropped is retried once, and a fresh
-#      connection the server hangs up on is not. Many guards share 08006 and
+#      connection the server hangs up on is not; an object overwritten
+#      mid-read is refused, and a weak ETag is not used as a pin (#1805). Many guards share 08006 and
 #      08P01, so each refusal must also carry its own guard's message.
 #   D  cancel: statement_timeout fires within bound while the server stalls
 #      mid-body. Removal proof: with the module's WaitLatchOrSocket wait arm
@@ -72,6 +73,23 @@ assert md.num_row_groups == G, md.num_row_groups
 print("fixture: %d groups, %d cols, %d rows" % (md.num_row_groups, md.num_columns, md.num_rows))
 PYEOF
 check "premise: fixture written" "$([ -s "$PGC_WORKDIR/fixture.parquet" ] && echo yes)" "yes"
+
+# The overwrite pair (#1805): swap.parquet and swap.parquet.next have the same
+# layout and byte length, so every offset in one footer is valid in the other.
+# The first has c0 >= 0 in every row, the second c0 < 0 in every row, so a read
+# that mixes them shows both signs. /swap/ moves .next over the first mid-read.
+python3 - "$PGC_WORKDIR/swap.parquet" <<PYEOF
+import os, sys
+import pyarrow as pa, pyarrow.parquet as pq
+G, RPG = $G, $ROWS_PER_GROUP
+for path, sign in ((sys.argv[1], 1), (sys.argv[1] + ".next", -1)):
+    c0 = pa.array([sign * v - (sign < 0) for v in range(G * RPG)], pa.int64())
+    pq.write_table(pa.table({"c0": c0}), path, row_group_size=RPG,
+                   compression="NONE", use_dictionary=False, write_statistics=False)
+assert os.path.getsize(sys.argv[1]) == os.path.getsize(sys.argv[1] + ".next")
+PYEOF
+check "premise: the overwrite pair has one byte length" \
+	"$(stat -c %s "$PGC_WORKDIR/swap.parquet.next" 2>&1)" "$(stat -c %s "$PGC_WORKDIR/swap.parquet" 2>&1)"
 
 # ---- fixture server --------------------------------------------------------
 python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
@@ -206,6 +224,8 @@ psql_run "CREATE FOREIGN TABLE fshort ($COLDEFS) SERVER osrv OPTIONS (path '$BAS
 psql_run "CREATE FOREIGN TABLE ftrunc ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/trunc/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fdropka ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/dropka/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fhangup ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/hangup/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/swap/swap.parquet');"
+psql_run "CREATE FOREIGN TABLE fweak ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/weak/fixture.parquet');"
 
 check "C: unreachable endpoint SQLSTATE" \
 	"$(refusal_of "SELECT count(*) FROM fdead" "could not connect to")" "08006: could not connect to"
@@ -227,6 +247,19 @@ check "C: a server that hangs up on a fresh connection is refused" \
 	"$(refusal_of "SELECT count(*) FROM fhangup" "failed before a response")" "08006: failed before a response"
 check_num "C: and that fresh connection is not retried (one request logged)" \
 	"$(wc -l < "$HTTP_LOG" | tr -d ' ')" "1"
+
+# An object overwritten between two ranged GETs of one read (#1805). Without a
+# pin the footer comes from the old object and later chunks from the new one,
+# and the read returns rows of both; the measurement then shows both signs.
+await_server >/dev/null
+check "C: an object overwritten mid-read is refused" \
+	"$(refusal_of "SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM fswap" \
+		"changed while it was being read")" "55000: changed while it was being read"
+# A weak ETag cannot pin a ranged read (If-Match compares strongly), so the
+# client must not send it: the read still equals the local file.
+await_server >/dev/null
+check "C: a weak ETag is not sent as If-Match (http == local)" \
+	"$(pgc_set_hash "SELECT c3, c7 FROM fweak")" "$(pgc_set_hash "SELECT c3, c7 FROM flocal")"
 
 # ---- arm D: cancel while the server stalls mid-body ------------------------
 psql_run "CREATE FOREIGN TABLE fstall ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/stall/fixture.parquet');"

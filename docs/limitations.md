@@ -1094,6 +1094,11 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   written with smaller ones.
 - The column definition list, or a foreign table's column list, must cover every
   leaf column in the file. A shorter list is an error rather than a projection.
+- A remote read is pinned to one version of the object by the ETag of its first
+  HEAD. A server that sends no ETag, or only a weak one (`W/"..."`), cannot pin
+  the read. If such an object is overwritten during the read, the query can
+  return rows from both versions without an error. Amazon S3 and Garage send a
+  strong ETag.
 
 ### Row-group skipping
 

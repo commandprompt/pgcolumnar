@@ -24,6 +24,11 @@
  *   wrong bytes quietly" is the failure mode this tree keeps deciding not to
  *   ship.
  *
+ * - One read sees one version of the object (#1805). Open keeps the HEAD's
+ *   strong ETag and every ranged GET sends it as If-Match, so a key that is
+ *   overwritten mid-read answers 412 and the read fails, instead of mixing a
+ *   footer from one object with chunks from another.
+ *
  * - Sockets are cleaned up on abort through a resource-release callback over
  *   the open-handle list. The invariant that makes close-all-on-abort correct:
  *   no handle survives its statement, so a live handle during an abort belongs
@@ -95,6 +100,13 @@ struct PgColumnarObjHandle
 	int			fd;				/* -1 when disconnected */
 	bool		fd_reserved;	/* ReserveExternalFD accounting */
 	int64		len;			/* object length from open's HEAD */
+
+	/*
+	 * The strong ETag open's HEAD returned, sent as If-Match on every ranged
+	 * GET so one read sees one version of the object (#1805). "" when the
+	 * server sent none, or only a weak one: then reads are not pinned.
+	 */
+	char		pin_etag[80];
 	uint64		served;			/* requests completed on this connection */
 
 	/*
@@ -149,7 +161,7 @@ typedef struct OsResponse
 	int64		content_length; /* -1 when absent */
 	bool		chunked;
 	bool		conn_close;
-	char		etag[80];		/* PUT part response ETag, "" when absent (#394) */
+	char		etag[80];		/* response ETag, "" when absent or too long */
 } OsResponse;
 
 static dlist_head os_open_handles = DLIST_STATIC_INIT(os_open_handles);
@@ -882,6 +894,9 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 					   i < (int) sizeof(resp->etag) - 1)
 					resp->etag[i++] = *p++;
 				resp->etag[i] = '\0';
+				/* A cut-down ETag would match nothing: keep none instead. */
+				if (p < eol && *p != '\r' && *p != '\n')
+					resp->etag[0] = '\0';
 			}
 			line = eol + 1;
 		}
@@ -1226,6 +1241,9 @@ os_request(PgColumnarObjHandle *h, const char *method,
 	if (isGet)
 		appendStringInfo(&req, "Range: bytes=%lld-%lld\r\n",
 						 (long long) off, (long long) (off + n - 1));
+	/* Pin the read to the version open saw (#1805); S3 answers 412 if not. */
+	if (isGet && h->pin_etag[0] != '\0')
+		appendStringInfo(&req, "If-Match: %s\r\n", h->pin_etag);
 	if (h->sign)
 	{
 		char		rangeVal[64];
@@ -1699,6 +1717,13 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 
 	h->len = resp.content_length;
 	*len = h->len;
+
+	/*
+	 * If-Match compares strongly (RFC 9110 13.1.1), so a weak ETag would make
+	 * every ranged GET fail. Such a server's reads stay unpinned.
+	 */
+	if (strncmp(resp.etag, "W/", 2) != 0)
+		strlcpy(h->pin_etag, resp.etag, sizeof(h->pin_etag));
 	return h;
 }
 
@@ -1731,6 +1756,18 @@ objstore_read(PgColumnarObjHandle *h, int64 off, void *buf, size_t n)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_FILE),
 				 errmsg("columnar: \"%s\" does not exist (HTTP 404)", h->url)));
+	if (resp.status == 412 && h->pin_etag[0] != '\0')
+	{
+		/* The body is the server's, not ours; drop the connection with it. */
+		os_disconnect(h);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("columnar: \"%s\" changed while it was being read", h->url),
+				 errdetail("The object no longer has ETag %s, which it had when "
+						   "the read began, so the server refused the rest of "
+						   "the read (HTTP 412).", h->pin_etag),
+				 errhint("Run the statement again to read the new version.")));
+	}
 	if (resp.status != 206)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
