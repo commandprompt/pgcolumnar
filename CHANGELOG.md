@@ -466,6 +466,21 @@ true until the next version shipped.
 
 ### Fixed
 
+- `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign table
+  now read a column after an Iceberg `int` to `long` or `float` to `double`
+  promotion (#1789). A data file written before the promotion still stores
+  `INT32` or `FLOAT`, and the field-id binder required the exact type the output
+  column wanted, so it refused `bigint` and `double precision` with `Parquet
+  column with field id N has a physical type incompatible with output column`.
+  Once files from both sides of the promotion were live, no declared type read
+  the column. An equality delete on a promoted column made every query on the
+  table fail, because its probe always binds the current schema's type. The
+  binder now accepts a plain integer `INT32` for `bigint` and a `FLOAT` for
+  `double precision`, and the decoder widens the value. Both widenings are
+  exact. A narrower declared type is still refused, as is a date read as
+  `bigint`. `read_parquet` by field id widens the same way; the positional form
+  does not. A wider `decimal` already read. `test/iceberg_scan.sh`,
+  `test/iceberg_rest_scan.sh` and their pytest twins.
 - `pgcolumnar.iceberg_data_files` lists an Iceberg table after a copy-on-write
   delete or a filtered overwrite, instead of refusing it with "has delete files"
   (#1791). Such a commit records the data file it replaced as a removed entry
