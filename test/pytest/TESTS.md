@@ -12701,6 +12701,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 | `test_an_object_overwritten_mid_read_is_refused` | C: an object overwritten mid-read is refused |
 | `test_a_weak_etag_is_not_sent_as_if_match` | C: a weak ETag is not sent as If-Match (http == local) |
 | `test_a_79_character_etag_still_pins_the_read` | C: a 79-character ETag still pins the read |
+| `test_a_79_character_etag_reads_an_unchanged_object_whole` | C: a 79-character ETag reads an unchanged object whole (http == local) |
 | `test_an_80_character_etag_is_not_sent_cut_short` | C: an 80-character ETag is not sent cut short as If-Match |
 | `test_a_server_whose_etag_changes_on_every_request_is_refused` | C: a server whose ETag changes on every request is refused |
 | `test_a_stalled_transfer_is_cancelled` | D: stalled transfer cancelled with query_canceled |

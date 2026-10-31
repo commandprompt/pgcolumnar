@@ -5598,6 +5598,7 @@ objstore_http_read	objstore_http_read	B: buffered/unbuffered request ratio	15;16
 objstore_http_read	objstore_http_read	B: every GET carried a Range header	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no Range header sent on a GET
 objstore_http_read	objstore_http_read	B: unbuffered >= 10x K	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
 objstore_http_read	objstore_http_read	C: EOF mid-body is refused	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_read_exact ends the read on EOF mid-body instead of raising
+objstore_http_read	objstore_http_read	C: a 79-character ETag reads an unchanged object whole (http == local)	15;16;17;18;19	2026-10-31	pin_buf_79: the read pin buffer pin_etag one byte smaller than the parsed ETag (80 -> 79), so a 79-character ETag is sent cut short (#1805 review)
 objstore_http_read	objstore_http_read	C: a 79-character ETag still pins the read	15;16;17;18;19	2026-10-31	the 412 branch in objstore_read removed (#1805);the ETag buffer bound cut by one, so a 79-character ETag is dropped (#1805)
 objstore_http_read	objstore_http_read	C: a dropped keep-alive connection is retried (http == local)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_request never retries a stale keep-alive connection
 objstore_http_read	objstore_http_read	C: a server that hangs up on a fresh connection is refused	15;16;17;18;19	never	-

@@ -1108,9 +1108,10 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   leaf column in the file. A shorter list is an error rather than a projection.
 - A remote read is pinned to one version of the object by the ETag of its first
   HEAD. The reader cannot pin the read when the server sends no ETag, only a weak
-  one (`W/"..."`), or one longer than 79 characters. If such an object is
-  overwritten during the read, the query can return rows from both versions
-  without an error. Garage v2.1.0 sends a strong ETag; we tested it. Amazon S3
+  one (`W/"..."`), or one longer than 79 characters. That count includes the
+  ETag's two quote marks. If such an object is overwritten during the read, the
+  query can return rows from both versions without an error. Garage v2.1.0 sends
+  a strong ETag; we tested it. Amazon S3
   documents a strong ETag, but we have not tested against it.
 - The reader treats a changed ETag as a changed object. Some servers send a
   different ETag for the same bytes on different requests. Nodes behind a load

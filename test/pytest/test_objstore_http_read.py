@@ -224,6 +224,7 @@ def ohr(pgc_cluster):
                                ("fhangup", f"{base}/hangup/fixture.parquet"),
                                ("fstall", f"{base}/stall/fixture.parquet"),
                                ("fweak", f"{base}/weak/fixture.parquet"),
+                               ("fetag79", f"{base}/etag79/fixture.parquet"),
                                ("flongetag", f"{base}/longetag/fixture.parquet"),
                                ("ffickle", f"{base}/fickle/fixture.parquet")):
                 c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.{name} ({COLDEFS}) SERVER ohr_srv "
@@ -272,6 +273,9 @@ def ohr(pgc_cluster):
         r["C weak"] = (_set_hash(dsn, "SELECT c3, c7 FROM fweak"),
                        _set_hash(dsn, "SELECT c3, c7 FROM flocal"))
         r["C swap79"] = _refusal(dsn, SWAP79_SQL, "changed while it was being read")
+        _await_server(dsn)
+        r["C etag79"] = (_set_hash(dsn, "SELECT c3, c7 FROM fetag79"),
+                         _set_hash(dsn, "SELECT c3, c7 FROM flocal"))
         r["C longetag"] = _refusal(dsn, "SELECT 'rows=' || count(*) FROM flongetag",
                                    "changed while it was being read")
         r["C fickle"] = _refusal(dsn, "SELECT 'rows=' || count(*) FROM ffickle",
@@ -476,6 +480,13 @@ def test_a_79_character_etag_still_pins_the_read(ohr, expect):
         return
     expect.text(ohr["C swap79"], "55000: changed while it was being read",
                 "C: a 79-character ETag still pins the read")
+
+
+def test_a_79_character_etag_reads_an_unchanged_object_whole(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.hash(*ohr["C etag79"],
+                "C: a 79-character ETag reads an unchanged object whole (http == local)")
 
 
 def test_an_80_character_etag_is_not_sent_cut_short(ohr, expect):

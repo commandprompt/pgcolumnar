@@ -473,11 +473,11 @@ true until the next version shipped.
   versions without an error. The reader now keeps the ETag from the HEAD and sends
   it as `If-Match` on every ranged GET. After an overwrite the server answers 412,
   and the query fails with `"<url>" changed while it was being read` (SQLSTATE
-  55000). The reader pins only a strong ETag of at most 79 characters. A server
-  that sends no ETag, a weak one or a longer one is not pinned, and a server that
-  sends a new ETag for the same bytes on each request is refused (#1866 asks for
-  an opt-out); docs/limitations.md says so. `test/objstore_http_read.sh` and
-  `test_objstore_http_read.py`.
+  55000). The reader pins only a strong ETag of at most 79 characters, its two
+  quote marks included. A server that sends no ETag, a weak one or a longer one
+  is not pinned, and a server that sends a new ETag for the same bytes on each
+  request is refused (#1866 asks for an opt-out); docs/limitations.md says so.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
 - `parallel_export_parquet` now removes the run's parts when it fails after
   every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
   prefix, the export lists the prefix to remove stale parts, and then it PUTs

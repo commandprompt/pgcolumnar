@@ -32,6 +32,9 @@
 #                    weak ETag never matches and any If-Match is answered 412.
 #   /swap79/<file>   as /swap/, with a strong ETag of 79 characters: the longest
 #                    the client keeps, so the read is still pinned.
+#   /etag79/<file>   send a strong ETag of 79 characters and never swap: the
+#                    pinned read of an unchanged object must succeed whole, so a
+#                    pin cut shorter than the ETag shows up (#1805 review).
 #   /longetag/<file> send a strong ETag of 80 characters: one too long for the
 #                    client's buffer, which must keep none rather than a cut one.
 #   /fickle/<file>   send a different strong ETag on every request for the same
@@ -190,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.unquote(self.path.partition("?")[0])
         mode = "normal"
         for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/",
-                       "/swap/", "/weak/", "/swap79/", "/longetag/", "/fickle/"):
+                       "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -280,8 +283,8 @@ class Handler(BaseHTTPRequestHandler):
             md5 = hashlib.md5(f.read()).hexdigest()
         if mode == "weak":
             return 'W/"%s"' % md5
-        if mode in ("swap79", "longetag"):
-            width = 79 if mode == "swap79" else 80
+        if mode in ("swap79", "etag79", "longetag"):
+            width = 80 if mode == "longetag" else 79
             return '"%s"' % (md5 + "x" * (width - 2 - len(md5)))
         if mode == "fickle":
             with self.server.uploads_lock:

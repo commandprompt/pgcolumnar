@@ -231,6 +231,7 @@ psql_run "CREATE FOREIGN TABLE fhangup ($COLDEFS) SERVER osrv OPTIONS (path '$BA
 psql_run "CREATE FOREIGN TABLE fswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/swap/swap.parquet');"
 psql_run "CREATE FOREIGN TABLE fweak ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/weak/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fswap79 (c0 int8) SERVER osrv OPTIONS (path '$BASE/swap79/swap79.parquet');"
+psql_run "CREATE FOREIGN TABLE fetag79 ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/etag79/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE flongetag ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/longetag/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE ffickle ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/fickle/fixture.parquet');"
 
@@ -274,6 +275,11 @@ check "C: a weak ETag is not sent as If-Match (http == local)" \
 check "C: a 79-character ETag still pins the read" \
 	"$(refusal_of "SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM fswap79" \
 		"changed while it was being read")" "55000: changed while it was being read"
+# The same 79-character ETag on an object nobody overwrites: the read is pinned
+# and every GET must match, so a pin kept shorter than the ETag fails each GET.
+await_server >/dev/null
+check "C: a 79-character ETag reads an unchanged object whole (http == local)" \
+	"$(pgc_set_hash "SELECT c3, c7 FROM fetag79")" "$(pgc_set_hash "SELECT c3, c7 FROM flocal")"
 check "C: an 80-character ETag is not sent cut short as If-Match" \
 	"$(refusal_of "SELECT 'rows=' || count(*) FROM flongetag" "changed while it was being read")" \
 	"no error: rows=$((G * ROWS_PER_GROUP))"
