@@ -1385,4 +1385,5 @@ guard_tests 854
 # and prefix, the 64-level bound and page-token cycles, by collection: `5416 tests collected`, minus 854.
 # cluster_tests 4656 -> 4678 at the merge of origin/main (b9c0884c) into fix/1793-rest-namespaces: main's 4623
 # plus this branch's 22 checks in test_iceberg_rest_scan.py, by collection: `5499 tests collected`, minus 854.
-cluster_tests 4678
+# cluster_tests 4678 -> 4681 for #1807's three parquet_schema advice tests in test_parquet_timestamp_zone.py, by collection.
+cluster_tests 4681

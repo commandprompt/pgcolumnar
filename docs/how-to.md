@@ -807,12 +807,17 @@ skipped.
 
 ## Import and export Arrow
 
-The Arrow IPC file format works the same way as Parquet.
+`export_arrow` writes the Arrow IPC stream format. `import_arrow` reads the
+stream format and the Arrow IPC file format, which includes Feather v2.
 
 ```sql
-SELECT pgcolumnar.import_arrow('events', '/data/events.arrow');
-SELECT pgcolumnar.export_arrow('events', '/data/events.arrow');
+SELECT pgcolumnar.export_arrow('events', '/data/events.arrows');
+SELECT pgcolumnar.import_arrow('events', '/data/events.arrows');
+SELECT pgcolumnar.import_arrow('events', '/data/events.arrow');  -- IPC file or Feather v2
 ```
+
+To read an export with pyarrow, use `pyarrow.ipc.open_stream`. The export has no
+file footer, so `pyarrow.ipc.open_file` and Feather readers refuse it.
 
 **Tuning.** Use Arrow to exchange data with an in-process analytic engine without
 a Parquet encode step. Use Parquet for durable, compressed files.
