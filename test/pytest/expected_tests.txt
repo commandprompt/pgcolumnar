@@ -1296,4 +1296,12 @@ guard_tests 854
 # by collection over the cluster files.
 # cluster_tests 4575 at the merge of origin/main (9fc12386) into fix/1814-parquet-unsigned,
 # by collection: `4575 tests collected`.
+# cluster_tests 4560 at the merge of origin/main (9fc12386) into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
+# cluster_tests 4556 at the merge of origin/main (9fc12386) into fix/1789-iceberg-type-promotion,
+# by collection: `4556 tests collected`.
+# cluster_tests 4560 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
+# cluster_tests 4575 at the merge of fix/1818-iceberg-bucket-collation into fix/1814-parquet-unsigned,
+# by collection: `4575 tests collected`.
 cluster_tests 4575
