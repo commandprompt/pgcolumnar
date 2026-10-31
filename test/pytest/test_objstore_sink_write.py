@@ -44,6 +44,8 @@ from pgc_vacuity import query_error
 
 TEST = pathlib.Path(__file__).resolve().parents[1]
 AKID, SECRET, REGION, BUCKET = "PGCTESTKEYID", "pgctest-secret-shhh", "pgc-test-1", "pgc-bucket"
+# the sibling-prefix part objects every #1782 export must leave in place
+SIBLINGS = "sl2/part-0005.parquet slx/part-0007.parquet"
 PART = "SET pgcolumnar.objstore_part_size = 262144"
 
 GEN_SMALL = "SELECT g, 'row-'||g FROM generate_series(1,1000) g"
@@ -196,7 +198,8 @@ def _restart(cluster, datadir, log, env):
 
 def _cancel_run(dsn, s3log, bucket, r):
     """The shell's cancel arm: a 4-worker export of es_parbig in the background, cancelled
-    once a worker has PUT a part."""
+    once a worker has PUT a part. The prefix ends in a slash (#1782), so the cleanup
+    DELETEs and the multipart listing run on the stripped prefix."""
     out = {}
 
     def run():
@@ -204,7 +207,7 @@ def _cancel_run(dsn, s3log, bucket, r):
             with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
                 conn.execute(PART)
                 conn.execute("SELECT pgcolumnar.parallel_export_parquet("
-                             f"'es_parbig'::regclass, 's3://{BUCKET}/cx', 4)").fetchall()
+                             f"'es_parbig'::regclass, 's3://{BUCKET}/cx/', 4)").fetchall()
             out["result"] = "completed"
         except psycopg.Error as exc:
             out["result"] = str(exc)
@@ -215,7 +218,7 @@ def _cancel_run(dsn, s3log, bucket, r):
     bg.start()
     wrote = "no"
     for _ in range(300):
-        n = _logn(s3log, r"^PUT /pgc-bucket/cx/part-")
+        n = _logn(s3log, r"^PUT /pgc-bucket/cx/+part-")
         if isinstance(n, int) and n >= 1:
             wrote = "yes"
             break
@@ -247,6 +250,7 @@ def _cancel_run(dsn, s3log, bucket, r):
                          else "completed")
     n = _logn(s3log, r"^DELETE /pgc-bucket/cx/part-")
     r["cx delete"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
+    r["cx empty segment"] = str(_logn(s3log, r"^[A-Z]+ /pgc-bucket/[^ ]*//"))
     r["cx parts"] = str(_parts(bucket / "cx"))
     r["cx marker"] = "present" if (bucket / "cx" / "_SUCCESS").exists() else "absent"
     r["cx open"] = _open_uploads(bucket.parent, r"^pgc-bucket/cx/")
@@ -497,6 +501,90 @@ def osw(pgc_cluster):
         r["sr gone"] = "gone" if not (sr / "part-0002.parquet").exists() and \
             not (sr / "part-0003.parquet").exists() else "present"
         r["sr marker"] = "yes" if (sr / "_SUCCESS").is_file() else "no"
+
+        # #1782: a prefix ending in '/' must not put an empty segment in the keys.
+        # The fixture stores files, which collapse '//', so only the log shows it.
+        # An S3 listing matches leading characters, so each export runs beside part
+        # objects under the sibling prefixes slx/ and sl2/, which must survive.
+        sl = bucket / "sl"
+
+        def plant():
+            for d, name in (("slx", "part-0007.parquet"), ("sl2", "part-0005.parquet")):
+                (bucket / d).mkdir(parents=True, exist_ok=True)
+                (bucket / d / name).write_text("x")
+
+        def siblings_left():
+            left = [f"{d}/{n}" for d, n in (("sl2", "part-0005.parquet"), ("slx", "part-0007.parquet"))
+                    if (bucket / d / n).exists()]
+            return " ".join(left) or "none"
+
+        def sl_put_keys():
+            try:
+                lines = pathlib.Path(s3log).read_text(errors="replace").splitlines()
+            except OSError as exc:
+                return query_error(f"request log unreadable: {exc}")
+            return str(len({m.group(0) for m in
+                            (re.match(r"^PUT /pgc-bucket/sl/part-[0-9]+\.parquet", ln) for ln in lines)
+                            if m}))
+
+        def pexport(prefix, workers):
+            return _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                             f"'es_par'::regclass, 's3://{BUCKET}/{prefix}', {workers})")
+
+        plant()
+        open(s3log, "w").close()
+        r["sl export"] = pexport("sl/", 4)
+        r["sl puts"] = sl_put_keys()
+        n = _logn(s3log, r"^PUT /pgc-bucket/sl/_SUCCESS")
+        r["sl marker put"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
+        r["sl empty segment"] = str(_logn(s3log, r"^[A-Z]+ /pgc-bucket/[^ ]*//"))
+        r["sl glob back"] = _set_hash(dsn, f"SELECT * FROM pgcolumnar.read_parquet("
+                                           f"'s3://{BUCKET}/sl/*.parquet') AS t(id int8, v int)")
+        r["sl siblings"] = siblings_left()
+
+        # a listing with no delimiter also returns keys below sl/, so a part
+        # under sl/sub/ (another export's prefix) must survive the reconcile too
+        plant()
+        nested = sl / "sub" / "part-0009.parquet"
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        nested.write_text("x")
+        r["ns export"] = pexport("sl", 2)
+        r["ns parts"] = str(_parts(sl))
+        r["ns siblings"] = siblings_left()
+        r["ns nested"] = "sl/sub/part-0009.parquet" if nested.exists() else "none"
+
+        plant()
+        open(s3log, "w").close()
+        r["ss export"] = pexport("sl//", 3)
+        r["ss puts"] = sl_put_keys()
+        r["ss empty segment"] = str(_logn(s3log, r"^[A-Z]+ /pgc-bucket/[^ ]*//"))
+        r["ss parts"] = str(_parts(sl))
+        r["ss siblings"] = siblings_left()
+
+        # The scheme is matched in any case, but the listing returns keys spelled
+        # "s3://...": the reconcile must still drop the stale tail for "S3://".
+        _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/up', 4)")
+        open(s3log, "w").close()
+        r["up export"] = _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                   f"'es_par'::regclass, 'S3://{BUCKET}/up/', 2)")
+        r["up parts"] = str(_parts(bucket / "up"))
+        try:
+            lines = pathlib.Path(s3log).read_text(errors="replace").splitlines()
+            r["up deletes"] = " ".join(sorted({m.group(1) for m in
+                                               (re.match(r"^DELETE /pgc-bucket/(up/part-000[23]\.parquet)", ln)
+                                                for ln in lines) if m}))
+        except OSError as exc:
+            r["up deletes"] = query_error(f"request log unreadable: {exc}")
+
+        # a bare bucket names no prefix: refused before any worker starts
+        open(s3log, "w").close()
+        for key, prefix in (("bb slash", "/"), ("bb bare", "")):
+            r[key] = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                   f"'es_par'::regclass, 's3://{BUCKET}{prefix}', 2)",
+                              "names no prefix under the bucket", " (no prefix)")
+        r["bb puts"] = str(_logn(s3log, r"^PUT "))
+        r["bb root parts"] = str(sum(1 for p in bucket.iterdir()
+                                     if p.is_file() and re.search(r"^part-.*\.parquet$", p.name)))
 
         # #1780: the workers obey the calling session's settings, not only the system's
         open(s3log, "w").close()
@@ -752,6 +840,108 @@ def test_the_marker_certifies_the_reconciled_prefix(osw, expect):
     expect.text(osw["sr marker"], "yes", "shrink: _SUCCESS certifies the reconciled prefix")
 
 
+def test_a_parallel_export_to_a_prefix_ending_in_a_slash_succeeds(osw, expect):
+    expect.text(osw["sl export"], "80000",
+                "trailing slash: parallel export to an s3:// prefix ending in / succeeds")
+
+
+def test_a_trailing_slash_prefix_puts_parts_with_one_slash(osw, expect):
+    expect.text(osw["sl puts"], "4", "trailing slash: every worker PUT went to sl/part- (one slash)")
+
+
+def test_a_trailing_slash_prefix_puts_the_marker_with_one_slash(osw, expect):
+    expect.text(osw["sl marker put"], "yes", "trailing slash: the marker went to sl/_SUCCESS (one slash)")
+
+
+def test_a_trailing_slash_prefix_names_no_key_with_an_empty_segment(osw, expect):
+    expect.text(osw["sl empty segment"], "0",
+                "trailing slash: no request named a key with an empty segment (//)")
+
+
+def test_a_trailing_slash_export_reads_back_through_the_documented_glob(osw, expect):
+    expect.text(osw["sl glob back"], osw["par gen"],
+                "trailing slash: the documented glob read-back equals the source")
+
+
+def test_a_trailing_slash_export_leaves_the_sibling_prefixes_parts(osw, expect):
+    expect.text(osw["sl siblings"], SIBLINGS,
+                "trailing slash: an export to sl/ leaves the parts under slx/ and sl2/")
+
+
+def test_a_smaller_rerun_without_the_slash_succeeds(osw, expect):
+    expect.text(osw["ns export"], "80000", "no slash: a 2-worker re-run to s3://bucket/sl succeeds")
+
+
+def test_a_smaller_rerun_without_the_slash_leaves_its_own_parts(osw, expect):
+    expect.text(osw["ns parts"], "2", "no slash: the re-run leaves exactly its own 2 parts under sl/")
+
+
+def test_a_smaller_rerun_without_the_slash_leaves_the_sibling_prefixes_parts(osw, expect):
+    expect.text(osw["ns siblings"], SIBLINGS,
+                "no slash: a re-run to sl leaves the parts under slx/ and sl2/")
+
+
+def test_a_smaller_rerun_without_the_slash_leaves_a_nested_prefixes_part(osw, expect):
+    expect.text(osw["ns nested"], "sl/sub/part-0009.parquet",
+                "no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet")
+
+
+def test_an_export_to_a_prefix_with_several_slashes_succeeds(osw, expect):
+    expect.text(osw["ss export"], "80000",
+                "several slashes: a 3-worker export to s3://bucket/sl// succeeds")
+
+
+def test_several_slashes_put_parts_with_one_slash(osw, expect):
+    expect.text(osw["ss puts"], "3", "several slashes: every worker PUT went to sl/part- (one slash)")
+
+
+def test_several_slashes_name_no_key_with_an_empty_segment(osw, expect):
+    expect.text(osw["ss empty segment"], "0",
+                "several slashes: no request named a key with an empty segment (//)")
+
+
+def test_several_slashes_leave_exactly_this_runs_parts(osw, expect):
+    expect.text(osw["ss parts"], "3", "several slashes: sl/ holds exactly this run's 3 parts")
+
+
+def test_several_slashes_leave_the_sibling_prefixes_parts(osw, expect):
+    expect.text(osw["ss siblings"], SIBLINGS,
+                "several slashes: an export to sl// leaves the parts under slx/ and sl2/")
+
+
+def test_an_uppercase_scheme_rerun_succeeds(osw, expect):
+    expect.text(osw["up export"], "80000",
+                "uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds")
+
+
+def test_an_uppercase_scheme_rerun_leaves_exactly_its_own_parts(osw, expect):
+    expect.text(osw["up parts"], "2",
+                "uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts")
+
+
+def test_an_uppercase_scheme_rerun_deletes_the_stale_parts(osw, expect):
+    expect.text(osw["up deletes"], "up/part-0002.parquet up/part-0003.parquet",
+                "uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003")
+
+
+def test_a_bare_bucket_with_a_slash_is_refused(osw, expect):
+    expect.text(osw["bb slash"], "22023 (no prefix)",
+                "bare bucket: an export to s3://bucket/ is refused as naming no prefix")
+
+
+def test_a_bare_bucket_without_a_slash_is_refused(osw, expect):
+    expect.text(osw["bb bare"], "22023 (no prefix)",
+                "bare bucket: an export to s3://bucket is refused as naming no prefix")
+
+
+def test_the_refused_bare_bucket_exports_sent_no_put(osw, expect):
+    expect.text(osw["bb puts"], "0", "bare bucket: the refused exports sent no PUT")
+
+
+def test_no_part_object_lands_at_the_bucket_root(osw, expect):
+    expect.text(osw["bb root parts"], "0", "bare bucket: no part object at the bucket root")
+
+
 def test_a_session_set_to_empty_refuses_the_parallel_export(osw, expect):
     expect.text(osw["sa refused"], "42501 by the allow-list",
                 "premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check")
@@ -796,6 +986,11 @@ def test_the_export_was_cancelled_not_completed(osw, expect):
 
 def test_the_dispatcher_deleted_the_known_keys_on_cancel(osw, expect):
     expect.text(osw["cx delete"], "yes", "cancel: the dispatcher issued DELETE over the known keys")
+
+
+def test_the_cancel_names_no_key_with_an_empty_segment(osw, expect):
+    expect.text(osw["cx empty segment"], "0",
+                "cancel: no request named a key with an empty segment (//)")
 
 
 def test_no_completed_object_remains_after_the_cancel(osw, expect):

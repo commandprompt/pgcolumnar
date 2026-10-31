@@ -1397,4 +1397,15 @@ guard_tests 854
 # by collection: `4606 tests collected`.
 # cluster_tests 4645 + 46 = 4691 at the merge of origin/main (3fae8317) into fix/1810-serial-export-cancel:
 # this branch's 46 tests in test_objstore_export_open_uploads.py on main's 4645, by collection: `4691 tests collected`.
-cluster_tests 4727
+# cluster_tests 4565 -> 4570 for #1782's test_objstore_sink_write.py: 5 trailing-slash checks
+# in 5 tests, by collection over the cluster files.
+# cluster_tests 4570 -> 4584 for #1782's test_objstore_sink_write.py review round: 14 checks in
+# 14 tests (sibling prefixes, no slash, several slashes, bare bucket, cancel), by collection.
+# cluster_tests 4584 -> 4585 for #1782's test_objstore_sink_write.py re-review: 1 nested-prefix check
+# in 1 test, by collection over the cluster files.
+# cluster_tests 4585 -> 4588 for #1782's test_objstore_sink_write.py second re-review: 3 uppercase-scheme
+# checks in 3 tests, by collection over the cluster files.
+# cluster_tests 4727 -> 4750 at the merge of origin/fix/1793-rest-namespaces into fix/1782-pexport-trailing-slash:
+# that branch's 4678 plus this branch's 23 tests in test_objstore_sink_write.py (4516 -> 4539),
+# by collection over the cluster files: `4701 tests collected`.
+cluster_tests 4750

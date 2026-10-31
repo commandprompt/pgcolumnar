@@ -466,6 +466,25 @@ true until the next version shipped.
 
 ### Fixed
 
+- `parallel_export_parquet` to an `s3://` prefix that ends in `/` now writes
+  `prefix/part-NNNN.parquet` and `prefix/_SUCCESS` (#1782). It used to write
+  `prefix//part-NNNN.parquet`, which S3 stores as a different key, so the
+  documented read-back `read_parquet('s3://bucket/prefix/*.parquet')` found
+  nothing. The export now strips every trailing slash from a remote prefix,
+  never into the bucket name. A local directory is unchanged.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+- `parallel_export_parquet` to a remote prefix no longer deletes part objects
+  under a sibling prefix (#1782). Before writing `_SUCCESS`, the export deletes
+  the stale `part-NNNN.parquet` objects a larger earlier run left. It listed
+  `s3://bucket/out` without the closing `/`, and an S3 listing matches leading
+  characters, so it also deleted `outer/part-0007.parquet` and
+  `out2/part-0005.parquet`. It now lists `out/` only, and deletes only keys
+  directly under it: a part under a deeper prefix, such as
+  `out/sub/part-0009.parquet`, belongs to another export and is kept.
+- `parallel_export_parquet` refuses `s3://bucket/` and `s3://bucket`, which name
+  no prefix, with SQLSTATE 22023 before any worker starts (#1782). Before,
+  `s3://bucket` wrote the parts at the bucket root and then failed, leaving them
+  there, and `s3://bucket/` wrote them at the bucket root and succeeded.
 - A serial `export_parquet` or `export_arrow` to `s3://` that is cancelled or
   terminated while it waits for the store to start its multipart upload no
   longer leaves that upload open (#1810). The export had no upload id, so it

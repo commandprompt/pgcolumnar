@@ -12730,7 +12730,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a refused stale-part listing or a refused `_SUCCESS` PUT after every worker finished fails the run by its own 28000 and leaves no part and no earlier marker (`__listing_status__` and the fixture's `__put_status__`, #1781). A refused listing after a larger 4-worker run leaves that run's part-0002 and part-0003 and no marker, which is the limit docs/sql-reference.md documents, and its error names the prefix it listed rather than the dummy key `s3://pgc-bucket/_`. A smaller re-run drops the stale tail, the workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780), and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a refused stale-part listing or a refused `_SUCCESS` PUT after every worker finished fails the run by its own 28000 and leaves no part and no earlier marker (`__listing_status__` and the fixture's `__put_status__`, #1781). A refused listing after a larger 4-worker run leaves that run's part-0002 and part-0003 and no marker, which is the limit docs/sql-reference.md documents, and its error names the prefix it listed rather than the dummy key `s3://pgc-bucket/_`. A smaller re-run drops the stale tail, a prefix that ends in one or more `/` gets keys with one slash and reads back through the documented glob (#1782), no form of the prefix deletes part objects under a sibling prefix that shares its leading characters, a smaller re-run keeps a part under a deeper prefix such as `sl/sub/`, a smaller re-run to an `S3://` prefix (uppercase scheme) still drops the stale tail, and a bare bucket is refused before any worker writes. The workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780). A cancelled run on a prefix ending in `/` leaves no object, no marker, no upload open and no key with an empty segment. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
 
 ### Every test
 
@@ -12780,6 +12780,28 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_smaller_rerun_leaves_exactly_its_own_parts` | shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped) |
 | `test_the_larger_runs_stale_parts_are_gone` | shrink: parts 0002/0003 from the larger run are gone |
 | `test_the_marker_certifies_the_reconciled_prefix` | shrink: _SUCCESS certifies the reconciled prefix |
+| `test_a_parallel_export_to_a_prefix_ending_in_a_slash_succeeds` | trailing slash: parallel export to an s3:// prefix ending in / succeeds |
+| `test_a_trailing_slash_prefix_puts_parts_with_one_slash` | trailing slash: every worker PUT went to sl/part- (one slash) |
+| `test_a_trailing_slash_prefix_puts_the_marker_with_one_slash` | trailing slash: the marker went to sl/_SUCCESS (one slash) |
+| `test_a_trailing_slash_prefix_names_no_key_with_an_empty_segment` | trailing slash: no request named a key with an empty segment (//) |
+| `test_a_trailing_slash_export_reads_back_through_the_documented_glob` | trailing slash: the documented glob read-back equals the source |
+| `test_a_trailing_slash_export_leaves_the_sibling_prefixes_parts` | trailing slash: an export to sl/ leaves the parts under slx/ and sl2/ |
+| `test_a_smaller_rerun_without_the_slash_succeeds` | no slash: a 2-worker re-run to s3://bucket/sl succeeds |
+| `test_a_smaller_rerun_without_the_slash_leaves_its_own_parts` | no slash: the re-run leaves exactly its own 2 parts under sl/ |
+| `test_a_smaller_rerun_without_the_slash_leaves_the_sibling_prefixes_parts` | no slash: a re-run to sl leaves the parts under slx/ and sl2/ |
+| `test_a_smaller_rerun_without_the_slash_leaves_a_nested_prefixes_part` | no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet |
+| `test_an_export_to_a_prefix_with_several_slashes_succeeds` | several slashes: a 3-worker export to s3://bucket/sl// succeeds |
+| `test_several_slashes_put_parts_with_one_slash` | several slashes: every worker PUT went to sl/part- (one slash) |
+| `test_several_slashes_name_no_key_with_an_empty_segment` | several slashes: no request named a key with an empty segment (//) |
+| `test_several_slashes_leave_exactly_this_runs_parts` | several slashes: sl/ holds exactly this run's 3 parts |
+| `test_several_slashes_leave_the_sibling_prefixes_parts` | several slashes: an export to sl// leaves the parts under slx/ and sl2/ |
+| `test_an_uppercase_scheme_rerun_succeeds` | uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds |
+| `test_an_uppercase_scheme_rerun_leaves_exactly_its_own_parts` | uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts |
+| `test_an_uppercase_scheme_rerun_deletes_the_stale_parts` | uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003 |
+| `test_a_bare_bucket_with_a_slash_is_refused` | bare bucket: an export to s3://bucket/ is refused as naming no prefix |
+| `test_a_bare_bucket_without_a_slash_is_refused` | bare bucket: an export to s3://bucket is refused as naming no prefix |
+| `test_the_refused_bare_bucket_exports_sent_no_put` | bare bucket: the refused exports sent no PUT |
+| `test_no_part_object_lands_at_the_bucket_root` | bare bucket: no part object at the bucket root |
 | `test_a_session_set_to_empty_refuses_the_parallel_export` | premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check |
 | `test_the_dispatcher_raises_the_refusal_not_a_worker` | session allow-list: the dispatcher raises the refusal, not a worker -- with the settings handed to the workers but no check in the dispatcher, worker 0 refused |
 | `test_nothing_reached_the_prefix_the_session_refused` | session allow-list: nothing reached the refused prefix (no PUT, no POST) -- #1780: the workers uploaded part-0000 before the error |
@@ -12790,6 +12812,7 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_all_four_uploads_were_open_before_the_cancel` | all four workers' uploads were open before the cancel -- an upload whose POST ?uploads is in flight is #1743's window |
 | `test_the_export_was_cancelled_not_completed` | premise: the export was cancelled, not completed |
 | `test_the_dispatcher_deleted_the_known_keys_on_cancel` | cancel: the dispatcher issued DELETE over the known keys |
+| `test_the_cancel_names_no_key_with_an_empty_segment` | cancel: no request named a key with an empty segment (//) |
 | `test_no_completed_object_remains_after_the_cancel` | cancel: no completed object remains at the prefix |
 | `test_no_success_marker_remains_after_the_cancel` | cancel: no _SUCCESS marker at the prefix |
 | `test_no_upload_stays_open_after_the_cancel` | cancel: the server holds no open upload under the prefix -- #1722: the workers the cancel terminates abort their uploads on the way out |
