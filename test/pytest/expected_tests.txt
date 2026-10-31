@@ -1258,8 +1258,19 @@ guard_tests 854
 # native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
 # 16 checks in 16 tests, by collection over the cluster files.
+# cluster_tests 4510 -> 4514 for #1818: four tests in test_iceberg_fdw.py for bucket[16] on a string
+# column under a deterministic and a nondeterministic collation, by collection: `4514 tests collected`.
 # cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
 # that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
+# cluster_tests 4520 at the merge of origin/main (a247bea0) into fix/1818-iceberg-bucket-collation,
+# by collection: `4520 tests collected`.
+# cluster_tests 4510 -> 4526 for #1789: fourteen tests in test_iceberg_scan.py and two in
+# test_iceberg_rest_scan.py for a column read after an Iceberg type promotion, by collection:
+# `4526 tests collected`.
+# cluster_tests 4532 at the merge of origin/main (a247bea0) into fix/1789-iceberg-type-promotion,
+# by collection: `4532 tests collected`.
+# cluster_tests 4536 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4536 tests collected`.
 # cluster_tests 4516 -> 4524 for #1783's eight prefix, pattern and upload-cleanup tests in
 # test_objstore_addressing.py, by collection over the cluster files.
 # cluster_tests 4524 -> 4526 for #1783's two tests in test_objstore_addressing.py that an upload a
@@ -1275,6 +1286,12 @@ guard_tests 854
 # cluster_tests 4537 -> 4540 for #1791 in test_iceberg_data_files.py: the DELETED-entry case leaves the
 # refusal table for a test of its own (skipped, not refused), and three copy-on-write tests join it,
 # by collection over the cluster files.
+# cluster_tests 4560 at the merge of origin/main (9fc12386) into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
+# cluster_tests 4556 at the merge of origin/main (9fc12386) into fix/1789-iceberg-type-promotion,
+# by collection: `4556 tests collected`.
+# cluster_tests 4560 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
 # cluster_tests 4516 -> 4526 for #1811's and #1812's tests in test_parquet_export.py (4), test_arrow_export.py (3)
 # and test_objstore_sink_write.py (3). Re-derived by collection on the merged tree, not by adding
 # the deltas: `4526 tests collected`.
@@ -1286,4 +1303,6 @@ guard_tests 854
 # `5413 tests collected`, guard 854 + cluster 4559.
 # cluster_tests 4559 -> 4561 for #1811's kept-text tests on #1843, one each in test_parquet_export.py
 # and test_arrow_export.py, by collection: `5415 tests collected`, guard 854 + cluster 4561.
-cluster_tests 4561
+# cluster_tests 4560 -> 4581 merging main (6f88f973) into #1843 again, by collection on the merged tree:
+# `5435 tests collected`, guard 854 + cluster 4581.
+cluster_tests 4581
