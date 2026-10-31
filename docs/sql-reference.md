@@ -876,7 +876,8 @@ A partial directory is never left for `read_parquet` to union. Over an `s3://`
 prefix the dispatcher deletes the same objects by key. A worker terminated
 mid-upload can leave one incomplete multipart upload that the dispatcher cannot
 address. Set a bucket lifecycle rule that expires incomplete multipart uploads to
-reclaim it, as the object-storage notes recommend for `export_parquet`.
+reclaim it, as [Exporting to object storage](#exporting-to-object-storage)
+recommends.
 
 On success the function writes an empty `_SUCCESS` marker at the destination, the
 Hadoop and Spark convention. Its presence means a complete run's output is there;
@@ -1439,6 +1440,23 @@ path. A small object goes in one request. A large one is written as a multipart
 upload. It becomes visible at its final name only when the upload completes, so a
 reader never sees a partial object. A failed export removes what it wrote,
 including an incomplete multipart upload.
+
+This holds when you cancel or terminate the export while it waits for the store
+to start the upload. The export then has no id for that upload. It lists the
+open uploads for its own key and aborts each one, within 10 seconds. Uploads at
+other keys stay open. An upload that another writer started at the same key is
+aborted too.
+
+The last request commits the object. It is the single request of a small object,
+or the request that completes a multipart upload. Once the store has that whole
+request, a cancel or terminate waits for its answer. If the store accepted it,
+the export issues a warning that it wrote the object. The statement can still end
+with the cancel error. The new object is then at the key and has replaced any
+earlier object there. A store cannot take a committed object back.
+
+A backend killed with `SIGKILL`, or a lost connection to the store, can still
+leave an incomplete multipart upload. To reclaim one, set a bucket lifecycle rule
+that expires incomplete multipart uploads after a few days.
 
 Export to object storage is not transactional. An export whose transaction later
 rolls back has already written the object. This is true of a local export as

@@ -16,11 +16,21 @@ while the store does not answer the listing (__list_uploads_delay__), where the
 cleanup's bounded wait must give up and the export still report its own cancel,
 promptly.
 
+The serial arms (#1810) end export_parquet and export_arrow, which write one key through
+one upload, while their own POST ?uploads is held: cancelled (both) and terminated
+(export_parquet). No upload at the key may stay open; notes.parquet and the key plus
+".old" (a listing by the key as prefix returns it too) must. The commit arms (#1813)
+cancel export_parquet while the store holds the answer to the request that commits the
+object, CompleteMultipartUpload (__complete_delay__) or a single PUT (__put_delay__),
+after it wrote the object over an earlier one. What the export reports must match what
+the key holds.
+
 A PRIVATE CLUSTER, because the postmaster starts with AWS_* in its environment, which
 the shared cluster cannot do: every AWS_* variable of this process is removed and the
 fixture's own are set. A backend that died does not pass as one that survived:
 survival also reads the private cluster's server log for killed backends.
 """
+import hashlib
 import os
 import pathlib
 import re
@@ -39,6 +49,7 @@ from pgc_vacuity import query_error
 TEST = pathlib.Path(__file__).resolve().parents[1]
 AKID, SECRET, REGION, BUCKET = "PGCTESTKEYID", "pgctest-secret-shhh", "pgc-test-1", "pgc-bucket"
 OWN = re.compile(r"^part-000[0-3]\.parquet$")
+SERIAL_KEYS = {"sc": "out.parquet", "sa": "out.arrow", "st": "out.parquet"}
 
 
 def _message(exc):
@@ -140,6 +151,89 @@ def _completed_parts(work, prefix):
         if d.is_dir() else 0
 
 
+def _key_open(work, prefix, key):
+    keys = _open_keys(work, prefix)
+    if keys is None:
+        return query_error("the server's __open_uploads__ record is missing")
+    return sum(1 for k in keys if k == key)
+
+
+def _key_foreign(work, prefix, key):
+    keys = _open_keys(work, prefix)
+    if keys is None:
+        return query_error("the server's __open_uploads__ record is missing")
+    return " ".join(sorted(f"{BUCKET}/{prefix}/{k}" for k in keys if k != key))
+
+
+def _key_parts(s3log, prefix, key):
+    pat = re.compile(rf"^PUT /{BUCKET}/{prefix}/{re.escape(key)} .*partNumber=")
+    try:
+        return sum(1 for ln in pathlib.Path(s3log).read_text(errors="replace").splitlines()
+                   if pat.match(ln))
+    except OSError:
+        return 0
+
+
+def _wait_key_unanswered(work, s3log, prefix, key):
+    for _ in range(300):
+        if _key_open(work, prefix, key) == 1:
+            break
+        time.sleep(0.1)
+    return f"{_key_open(work, prefix, key)} open, {_key_parts(s3log, prefix, key)} parts"
+
+
+def _start_serial(dsn, fn, table, url, got):
+    """A serial export in a thread under application_name pgc_serial. got["outcome"] is
+    "no error: ..." or "SQLSTATE: message"; got["warnings"] lists each WARNING as
+    "SQLSTATE: message"."""
+    got["warnings"] = []
+
+    def notice(diag):
+        if diag.severity_nonlocalized == "WARNING":
+            got["warnings"].append(f"{diag.sqlstate}: {diag.message_primary}")
+
+    def export():
+        try:
+            with psycopg.connect(dsn, autocommit=True, application_name="pgc_serial") as conn:
+                conn.add_notice_handler(notice)
+                conn.execute(f"SELECT pgcolumnar.{fn}('{table}'::regclass, '{url}')")
+            got["outcome"] = "no error: the export completed"
+        except psycopg.Error as exc:
+            got["outcome"] = f"{exc.sqlstate}: {exc.diag.message_primary or _message(exc)}"
+    t = threading.Thread(target=export)
+    t.start()
+    return t
+
+
+def _signal_serial(dsn, fn):
+    _value(dsn, f"SELECT count({fn}(pid)) FROM pg_stat_activity "
+                "WHERE application_name = 'pgc_serial' AND pid <> pg_backend_pid()")
+
+
+def _md5(path):
+    try:
+        return hashlib.md5(pathlib.Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _report_matches_store(got, path, old):
+    """"truthful" when the export's report matches what the key holds; otherwise the
+    key's state and the report."""
+    now = _md5(path)
+    state = "no" if now is None else ("the earlier" if now == old else "the new")
+    outcome = got.get("outcome", "the export did not return")
+    failed = not outcome.startswith("no error")
+    warned = sum(1 for w in got.get("warnings", []) if "before the interrupt took effect" in w)
+    if state == "the new" and (not failed or warned >= 1):
+        return "truthful"
+    if state == "the earlier" and failed:
+        return "truthful"
+    size = pathlib.Path(path).stat().st_size if now is not None else "?"
+    return (f"untruthful: the key holds {state} object ({size} bytes); "
+            f"the export reported [{outcome}] with {warned} commit warnings")
+
+
 def _start_export(dsn, prefix, got):
     def export():
         try:
@@ -180,6 +274,9 @@ def ou(pgc_cluster):
     for p in ("op", "oc", "ot", "od"):
         seeds += ["--seed-upload", f"{BUCKET}/{p}/part-0004.parquet",
                   "--seed-upload", f"{BUCKET}/{p}/notes.parquet"]
+    for p, key in SERIAL_KEYS.items():
+        seeds += ["--seed-upload", f"{BUCKET}/{p}/notes.parquet",
+                  "--seed-upload", f"{BUCKET}/{p}/{key}.old"]
     srv = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
                             "--port", str(s3_port), "--log", str(s3log),
                             "--sigv4-key", AKID, "--sigv4-secret", SECRET, "--sigv4-region", REGION,
@@ -319,6 +416,62 @@ def ou(pgc_cluster):
         r["os outcome"] = got.get("outcome", query_error("the export did not return"))
         r["os prompt"] = "yes" if elapsed <= 30 else f"no, after {int(elapsed)} s"
         r["os survived"] = _survived(dsn, log, crashes0)
+
+        # serial (#1810): one key, one upload, ended while its POST ?uploads is held
+        for pfx, fn, sig in (("sc", "export_parquet", "pg_cancel_backend"),
+                             ("sa", "export_arrow", "pg_cancel_backend"),
+                             ("st", "export_parquet", "pg_terminate_backend")):
+            key = SERIAL_KEYS[pfx]
+            s3log.write_text("")
+            uploads_delay.write_text("20\n")
+            got = {}
+            t = _start_serial(dsn, fn, "ou_big", f"s3://{BUCKET}/{pfx}/{key}", got)
+            r[f"{pfx} unanswered"] = _wait_key_unanswered(work, s3log, pfx, key)
+            _signal_serial(dsn, sig)
+            t.join(300)
+            uploads_delay.unlink()
+            r[f"{pfx} outcome"] = got.get("outcome", query_error("the export did not return"))
+            r[f"{pfx} own"] = _key_open(work, pfx, key)
+            r[f"{pfx} foreign"] = _key_foreign(work, pfx, key)
+            r[f"{pfx} survived"] = _survived(dsn, log, crashes0)
+
+        # commit (#1813): a cancel while the store holds the commit's answer
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE TABLE ou_small (id int8) USING pgcolumnar")
+            c.execute("INSERT INTO ou_small SELECT g FROM generate_series(1,10) g")
+            c.execute("CREATE TABLE ou_mid (id int8, pad text) USING pgcolumnar")
+            c.execute("INSERT INTO ou_mid SELECT g, md5(g::text) FROM generate_series(1,500) g")
+        for pfx, table, hook, pat in (
+                ("cc", "ou_big", "__complete_delay__",
+                 rf"^POST /{BUCKET}/cc/obj\.parquet .*uploadId="),
+                ("pc", "ou_mid", "__put_delay__", rf"^PUT /{BUCKET}/pc/obj\.parquet ")):
+            path = work / BUCKET / pfx / "obj.parquet"
+            url = f"s3://{BUCKET}/{pfx}/obj.parquet"
+            got = {}
+            _start_serial(dsn, "export_parquet", "ou_small", url, got).join(300)
+            old = _md5(path)
+            r[f"{pfx} earlier"] = "yes" if old else f"no: {got.get('outcome')}"
+            s3log.write_text("")
+            (work / hook).write_text("5\n")
+            got = {}
+            t = _start_serial(dsn, "export_parquet", table, url, got)
+            for _ in range(300):
+                now = _md5(path)
+                if now is not None and now != old:
+                    break
+                time.sleep(0.1)
+            sent = sum(1 for ln in s3log.read_text(errors="replace").splitlines()
+                       if re.match(pat, ln))
+            state = "new" if _md5(path) != old else "earlier"
+            r[f"{pfx} held"] = f"{sent} commit requests, {state} object"
+            _signal_serial(dsn, "pg_cancel_backend")
+            t.join(300)
+            (work / hook).unlink()
+            r[f"{pfx} truthful"] = _report_matches_store(got, path, old)
+            r[f"{pfx} warning"] = got["warnings"][0].replace(f"s3://{BUCKET}/", "s3://B/") \
+                if got["warnings"] else query_error("no WARNING")
+            r[f"{pfx} own"] = _key_open(work, pfx, "obj.parquet")
+            r[f"{pfx} survived"] = _survived(dsn, log, crashes0)
         yield r
     finally:
         _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
@@ -457,7 +610,9 @@ def test_silent_listing_cancel_landed_while_every_create_was_unanswered(ou, expe
 
 
 def test_silent_listing_the_cleanup_asked_for_open_uploads(ou, expect):
-    expect.text(ou["os listed"], "1", "silent listing: the cleanup asked the store for its open uploads")
+    # The dispatcher's listing, and since #1810 one from each of the 4 terminated
+    # workers, whose sink sent POST ?uploads and holds no upload id.
+    expect.text(ou["os listed"], "5", "silent listing: the cleanup asked the store for its open uploads")
 
 
 def test_silent_listing_reports_its_own_cancel(ou, expect):
@@ -471,3 +626,78 @@ def test_silent_listing_returned_promptly(ou, expect):
 
 def test_silent_listing_the_server_survived(ou, expect):
     expect.text(ou["os survived"], "1", "silent listing: the server survived")
+
+
+SERIAL_ARMS = [("serial cancel", "sc", "export_parquet",
+                "57014: canceling statement due to user request"),
+               ("arrow cancel", "sa", "export_arrow",
+                "57014: canceling statement due to user request"),
+               ("serial terminate", "st", "export_parquet",
+                "57P01: terminating connection due to administrator command")]
+
+
+@pytest.mark.parametrize("arm,pfx,fn,want", SERIAL_ARMS, ids=[a[1] for a in SERIAL_ARMS])
+def test_serial_create_was_unanswered_when_the_signal_landed(ou, expect, arm, pfx, fn, want):
+    expect.text(ou[f"{pfx} unanswered"], "1 open, 0 parts",
+                f"premise: {arm}: the {fn} CreateMultipartUpload was unanswered when the signal landed")
+
+
+@pytest.mark.parametrize("arm,pfx,fn,want", SERIAL_ARMS, ids=[a[1] for a in SERIAL_ARMS])
+def test_serial_reports_the_signal(ou, expect, arm, pfx, fn, want):
+    expect.text(ou[f"{pfx} outcome"], want, f"{arm}: the export reports the signal")
+
+
+@pytest.mark.parametrize("arm,pfx,fn,want", SERIAL_ARMS, ids=[a[1] for a in SERIAL_ARMS])
+def test_serial_leaves_no_upload_at_the_key_open(ou, expect, arm, pfx, fn, want):
+    expect.num(ou[f"{pfx} own"], 0, f"{arm}: no upload at the export's key is left open")
+
+
+@pytest.mark.parametrize("arm,pfx,fn,want", SERIAL_ARMS, ids=[a[1] for a in SERIAL_ARMS])
+def test_serial_leaves_the_foreign_uploads_open(ou, expect, arm, pfx, fn, want):
+    key = SERIAL_KEYS[pfx]
+    expect.text(ou[f"{pfx} foreign"], f"{BUCKET}/{pfx}/notes.parquet {BUCKET}/{pfx}/{key}.old",
+                f"{arm}: the foreign uploads under the prefix are left open")
+
+
+@pytest.mark.parametrize("arm,pfx,fn,want", SERIAL_ARMS, ids=[a[1] for a in SERIAL_ARMS])
+def test_serial_the_server_survived(ou, expect, arm, pfx, fn, want):
+    expect.text(ou[f"{pfx} survived"], "1", f"{arm}: the server survived")
+
+
+COMMIT_ARMS = [("complete cancel", "cc"), ("put cancel", "pc")]
+
+
+@pytest.mark.parametrize("arm,pfx", COMMIT_ARMS, ids=[a[1] for a in COMMIT_ARMS])
+def test_commit_an_earlier_object_is_at_the_key(ou, expect, arm, pfx):
+    expect.text(ou[f"{pfx} earlier"], "yes", f"premise: {arm}: an earlier object is at the key")
+
+
+@pytest.mark.parametrize("arm,pfx", COMMIT_ARMS, ids=[a[1] for a in COMMIT_ARMS])
+def test_commit_answer_was_held_when_the_cancel_landed(ou, expect, arm, pfx):
+    expect.text(ou[f"{pfx} held"], "1 commit requests, new object",
+                f"premise: {arm}: the store had written the new object and held the answer "
+                "when the cancel landed")
+
+
+@pytest.mark.parametrize("arm,pfx", COMMIT_ARMS, ids=[a[1] for a in COMMIT_ARMS])
+def test_commit_report_matches_the_object_at_the_key(ou, expect, arm, pfx):
+    expect.text(ou[f"{pfx} truthful"], "truthful",
+                f"{arm}: what the export reports matches the object at the key")
+
+
+@pytest.mark.parametrize("arm,pfx", COMMIT_ARMS, ids=[a[1] for a in COMMIT_ARMS])
+def test_commit_warns_that_the_object_was_written(ou, expect, arm, pfx):
+    expect.text(ou[f"{pfx} warning"],
+                f'01000: columnar: the export wrote "s3://B/{pfx}/obj.parquet" '
+                "before the interrupt took effect",
+                f"{arm}: the export warns that it wrote the object before the cancel took effect")
+
+
+@pytest.mark.parametrize("arm,pfx", COMMIT_ARMS, ids=[a[1] for a in COMMIT_ARMS])
+def test_commit_leaves_no_upload_at_the_key_open(ou, expect, arm, pfx):
+    expect.num(ou[f"{pfx} own"], 0, f"{arm}: no upload at the export's key is left open")
+
+
+@pytest.mark.parametrize("arm,pfx", COMMIT_ARMS, ids=[a[1] for a in COMMIT_ARMS])
+def test_commit_the_server_survived(ou, expect, arm, pfx):
+    expect.text(ou[f"{pfx} survived"], "1", f"{arm}: the server survived")
