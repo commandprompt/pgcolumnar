@@ -1389,9 +1389,11 @@ guard_tests 854
 # 3 in test_native_parquet_fdw.py, 4 in test_iceberg_scan.py and 3 in test_iceberg_fdw.py (the 3 in
 # test_native_parquet_pushdown.py join an existing test), by collection.
 # cluster_tests 4699 -> 4707 for #1790's review checks: 5 in test_iceberg_deletes.py, 2 in
-# test_iceberg_fdw.py and 1 in test_native_parquet_pushdown.py, by collection: `4674 tests collected`.
+# test_iceberg_fdw.py and 1 in test_native_parquet_pushdown.py. Restated at the 6987adea merge; the
+# collection before that merge, against an older main, read `4674 tests collected`.
 # cluster_tests 4707 -> 4708 for #1790's second review: test_native_read_parquet.py gains the twin of
-# numeric(5,3), the file's scale with a lower precision, refusing 12345.678, by collection: `4675 tests collected`.
+# numeric(5,3), the file's scale with a lower precision, refusing 12345.678. Restated at the 6987adea merge;
+# the collection before that merge, against an older main, read `4675 tests collected`.
 # cluster_tests 4708 at the merge of origin/main (6987adea) into fix/1790-apply-typmod,
 # by collection: `4708 tests collected`.
 cluster_tests 4708

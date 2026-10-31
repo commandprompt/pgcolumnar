@@ -1135,10 +1135,6 @@ correct rows; these are the conditions under which it can skip at all:
   signed. The reader does not skip on such an interval. A minimum or maximum
   that does not fit the column's declared type also turns skipping off for that
   row group.
-  interval must not be inverted. Two cases decode to an interval that the reader
-  does not trust for skipping. The first is an unsigned Parquet column that
-  crosses the sign boundary. The second is a column that the reader makes
-  narrower, into a smaller PostgreSQL type.
 - The column's type modifier must not be able to change a value, because the
   statistics hold the stored values, not the values the scan returns. A
   `numeric(p,s)` column does not skip when its scale `s` differs from the file's

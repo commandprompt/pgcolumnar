@@ -477,8 +477,8 @@ true until the next version shipped.
   foreign table no longer prunes files on a column whose type modifier can
   change a value, and the Parquet foreign table no longer skips row groups on
   one. `test/native_read_parquet.sh`, `native_parquet_fdw.sh`,
-  `native_parquet_pushdown.sh`, `iceberg_scan.sh`, `iceberg_fdw.sh` and their
-  pytest twins.
+  `native_parquet_pushdown.sh`, `iceberg_scan.sh`, `iceberg_fdw.sh`,
+  `iceberg_deletes.sh` and their pytest twins.
 - The REST catalog functions now follow the catalog's `GET /v1/config` (#1793).
   They use the advertised `namespace-separator`, so a nested namespace such as
   `db.x` works on the Apache Iceberg 1.12 REST catalog, which answered HTTP 400
