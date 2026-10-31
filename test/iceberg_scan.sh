@@ -144,6 +144,20 @@ check "a gzip metadata file that inflates past the 64 MiB cap is refused (54000)
 check "a cut-short gzip metadata file is refused as corrupt gzip (XX001)" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_trunc)')" \
 	   "gzip" " naming gzip")" "XX001 naming gzip"
+# gzip allows several members back to back (cat a.gz b.gz); the text is all of them
+check "iceberg_current_snapshot reads a gzip metadata file of two members as it reads the plain file" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_multi)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
+# zero bytes after the gzip stream are padding, not a second member
+check "iceberg_current_snapshot reads a gzip metadata file followed by zero padding" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_padded)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
+# az:// counts as remote, but no object-store module reads it. The refusal names the
+# URL as one it cannot read remotely (0A000), not "could not open file" as for a
+# local path. Its wording depends on whether the object-store module is installed.
+check "an az:// metadata path is refused as a remote URL it cannot read (0A000)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_current_snapshot('az://b/t/metadata/v1.metadata.json')" \
+	   'reading "az://' " remote refusal")" "0A000 remote refusal"
 check "iceberg_scan reads a data file whose file_format is lowercase parquet" \
 	"$(qe "SELECT id || '|' || region || '|' || amount
 	       FROM pgcolumnar.iceberg_scan('$(vpath lower)') AS t(id bigint, region text, amount int)

@@ -35,6 +35,8 @@ message, and the rest decline.
 import json
 import pathlib
 import shutil
+import subprocess
+import sys
 import time
 
 import psycopg
@@ -121,6 +123,43 @@ def _names(dsn, sql, phrase):
             return query_error(_message(exc))
         return "1" if phrase in (exc.diag.message_primary or "") else "0"
     return "0"
+
+
+def _hwm(pid):
+    try:
+        for line in pathlib.Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1])
+    except OSError:
+        pass
+    return None
+
+
+def _peak(dsn, sql):
+    """-> (kB the backend's peak rose by over sql, its value), as the shell's peak():
+    VmHWM before and after, in a connection of its own. The rise is None when it
+    cannot be read; the value is the query's error when it failed."""
+    _await_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+            base = _hwm(pid)
+            val = conn.execute(sql).fetchone()[0]
+            pk = _hwm(pid)
+    except psycopg.Error as exc:
+        return None, query_error(_message(exc))
+    return (pk - base if base is not None and pk is not None else None), str(val)
+
+
+def _dvariants(dest):
+    """-> {name: path} from gen_iceberg_variants.py --deletes, or {} with the failure
+    under "error"."""
+    run = subprocess.run([sys.executable, str(FX / "gen_iceberg_variants.py"), "--deletes", str(dest)],
+                         capture_output=True, text=True)
+    out = dict(line.split("=", 1) for line in run.stdout.splitlines() if "=" in line)
+    if run.returncode != 0:
+        out["error"] = (run.stdout + run.stderr).strip()
+    return out
 
 
 def _crashes(cluster):
@@ -231,6 +270,18 @@ def dl(pgc_cluster, server_dir):
         before = _crashes(pgc_cluster)
         r["badseq"] = _refusal(dsn, scan("badseq"), PHRASE["badseq"])
         r["up after badseq"] = _survived(dsn, pgc_cluster, before)
+        var = _dvariants(dest)
+        for p in [dest, *dest.rglob("*")]:
+            p.chmod(0o777 if p.is_dir() else 0o666)
+
+        def vpath(name):
+            return var.get(name, f"no variant {name}: {var.get('error', var)}")
+        r["plower apply"] = _read(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, E'\\n' ORDER BY id) "
+                                       f"FROM pgcolumnar.iceberg_scan('{vpath('plower')}/apply.metadata.json') {COLS}")
+        r["plower eqapply"] = _read(dsn, f"SELECT string_agg(id::text, ',' ORDER BY id) "
+                                         f"FROM pgcolumnar.iceberg_scan('{vpath('plower')}/eqapply.metadata.json') {COLS}")
+        for name in ("bloat_s3", "bloat_s3a"):
+            r[name] = _peak(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{vpath(name)}') {COLS}")
         yield r
     finally:
         with psycopg.connect(admin, autocommit=True) as a:
@@ -559,3 +610,45 @@ def test_the_backend_survives_the_bad_sequence_refusal(dl, expect):
     if _declined(dl, expect):
         return
     expect.text(str(dl["up after badseq"]), "1", "backend still up after the bad-sequence refusal")
+
+
+# ---- delete files other writers describe (#1815, #1825) ---------------------------
+
+def test_a_lowercase_parquet_position_delete_file_is_applied(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["plower apply"]), dl["oracle"],
+                "a position-delete file whose file_format is lowercase parquet is applied")
+
+
+def test_a_lowercase_parquet_equality_delete_file_is_applied(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["plower eqapply"]), dl["eq oracle"]["eqapply"],
+                "an equality-delete file whose file_format is lowercase parquet is applied")
+
+
+def test_a_million_s3_position_delete_rows_apply(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(dl["bloat_s3"][1], "3", "a million s3:// position-delete rows apply (3 rows left)")
+
+
+def test_a_million_s3a_position_delete_rows_apply(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(dl["bloat_s3a"][1], "3", "a million s3a:// position-delete rows apply (3 rows left)")
+
+
+def test_s3a_position_deletes_cost_no_more_memory_than_s3(dl, expect):
+    """The two tables differ only in their paths' scheme. 16 MiB is far above the
+    noise between two runs and far below one allocation per delete row (about
+    140 MB here, measured before the fix)."""
+    if _declined(dl, expect):
+        return
+    (s3kb, s3v), (s3akb, s3av) = dl["bloat_s3"], dl["bloat_s3a"]
+    ok = (s3kb is not None and s3akb is not None and s3v == "3" and s3av == "3"
+          and s3akb - s3kb <= 16384)
+    expect.text("1" if ok else f"0 (peak rise: s3:// [{s3kb}] kB, s3a:// [{s3akb}] kB; "
+                               f"readings [{s3v}] [{s3av}])", "1",
+                "s3a:// position deletes cost no more memory than s3:// ones (within 16 MiB)")

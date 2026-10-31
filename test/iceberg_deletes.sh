@@ -390,4 +390,79 @@ check "an EXISTING entry with a null sequence number is refused (XX001)" \
 	                AS t(id bigint, region text, amount int)" "has no sequence number")" "XX001"
 check "backend still up after the bad-sequence refusal" "$(survived "$CRASHES_BEFORE")" "1"
 
+# ---- delete files other writers describe (#1815, #1825) --------------------
+# The variants come from gen_iceberg_variants.py --deletes, written next to the
+# relocated table: delete manifests that spell file_format "parquet", and two tables
+# with one position-delete file of a million rows, recorded under s3:// and s3a://.
+DVARIANTS="$(python3 "$FX/gen_iceberg_variants.py" --deletes "$DEST" 2>&1)"
+chmod -R a+rwX "$DEST" 2>/dev/null
+dvar() { local p; p="$(sed -n "s/^$1=//p" <<<"$DVARIANTS")"; echo "${p:-no variant $1: $DVARIANTS}"; }
+# qe SQL -> the rows, or the server's ERROR line, so a failed read shows its cause
+qe() {
+	await_up
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1 | sed -n '/^ERROR:/{p;q};p'
+}
+check_text "a position-delete file whose file_format is lowercase parquet is applied" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(dvar plower)/apply.metadata.json')
+	         AS t(id bigint, region text, amount int) ORDER BY id")" "$ORACLE"
+check_text "an equality-delete file whose file_format is lowercase parquet is applied" \
+	"$(qe "SELECT string_agg(id::text, ',' ORDER BY id)
+	       FROM pgcolumnar.iceberg_scan('$(dvar plower)/eqapply.metadata.json')
+	         AS t(id bigint, region text, amount int)")" "$(eq_oracle eqapply)"
+
+# peak QUERY -> "<kB the backend's peak rose by> <the query's last output line>",
+# or the reason there is no reading. VmHWM is the backend's peak resident memory and
+# only grows, so reading it before and after the statement cannot miss the peak.
+peak() {
+	local fifo pid="" n=0 base pk out
+	await_up
+	fifo="$PGC_WORKDIR/delpeak.$RANDOM.$RANDOM"; rm -f "$fifo"; mkfifo "$fifo"
+	env PATH="$PGC_BINDIR:$PATH" PGAPPNAME=pgcdelpeak \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		< "$fifo" > "$fifo.out" 2>&1 &
+	exec 9> "$fifo"
+	echo "SELECT 1;" >&9
+	while [ -z "$pid" ] && [ $n -lt 200 ]; do
+		pid="$(q "SELECT pid FROM pg_stat_activity WHERE application_name = 'pgcdelpeak' LIMIT 1;")"
+		n=$((n+1)); [ -z "$pid" ] && sleep 0.1
+	done
+	if [ -z "$pid" ]; then exec 9>&-; wait 2>/dev/null; rm -f "$fifo" "$fifo.out"; echo "no backend pid"; return; fi
+	base=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null)
+	echo "$1;" >&9
+	n=0
+	while [ "$(q "SELECT count(*) FROM pg_stat_activity WHERE pid = $pid AND state = 'idle';")" != 1 ] && [ $n -lt 1200 ]; do
+		n=$((n+1)); sleep 0.1
+	done
+	pk=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null)
+	exec 9>&-; wait 2>/dev/null
+	out="$(tail -1 "$fifo.out")"
+	if grep -q '^ERROR' "$fifo.out"; then out="$(grep -m1 '^ERROR' "$fifo.out")"; fi
+	rm -f "$fifo" "$fifo.out"
+	if pgc_is_number "$base" && pgc_is_number "$pk"; then echo "$(( pk - base )) $out"
+	else echo "no VmHWM for backend $pid ($out)"; fi
+}
+# The two tables differ only in the scheme their paths carry, so they must cost the
+# same. Before the fix, each delete row allocated a fresh s3:// copy of its path for
+# every data file it was compared with, and nothing freed them until the query ended.
+BLOAT_SQL="SELECT count(*) FROM pgcolumnar.iceberg_scan('%s') AS t(id bigint, region text, amount int)"
+# shellcheck disable=SC2059
+P_S3="$(peak "$(printf "$BLOAT_SQL" "$(dvar bloat_s3)")")"
+# shellcheck disable=SC2059
+P_S3A="$(peak "$(printf "$BLOAT_SQL" "$(dvar bloat_s3a)")")"
+echo "      peak over the scan: s3:// table [$P_S3], s3a:// table [$P_S3A] (kB, rows)"
+check_text "a million s3:// position-delete rows apply (3 rows left)" \
+	"$(awk '{ $1 = ""; sub(/^ /, ""); print }' <<<"$P_S3")" "3"
+check_text "a million s3a:// position-delete rows apply (3 rows left)" \
+	"$(awk '{ $1 = ""; sub(/^ /, ""); print }' <<<"$P_S3A")" "3"
+# 16 MiB is far above the noise between two runs of the same scan, and far below the
+# cost of one allocation per delete row: measured at about 140 MB for this table.
+# A scan that errored has no peak worth comparing, so both must have read 3 rows.
+s3kb="$(awk '{print $1}' <<<"$P_S3")"; s3akb="$(awk '{print $1}' <<<"$P_S3A")"
+check_text "s3a:// position deletes cost no more memory than s3:// ones (within 16 MiB)" \
+	"$(pgc_is_number "$s3kb" && pgc_is_number "$s3akb" && [ "${P_S3#* }" = 3 ] && [ "${P_S3A#* }" = 3 ] \
+	   && [ $(( s3akb - s3kb )) -le 16384 ] && echo 1 \
+	   || echo "0 (peak rise: s3:// [$s3kb] kB, s3a:// [$s3akb] kB; readings [$P_S3] [$P_S3A])")" 1
+
 pgc_summary

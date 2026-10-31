@@ -141,6 +141,10 @@ def isc(pgc_cluster, server_dir):
                                 "inflates past", " past the cap"),
             "gz_trunc": _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_trunc')}')",
                                  "gzip", " naming gzip"),
+            "gz_multi snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_multi')}')"),
+            "gz_padded snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_padded')}')"),
+            "az": _refusal(dsn, "SELECT * FROM pgcolumnar.iceberg_current_snapshot('az://b/t/metadata/v1.metadata.json')",
+                           'reading "az://', " remote refusal"),
             "unpriv": _sqlstate(dsn, f"SELECT * FROM {scan.format(md)} AS t(id bigint)", UNPRIV, pgc_cluster.port),
             "reader": _rows(dsn, f"SELECT count(*) FROM {scan.format(md)} AS t(id bigint)", READER, pgc_cluster.port),
         }
@@ -260,6 +264,27 @@ def test_a_cut_short_gzip_metadata_file_is_refused(isc, expect):
         return
     expect.text(str(isc["gz_trunc"]), "XX001 naming gzip",
                 "a cut-short gzip metadata file is refused as corrupt gzip (XX001)")
+
+
+def test_iceberg_current_snapshot_reads_a_two_member_gzip_file(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["gz_multi snap"]), _plain_snapshot(isc),
+                "iceberg_current_snapshot reads a gzip metadata file of two members as it reads the plain file")
+
+
+def test_iceberg_current_snapshot_reads_a_zero_padded_gzip_file(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["gz_padded snap"]), _plain_snapshot(isc),
+                "iceberg_current_snapshot reads a gzip metadata file followed by zero padding")
+
+
+def test_an_az_metadata_path_is_refused_as_remote(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["az"]), "0A000 remote refusal",
+                "an az:// metadata path is refused as a remote URL it cannot read (0A000)")
 
 
 def test_iceberg_scan_reads_a_lowercase_parquet_file_format(isc, expect):

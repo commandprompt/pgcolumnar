@@ -2,11 +2,13 @@
 """Derive variants of the committed `warehouse` Iceberg table at test time (#1815, #1825).
 
 Usage:  gen_iceberg_variants.py <dir holding a copy of warehouse/db>
+        gen_iceberg_variants.py --deletes <dir holding a copy of warehouse_del/db>
 
-The suites copy test/fixtures/iceberg/warehouse/db to a work directory, then run
-this script on that copy. It writes the variants next to the table and prints one
-`name=path` line per variant, for the suite to read. It needs only the Python
-standard library, so it runs wherever the suites run.
+The suites copy test/fixtures/iceberg/warehouse/db (or warehouse_del/db) to a work
+directory, then run this script on that copy. It writes the variants next to the
+table and prints one `name=path` line per variant, for the suite to read. The first
+form needs only the Python standard library. The --deletes form also needs pyarrow,
+for its large position-delete files.
 
 The variants:
 
@@ -17,6 +19,10 @@ The variants:
   gz_bomb     A gzip file that inflates to 64 MiB + 1 byte: one byte past the
               reader's metadata cap.
   gz_trunc    The first half of gz_infix: a gzip stream cut short.
+  gz_multi    The current metadata.json as two gzip members, back to back. The
+              gzip format allows this, and `cat a.gz b.gz` makes one.
+  gz_padded   gz_infix followed by 8 zero bytes, as some tools pad a file. Readers
+              such as Java's GZIPInputStream ignore such trailing bytes.
   lower       A copy of the table (db/lower) whose manifest records the data
               files' file_format as "parquet", the spelling the Iceberg spec uses
               (#1825).
@@ -24,7 +30,19 @@ The variants:
               as s3://bucket77/pgc_ice/db/events while the manifest list and the
               manifests record every path as s3a://bucket77/pgc_ice/... (#1825).
 
-The two copied tables keep their own metadata, so a suite reads each one by its
+The --deletes variants, from the warehouse_del table (#1815, #1825):
+
+  plower      A copy of the table (db/plower) whose delete manifests record the
+              position-delete file (apply) and the equality-delete file (eqapply)
+              with file_format "parquet". Its data manifests keep "PARQUET", so
+              only the delete readers meet the lowercase name.
+  bloat_s3    A copy of the table (db/bloat_s3) whose every recorded path is
+              s3://, and whose position-delete file holds BLOAT_ROWS rows, all on
+              data.parquet, each deleting row 1 or row 3.
+  bloat_s3a   The same table with every recorded path s3a://. Matching a delete
+              row to its data file must cost no more memory here than in bloat_s3.
+
+The copied tables keep their own metadata, so a suite reads each one by its
 own metadata path. The Avro rewrite keeps every string the same length, so no
 length prefix inside a record changes.
 """
@@ -42,6 +60,12 @@ S3A_ROOT = "s3a://bucket77/pgc_ice"
 S3_ROOT = "s3://bucket77/pgc_ice"
 CAP = 64 * 1024 * 1024
 assert len(RECORDED) == len(S3A_ROOT)
+# the warehouse_del table's recorded root, and two same-length S3 forms of it
+DEL_RECORDED = "file:///tmp/pgc_ice_del"
+DEL_S3 = "s3://bb/tmp/pgc_ice_del"
+DEL_S3A = "s3a://b/tmp/pgc_ice_del"
+BLOAT_ROWS = 1000000
+assert len(DEL_RECORDED) == len(DEL_S3) == len(DEL_S3A)
 
 
 def _read_long(b, i):
@@ -164,6 +188,11 @@ def main(root):
     out["gz_trunc"] = os.path.join(events, "metadata", "trunc.gz.metadata.json")
     whole = open(out["gz_infix"], "rb").read()
     open(out["gz_trunc"], "wb").write(whole[:len(whole) // 2])
+    out["gz_multi"] = os.path.join(events, "metadata", "multi.gz.metadata.json")
+    half = len(body) // 2
+    open(out["gz_multi"], "wb").write(gzip.compress(body[:half]) + gzip.compress(body[half:]))
+    out["gz_padded"] = os.path.join(events, "metadata", "padded.gz.metadata.json")
+    open(out["gz_padded"], "wb").write(whole + b"\0" * 8)
 
     for p in out.values():
         os.chmod(p, 0o644)
@@ -171,7 +200,52 @@ def main(root):
         print(f"{k}={v}")
 
 
+def deletes(root):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    t = os.path.join(root, "db", "t")
+    out = {}
+
+    # plower: only the two delete manifests spell the format in lowercase
+    plower = os.path.join(root, "db", "plower")
+    shutil.copytree(t, plower)
+    for name in ("delete-manifest-apply.avro", "delete-manifest-eqapply.avro"):
+        if rewrite_ocf(os.path.join(plower, "metadata", name), [(b"PARQUET", b"parquet")]) == 0:
+            sys.exit(f"gen_iceberg_variants: no PARQUET file_format found in {name}")
+    out["plower"] = os.path.join(plower, "metadata")
+
+    # bloat_s3 and bloat_s3a: one position-delete file of BLOAT_ROWS rows
+    for name, scheme_root in (("bloat_s3", DEL_S3), ("bloat_s3a", DEL_S3A)):
+        d = os.path.join(root, "db", name)
+        shutil.copytree(t, d)
+        for f in ("manifest-list-apply.avro", "data-manifest.avro", "delete-manifest-apply.avro"):
+            if rewrite_ocf(os.path.join(d, "metadata", f),
+                           [(DEL_RECORDED.encode(), scheme_root.encode())]) == 0:
+                sys.exit(f"gen_iceberg_variants: no recorded path found in {f}")
+        md = os.path.join(d, "metadata", "apply.metadata.json")
+        text = open(md).read().replace(DEL_RECORDED, scheme_root)
+        open(md, "w").write(text)
+        old = pq.read_table(os.path.join(d, "data", "posdel.parquet"))
+        target = scheme_root + "/db/t/data/data.parquet"
+        table = pa.table({
+            "file_path": pa.array([target] * BLOAT_ROWS, pa.string()),
+            "pos": pa.array([1 + 2 * (i % 2) for i in range(BLOAT_ROWS)], pa.int64()),
+        }, schema=old.schema)
+        pq.write_table(table, os.path.join(d, "data", "posdel.parquet"))
+        out[name] = md
+
+    for p in out.values():
+        if os.path.isfile(p):
+            os.chmod(p, 0o644)
+    for k, v in out.items():
+        print(f"{k}={v}")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) == 3 and sys.argv[1] == "--deletes":
+        deletes(sys.argv[2])
+    elif len(sys.argv) == 2:
+        main(sys.argv[1])
+    else:
         sys.exit(__doc__)
-    main(sys.argv[1])

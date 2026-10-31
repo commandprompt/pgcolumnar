@@ -140,6 +140,25 @@ ice_s3_alias(const char *path)
 	return path;
 }
 
+#ifdef HAVE_LIBZ
+/*
+ * zlib's allocator, on palloc: an ERROR raised while the stream is open (a
+ * cancel, or out of memory) then frees zlib's state with the memory context,
+ * where malloc'd state would leak until the backend exits.
+ */
+static voidpf
+ice_zalloc(voidpf opaque, uInt items, uInt size)
+{
+	return palloc((Size) items * size);
+}
+
+static void
+ice_zfree(voidpf opaque, voidpf address)
+{
+	pfree(address);
+}
+#endif
+
 /*
  * Inflate a gzip-compressed metadata.json (#1815). Iceberg writes one when the
  * table property write.metadata.compression-codec is gzip, and names it
@@ -147,7 +166,10 @@ ice_s3_alias(const char *path)
  * by the gzip magic bytes, not by the name, so a file of either name, or of a
  * name that does not say, reads the same. The inflated size is held to the same
  * cap as a plain file, so a small file cannot make the backend allocate without
- * bound. Returns a palloc'd, NUL-terminated buffer.
+ * bound. A gzip file may hold several members back to back, and the text is
+ * all of them. Bytes after a member that do not start another one are padding,
+ * and are ignored, as Java's GZIPInputStream ignores them. Returns a palloc'd,
+ * NUL-terminated buffer.
  */
 static char *
 ice_gunzip(const char *path, const uint8 *in, int64 inlen)
@@ -156,9 +178,12 @@ ice_gunzip(const char *path, const uint8 *in, int64 inlen)
 	z_stream	zs;
 	int64		cap = Min(Max(inlen * 8, (int64) 64 * 1024), ICE_MAX_METADATA);
 	char	   *out = palloc(cap + 1);
+	int64		used;
 	int			rc;
 
 	memset(&zs, 0, sizeof(zs));
+	zs.zalloc = ice_zalloc;
+	zs.zfree = ice_zfree;
 	if (inflateInit2(&zs, 15 + 16) != Z_OK)	/* 15 + 16: the gzip wrapper */
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
@@ -173,9 +198,10 @@ ice_gunzip(const char *path, const uint8 *in, int64 inlen)
 		rc = inflate(&zs, Z_NO_FLUSH);
 		if (rc == Z_STREAM_END)
 		{
-			/* a gzip file may hold several members, read back to back */
-			if (zs.avail_in == 0)
+			/* another member follows only where the gzip magic does */
+			if (zs.avail_in < 2 || zs.next_in[0] != 0x1f || zs.next_in[1] != 0x8b)
 				break;
+			/* inflateReset zeroes total_out, so count output by next_out */
 			if (inflateReset(&zs) != Z_OK)
 				rc = Z_DATA_ERROR;
 			else
@@ -183,8 +209,7 @@ ice_gunzip(const char *path, const uint8 *in, int64 inlen)
 		}
 		if (rc == Z_OK && zs.avail_out == 0)
 		{
-			int64		used = (int64) zs.total_out;
-
+			used = (int64) ((char *) zs.next_out - out);
 			if (cap >= ICE_MAX_METADATA)
 			{
 				inflateEnd(&zs);
@@ -213,7 +238,8 @@ ice_gunzip(const char *path, const uint8 *in, int64 inlen)
 						   rc == Z_OK || rc == Z_BUF_ERROR ? "unexpected end of input" :
 						   (zs.msg != NULL ? zs.msg : "invalid data"))));
 	}
-	out[zs.total_out] = '\0';
+	used = (int64) ((char *) zs.next_out - out);
+	out[used] = '\0';
 	inflateEnd(&zs);
 	return out;
 #else
@@ -258,7 +284,6 @@ static uint8 *
 ice_slurp_bin(const char *path, int64 *outlen,
 			  const PgColumnarObjStoreConfig *cfg)
 {
-	path = ice_s3_alias(path);
 	if (PgColumnarPathIsRemote(path))
 		return ice_slurp_remote(path, outlen, cfg);
 
@@ -463,6 +488,44 @@ ice_strip_scheme(const char *path)
 	if (strncmp(path, "file://", 7) == 0)
 		return path + 7;
 	return ice_s3_alias(path);
+}
+
+/*
+ * Do two recorded paths name the same file, under ice_strip_scheme's rules?
+ * The answer is strcmp(ice_strip_scheme(a), ice_strip_scheme(b)) == 0, found
+ * without allocating: the delete-matching loops call this once per delete row
+ * per data file, and one allocation each grew a scan's memory with files x
+ * delete rows (#1825 review).
+ */
+static const char *
+ice_path_tail(const char *path, bool *s3)
+{
+	*s3 = false;
+	if (strncmp(path, "file://", 7) == 0)
+		return path + 7;
+	if (pg_strncasecmp(path, "s3a://", 6) == 0 ||
+		pg_strncasecmp(path, "s3n://", 6) == 0)
+	{
+		*s3 = true;
+		return path + 6;
+	}
+	if (strncmp(path, "s3://", 5) == 0)
+	{
+		*s3 = true;
+		return path + 5;
+	}
+	return path;
+}
+
+static bool
+ice_path_eq(const char *a, const char *b)
+{
+	bool		as3,
+				bs3;
+	const char *at = ice_path_tail(a, &as3);
+	const char *bt = ice_path_tail(b, &bs3);
+
+	return as3 == bs3 && strcmp(at, bt) == 0;
 }
 
 /* does a path segment sequence contain a ".." component? For object storage a
@@ -2489,8 +2552,7 @@ ice_read_dvs(IceScanCtx *c, int64 format_version)
 		 * one-DV-per-data-file check must too, or an aliased pair (one with a
 		 * file:// scheme, one without) would slip past and be unioned */
 		foreach(lc2, seen)
-			if (strcmp(ice_strip_scheme((const char *) lfirst(lc2)),
-					   ice_strip_scheme(pd->ref_data_file)) == 0)
+			if (ice_path_eq((const char *) lfirst(lc2), pd->ref_data_file))
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_CORRUPTED),
 						 errmsg("iceberg: two deletion vectors reference data file \"%s\"",
@@ -3098,7 +3160,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 	foreach(lc, ctx.data)
 	{
 		IceEntry   *d = (IceEntry *) lfirst(lc);
-		const char *dp = ice_strip_scheme(d->file_path);
+		const char *dp = d->file_path;
 		uint64	   *skip = NULL;
 		int			nskip = 0;
 		int			cap = 0;
@@ -3152,7 +3214,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 				IceDvDel   *dv = (IceDvDel *) lfirst(lc2);
 
 				if (dv->seq >= d->seq &&
-					strcmp(ice_strip_scheme(dv->dpath), dp) == 0)
+					ice_path_eq(dv->dpath, dp))
 				{
 					dv_applies = true;
 					if (dv->npos > 0)
@@ -3182,7 +3244,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 					IcePosDel  *pd = (IcePosDel *) lfirst(lc2);
 
 					if (pd->seq >= d->seq &&
-						strcmp(ice_strip_scheme(pd->dpath), dp) == 0)
+						ice_path_eq(pd->dpath, dp))
 					{
 						if (nskip == cap)
 						{

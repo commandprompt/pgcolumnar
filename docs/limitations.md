@@ -1194,8 +1194,9 @@ table at its current snapshot. It has these limits:
 - The metadata path and every path the table records may be a local path, or an
   `s3://`, `gs://`, `http://`, or `https://` URL. The reader treats `s3a://` and
   `s3n://`, the Hadoop names for S3, as `s3://`. So a table may record its location
-  under one of the three names and its files under another. Other schemes, such as
-  `abfs://` or `hdfs://`, are opened as local paths and fail with "could not open
-  file".
+  under one of the three names and its files under another. An `az://` URL is
+  refused with SQLSTATE 0A000, because no module reads Azure Blob Storage yet.
+  Other schemes, such as `abfs://` or `hdfs://`, are opened as local paths and fail
+  with "could not open file".
 - The reader does not write or commit to an Iceberg table, and it reads only the
   current snapshot. Time travel to an older snapshot is not supported.
