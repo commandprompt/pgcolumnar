@@ -390,4 +390,47 @@ check "an EXISTING entry with a null sequence number is refused (XX001)" \
 	                AS t(id bigint, region text, amount int)" "has no sequence number")" "XX001"
 check "backend still up after the bad-sequence refusal" "$(survived "$CRASHES_BEFORE")" "1"
 
+
+# ---- a deleted row's values are not coerced to the declared typmod (#1790) ----
+# The reader applies a declared typmod to every value it returns, and a value
+# that breaks it fails the scan (varchar(2) refuses 'toolong' with 22001). A row
+# that a delete removes is not part of the table, so its values must not fail
+# the scan. This copy of the warehouse swaps in del_data_toolong.parquet
+# (fixtures/iceberg/gen_iceberg_typmod.py): the same rows, except that the rows
+# the deletes remove, ids 2 and 4, hold 'toolong'.
+# tm_read SQL -> the query's output, or its first ERROR line
+tm_read() {
+	local out
+	await_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1)"
+	if grep -q '^ERROR:' <<<"$out"; then grep -m1 '^ERROR:' <<<"$out"; else echo "$out"; fi
+}
+TMD="$PGC_WORKDIR/del_typmod"
+rm -rf "$TMD"; mkdir -p "$TMD"
+cp -r "$WHD/db" "$TMD/db"
+chmod -R u+rwX "$TMD"
+cp "$FX/warehouse_typmod/del_data_toolong.parquet" "$TMD/db/t/data/data.parquet"
+TMDIR="$TMD/db/t/metadata"
+tm_regions() {	# tm_regions METADATA -> "id:region,..." read as varchar(2)
+	tm_read "SELECT string_agg(id || ':' || region, ',' ORDER BY id)
+	         FROM pgcolumnar.iceberg_scan('$TMDIR/$1.metadata.json')
+	           AS t(id bigint, region varchar(2))"
+}
+check "typmod: with no delete applied, 'toolong' breaks varchar(2) (22001)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$TMDIR/noapply.metadata.json')
+	                AS t(id bigint, region varchar(2))" "value too long")" "22001"
+check "typmod: position deletes do not coerce a deleted row's value" \
+	"$(tm_regions apply)" "1:eu,3:us,5:us"
+check "typmod: equality deletes do not coerce a deleted row's value" \
+	"$(tm_regions eqapply)" "1:eu,3:us,5:us"
+check "typmod: a deletion vector does not coerce a deleted row's value" \
+	"$(tm_regions dvapply)" "1:eu,3:us,5:us"
+q "CREATE SERVER ice_tm FOREIGN DATA WRAPPER pgcolumnar_iceberg" >/dev/null
+q "CREATE FOREIGN TABLE del_tm (id bigint, region varchar(2))
+   SERVER ice_tm OPTIONS (metadata_path '$TMDIR/apply.metadata.json')" >/dev/null
+check "typmod: the Iceberg FDW does not coerce a position-deleted row's value" \
+	"$(tm_read "SELECT string_agg(id || ':' || region, ',' ORDER BY id) FROM del_tm")" \
+	"1:eu,3:us,5:us"
+
 pgc_summary

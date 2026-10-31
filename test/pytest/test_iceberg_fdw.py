@@ -65,6 +65,8 @@ WAREHOUSES = {
     "ev_v1": ("warehouse",          "events",       "id bigint, region varchar(1), amount int"),
     "pad2":  ("warehouse_typmod",   "byregion_pad", "id bigint, region varchar(2)"),
     "frac0": ("warehouse_typmod",   "byhour_frac",  "id bigint, ts timestamp(0)"),
+    "bkt2":  ("warehouse_typmod",   "byregion_bucket", "id bigint, region varchar(2)"),
+    "th6":   ("warehouse_temporal", "byhour",       "id bigint, ts timestamp(6)"),
 }
 
 
@@ -734,6 +736,26 @@ def test_a_timestamp_0_hour_partition_keeps_a_row_that_rounds_into_range(ice, ex
         return
     expect.text(_ids(conn, "frac0", "ts >= TIMESTAMP '2021-03-01 01:00:00'") or "none", "1,2",
                 "typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2")
+
+
+def test_a_varchar_2_bucket_partition_keeps_a_row_stored_with_trailing_spaces(ice, expect):
+    """'eu  ' (id 1) and 'eu' (id 3) sit in different buckets but both read 'eu'. Today
+    the planner casts a varchar column to text for "=", so the qual never reaches
+    bucket pruning; the typmod guard in ice_fdw_bucket_quals keeps id 1 if that changes."""
+    conn, meta = ice
+    if not _need(expect, meta, "bkt2"):
+        return
+    expect.text(_ids(conn, "bkt2", "region = 'eu'") or "none", "1,3",
+                "typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3")
+
+
+def test_a_timestamp_6_hour_partition_still_prunes(ice, expect):
+    """Microsecond precision changes no value, so the column keeps hour pruning."""
+    conn, meta = ice
+    if not _need(expect, meta, "th6"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM th6 WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'"), 1,
+               "typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)")
 
 
 # ------------------------------------------------------------------- option validation

@@ -10,6 +10,7 @@ inverted interval (UINT_32 stats ordered unsigned, decoded signed) must never dr
 skip; and an INT64-backed DECIMAL is skippable. Every file is written by pyarrow, an
 independent writer, so the reader and the writer cannot share a misunderstanding.
 """
+import datetime
 import decimal
 
 import psycopg
@@ -181,3 +182,35 @@ def test_an_int64_backed_decimal_is_skippable(pgc_conn, server_dir, expect):
                     "typmod: a numeric(18,1) column skips no group for d = 100.0")
         expect.text(_counter(cur, "ftdec2", "d BETWEEN 120.00 AND 130.00", "Row Groups Skipped"), "3",
                     "typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups")
+
+
+def test_a_time_type_at_full_precision_keeps_skipping(pgc_conn, server_dir, expect):
+    pa = expect.require_module("pyarrow", name="pyarrow not available; predicate-pushdown suite needs it to write stats")
+    if pa is None:
+        return
+    pq = expect.require_module("pyarrow.parquet",
+                               name="pyarrow not available; predicate-pushdown suite needs it to write stats")
+    # four groups, one per hour of 2021-01-01: 999 whole seconds, then hh:59:59.9996,
+    # which timestamp(3) reads as the next hour, beyond the group's stored max (#1790)
+    path = server_dir / "ts_push.parquet"
+    base = datetime.datetime(2021, 1, 1)
+    vals = []
+    for g in range(4):
+        h = base + datetime.timedelta(hours=g)
+        vals += [h + datetime.timedelta(seconds=k) for k in range(999)]
+        vals.append(h + datetime.timedelta(minutes=59, seconds=59, microseconds=999600))
+    _write(path, pa.table({"t": pa.array(vals, pa.timestamp("us"))}), pq,
+           compression="none", row_group_size=1000)
+    assert pq.ParquetFile(str(path)).metadata.num_row_groups == 4
+    where = "t >= TIMESTAMP '2021-01-01 03:00:00'"
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE SERVER IF NOT EXISTS pq_ts FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        cur.execute(f"CREATE FOREIGN TABLE ftts6 (t timestamp(6)) SERVER pq_ts OPTIONS (path '{path}')")
+        cur.execute(f"CREATE FOREIGN TABLE ftts3 (t timestamp(3)) SERVER pq_ts OPTIONS (path '{path}')")
+        expect.text(_counter(cur, "ftts6", where, "Row Groups Skipped"), "3",
+                    "typmod: a timestamp(6) column still skips 3 of 4 groups")
+        expect.text(_counter(cur, "ftts3", where, "Row Groups Skipped"), "0",
+                    "typmod: a timestamp(3) column skips no group for t >= 03:00")
+        cur.execute(f"SELECT count(*) FROM ftts3 WHERE {where}")
+        expect.num(cur.fetchone()[0], 1001,
+                   "typmod: a timestamp(3) column returns the row that rounds up to 03:00")

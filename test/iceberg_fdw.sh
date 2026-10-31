@@ -416,6 +416,22 @@ check "typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  '" \
 check "typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2" \
 	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM frac0
 	      WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'")" "1,2"
+# byregion_bucket is bucket[8](region): 'eu  ' (id 1) and 'eu' (id 3) sit in
+# different buckets, yet both read 'eu' as varchar(2). A bucket pruned on the
+# constant 'eu' would drop id 1. Today the planner wraps a varchar column in a
+# cast to text for "=", so its qual never reaches bucket pruning; the typmod
+# guard in ice_fdw_bucket_quals keeps id 1 if that changes.
+MD_BKT="$(ls "$TMWH"/db/byregion_bucket/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE bkt2 (id bigint, region varchar(2))
+   SERVER ice OPTIONS (metadata_path '$MD_BKT')" >/dev/null
+check "typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM bkt2 WHERE region = 'eu'")" "1,3"
+# A time type at full microsecond precision changes no value, so it keeps
+# pruning: the hour(ts) table read as timestamp(6) prunes as plain timestamp does.
+q "CREATE FOREIGN TABLE th6 (id bigint, ts timestamp(6))
+   SERVER ice OPTIONS (metadata_path '${MD_th:-}')" >/dev/null
+check "typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM th6 WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'")" "1"
 
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \

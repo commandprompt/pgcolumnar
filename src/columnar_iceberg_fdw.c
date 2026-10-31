@@ -753,9 +753,15 @@ ice_fdw_bucket_quals(ForeignScanState *node, TupleDesc tupdesc,
 			continue;
 		if (var->varattno < 1 || contain_volatile_functions((Node *) op))
 			continue;
+		/*
+		 * The stored bucket need not match a value the typmod changed (#1790).
+		 * Not reachable today: the only bucket source types with a typmod are
+		 * varchar(n), and "=" on varchar wraps the Var in a cast to text, which
+		 * the test above rejects. The guard keeps this sound if that changes.
+		 */
 		if (var->varattno <= tupdesc->natts &&
 			ice_fdw_typmod_changes_values(tupdesc, var->varattno))
-			continue;			/* the stored bucket need not match (#1790) */
+			continue;
 
 		interp = PgColumnarGetOpInterpretation(op->opno);
 		foreach(ic, interp)

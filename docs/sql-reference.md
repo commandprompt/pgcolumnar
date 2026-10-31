@@ -1273,6 +1273,13 @@ requires a `column op constant` clause over an integer or floating-point column
 with a constant of the same type; [limitations.md](limitations.md) lists the
 conditions. A scan that skips nothing still returns correct rows.
 
+The wrapper skips no row group on a column whose type modifier can change a
+value, because the statistics hold the stored values. Examples are
+`numeric(18,1)` over a file whose DECIMAL scale is 2, which reads a stored 99.99
+as 100.0, and `timestamp(3)`, which rounds microseconds. A `timestamp(6)` column,
+or a `numeric(p,s)` column with the file's own scale and at least its precision,
+still skips.
+
 The `path` option can name a local file, directory, or glob, or an
 object-storage URL. A remote URL is an exact object, a prefix ending in a slash,
 or a pattern, expanded the same way as a local path. For a remote server the
@@ -1339,9 +1346,7 @@ covers integer and boolean columns; other column types are read in full.
 A column whose type modifier can change a value is never used to prune. Examples
 are `varchar(2)`, which reads a stored `'eu  '` as `'eu'`, and `timestamp(0)`,
 which reads `00:59:59.7` as `01:00:00`. The manifest holds the stored value, so
-it does not describe the value the scan returns. For the same reason, the
-`pgcolumnar_parquet` wrapper skips no row group on a `numeric(p,s)` column whose
-scale differs from the file's DECIMAL scale.
+it does not describe the value the scan returns.
 
 ```sql
 CREATE SERVER ice FOREIGN DATA WRAPPER pgcolumnar_iceberg;

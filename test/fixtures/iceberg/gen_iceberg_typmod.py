@@ -14,8 +14,18 @@
 #   db.byregion_pad: id bigint, region string; identity(region).
 #                    id 1 with 'eu  ' (two trailing spaces), id 2 with 'us'.
 #                    Read as varchar(2), id 1 reads 'eu'.
+#   db.byregion_bucket: id bigint, region string; bucket[8](region).
+#                    id 1 with 'eu  ' (bucket 4), id 2 with 'us' (bucket 0),
+#                    id 3 with 'eu' (bucket 6). Read as varchar(2), ids 1 and 3
+#                    both read 'eu', but sit in different buckets.
 #
-# Run: ~/icevenv/bin/python gen_iceberg_typmod.py <out warehouse> <scratch root>
+# It also writes del_data_toolong.parquet, for test/iceberg_deletes.sh: a copy of
+# warehouse_del's data.parquet (same field ids, same three row groups of 2, 2 and
+# 1 rows) in which the rows the delete fixtures remove, ids 2 and 4, hold the
+# region 'toolong'. Read as varchar(2), only a deleted row breaks the typmod.
+#
+# Run: ~/icevenv/bin/python gen_iceberg_typmod.py <out warehouse> <scratch root> [table ...]
+# Name tables to write only those; with none, it writes every table and the file.
 # with pyiceberg 0.12.0, pyarrow and pyiceberg-core.
 import datetime
 import os
@@ -26,11 +36,13 @@ import pyarrow as pa
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
-from pyiceberg.transforms import HourTransform, IdentityTransform
+import pyarrow.parquet as pq
+from pyiceberg.transforms import BucketTransform, HourTransform, IdentityTransform
 from pyiceberg.types import LongType, NestedField, StringType, TimestampType
 
 OUT = sys.argv[1]
 ROOT = sys.argv[2]
+ONLY = set(sys.argv[3:])
 
 shutil.rmtree(ROOT, ignore_errors=True)
 os.makedirs(ROOT, exist_ok=True)
@@ -39,6 +51,8 @@ cat.create_namespace("db")
 
 
 def make(name, col, col_type, arrow, transform, rows):
+    if ONLY and name not in ONLY:
+        return
     schema = Schema(
         NestedField(1, "id", LongType(), required=False),
         NestedField(2, col, col_type, required=False),
@@ -68,3 +82,17 @@ make("byhour_frac", "ts", TimestampType(), pa.timestamp("us"), HourTransform(),
       (2, datetime.datetime(2021, 3, 1, 5, 0, 0))])
 make("byregion_pad", "region", StringType(), pa.string(), IdentityTransform(),
      [(1, "eu  "), (2, "us")])
+make("byregion_bucket", "region", StringType(), pa.string(), BucketTransform(8),
+     [(1, "eu  "), (2, "us"), (3, "eu")])
+
+if not ONLY or "del_data_toolong" in ONLY:
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "warehouse_del", "db", "t", "data", "data.parquet")
+    t = pq.read_table(src)
+    ids = t.column("id").to_pylist()
+    region = [("toolong" if i in (2, 4) else r)
+              for i, r in zip(ids, t.column("region").to_pylist())]
+    t = t.set_column(t.schema.get_field_index("region"), t.schema.field("region"),
+                     pa.array(region, pa.string()))
+    pq.write_table(t, os.path.join(OUT, "del_data_toolong.parquet"), row_group_size=2)
+    print("del_data_toolong:", list(zip(ids, region)))
