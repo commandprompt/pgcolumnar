@@ -195,18 +195,17 @@ rest_resolve_server(const char *name, char **out_uri, char **out_token,
 	}
 
 	/* OAuth2 client-credentials: a half credential (one of id/secret) is refused
-	 * before any request; a complete pair mints the bearer when no static token. */
-	if (token == NULL && (oauthId != NULL || oauthSecret != NULL))
-	{
-		if (oauthId == NULL || oauthSecret == NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
-					 errmsg("iceberg: incomplete OAuth2 credential for REST catalog server \"%s\"",
-							name),
-					 errhint("Set both oauth_client_id and oauth_client_secret on the "
-							 "USER MAPPING.")));
+	 * before any request, whether or not a static token is also set (#1794); a
+	 * complete pair mints the bearer when no static token. */
+	if ((oauthId == NULL) != (oauthSecret == NULL))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+				 errmsg("iceberg: incomplete OAuth2 credential for REST catalog server \"%s\"",
+						name),
+				 errhint("Set both oauth_client_id and oauth_client_secret on the "
+						 "USER MAPPING.")));
+	if (token == NULL && oauthId != NULL)
 		token = rest_oauth_token(uri, oauthUri, oauthId, oauthSecret, oauthScope);
-	}
 
 	if (token == NULL)
 	{
