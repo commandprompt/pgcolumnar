@@ -103,6 +103,18 @@ def _refusal(dsn, sql, phrase, label, setup=()):
     return "no error"
 
 
+def _denied_url(dsn, sql):
+    """-> the URL that `sql`'s access-denied error names, or what happened instead."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        m = re.search(r'access to "([^"]*)" was denied', str(exc))
+        return m.group(1) if m else f"no access-denied error ({_message(exc)})"
+    return "no access-denied error (no error)"
+
+
 def _refused_by(dsn, sql, setup=()):
     """-> "refused by the dispatcher" when `sql` raised the allow-list refusal itself,
     "refused by worker N" when the dispatcher re-raised a worker's error, or what
@@ -426,6 +438,55 @@ def osw(pgc_cluster):
         open(s3log, "w").close()
         r["par rerun"] = _row(dsn, pexp)
 
+        # #1781: a refused stale-part listing after every worker finished fails the run,
+        # and the dispatcher removes its parts and the earlier run's marker
+        _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/lf', 2)")
+        r["lf first marker"] = "yes" if (bucket / "lf" / "_SUCCESS").is_file() else "no"
+        open(s3log, "w").close()
+        (work / "__listing_status__").write_text("403\n")
+        try:
+            r["lf refusal"] = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                            f"'es_par'::regclass, 's3://{BUCKET}/lf', 2)",
+                                       "was denied", " by the listing")
+        finally:
+            (work / "__listing_status__").unlink()
+        n = _logn(s3log, r"^PUT /pgc-bucket/lf/part-")
+        r["lf uploaded"] = ("yes" if n >= 2 else f"no ({n} part PUTs)") if isinstance(n, int) else n
+        r["lf parts"] = str(_parts(bucket / "lf"))
+        r["lf marker"] = "present" if (bucket / "lf" / "_SUCCESS").exists() else "absent"
+
+        # the same for a refused _SUCCESS PUT
+        open(s3log, "w").close()
+        (work / "__put_status__").write_text(f"403 {BUCKET}/mf/_SUCCESS\n")
+        try:
+            r["mf refusal"] = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                            f"'es_par'::regclass, 's3://{BUCKET}/mf', 2)",
+                                       "mf/_SUCCESS", " by the marker PUT")
+        finally:
+            (work / "__put_status__").unlink()
+        n = _logn(s3log, r"^PUT /pgc-bucket/mf/part-")
+        r["mf uploaded"] = ("yes" if n >= 2 else f"no ({n} part PUTs)") if isinstance(n, int) else n
+        r["mf parts"] = str(_parts(bucket / "mf"))
+
+        # #1781 review: the documented limit of a refused listing. A 4-worker run, then
+        # a 2-worker re-run whose listing is refused, leaves the earlier part-0002/0003
+        # and no marker; the refusal names the prefix it listed, not "s3://pgc-bucket/_"
+        lt = bucket / "lt"
+        _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/lt', 4)")
+        r["lt first"] = f"{_parts(lt)} parts, marker " + \
+            ("present" if (lt / "_SUCCESS").is_file() else "absent")
+        (work / "__listing_status__").write_text("403\n")
+        try:
+            r["lt url"] = _denied_url(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                           f"'es_par'::regclass, 's3://{BUCKET}/lt', 2)")
+        finally:
+            (work / "__listing_status__").unlink()
+        r["lt left"] = " ".join(sorted(p.name for p in lt.iterdir())) if lt.is_dir() else ""
+        print(f"LT error names: {r['lt url']}")
+        print(f"LT contents: {r['lt left'] or '(empty)'}")
+        r["lt left"] = r["lt left"] or "(empty)"
+        r["lt marker"] = "present" if (lt / "_SUCCESS").exists() else "absent"
+
         # shrink: a smaller re-run drops the stale tail
         _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/sr', 4)")
         sr = bucket / "sr"
@@ -616,6 +677,63 @@ def test_the_per_worker_objects_read_back_as_the_generator(osw, expect):
 
 def test_a_rerun_into_the_same_prefix_succeeds(osw, expect):
     expect.text(osw["par rerun"], "80000", "parallel: a re-run into the same prefix succeeds (overwrite)")
+
+
+def test_an_earlier_complete_run_left_its_marker(osw, expect):
+    expect.text(osw["lf first marker"], "yes",
+                "premise: lister refused: an earlier complete run left its marker at lf/")
+
+
+def test_a_refused_listing_fails_the_export(osw, expect):
+    expect.text(osw["lf refusal"], "28000 by the listing", "lister refused: the export fails with the listing's 28000")
+
+
+def test_the_parts_were_uploaded_before_the_refused_listing(osw, expect):
+    expect.text(osw["lf uploaded"], "yes",
+                "premise: lister refused: both workers' parts were uploaded before the listing")
+
+
+def test_a_refused_listing_leaves_no_part(osw, expect):
+    expect.text(osw["lf parts"], "0", "lister refused: no part object remains at the prefix")
+
+
+def test_a_refused_listing_leaves_no_marker(osw, expect):
+    expect.text(osw["lf marker"], "absent", "lister refused: no _SUCCESS marker certifies the failed run's prefix")
+
+
+def test_a_refused_marker_fails_the_export(osw, expect):
+    expect.text(osw["mf refusal"], "28000 by the marker PUT",
+                "marker refused: the export fails with the marker PUT's 28000")
+
+
+def test_the_parts_were_uploaded_before_the_refused_marker(osw, expect):
+    expect.text(osw["mf uploaded"], "yes",
+                "premise: marker refused: both workers' parts were uploaded before the marker")
+
+
+def test_a_refused_marker_leaves_no_part(osw, expect):
+    expect.text(osw["mf parts"], "0", "marker refused: no part object remains at the prefix")
+
+
+def test_the_larger_run_left_four_parts_and_a_marker(osw, expect):
+    expect.text(osw["lt first"], "4 parts, marker present",
+                "premise: listing refused after a larger run: the 4-worker run left 4 parts and its marker at lt/")
+
+
+def test_a_refused_listing_names_the_prefix_it_listed(osw, expect):
+    got = osw["lt url"]
+    expect.text(got, f"s3://{BUCKET}/lt" + ("/" if got.endswith("/") else ""),
+                "listing error: the refused listing names the prefix it listed, not a dummy key")
+
+
+def test_a_refused_listing_leaves_the_larger_runs_tail(osw, expect):
+    expect.text(osw["lt left"], "part-0002.parquet part-0003.parquet",
+                "listing refused after a larger run: the earlier run's part-0002 and part-0003 remain, and nothing else")
+
+
+def test_a_refused_listing_after_a_larger_run_leaves_no_marker(osw, expect):
+    expect.text(osw["lt marker"], "absent",
+                "listing refused after a larger run: no _SUCCESS marker remains at the prefix")
 
 
 def test_the_four_worker_run_wrote_four_parts_and_a_marker(osw, expect):

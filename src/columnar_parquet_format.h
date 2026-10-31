@@ -35,6 +35,9 @@
 
 /* ConvertedType (parquet.thrift ConvertedType); -1 means none */
 #define PQ_CT_UTF8				0
+#define PQ_CT_MAP				1
+#define PQ_CT_MAP_KEY_VALUE		2
+#define PQ_CT_LIST				3
 #define PQ_CT_ENUM				4
 #define PQ_CT_DECIMAL			5
 #define PQ_CT_DATE				6
