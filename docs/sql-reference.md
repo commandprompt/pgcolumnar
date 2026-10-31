@@ -1306,7 +1306,10 @@ The one table option is `metadata_path`, the table's current `metadata.json`
 
 Partition pruning covers the identity, `bucket[N]`, `truncate[W]`, and temporal
 transforms. Identity partitioning prunes on any predicate. `bucket[N]` prunes on
-an equality predicate on the source column. `truncate[W]` prunes on a predicate
+an equality predicate on the source column under a deterministic collation.
+Iceberg buckets a string by its UTF-8 bytes, and under a nondeterministic
+collation two equal strings can differ in bytes. So such an equality reads every
+file. `truncate[W]` prunes on a predicate
 on an integer source column. `day()` on a date source column prunes on a
 predicate on that column.
 
