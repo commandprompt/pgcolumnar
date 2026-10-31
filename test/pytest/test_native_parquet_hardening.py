@@ -3,13 +3,15 @@ whose column-chunk list is shorter than the schema. The pytest twin of
 `test/native_parquet_hardening.sh`, every check by the shell's name.
 
 int2 and date ride on INT32, time and timestamp on INT64, because Parquet has no
-narrower physical type. An out-of-range value must raise, not wrap. Four of the five
-range refusals share 22008, so each check wants its guard's own message ("value out of
-range for type <T>") as well as the SQLSTATE. Each "still reads" check compares the
-decoded values with the ones the writer stored, not a row count, and the no-wrap check
-reads the out-of-range file itself, which must refuse. Every reading waits for the
-server first, and survival also reads the server log's count of killed backends, since
-SELECT 1 answers again after crash recovery.
+narrower physical type. An out-of-range value must raise, not wrap. An unsigned column
+(UINT_32, UINT_64) reads as the stored value into bigint or numeric, which parquet_schema
+now advises, and refuses a narrower type with 22003 rather than coming back negative
+(#1814). Four of the five range refusals share 22008, so each check wants its guard's
+own message ("value out of range for type <T>") as well as the SQLSTATE. Each "still
+reads" check compares the decoded values with the ones the writer stored, not a row
+count, and the no-wrap check reads the out-of-range file itself, which must refuse.
+Every reading waits for the server first, and survival also reads the server log's
+count of killed backends, since SELECT 1 answers again after crash recovery.
 
 STRING CELLS (#1821). A Parquet STRING is UTF-8 by the spec, and a cell holding
 invalid UTF-8 or an embedded NUL must be refused with 22021 and a message that names
@@ -47,7 +49,15 @@ TABLES = [
     ("f_date_bad", "date", "date_bad"), ("f_date_ovf", "date", "date_ovf"),
     ("f_date_ok", "date", "date_ok"),
     ("f_ts_bad", "timestamp", "ts_bad"), ("f_ts_ok", "timestamp", "ts_ok"),
+    ("f_u32_i8", "int8", "u32"), ("f_u32_i4", "int4", "u32"),
+    ("f_u64_num", "numeric", "u64"), ("f_u64_i8", "int8", "u64"),
+    ("f_u32max_i2", "int2", "u32_max"),
 ]
+
+# the premise reader: pyarrow's own reading of the unsigned file, in a subprocess so
+# this module imports no pyarrow
+UNSIGNED_READER = ("import sys, pyarrow.parquet as pq; t = pq.read_table(sys.argv[1]); "
+                   "print(' '.join(str(v) for c in ('u32', 'u64') for v in t.column(c).to_pylist()))")
 
 
 def _message(exc):
@@ -112,6 +122,21 @@ def _short_verdict(dsn, sql):
     return "NO ERROR"
 
 
+def _detail_verdict(dsn, sql, want):
+    """-> "names <value>" when SQL raised with the DETAIL `want` names, NO ERROR when it
+    raised nothing, or any other failure as a query_error() that names it."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        detail = exc.diag.message_detail or ""
+        if detail == f"The Parquet file stores {want}, which cannot be represented as bigint.":
+            return f"names {want}"
+        return query_error(f"{exc.sqlstate}: {exc.diag.message_primary} / {detail}")
+    return "NO ERROR"
+
+
 def _crashes(cluster):
     try:
         return (cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
@@ -165,6 +190,8 @@ def pqh(pgc_cluster, server_dir):
             "DECLARE r text; BEGIN EXECUTE q INTO r; RETURN coalesce(r, '<null>'); "
             "EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE; END $$",
             "CREATE TABLE imp_bad (c int2)",
+            "CREATE TABLE imp_u (u8 int, u16 int, u32 bigint, u64 numeric)",
+            "CREATE TABLE imp_u32_i4 (c int4)",
             f"CREATE FOREIGN TABLE f_short (a int4, b int4) SERVER pq OPTIONS (path '{w}/short_chunks.parquet')",
         ]
         for stmt in setup:
@@ -186,6 +213,32 @@ def pqh(pgc_cluster, server_dir):
                                  f"pgcolumnar.read_parquet('{w}/i2_ok.parquet') AS t(c int2)")
         r["imp bad"] = _sqlstate(dsn, f"SELECT pgcolumnar.import_parquet('imp_bad'::regclass, '{w}/i2_bad.parquet')")
         r["imp rows"] = _value(dsn, "SELECT count(*) FROM imp_bad")
+        pre = subprocess.run([sys.executable, "-c", UNSIGNED_READER, f"{w}/unsigned.parquet"],
+                             capture_output=True, text=True)
+        r["u premise"] = (pre.stdout.strip() if pre.returncode == 0
+                          else query_error((pre.stderr.strip().splitlines() or ["no output"])[-1]))
+        r["u schema"] = _value(dsn, "SELECT string_agg(column_name || ' ' || data_type, '|' ORDER BY column_name) "
+                                    f"FROM pgcolumnar.parquet_schema('{w}/unsigned.parquet')")
+        r["u32 i8"] = _value(dsn, "SELECT string_agg(c::text, ' ' ORDER BY c) FROM f_u32_i8")
+        r["u64 num"] = _value(dsn, "SELECT string_agg(c::text, ' ' ORDER BY c) FROM f_u64_num")
+        r["u32 where"] = _value(dsn, "SELECT count(*) FROM f_u32_i8 WHERE c > 0")
+        r["u32 i4"] = _sqlstate(dsn, "SELECT * FROM f_u32_i4")
+        r["u64 i8"] = _sqlstate(dsn, "SELECT * FROM f_u64_i8")
+        r["u32max i2"] = _sqlstate(dsn, "SELECT * FROM f_u32max_i2")
+        r["u64 detail"] = _detail_verdict(dsn, "SELECT * FROM f_u64_i8", "9223372036854775808")
+        r["u rp"] = _value(dsn, "SELECT string_agg(u8 || '|' || u16 || '|' || u32 || '|' || u64, ' ' ORDER BY u64) "
+                                f"FROM pgcolumnar.read_parquet('{w}/unsigned.parquet') "
+                                "AS t(u8 int, u16 int, u32 bigint, u64 numeric)")
+        r["u rp i8"] = _sqlstate(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/u64.parquet') AS t(c bigint)")
+        for mark in ("logical", "converted"):
+            r[f"u32 {mark} only"] = _value(dsn, "SELECT string_agg(c::text, ' ' ORDER BY c) FROM pgcolumnar.read_parquet("
+                                                f"'{w}/u32_{mark}_only.parquet') AS t(c bigint)")
+        imp = _value(dsn, f"SELECT pgc_value($q$SELECT pgcolumnar.import_parquet('imp_u'::regclass, "
+                          f"'{w}/unsigned.parquet')$q$)")
+        rows = _value(dsn, "SELECT string_agg(u32 || '|' || u64, ' ' ORDER BY u64) FROM imp_u")
+        r["u imp"] = (f"{imp}:{rows}" if isinstance(imp, str) and isinstance(rows, str)
+                      else imp if not isinstance(imp, str) else rows)
+        r["u imp i4"] = _sqlstate(dsn, f"SELECT pgcolumnar.import_parquet('imp_u32_i4'::regclass, '{w}/u32.parquet')")
         r["short"] = _short_verdict(dsn, "SELECT * FROM f_short")
         r["survived"] = _survived(dsn, pgc_cluster, before)
         r["schema"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.parquet_schema('{w}/short_chunks.parquet')")
@@ -343,6 +396,111 @@ def test_parquet_hardening_import_parquet_left_no_wrapped_rows(request, expect):
         return
     r = request.getfixturevalue("pqh")
     expect.num(_int(r["imp rows"]), 0, "import_parquet left no wrapped rows")
+
+
+def test_parquet_hardening_unsigned_premise_pyarrow_reads_unsigned(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u premise"], "1 2147483648 4294967295 1 9223372036854775808 18446744073709551615", "premise: pyarrow reads the unsigned file's values unsigned")
+
+
+def test_parquet_hardening_parquet_schema_advises_types_that_hold_unsigned_values(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u schema"], "u16 integer|u32 bigint|u64 numeric(20,0)|u8 integer", "parquet_schema advises a type that holds every unsigned value")
+
+
+def test_parquet_hardening_uint32_reads_into_bigint_as_unsigned(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32 i8"], "1 2147483648 4294967295", "UINT_32 reads into bigint as unsigned")
+
+
+def test_parquet_hardening_uint64_reads_into_numeric_as_unsigned(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u64 num"], "1 9223372036854775808 18446744073709551615", "UINT_64 reads into numeric as unsigned")
+
+
+def test_parquet_hardening_uint32_into_bigint_where_counts_every_row(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32 where"], "3", "UINT_32 into bigint: WHERE c > 0 counts every row")
+
+
+def test_parquet_hardening_uint32_above_2_31_into_integer_raises_22003(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32 i4"], "22003: value out of range for type integer", "UINT_32 at or above 2^31 into integer -> 22003")
+
+
+def test_parquet_hardening_uint64_above_2_63_into_bigint_raises_22003(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u64 i8"], "22003: value out of range for type bigint", "UINT_64 at or above 2^63 into bigint -> 22003")
+
+
+def test_parquet_hardening_uint32_max_into_smallint_raises_22003(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32max i2"], "22003: value out of range for type smallint", "UINT_32 2^32-1 into smallint -> 22003, not -1")
+
+
+def test_parquet_hardening_uint64_refusal_names_the_stored_value(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u64 detail"], "names 9223372036854775808", "the UINT_64 refusal names the stored value")
+
+
+def test_parquet_hardening_read_parquet_reads_every_unsigned_width(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u rp"], "1|1|1|1 200|40000|2147483648|9223372036854775808 255|65535|4294967295|18446744073709551615", "read_parquet reads every unsigned width at its advised type")
+
+
+def test_parquet_hardening_read_parquet_uint64_into_bigint_raises_22003(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u rp i8"], "22003: value out of range for type bigint", "read_parquet UINT_64 into bigint -> 22003")
+
+
+def test_parquet_hardening_uint32_logical_type_alone_marks_it_unsigned(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32 logical only"], "1 2147483648 4294967295", "UINT_32 marked only by its LogicalType reads into bigint as unsigned")
+
+
+def test_parquet_hardening_uint32_converted_type_alone_marks_it_unsigned(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32 converted only"], "1 2147483648 4294967295", "UINT_32 marked only by its ConvertedType reads into bigint as unsigned")
+
+
+def test_parquet_hardening_import_parquet_reads_unsigned_into_wider_types(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u imp"], "3:1|1 2147483648|9223372036854775808 4294967295|18446744073709551615", "import_parquet reads UINT_32 into bigint and UINT_64 into numeric")
+
+
+def test_parquet_hardening_import_parquet_uint32_into_integer_raises_22003(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u imp i4"], "22003: value out of range for type integer", "import_parquet UINT_32 into integer -> 22003")
 
 
 def test_parquet_hardening_short_chunk_list_is_a_clean_reject(request, expect):

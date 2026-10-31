@@ -952,8 +952,11 @@ old name, and columns are selected by id.
 
 The file must carry field ids. A file written without them is an error that
 directs you to the positional form above. Each requested id must match exactly
-one scalar column of a compatible type. An absent id is an error. So is an id
-that matches more than one column, or an array or composite output column. None
+one scalar column of a compatible type. A compatible type includes Iceberg's two
+exact widenings: an integer `INT32` column reads as `bigint`, and a `FLOAT`
+column as `double precision`. The positional form above does not widen. An
+absent id is an error. So is an id that matches more than one column, or an
+array or composite output column. None
 is a silent wrong column. Read the ids a file carries with `parquet_schema`.
 
 ```sql
@@ -968,7 +971,8 @@ SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet', ARRAY[12, 7])
 Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
 without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
-file.
+file. The type it reports holds every value the column can store. So an unsigned
+`UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
 
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when
@@ -1095,6 +1099,16 @@ A projected column that the file does not carry reads as null. This covers a
 column added to the schema after the file was written. It also covers a column
 an id-less file has but the mapping does not bind. The file's other columns
 return their real values.
+
+A column whose type was promoted reads as its current type. Iceberg allows three
+promotions: `int` to `long`, `float` to `double`, and a `decimal` to a larger
+precision at the same scale. A data file written before the promotion still
+stores the old type, and its values are widened as they are read. Declare such a
+column with the current schema's type: `bigint`, `double precision` or `numeric`.
+Files from before and after the promotion read together. An equality delete on a
+promoted column applies to both, whichever type its own file stores. A declared
+type narrower than a file's stored type is refused. So a column declared with its
+pre-promotion type errors once a file written after the promotion is live.
 
 Row-level deletes are applied, each kind under its own Iceberg sequence rule.
 A position delete drops the row ordinals it lists from the data file it names.
@@ -1312,7 +1326,10 @@ The one table option is `metadata_path`, the table's current `metadata.json`
 
 Partition pruning covers the identity, `bucket[N]`, `truncate[W]`, and temporal
 transforms. Identity partitioning prunes on any predicate. `bucket[N]` prunes on
-an equality predicate on the source column. `truncate[W]` prunes on a predicate
+an equality predicate on the source column under a deterministic collation.
+Iceberg buckets a string by its UTF-8 bytes, and under a nondeterministic
+collation two equal strings can differ in bytes. So such an equality reads every
+file. `truncate[W]` prunes on a predicate
 on an integer source column. `day()` on a date source column prunes on a
 predicate on that column.
 
