@@ -4510,6 +4510,9 @@ native_param_pushdown	native_param_pushdown	backend alive	15;16;17;18;19	never	-
 native_param_pushdown	native_param_pushdown	literal count is the expected value	15;16;17;18;19	never	-
 native_param_pushdown	native_param_pushdown	parameterized count matches the literal count	15;16;17;18;19	2026-10-22	columnar_customscan.c: an int4 scan-key operand is frozen 2000 above its value
 native_param_pushdown	native_param_pushdown	the correlated arm rescans the columnar scan once per outer row	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	all-NULL gzip column reads as 3 rows, none non-NULL	15;16;17;18;19	2026-10-30	columnar_parquet_codec.c: a page whose declared uncompressed size is 0 is refused for GZIP, ZSTD and LZ4_RAW again, the #1786 defect (#1786)
+native_parquet_codecs	native_parquet_codecs	all-NULL lz4 column reads as 3 rows, none non-NULL	15;16;17;18;19	2026-10-30	columnar_parquet_codec.c: a page whose declared uncompressed size is 0 is refused for GZIP, ZSTD and LZ4_RAW again, the #1786 defect (#1786)
+native_parquet_codecs	native_parquet_codecs	all-NULL zstd column reads as 3 rows, none non-NULL	15;16;17;18;19	2026-10-30	columnar_parquet_codec.c: a page whose declared uncompressed size is 0 is refused for GZIP, ZSTD and LZ4_RAW again, the #1786 defect (#1786)
 native_parquet_codecs	native_parquet_codecs	backend survived the crafted header	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: a page declaring a size past MaxAllocSize aborts instead of being refused
 native_parquet_codecs	native_parquet_codecs	crafted uncompressed size gives a clean decode error	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: a page declaring a size past MaxAllocSize aborts instead of being refused
 native_parquet_codecs	native_parquet_codecs	gzip FDW count	15;16;17;18;19	never	-
@@ -4517,6 +4520,9 @@ native_parquet_codecs	native_parquet_codecs	gzip decodes to the generator's rows
 native_parquet_codecs	native_parquet_codecs	gzip sum matches the generator	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
 native_parquet_codecs	native_parquet_codecs	lz4 FDW count	15;16;17;18;19	never	-
 native_parquet_codecs	native_parquet_codecs	lz4 decodes to the generator's rows	15;16;17;18;19	2026-10-22	columnar_parquet_codec.c: every decompressed page over 4 KB has one byte flipped after decompression, the same way for every codec
+native_parquet_codecs	native_parquet_codecs	premise: the all-NULL gzip file is GZIP with a dictionary page	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	premise: the all-NULL lz4 file is LZ4 with a dictionary page	15;16;17;18;19	never	-
+native_parquet_codecs	native_parquet_codecs	premise: the all-NULL zstd file is ZSTD with a dictionary page	15;16;17;18;19	never	-
 native_parquet_codecs	native_parquet_codecs	premise: the gzip file is GZIP-compressed	15;16;17;18;19	never	-
 native_parquet_codecs	native_parquet_codecs	premise: the lz4 file is LZ4-compressed	15;16;17;18;19	never	-
 native_parquet_codecs	native_parquet_codecs	premise: the uncompressed file is UNCOMPRESSED	15;16;17;18;19	never	-
@@ -5273,17 +5279,27 @@ nologin_workers	nologin_workers	premise: the server log records the NOLOGIN role
 nologin_workers	nologin_workers	the flush is dispatched to workers	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	a key with a space, '+' and '=' reads back (path-style)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_uriencode_path encodes a space as '+'
 objstore_addressing	objstore_addressing	a key with a space, '+' and '=' reads back (virtual-host)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_uriencode_path encodes a space as '+'
+objstore_addressing	objstore_addressing	and its path-style LIST put the bucket in the request path	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	and its path-style request path is the key URI-encoded once	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	and its virtual-host LIST went to the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	and its virtual-host request path is the key alone, URI-encoded once	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
+objstore_addressing	objstore_addressing	and its virtual-host upload cleanup listed the uploads at the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
+objstore_addressing	objstore_addressing	and the pattern read's virtual-host LIST went to the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	and the request path carried the bucket again	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	and the virtual-host upload cleanup aborted the upload the worker left open	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783)
 objstore_addressing	objstore_addressing	gs:// read round-trips (scheme handled, HMAC creds reused)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	gs:// read-back of the written object	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: gs:// demands AWS_ENDPOINT_URL like s3:// instead of defaulting to storage.googleapis.com
 objstore_addressing	objstore_addressing	gs:// write round-trips	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	path-style put the bucket in the request path	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	premise: a worker's upload is open and its id unanswered when the worker is terminated	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	premise: fixture up	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	premise: the virtual-host export fails in a worker	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	removal proof: with addressing=path the bucket is back in the path	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	s3:// path-style read	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	s3:// pattern read, virtual-host	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
+objstore_addressing	objstore_addressing	s3:// prefix read, path-style	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	s3:// prefix read, virtual-host	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	s3:// with no endpoint demands one (names AWS_ENDPOINT_URL)	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	virtual-host put the KEY ALONE in the path (no bucket segment)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
 objstore_addressing	objstore_addressing	virtual-host read == path-style read (same object, different addressing)	15;16;17;18;19	never	-
@@ -5476,18 +5492,24 @@ objstore_sink_write	objstore_sink_write	parallel export to an s3:// prefix succe
 objstore_sink_write	objstore_sink_write	parallel remote: a _SUCCESS marker object exists at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: the marker went to the prefix as a PUT	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: a re-run into the same prefix succeeds (overwrite)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: a session SET of objstore_part_size reaches the workers (multipart)	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
 objstore_sink_write	objstore_sink_write	parallel: every worker PUT went to the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: one object per worker was written (4)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: the union of the per-worker objects == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
 objstore_sink_write	objstore_sink_write	part failure: a refused part fails the export (58030)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a part upload the server refused is read as stored
 objstore_sink_write	objstore_sink_write	part failure: the key does not exist	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no multipart, the growing object is PUT to the final key as it grows
 objstore_sink_write	objstore_sink_write	part failure: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
+objstore_sink_write	objstore_sink_write	premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: a worker was uploading before the cancel	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the export was cancelled, not completed	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the fault landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the large export took the multipart protocol	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the part failure landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	session allow-list: a new session sees an empty system list before the widen arm	15;16;17;18;19	2026-10-31	objstore_sink_write.sh: the pg_reload_conf() after ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '' removed, so the system list never becomes '' (#1780)
+objstore_sink_write	objstore_sink_write	session allow-list: a session SET widens an empty system list for the workers	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
+objstore_sink_write	objstore_sink_write	session allow-list: nothing reached the refused prefix (no PUT, no POST)	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
+objstore_sink_write	objstore_sink_write	session allow-list: the dispatcher raises the refusal, not a worker	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: pexport_prepare_dir's api->check_endpoint(dir, NULL) removed, the GUC hand-off to the workers kept (#1780)
 objstore_sink_write	objstore_sink_write	shrink: _SUCCESS certifies the reconciled prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	shrink: parts 0002/0003 from the larger run are gone	15;16;17;18;19	never	-
