@@ -44,6 +44,7 @@ from pgc_vacuity import query_error
 
 TEST = pathlib.Path(__file__).resolve().parents[1]
 AKID, SECRET, REGION, BUCKET = "PGCTESTKEYID", "pgctest-secret-shhh", "pgc-test-1", "pgc-bucket"
+DENIED_BUCKET = "pgc-denied"   # the fixture checks this bucket's signatures against another secret
 PART = "SET pgcolumnar.objstore_part_size = 262144"
 
 GEN_SMALL = "SELECT g, 'row-'||g FROM generate_series(1,1000) g"
@@ -311,6 +312,16 @@ def _plain_run(dsn, work, r, procs):
     except psycopg.Error as exc:
         print(f"-- fh_small: {_message(exc)}")
     r["plain small back"] = _set_hash(dsn, "SELECT * FROM fh_small")
+    # export_arrow shares the sink, and #1779 names it too: the object goes to the
+    # http:// target and is imported back from the fixture server's directory.
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE TABLE eh_arrow_back (id int, t text) USING pgcolumnar")
+    except psycopg.Error as exc:
+        print(f"-- eh_arrow_back: {_message(exc)}")
+    _row(dsn, f"SELECT pgcolumnar.export_arrow('es_small', '{url}/small.arrow')")
+    _row(dsn, f"SELECT pgcolumnar.import_arrow('eh_arrow_back', '{pdir}/pb/small.arrow')")
+    r["plain arrow back"] = _set_hash(dsn, "SELECT * FROM eh_arrow_back")
 
     open(plog, "w").close()
     r["plain big"] = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_big', '{url}/big.parquet')", setup=[PART])
@@ -358,7 +369,8 @@ def osw(pgc_cluster):
         s3log = str(work / "sink.log")
         srv = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
                                 "--port", str(s3_port), "--log", s3log,
-                                "--sigv4-key", AKID, "--sigv4-secret", SECRET, "--sigv4-region", REGION],
+                                "--sigv4-key", AKID, "--sigv4-secret", SECRET, "--sigv4-region", REGION,
+                                "--tamper-bucket", DENIED_BUCKET],
                                stdout=open(out, "w"), stderr=subprocess.STDOUT)
         for _ in range(50):
             if out.is_file() and "READY" in out.read_text(errors="replace"):
@@ -494,6 +506,11 @@ def osw(pgc_cluster):
         # Authorization header, so an http:// export to it draws that 403.
         r["unsigned 403 hint"] = _hint(dsn, "SELECT pgcolumnar.export_parquet('es_small', "
                                             f"'http://127.0.0.1:{s3_port}/{BUCKET}/denied.parquet')")
+        # The other side of that branch: an s3:// request IS signed, so its 403 keeps
+        # the AWS_* hint. The fixture verifies the denied bucket against a different
+        # secret, so this correctly signed export is refused as a wrong secret would be.
+        r["signed 403 hint"] = _hint(dsn, "SELECT pgcolumnar.export_parquet('es_small', "
+                                          f"'s3://{DENIED_BUCKET}/denied.parquet')")
 
         # optional: a real S3 implementation, the shell's last arm. The endpoint's host
         # replaces the fixture's in the allow-list, and the cluster restarts with its
@@ -705,6 +722,11 @@ def test_the_small_http_object_reads_back_as_the_generator(osw, expect):
     expect.text(osw["plain small back"], osw["small gen"], "http:// small round trip: read-back == source")
 
 
+def test_an_arrow_export_to_http_imports_back_as_the_generator(osw, expect):
+    # #1779 names export_arrow too: it writes through the same sink
+    expect.text(osw["plain arrow back"], osw["small gen"], "http:// arrow export round-trips unsigned (no crash)")
+
+
 def test_a_large_export_to_http_succeeds_unsigned(osw, expect):
     expect.text(osw["plain big"], "400000", "http:// large export succeeds unsigned (no crash)")
 
@@ -738,6 +760,13 @@ def test_a_403_from_an_unsigned_http_target_hints_that_it_went_unsigned(osw, exp
                 "Requests to http:// and https:// URLs are never signed. "
                 "Use an s3:// or gs:// URL for a store that needs credentials.",
                 "http:// 403: the hint says the request went unsigned, not to check AWS_* credentials")
+
+
+def test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials(osw, expect):
+    # #1779 review: the unsigned hint must not reach a request that was signed
+    expect.text(osw["signed 403 hint"],
+                "Check the AWS_* credential environment of the server process.",
+                "s3:// 403: a signed request that is refused still hints to check AWS_* credentials")
 
 
 _NO_REAL_S3 = ("PGC_S3_INTEGRATION_ENDPOINT names no real S3 implementation, so the shell "

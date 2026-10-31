@@ -32,6 +32,7 @@ AKID="PGCTESTKEYID"
 SECRET="pgctest-secret-shhh"
 REGION="pgc-test-1"
 BUCKET="pgc-bucket"
+DENIED_BUCKET="pgc-denied"   # the fixture checks this bucket's signatures against another secret
 
 objstore_sink_teardown() {
 	[ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
@@ -80,6 +81,7 @@ mkdir -p "$PGC_WORKDIR/$BUCKET"
 python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
 	--dir "$PGC_WORKDIR" --port "$S3_PORT" --log "$S3_LOG" \
 	--sigv4-key "$AKID" --sigv4-secret "$SECRET" --sigv4-region "$REGION" \
+	--tamper-bucket "$DENIED_BUCKET" \
 	> "$PGC_WORKDIR/sink_server.out" 2>&1 &
 SRV_PID=$!
 for _ in $(seq 1 50); do
@@ -369,6 +371,14 @@ check_num "http:// small object went as ONE plain PUT" \
 psql_run "CREATE FOREIGN TABLE fh_small (id int, t text) SERVER wsrv OPTIONS (path '$PLAIN/small.parquet');"
 check "http:// small round trip: read-back == source" \
 	"$(pgc_set_hash "SELECT * FROM fh_small")" "$(pgc_set_hash "$GEN_SMALL")"
+# export_arrow shares the sink, and #1779 names it too: the object goes to the
+# http:// target and is imported back from the fixture server's directory.
+psql_run "CREATE TABLE eh_arrow_back (id int, t text) USING pgcolumnar;"
+q "SELECT pgcolumnar.export_arrow('es_small', '$PLAIN/small.arrow')" >/dev/null
+wait_up
+q "SELECT pgcolumnar.import_arrow('eh_arrow_back', '$PLAIN_DIR/pb/small.arrow')" >/dev/null
+check "http:// arrow export round-trips unsigned (no crash)" \
+	"$(pgc_set_hash "SELECT * FROM eh_arrow_back")" "$(pgc_set_hash "$GEN_SMALL")"
 
 : > "$PLAIN_LOG"
 wait_up   # a crash above leaves the cluster in recovery; read this arm on its own
@@ -408,6 +418,12 @@ hint_of() {
 check "http:// 403: the hint says the request went unsigned, not to check AWS_* credentials" \
 	"$(hint_of "SELECT pgcolumnar.export_parquet('es_small', 'http://127.0.0.1:$S3_PORT/$BUCKET/denied.parquet')")" \
 	"Requests to http:// and https:// URLs are never signed. Use an s3:// or gs:// URL for a store that needs credentials."
+# The other side of that branch: an s3:// request IS signed, so its 403 keeps the
+# AWS_* hint. The fixture verifies the denied bucket against a different secret,
+# so this correctly signed export is refused as a wrong secret would be.
+check "s3:// 403: a signed request that is refused still hints to check AWS_* credentials" \
+	"$(hint_of "SELECT pgcolumnar.export_parquet('es_small', 's3://$DENIED_BUCKET/denied.parquet')")" \
+	"Check the AWS_* credential environment of the server process."
 
 # ---- optional: a real S3 implementation (Garage) ----------------------------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then
