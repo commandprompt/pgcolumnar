@@ -700,8 +700,9 @@ typedef void (*IceDataFileCb) (void *ctx, PgColumnarAvroManifestEntry *e,
  * When `collect_deletes` is false (the lister), any delete file or removed entry
  * is refused loudly (0A000). When true (the scan), position-delete (content 1)
  * and equality-delete (content 2) entries are passed to `cb` alongside data
- * entries (content 0), and removed entries (status 2) are skipped. Does nothing
- * when there is no current snapshot.
+ * entries (content 0), and removed entries (status 2) are skipped. Either way a
+ * manifest content, entry content or entry status outside the spec is refused
+ * as corrupt metadata (XX001). Does nothing when there is no current snapshot.
  */
 static void
 ice_walk_data_files(const char *path, JsonbContainer *root,
@@ -763,6 +764,14 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 
 		CHECK_FOR_INTERRUPTS();
 
+		/* the spec allows only 0 (data) and 1 (deletes); anything else is
+		 * corrupt metadata, not a delete manifest */
+		if (mfs[mi].content != 0 && mfs[mi].content != 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: manifest \"%s\" has invalid content %d",
+							mfs[mi].manifest_path, mfs[mi].content)));
+
 		/* the lister refuses a delete manifest without even opening it */
 		if (mfs[mi].content != 0 && !collect_deletes)
 			ereport(ERROR,
@@ -782,6 +791,22 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 			PgColumnarAvroManifestEntry *e = &entries[ei];
 
 			CHECK_FOR_INTERRUPTS();
+
+			/* the spec allows content 0 (data), 1 (position deletes) and 2
+			 * (equality deletes), and status 0 (existing), 1 (added) and 2
+			 * (deleted). Any other value is corrupt metadata: an unknown
+			 * content was once taken for an equality delete, which dropped the
+			 * file's rows with no error (#1823). */
+			if (e->content < 0 || e->content > 2)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("iceberg: manifest entry \"%s\" has invalid content %d",
+								e->file_path ? e->file_path : "(null)", e->content)));
+			if (e->status < 0 || e->status > 2)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("iceberg: manifest entry \"%s\" has invalid status %d",
+								e->file_path ? e->file_path : "(null)", e->status)));
 
 			if (!collect_deletes)
 			{
@@ -2178,8 +2203,11 @@ ice_scan_cb(void *ctx, PgColumnarAvroManifestEntry *e,
 		c->data = lappend(c->data, ie);
 	else if (e->content == 1)
 		c->posdel = lappend(c->posdel, ie);
-	else
+	else if (e->content == 2)
 		c->eqdel = lappend(c->eqdel, ie);
+	else						/* ice_walk_data_files refuses any other */
+		elog(ERROR, "iceberg: unexpected content %d for \"%s\"",
+			 e->content, e->file_path);
 }
 
 /*

@@ -95,6 +95,7 @@ WHM="$FX/warehouse_malformed"
 	&& [ -f "$WHM/nullminseq_ml/ml.avro" ] \
 	&& [ -f "$WHM/nullmanifestpath/db/t/metadata/t.metadata.json" ] \
 	&& [ -f "$WHM/danglingschema/db/t/metadata/t.metadata.json" ] \
+	&& [ -f "$WHM/enum_ctl/db/t/metadata/t.metadata.json" ] \
 	|| pgc_skip fixture "malformed iceberg fixtures are missing"
 python3 -c 'import json' 2>/dev/null || pgc_skip python "python3 is needed"
 
@@ -272,5 +273,57 @@ check "control: the legacy table binds amount correctly (10..50)" \
 	"$(q "SELECT string_agg(amount::text, ',' ORDER BY amount)
 	      FROM pgcolumnar.iceberg_scan('$LS') AS t(id bigint, region text, amount int)")" \
 	"10,20,30,40,50"
+
+# =========================================================================
+# #1823  manifest enum fields outside the spec. data_file.content may be only
+#     0 (data), 1 (position deletes) or 2 (equality deletes); any other value was
+#     sorted as an equality delete. On the OLDEST data file that delete was then
+#     skipped as never applicable, so the file's five rows vanished with no error;
+#     on the newest the scan failed with a misleading "has no equality_ids". The
+#     lister called it a delete file (0A000). manifest_entry.status (0..2) and
+#     manifest_file.content (0..1) were not range-checked either. Each variant is
+#     enum_ctl with ONE value changed, and each refusal must name the value.
+# =========================================================================
+md_of() { echo "$DEST/$1/db/t/metadata/t.metadata.json"; }
+EN="AS t(id bigint, region text, amount int)"
+check "control: two valid data entries scan as ten rows (ids 1..10)" \
+	"$(q "SELECT count(*) || '|' || min(id) || '|' || max(id) FROM pgcolumnar.iceberg_scan('$(md_of enum_ctl)') $EN")" \
+	"10|1|10"
+check "control: two valid data entries list two data files" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$(md_of enum_ctl)')")" "2"
+B="$(crashes)"
+check "data_file.content 3 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of content3_old)') $EN" \
+		'manifest entry ".*/old\.parquet" has invalid content 3$' "invalid content 3")" \
+	"XX001 (invalid content 3)"
+check "data_file.content -1 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of contentm1_old)') $EN" \
+		'manifest entry ".*/old\.parquet" has invalid content -1$' "invalid content -1")" \
+	"XX001 (invalid content -1)"
+check "data_file.content 3 on the newest file is refused naming the value, not as an equality delete with no ids" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of content3_new)') $EN" \
+		'manifest entry ".*/new\.parquet" has invalid content 3$' "invalid content 3")" \
+	"XX001 (invalid content 3)"
+check "iceberg_data_files refuses data_file.content 3 as corrupt (XX001), not as a delete file (0A000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_data_files('$(md_of content3_old)')" \
+		'manifest entry ".*/old\.parquet" has invalid content 3$' "invalid content 3")" \
+	"XX001 (invalid content 3)"
+check "manifest_entry.status 3 is refused by iceberg_scan (XX001), not read as a live entry" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of status3_old)') $EN" \
+		'manifest entry ".*/old\.parquet" has invalid status 3$' "invalid status 3")" \
+	"XX001 (invalid status 3)"
+check "iceberg_data_files refuses manifest_entry.status 3 (XX001), not listed" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_data_files('$(md_of status3_old)')" \
+		'manifest entry ".*/old\.parquet" has invalid status 3$' "invalid status 3")" \
+	"XX001 (invalid status 3)"
+check "manifest_file.content 5 is refused by iceberg_scan (XX001), not read as a data manifest" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of mfcontent5)') $EN" \
+		'manifest ".*/dm\.avro" has invalid content 5$' "invalid manifest content 5")" \
+	"XX001 (invalid manifest content 5)"
+check "iceberg_data_files refuses manifest_file.content 5 as corrupt (XX001), not as a delete manifest (0A000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_data_files('$(md_of mfcontent5)')" \
+		'manifest ".*/dm\.avro" has invalid content 5$' "invalid manifest content 5")" \
+	"XX001 (invalid manifest content 5)"
+check "backend still up after the enum refusals" "$(survived "$B")" "1"
 
 pgc_summary

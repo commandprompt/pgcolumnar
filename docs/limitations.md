@@ -1177,7 +1177,9 @@ table at its current snapshot. It has these limits:
 - The reader refuses malformed or hostile metadata rather than crashing or
   returning wrong rows. It rejects a non-regular file, such as a FIFO, named as a
   path. It also rejects a null manifest sequence number, a null or negative
-  position-delete position, and a `current-schema-id` that names no schema.
+  position-delete position, and a `current-schema-id` that names no schema. It
+  also rejects a manifest `content` or `status` value outside the Iceberg spec.
+  A file of unknown kind is never skipped as a delete.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet.
 - The reader does not write or commit to an Iceberg table, and it reads only the
