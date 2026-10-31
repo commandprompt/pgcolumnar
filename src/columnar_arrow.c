@@ -2253,7 +2253,10 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 				IMPORT_CORRUPT("the file starts with ARROW1 but does not end with it");
 			memcpy(&footerLen, tail, 4);
 			if (footerLen < 0 || (int64) footerLen > (int64) fileSize - 8 - 10)
-				IMPORT_CORRUPT("the footer length runs past the start of the file");
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("columnar: malformed Arrow IPC file: footer length %d is out of range",
+								footerLen)));
 			streamEnd = (int64) fileSize - 10 - footerLen;
 			streamPos = 8;
 		}

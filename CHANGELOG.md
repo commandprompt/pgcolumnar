@@ -471,9 +471,12 @@ true until the next version shipped.
   `invalid memory alloc request size 1330795073`, because the reader took
   `ARRO` as a message length. The reader now skips the 8-byte header, reads the
   stream inside the file, and ignores the footer. A file that starts with
-  `ARROW1` but does not end with it is refused with `XX001`. A message or body
-  length larger than the rest of the file is now refused with `XX001` before
-  anything is allocated. `export_arrow` still writes the IPC stream format.
+  `ARROW1` but does not end with it is refused with `XX001`, and so is one whose
+  footer length is negative or larger than the file. A file without the
+  optional end-of-stream marker before its footer is read too. A message or
+  body length larger than the rest of the file is now refused with `XX001`
+  before anything is allocated. `export_arrow` still writes the IPC stream
+  format.
   `docs/how-to.md` said both functions use the IPC file format; it now names
   each format and says to read an export with `pyarrow.ipc.open_stream`.
   `test/arrow_import.sh` and `test_arrow_import.py`. Reported by @OffgridwithJD.

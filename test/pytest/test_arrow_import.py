@@ -53,6 +53,17 @@ def _refusal(conn, sql):
         return f"{e.sqlstate} {e.diag.message_primary}"
 
 
+def _outcome(conn, sql):
+    """-> the value `sql` returned, as text, or 'SQLSTATE message' of its error.
+
+    The shell's ai_outcome: the check shows what the server did either way."""
+    import psycopg
+    try:
+        return str(_one(conn, sql))
+    except psycopg.Error as e:
+        return f"{e.sqlstate} {e.diag.message_primary}"
+
+
 def _notices(conn, sql):
     """-> the messages the server sent while running `sql`, errors included."""
     import psycopg
@@ -161,6 +172,24 @@ def test_a_round_trip_and_the_documented_lossy_mapping(pgc_conn, server_dir, exp
                 f"XX001 columnar: malformed Arrow IPC file: body length {body} is larger than"
                 f" the {body // 2} bytes left in the file|0",
                 "a body length larger than the rest of the file is refused before it is allocated (#1806)")
+    # an IPC file whose footer length is larger than the file, or negative: the
+    # one-row export wrapped in "ARROW1", 2 padding bytes, a 4-byte footer, the
+    # footer length and "ARROW1"
+    wrapped = b"ARROW1\0\0" + d + bytes(4)
+    size = len(wrapped) + 10
+    feet = []
+    for name, flen in (("footlong.arrow", size), ("footneg.arrow", -1)):
+        f = server_dir / name
+        f.write_bytes(wrapped + struct.pack("<i", flen) + b"ARROW1")
+        f.chmod(0o644)
+        feet.append(f)
+    _run(conn, "CREATE TABLE ri_foot (a int) USING pgcolumnar")
+    expect.text(" / ".join(_outcome(conn, f"SELECT pgcolumnar.import_arrow('ri_foot', '{f}')") for f in feet)
+                + f"|{_one(conn, 'SELECT count(*) FROM ri_foot')}",
+                f"XX001 columnar: malformed Arrow IPC file: footer length {size} is out of range"
+                " / XX001 columnar: malformed Arrow IPC file: footer length -1 is out of range|0",
+                "an Arrow IPC file whose footer length is negative or larger than the file is refused as malformed"
+                " (#1806)")
 
 
 def test_a_file_pyarrow_wrote(pgc_conn, server_dir, expect):
@@ -187,25 +216,17 @@ def test_a_file_pyarrow_wrote(pgc_conn, server_dir, expect):
     ipcfile = server_dir / "foreign.arrow"
     with pa.ipc.new_file(pa.OSFile(str(ipcfile), "wb"), tab.schema) as w:
         w.write_table(tab)
-    pafeather = expect.require_module("pyarrow.feather", name="a Feather v2 file imports its rows too (#1806)")
-    if pafeather is None:
-        return
-    feather = server_dir / "foreign.feather"
-    pafeather.write_feather(tab, str(feather), compression="uncompressed")
 
     def file_rows(table, path):
+        """-> "<what import_arrow returned, or its error>|<values>", as the shell's ai_file_rows."""
         _run(conn, f"CREATE TABLE {table} (a bigint, b float8, c text) USING pgcolumnar")
-        got = _refusal(conn, f"SELECT pgcolumnar.import_arrow('{table}', '{path}')")
-        if got == "ok":
-            got = str(_one(conn, f"SELECT count(*) FROM {table}"))
+        got = _outcome(conn, f"SELECT pgcolumnar.import_arrow('{table}', '{path}')")
         vals = _one(conn, "SELECT string_agg(coalesce(a::text,'-')||'/'||coalesce(b::text,'-')||'/'||"
                           f"coalesce(c,'-'), ',' ORDER BY a NULLS LAST) FROM {table}")
         return f"{got}|{vals or ''}"
 
     expect.text(file_rows("ri_ipcfile", ipcfile), "4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z",
                 "an Arrow IPC file (ARROW1 magic) imports its rows (#1806)")
-    expect.text(file_rows("ri_feather", feather), "4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z",
-                "a Feather v2 file imports its rows too (#1806)")
     nofooter = server_dir / "nofooter.arrow"
     nofooter.write_bytes(ipcfile.read_bytes()[:-10])
     nofooter.chmod(0o644)
@@ -214,6 +235,27 @@ def test_a_file_pyarrow_wrote(pgc_conn, server_dir, expect):
                 + f"|{_one(conn, 'SELECT count(*) FROM ri_nofooter')}",
                 "XX001 columnar: malformed Arrow IPC file: the file starts with ARROW1 but does not end with it|0",
                 "an Arrow IPC file without its trailing magic is refused as malformed (#1806)")
+    # the same file without the 8-byte end-of-stream marker before its footer; the
+    # removed bytes lead the reading, so a builder that cut the wrong ones fails it
+    raw = ipcfile.read_bytes()
+    fstart = len(raw) - 10 - struct.unpack_from("<i", raw, len(raw) - 10)[0]
+    noeos = server_dir / "noeos.arrow"
+    noeos.write_bytes(raw[:fstart - 8] + raw[fstart:])
+    noeos.chmod(0o644)
+    expect.text(f"{raw[fstart - 8:fstart].hex()}|{file_rows('ri_noeos', noeos)}",
+                "ffffffff00000000|4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z",
+                "an Arrow IPC file without an end-of-stream marker before its footer imports its rows (#1806)")
+
+    # Feather v2 last, so no check above depends on pyarrow.feather. It ships inside
+    # pyarrow, which this test required first. A decline here would follow recorded
+    # checks, which the harness refuses, so a missing feather fails the test.
+    pafeather = expect.require_module("pyarrow.feather", name="a Feather v2 file imports its rows too (#1806)")
+    if pafeather is None:
+        return
+    feather = server_dir / "foreign.feather"
+    pafeather.write_feather(tab, str(feather), compression="uncompressed")
+    expect.text(file_rows("ri_feather", feather), "4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z",
+                "a Feather v2 file imports its rows too (#1806)")
 
 
 def test_nanosecond_narrowing_is_reported_never_refused(pgc_conn, server_dir, expect):
