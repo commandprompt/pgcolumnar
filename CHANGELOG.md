@@ -466,6 +466,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- An object-store error no longer names `s3://<bucket>/_`, a key nobody gave
+  (#1869). A bucket-level request, the upload listing an export's cleanup makes,
+  the object listing behind `read_parquet` on a prefix, and the endpoint check
+  `parallel_export_parquet` makes before it starts workers, is resolved from
+  that dummy key, and a refusal named it. A refused ListMultipartUploads, or a
+  region or credential refusal in any of the three, now names the URL the caller
+  gave. The export's upload cleanup still never raises, but it now LOGs what it
+  discarded, so the server log says why an export's uploads were left open.
+  `test/objstore_export_open_uploads.sh` and
+  `test_objstore_export_open_uploads.py`.
 - `parallel_export_parquet` now removes the run's parts when it fails after
   every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
   prefix, the export lists the prefix to remove stale parts, and then it PUTs

@@ -16,6 +16,14 @@ while the store does not answer the listing (__list_uploads_delay__), where the
 cleanup's bounded wait must give up and the export still report its own cancel,
 promptly.
 
+Then the messages name what the caller gave, never the dummy key "s3://bucket/_" a
+bucket-level request is resolved from (#1869). Worker 0's part PUT is refused
+(__put_status__), so the run fails and the cleanup lists the prefix's uploads, which
+the store refuses (__list_uploads_status__): the dispatcher LOGs what the cleanup
+discarded, and that line must name the prefix it listed. And with no region in the
+postmaster's environment, the export's endpoint check and read_parquet's directory
+listing must each name the prefix in the region refusal.
+
 A PRIVATE CLUSTER, because the postmaster starts with AWS_* in its environment, which
 the shared cluster cannot do: every AWS_* variable of this process is removed and the
 fixture's own are set. A backend that died does not pass as one that survived:
@@ -152,6 +160,47 @@ def _start_export(dsn, prefix, got):
     t = threading.Thread(target=export)
     t.start()
     return t
+
+
+def _outcome(dsn, sql):
+    """-> "no error" or "SQLSTATE: message" for a statement expected to fail."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql)
+        return "no error: the statement completed"
+    except psycopg.Error as exc:
+        return f"{exc.sqlstate}: {exc.diag.message_primary}"
+
+
+REFUSED_LISTING = re.compile(r'could not clean up the open uploads under "[^"]*": '
+                             r'columnar: access to "([^"]*)" was denied')
+REGION_REFUSAL = re.compile(r'^columnar: reading "([^"]*)" requires a region option')
+
+
+def _cleanup_named(log, offset):
+    """-> the URL the cleanup's LOG line says was denied, from the server log past
+    byte `offset`, or a query_error() saying what was there."""
+    try:
+        with open(log, "rb") as fh:
+            fh.seek(offset)
+            tail = fh.read().decode(errors="replace")
+    except OSError as exc:
+        return query_error(f"server log unreadable: {exc}")
+    m = REFUSED_LISTING.search(tail)
+    if m is None:
+        return query_error(f"no cleanup LOG line naming an access denial past byte {offset}")
+    return m.group(1)
+
+
+def _region_named(dsn, sql):
+    """-> the URL the region refusal names, or a query_error() saying what happened."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql)
+        return query_error("no region refusal: the statement completed")
+    except psycopg.Error as exc:
+        m = REGION_REFUSAL.match(exc.diag.message_primary or "")
+        return m.group(1) if m else query_error(f"no region refusal: {_message(exc)}")
 
 
 def _cancel(dsn):
@@ -319,6 +368,35 @@ def ou(pgc_cluster):
         r["os outcome"] = got.get("outcome", query_error("the export did not return"))
         r["os prompt"] = "yes" if elapsed <= 30 else f"no, after {int(elapsed)} s"
         r["os survived"] = _survived(dsn, log, crashes0)
+
+        # refused upload listing: the cleanup's LOG names the prefix it listed (#1869)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE TABLE ou_small (id int8) USING pgcolumnar")
+            c.execute("INSERT INTO ou_small SELECT g FROM generate_series(1,1000) g")
+        s3log.write_text("")
+        list_status = work / "__list_uploads_status__"
+        put_status = work / "__put_status__"
+        list_status.write_text("403\n")
+        put_status.write_text(f"403 {BUCKET}/or/part-0000.parquet\n")
+        offset = os.path.getsize(log)
+        r["or outcome"] = _outcome(dsn, "SELECT pgcolumnar.parallel_export_parquet("
+                                        f"'ou_small'::regclass, 's3://{BUCKET}/or', 2)")
+        list_status.unlink()
+        put_status.unlink()
+        r["or listed"] = str(sum(1 for ln in s3log.read_text(errors="replace").splitlines()
+                                 if lists.match(ln)))
+        r["or url"] = _cleanup_named(log, offset)
+
+        # no region: each refusal names the prefix the caller gave (#1869)
+        _pg_ctl(cluster, ["-D", str(datadir), "-m", "fast", "-w", "stop"], {})
+        noregion = {k: v for k, v in aws.items() if k != "AWS_REGION"}
+        started = _pg_ctl(cluster, ["-D", str(datadir), "-l", log, "-w", "start"], noregion)
+        if started.returncode != 0:
+            raise RuntimeError(f"the private cluster did not restart: {started.stderr}")
+        r["nr export"] = _region_named(dsn, "SELECT pgcolumnar.parallel_export_parquet("
+                                            f"'ou_small'::regclass, 's3://{BUCKET}/nr', 2)")
+        r["nr read"] = _region_named(dsn, "SELECT count(*) FROM pgcolumnar.read_parquet("
+                                          f"'s3://{BUCKET}/nr/') AS t(id int8)")
         yield r
     finally:
         _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
@@ -471,3 +549,31 @@ def test_silent_listing_returned_promptly(ou, expect):
 
 def test_silent_listing_the_server_survived(ou, expect):
     expect.text(ou["os survived"], "1", "silent listing: the server survived")
+
+
+def test_refused_upload_listing_export_fails_on_the_refused_part(ou, expect):
+    expect.text(ou["or outcome"],
+                "28000: pgcolumnar.parallel_export_parquet worker 0 failed: columnar: access to "
+                f"\"s3://{BUCKET}/or/part-0000.parquet\" was denied (HTTP 403: AccessDenied)",
+                "premise: refused upload listing: the export fails on worker 0's refused part")
+
+
+def test_refused_upload_listing_the_cleanup_listed_once(ou, expect):
+    expect.text(ou["or listed"], "1",
+                "premise: refused upload listing: the cleanup asked the store for its open uploads once")
+
+
+def test_refused_upload_listing_names_the_listed_prefix(ou, expect):
+    expect.text(ou["or url"], f"s3://{BUCKET}/or/",
+                "refused upload listing: the server log names the prefix that was listed, not a dummy key")
+
+
+def test_no_region_export_names_the_prefix(ou, expect):
+    expect.text(ou["nr export"], f"s3://{BUCKET}/nr",
+                "no region: parallel_export_parquet's refusal names the prefix it was given, not a dummy key")
+
+
+def test_no_region_read_parquet_names_the_prefix(ou, expect):
+    expect.text(ou["nr read"], f"s3://{BUCKET}/nr/",
+                "no region: read_parquet's directory listing refusal names the prefix it was given, "
+                "not a dummy key")
