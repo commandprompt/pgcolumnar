@@ -10594,6 +10594,9 @@ One module fixture copies the fixtures into `server_dir`, builds the FIFOs there
 | `test_the_lister_refuses_status_3` | iceberg_data_files refuses manifest_entry.status 3 (XX001), not listed |
 | `test_manifest_content_5_is_refused_by_the_scan` | manifest_file.content 5 is refused by iceberg_scan (XX001), not read as a data manifest |
 | `test_the_lister_refuses_manifest_content_5_as_corrupt` | iceberg_data_files refuses manifest_file.content 5 as corrupt (XX001), not as a delete manifest (0A000) |
+| `test_content_2_32_on_the_oldest_file_is_refused_not_wrapped` | data_file.content 4294967296 on the oldest file is refused by iceberg_scan (XX001), not wrapped to 0 |
+| `test_status_2_32_plus_1_is_refused_not_wrapped` | manifest_entry.status 4294967297 is refused by iceberg_scan (XX001), not wrapped to 1 |
+| `test_manifest_content_2_32_is_refused_not_wrapped` | manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not wrapped to 0 |
 | `test_the_backend_survives_the_enum_refusals` | backend still up after the enum refusals |
 
 ## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping

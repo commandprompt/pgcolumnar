@@ -475,7 +475,9 @@ true until the next version shipped.
   no error. A newer one failed with a misleading `has no equality_ids`, and the
   lister called it a delete file (`0A000`). An entry `status` other than 0, 1 or
   2 was read as a live entry, and a manifest list `content` other than 0 or 1
-  was read as a data manifest. `test/iceberg_malformed.sh` and
+  was read as a data manifest. A value outside the 32-bit range, such as
+  4294967296, is refused the same way. It used to wrap to a valid value, 0 or
+  1, and read as data. `test/iceberg_malformed.sh` and
   `test_iceberg_malformed.py`.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the

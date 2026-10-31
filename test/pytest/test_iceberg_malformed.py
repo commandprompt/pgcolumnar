@@ -49,6 +49,9 @@ OLDM1 = (r'manifest entry ".*/old\.parquet" has invalid content -1$', "invalid c
 NEW3 = (r'manifest entry ".*/new\.parquet" has invalid content 3$', "invalid content 3")
 STATUS3 = (r'manifest entry ".*/old\.parquet" has invalid status 3$', "invalid status 3")
 MF5 = (r'manifest ".*/dm\.avro" has invalid content 5$', "invalid manifest content 5")
+OLD4G = (r'manifest entry has invalid content 4294967296$', "invalid content 4294967296")
+STATUS4G = (r'manifest entry has invalid status 4294967297$', "invalid status 4294967297")
+MF4G = (r'manifest ".*/dm\.avro" has invalid content 4294967296$', "invalid manifest content 4294967296")
 
 
 def _message(exc):
@@ -238,6 +241,10 @@ def imf(pgc_cluster, server_dir):
         r["status3 list"] = _refusal(dsn, lst("status3_old"), STATUS3)
         r["mf5 scan"] = _refusal(dsn, scan("mfcontent5"), MF5)
         r["mf5 list"] = _refusal(dsn, lst("mfcontent5"), MF5)
+        # outside int32: a cast before the range check wrapped these to 0 and 1
+        r["old4g scan"] = _refusal(dsn, scan("content4g_old"), OLD4G)
+        r["status4g scan"] = _refusal(dsn, scan("status4g_old"), STATUS4G)
+        r["mf4g scan"] = _refusal(dsn, scan("mfcontent4g"), MF4G)
         r["enum up"] = alive(b)
         yield r
     finally:
@@ -537,6 +544,24 @@ def test_the_lister_refuses_manifest_content_5_as_corrupt(imf, expect):
         return
     expect.text(imf["mf5 list"], "XX001 (invalid manifest content 5)",
                 "iceberg_data_files refuses manifest_file.content 5 as corrupt (XX001), not as a delete manifest (0A000)")
+
+
+def test_content_2_32_on_the_oldest_file_is_refused_not_wrapped(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["old4g scan"], "XX001 (invalid content 4294967296)", "data_file.content 4294967296 on the oldest file is refused by iceberg_scan (XX001), not wrapped to 0")
+
+
+def test_status_2_32_plus_1_is_refused_not_wrapped(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["status4g scan"], "XX001 (invalid status 4294967297)", "manifest_entry.status 4294967297 is refused by iceberg_scan (XX001), not wrapped to 1")
+
+
+def test_manifest_content_2_32_is_refused_not_wrapped(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["mf4g scan"], "XX001 (invalid manifest content 4294967296)", "manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not wrapped to 0")
 
 
 def test_the_backend_survives_the_enum_refusals(imf, expect):

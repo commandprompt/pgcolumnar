@@ -324,6 +324,21 @@ check "iceberg_data_files refuses manifest_file.content 5 as corrupt (XX001), no
 	"$(refusal "SELECT * FROM pgcolumnar.iceberg_data_files('$(md_of mfcontent5)')" \
 		'manifest ".*/dm\.avro" has invalid content 5$' "invalid manifest content 5")" \
 	"XX001 (invalid manifest content 5)"
+# A value outside int32 was cast before that range check, so 2^32 wrapped to 0
+# and 2^32+1 to 1: valid values, read as live data with no error. The decoder
+# refuses it before the cast; no path is decoded yet for an entry's enum.
+check "data_file.content 4294967296 on the oldest file is refused by iceberg_scan (XX001), not wrapped to 0" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of content4g_old)') $EN" \
+		'manifest entry has invalid content 4294967296$' "invalid content 4294967296")" \
+	"XX001 (invalid content 4294967296)"
+check "manifest_entry.status 4294967297 is refused by iceberg_scan (XX001), not wrapped to 1" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of status4g_old)') $EN" \
+		'manifest entry has invalid status 4294967297$' "invalid status 4294967297")" \
+	"XX001 (invalid status 4294967297)"
+check "manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not wrapped to 0" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of mfcontent4g)') $EN" \
+		'manifest ".*/dm\.avro" has invalid content 4294967296$' "invalid manifest content 4294967296")" \
+	"XX001 (invalid manifest content 4294967296)"
 check "backend still up after the enum refusals" "$(survived "$B")" "1"
 
 pgc_summary

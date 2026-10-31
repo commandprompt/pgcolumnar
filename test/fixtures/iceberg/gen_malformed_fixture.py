@@ -20,6 +20,8 @@
 #   content3_old / contentm1_old / content3_new / status3_old / mfcontent5
 #                 enum_ctl with one data_file.content, manifest_entry.status or
 #                 manifest_file.content outside the spec (#1823)
+#   content4g_old / status4g_old / mfcontent4g
+#                 the same three fields at 2^32 or 2^32+1, outside int32 (#1823)
 import sys, os, json, shutil
 import pyarrow as pa, pyarrow.parquet as pq
 
@@ -360,6 +362,11 @@ build_enum("contentm1_old", old_content=-1)     # was: 5 rows, no error
 build_enum("content3_new", new_content=3)       # was: "has no equality_ids"
 build_enum("status3_old", old_status=3)         # was: read as live data
 build_enum("mfcontent5", mf_content=5)          # was: read as a data manifest
+# A value outside int32 was cast to int32 before the range check, so 2^32 wrapped
+# to 0 and 2^32+1 to 1, both valid: each read as live data with no error.
+build_enum("content4g_old", old_content=2**32)  # was: 10 rows, read as data
+build_enum("status4g_old", old_status=2**32 + 1)  # was: 10 rows, read as added
+build_enum("mfcontent4g", mf_content=2**32)     # was: read as a data manifest
 
 
 print("malformed fixtures written under", OUT)
