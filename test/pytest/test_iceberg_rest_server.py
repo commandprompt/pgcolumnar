@@ -9,10 +9,11 @@ fixture (test/iceberg_rest_server.py), which 401s a wrong or absent token and lo
 request: a server-name call authenticates with the mapping token and with no token in
 the environment; the token and the OAuth2 client secret never reach the server log; a
 wrong token, a missing one, and a wrong OAuth2 secret are each refused by their own
-message; a half OAuth2 credential is refused before any request; secrets are rejected
-on a SERVER and catalog_uri on a USER MAPPING; an oauth_token_uri off the endpoint
-allow-list (link-local or any other host) is refused by the allow-list itself; the URI
-form works with the environment token; a non-superuser never borrows the
+message; a half OAuth2 credential is refused before any request, even beside a static
+token; a static token wins over a complete pair, with no token request; secrets are
+rejected on a SERVER and catalog_uri on a USER MAPPING; an oauth_token_uri off the
+endpoint allow-list (link-local or any other host) is refused by the allow-list itself;
+the URI form works with the environment token; a non-superuser never borrows the
 environment token unless a superuser marked its mapping credentials_required 'false';
 and a role without USAGE on the server is refused 42501 before any request, through a
 PUBLIC mapping and through its own mapping after a REVOKE, while a foreign table on a
@@ -303,8 +304,37 @@ def irs(pgc_cluster):
         n1 = _nlines(olog)
         r["half"] = f"{half}|{n1 - n0}" if isinstance(n0, int) and isinstance(n1, int) else query_error(
             f"fixture log unreadable: {n0} / {n1}")
+        # a static token does not excuse a half pair (#1794); both halves, then back to id-only
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (ADD token 'static-tok')")
+        n0 = _nlines(olog)
+        half = _refusal(dsn, LOCATE.format("ocat"), "incomplete OAuth2 credential")
+        n1 = _nlines(olog)
+        r["half id token"] = f"{half}|{n1 - n0}" if isinstance(n0, int) and isinstance(n1, int) else query_error(
+            f"fixture log unreadable: {n0} / {n1}")
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat"
+                  f" OPTIONS (DROP oauth_client_id, ADD oauth_client_secret '{OCSEC}')")
+        n0 = _nlines(olog)
+        half = _refusal(dsn, LOCATE.format("ocat"), "incomplete OAuth2 credential")
+        n1 = _nlines(olog)
+        r["half secret token"] = f"{half}|{n1 - n0}" if isinstance(n0, int) and isinstance(n1, int) else query_error(
+            f"fixture log unreadable: {n0} / {n1}")
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat"
+                  f" OPTIONS (DROP token, DROP oauth_client_secret, ADD oauth_client_id '{OCID}')")
         r["oauth on mapping"] = _sqlstate(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat"
                                                " OPTIONS (ADD oauth_scope 'catalog')")
+        # a token wins over a complete pair and mints no bearer. The secret is wrong, so
+        # a mint would be refused; the catalog takes only the fixture's minted bearer,
+        # given here as the static token. "no error" means the static token was sent;
+        # the count is the requests to the token endpoint.
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat"
+                  f" OPTIONS (ADD token '{OATOKEN}', ADD oauth_client_secret 'wrong-secret')")
+        tw0 = _lines(olog)
+        won = _refusal(dsn, LOCATE.format("ocat"), "@@ no refusal is expected @@")
+        tw1 = _lines(olog)
+        r["token wins"] = (f"{won}|{sum(1 for l in tw1[len(tw0):] if 'POST /v1/oauth/tokens' in l)}"
+                           if isinstance(tw0, list) and isinstance(tw1, list)
+                           else query_error(f"fixture log unreadable: {tw0} / {tw1}"))
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (DROP token, DROP oauth_client_secret)")
         r["oauth on server"] = _sqlstate(dsn, "CREATE SERVER bad2 FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog"
                                               f" OPTIONS (catalog_uri '{ocat}', oauth_client_secret 'x')")
 
@@ -523,10 +553,31 @@ def test_a_half_oauth_credential_is_refused_before_any_request(irs, expect):
                 "a half OAuth2 credential (id, no secret) is refused before any request (28000)")
 
 
+def test_a_half_oauth_id_is_refused_even_with_a_static_token(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["half id token"], "28000|0",
+                "a half OAuth2 credential (id, no secret) is refused even with a static token (28000)")
+
+
+def test_a_half_oauth_secret_is_refused_even_with_a_static_token(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["half secret token"], "28000|0",
+                "a half OAuth2 credential (secret, no id) is refused even with a static token (28000)")
+
+
 def test_oauth_options_are_accepted_on_a_mapping(irs, expect):
     if _declined(irs, expect):
         return
     expect.text(irs["oauth on mapping"], "ok", "oauth options are accepted on a USER MAPPING (no error)")
+
+
+def test_a_static_token_wins_over_a_complete_oauth_pair(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["token wins"], "no error|0",
+                "a static token and a complete OAuth2 pair read by the token, with no token request")
 
 
 def test_an_oauth_option_on_the_server_is_rejected(irs, expect):

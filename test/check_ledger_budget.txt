@@ -15,7 +15,7 @@
 #
 #   Adding a check to a suite that is already covered does not move it, which is
 #   what makes it safe to bound.
-suites_not_covered 22
+suites_not_covered 21
 #
 # checks_never_observed_red -- A CENSUS. NOT a ceiling, and it must not become
 #   one.
@@ -66,4 +66,4 @@ suites_not_covered 22
 #   carried until then, 7200 lines of it, is in git:
 #
 #       git show 30464796:test/check_ledger_budget.txt
-checks_never_observed_red 4677
+checks_never_observed_red 4701
