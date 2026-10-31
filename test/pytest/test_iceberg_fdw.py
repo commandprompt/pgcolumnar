@@ -46,6 +46,7 @@ WAREHOUSES = {
     "ev":  ("warehouse",            "events",  "id bigint, region text, amount int"),
     "evd": ("warehouse_datepart",   "byday",   "id bigint, dt date, amount int"),
     "evb": ("warehouse_bucket",     "byid",    "id bigint, val text, amount int"),
+    "evs": ("warehouse_bucket_text", "bystr",  "id bigint, s text"),
     "evt": ("warehouse_trunc",      "bytr",    "id bigint, amount int"),
     "evy": ("warehouse_day",        "byday",   "id bigint, dt date"),
     "ty":  ("warehouse_temporal",   "byyear",   "id bigint, ts timestamp"),
@@ -425,6 +426,107 @@ def test_a_range_predicate_cannot_bucket_prune(ice, expect):
                "id > 4 prunes by metrics not bucket, correctly (Files Pruned: 2)")
     expect.text(_ids(conn, "evb", "id > 4"), "5,6,7,8",
                 "id > 4 still returns the right rows")
+
+
+# ------------------------------------- bucket[N] on a string, and the collation (#1818)
+#
+# warehouse_bucket_text/db/bystr is bucket[16](s), one row per file: 1 abc, 2 ABC,
+# 3 Abc, 4 aBc, 5 x, 6 y, in buckets 10, 5, 0, 7, 11, 6. Iceberg hashes the UTF-8
+# BYTES, so under a case-insensitive collation four rows equal 'ABC' while sitting in
+# four buckets. Pruning by bucket('ABC') there skips three files of matching rows and
+# returns one row where iceberg_scan returns four -- no error, just fewer rows. So
+# the wrapper must read every file under a nondeterministic collation, and must keep
+# pruning under a deterministic one, or the guard has merely switched text off.
+
+def test_a_text_bucket_prunes_under_a_deterministic_collation(ice, expect):
+    """THE CONTROL THE GUARD MUST NOT BREAK. The default collation and "C" are both
+    deterministic: equal means byte-equal there, so bucket('ABC') names the only file
+    that can hold a match. A guard that refused every collatable qual would pass the
+    nondeterministic arms below and red these.
+    """
+    conn, meta = ice
+    if not _need(expect, meta, "evs"):
+        return
+    expect.num(int(_one(conn, "SELECT count(*) FROM evs")), 6,
+               "text bucket: the FDW reads the whole table (6 rows)")
+    expect.num(_pruned(conn, "SELECT * FROM evs WHERE s = 'ABC'"), 5,
+               "text bucket: s = 'ABC' under the default collation prunes 5 files")
+    expect.text(_ids(conn, "evs", "s = 'ABC'"), "2",
+                "text bucket: s = 'ABC' under the default collation returns row 2")
+    expect.num(_pruned(conn, "SELECT * FROM evs WHERE s = 'ABC' COLLATE \"C\""), 5,
+               "text bucket: s = 'ABC' under the deterministic C collation still prunes 5 files")
+
+
+def _ice_ci(expect, conn, meta):
+    """-> True once the ICU collation `ice_ci` and the foreign table `evs_ci`, whose
+    column is declared with it, exist; otherwise records ONE refusal and -> False.
+
+    Idempotent, so each test below can call it: `cannot_run` declines a whole test,
+    while the shell suite's `check_skip` declines only this block, so every test that
+    needs the collation refuses on its own.
+    """
+    import psycopg
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE COLLATION IF NOT EXISTS ice_ci (provider = icu, "
+                        "locale = 'und-u-ks-level2', deterministic = false)")
+            cur.execute(f"CREATE FOREIGN TABLE IF NOT EXISTS evs_ci "
+                        f"(id bigint, s text COLLATE ice_ci) SERVER ice "
+                        f"OPTIONS (metadata_path '{meta['evs']}')")
+    except psycopg.Error:
+        expect.cannot_run(
+            "MISSING_DEPENDENCY",
+            "a case-insensitive collation needs a nondeterministic ICU collation, "
+            "and a server built without ICU cannot create one",
+            name="text bucket: the nondeterministic collation case")
+        return False
+    return True
+
+
+def test_a_nondeterministic_collation_on_the_qual_does_not_bucket_prune(ice, expect):
+    """`s = 'ABC' COLLATE ice_ci`: four rows match, in four buckets. The oracle is
+    iceberg_scan, which receives no predicate and so cannot prune."""
+    conn, meta = ice
+    if not _need(expect, meta, "evs") or not _ice_ci(expect, conn, meta):
+        return
+    expect.text(_ids(conn, "evs", "s = 'ABC' COLLATE ice_ci"), "1,2,3,4",
+                "text bucket: s = 'ABC' COLLATE ice_ci returns all four case variants")
+    expect.text(
+        _one(conn, "SELECT string_agg(id::text || '|' || s, ',' ORDER BY id) FROM evs "
+                   "WHERE s = 'ABC' COLLATE ice_ci"),
+        _one(conn, f"SELECT string_agg(id::text || '|' || s, ',' ORDER BY id) FROM "
+                   f"pgcolumnar.iceberg_scan('{meta['evs']}') AS t(id bigint, s text) "
+                   f"WHERE s = 'ABC' COLLATE ice_ci"),
+        "text bucket: s = 'ABC' COLLATE ice_ci matches iceberg_scan (same oracle)")
+    expect.num(_pruned(conn, "SELECT * FROM evs WHERE s = 'ABC' COLLATE ice_ci"), 0,
+               "text bucket: s = 'ABC' COLLATE ice_ci prunes no file (Files Pruned: 0)")
+
+
+def test_a_nondeterministic_collation_on_the_column_does_not_bucket_prune(ice, expect):
+    """The column is declared `COLLATE ice_ci` and the query names no collation. It
+    reaches the scan only as the comparison's input collation, so a guard that read
+    anything else -- the literal, or the Var -- would see nothing to refuse here, or
+    refuse the wrong thing in the arm above."""
+    conn, meta = ice
+    if not _need(expect, meta, "evs") or not _ice_ci(expect, conn, meta):
+        return
+    expect.text(_ids(conn, "evs_ci", "s = 'ABC'"), "1,2,3,4",
+                "text bucket: a column declared COLLATE ice_ci returns all four case variants")
+    expect.num(_pruned(conn, "SELECT * FROM evs_ci WHERE s = 'ABC'"), 0,
+               "text bucket: a column declared COLLATE ice_ci prunes no file (Files Pruned: 0)")
+
+
+def test_an_identity_partition_prunes_under_the_quals_own_collation(ice, expect):
+    """Identity pruning evaluates the qual itself, against the file's partition value,
+    under the qual's own collation. So 'EU' COLLATE ice_ci keeps the eu file and prunes
+    only the us one: the collation that breaks bucket pruning is honoured here."""
+    conn, meta = ice
+    if not _need(expect, meta, "evs", "ev") or not _ice_ci(expect, conn, meta):
+        return
+    expect.text(_ids(conn, "ev", "region = 'EU' COLLATE ice_ci"), "1,2",
+                "identity: region = 'EU' COLLATE ice_ci returns the eu rows")
+    expect.num(_pruned(conn, "SELECT * FROM ev WHERE region = 'EU' COLLATE ice_ci"), 1,
+               "identity: region = 'EU' COLLATE ice_ci prunes only the us file (Files Pruned: 1)")
 
 
 # ----------------------------------------------------------- truncate[W] partitioning

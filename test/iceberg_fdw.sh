@@ -164,6 +164,62 @@ if [ -f "$FX/warehouse_bucket/db/byid/data/id_bucket=4/00000-0-aa63bd5e-94cd-4a4
 		"5,6,7,8"
 fi
 
+# ---- bucket[N] on a STRING column, and the comparison collation (#1818) -----
+# warehouse_bucket_text is bucket[16](s), one row per file: 1 abc, 2 ABC, 3 Abc,
+# 4 aBc, 5 x, 6 y, in buckets 10, 5, 0, 7, 11, 6. Iceberg hashes the UTF-8
+# bytes, so under a case-insensitive (nondeterministic) collation four rows
+# equal 'ABC' while sitting in four buckets. Pruning by bucket('ABC') there
+# would skip three files of matching rows. The wrapper must read every file
+# then, and must still prune under a deterministic collation.
+if ls "$FX"/warehouse_bucket_text/db/bystr/metadata/*.metadata.json >/dev/null 2>&1; then
+	SDEST="$PGC_WORKDIR/whs"; rm -rf "$SDEST"; mkdir -p "$SDEST"
+	cp -r "$FX/warehouse_bucket_text/db" "$SDEST/db"; chmod -R u+rwX "$SDEST"
+	MDS="$(ls "$SDEST"/db/bystr/metadata/*.metadata.json | sort | tail -1)"
+	q "CREATE FOREIGN TABLE evs (id bigint, s text)
+	   SERVER ice OPTIONS (metadata_path '$MDS')" >/dev/null
+	check "text bucket: the FDW reads the whole table (6 rows)" \
+		"$(q "SELECT count(*) FROM evs")" "6"
+	check "text bucket: s = 'ABC' under the default collation prunes 5 files" \
+		"$(fp "SELECT * FROM evs WHERE s = 'ABC'")" "5"
+	check "text bucket: s = 'ABC' under the default collation returns row 2" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM evs WHERE s = 'ABC'")" "2"
+	check "text bucket: s = 'ABC' under the deterministic C collation still prunes 5 files" \
+		"$(fp "SELECT * FROM evs WHERE s = 'ABC' COLLATE \"C\"")" "5"
+
+	q "CREATE COLLATION IF NOT EXISTS ice_ci
+	   (provider = icu, locale = 'und-u-ks-level2', deterministic = false)" >/dev/null
+	if [ "$(q "SELECT 1 FROM pg_collation WHERE collname = 'ice_ci'")" = "1" ]; then
+		q "CREATE FOREIGN TABLE evs_ci (id bigint, s text COLLATE ice_ci)
+		   SERVER ice OPTIONS (metadata_path '$MDS')" >/dev/null
+		check "text bucket: s = 'ABC' COLLATE ice_ci returns all four case variants" \
+			"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM evs WHERE s = 'ABC' COLLATE ice_ci")" \
+			"1,2,3,4"
+		check_text "text bucket: s = 'ABC' COLLATE ice_ci matches iceberg_scan (same oracle)" \
+			"$(q "SELECT string_agg(id::text||'|'||s, ',' ORDER BY id) FROM evs WHERE s = 'ABC' COLLATE ice_ci")" \
+			"$(q "SELECT string_agg(id::text||'|'||s, ',' ORDER BY id)
+			      FROM pgcolumnar.iceberg_scan('$MDS') AS t(id bigint, s text)
+			      WHERE s = 'ABC' COLLATE ice_ci")"
+		check "text bucket: s = 'ABC' COLLATE ice_ci prunes no file (Files Pruned: 0)" \
+			"$(fp "SELECT * FROM evs WHERE s = 'ABC' COLLATE ice_ci")" "0"
+		check "text bucket: a column declared COLLATE ice_ci returns all four case variants" \
+			"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM evs_ci WHERE s = 'ABC'")" \
+			"1,2,3,4"
+		check "text bucket: a column declared COLLATE ice_ci prunes no file (Files Pruned: 0)" \
+			"$(fp "SELECT * FROM evs_ci WHERE s = 'ABC'")" "0"
+		# identity pruning evaluates the qual itself, under its own collation, so
+		# 'EU' COLLATE ice_ci keeps the eu file and prunes only the us one.
+		check "identity: region = 'EU' COLLATE ice_ci returns the eu rows" \
+			"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM ev WHERE region = 'EU' COLLATE ice_ci")" \
+			"1,2"
+		check "identity: region = 'EU' COLLATE ice_ci prunes only the us file (Files Pruned: 1)" \
+			"$(fp "SELECT * FROM ev WHERE region = 'EU' COLLATE ice_ci")" "1"
+	else
+		check_skip "text bucket: the nondeterministic collation case" \
+			"SKIP  text bucket: the nondeterministic collation case (ICU unavailable)" \
+			"ICU unavailable"
+	fi
+fi
+
 # ---- truncate[W] partition pruning (range, order-preserving) -----------------
 # warehouse_trunc is partitioned by truncate[100](amount) with column metrics
 # DISABLED, so truncate is the only mechanism (metrics would otherwise subsume
