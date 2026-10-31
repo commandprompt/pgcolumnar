@@ -12209,11 +12209,11 @@ Every test makes one check under the shell's name, on a private database. Each t
 
 ## 318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks
 
-The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range) and a two-column file whose row group carries one column chunk. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, the short chunk list must be refused by the chunk-count guard itself, and the backend must survive.
+The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range) a two-column file whose row group carries one column chunk, string files whose cells are not valid UTF-8 (PLAIN and dictionary-encoded, plus an embedded NUL), and two copies of the committed Iceberg events table: one whose eu data file holds an invalid string, and one whose manifest records the eu partition value as invalid bytes. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, the short chunk list must be refused by the chunk-count guard itself, and the backend must survive. Each invalid string cell must be refused with 22021 and a message naming the column, through read_parquet, the Parquet foreign table, import_parquet and iceberg_scan, with no row stored; valid multibyte UTF-8 must still read whole; and the Iceberg FDW must read, not prune, a file whose partition value is not valid text (#1821).
 
 ### Every test
 
-Every test makes one check under the shell's name, on a private database. The crafter runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A refusal reads as 'SQLSTATE: message' through the shell's own pgc_try; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+Every test makes one check under the shell's name, on a private database. The crafter runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A refusal reads as 'SQLSTATE: message' through the shell's own pgc_try; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved. The string tests read a second private database created as UTF8, because the check is against the server encoding and a SQL_ASCII cluster accepts any byte but NUL.
 
 | test | what it holds |
 | --- | --- |
@@ -12235,6 +12235,21 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
 | `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
 | `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
+| `test_parquet_hardening_strings_run_in_a_utf8_database` | premise: the string arms run in a UTF8 database |
+| `test_parquet_hardening_read_parquet_plain_string_not_utf8_raises_22021` | read_parquet PLAIN string not UTF-8 -> 22021 naming the column |
+| `test_parquet_hardening_read_parquet_dictionary_string_not_utf8_raises_22021` | read_parquet dictionary string not UTF-8 -> 22021 naming the column |
+| `test_parquet_hardening_read_parquet_embedded_nul_raises_22021` | read_parquet string with an embedded NUL -> 22021 |
+| `test_parquet_hardening_varchar_output_column_is_checked_too` | varchar output column is checked too -> 22021 |
+| `test_parquet_hardening_parquet_foreign_table_string_not_utf8_raises_22021` | parquet foreign table string not UTF-8 -> 22021 |
+| `test_parquet_hardening_import_parquet_string_not_utf8_raises_22021` | import_parquet string not UTF-8 -> 22021 |
+| `test_parquet_hardening_import_parquet_stored_no_row_of_the_invalid_file` | import_parquet stored no row of the invalid file |
+| `test_parquet_hardening_insert_select_read_parquet_stored_no_row_of_the_invalid_file` | INSERT SELECT read_parquet stored no row of the invalid file |
+| `test_parquet_hardening_valid_multibyte_utf8_still_reads_plain` | valid multibyte UTF-8 still reads (PLAIN) |
+| `test_parquet_hardening_valid_multibyte_utf8_still_reads_dictionary` | valid multibyte UTF-8 still reads (dictionary) |
+| `test_parquet_hardening_iceberg_scan_data_file_string_not_utf8_raises_22021` | iceberg_scan data file string not UTF-8 -> 22021 naming the column |
+| `test_parquet_hardening_patched_manifest_table_reads_all_five_rows` | premise: the patched-manifest table reads all five rows |
+| `test_parquet_hardening_iceberg_fdw_reads_a_file_whose_partition_value_is_not_valid_text` | iceberg FDW reads, not prunes, a file whose partition value is not valid text |
+| `test_parquet_hardening_backend_survives_the_string_arms` | backend survived the string arms |
 
 ## 319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend
 
