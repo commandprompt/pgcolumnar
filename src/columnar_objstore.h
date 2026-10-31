@@ -33,7 +33,7 @@
 
 #include "postgres.h"
 
-#define PGCOLUMNAR_OBJSTORE_ABI 6
+#define PGCOLUMNAR_OBJSTORE_ABI 7
 
 /* An open remote object (read) / upload (write). Module owns both. */
 typedef struct PgColumnarObjHandle PgColumnarObjHandle;
@@ -214,6 +214,19 @@ typedef struct PgColumnarObjStoreApi
 								 const char *upload_id,
 								 const PgColumnarObjStoreConfig *cfg,
 								 int timeout_ms);
+
+	/*
+	 * The endpoint allow-list check alone (#1780, ABI v7). It resolves the
+	 * endpoint `url` would connect to, exactly as a write does, and raises
+	 * 42501 when pgcolumnar.objstore_allowed_endpoints, as this backend sees
+	 * it, does not list that endpoint. It sends no request and opens no
+	 * connection. `url` is s3://bucket/prefix, gs://bucket/prefix or an
+	 * http(s) URL; the prefix may be empty. The parallel export's dispatcher
+	 * calls it so a refused endpoint fails before any worker starts. cfg may
+	 * be NULL.
+	 */
+	void		(*check_endpoint) (const char *url,
+								   const PgColumnarObjStoreConfig *cfg);
 } PgColumnarObjStoreApi;
 
 /*

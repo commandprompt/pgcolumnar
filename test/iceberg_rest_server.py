@@ -21,6 +21,15 @@
 # Special table names drive the failure arms:
 #   toobig   loadTable answers 200 with a huge Content-Length and no body, so a
 #            client honoring a response cap refuses before reading it.
+#   closedelim  loadTable answers 200 with Connection: close and neither
+#            Content-Length nor chunked framing, so the body ends when the server
+#            closes the connection (RFC 9112 section 6.3, rule 8). The Apache
+#            Iceberg REST catalog frames any reply over about 32 KB this way when
+#            the client sends Connection: close (#1787). The body is padded past
+#            the client's 64 KB receive buffer so it arrives in several reads.
+#   closebig loadTable answers the same close-delimited way with a body larger
+#            than the client's 64 MB REST response cap, so a client that reads to
+#            end of stream must still refuse once the body passes the cap.
 #
 # Written fresh for pgColumnar. Reuses no upstream test harness.
 
@@ -165,7 +174,38 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._unauthorized()
 
+    def _send_close_delimited(self, chunks):
+        # no Content-Length, no Transfer-Encoding: the close ends the body.
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            for chunk in chunks:
+                self.wfile.write(chunk)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass                        # the client stopped reading at its cap
+
     def _load_table(self, ns, table):
+        if table == "closedelim":
+            pad = [{"snapshot-id": i, "summary": {"operation": "append"}}
+                   for i in range(4000)]
+            body = json.dumps({
+                "metadata-location": ARGS.metadata_location,
+                "metadata": {"format-version": 2, "location": ARGS.table_location,
+                             "snapshots": pad},
+                "config": {},
+            }).encode()
+            self._send_close_delimited([body])
+            return
+        if table == "closebig":
+            # 65 MB of a JSON string, sent in 1 MB writes, never completed.
+            head = b'{"metadata-location": "' + ARGS.metadata_location.encode() + \
+                b'", "metadata": {"pad": "'
+            self._send_close_delimited([head] + [b"x" * (1 << 20)] * 65)
+            return
         if table == "toobig":
             # advertise a body far larger than any sane response cap, send none:
             # a client honoring the cap must refuse on the advertised length.

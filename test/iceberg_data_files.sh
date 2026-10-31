@@ -196,11 +196,12 @@ recovered
 # ---- a delete ENTRY inside a data manifest is refused too (#1341 item 49) --
 # The arm above stops at the manifest LIST. A data manifest (content 0 in the
 # list) can still hold an entry the lister must not return: a position or
-# equality delete file (entry content 1 or 2), or a removed file (status 2,
-# DELETED). Returning a removed file would read rows a commit took out. Each
-# variant below is the same crafted table with one (status, content) pair; the
-# (1, 0) control is listed, so a refusal is the entry's doing, not a fault in
-# the crafted Avro.
+# equality delete file (entry content 1 or 2), which it refuses, or a removed
+# file (status 2, DELETED), which it skips (#1791). Returning a removed file
+# would read rows a commit took out; refusing it would refuse every table after
+# a copy-on-write delete, which has no delete files. Each variant below is the
+# same crafted table with one (status, content) pair; the (1, 0) control is
+# listed, so a refusal is the entry's doing, not a fault in the crafted Avro.
 entry_tbl() {  # $1 name, $2 status, $3 content; echoes the metadata path
 	local d="$PGC_WORKDIR/entry_$1/db/t"
 	mkdir -p "$d/metadata"
@@ -270,10 +271,151 @@ check "a position-delete entry in a data manifest is refused (0A000)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl pos 1 1)')")" "0A000"
 check "an equality-delete entry in a data manifest is refused (0A000)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl eq 1 2)')")" "0A000"
-check "a DELETED (status 2) data entry is refused, not listed (0A000)" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl gone 2 0)')")" "0A000"
+check "a DELETED (status 2) data entry is skipped, not listed and not refused" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$(entry_tbl gone 2 0)')")" "0"
 check "backend still up after the entry refusals" "$(q 'SELECT 1')" "1"
 recovered
+
+# ---- a copy-on-write delete: the removed file is skipped (#1791) -----------
+# A real table written by pyiceberg (gen_iceberg_cow.py, warehouse_cow): ids 0..9
+# appended, then a copy-on-write delete. The delete rewrites the file and records
+# the old one as a DELETED (status 2) entry in the current snapshot. The table
+# has no delete files, so the lister must list exactly the live files that
+# pyiceberg's own scan planning lists. The premise arm proves the fixture really
+# carries a status-2 entry, so the listing arms cannot pass on a table without one.
+CW="$PGC_WORKDIR/cow_relocated"
+rm -rf "$CW"; mkdir -p "$CW"
+cp -r "$FX/warehouse_cow/db" "$CW/db"
+chmod -R a+rX "$CW"
+COW_ORACLE="$FX/warehouse_cow/expected_files.json"
+cow_md() {  # $1 table -> its current metadata.json under the relocated copy
+	python3 - "$COW_ORACLE" "$1" "$CW" <<'PY'
+import json, sys
+o = json.load(open(sys.argv[1]))["tables"][sys.argv[2]]
+print("%s/db/%s/metadata/%s" % (sys.argv[3], sys.argv[2], o["metadata_basename"]))
+PY
+}
+# The premise counts the DELETED (status 2) data (content 0) entries in each
+# table's current snapshot twice: once in the committed Avro manifests, decoded
+# here with json and zlib only, and once in the oracle. Both counts are shown,
+# so an oracle that drifted from the fixture fails the arm.
+COW_PREMISE="$(python3 - "$COW_ORACLE" "$FX/warehouse_cow" 2>&1 <<'PY'
+import json, os, sys, zlib
+
+def avro_records(path):
+    """Every record of an Avro object container file (codec null or deflate)."""
+    data, at = open(path, "rb").read(), [0]
+
+    def raw(n):
+        v = data[at[0]:at[0] + n]
+        at[0] += n
+        return v
+
+    def num():
+        n = shift = 0
+        while True:
+            c = raw(1)[0]
+            n |= (c & 0x7F) << shift
+            shift += 7
+            if not c & 0x80:
+                return (n >> 1) ^ -(n & 1)
+
+    def blocks(read_one):  # Avro arrays and maps: counted blocks, 0 ends them
+        out = []
+        while True:
+            n = num()
+            if n == 0:
+                return out
+            if n < 0:
+                num()
+                n = -n
+            out.extend(read_one() for _ in range(n))
+
+    named = {}
+
+    def value(t):
+        if isinstance(t, list):
+            return value(t[num()])
+        if isinstance(t, dict):
+            kind = t["type"]
+            if "name" in t:
+                named[t["name"]] = t
+            if kind == "record":
+                return {f["name"]: value(f["type"]) for f in t["fields"]}
+            if kind == "enum":
+                return t["symbols"][num()]
+            if kind == "fixed":
+                return raw(t["size"])
+            if kind == "array":
+                return blocks(lambda: value(t["items"]))
+            if kind == "map":
+                return dict(blocks(lambda: (raw(num()).decode(), value(t["values"]))))
+            return value(kind)
+        if t == "null":
+            return None
+        if t == "boolean":
+            return raw(1) != b"\0"
+        if t in ("int", "long"):
+            return num()
+        if t == "float":
+            return raw(4)
+        if t == "double":
+            return raw(8)
+        if t == "bytes":
+            return raw(num())
+        if t == "string":
+            return raw(num()).decode()
+        return value(named[t])
+
+    if raw(4) != b"Obj\x01":
+        raise ValueError("%s is not an Avro container file" % path)
+    meta = dict(blocks(lambda: (raw(num()).decode(), raw(num()))))
+    schema = json.loads(meta["avro.schema"])
+    codec = meta.get("avro.codec", b"null")
+    sync = raw(16)
+    file_data, records = data, []
+    while at[0] < len(file_data):
+        count, block = num(), raw(num())
+        if raw(16) != sync:
+            raise ValueError("%s: bad sync marker" % path)
+        if codec == b"deflate":
+            block = zlib.decompress(block, -15)
+        elif codec != b"null":
+            raise ValueError("%s: codec %r" % (path, codec))
+        data, saved = block, at[0]
+        at[0] = 0
+        records.extend(value(schema) for _ in range(count))
+        data, at[0] = file_data, saved
+    return records
+
+oracle = json.load(open(sys.argv[1]))["tables"]
+out = []
+for name in ("cow", "cow_all"):
+    md_dir = os.path.join(sys.argv[2], "db", name, "metadata")
+    md = json.load(open(os.path.join(md_dir, oracle[name]["metadata_basename"])))
+    snap = [s for s in md["snapshots"] if s["snapshot-id"] == md["current-snapshot-id"]][0]
+    in_avro = 0
+    for mf in avro_records(os.path.join(md_dir, os.path.basename(snap["manifest-list"]))):
+        for e in avro_records(os.path.join(md_dir, os.path.basename(mf["manifest_path"]))):
+            in_avro += e["status"] == 2 and e["data_file"]["content"] == 0
+    in_oracle = sum(e["status"] == 2 and e["content"] == 0 for e in oracle[name]["entries"])
+    out.append("%s: avro=%d oracle=%d" % (name, in_avro, in_oracle))
+print("; ".join(out))
+PY
+)"
+check "premise: each copy-on-write fixture's current snapshot carries a DELETED (status 2) data entry" \
+	"$COW_PREMISE" "cow: avro=1 oracle=1; cow_all: avro=1 oracle=1"
+COW_EXPECT="$(python3 - "$COW_ORACLE" <<'PY'
+import json, sys
+o = json.load(open(sys.argv[1]))["tables"]["cow"]
+print("\n".join(sorted("%d|%s" % (r["record_count"], r["file_basename"]) for r in o["live_files"])))
+PY
+)"
+check "after a copy-on-write delete, data files == pyiceberg plan_files (record_count|basename)" \
+	"$(q "SELECT record_count || '|' || (regexp_match(file_path,'[^/]+\$'))[1]
+	      FROM pgcolumnar.iceberg_data_files('$(cow_md cow)') ORDER BY 1")" "$COW_EXPECT"
+check "after a copy-on-write delete of every row, no data files are listed" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$(cow_md cow_all)')")" "0"
 
 # ---- no current snapshot: zero rows ----------------------------------------
 NOSNAP="$PGC_WORKDIR/no_current.metadata.json"
