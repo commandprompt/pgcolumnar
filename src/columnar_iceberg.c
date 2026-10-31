@@ -64,11 +64,12 @@
  * Slurp a whole object from object storage into a palloc'd buffer of *outlen
  * bytes (an extra NUL is always appended past the end, so a text caller can use
  * the buffer as a C string without copying). Used for the metadata.json,
- * manifest list, manifests, and Puffin files of a table in object storage. The
- * config is NULL: endpoint and credentials come from the ambient environment,
+ * manifest list, manifests, and Puffin files of a table in object storage. A
+ * NULL config means endpoint and credentials come from the ambient environment,
  * matching the read_parquet function API, which is gated by pg_read_server_files
  * (the endpoint itself is checked against objstore_allowed_endpoints inside the
- * module). The metadata cap bounds the object as for a local file.
+ * module). A REST scan passes the catalog's vended credentials, and the one for
+ * this URL is chosen here. The metadata cap bounds the object as for a local file.
  */
 static uint8 *
 ice_slurp_remote(const char *url, int64 *outlen,
@@ -94,6 +95,8 @@ ice_slurp_remote(const char *url, int64 *outlen,
 				 errmsg("iceberg: reading \"%s\" is not supported", url),
 				 errdetail("The installed object-store module handles no such URL scheme.")));
 
+	/* the vended credential for THIS object (#1820), or a refusal */
+	cfg = PgColumnarObjStoreConfigFor(cfg, url);
 	h = api->open(url, cfg, &len);	/* raises on failure; len is required */
 	/* the handle is module-owned and not freed on transaction abort (the module
 	 * uses explicit caller cleanup, like its sink API), so close it on any raise

@@ -66,9 +66,11 @@ class Handler(BaseHTTPRequestHandler):
                                         "type": "NotAuthorizedException",
                                         "code": 401}})
 
-    def _not_found(self, msg):
+    def _not_found(self, msg, kind="NoSuchTableException"):
+        # The spec's ErrorModel. The type tells a missing namespace from a
+        # missing table, and the message reaches the client's errdetail (#1820).
         self._send_json(404, {"error": {"message": msg,
-                                        "type": "NoSuchTableException",
+                                        "type": kind,
                                         "code": 404}})
 
     def _strip_prefix(self, rest):
@@ -127,7 +129,8 @@ class Handler(BaseHTTPRequestHandler):
                 # namespace back let a client that ignored its namespace argument
                 # list "events" anyway.
                 if ns.replace("\x1f", ".") != ARGS.namespace:
-                    self._not_found("no such namespace %s" % ns)
+                    self._not_found("no such namespace %s" % ns,
+                                    "NoSuchNamespaceException")
                     return
                 self._send_json(200, {"identifiers": [
                     {"namespace": [ns], "name": ARGS.table}]})
@@ -174,7 +177,11 @@ class Handler(BaseHTTPRequestHandler):
         # the namespace wire form joins multi-level parts with 0x1F; accept both
         # a single "db" and the unit-separated form.
         ns_norm = ns.replace("\x1f", ".")
-        if ns_norm != ARGS.namespace or table != ARGS.table:
+        if ns_norm != ARGS.namespace:
+            self._not_found("no such namespace %s" % ns_norm,
+                            "NoSuchNamespaceException")
+            return
+        if table != ARGS.table:
             self._not_found("no such table %s.%s" % (ns, table))
             return
         config = {}
@@ -211,6 +218,22 @@ class Handler(BaseHTTPRequestHandler):
                     "s3.endpoint": ARGS.vend_endpoint}},
                 {"prefix": ARGS.storage_cred_prefix, "config": config},
             ]
+        # --storage-cred PREFIX=good|bad, repeatable (#1820): an explicit
+        # storage-credentials array. "good" is the vended key, "bad" a key the
+        # SigV4 fixture refuses with 403. The flat config follows --flat-config:
+        # "none" (the default here) vends nothing flat, "good" the vended key.
+        # A reader that matched one entry against the metadata-location only, or
+        # fell back to ambient for a path no entry covers, reads where it must not.
+        if ARGS.storage_cred:
+            bad = dict(config, **{"s3.access-key-id": "BADSCOPEDKEY",
+                                  "s3.secret-access-key": "bad-scoped-secret"})
+            entries = []
+            for spec in ARGS.storage_cred:
+                prefix, _, kind = spec.rpartition("=")
+                entries.append({"prefix": prefix,
+                                "config": config if kind == "good" else bad})
+            resp["storage-credentials"] = entries
+            resp["config"] = config if ARGS.flat_config == "good" else {}
         self._send_json(200, resp)
 
 
@@ -232,6 +255,8 @@ def main():
     ap.add_argument("--vend-region", default="")
     ap.add_argument("--vend-endpoint", default="")
     ap.add_argument("--storage-cred-prefix", default="")
+    ap.add_argument("--storage-cred", action="append", default=[])
+    ap.add_argument("--flat-config", choices=["none", "good"], default="none")
     ap.add_argument("--oauth-client-id", default="")
     ap.add_argument("--oauth-client-secret", default="")
     ARGS = ap.parse_args()

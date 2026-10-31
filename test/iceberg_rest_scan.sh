@@ -147,14 +147,21 @@ check "iceberg_rest_scan of an unknown table is a clean not-found (42P01)" \
 # (sent "db" whatever it was given) passed every check above, because they all
 # ask for "db". Asking for a namespace the catalog does not have must reach the
 # catalog as that namespace and come back as its 404.
+# The catalog's 404 says NoSuchNamespaceException here, so the error names a
+# namespace (3F000), not a table (#1820).
 check "iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$CAT','nosuchns')" \
-	   "the REST catalog has no such table list" " by the catalog's 404")" \
-	"42P01 by the catalog's 404"
+	   "the REST catalog has no such namespace" " by the catalog's 404")" \
+	"3F000 by the catalog's 404"
 check "iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','nosuchns','events') AS t(id bigint)" \
-	   "the REST catalog has no such table" " by the catalog's 404")" \
-	"42P01 by the catalog's 404"
+	   "the REST catalog has no such namespace" " by the catalog's 404")" \
+	"3F000 by the catalog's 404"
+# The catalog's own ErrorModel message reaches the error detail (#1820).
+check "the catalog's 404 message reaches the error detail" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','nosuch') AS t(id bigint)" \
+	   "DETAIL:  The catalog said: no such table db.nosuch" " with the catalog's message")" \
+	"42P01 with the catalog's message"
 
 check "backend still up after the REST read" "$(survived "$CRASHES_BEFORE")" "1"
 

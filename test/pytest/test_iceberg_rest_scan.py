@@ -78,6 +78,21 @@ def _refusal(dsn, sql, phrase, label):
     return "no error"
 
 
+def _detail_refusal(dsn, sql, phrase, label):
+    """-> "<SQLSTATE><label>" when `sql` raised with `phrase` in its DETAIL, else
+    "<SQLSTATE> (detail: ...)" so a failure shows what the detail held."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        detail = exc.diag.message_detail or ""
+        return exc.sqlstate + (label if phrase in detail else f" (detail: {detail!r})")
+    return "no error"
+
+
 def _crashes(log):
     try:
         return pathlib.Path(log).read_text(errors="replace").count("terminated by signal")
@@ -193,11 +208,15 @@ def irs(pgc_cluster):
         # The catalog serves only "db": a namespace it does not have must reach it as
         # that namespace and come back as its 404, so a client that ignored its
         # namespace argument can no longer pass.
+        # the catalog's 404 says NoSuchNamespaceException: the error names a namespace (#1820)
         r["list other ns"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{cat}','nosuchns')",
-                                      "the REST catalog has no such table list", " by the catalog's 404")
+                                      "the REST catalog has no such namespace", " by the catalog's 404")
         r["scan other ns"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','nosuchns','events') "
                                            f"AS t(id bigint)",
-                                      "the REST catalog has no such table", " by the catalog's 404")
+                                      "the REST catalog has no such namespace", " by the catalog's 404")
+        r["detail"] = _detail_refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','db','nosuch') "
+                                           f"AS t(id bigint)",
+                                      "The catalog said: no such table db.nosuch", " with the catalog's message")
         r["survived"] = _survived(dsn, log, before)
         yield r
     finally:
@@ -279,13 +298,20 @@ def test_iceberg_rest_scan_of_an_unknown_table_is_a_clean_not_found(irs, expect)
 
 
 def test_iceberg_rest_tables_of_an_absent_namespace_is_the_catalogs_404(irs, expect):
-    expect.text(irs["list other ns"], "42P01 by the catalog's 404",
+    expect.text(irs["list other ns"], "3F000 by the catalog's 404",
                 "iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404")
 
 
 def test_iceberg_rest_scan_in_an_absent_namespace_is_the_catalogs_404(irs, expect):
-    expect.text(irs["scan other ns"], "42P01 by the catalog's 404",
+    expect.text(irs["scan other ns"], "3F000 by the catalog's 404",
                 "iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404")
+
+def test_the_catalogs_404_message_reaches_the_error_detail(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["detail"], "42P01 with the catalog's message",
+                "the catalog's 404 message reaches the error detail")
+
 
 def test_the_backend_is_still_up_after_the_rest_read(irs, expect):
     if _declined(irs, expect):

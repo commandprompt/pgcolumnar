@@ -10872,11 +10872,11 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 ## 274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table
 
-The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails.
+The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails. The fixture's 404 for a missing namespace says NoSuchNamespaceException, so the error names a namespace (3F000), and the catalog's ErrorModel message reaches the error detail (#1820).
 
 ### Every test
 
-Every test makes one check under the shell's name. The not-found reads as 42P01 only when the message is the catalog's 404, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer.
+Every test makes one check under the shell's name. The not-found reads as 42P01, or 3F000 for a namespace, only when the message is the catalog's 404, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer.
 
 | test | what it holds |
 | --- | --- |
@@ -10890,11 +10890,12 @@ Every test makes one check under the shell's name. The not-found reads as 42P01 
 | `test_iceberg_rest_scan_of_an_unknown_table_is_a_clean_not_found` | iceberg_rest_scan of an unknown table is a clean not-found (42P01) |
 | `test_iceberg_rest_tables_of_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404 |
 | `test_iceberg_rest_scan_in_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404 |
+| `test_the_catalogs_404_message_reaches_the_error_detail` | the catalog's 404 message reaches the error detail |
 | `test_the_backend_is_still_up_after_the_rest_read` | backend still up after the REST read |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
-The twin of `test/iceberg_rest_vended.sh`. A private cluster with no AWS_* in its environment reads a table through the shell's REST catalog, which vends the SigV4 S3 fixture's key; the vended secret never reaches either log, a wrong one is refused by S3's 403, the longest storage-credentials prefix wins over a wrong catch-all and a wrong flat config, an endpoint off the allow-list is refused by the allow-list, a catalog vending nothing falls back to ambient credentials, and no backend dies.
+The twin of `test/iceberg_rest_vended.sh`. A private cluster with no AWS_* in its environment reads a table through the shell's REST catalog, which vends the SigV4 S3 fixture's key; the vended secret never reaches either log, a wrong one is refused by S3's 403, the longest storage-credentials prefix wins over a wrong catch-all and a wrong flat config, an endpoint off the allow-list is refused by the allow-list, a catalog vending nothing falls back to ambient credentials, and no backend dies. Each file gets its own longest-prefix credential (#1820): with split metadata/ and data/ entries, the data/ key signs the data files; the flat config covers a file no prefix matches; and a file nothing vended covers is refused, even when the server holds ambient keys S3 accepts.
 
 ### Every test
 
@@ -10909,8 +10910,12 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_the_vended_secret_is_not_in_the_s3_request_log` | the vended secret never appears in the S3 request log |
 | `test_a_wrong_vended_secret_is_refused_by_s3` | a wrong vended secret is refused by S3, not bypassed (28000) |
 | `test_the_longest_storage_credentials_prefix_wins` | storage-credentials longest-prefix match selects the right creds |
+| `test_split_credentials_each_sign_their_own_files` | split metadata/ and data/ credentials each sign their own files |
+| `test_the_data_credential_signs_a_data_file` | the data/ credential, not the metadata/ one, signs a data file (28000) |
+| `test_the_flat_config_signs_an_uncovered_file` | the flat config signs a file no storage-credentials prefix covers |
 | `test_a_vended_endpoint_off_the_allow_list_is_refused` | vended creds for an off-allow-list endpoint are refused (42501) |
 | `test_a_catalog_vending_nothing_falls_back_to_ambient` | a table vending no creds still reads with ambient (cfg NULL path) |
+| `test_an_uncovered_file_is_refused_not_read_ambient` | a file no vended credential covers is refused, not read ambient (28000) |
 | `test_the_backend_survives_the_vended_arms` | backend still up after the vended-credential arms |
 
 ## 276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else

@@ -1218,10 +1218,16 @@ the allow-list, the link-local refusal, and the environment bearer token.
 
 A catalog can vend storage credentials in its `loadTable` reply. The data,
 metadata, and delete files are then read with those credentials, not the server
-environment. Both the flat `config` keys and the `storage-credentials` array are
-read, and the longest-prefix match is used. Vended credentials do not bypass the
-allow-list. The endpoint is still checked. A table that vends no credentials is
-read with the ambient environment, as before.
+environment. Each file gets its own credential. For each file, the reader uses
+the `storage-credentials` entry whose `prefix` is the longest match for the
+file's location. A file that no prefix covers uses the flat `config` keys. If
+the flat `config` vends no keys either, the read fails with SQLSTATE 28000 and
+names the file. The server's own `AWS_*` credentials are never used for a table
+whose catalog vends credentials. An entry, or a flat `config`, counts as a
+credential only when it has both `s3.access-key-id` and `s3.secret-access-key`.
+Vended credentials do not bypass the allow-list. The endpoint is still checked.
+A table that vends no credentials is read with the ambient environment, as
+before.
 
 ```sql
 SELECT region, sum(amount)

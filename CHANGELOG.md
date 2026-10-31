@@ -466,6 +466,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- `iceberg_rest_scan` now chooses a vended storage credential for each file it
+  reads (#1820). Before, it matched each `storage-credentials` prefix against the
+  metadata location only, and that one credential signed every file. So a
+  catalog that vended separate keys for `metadata/` and `data/` had its data
+  files read with the metadata key. A catalog that vended a key for `data/` only
+  had the whole table read with the server's own `AWS_*` credentials. Now each
+  file uses the entry with the longest prefix of its location, then the flat
+  `config`. When neither covers a file, the read fails with SQLSTATE 28000 and
+  names the file. `test/iceberg_rest_vended.sh` and `test_iceberg_rest_vended.py`.
+  Reported by @OffgridwithJD.
 - `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
   read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
   or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that
