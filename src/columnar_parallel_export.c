@@ -72,6 +72,7 @@
 #define PEXPORT_KEY_HEADER	0
 #define PEXPORT_KEY_SLOTS	1
 #define PEXPORT_KEY_LEAVES	2
+#define PEXPORT_KEY_GUCS	3
 #define PEXPORT_MAX_WORKERS 32
 
 typedef enum PexportState
@@ -119,6 +120,22 @@ typedef struct PexportSpawn
 } PexportSpawn;
 
 PGDLLEXPORT void pgcolumnar_parallel_export_worker(Datum main_arg);
+
+/*
+ * The settings the object-store module reads by name (#1780). A background
+ * worker gets postgresql.conf, ALTER SYSTEM, and the ALTER ROLE and ALTER
+ * DATABASE settings applied when it connects, but never the caller's SET, so
+ * without these a worker ignored the caller's SET: it uploaded to an endpoint the session
+ * had refused, and ignored its part size and addressing. The dispatcher copies
+ * the caller's values into the segment, in this order, each ending in a NUL,
+ * and every worker applies them before it writes.
+ */
+static const char *const pexport_session_gucs[] = {
+	"pgcolumnar.objstore_allowed_endpoints",
+	"pgcolumnar.objstore_s3_addressing",
+	"pgcolumnar.objstore_part_size",
+};
+#define PEXPORT_NGUCS lengthof(pexport_session_gucs)
 
 /* ------------------------------------------------------------------------- */
 
@@ -200,14 +217,16 @@ pexport_prepare_dir(const char *dir)
 	struct dirent *de;
 
 	/*
-	 * A remote prefix (#623) has no directory to create, and require-empty
-	 * cannot be checked without a bucket listing, which is #619 and
-	 * deliberately deferred. So the remote branch does not verify the prefix
-	 * is empty: the documented rule is that a remote prefix must be new or
-	 * empty, and a stale higher-numbered part from a larger prior export into
-	 * the same prefix would be unioned by a later read. The one thing done
-	 * here is to load the module and reject an unsupported scheme up front, so
-	 * a missing module fails before any worker is spawned rather than N times.
+	 * A remote prefix (#623) has no directory to create, so this branch runs
+	 * the checks that must fail once, in the dispatcher, before any worker
+	 * starts, rather than once per worker:
+	 *   - the object-store module is installed;
+	 *   - it handles the scheme;
+	 *   - this session's pgcolumnar.objstore_allowed_endpoints lists the
+	 *     endpoint (#1780). The module checks the list without a request.
+	 * It does not require the prefix to be empty. A stale part from a larger
+	 * earlier export into the same prefix is removed after the workers finish
+	 * (pexport_remove_stale_remote_parts), before the _SUCCESS marker.
 	 */
 	if (PgColumnarPathIsRemote(dir))
 	{
@@ -227,6 +246,13 @@ pexport_prepare_dir(const char *dir)
 					 errhint("A remote prefix must be new or empty; "
 							 "pgcolumnar cannot verify this without a bucket "
 							 "listing.")));
+
+		/*
+		 * The workers apply this session's allow-list too (see
+		 * pexport_session_gucs), but each would refuse on its own, and the
+		 * error would arrive as "worker N failed".
+		 */
+		api->check_endpoint(dir, NULL);
 		return;
 	}
 
@@ -620,6 +646,18 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
 
+	/* the caller's object-store settings (#1780); the caller could SET each */
+	{
+		const char *v = (const char *) shm_toc_lookup(toc, PEXPORT_KEY_GUCS, false);
+		int			g;
+
+		for (g = 0; g < (int) PEXPORT_NGUCS; g++)
+		{
+			SetConfigOption(pexport_session_gucs[g], v, PGC_SUSET, PGC_S_SESSION);
+			v += strlen(v) + 1;
+		}
+	}
+
 	/*
 	 * Adopt the dispatcher's exact snapshot. ImportSnapshot requires a
 	 * repeatable-read (or serializable) transaction with no snapshot taken yet,
@@ -738,6 +776,9 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	PexportHeader *hdr;
 	PexportWorkerSlot *slots;
 	Oid		   *leafchunk;
+	char	   *gucvals[PEXPORT_NGUCS];
+	Size		gucsize;
+	char	   *gucchunk;
 	uint32		dsmh;
 	BackgroundWorker bw;
 	BackgroundWorkerHandle **handles;
@@ -884,7 +925,14 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	shm_toc_estimate_chunk(&est, sizeof(PexportHeader));
 	shm_toc_estimate_chunk(&est, mul_size(sizeof(PexportWorkerSlot), workers));
 	shm_toc_estimate_chunk(&est, mul_size(sizeof(Oid), Max(npart, 1)));
-	shm_toc_estimate_keys(&est, 3);
+	gucsize = 0;
+	for (i = 0; i < (int) PEXPORT_NGUCS; i++)
+	{
+		gucvals[i] = pstrdup(GetConfigOption(pexport_session_gucs[i], false, false));
+		gucsize = add_size(gucsize, strlen(gucvals[i]) + 1);
+	}
+	shm_toc_estimate_chunk(&est, gucsize);
+	shm_toc_estimate_keys(&est, 4);
 	segsize = shm_toc_estimate(&est);
 
 	seg = dsm_create(segsize, 0);
@@ -898,6 +946,15 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	shm_toc_insert(toc, PEXPORT_KEY_LEAVES, leafchunk);
 	for (i = 0; i < npart; i++)
 		leafchunk[i] = leafoids[i];
+	gucchunk = (char *) shm_toc_allocate(toc, gucsize);
+	shm_toc_insert(toc, PEXPORT_KEY_GUCS, gucchunk);
+	for (i = 0; i < (int) PEXPORT_NGUCS; i++)
+	{
+		size_t		len = strlen(gucvals[i]) + 1;
+
+		memcpy(gucchunk, gucvals[i], len);
+		gucchunk += len;
+	}
 	dsmh = dsm_segment_handle(seg);
 
 	hdr->dbid = MyDatabaseId;

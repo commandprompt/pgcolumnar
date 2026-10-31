@@ -1260,10 +1260,28 @@ guard_tests 854
 # 16 checks in 16 tests, by collection over the cluster files.
 # cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
 # that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
+# cluster_tests 4516 -> 4524 for #1783's eight prefix, pattern and upload-cleanup tests in
+# test_objstore_addressing.py, by collection over the cluster files.
+# cluster_tests 4524 -> 4526 for #1783's two tests in test_objstore_addressing.py that an upload a
+# terminated worker left open is aborted under virtual-host addressing, by collection over the cluster files.
+# cluster_tests 4526 -> 4532 for #1780's test_objstore_sink_write.py, the twin of objstore_sink_write.sh:
+# 6 checks in 6 new tests (4, then 2 after review), by collection over the cluster files.
+# cluster_tests 4532 -> 4534 for #1787's two close-delimited reply tests in test_iceberg_rest.py (read to
+# the end, and refused past the cap), by collection over the cluster files.
+# cluster_tests 4534 -> 4536 for #1794's two half-pair tests in test_iceberg_rest_server.py (a half OAuth2
+# credential, id or secret, is refused even with a static token), by collection.
+# cluster_tests 4536 -> 4537 for #1794's token-wins test in test_iceberg_rest_server.py (a static token and a
+# complete OAuth2 pair read by the token, with no token request), by collection.
+# cluster_tests 4537 -> 4540 for #1791 in test_iceberg_data_files.py: the DELETED-entry case leaves the
+# refusal table for a test of its own (skipped, not refused), and three copy-on-write tests join it,
+# by collection over the cluster files.
 # cluster_tests 4516 -> 4526 for #1811's and #1812's tests in test_parquet_export.py (4), test_arrow_export.py (3)
 # and test_objstore_sink_write.py (3). Re-derived by collection on the merged tree, not by adding
 # the deltas: `4526 tests collected`.
 # cluster_tests 4526 -> 4535 for #1811's review fixes on #1843: test_parquet_export.py (4),
 # test_arrow_export.py (4) and test_parallel_export_parquet.py (1), by collection: the whole
 # corpus collects `5389 tests collected`, guard 854 + cluster 4535.
-cluster_tests 4535
+# cluster_tests 4540 -> 4559 merging main into #1843 (main's #1783, #1780, #1787, #1794, #1791 with
+# #1811's and #1812's 19), by collection on the merged tree, not by adding the deltas:
+# `5413 tests collected`, guard 854 + cluster 4559.
+cluster_tests 4559
