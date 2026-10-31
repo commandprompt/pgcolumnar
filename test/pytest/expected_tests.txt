@@ -1371,4 +1371,10 @@ guard_tests 854
 # by collection: `4641 tests collected`.
 # cluster_tests 4641 -> 4645 for #1781's review: test_objstore_sink_write.py gains the twins of
 # objstore_sink_write.sh's refused-listing-after-a-larger-run arm (4 tests), by collection: `4645 tests collected`.
-cluster_tests 4645
+# cluster_tests 4645 -> 4653 for #1784's test_objstore_listing.py, the twin of objstore_listing.sh:
+# 8 checks in one test of 8 parameters, by collection over the cluster files.
+# cluster_tests 4653 -> 4655 for #1784's two upper-case scheme checks in test_objstore_listing.py
+# (an S3:// prefix and an S3:// pattern), 2 parameters of the same test, by collection over the cluster files.
+# cluster_tests 4655 -> 4656 for #1784's S3://.../glb/[A_]*.parquet check in test_objstore_listing.py (only the
+# scheme ignores case), 1 parameter of the same test, by collection over the cluster files (`4527 tests collected` after the merge of main).
+cluster_tests 4656
