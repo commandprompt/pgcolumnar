@@ -466,6 +466,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- The REST catalog functions now follow the catalog's `GET /v1/config` (#1793).
+  They use the advertised `namespace-separator`, so a nested namespace such as
+  `db.x` works on the Apache Iceberg 1.12 REST catalog, which answered HTTP 400
+  before. `iceberg_rest_namespaces` now lists every level: it asks for the
+  children of each namespace with `?parent=`, where it listed only the top level
+  before. `iceberg_rest_namespaces` and `iceberg_rest_tables` now read the
+  config too, so they send the server's `warehouse` and use the catalog's
+  prefix; on a prefixed catalog they returned HTTP 404 before. A prefix with a
+  `/` in it, such as `catalogs/main`, is sent as path segments, not as one
+  `%2F`-encoded segment, and a prefix in the config `defaults` is used. Both list
+  functions follow `next-page-token`. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`. Reported by @OffgridwithJD.
+
 - `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
   read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
   or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that

@@ -10874,6 +10874,8 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails.
 
+Four more fixtures cover #1793, one catalog behaviour each. One nests namespaces (db, db.x, db.x.y, aa), advertises the separator `%2E`, answers 400 to a `%1F` path and pages every list one item at a time. One has the prefix `catalogs/main`. One puts its prefix in the config `defaults`. One requires `?warehouse=wh1` on the config request and is reached through a FOREIGN SERVER. A failed reading shows the catalog's error text.
+
 ### Every test
 
 Every test makes one check under the shell's name. The not-found reads as 42P01 only when the message is the catalog's 404, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer.
@@ -10891,6 +10893,17 @@ Every test makes one check under the shell's name. The not-found reads as 42P01 
 | `test_iceberg_rest_tables_of_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404 |
 | `test_iceberg_rest_scan_in_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404 |
 | `test_the_backend_is_still_up_after_the_rest_read` | backend still up after the REST read |
+| `test_nested_namespaces_iceberg_rest_namespaces_lists_every_level` | nested namespaces: iceberg_rest_namespaces lists every level, page by page |
+| `test_nested_namespaces_iceberg_rest_tables_lists_both_pages` | nested namespaces: iceberg_rest_tables of db.x lists both pages |
+| `test_nested_namespaces_iceberg_rest_scan_returns_the_five_rows` | nested namespaces: iceberg_rest_scan of db.x.events returns the five rows |
+| `test_multi_segment_prefix_iceberg_rest_table_location_resolves` | multi-segment prefix: iceberg_rest_table_location resolves the table |
+| `test_multi_segment_prefix_iceberg_rest_scan_returns_the_five_rows` | multi-segment prefix: iceberg_rest_scan returns the five rows |
+| `test_multi_segment_prefix_iceberg_rest_namespaces_lists` | multi-segment prefix: iceberg_rest_namespaces lists the namespaces |
+| `test_multi_segment_prefix_iceberg_rest_tables_lists` | multi-segment prefix: iceberg_rest_tables lists the tables |
+| `test_prefix_in_config_defaults_iceberg_rest_table_location_resolves` | prefix in config defaults: iceberg_rest_table_location resolves the table |
+| `test_prefix_in_config_defaults_iceberg_rest_tables_lists` | prefix in config defaults: iceberg_rest_tables lists the tables |
+| `test_warehouse_server_iceberg_rest_namespaces_sends_the_warehouse` | warehouse server: iceberg_rest_namespaces sends the warehouse and lists |
+| `test_warehouse_server_iceberg_rest_tables_sends_the_warehouse` | warehouse server: iceberg_rest_tables sends the warehouse and lists |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 

@@ -1182,6 +1182,16 @@ request is made.
 Multi-level namespaces are given dot-separated, and the function requires the
 `pg_read_server_files` role, like the other Iceberg functions.
 
+Every REST function first reads the catalog configuration (`GET /v1/config`) and
+follows it:
+
+- The `prefix` goes after `/v1/` in every later request. A prefix may contain
+  `/`, such as `catalogs/main`; each part is sent as its own path segment.
+- The `namespace-separator` joins the levels of a multi-level namespace in a
+  request. The default is the unit separator, sent as `%1F`. The Apache Iceberg
+  REST catalog advertises `%2E`.
+- A value in `overrides` wins over one in `defaults`.
+
 ```sql
 -- URI form: the token, if any, comes from the server environment, not the query
 SELECT pgcolumnar.iceberg_rest_table_location(
@@ -1233,12 +1243,21 @@ SELECT region, sum(amount)
 
 ### pgcolumnar.iceberg_rest_namespaces(catalog_uri text) returns setof text
 
-Lists the namespaces of a catalog, one per row. A multi-level namespace is
-returned dot-joined. Same catalog and authentication rules as above.
+Lists the namespaces of a catalog, one per row, at every level. A multi-level
+namespace is returned dot-joined, for example `analytics.daily`. Same catalog and
+authentication rules as above.
+
+The catalog lists only the direct children of a namespace. So the function asks
+for the top level, then asks for the children of each namespace it finds
+(`?parent=`). That is one request per namespace. It lists namespaces up to 64
+levels deep, and raises an error rather than look for a 65th level.
 
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
 
 Lists the table names in a namespace, one per row.
+
+Both list functions follow the catalog's `next-page-token`, so a catalog that
+splits a list into pages is read to the end.
 
 ```sql
 SELECT * FROM pgcolumnar.iceberg_rest_namespaces('https://catalog.example.com');

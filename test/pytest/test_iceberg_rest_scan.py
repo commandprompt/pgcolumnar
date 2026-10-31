@@ -162,6 +162,7 @@ def irs(pgc_cluster):
     datadir.mkdir()
     log = str(work / "server.log")
     cluster = Cluster(pgc_cluster.pg_config, "icerestscan", datadir, pick_port(35))
+    fx_srvs = []
     r = {"server up": out.read_text(errors="replace").count("READY") if out.is_file() else 0, "mdloc": mdloc}
     try:
         cluster.initdb()
@@ -198,12 +199,67 @@ def irs(pgc_cluster):
         r["scan other ns"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','nosuchns','events') "
                                            f"AS t(id bigint)",
                                       "the REST catalog has no such table", " by the catalog's 404")
+        # #1793: one fixture per catalog behaviour, as the shell starts them.
+        def start_fx(name, *args):
+            port = pick_port(36 + len(fx_srvs))
+            fout = work / f"{name}.out"
+            fx_srvs.append(subprocess.Popen(
+                [sys.executable, str(TEST / "iceberg_rest_server.py"), "--port", str(port),
+                 "--log", str(work / f"{name}.log"), "--token", TOKEN,
+                 "--metadata-location", mdloc, *args],
+                stdout=open(fout, "w"), stderr=subprocess.STDOUT))
+            for _ in range(50):
+                if fout.is_file() and "READY" in fout.read_text(errors="replace"):
+                    break
+                time.sleep(0.1)
+            return f"http://127.0.0.1:{port}"
+
+        def nslist(c):
+            return _rows(dsn, f"SELECT string_agg(ns, ',' ORDER BY ns) FROM pgcolumnar.iceberg_rest_namespaces('{c}') AS ns")
+
+        def tlist(c, ns):
+            return _rows(dsn, f"SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('{c}','{ns}') AS t")
+
+        def scan(c, ns):
+            return _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM "
+                              f"pgcolumnar.iceberg_rest_scan('{c}','{ns}','events') {cols} ORDER BY id")
+
+        def location(c):
+            return _rows(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{c}','db','events')")
+
+        ncat = start_fx("nested", "--namespace", "db.x", "--table", "events", "--extra-table", "more",
+                        "--extra-namespace", "db.x.y", "--extra-namespace", "aa",
+                        "--namespace-separator", "%2E", "--page-size", "1")
+        r["nested namespaces"] = nslist(ncat)
+        r["nested tables"] = tlist(ncat, "db.x")
+        r["nested scan"] = scan(ncat, "db.x")
+        scat = start_fx("slashpfx", "--namespace", "db", "--table", "events", "--prefix", "catalogs/main")
+        r["slash location"] = location(scat)
+        r["slash scan"] = scan(scat, "db")
+        r["slash namespaces"] = nslist(scat)
+        r["slash tables"] = tlist(scat, "db")
+        dcat = start_fx("defpfx", "--namespace", "db", "--table", "events", "--prefix", "wh1",
+                        "--prefix-in-defaults")
+        r["defaults location"] = location(dcat)
+        r["defaults tables"] = tlist(dcat, "db")
+        wcat = start_fx("whcat", "--namespace", "db", "--table", "events", "--prefix", "whp",
+                        "--warehouse", "wh1")
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE SERVER irs_wh FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog "
+                      f"OPTIONS (catalog_uri '{wcat}', warehouse 'wh1')")
+            c.execute(f"CREATE USER MAPPING FOR CURRENT_USER SERVER irs_wh OPTIONS (token '{TOKEN}')")
+        r["warehouse namespaces"] = nslist("irs_wh")
+        r["warehouse tables"] = tlist("irs_wh", "db")
+
         r["survived"] = _survived(dsn, log, before)
         yield r
     finally:
         _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
         srv.kill()
         srv.wait()
+        for fx in fx_srvs:
+            fx.kill()
+            fx.wait()
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -291,3 +347,81 @@ def test_the_backend_is_still_up_after_the_rest_read(irs, expect):
     if _declined(irs, expect):
         return
     expect.text(irs["survived"], "1", "backend still up after the REST read")
+
+
+ROWS5 = "1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50"
+
+
+def test_nested_namespaces_iceberg_rest_namespaces_lists_every_level(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["nested namespaces"], "aa,db,db.x,db.x.y",
+                "nested namespaces: iceberg_rest_namespaces lists every level, page by page")
+
+
+def test_nested_namespaces_iceberg_rest_tables_lists_both_pages(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["nested tables"], "events,more",
+                "nested namespaces: iceberg_rest_tables of db.x lists both pages")
+
+
+def test_nested_namespaces_iceberg_rest_scan_returns_the_five_rows(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["nested scan"], ROWS5,
+                "nested namespaces: iceberg_rest_scan of db.x.events returns the five rows")
+
+
+def test_multi_segment_prefix_iceberg_rest_table_location_resolves(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["slash location"], irs["mdloc"],
+                "multi-segment prefix: iceberg_rest_table_location resolves the table")
+
+
+def test_multi_segment_prefix_iceberg_rest_scan_returns_the_five_rows(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["slash scan"], ROWS5, "multi-segment prefix: iceberg_rest_scan returns the five rows")
+
+
+def test_multi_segment_prefix_iceberg_rest_namespaces_lists(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["slash namespaces"], "db",
+                "multi-segment prefix: iceberg_rest_namespaces lists the namespaces")
+
+
+def test_multi_segment_prefix_iceberg_rest_tables_lists(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["slash tables"], "events", "multi-segment prefix: iceberg_rest_tables lists the tables")
+
+
+def test_prefix_in_config_defaults_iceberg_rest_table_location_resolves(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["defaults location"], irs["mdloc"],
+                "prefix in config defaults: iceberg_rest_table_location resolves the table")
+
+
+def test_prefix_in_config_defaults_iceberg_rest_tables_lists(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["defaults tables"], "events",
+                "prefix in config defaults: iceberg_rest_tables lists the tables")
+
+
+def test_warehouse_server_iceberg_rest_namespaces_sends_the_warehouse(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["warehouse namespaces"], "db",
+                "warehouse server: iceberg_rest_namespaces sends the warehouse and lists")
+
+
+def test_warehouse_server_iceberg_rest_tables_sends_the_warehouse(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["warehouse tables"], "events",
+                "warehouse server: iceberg_rest_tables sends the warehouse and lists")
