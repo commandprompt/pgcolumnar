@@ -28,17 +28,17 @@
 # Both are reachable today by an honest caller who names a hostile file:
 # parquet_schema()/read_parquet() for (1), read_manifest/iceberg_scan for (2).
 #
-# This suite asserts the fix two ways. The functional arm crafts the bomb and
-# proves a 1 s statement_timeout now aborts it (SQLSTATE 57014) instead of the
-# backend spinning until a KILL: a genuine cancellation test, resolvable here --
-# unlike the in-memory decoders (see decode_interrupts.sh) -- precisely because
-# the unfixed loop is effectively unbounded, so there is no sub-100 ms window to
-# race. The shape arm (like decode_interrupts.sh / wal_envelope.sh) pins the
-# CHECK_FOR_INTERRUPTS into the skip bodies so a future edit that drops it fails
-# here in the matrix without depending on timing.
+# This suite asserts the fix two ways. The functional arm crafts the Thrift bomb
+# and wants it refused as corrupt within 3 s. Since #1822 that refusal comes from
+# the footer's end, not from the 1 s statement_timeout, so no test now runs the
+# Thrift skip's interrupt check: a hostile footer can make the skip loop only as
+# long as the footer itself. The shape arm (like decode_interrupts.sh /
+# wal_envelope.sh) pins the CHECK_FOR_INTERRUPTS into both skip bodies, so an edit
+# that drops either fails here without depending on timing.
 #
-# Removal proof: revert either fix and the matching functional check goes from
-# 57014 to HANG (the KILL fires), and the matching shape check goes to 0.
+# Removal proof: drop either interrupt check and the matching shape check goes to
+# 0. Skip a bool list element as zero bytes again and the functional check reads
+# 57014 instead of the corrupt-footer refusal.
 #
 # Usage:  test/decode_skip_interrupts.sh [PG_CONFIG]
 # Written fresh for pgColumnar.

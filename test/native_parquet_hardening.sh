@@ -177,6 +177,16 @@ psql_run "CREATE FUNCTION pgc_err(q text) RETURNS text LANGUAGE plpgsql AS \$\$
 footer_read() {
 	qw "SELECT pgc_err(\$q\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id bigint, name text)\$q\$);"
 }
+# pgc_timed Q -> pgc_err's reading, then "within 3 s" or "after N ms"
+psql_run "CREATE FUNCTION pgc_timed(q text) RETURNS text LANGUAGE plpgsql AS \$\$
+          DECLARE t0 timestamptz := clock_timestamp(); v text; ms bigint;
+          BEGIN v := pgc_err(q);
+            ms := (extract(epoch FROM clock_timestamp() - t0) * 1000)::bigint;
+            RETURN v || CASE WHEN ms < 3000 THEN ' within 3 s' ELSE ' after ' || ms || ' ms' END; END \$\$;"
+# footer_timed FILE -> footer_read's reading with the time it took
+footer_timed() {
+	qw "SELECT pgc_timed(\$q\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id bigint, name text)\$q\$);"
+}
 FOOTER_BEFORE="$(crashes)"
 UNPARSED='0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
 check "footer: the good file still reads"            "$(footer_read footer_good)"      "NO ERROR: 3000/4498500"
@@ -193,6 +203,16 @@ check "footer: every invalid type nibble on a field header is refused" \
 	             FROM generate_series(0, ${NSWEEP:-0} - 1) AS i) s
 	      WHERE v LIKE 'NO ERROR%';")" \
 	"0 of $NSWEEP read without an error"
+# The same headers set to type 13 (UUID). The skip steps over 16 bytes, so a copy
+# may read, but only with the good file's answer. The reading names each copy
+# that read a different answer without an error.
+check "footer: no type-13 (UUID) nibble on a field header reads a wrong answer" \
+	"$(qw "SELECT count(*) || ' of $NSWEEP read a wrong answer' || coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '')
+	       FROM (SELECT i, pgc_err(format(\$f\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet(%L) AS t(id bigint, name text)\$f\$,
+	                                     '$W/uuid_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v
+	             FROM generate_series(0, ${NSWEEP:-0} - 1) AS i) s
+	      WHERE v LIKE 'NO ERROR%' AND v <> 'NO ERROR: 3000/4498500';")" \
+	"0 of $NSWEEP read a wrong answer"
 check "footer: no row_groups field is refused" "$(footer_read no_row_groups)" \
 	'XX001: Parquet file "<file>" has a malformed footer / The footer has no row_groups field.'
 check "footer: a row group with no num_rows is refused" "$(footer_read no_rg_num_rows)" \
@@ -203,6 +223,20 @@ check "footer: a file num_rows that differs from its row groups is refused" "$(f
 	'XX001: Parquet file "<file>" has a malformed footer / The footer declares num_rows 2999, but its row groups hold 3000 rows.'
 check "footer: an unknown map field is skipped whole"     "$(footer_read unknown_map_field)"       "NO ERROR: 3000/4498500"
 check "footer: an unknown list of bools is skipped whole" "$(footer_read unknown_bool_list_field)" "NO ERROR: 3000/4498500"
+# Type 13 is UUID: a 16-byte value. parquet.thrift has none, but the skip must
+# step over one whole, as it does any other unknown field.
+check "footer: an unknown UUID field is skipped whole"      "$(footer_read unknown_uuid_field)"      "NO ERROR: 3000/4498500"
+check "footer: an unknown list of UUIDs is skipped whole"   "$(footer_read unknown_uuid_list_field)" "NO ERROR: 3000/4498500"
+# A list element of a type that is not a compact type has no known size. The
+# skip refuses it; skipped as zero bytes, the list vanished and the file read.
+check "footer: a list whose element type is not a compact type is refused" "$(footer_read list_of_type_14)" "$UNPARSED"
+# A list of 4294967295 bytes or doubles that runs off the footer's end. The skip
+# refuses the first element that does not fit. Stepping past the end without an
+# error ran every element first: seconds of work from a few bytes of footer.
+check "footer: a list of bytes that runs off the footer is refused at once" \
+	"$(footer_timed byte_list_off_end)" "$UNPARSED within 3 s"
+check "footer: a list of doubles that runs off the footer is refused at once" \
+	"$(footer_timed double_list_off_end)" "$UNPARSED within 3 s"
 check "backend survived the malformed footers" "$(survived "$FOOTER_BEFORE")" "1"
 
 pgc_summary

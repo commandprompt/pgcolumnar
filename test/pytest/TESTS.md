@@ -385,7 +385,7 @@ behaviour, the source of that number is named.
 - [337. test_phase6.py: vectorized aggregates and scans against a heap oracle, not only against themselves](#337-test_phase6py-vectorized-aggregates-and-scans-against-a-heap-oracle-not-only-against-themselves)
 - [338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it](#338-test_cancel_decodepy-a-cancel-lands-inside-one-large-row-groups-decode-and-the-session-it-lands-in-survives-it)
 - [339. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards](#339-test_decode_interruptspy-the-decode-paths-interrupt-checks-each-inside-the-loop-it-guards)
-- [340. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value](#340-test_decode_skip_interruptspy-the-thrift-and-avro-skip-loops-of-a-hostile-file-yield-to-a-cancel-per-skipped-value)
+- [340. test_decode_skip_interrupts.py: the Thrift skip of a hostile footer stops at the footer's end, and both skip loops keep an interrupt check](#340-test_decode_skip_interruptspy-the-thrift-skip-of-a-hostile-footer-stops-at-the-footers-end-and-both-skip-loops-keep-an-interrupt-check)
 - [341. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop](#341-test_native_cancelpy-a-scans-row-group-load-yields-to-statement_timeout-inside-the-decode-loop)
 - [342. test_objstore_export_double_cancel.py: a second cancel during a remote export's cleanup keeps the export's own error](#342-test_objstore_export_double_cancelpy-a-second-cancel-during-a-remote-exports-cleanup-keeps-the-exports-own-error)
 - [343. test_parquet_timestamp_zone.py: a Parquet timestamp read into the other timestamp type follows PostgreSQL's casts](#343-test_parquet_timestamp_zonepy-a-parquet-timestamp-read-into-the-other-timestamp-type-follows-postgresqls-casts)
@@ -12217,7 +12217,7 @@ Every test makes one check under the shell's name, on a private database. Each t
 
 ## 318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks
 
-The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range) and a two-column file whose row group carries one column chunk. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, the short chunk list must be refused by the chunk-count guard itself, and the backend must survive. For #1822 it also writes variants of a 3000-row file's footer: an invalid Thrift type nibble on each field header, a missing `row_groups`, a missing footer or row-group `num_rows`, a footer total that differs from its row groups, and an unknown map field and list of bools. Each defect must be refused by its own guard, and each valid variant must read 3000 rows with the right sum.
+The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range) and a two-column file whose row group carries one column chunk. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, the short chunk list must be refused by the chunk-count guard itself, and the backend must survive. For #1822 it also writes variants of a 3000-row file's footer: an invalid Thrift type nibble on each field header, a missing `row_groups`, a missing footer or row-group `num_rows`, a footer total that differs from its row groups, and an unknown map field and list of bools. It also sets each field header to type 13 (UUID, a 16-byte value), adds an unknown UUID field and list of UUIDs, a list whose element type is 14, and lists of 4294967295 bytes and doubles that run off the footer's end. Each defect must be refused, and each valid variant must read 3000 rows with the right sum. The missing-field guards overlap the total check: with one of them removed, the total check still refuses the file. So each of those checks tells its guard apart by the error detail, not by the refusal alone. The two run-off lists must be refused within 3 s: a skip that stepped past the end without an error took 10 to 12 s on PG18.
 
 ### Every test
 
@@ -12248,12 +12248,18 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_footer_invalid_type_nibble_on_row_groups_is_refused` | footer: an invalid type nibble on row_groups is refused |
 | `test_parquet_hardening_footer_invalid_type_nibble_on_num_rows_is_refused` | footer: an invalid type nibble on a num_rows is refused |
 | `test_parquet_hardening_footer_every_invalid_type_nibble_is_refused` | footer: every invalid type nibble on a field header is refused |
+| `test_parquet_hardening_footer_no_uuid_nibble_reads_a_wrong_answer` | footer: no type-13 (UUID) nibble on a field header reads a wrong answer |
 | `test_parquet_hardening_footer_without_row_groups_is_refused` | footer: no row_groups field is refused |
 | `test_parquet_hardening_footer_row_group_without_num_rows_is_refused` | footer: a row group with no num_rows is refused |
 | `test_parquet_hardening_footer_without_file_num_rows_is_refused` | footer: no file num_rows is refused |
 | `test_parquet_hardening_footer_num_rows_differing_from_row_groups_is_refused` | footer: a file num_rows that differs from its row groups is refused |
 | `test_parquet_hardening_footer_unknown_map_field_is_skipped_whole` | footer: an unknown map field is skipped whole |
 | `test_parquet_hardening_footer_unknown_bool_list_is_skipped_whole` | footer: an unknown list of bools is skipped whole |
+| `test_parquet_hardening_footer_unknown_uuid_field_is_skipped_whole` | footer: an unknown UUID field is skipped whole |
+| `test_parquet_hardening_footer_unknown_uuid_list_is_skipped_whole` | footer: an unknown list of UUIDs is skipped whole |
+| `test_parquet_hardening_footer_list_of_non_compact_type_is_refused` | footer: a list whose element type is not a compact type is refused |
+| `test_parquet_hardening_footer_byte_list_off_the_end_is_refused_at_once` | footer: a list of bytes that runs off the footer is refused at once |
+| `test_parquet_hardening_footer_double_list_off_the_end_is_refused_at_once` | footer: a list of doubles that runs off the footer is refused at once |
 | `test_parquet_hardening_backend_survived_the_malformed_footers` | backend survived the malformed footers |
 
 ## 319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend
@@ -12952,9 +12958,9 @@ Every test makes one check under the shell's name; the per-decoder pair is param
 | `test_the_group_load_checks_per_column_chunk` | the group load checks for interrupts per column chunk |
 | `test_the_row_loop_checks_for_interrupts` | the row loop checks for interrupts |
 
-## 340. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value
+## 340. test_decode_skip_interrupts.py: the Thrift skip of a hostile footer stops at the footer's end, and both skip loops keep an interrupt check
 
-The twin of `test/decode_skip_interrupts.sh`. It writes the shell's Thrift skip-bomb footer (256 lists of 4.3e9 bools in one unrecognised struct). Since #1822 each bool element takes its one byte, so the footer runs off its own end: parquet_schema() over it must be refused by the footer parser (0A000), not cancelled by the 1 s statement_timeout, within 3 s, with no backend killed. av_skip's window is too small for a timeout to resolve, so both skip functions are also held by shape: an interrupt check before the switch, in the source with its comments blanked.
+The twin of `test/decode_skip_interrupts.sh`. It writes the shell's Thrift skip-bomb footer (256 lists of 4.3e9 bools in one unrecognised struct). Since #1822 each bool element takes its one byte, so the footer runs off its own end: parquet_schema() over it must be refused by the footer parser (0A000), not cancelled by the 1 s statement_timeout, within 3 s, with no backend killed. No test now runs the Thrift skip's interrupt check, because every skipped value takes at least one byte and the footer ends the loop. av_skip's window is too small for a timeout to resolve. So both skip functions are held by shape: an interrupt check before the switch, in the source with its comments blanked.
 
 ### Every test
 

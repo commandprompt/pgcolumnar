@@ -121,7 +121,8 @@ def _survived(dsn, cluster, before):
 
 FOOTER_FILES = ("footer_good", "footer_reencoded", "nibble_row_groups", "nibble_num_rows", "no_row_groups",
                 "no_rg_num_rows", "no_file_num_rows", "file_num_rows_2999", "unknown_map_field",
-                "unknown_bool_list_field")
+                "unknown_bool_list_field", "unknown_uuid_field", "unknown_uuid_list_field", "list_of_type_14")
+TIMED_FILES = ("byte_list_off_end", "double_list_off_end")
 UNPARSED = '0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
 GOOD_READ = "NO ERROR: 3000/4498500"
 
@@ -166,6 +167,12 @@ def pqh(pgc_cluster, server_dir):
             "EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL; "
             "RETURN SQLSTATE || ': ' || regexp_replace(SQLERRM, '\"[^\"]*\"', '\"<file>\"') "
             "|| coalesce(' / ' || nullif(d, ''), ''); END $$",
+            # pgc_err's reading, then "within 3 s" or "after N ms"
+            "CREATE FUNCTION pgc_timed(q text) RETURNS text LANGUAGE plpgsql AS $$ "
+            "DECLARE t0 timestamptz := clock_timestamp(); v text; ms bigint; "
+            "BEGIN v := pgc_err(q); "
+            "ms := (extract(epoch FROM clock_timestamp() - t0) * 1000)::bigint; "
+            "RETURN v || CASE WHEN ms < 3000 THEN ' within 3 s' ELSE ' after ' || ms || ' ms' END; END $$",
         ]
         for stmt in setup:
             # a failed setup step surfaces in the readings that depend on it, by name
@@ -196,6 +203,9 @@ def pqh(pgc_cluster, server_dir):
         for name in FOOTER_FILES:
             r[name] = _value(dsn, f"SELECT pgc_err($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
                                   f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
+        for name in TIMED_FILES:
+            r[name] = _value(dsn, f"SELECT pgc_timed($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+                                  f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
         try:
             nsweep = (w / "nibble_sweep.count").read_text().strip()
         except OSError:
@@ -208,6 +218,14 @@ def pqh(pgc_cluster, server_dir):
             "pgcolumnar.read_parquet(%L) AS t(id bigint, name text)$f$, "
             f"'{w}/nibble_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v "
             f"FROM generate_series(0, {nsweep or 0} - 1) AS i) s WHERE v LIKE 'NO ERROR%'"))
+        r["uuid sweep"] = _value(dsn, (
+            f"SELECT count(*) || ' of {nsweep} read a wrong answer' "
+            "|| coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '') "
+            "FROM (SELECT i, pgc_err(format($f$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+            "pgcolumnar.read_parquet(%L) AS t(id bigint, name text)$f$, "
+            f"'{w}/uuid_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v "
+            f"FROM generate_series(0, {nsweep or 0} - 1) AS i) s "
+            f"WHERE v LIKE 'NO ERROR%' AND v <> '{GOOD_READ}'"))
         r["footer survived"] = _survived(dsn, pgc_cluster, footer_before)
         yield r
     finally:
@@ -393,6 +411,14 @@ def test_parquet_hardening_footer_every_invalid_type_nibble_is_refused(request, 
                 "footer: every invalid type nibble on a field header is refused")
 
 
+def test_parquet_hardening_footer_no_uuid_nibble_reads_a_wrong_answer(request, expect):
+    if expect.require_module("pyarrow.parquet", name=SKIP) is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["uuid sweep"], f"0 of {r['nsweep']} read a wrong answer",
+                "footer: no type-13 (UUID) nibble on a field header reads a wrong answer")
+
+
 def test_parquet_hardening_footer_without_row_groups_is_refused(request, expect):
     r = _footer(request, expect)
     if r is None:
@@ -443,6 +469,44 @@ def test_parquet_hardening_footer_unknown_bool_list_is_skipped_whole(request, ex
         return
     expect.text(r["unknown_bool_list_field"], GOOD_READ,
                 "footer: an unknown list of bools is skipped whole")
+
+
+def test_parquet_hardening_footer_unknown_uuid_field_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_uuid_field"], GOOD_READ, "footer: an unknown UUID field is skipped whole")
+
+
+def test_parquet_hardening_footer_unknown_uuid_list_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_uuid_list_field"], GOOD_READ, "footer: an unknown list of UUIDs is skipped whole")
+
+
+def test_parquet_hardening_footer_list_of_non_compact_type_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["list_of_type_14"], UNPARSED,
+                "footer: a list whose element type is not a compact type is refused")
+
+
+def test_parquet_hardening_footer_byte_list_off_the_end_is_refused_at_once(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["byte_list_off_end"], UNPARSED + " within 3 s",
+                "footer: a list of bytes that runs off the footer is refused at once")
+
+
+def test_parquet_hardening_footer_double_list_off_the_end_is_refused_at_once(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["double_list_off_end"], UNPARSED + " within 3 s",
+                "footer: a list of doubles that runs off the footer is refused at once")
 
 
 def test_parquet_hardening_backend_survived_the_malformed_footers(request, expect):

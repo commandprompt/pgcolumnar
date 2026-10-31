@@ -470,8 +470,13 @@ true until the next version shipped.
   Thrift field header with type 13, 14 or 15 was skipped as zero bytes, so the
   parser lost its place and read the value bytes as more headers. One bad
   footer byte could then return 0, 2000 or 2016 rows of a 3000-row file with
-  no error. The reader now refuses an invalid field type. It also skips a map
-  field and a list of bools by their real size, which it could not do before.
+  no error. Types 14 and 15 are not compact types, so the reader now refuses
+  them, as a field and as a list element. Type 13 is UUID, a 16-byte value that
+  parquet.thrift does not use; the reader skips it as 16 bytes. It also skips a
+  map field and a list of bools by their real size, which it could not do
+  before. A skipped byte or double that would run past the footer's end now
+  stops the parse at once: a list of 4294967295 of them took 10 to 12 seconds
+  to fail before.
   It refuses a footer that lacks `row_groups`, its own `num_rows`, or a row
   group's `num_rows`, and one whose `num_rows` differs from the sum of its row
   groups. `read_parquet`, the Parquet foreign table and `iceberg_scan` share

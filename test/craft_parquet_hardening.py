@@ -146,9 +146,10 @@ print(f"  columns list at {target}: 2 chunks -> 1, removed {removed} footer byte
 
 
 # ---- malformed footer Thrift (#1822) ---------------------------------------
-# A Thrift compact field header carries its type in the low nibble. Types 13, 14
-# and 15 do not exist, and type 11 (map) and a list of bools are valid but were
-# skipped as zero bytes. Either way the parser lost its place in the footer and
+# A Thrift compact field header carries its type in the low nibble. Types 14 and
+# 15 are not compact types. Type 13 is UUID, a 16-byte value that parquet.thrift
+# does not use. Type 11 (map) and a list of bools are valid but were skipped as
+# zero bytes. Either way the parser lost its place in the footer and
 # could return a wrong row count with no error. These files are built from one
 # good file by decoding its footer into a tree and encoding it again, so they do
 # not depend on how a pyarrow version lays the footer out.
@@ -237,6 +238,11 @@ def enc_zz(n):
 
 
 def enc_value(t, v, in_list=False):
+    if t == 13:                               # UUID: 16 raw bytes
+        assert len(v) == 16, len(v)
+        return bytes(v)
+    if t in (0, 14, 15) and in_list:          # not a compact type: raw bytes, for crafting
+        return bytes(v)
     if t in (1, 2):
         return bytes([v]) if in_list else b""
     if t == 3:
@@ -283,9 +289,9 @@ def write_footer(name, foot):
     open(f"{W}/{name}.parquet", "wb").write(good[:gbase] + foot + len(foot).to_bytes(4, "little") + b"PAR1")
 
 
-def write_mutant(name, offset):
+def write_mutant(name, offset, nibble=0x0F):
     b = bytearray(good)
-    b[offset] = (b[offset] & 0xF0) | 0x0F    # type nibble 15: not a compact type
+    b[offset] = (b[offset] & 0xF0) | nibble  # 15 by default: not a compact type
     open(f"{W}/{name}.parquet", "wb").write(bytes(b))
 
 
@@ -313,6 +319,10 @@ offs = sorted(headers(fmd))
 for i, off in enumerate(offs):
     write_mutant(f"nibble_sweep_{i:04d}", off)
 open(f"{W}/nibble_sweep.count", "w").write(f"{len(offs)}\n")
+# The same headers set to type 13 (UUID), which the skip steps over as 16 bytes.
+# A copy may then read, but only with the right answer.
+for i, off in enumerate(offs):
+    write_mutant(f"uuid_sweep_{i:04d}", off, 0x0D)
 
 
 def strip(fields):
@@ -338,4 +348,28 @@ variant("unknown_map_field", lambda m: m.insert(m.index(fld(m, 4)),
                                                 [100, 11, (8, 5, [(b"a", 1), (b"b", 2)])]))
 variant("unknown_bool_list_field", lambda m: m.insert(m.index(fld(m, 4)),
                                                       [101, 9, (1, [1, 2, 1])]))
+# A UUID field and a list of UUIDs: valid compact values, 16 bytes each, that a
+# future parquet.thrift could add. A skip of the wrong size loses row_groups or
+# reads 0xff as a field header of type 15.
+variant("unknown_uuid_field", lambda m: m.insert(m.index(fld(m, 4)),
+                                                 [102, 13, bytes(range(16))]))
+variant("unknown_uuid_list_field", lambda m: m.insert(m.index(fld(m, 4)),
+                                                      [103, 9, (13, [b"\xff" * 16, bytes(range(16))])]))
+# A list whose element type, 14, is not a compact type. The size of its elements
+# is unknown. Skipped as zero bytes, the list vanished and the file read.
+variant("list_of_type_14", lambda m: m.insert(m.index(fld(m, 4)),
+                                              [104, 9, (14, [b"", b"", b""])]))
+
+
+# A list of 4294967295 bytes or doubles as the footer's last field, with the
+# footer ending a few bytes in. A skip that steps past the footer's end without
+# an error runs all 4294967295 elements before anything notices.
+def off_end(name, etype, tail):
+    m = strip(fmd)
+    raw = bytes([0x09]) + enc_zz(105) + bytes([0xF0 | etype]) + enc_varint(0xFFFFFFFF) + tail
+    write_footer(name, enc_struct(m)[:-1] + raw)
+
+
+off_end("byte_list_off_end", 3, b"")
+off_end("double_list_off_end", 7, b"\x00\x00\x00")
 print(f"  footer {gflen} bytes, {len(offs)} field headers swept", file=sys.stderr)

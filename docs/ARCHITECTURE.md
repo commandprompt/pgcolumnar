@@ -360,8 +360,9 @@ The decode paths guard against crafted files. They range-check these items:
 - the compressed size of each page
 - a page that claims no values
 
-The footer parser also refuses a Thrift field of a type that does not exist,
-because it cannot know that field's size. It requires `row_groups`, the footer's
+The footer parser also refuses a Thrift field whose type is not a compact type,
+because it cannot know that field's size. It skips a UUID field (type 13) as
+16 bytes, though parquet.thrift has none. It requires `row_groups`, the footer's
 `num_rows` and each row group's `num_rows`. The footer's total must equal the sum
 of the row groups (#1822). A
 malformed footer therefore gives an explicit error. It does not give a read

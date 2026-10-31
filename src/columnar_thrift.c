@@ -109,11 +109,12 @@ PgColumnarThriftField(TCReader *r, int *ftype, int *fid, int *lastId)
 	*ftype = b & 0x0f;
 
 	/*
-	 * Types 13, 14 and 15 do not exist in the compact protocol. A header with
-	 * one is corrupt, and no skip can know how many bytes its value takes, so
-	 * the parser would lose its place in the struct (#1822).
+	 * Types 14 and 15 are not compact types. A header with one is corrupt, and
+	 * no skip can know how many bytes its value takes, so the parser would lose
+	 * its place in the struct (#1822). Type 13 is UUID: parquet.thrift has no
+	 * UUID field, but the skip steps over its 16 bytes like any unknown field.
 	 */
-	if (*ftype > TC_STRUCT)
+	if (*ftype > TC_UUID)
 	{
 		r->error = true;
 		*ftype = TC_STOP;
@@ -172,6 +173,12 @@ PgColumnarThriftSkip(TCReader *r, int ftype)
 				r->error = true;
 			else
 				r->pos += 8;
+			break;
+		case TC_UUID:
+			if (r->len - r->pos < 16)
+				r->error = true;
+			else
+				r->pos += 16;
 			break;
 		case TC_BINARY:
 			{

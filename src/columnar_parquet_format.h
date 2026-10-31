@@ -87,6 +87,7 @@
 #define TC_SET					10
 #define TC_MAP					11
 #define TC_STRUCT				12
+#define TC_UUID					13	/* 16 raw bytes; parquet.thrift has none */
 
 /*
  * pq_bits_for
