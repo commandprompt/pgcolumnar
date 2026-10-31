@@ -3232,14 +3232,15 @@ iceberg_rest	iceberg_rest	the token value never appears in the catalog request l
 iceberg_rest_scan	iceberg_rest_scan	backend still up after the REST read	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the backend aborts on a catalog 404 (abort() before the 42P01 refusal)
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_namespaces lists the catalog's namespaces	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: iceberg_rest_namespaces drops the catalog's last namespace
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan matches iceberg_scan of the same table (same oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
-iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-22	columnar_iceberg_rest.c: loadTable always asks for namespace db, whatever namespace it was given
+iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: loadTable always asks for namespace db, whatever namespace it was given;rest_get_json reverted to main: the catalog's ErrorModel body is never read, every 404 says no such table (#1820)
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan of an unknown table is a clean not-found (42P01)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 404 is not mapped to 42P01
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan projects and reorders by field id (amount, id)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan returns the five current-snapshot rows	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_tables lists a namespace's tables	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
-iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-22	columnar_iceberg_rest.c: iceberg_rest_tables always asks for namespace db, whatever namespace it was given
+iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: iceberg_rest_tables always asks for namespace db, whatever namespace it was given;rest_get_json reverted to main: the catalog's ErrorModel body is never read, every 404 says no such table (#1820)
 iceberg_rest_scan	iceberg_rest_scan	premise: rest fixture server is up	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	the catalog reports the relocated metadata location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
+iceberg_rest_scan	iceberg_rest_scan	the catalog's 404 message reaches the error detail	15;16;17;18;19	2026-10-31	rest_get_json reverted to main: the catalog's ErrorModel body is never read, every 404 says no such table (#1820)
 iceberg_rest_server	iceberg_rest_server	a catalog_uri option on the USER MAPPING is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused before any request (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a half OAuth2 credential (id, no secret) is not refused, so the mint runs with a NULL secret and the backend dies
 iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused even with a static token (28000)	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the half-pair refusal runs only when no static token is set, so a token excuses a half OAuth2 pair (the fix reverted, #1794)
@@ -3272,13 +3273,17 @@ iceberg_rest_server	iceberg_rest_server	the client secret never appears in the f
 iceberg_rest_server	iceberg_rest_server	the mapping token never appears in the PG server log	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the request carried an Authorization header	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the USER MAPPING token option is ignored
 iceberg_rest_server	iceberg_rest_server	the warehouse was sent on GET /v1/config (?warehouse=wh1)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the warehouse server option is never sent on GET /v1/config
+iceberg_rest_vended	iceberg_rest_vended	a file no vended credential covers is refused, not read ambient (28000)	15;16;17;18;19	2026-10-31	rest_vended_cfg reverted to main: one credential, matched against the metadata-location only, signs every file, and no match falls back to ambient (#1820)
 iceberg_rest_vended	iceberg_rest_vended	a table vending no creds still reads with ambient (cfg NULL path)	15;16;17;18;19	never	-
 iceberg_rest_vended	iceberg_rest_vended	a wrong vended secret is refused by S3, not bypassed (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: vended credentials are never built, so every read falls back to ambient
 iceberg_rest_vended	iceberg_rest_vended	backend still up after the vended-credential arms	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: abort() in place of the HTTP 403 refusal
 iceberg_rest_vended	iceberg_rest_vended	iceberg_rest_scan reads via vended credentials (no ambient creds set)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: vended credentials are never built, so every read falls back to ambient
 iceberg_rest_vended	iceberg_rest_vended	premise: the PG server log holds lines to search	15;16;17;18;19	never	-
 iceberg_rest_vended	iceberg_rest_vended	premise: the SigV4 S3 fixture is up	15;16;17;18;19	never	-
+iceberg_rest_vended	iceberg_rest_vended	split metadata/ and data/ credentials each sign their own files	15;16;17;18;19	never	-
 iceberg_rest_vended	iceberg_rest_vended	storage-credentials longest-prefix match selects the right creds	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: rest_vended_cfg never reads the storage-credentials array and signs with the flat config
+iceberg_rest_vended	iceberg_rest_vended	the data/ credential, not the metadata/ one, signs a data file (28000)	15;16;17;18;19	2026-10-31	rest_vended_cfg reverted to main: one credential, matched against the metadata-location only, signs every file, and no match falls back to ambient (#1820)
+iceberg_rest_vended	iceberg_rest_vended	the flat config signs a file no storage-credentials prefix covers	15;16;17;18;19	never	-
 iceberg_rest_vended	iceberg_rest_vended	the vended secret never appears in the PG server log	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the vended secret is written to the server log
 iceberg_rest_vended	iceberg_rest_vended	the vended secret never appears in the S3 request log	15;16;17;18;19	never	-
 iceberg_rest_vended	iceberg_rest_vended	vended creds for an off-allow-list endpoint are refused (42501)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: vended credentials are never built, so every read falls back to ambient
