@@ -35,6 +35,9 @@
 
 /* ConvertedType (parquet.thrift ConvertedType); -1 means none */
 #define PQ_CT_UTF8				0
+#define PQ_CT_MAP				1
+#define PQ_CT_MAP_KEY_VALUE		2
+#define PQ_CT_LIST				3
 #define PQ_CT_ENUM				4
 #define PQ_CT_DECIMAL			5
 #define PQ_CT_DATE				6
@@ -90,7 +93,9 @@
 #define TC_BINARY				8
 #define TC_LIST					9
 #define TC_SET					10
+#define TC_MAP					11
 #define TC_STRUCT				12
+#define TC_UUID					13	/* 16 raw bytes; parquet.thrift has none */
 
 /*
  * pq_bits_for

@@ -807,12 +807,17 @@ skipped.
 
 ## Import and export Arrow
 
-The Arrow IPC file format works the same way as Parquet.
+`export_arrow` writes the Arrow IPC stream format. `import_arrow` reads the
+stream format and the Arrow IPC file format, which includes Feather v2.
 
 ```sql
-SELECT pgcolumnar.import_arrow('events', '/data/events.arrow');
-SELECT pgcolumnar.export_arrow('events', '/data/events.arrow');
+SELECT pgcolumnar.export_arrow('events', '/data/events.arrows');
+SELECT pgcolumnar.import_arrow('events', '/data/events.arrows');
+SELECT pgcolumnar.import_arrow('events', '/data/events.arrow');  -- IPC file or Feather v2
 ```
+
+To read an export with pyarrow, use `pyarrow.ipc.open_stream`. The export has no
+file footer, so `pyarrow.ipc.open_file` and Feather readers refuse it.
 
 **Tuning.** Use Arrow to exchange data with an in-process analytic engine without
 a Parquet encode step. Use Parquet for durable, compressed files.
@@ -836,11 +841,13 @@ pgcolumnar.objstore_allowed_endpoints = 's3.amazonaws.com, minio.internal'
 ```
 
 The environment supplies `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-`AWS_SESSION_TOKEN`, `AWS_REGION`, and `AWS_ENDPOINT_URL`. A host that resolves to
-a link-local or instance-metadata address is refused even when it is listed.
+`AWS_SESSION_TOKEN`, `AWS_REGION`, and `AWS_ENDPOINT_URL`. The module refuses a
+host that resolves to a link-local range or a known instance-metadata address,
+even when it is listed. See
+[the refused ranges](best-practices.md#run-object-storage-safely).
 
 **Tuning.** Raise `pgcolumnar.objstore_part_size` to use larger multipart parts
-over a high-latency network. Choose `pgcolumnar.objstore_s3_addressing` to match
+over a high-latency network. Its maximum is 512 MiB. Choose `pgcolumnar.objstore_s3_addressing` to match
 your provider's path or virtual-host style. Keep the allow-list as small as your
 buckets require.
 

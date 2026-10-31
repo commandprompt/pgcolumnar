@@ -5,11 +5,14 @@ check by the shell's name (#1341).
 The warehouse is relocated so its recorded root differs from where it lies. The scan
 reads the current snapshot's five rows, projects and reorders by field id, reads a
 subset, and still reads a column the schema renamed, because it selects by id and not
-by name; a name the schema lacks is refused with 42703. After an int -> long, float ->
-double or decimal precision promotion (#1789), files written before it read as the
-current schema's types: alone, mixed with newer files, under equality deletes on the
-promoted column, and through a pgcolumnar_iceberg foreign table. A narrower declared
-type is still refused with 42804, as are a date column declared bigint and positional
+by name; a name the schema lacks is refused with 42703. A struct, list or map column
+declared with a scalar type is refused with 0A000, naming the column and its kind,
+through iceberg_scan and through a pgcolumnar_iceberg foreign table, instead of
+reading as null on every row (#1788). After an int -> long, float -> double or
+decimal precision promotion (#1789), files written before it read as the current
+schema's types: alone, mixed with newer files, under equality deletes on the promoted
+column, and through a pgcolumnar_iceberg foreign table. A narrower declared type is
+still refused with 42804, as are a date column declared bigint and positional
 read_parquet's bigint over INT32, while read_parquet by field id widens. A role with
 USAGE on the schema but without pg_read_server_files is refused with 42501, and a
 non-superuser holding that role reads every row.
@@ -21,6 +24,7 @@ shell's pgc_skip message, as pgc_skip does, and the rest decline unnamed.
 """
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -77,7 +81,7 @@ def _sqlstate(dsn, sql, user=None, port=None):
     return "no error"
 
 
-def _refusal(dsn, sql, phrase, label):
+def _refusal_phrase(dsn, sql, phrase, label):
     """-> "<SQLSTATE><label>" when `sql` raised with `phrase` in its message, else
     "<SQLSTATE>: <message>", or "no error"."""
     try:
@@ -99,6 +103,21 @@ def _variants(dest):
     if run.returncode != 0:
         out["error"] = (run.stdout + run.stderr).strip()
     return out
+
+
+def _refusal(dsn, sql, regex, label):
+    """-> "<SQLSTATE> (<label>)" when the statement raised an error whose primary
+    message matches `regex`, "<SQLSTATE>: <message>" for any other error, or
+    "no error: <rows>" with what it read instead."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            rows = conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        msg = exc.diag.message_primary or ""
+        return f"{exc.sqlstate} ({label})" if re.search(regex, msg) else f"{exc.sqlstate}: {msg}"
+    return "no error: " + " ".join("|".join("" if v is None else str(v) for v in r) for r in rows)
 
 
 def _lines(v):
@@ -130,6 +149,23 @@ def isc(pgc_cluster, server_dir):
     ren = md.parent / "renamed.metadata.json"
     ren.write_text(json.dumps(m))
     ren.chmod(0o666)
+    # #1788: the current schema also gets a struct, a list and a map, added after
+    # the data files were written, as the shell's nested.metadata.json does
+    m = json.loads(md.read_text())
+    sch = next(s for s in m["schemas"] if s["schema-id"] == m["current-schema-id"])
+    sch["fields"] += [
+        {"id": 4, "name": "st", "required": False, "type": {"type": "struct", "fields": [
+            {"id": 5, "name": "a", "required": False, "type": "int"}]}},
+        {"id": 6, "name": "li", "required": False, "type": {
+            "type": "list", "element-id": 7, "element": "int", "element-required": False}},
+        {"id": 8, "name": "mp", "required": False, "type": {
+            "type": "map", "key-id": 9, "key": "string", "value-id": 10, "value": "long",
+            "value-required": False}},
+    ]
+    m["last-column-id"] = 10
+    nest = md.parent / "nested.metadata.json"
+    nest.write_text(json.dumps(m))
+    nest.chmod(0o666)
     pdest = server_dir / "promo"
     shutil.copytree(WHP / "db", pdest / "db")
     for p in [pdest, *pdest.rglob("*")]:
@@ -149,6 +185,9 @@ def isc(pgc_cluster, server_dir):
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
             c.execute(f"GRANT USAGE ON SCHEMA pgcolumnar TO {UNPRIV}, {READER}")
+            c.execute("CREATE SERVER icescan_nest FOREIGN DATA WRAPPER pgcolumnar_iceberg")
+            c.execute("CREATE FOREIGN TABLE icescan_fnest (id bigint, st text) "
+                      f"SERVER icescan_nest OPTIONS (metadata_path '{nest}')")
         scan = "pgcolumnar.iceberg_scan('{}')"
         r = {
             "ids": _rows(dsn, f"SELECT string_agg(field_id::text, ',' ORDER BY field_id) "
@@ -163,18 +202,28 @@ def isc(pgc_cluster, server_dir):
             "plain snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{md}')"),
             "gz_infix snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_infix')}')"),
             "gz_suffix snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_suffix')}')"),
-            "gz_bomb": _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_bomb')}')",
-                                "inflates past", " past the cap"),
-            "gz_trunc": _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_trunc')}')",
-                                 "gzip", " naming gzip"),
+            "gz_bomb": _refusal_phrase(dsn, f"SELECT * FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_bomb')}')",
+                                       "inflates past", " past the cap"),
+            "gz_trunc": _refusal_phrase(dsn, f"SELECT * FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_trunc')}')",
+                                        "gzip", " naming gzip"),
             "gz_multi snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_multi')}')"),
             "gz_padded snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_padded')}')"),
-            "notpq": _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{vpath('notpq')}') AS t(id bigint)",
-                              "only PARQUET is supported", " naming PARQUET"),
+            "notpq": _refusal_phrase(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{vpath('notpq')}') AS t(id bigint)",
+                                     "only PARQUET is supported", " naming PARQUET"),
             "gz_large snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_large')}')"),
             "gz_grow snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_grow')}')"),
-            "az": _refusal(dsn, "SELECT * FROM pgcolumnar.iceberg_current_snapshot('az://b/t/metadata/v1.metadata.json')",
-                           'reading "az://', " remote refusal"),
+            "az": _refusal_phrase(dsn, "SELECT * FROM pgcolumnar.iceberg_current_snapshot('az://b/t/metadata/v1.metadata.json')",
+                                  'reading "az://', " remote refusal"),
+            "nest scalar": _rows(dsn, f"SELECT string_agg(id::text, ',' ORDER BY id) FROM {scan.format(nest)} "
+                                      "AS t(id bigint)"),
+            "nest struct": _refusal(dsn, f"SELECT * FROM {scan.format(nest)} AS t(id bigint, st text)",
+                                    r'output column "st" is a struct field', "struct"),
+            "nest list": _refusal(dsn, f"SELECT * FROM {scan.format(nest)} AS t(id bigint, li int4)",
+                                  r'output column "li" is a list field', "list"),
+            "nest map": _refusal(dsn, f"SELECT * FROM {scan.format(nest)} AS t(id bigint, mp int8)",
+                                 r'output column "mp" is a map field', "map"),
+            "fdw struct": _refusal(dsn, "SELECT * FROM icescan_fnest",
+                                   r'output column "st" is a struct field', "struct"),
             "unpriv": _sqlstate(dsn, f"SELECT * FROM {scan.format(md)} AS t(id bigint)", UNPRIV, pgc_cluster.port),
             "reader": _rows(dsn, f"SELECT count(*) FROM {scan.format(md)} AS t(id bigint)", READER, pgc_cluster.port),
         }
@@ -298,56 +347,56 @@ def test_iceberg_current_snapshot_reads_a_gz_metadata_json_file(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["gz_infix snap"]), _plain_snapshot(isc),
-                "iceberg_current_snapshot reads a .gz.metadata.json file as it reads the plain file")
+                       "iceberg_current_snapshot reads a .gz.metadata.json file as it reads the plain file")
 
 
 def test_iceberg_current_snapshot_reads_a_metadata_json_gz_file(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["gz_suffix snap"]), _plain_snapshot(isc),
-                "iceberg_current_snapshot reads a .metadata.json.gz file as it reads the plain file")
+                       "iceberg_current_snapshot reads a .metadata.json.gz file as it reads the plain file")
 
 
 def test_iceberg_scan_reads_a_table_whose_metadata_is_gz_metadata_json(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["gz_infix rows"]), ROWS5,
-                "iceberg_scan reads the rows of a table whose metadata is .gz.metadata.json")
+                       "iceberg_scan reads the rows of a table whose metadata is .gz.metadata.json")
 
 
 def test_iceberg_scan_reads_a_table_whose_metadata_is_metadata_json_gz(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["gz_suffix rows"]), ROWS5,
-                "iceberg_scan reads the rows of a table whose metadata is .metadata.json.gz")
+                       "iceberg_scan reads the rows of a table whose metadata is .metadata.json.gz")
 
 
 def test_a_gzip_metadata_file_past_the_cap_is_refused(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(str(isc["gz_bomb"]), "54000 past the cap",
-                "a gzip metadata file that inflates past the 64 MiB cap is refused (54000)")
+                       "a gzip metadata file that inflates past the 64 MiB cap is refused (54000)")
 
 
 def test_a_cut_short_gzip_metadata_file_is_refused(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(str(isc["gz_trunc"]), "XX001 naming gzip",
-                "a cut-short gzip metadata file is refused as corrupt gzip (XX001)")
+                       "a cut-short gzip metadata file is refused as corrupt gzip (XX001)")
 
 
 def test_iceberg_current_snapshot_reads_a_two_member_gzip_file(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["gz_multi snap"]), _plain_snapshot(isc),
-                "iceberg_current_snapshot reads a gzip metadata file of two members as it reads the plain file")
+                       "iceberg_current_snapshot reads a gzip metadata file of two members as it reads the plain file")
 
 
 def test_iceberg_current_snapshot_reads_a_zero_padded_gzip_file(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["gz_padded snap"]), _plain_snapshot(isc),
-                "iceberg_current_snapshot reads a gzip metadata file followed by zero padding")
+                       "iceberg_current_snapshot reads a gzip metadata file followed by zero padding")
 
 
 def test_iceberg_current_snapshot_reads_a_gzip_file_that_outgrows_the_first_buffer(isc, expect):
@@ -356,7 +405,7 @@ def test_iceberg_current_snapshot_reads_a_gzip_file_that_outgrows_the_first_buff
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["gz_large snap"]), _plain_snapshot(isc),
-                "iceberg_current_snapshot reads a gzip metadata file that outgrows the first inflate buffer")
+                       "iceberg_current_snapshot reads a gzip metadata file that outgrows the first inflate buffer")
 
 
 def test_iceberg_current_snapshot_reads_a_two_member_gzip_file_that_grows_in_its_second_member(isc, expect):
@@ -365,21 +414,21 @@ def test_iceberg_current_snapshot_reads_a_two_member_gzip_file_that_grows_in_its
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["gz_grow snap"]), _plain_snapshot(isc),
-                "iceberg_current_snapshot reads a two-member gzip file that grows the buffer in its second member")
+                       "iceberg_current_snapshot reads a two-member gzip file that grows the buffer in its second member")
 
 
 def test_an_az_metadata_path_is_refused_as_remote(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(str(isc["az"]), "0A000 remote refusal",
-                "an az:// metadata path is refused as a remote URL it cannot read (0A000)")
+                       "an az:// metadata path is refused as a remote URL it cannot read (0A000)")
 
 
 def test_iceberg_scan_reads_a_lowercase_parquet_file_format(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["lower rows"]), ROWS5,
-                "iceberg_scan reads a data file whose file_format is lowercase parquet")
+                       "iceberg_scan reads a data file whose file_format is lowercase parquet")
 
 
 def test_iceberg_scan_refuses_a_data_file_format_that_is_not_parquet(isc, expect):
@@ -387,14 +436,44 @@ def test_iceberg_scan_refuses_a_data_file_format_that_is_not_parquet(isc, expect
     if _declined(isc, expect):
         return
     expect.text(str(isc["notpq"]), "0A000 naming PARQUET",
-                "iceberg_scan refuses a data file whose file_format is not Parquet (0A000)")
+                       "iceberg_scan refuses a data file whose file_format is not Parquet (0A000)")
 
 
 def test_iceberg_scan_reads_mixed_s3_and_s3a_paths(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(_lines(isc["mixed rows"]), ROWS5,
-                "iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a://")
+                       "iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a://")
+def test_iceberg_scan_reads_the_scalars_beside_nested_fields(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["nest scalar"]), "1,2,3,4,5",
+                "iceberg_scan still reads the scalar columns beside nested fields")
+
+
+def test_iceberg_scan_refuses_a_struct_column_declared_text(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(isc["nest struct"], "0A000 (struct)", "iceberg_scan refuses a struct column declared text (0A000)")
+
+
+def test_iceberg_scan_refuses_a_list_column_declared_int4(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(isc["nest list"], "0A000 (list)", "iceberg_scan refuses a list column declared int4 (0A000)")
+
+
+def test_iceberg_scan_refuses_a_map_column_declared_int8(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(isc["nest map"], "0A000 (map)", "iceberg_scan refuses a map column declared int8 (0A000)")
+
+
+def test_an_iceberg_foreign_table_refuses_a_struct_column_declared_text(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(isc["fdw struct"], "0A000 (struct)",
+                "a pgcolumnar_iceberg foreign table refuses a struct column declared text (0A000)")
 
 
 OLD_ROWS = ("1|-2147483648|1.5|1.25\n2|-1|-2.25|-3.50\n3|0|0.5|0.00\n4|2|1024.75|99999999.99\n"

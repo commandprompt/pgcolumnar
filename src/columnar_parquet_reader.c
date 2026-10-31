@@ -183,6 +183,7 @@ typedef struct PqChunk
 typedef struct PqRowGroup
 {
 	int64		num_rows;
+	bool		has_num_rows;	/* num_rows (required) was present */
 	PqChunk    *chunks;			/* [nchunks]; consumers index by ncols, so a value
 								 * read path must call pq_check_row_groups() first */
 	int			nchunks;		/* column chunks this row group actually carries */
@@ -197,6 +198,9 @@ typedef struct PqFile
 	int			ntop;			/* top-level columns (root's children) */
 	int			nrowgroups;
 	PqRowGroup *rgs;
+	bool		has_row_groups; /* row_groups (required) was present */
+	bool		has_num_rows;	/* num_rows (required) was present */
+	int64		num_rows;		/* the footer's own total of rows */
 } PqFile;
 
 /*
@@ -621,6 +625,9 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 	pf->ntop = 0;
 	pf->nrowgroups = 0;
 	pf->rgs = NULL;
+	pf->has_row_groups = false;
+	pf->has_num_rows = false;
+	pf->num_rows = 0;
 
 	for (;;)
 	{
@@ -650,6 +657,7 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 			uint32		i;
 
 			pf->nrowgroups = n;
+			pf->has_row_groups = true;
 			pf->rgs = palloc0(sizeof(PqRowGroup) * Max(n, 1));
 			for (i = 0; i < n && !r.error; i++)
 			{
@@ -678,11 +686,19 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 							parse_column_chunk(&r, &rg->chunks[ci]);
 					}
 					else if (rfid == 3)		/* num_rows */
+					{
 						rg->num_rows = PgColumnarThriftZigzag(&r);
+						rg->has_num_rows = true;
+					}
 					else
 						PgColumnarThriftSkip(&r, rft);
 				}
 			}
+		}
+		else if (fid == 3 && (ft == TC_I64 || ft == TC_I32 || ft == TC_I16))	/* num_rows */
+		{
+			pf->num_rows = PgColumnarThriftZigzag(&r);
+			pf->has_num_rows = true;
 		}
 		else
 			PgColumnarThriftSkip(&r, ft);
@@ -729,11 +745,36 @@ static void
 pq_check_row_groups(const PqFile *pf, const char *path)
 {
 	int			rg;
+	int64		total = 0;
+
+	/*
+	 * row_groups, each row group's num_rows and the footer's num_rows are all
+	 * required. When one is missing, the reader counted that part as 0 rows and
+	 * returned a short answer with no error (#1822). The footer's total must
+	 * also match the row groups' sum, which catches a corrupt count that still
+	 * parses.
+	 */
+	if (!pf->has_row_groups)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer has no row_groups field.")));
+	if (!pf->has_num_rows)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer has no num_rows field.")));
 
 	for (rg = 0; rg < pf->nrowgroups; rg++)
 	{
 		PqRowGroup *g = &pf->rgs[rg];
 		int			ci;
+
+		if (!g->has_num_rows)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("Parquet file \"%s\" has a malformed row group", path),
+					 errdetail("Row group %d has no num_rows field.", rg)));
 
 		if (g->chunks == NULL || g->nchunks != pf->ncols)
 			ereport(ERROR,
@@ -789,7 +830,17 @@ pq_check_row_groups(const PqFile *pf, const char *path)
 						 errdetail("Row group %d declares num_rows %ld, but column %d holds only %ld values.",
 								   rg, (long) g->num_rows, ci, (long) nv)));
 		}
+
+		/* each num_rows is now 0..MaxAllocSize/sizeof(Datum), so no overflow */
+		total += g->num_rows;
 	}
+
+	if (total != pf->num_rows)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer declares num_rows %ld, but its row groups hold %ld rows.",
+						   (long) pf->num_rows, (long) total)));
 }
 
 /* -------------------------------------------------------------------------
@@ -2489,13 +2540,22 @@ pq_ts_shift(int shift, Timestamp in, Timestamp *out)
 }
 
 /*
+ * pq_want_phys_for's answer for a supported target type that this particular
+ * column cannot hold: not -1, which means the target type is unsupported, and
+ * equal to no physical type, so the bind's compatibility check refuses it.
+ */
+#define PQ_PHYS_NO_MATCH	INT_MAX
+
+/*
  * The Parquet physical type a target PostgreSQL type must be stored as, for one
- * specific source column. Only `time` is column-dependent: Parquet spells
+ * specific source column. `time` is column-dependent: Parquet spells
  * TIME_MILLIS as INT32 and TIME_MICROS/TIME_NANOS as INT64, so the same
  * PostgreSQL type binds to either width depending on the unit the file declares.
- * An unsigned integer column also binds wider than its physical type (#1814):
- * bigint to a UINT_32 INT32, numeric to a UINT_64 INT64, the types that hold every
- * value. Everything else is a fixed mapping and falls through to pq_want_phys().
+ * So are uuid (an FLBA of width 16 only), bytea (a BYTE_ARRAY or any FLBA) and
+ * a DECIMAL's numeric. An unsigned integer column also binds wider than its
+ * physical type (#1814): bigint to a UINT_32 INT32, numeric to a UINT_64 INT64,
+ * the types that hold every value. Everything else is a fixed mapping and falls
+ * through to pq_want_phys().
  */
 static int
 pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
@@ -2509,8 +2569,17 @@ pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
 			return PQ_INT32;
 		if (sc->is_unsigned && typid == NUMERICOID && sc->phys_type == PQ_INT64)
 			return PQ_INT64;
-		/* uuid is a 16-byte fixed-length binary */
+		/* uuid is a 16-byte fixed-length binary. An FLBA of any other width
+		 * cannot hold one, so the bind refuses it as incompatible rather than
+		 * leaving the decoder to fail on the first value (#1792). */
 		if (typid == UUIDOID)
+			return (sc->phys_type == PQ_FIXED_LEN_BYTE_ARRAY &&
+					sc->type_length != UUID_LEN)
+				? PQ_PHYS_NO_MATCH : PQ_FIXED_LEN_BYTE_ARRAY;
+		/* bytea holds raw bytes of any width, so a fixed-length binary --
+		 * Iceberg's fixed(L), for which parquet_schema advises bytea -- reads
+		 * as one, its flen bytes copied as they are (#1792) */
+		if (typid == BYTEAOID && sc->phys_type == PQ_FIXED_LEN_BYTE_ARRAY)
 			return PQ_FIXED_LEN_BYTE_ARRAY;
 		/* DECIMAL as fixed or variable big-endian two's-complement bytes, or as
 		 * an INT32/INT64 holding the unscaled integer (what writers use for small
@@ -2613,8 +2682,15 @@ pq_leaf_to_pgtype(const PqSchemaCol *sc, Oid *typid, int32 *typmod)
 				*typmod = pq_decimal_typmod(sc);
 				return true;
 			}
+			/*
+			 * A UTC-adjusted timestamp holds an instant, so advise timestamptz
+			 * (#1807). Advising timestamp made a read convert the instant to a
+			 * wall time in the session zone (PQ_TS_INSTANT_TO_WALL). The legacy
+			 * TIMESTAMP_MILLIS/MICROS types are UTC-adjusted by definition.
+			 */
 			if (sc->time_unit == PQ_TU_MILLIS || sc->time_unit == PQ_TU_MICROS)
-				*typid = sc->is_timestamp ? TIMESTAMPOID : TIMEOID;
+				*typid = !sc->is_timestamp ? TIMEOID
+					: sc->adjusted_utc ? TIMESTAMPTZOID : TIMESTAMPOID;
 			else if (sc->is_unsigned)
 			{
 				/* UINT_64 reaches 2^64-1, 20 digits (#1814) */
@@ -2888,7 +2964,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
  * Scope: flat top-level scalars. A requested id must resolve to exactly one
  * non-repeated scalar leaf of a compatible physical type; a nested/array output,
  * an absent id, a duplicate id, or a file with no ids at all is refused rather
- * than silently mis-bound. Reuses the same ImpTop/ImpLeaf output as the
+ * than silently mis-bound, and so is an id carried by a group (a struct, list
+ * or map: #1788). Reuses the same ImpTop/ImpLeaf output as the
  * positional binder, so pq_read_rows is unchanged.
  *
  * Name mapping (Iceberg schema.name-mapping.default): when a leaf carries no
@@ -3017,6 +3094,29 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 		if (found < 0)
 		{
 			/*
+			 * A struct, list or map carries its field id on a group, not a leaf
+			 * (#1788). The file has the column, so it is neither absent nor null:
+			 * it is nested, and field-id projection reads only scalars. A group
+			 * with no id holds -1, so only a real id (>= 0) can match: without
+			 * that, ARRAY[-1] named a list's or map's inner group as nested.
+			 */
+			for (j = 1; j < pf->nelems; j++)
+			{
+				PqSchemaCol *g = &pf->elems[j];
+
+				if (g->num_children > 0 && g->field_id >= 0 &&
+					g->field_id == req)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("field id %d (requested for output column \"%s\") is a nested %s column; field-id projection supports only scalar columns",
+									req, NameStr(att->attname),
+									g->converted_type == PQ_CT_LIST ? "list" :
+									(g->converted_type == PQ_CT_MAP ||
+									 g->converted_type == PQ_CT_MAP_KEY_VALUE) ? "map" :
+									"struct")));
+			}
+
+			/*
 			 * The projected field id is not present in this file. Under
 			 * Column Projection (Iceberg data files) that is not an error: the
 			 * column resolves to null (a schema column added after the file was
@@ -3111,15 +3211,32 @@ pq_has_parquet_ext(const char *name)
 
 /*
  * Mirror the local directory walk's skip of `_SUCCESS`, `_temporary`, and
- * dot-hidden names (#619): a listed key whose any path segment begins with '_'
- * or '.' is excluded, so a Spark staging directory does not fold into a read.
- * The `//` in a scheme prefix is not a segment start and never matches.
+ * dot-hidden names (#619) for a listed prefix: a key is excluded when a path
+ * segment BELOW the prefix the user named begins with '_' or '.', so a Spark
+ * staging directory does not fold into a read. The prefix itself is not judged
+ * (#1784): the local walk tests only the entries it finds below the directory
+ * you name, so s3://b/_landing/ reads like /data/_landing/ does.
+ *
+ * `listUrl` ends in '/'. Its scheme is compared without case, because the
+ * module accepts S3:// and returns keys as s3://. A key that does not start
+ * with `listUrl` (the endpoint answered outside the prefix) is judged whole.
  */
 static bool
-pq_remote_key_hidden(const char *key)
+pq_remote_key_hidden(const char *key, const char *listUrl)
 {
+	size_t		llen = strlen(listUrl);
+	const char *sep = strstr(listUrl, "://");
+	size_t		slen = (sep != NULL) ? (size_t) (sep - listUrl) + 3 : 0;
 	const char *p = key;
 
+	if (strlen(key) >= llen &&
+		pg_strncasecmp(key, listUrl, slen) == 0 &&
+		strncmp(key + slen, listUrl + slen, llen - slen) == 0)
+	{
+		p = key + llen;
+		if (p[0] == '_' || p[0] == '.')
+			return true;
+	}
 	while ((p = strchr(p, '/')) != NULL)
 	{
 		if (p[1] == '_' || p[1] == '.')
@@ -3127,6 +3244,23 @@ pq_remote_key_hidden(const char *key)
 		p++;
 	}
 	return false;
+}
+
+/*
+ * Does a listed key match the remote pattern the user wrote? The scheme is
+ * compared without case, as pq_remote_key_hidden does, because the module
+ * accepts S3:// and returns keys as s3://. The rest is matched by fnmatch()
+ * segment by segment, as the local glob() matches (#1784).
+ */
+static bool
+pq_remote_glob_match(const char *pattern, const char *key)
+{
+	const char *sep = strstr(pattern, "://");
+	size_t		slen = (sep != NULL) ? (size_t) (sep - pattern) + 3 : 0;
+
+	if (strlen(key) < slen || pg_strncasecmp(key, pattern, slen) != 0)
+		return false;
+	return fnmatch(pattern + slen, key + slen, FNM_PATHNAME | FNM_PERIOD) == 0;
 }
 
 /*
@@ -3325,10 +3459,21 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		keys = api->list_objects(listUrl, cfg, &nkeys);
 		for (i = 0; i < nkeys; i++)
 		{
-			if (!pq_has_parquet_ext(keys[i]) || pq_remote_key_hidden(keys[i]))
+			if (!pq_has_parquet_ext(keys[i]))
 				continue;
-			/* a glob applies segment by segment, as the local glob() does */
-			if (hasGlob && fnmatch(path, keys[i], FNM_PATHNAME) != 0)
+
+			/*
+			 * A glob matches segment by segment, as the local glob() does: a '_'
+			 * name matches, and a '.' name matches only when the pattern spells
+			 * the dot (FNM_PERIOD), with no hidden-name skip of its own (#1784).
+			 * A prefix skips hidden names below it, as the local walk does.
+			 */
+			if (hasGlob)
+			{
+				if (!pq_remote_glob_match(path, keys[i]))
+					continue;
+			}
+			else if (pq_remote_key_hidden(keys[i], listUrl))
 				continue;
 			files = lappend(files, keys[i]);
 		}

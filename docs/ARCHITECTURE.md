@@ -286,6 +286,9 @@ Arrow IPC stream export (`pgcolumnar.export_arrow`, gap 27). A self-contained
 FlatBuffers builder emits the Schema and RecordBatch messages (MetadataVersion
 V5); rows are read in physical order via the scalar reader and buffered one
 RecordBatch at a time (validity bitmap, then values, with utf8/binary offsets).
+A batch holds 16384 rows, or fewer: a new batch starts before a row that would
+take the buffered bytes past `pgcolumnar.export_group_bytes` (256 MiB by default).
+The row is counted as written: a numeric or jsonb by its text.
 No libarrow dependency. Supported types are int2/int4/int8, float4/float8, bool,
 text/varchar, bytea, date/time/timestamp/timestamptz, uuid, numeric, and
 json/jsonb; other types are rejected. Little-endian hosts only.
@@ -296,7 +299,11 @@ compact-protocol writer emits the file metadata (row groups, column chunks, page
 headers) and PLAIN-encoded, UNCOMPRESSED data pages with RLE/bit-packed
 levels. Columns shred into leaf column chunks with repetition and definition
 levels (Dremel): scalars (one leaf), 1-D arrays (a 3-level LIST), and composites
-(a group with one leaf per field). One row group per 65536 rows. No libparquet
+(a group with one leaf per field). One row group per 65536 rows, or fewer: a new
+group starts before a row that would take the buffered bytes past
+`pgcolumnar.export_group_bytes` (256 MiB by default), because each leaf buffers
+its values in one allocation and PostgreSQL caps one allocation at 1 GiB. The row
+is counted as written, with its level bytes and value lengths. No libparquet
 dependency; same scalar type coverage as the Arrow writer.
 
 ### columnar_parquet_reader.c
@@ -358,7 +365,14 @@ The decode paths guard against crafted files. They range-check these items:
 - the chunk count of each row group
 - the page offsets
 - the compressed size of each page
-- a page that claims no values A
+- a page that claims no values
+
+The footer parser also refuses a Thrift field whose type is not a compact type,
+because it cannot know that field's size. It refuses a type-0 header that is not
+the STOP byte 0x00. It skips a UUID field (type 13) as
+16 bytes, though parquet.thrift has none. It requires `row_groups`, the footer's
+`num_rows` and each row group's `num_rows`. The footer's total must equal the sum
+of the row groups (#1822). A
 malformed footer therefore gives an explicit error. It does not give a read
 outside the buffer, an incorrect value, or work without a bound.
 Each of those guards has a crafted-file test verified to fail when that specific

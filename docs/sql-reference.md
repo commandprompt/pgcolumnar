@@ -611,7 +611,9 @@ inspection and testing, not for query use.
 
 ## Import and export
 
-These functions read and write Arrow IPC stream files and Parquet files. They read
+These functions read and write Arrow IPC files and Parquet files. `export_arrow`
+writes the IPC stream format; `import_arrow` reads the stream format and the IPC
+file format. They read
 and write files on the server host, so a reader needs the `pg_read_server_files`
 role and a writer needs the `pg_write_server_files` role. Superusers hold both.
 The Parquet functions also read from and write to object storage. See
@@ -624,14 +626,20 @@ and types that they do not support. See
 ### pgcolumnar.export_arrow(rel regclass, path text) returns bigint
 
 Writes the live rows of `rel` to an Arrow IPC stream file at `path`. Returns the
-number of rows written. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage).
+number of rows written. The file has no `ARROW1` header or footer, so pyarrow
+reads it with `pyarrow.ipc.open_stream`, not `open_file`. `path` can be a local
+file or an `s3://` URL. See [Object storage](#object-storage). A record batch
+holds at most 16384 rows and at most `pgcolumnar.export_group_bytes` of buffered
+data, 256 MiB by default, unless one row alone is larger. See
+[Export size limits](limitations.md#export-size-limits).
 
 ### pgcolumnar.export_parquet(rel regclass, path text) returns bigint
 
 Writes the live rows of `rel` to a Parquet file at `path`. Returns the number of
 rows written. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage).
+[Object storage](#object-storage). A row group holds at most 65536 rows and at most
+`pgcolumnar.export_group_bytes` of buffered data, 256 MiB by default, unless one row
+alone is larger. See [Export size limits](limitations.md#export-size-limits).
 
 ### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
 
@@ -728,9 +736,15 @@ See
 
 ### pgcolumnar.import_arrow(rel regclass, path text) returns bigint
 
-Inserts the rows of an Arrow IPC stream file at `path` into the existing table
+Inserts the rows of an Arrow IPC file at `path` into the existing table
 `rel`. The column types of the table define the types that the function accepts. Returns the number of
 rows inserted.
+
+The file can be in the IPC stream format, which `export_arrow` writes, or in the
+IPC file format, which starts and ends with `ARROW1`. Feather v2 is the IPC file
+format. The function reads the stream inside an IPC file and ignores its footer.
+A message or body length larger than the rest of the file is refused with
+`XX001` before any memory is allocated for it.
 
 Temporal columns are read in the unit the file declares, not the unit
 `export_arrow` writes. A `date` column accepts `date32` and `date64`. A `time`
@@ -854,11 +868,12 @@ The `path` may also be an `s3://` prefix. Each worker writes one
 [Object storage](#object-storage) for the endpoint and credential rules, which
 are the same as for `export_parquet`. One difference applies to a remote prefix.
 The local path is created and checked for emptiness before the export. A remote
-prefix cannot be checked for emptiness without a bucket listing, which pgColumnar
-does not yet perform. The prefix must therefore be new or empty by the caller's
-own account. A stale higher-numbered object left in the prefix by a larger prior
-export would be read back by a later directory read. Read each object by its
-exact key until prefix reads land.
+prefix is not checked, so a re-run may write into a used prefix. Before it
+writes the `_SUCCESS` marker, the export lists the prefix to remove stale parts
+a larger prior run left. Its credentials therefore need list permission
+(`s3:ListBucket` on AWS) as well as write and delete. If the listing fails,
+those stale parts can remain, as described below under "A failed listing can
+leave a larger earlier run's parts".
 
 The target may be one of two kinds:
 
@@ -872,11 +887,24 @@ every worker imports it. The files together are the committed image of the table
 at call time. This holds even when the call runs inside a transaction with
 uncommitted rows. There is no coordinator and no shared write state. If any worker
 fails, or the statement is cancelled, the dispatcher removes the files it wrote.
-A partial directory is never left for `read_parquet` to union. Over an `s3://`
-prefix the dispatcher deletes the same objects by key. A worker terminated
-mid-upload can leave one incomplete multipart upload that the dispatcher cannot
-address. Set a bucket lifecycle rule that expires incomplete multipart uploads to
-reclaim it, as the object-storage notes recommend for `export_parquet`.
+It also removes them when every worker has finished but a later step fails:
+removing stale parts or writing the `_SUCCESS` marker. Over an `s3://` prefix
+the dispatcher deletes the same objects by key. A worker terminated mid-upload
+can leave one incomplete multipart upload that the dispatcher cannot address.
+Set a bucket lifecycle rule that expires incomplete multipart uploads to reclaim
+it, as [Exporting to object storage](#exporting-to-object-storage)
+recommends.
+
+**A failed listing can leave a larger earlier run's parts.** The cleanup
+above removes a failed run's own parts. So a partial directory is never left for
+`read_parquet` to union, with one exception: a failed listing of a remote prefix.
+A key that may write but not list fails the run, and the dispatcher removes the
+parts this run wrote. Without the listing, though, the export cannot find the
+higher-numbered parts that a larger earlier run left in the prefix, so they
+remain. A run of 4 workers followed by a failed run of 2 leaves `part-0002` and
+`part-0003`, with no `_SUCCESS` marker. A later directory or prefix read would
+read those stale objects back as if they were a whole table. So check for
+`_SUCCESS` before you read a prefix, and read only a prefix that carries it.
 
 On success the function writes an empty `_SUCCESS` marker at the destination, the
 Hadoop and Spark convention. Its presence means a complete run's output is there;
@@ -885,8 +913,9 @@ The marker is written last, after every worker has finished, so a directory or
 prefix that carries it is a whole export. A remote prefix allows a re-run to
 overwrite a used prefix. A smaller re-run there first removes the stale
 higher-numbered parts a larger prior run left, so the marker certifies exactly
-the parts this run wrote. `read_parquet` and the foreign-data wrapper skip it, as
-they skip any name beginning with an underscore.
+the parts this run wrote. `read_parquet` and the foreign-data wrapper skip it
+when they read the directory or prefix. They skip any name below it that begins
+with an underscore.
 
 When `workers` is omitted the function derives a value from the target.
 
@@ -956,8 +985,9 @@ one scalar column of a compatible type. A compatible type includes Iceberg's two
 exact widenings: an integer `INT32` column reads as `bigint`, and a `FLOAT`
 column as `double precision`. The positional form above does not widen. An
 absent id is an error. So is an id that matches more than one column, or an
-array or composite output column. None
-is a silent wrong column. Read the ids a file carries with `parquet_schema`.
+array or composite output column. An id that belongs to a struct, list or map is
+refused as nested, whatever the output column's type (#1788). None is a silent
+wrong column. Read the ids a file carries with `parquet_schema`.
 
 ```sql
 -- the file has columns alpha (id 7), beta (id 3), gamma (id 12);
@@ -973,6 +1003,13 @@ without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
 file. The type it reports holds every value the column can store. So an unsigned
 `UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
+
+A millisecond or microsecond timestamp column that holds instants
+(`isAdjustedToUTC=true`, or the older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS`
+type) is reported as `timestamp with time zone`. A column of wall times
+(`isAdjustedToUTC=false`) is reported as `timestamp without time zone`. Each
+advised type reads the value unchanged. See
+[Timestamps and time zones](user-guide.md#read-parquet-files-in-place).
 
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when
@@ -1100,6 +1137,12 @@ ids ignores the mapping. An id-less file with no such property is refused,
 because the specification defines no positional fallback, and the error names
 the property. The mapping is read for top-level scalar columns.
 
+Only top-level primitive columns can be read. An output column that names a
+struct, list or map field is an error (SQLSTATE `0A000`). This holds whatever
+type the column definition list gives it. The error names the column and its
+kind (#1788). The same holds for `iceberg_rest_scan` and the
+`pgcolumnar_iceberg` foreign-data wrapper.
+
 A projected column that the file does not carry reads as null. This covers a
 column added to the schema after the file was written. It also covers a column
 an id-less file has but the mapping does not bind. The file's other columns
@@ -1176,8 +1219,10 @@ location. That location is an ordinary metadata path, so it is read with
 `iceberg_scan` and the other functions above.
 
 The catalog endpoint is subject to `pgcolumnar.objstore_allowed_endpoints`, the
-allow-list that governs every other remote access. A host that resolves to a
-link-local or instance-metadata address is refused whether or not it is listed.
+allow-list that governs every other remote access. The module refuses a host
+that resolves to a link-local range or a known instance-metadata address, whether
+or not it is listed. See
+[the refused ranges](best-practices.md#run-object-storage-safely).
 The request is carried by the `pgcolumnar_objstore` module, so no additional TLS
 library is loaded into the server process. HTTPS requires the module to be built
 with OpenSSL, as for object storage.
@@ -1214,6 +1259,17 @@ request is made, even when it also sets a static `token`. A mapping that sets a
 Multi-level namespaces are given dot-separated, and the function requires the
 `pg_read_server_files` role, like the other Iceberg functions. The server form
 also requires `USAGE` on the server.
+
+Every REST function first reads the catalog configuration (`GET /v1/config`) and
+follows it:
+
+- The `prefix` goes after `/v1/` in every later request. A prefix may contain
+  `/`, such as `catalogs/main`; each part is sent as its own path segment.
+- The `namespace-separator` joins the levels of a multi-level namespace in a
+  request. The default is the unit separator, sent as `%1F`. The Apache Iceberg
+  REST catalog advertises `%2E`.
+- A key can be set in more than one place. The value in `overrides` wins.
+  Next comes a top-level key of the same name, and last the value in `defaults`.
 
 ```sql
 -- URI form: the token, if any, comes from the server environment, not the query
@@ -1267,12 +1323,30 @@ SELECT region, sum(amount)
 
 ### pgcolumnar.iceberg_rest_namespaces(catalog_uri text) returns setof text
 
-Lists the namespaces of a catalog, one per row. A multi-level namespace is
-returned dot-joined. Same catalog and authentication rules as above.
+Lists the namespaces of a catalog, one per row, at every level. A multi-level
+namespace is returned dot-joined, for example `analytics.daily`. Same catalog and
+authentication rules as above.
+
+The catalog lists only the direct children of a namespace. So the function asks
+for the top level, then asks for the children of each namespace it finds
+(`?parent=`). That is one request for the top level, plus one for each
+namespace. A namespace can be up to 64 levels deep. If the catalog has a
+namespace 65 levels deep, the function raises an error.
+
+The function needs every one of these requests to succeed. If the catalog
+answers an error to any of them, the function raises that error and returns no
+rows. This includes a catalog that does not accept `?parent=`. On such a
+catalog, list the tables of a namespace you know with `iceberg_rest_tables`.
+
+Some catalogs also list nested namespaces at the top level. The function
+returns each namespace once.
 
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
 
 Lists the table names in a namespace, one per row.
+
+Both list functions follow the catalog's `next-page-token`, so a catalog that
+splits a list into pages is read to the end.
 
 ```sql
 SELECT * FROM pgcolumnar.iceberg_rest_namespaces('https://catalog.example.com');
@@ -1333,6 +1407,9 @@ column can prune this way. All read from the manifest, so a file is skipped
 without a read. Pruning is only an optimization. A file that is not pruned is read
 normally, so a predicate the wrapper cannot decide never changes the rows
 returned. Field-id projection and every delete rule are those of `iceberg_scan`.
+A foreign table may declare a nested Iceberg column (a struct, list or map) as a
+scalar. Such a table refuses every query, even one that does not read that
+column (#1788).
 
 The one table option is `metadata_path`, the table's current `metadata.json`
 (a local path or an object-storage URL). The wrapper requires the
@@ -1375,9 +1452,22 @@ recognized:
 | --- | --- |
 | `s3://bucket/key` | An S3 or S3-compatible object. The request is signed with AWS Signature Version 4. |
 | `gs://bucket/key` | A Google Cloud Storage object, read and written through the interoperable XML API. It signs with the same Signature Version 4 as `s3://`, so a GCS HMAC key is given as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The endpoint defaults to `https://storage.googleapis.com` and the region to `auto`; set `AWS_ENDPOINT_URL` to override. |
-| `http://host[:port]/path` | A plain-HTTP object. For a trusted network only, because a plain-HTTP request carries any credential in clear. |
+| `http://host[:port]/path` | A plain-HTTP object. The request carries no credential, but the data crosses the network in clear, so use it on a trusted network only. |
 | `https://host[:port]/path` | An HTTPS object. Available when the object-store module was built with OpenSSL. The server certificate is verified. |
 | `az://container/key` | Reserved for Azure Blob Storage, which no module reads yet. pgcolumnar treats the URL as remote, not as a local path, and refuses it with SQLSTATE 0A000: `reading "az://..." is not supported`, or, without the object-store module, `reading "az://..." requires the object-store module`. |
+
+Requests to an `http://` or `https://` URL are never signed and carry no
+credential, for reads and for exports alike. An export sends one `PUT`, or, for a
+large object, the multipart `POST` and `PUT` requests and the `DELETE` that aborts a
+failed upload. None of them has an `Authorization` header. Use these schemes for a
+server that accepts unsigned requests, and `s3://` or `gs://` for a store that needs
+credentials. If such a server refuses a request with HTTP 403, the error hint says
+the request was unsigned.
+
+Credentials go over plain HTTP only when an `s3://` or `gs://` URL has an `http://`
+`AWS_ENDPOINT_URL`. The request is then signed, and the signature, the access key ID
+and any `AWS_SESSION_TOKEN` cross the network in clear. The secret access key is
+never sent.
 
 S3 requests use path-style addressing (`endpoint/bucket/key`) by default. Set
 `pgcolumnar.objstore_s3_addressing` to `virtual` for virtual-host addressing
@@ -1394,19 +1484,32 @@ that names an object reads that one object with a single GET, no listing. An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a
-local glob. Listing is a paged ListObjectsV2 call. `_SUCCESS`, `_temporary`, and
-dot-hidden names are skipped, as they are for a local directory. Hive
+local glob. Listing is a paged ListObjectsV2 call. Below a prefix, `_SUCCESS`,
+`_temporary`, and other names that begin with `_` or `.` are skipped, as they are
+below a local directory. The prefix you name may itself begin with `_` or `.`,
+such as `s3://bucket/_landing/`. A pattern matches names as a local glob does.
+It matches a name that begins with `_`. It matches a name that begins with `.`
+only when the pattern spells the dot, such as `.*.parquet`. The scheme is
+compared without case, so `S3://` reads as `s3://` does. Hive
 `partition_columns` work over a remote prefix. A pattern or a prefix requires the
 object-store module, since only it can issue the listing.
 
 On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes one
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`
-marker beside them on completion. Every other write function writes a single
-object at the exact key. The workers use the calling session's values of
+marker beside them on completion. Trailing slashes on the prefix make no
+difference: `s3://bucket/out/`, `s3://bucket/out//` and `s3://bucket/out` all
+write `out/part-0000.parquet` and `out/_SUCCESS`. The scheme may be written in
+any case, so `S3://bucket/out` writes the same keys. Before it writes the marker,
+the export deletes any `part-NNNN.parquet` directly under `out/` that a larger
+earlier run left behind. It looks only directly under `out/`, so objects under
+`outer/`, `out2/` or a deeper prefix such as `out/sub/` are never touched. The prefix must name something under the bucket:
+`s3://bucket/` and `s3://bucket` are refused before any worker starts, with
+SQLSTATE 22023. The workers use the calling session's values of
 `pgcolumnar.objstore_allowed_endpoints`, `pgcolumnar.objstore_s3_addressing` and
 `pgcolumnar.objstore_part_size`, including any set with `SET`. The endpoint is
 checked against the session's allow-list before any worker starts, so a refused
-endpoint fails before anything is uploaded.
+endpoint fails before anything is uploaded. Every other write function writes a
+single object at the exact key.
 
 Remote paths carry the same privilege as local ones. A read needs
 `pg_read_server_files` and a write needs `pg_write_server_files`, over and above
@@ -1469,18 +1572,44 @@ SELECT pg_reload_conf();
 ```
 
 Each entry is a host or a `host:port`. A request whose endpoint matches no entry
-is refused before any connection is made. Link-local addresses, including the
-cloud instance-metadata address `169.254.169.254`, are refused unconditionally,
-whether or not they appear in the list. The setting is superuser-only, so a role
-cannot widen its own reach.
+is refused before any connection is made. The link-local ranges and the known
+cloud instance-metadata addresses, such as `169.254.169.254`, are refused
+unconditionally, whether or not they appear in the list. For every refused range,
+see [Run object storage safely](best-practices.md#run-object-storage-safely). The
+setting is superuser-only, so a role cannot widen its own reach.
 
 ### Exporting to object storage
 
 `export_parquet` and `export_arrow` write to an `s3://` URL as well as a local
 path. A small object goes in one request. A large one is written as a multipart
 upload. It becomes visible at its final name only when the upload completes, so a
-reader never sees a partial object. A failed export removes what it wrote,
-including an incomplete multipart upload.
+reader never sees a partial object. An export that fails before its last request
+removes what it wrote, including an incomplete multipart upload. The last request
+is different, as the next paragraphs explain.
+
+This cleanup holds when you cancel or terminate the export while it waits for the
+store to start the upload. The export then has no id for that upload. It lists
+the open uploads for its own key and aborts each one, within 10 seconds. Uploads
+at other keys stay open. An upload that another writer started at the same key is
+aborted too. This listing works for `s3://` only. A `gs://` export cancelled at
+that moment leaves the upload open (#1854).
+
+The last request commits the object. It is the single request of a small object,
+or the request that completes a multipart upload. Once the store has that whole
+request, a cancel or terminate waits for its answer. The wait ends when the answer
+arrives, or when the store sends nothing for 60 seconds. A store that keeps
+sending slowly can make it wait longer. If the store accepted the request, the
+export issues a warning that it wrote the object. The statement can still end with
+the cancel error. The new object is then at the key and has replaced any earlier
+object there. A store cannot take a committed object back.
+
+If the connection closes during that wait, the export does not send the request
+again. It fails with an error that says the store may have written the object.
+Check the key to see whether it holds the new object.
+
+A backend killed with `SIGKILL`, or a lost connection to the store, can still
+leave an incomplete multipart upload. To reclaim one, set a bucket lifecycle rule
+that expires incomplete multipart uploads after a few days.
 
 Export to object storage is not transactional. An export whose transaction later
 rolls back has already written the object. This is true of a local export as

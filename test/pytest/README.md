@@ -41,6 +41,12 @@ which is the mistake the previous text made: it passed 24, the number of files
 Each worker builds its own throwaway cluster on a port derived from its worker id,
 and drops it at session end. Nothing survives a run.
 
+Run the over-1-GiB arms serially. With `PGC_RUN_OVER_1GB=1`, the export arms of
+`test_parquet_export.py`, `test_arrow_export.py` and `test_objstore_sink_write.py`
+each hold several GB of memory. One `-n 4` run with `PGC_RUN_OVER_1GB=1` lost the
+objstore fixture's server during its over-1-GiB arm, and every later test in that
+file failed at setup; the cause is not known. The same file passed when run alone.
+
 ## Checking a port against its bash original
 
 ```sh
