@@ -1258,10 +1258,12 @@ guard_tests 854
 # native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
 # 16 checks in 16 tests, by collection over the cluster files.
-# cluster_tests 4510 -> 4518 for #1784's test_objstore_listing.py, the twin of objstore_listing.sh:
+# cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
+# that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
+# cluster_tests 4516 -> 4524 for #1784's test_objstore_listing.py, the twin of objstore_listing.sh:
 # 8 checks in one test of 8 parameters, by collection over the cluster files.
-# cluster_tests 4518 -> 4520 for #1784's two upper-case scheme checks in test_objstore_listing.py
+# cluster_tests 4524 -> 4526 for #1784's two upper-case scheme checks in test_objstore_listing.py
 # (an S3:// prefix and an S3:// pattern), 2 parameters of the same test, by collection over the cluster files.
-# cluster_tests 4520 -> 4521 for #1784's S3://.../glb/[A_]*.parquet check in test_objstore_listing.py (only the
-# scheme ignores case), 1 parameter of the same test: `4521 tests collected` over the cluster files.
-cluster_tests 4521
+# cluster_tests 4526 -> 4527 for #1784's S3://.../glb/[A_]*.parquet check in test_objstore_listing.py (only the
+# scheme ignores case), 1 parameter of the same test, by collection over the cluster files (`4527 tests collected` after the merge of main).
+cluster_tests 4527
