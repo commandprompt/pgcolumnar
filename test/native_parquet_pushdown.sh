@@ -301,9 +301,6 @@ fi
 # so it changes nothing and must keep skipping. timestamp(3) rounds: each group's
 # last value, hh:59:59.9996, reads as the next hour, beyond the group's stored
 # max, so that column must skip nothing and return the rounded row.
-TS_ARMS=("typmod: a timestamp(6) column still skips 3 of 4 groups"
-	"typmod: a timestamp(3) column skips no group for t >= 03:00"
-	"typmod: a timestamp(3) column returns the row that rounds up to 03:00")
 if python3 -c 'import pyarrow.parquet' 2>/dev/null; then
 	python3 - "$PGC_WORKDIR" <<'PYTS'
 import datetime, os, sys
@@ -324,7 +321,9 @@ if pq.ParquetFile(os.path.join(W, "ts_push.parquet")).metadata.num_row_groups !=
 PYTS
 	if [ $? -ne 0 ]; then
 		# ONE SKIP PER ARM, UNDER THE ARM'S OWN NAME (#994).
-		for _pt in "${TS_ARMS[@]}"; do
+		for _pt in "typmod: a timestamp(6) column still skips 3 of 4 groups" \
+				"typmod: a timestamp(3) column skips no group for t >= 03:00" \
+				"typmod: a timestamp(3) column returns the row that rounds up to 03:00"; do
 			check_skip "$_pt" "SKIP  $_pt (could not build the timestamp pushdown file)" \
 				"could not build the fixture file"
 		done
@@ -341,7 +340,9 @@ PYTS
 			"$(q "SELECT count(*) FROM ftts3 WHERE t >= TIMESTAMP '2021-01-01 03:00:00'")" "1001"
 	fi
 else
-	for _pt in "${TS_ARMS[@]}"; do
+	for _pt in "typmod: a timestamp(6) column still skips 3 of 4 groups" \
+			"typmod: a timestamp(3) column skips no group for t >= 03:00" \
+			"typmod: a timestamp(3) column returns the row that rounds up to 03:00"; do
 		check_skip "$_pt" "SKIP  $_pt (pyarrow not available)" "pyarrow not available"
 	done
 fi
