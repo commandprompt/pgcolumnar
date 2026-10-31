@@ -103,6 +103,19 @@ def _refusal(dsn, sql, phrase, label, setup=()):
     return "no error"
 
 
+def _hint(dsn, sql):
+    """-> the HINT of the error `sql` raises, so a failure shows what the hint said."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if exc.diag.message_hint:
+            return exc.diag.message_hint
+        return f"no hint ({_message(exc)})"
+    return "no error"
+
+
 def _logn(log, pattern):
     """-> how many request-log lines match `pattern` (grep -cE), or a query_error()."""
     try:
@@ -304,7 +317,8 @@ def _plain_run(dsn, work, r, procs):
     starts = _logn(plog, r"^POST /pb/big.parquet uploads=")
     parts = _logn(plog, r"^PUT /pb/big.parquet partNumber=")
     completes = _logn(plog, r"^POST /pb/big.parquet uploadId=")
-    r["plain big multipart"] = ("yes" if starts >= 1 and parts >= 2 and completes == 1 else "no") \
+    r["plain big multipart"] = ("yes" if starts >= 1 and parts >= 2 and completes == 1
+                                else f"no (starts={starts} parts={parts} completes={completes})") \
         if all(isinstance(x, int) for x in (starts, parts, completes)) \
         else query_error(f"{starts} / {parts} / {completes}")
     try:
@@ -320,7 +334,7 @@ def _plain_run(dsn, work, r, procs):
                                  "export write failed (injected fault)", " by the injected fault",
                                  setup=[PART, "SET pgcolumnar.sink_fail_after = 900000"])
     n = _logn(plog, r"^POST /pb/fail.parquet uploads=")
-    r["plain inject started"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
+    r["plain inject started"] = ("yes" if n >= 1 else f"no (starts={n})") if isinstance(n, int) else n
     r["plain inject open"] = _open_uploads(pdir, r"^pb/fail\.parquet$")
 
 
@@ -475,6 +489,11 @@ def osw(pgc_cluster):
         _cancel_run(dsn, s3log, bucket, r)
         _silent_run(dsn, s3log, bucket, srv, r)
         _plain_run(dsn, work, r, plain)
+        # A 403 from an http(s):// target cannot be about AWS_* credentials: those
+        # requests are never signed. The SigV4 server refuses a request with no
+        # Authorization header, so an http:// export to it draws that 403.
+        r["unsigned 403 hint"] = _hint(dsn, "SELECT pgcolumnar.export_parquet('es_small', "
+                                            f"'http://127.0.0.1:{s3_port}/{BUCKET}/denied.parquet')")
 
         # optional: a real S3 implementation, the shell's last arm. The endpoint's host
         # replaces the fixture's in the allow-list, and the cluster restarts with its
@@ -691,7 +710,7 @@ def test_a_large_export_to_http_succeeds_unsigned(osw, expect):
 
 
 def test_the_large_http_export_took_the_multipart_protocol(osw, expect):
-    expect.text(osw["plain big multipart"], "yes", "premise: the http:// large export took the multipart protocol")
+    expect.text(osw["plain big multipart"], "yes", "the http:// large export took the multipart protocol")
 
 
 def test_the_large_http_object_reads_back_as_the_generator(osw, expect):
@@ -705,11 +724,20 @@ def test_an_injected_failure_on_http_surfaces_as_disk_full(osw, expect):
 
 def test_the_injected_http_fault_landed_mid_multipart(osw, expect):
     expect.text(osw["plain inject started"], "yes",
-                "premise: the http:// fault landed mid-multipart (an upload was started)")
+                "the http:// fault landed mid-multipart (an upload was started)")
 
 
 def test_the_injected_http_failure_leaves_no_open_upload(osw, expect):
     expect.text(osw["plain inject open"], "0", "http:// inject: the server holds no open upload for the key")
+
+
+def test_a_403_from_an_unsigned_http_target_hints_that_it_went_unsigned(osw, expect):
+    # #1779: the hint used to send the reader to the AWS_* credentials, which an
+    # http(s):// request never carries
+    expect.text(osw["unsigned 403 hint"],
+                "Requests to http:// and https:// URLs are never signed. "
+                "Use an s3:// or gs:// URL for a store that needs credentials.",
+                "http:// 403: the hint says the request went unsigned, not to check AWS_* credentials")
 
 
 _NO_REAL_S3 = ("PGC_S3_INTEGRATION_ENDPOINT names no real S3 implementation, so the shell "

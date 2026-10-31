@@ -1303,6 +1303,19 @@ os_reject_403(PgColumnarObjHandle *h, const OsResponse *resp, bool hasBody)
 		pfree(body);
 	}
 
+	/*
+	 * Only an s3:// or gs:// handle signs (h->sign). An http(s):// request
+	 * carries no credential, so pointing its reader at the AWS_* environment
+	 * would send them to settings the request never used (#1779).
+	 */
+	if (!h->sign)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+				 errmsg("columnar: access to \"%s\" was denied (HTTP 403%s%s)",
+						h->url, code[0] ? ": " : "", code),
+				 errhint("Requests to http:// and https:// URLs are never "
+						 "signed. Use an s3:// or gs:// URL for a store that "
+						 "needs credentials.")));
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 			 errmsg("columnar: access to \"%s\" was denied (HTTP 403%s%s)",

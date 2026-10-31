@@ -473,7 +473,10 @@ true until the next version shipped.
   Writes are now signed only for `s3://` and `gs://`, as reads already were, so an
   `http(s)://` export goes unsigned: one `PUT`, or a multipart upload for a large
   object, and an abort on failure. `https://` takes the same code path but is not
-  tested. `test/objstore_sink_write.sh` and
+  tested. A 403 from an unsigned `http(s)://` target now hints that the request
+  was unsigned and that `s3://` or `gs://` is for a store that needs credentials; the hint
+  used to send the reader to the `AWS_*` credentials, which such a request never
+  carries. `test/objstore_sink_write.sh` and
   `test_objstore_sink_write.py` export to an unsigned fixture server both ways and
   read each object back.
 
