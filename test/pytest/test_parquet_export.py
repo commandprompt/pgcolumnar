@@ -204,6 +204,24 @@ def pqx(pgc_cluster, server_dir):
             _run(dsn, f"INSERT INTO {t} {gen}")
             r[f"{t} rows"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 1024"],
                                           f"SELECT pgcolumnar.export_parquet('{t}', '{f[t]}')")
+        # #1843 review, second round: an int2 is written as a 4-byte INT32
+        f["pq_w2"] = server_dir / "pq_w2.parquet"
+        _run(dsn, "CREATE TABLE pq_w2 (id int2) USING pgcolumnar")
+        _run(dsn, "INSERT INTO pq_w2 SELECT g FROM generate_series(1, 1000) g")
+        r["pq_w2 rows"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 1024"],
+                                       f"SELECT pgcolumnar.export_parquet('pq_w2', '{f['pq_w2']}')")
+        # #1843 review, second round: the incoming row's estimate counts every column shape
+        _run(dsn, "CREATE TYPE pq_rec AS (t text)")
+        for t, ddl, gen in (("pq_wst", "id int, r pq_rec", "SELECT g, ROW(repeat('x', 10000))::pq_rec FROM generate_series(1, 40) g"),
+                            ("pq_wtl", "id int, a text[]", "SELECT g, ARRAY[repeat('x', 5000), repeat('y', 5000)] FROM generate_series(1, 40) g"),
+                            ("pq_wil", "id int, a int[]", "SELECT g, array_fill(7, ARRAY[2000]) FROM generate_series(1, 40) g"),
+                            ("pq_wbig", "s text", "SELECT repeat('z', 2000) FROM generate_series(1, 3)")):
+            f[t] = server_dir / f"{t}.parquet"
+            _run(dsn, f"CREATE TABLE {t} ({ddl}) USING pgcolumnar")
+            _run(dsn, f"INSERT INTO {t} {gen}")
+            cap = 1024 if t.endswith("_wbig") else 65536
+            r[f"{t} rows"] = _value_after(dsn, [f"SET pgcolumnar.export_group_bytes = {cap}"],
+                                          f"SELECT pgcolumnar.export_parquet('{t}', '{f[t]}')")
         # #1843 review: each kept numeric or jsonb text reaches its own value
         _run(dsn, "CREATE TYPE pq_tpair AS (x numeric, y text)")
         _run(dsn, "CREATE TABLE pq_txt (id int, n numeric, a numeric[], j jsonb, c pq_tpair) USING pgcolumnar")
@@ -528,6 +546,54 @@ def test_a_row_group_cut_counts_a_lists_elements_as_written(pqx, expect):
         return
     expect.text(_cut(pqx, pa, "pq_wlist"), "10|10|1,1,1,1,1,1,1,1,1,1",
                 "the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 groups of 1")
+
+
+def test_a_row_group_cut_counts_an_int2_as_the_int32_it_is_written_as(pqx, expect):
+    """#1843 review, second round: an int2 is written as a 4-byte INT32, so it
+    buffers 4 bytes and a level byte, as an int4 does."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(_cut(pqx, pa, "pq_w2"), "1000|1000|204,204,204,204,184",
+                "the byte cut counts an int2 as the INT32 it is written as: 1000 int2 rows under a 1024-byte cap make groups of 204,204,204,204,184")
+
+
+def test_a_row_group_cut_counts_a_composites_fields_as_written(pqx, expect):
+    """#1843 review, second round: a composite row counts its field as written, so a
+    10 KB field cannot join a nearly full group."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(_cut(pqx, pa, "pq_wst"), "40|40|6,6,6,6,6,6,4",
+                "the byte cut counts a composite's fields as written: 40 rows of a 10000-byte text field under a 65536-byte cap make groups of 6,6,6,6,6,6,4")
+
+
+def test_a_row_group_cut_counts_a_text_lists_elements_as_written(pqx, expect):
+    """#1843 review, second round: a text[] row counts each element as written."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(_cut(pqx, pa, "pq_wtl"), "40|40|6,6,6,6,6,6,4",
+                "the byte cut counts a text list's elements as written: 40 rows of two 5000-byte texts under a 65536-byte cap make groups of 6,6,6,6,6,6,4")
+
+
+def test_a_row_group_cut_counts_an_int_lists_elements_as_written(pqx, expect):
+    """#1843 review, second round: an int[] row counts each fixed-width element as written."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(_cut(pqx, pa, "pq_wil"), "40|40|5,5,5,5,5,5,5,5",
+                "the byte cut counts an int list's elements as written: 40 rows of 2000 int4 under a 65536-byte cap make groups of 5,5,5,5,5,5,5,5")
+
+
+def test_a_row_larger_than_the_byte_cap_goes_in_a_group_of_its_own(pqx, expect):
+    """#1843 review: a row larger than the cap is written alone, with no empty group
+    before it."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(_cut(pqx, pa, "pq_wbig"), "3|3|1,1,1",
+                "a row larger than the byte cap goes in a group of its own: 3 rows of 2000 bytes under a 1024-byte cap make groups of 1,1,1")
 
 
 def test_a_row_far_wider_as_written_than_stored_goes_in_a_group_of_its_own(pqx, expect):

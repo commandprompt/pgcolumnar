@@ -322,6 +322,39 @@ check "the byte cut counts a numeric's text form: 10 rows of 1e1000 under a 1024
 	"$(pq_cut pq_wnum "$PGC_WORKDIR/wnum.parquet" 1024)" "10|10|1,1,1,1,1,1,1,1,1,1"
 check "the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 groups of 1" \
 	"$(pq_cut pq_wlist "$PGC_WORKDIR/wlist.parquet" 1024)" "10|10|1,1,1,1,1,1,1,1,1,1"
+
+# An int2 is written as a 4-byte INT32, so it buffers 4 bytes and a level byte, as an
+# int4 does: 204 rows to a 1024-byte group, not 341.
+psql_run "CREATE TABLE pq_w2 (id int2) USING pgcolumnar;
+          INSERT INTO pq_w2 SELECT g FROM generate_series(1, 1000) g;"
+check "the byte cut counts an int2 as the INT32 it is written as: 1000 int2 rows under a 1024-byte cap make groups of 204,204,204,204,184" \
+	"$(pq_cut pq_w2 "$PGC_WORKDIR/w2.parquet" 1024)" "1000|1000|204,204,204,204,184"
+# The incoming row's estimate must count every column shape, or a large row joins a
+# nearly full group and takes it past the cap (#1843 review, second round). Under a
+# 65536-byte cap: a composite of one 10000-byte text buffers its field's level byte,
+# length and bytes, about 10 KB, so 40 rows make groups of 6,6,6,6,6,6,4. A text[] of
+# two 5000-byte texts buffers each element's two level bytes, length and bytes, also
+# 6,6,6,6,6,6,4. An int[] of 2000 elements buffers 2000 x (2 level bytes + 4) = 12000
+# bytes, so groups of 5.
+psql_run "CREATE TYPE pq_rec AS (t text);
+          CREATE TABLE pq_wst (id int, r pq_rec) USING pgcolumnar;
+          INSERT INTO pq_wst SELECT g, ROW(repeat('x', 10000))::pq_rec FROM generate_series(1, 40) g;
+          CREATE TABLE pq_wtl (id int, a text[]) USING pgcolumnar;
+          INSERT INTO pq_wtl SELECT g, ARRAY[repeat('x', 5000), repeat('y', 5000)] FROM generate_series(1, 40) g;
+          CREATE TABLE pq_wil (id int, a int[]) USING pgcolumnar;
+          INSERT INTO pq_wil SELECT g, array_fill(7, ARRAY[2000]) FROM generate_series(1, 40) g;"
+check "the byte cut counts a composite's fields as written: 40 rows of a 10000-byte text field under a 65536-byte cap make groups of 6,6,6,6,6,6,4" \
+	"$(pq_cut pq_wst "$PGC_WORKDIR/wst.parquet" 65536)" "40|40|6,6,6,6,6,6,4"
+check "the byte cut counts a text list's elements as written: 40 rows of two 5000-byte texts under a 65536-byte cap make groups of 6,6,6,6,6,6,4" \
+	"$(pq_cut pq_wtl "$PGC_WORKDIR/wtl.parquet" 65536)" "40|40|6,6,6,6,6,6,4"
+check "the byte cut counts an int list's elements as written: 40 rows of 2000 int4 under a 65536-byte cap make groups of 5,5,5,5,5,5,5,5" \
+	"$(pq_cut pq_wil "$PGC_WORKDIR/wil.parquet" 65536)" "40|40|5,5,5,5,5,5,5,5"
+# A row larger than the cap goes in a group of its own, and no empty group is written
+# before it: 3 rows of a 2000-byte text under a 1024-byte cap make 3 groups of 1.
+psql_run "CREATE TABLE pq_wbig (s text) USING pgcolumnar;
+          INSERT INTO pq_wbig SELECT repeat('z', 2000) FROM generate_series(1, 3);"
+check "a row larger than the byte cap goes in a group of its own: 3 rows of 2000 bytes under a 1024-byte cap make groups of 1,1,1" \
+	"$(pq_cut pq_wbig "$PGC_WORKDIR/wbig.parquet" 1024)" "3|3|1,1,1"
 # The writer converts a numeric or jsonb to text once, while it counts the row, and
 # keeps the text for the append (#1843 review). Each kept text must reach its own
 # value: scalars, list elements (with a NULL among them), and a composite's field.
@@ -379,8 +412,9 @@ fi
 # A row whose written form is far larger than its stored form, after a large row (#1843
 # review). Opt-in for the same reason. Row 1 holds 260 MB of text. Row 2 holds 8200
 # numerics of 1e100000: about 98 KB stored, but 820 MB as text. Counted by its stored
-# size, row 2 joined row 1's group and the export failed with the raw string-buffer
-# error. Counted as written, it goes in a group of its own.
+# size, row 2 joined row 1's group, and the export wrote one 1.08 GB group of 2 rows
+# (each Parquet column has its own buffer, so it did not fail as Arrow did). Counted as
+# written, it goes in a group of its own.
 WIDEPQN="a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 row groups of 1"
 if [ "${PGC_RUN_OVER_1GB:-0}" = 1 ]; then
 	WIDEPQ="$PGC_WORKDIR/wide.parquet"

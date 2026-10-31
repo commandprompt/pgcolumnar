@@ -181,6 +181,18 @@ def ae(pgc_cluster, server_dir):
             _run(dsn, f"INSERT INTO {t} {gen}")
             r[f"{t} rows"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 1024"],
                                           f"SELECT pgcolumnar.export_arrow('{t}', '{f[t]}')")
+        # #1843 review, second round: the incoming row's estimate counts every column shape
+        _run(dsn, "CREATE TYPE ar_rec AS (t text)")
+        for t, ddl, gen in (("ar_wst", "id int, r ar_rec", "SELECT g, ROW(repeat('x', 10000))::ar_rec FROM generate_series(1, 40) g"),
+                            ("ar_wtl", "id int, a text[]", "SELECT g, ARRAY[repeat('x', 5000), repeat('y', 5000)] FROM generate_series(1, 40) g"),
+                            ("ar_wil", "id int, a int[]", "SELECT g, array_fill(7, ARRAY[2000]) FROM generate_series(1, 40) g"),
+                            ("ar_wbig", "s text", "SELECT repeat('z', 2000) FROM generate_series(1, 3)")):
+            f[t] = server_dir / f"{t}.arrows"
+            _run(dsn, f"CREATE TABLE {t} ({ddl}) USING pgcolumnar")
+            _run(dsn, f"INSERT INTO {t} {gen}")
+            cap = 1024 if t.endswith("_wbig") else 65536
+            r[f"{t} rows"] = _value_after(dsn, [f"SET pgcolumnar.export_group_bytes = {cap}"],
+                                          f"SELECT pgcolumnar.export_arrow('{t}', '{f[t]}')")
         # #1843 review: each kept numeric or jsonb text reaches its own value
         _run(dsn, "CREATE TYPE ar_tpair AS (x numeric, y text)")
         _run(dsn, "CREATE TABLE ar_txt (id int, n numeric, a numeric[], j jsonb, c ar_tpair) USING pgcolumnar")
@@ -429,6 +441,44 @@ def test_a_record_batch_cut_counts_a_lists_elements_as_written(ae, expect):
         return
     expect.text(_cut(ae, pa, "ar_wlist"), "10|10|1,1,1,1,1,1,1,1,1,1",
                 "the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 batches of 1")
+
+
+def test_a_record_batch_cut_counts_a_composites_fields_as_written(ae, expect):
+    """#1843 review, second round: a composite row counts its field as written, so a
+    10 KB field cannot join a nearly full batch."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(_cut(ae, pa, "ar_wst"), "40|40|6,6,6,6,6,6,4",
+                "the byte cut counts a composite's fields as written: 40 rows of a 10000-byte text field under a 65536-byte cap make batches of 6,6,6,6,6,6,4")
+
+
+def test_a_record_batch_cut_counts_a_text_lists_elements_as_written(ae, expect):
+    """#1843 review, second round: a text[] row counts each element as written."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(_cut(ae, pa, "ar_wtl"), "40|40|6,6,6,6,6,6,4",
+                "the byte cut counts a text list's elements as written: 40 rows of two 5000-byte texts under a 65536-byte cap make batches of 6,6,6,6,6,6,4")
+
+
+def test_a_record_batch_cut_counts_an_int_lists_elements_as_written(ae, expect):
+    """#1843 review, second round: an int[] row counts each fixed-width element as written."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(_cut(ae, pa, "ar_wil"), "40|40|6,6,6,6,6,6,4",
+                "the byte cut counts an int list's elements as written: 40 rows of 2000 int4 under a 65536-byte cap make batches of 6,6,6,6,6,6,4")
+
+
+def test_a_row_larger_than_the_byte_cap_goes_in_a_batch_of_its_own(ae, expect):
+    """#1843 review: a row larger than the cap is written alone, with no empty batch
+    before it."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(_cut(ae, pa, "ar_wbig"), "3|3|1,1,1",
+                "a row larger than the byte cap goes in a batch of its own: 3 rows of 2000 bytes under a 1024-byte cap make batches of 1,1,1")
 
 
 def test_a_row_far_wider_as_written_than_stored_goes_in_a_batch_of_its_own(ae, expect):

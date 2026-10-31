@@ -490,7 +490,10 @@ true until the next version shipped.
   export over 1 GiB. The remote sink also appended a whole chunk from the writer
   before it cut a part, so it could hold one part plus one chunk; it now fills
   the part, uploads it and goes on. docs/limitations.md now lists the S3 part
-  limits. `test/objstore_sink_write.sh` and its pytest twin.
+  limits. `test/objstore_sink_write.sh` and its pytest twin. If you set a value
+  between 512 MiB and 1 GiB in `postgresql.conf`, it is now out of range:
+  PostgreSQL logs a warning and uses `0`, the 8 MiB module default. Set 512 MiB
+  or less.
 
 - The `pgcolumnar_iceberg` foreign-data wrapper no longer prunes `bucket[N]`
   files for an equality compared under a nondeterministic collation (#1818).

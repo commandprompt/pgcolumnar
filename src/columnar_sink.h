@@ -74,7 +74,9 @@ extern int	pgcolumnar_export_group_bytes;
  * (#1811). A numeric or jsonb is written as text, and its output function is
  * the costly part of exporting it. Each text records the value it was made
  * from, and a pop for another value drops the queue, so a text never goes
- * to the wrong value.
+ * to the wrong value. A row holds all its kept texts until its append, so one
+ * numeric[] of a million elements holds a million texts at once, and the
+ * queue's arrays keep their largest size until the export ends.
  */
 typedef struct PgcTextQueue
 {

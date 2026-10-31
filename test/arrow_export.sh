@@ -288,6 +288,33 @@ check "the byte cut counts a numeric's text form: 10 rows of 1e1000 under a 1024
 check "the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 batches of 1" \
 	"$(ar_cut ar_wlist "$PGC_WORKDIR/wlist.arrow" 1024)" "10|10|1,1,1,1,1,1,1,1,1,1"
 
+# The incoming row's estimate must count every column shape, or a large row joins a
+# nearly full batch and takes it past the cap (#1843 review, second round). Under a
+# 65536-byte cap, each of these rows buffers about 10 KB, so 40 rows make batches of
+# 6,6,6,6,6,6,4. A composite of one 10000-byte text buffers its validity byte, then
+# its field's validity, offset and bytes. A text[] of two 5000-byte texts buffers its
+# list validity and offset, then each element's validity, offset and bytes. An int[]
+# of 2000 elements buffers 2000 x (1 validity + 4) = 10000 bytes.
+psql_run "CREATE TYPE ar_rec AS (t text);
+          CREATE TABLE ar_wst (id int, r ar_rec) USING pgcolumnar;
+          INSERT INTO ar_wst SELECT g, ROW(repeat('x', 10000))::ar_rec FROM generate_series(1, 40) g;
+          CREATE TABLE ar_wtl (id int, a text[]) USING pgcolumnar;
+          INSERT INTO ar_wtl SELECT g, ARRAY[repeat('x', 5000), repeat('y', 5000)] FROM generate_series(1, 40) g;
+          CREATE TABLE ar_wil (id int, a int[]) USING pgcolumnar;
+          INSERT INTO ar_wil SELECT g, array_fill(7, ARRAY[2000]) FROM generate_series(1, 40) g;"
+check "the byte cut counts a composite's fields as written: 40 rows of a 10000-byte text field under a 65536-byte cap make batches of 6,6,6,6,6,6,4" \
+	"$(ar_cut ar_wst "$PGC_WORKDIR/wst.arrow" 65536)" "40|40|6,6,6,6,6,6,4"
+check "the byte cut counts a text list's elements as written: 40 rows of two 5000-byte texts under a 65536-byte cap make batches of 6,6,6,6,6,6,4" \
+	"$(ar_cut ar_wtl "$PGC_WORKDIR/wtl.arrow" 65536)" "40|40|6,6,6,6,6,6,4"
+check "the byte cut counts an int list's elements as written: 40 rows of 2000 int4 under a 65536-byte cap make batches of 6,6,6,6,6,6,4" \
+	"$(ar_cut ar_wil "$PGC_WORKDIR/wil.arrow" 65536)" "40|40|6,6,6,6,6,6,4"
+# A row larger than the cap goes in a batch of its own, and no empty batch is written
+# before it: 3 rows of a 2000-byte text under a 1024-byte cap make 3 batches of 1.
+psql_run "CREATE TABLE ar_wbig (s text) USING pgcolumnar;
+          INSERT INTO ar_wbig SELECT repeat('z', 2000) FROM generate_series(1, 3);"
+check "a row larger than the byte cap goes in a batch of its own: 3 rows of 2000 bytes under a 1024-byte cap make batches of 1,1,1" \
+	"$(ar_cut ar_wbig "$PGC_WORKDIR/wbig.arrow" 1024)" "3|3|1,1,1"
+
 # The writer converts a numeric or jsonb to text once, while it counts the row, and
 # keeps the text for the append (#1843 review). Each kept text must reach its own
 # value: scalars, list elements (with a NULL among them), and a composite's field.
