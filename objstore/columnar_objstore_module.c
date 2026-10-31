@@ -378,7 +378,11 @@ os_check_endpoint_allowed(PgColumnarObjHandle *h)
 /*
  * Link-local refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
  * the cloud-metadata credential-theft surface (IMDS lives at
- * 169.254.169.254) and have no legitimate object-storage use. Checked after
+ * 169.254.169.254) and have no legitimate object-storage use. The same
+ * surface has IPv6 forms (#1808): AWS's IPv6 IMDS in fd00:ec2::/32, and
+ * 169.254/16 carried inside an IPv6 address -- IPv4-mapped ::ffff:0:0/96,
+ * IPv4-compatible ::/96, and the NAT64 prefixes 64:ff9b::/96 and
+ * 64:ff9b:1::/48 (RFC 6052, RFC 8215). Checked after
  * resolution so a name pinned to a link-local address is caught, and the
  * whole connection is refused rather than the address skipped, so a resolver
  * returning a mixed set cannot steer the choice.
@@ -397,10 +401,32 @@ os_addr_is_linklocal(const struct addrinfo *ai)
 		const struct in6_addr *a6 =
 			&((const struct sockaddr_in6 *) ai->ai_addr)->sin6_addr;
 
+		const uint8_t *b = a6->s6_addr;
+		static const uint8_t zero10[10] = {0};
+		static const uint8_t nat64wkp[12] = {0x00, 0x64, 0xff, 0x9b};
+		bool		v4low = (b[12] == 169 && b[13] == 254);
+
 		if (IN6_IS_ADDR_LINKLOCAL(a6))
 			return true;
-		if (IN6_IS_ADDR_V4MAPPED(a6))
-			return a6->s6_addr[12] == 169 && a6->s6_addr[13] == 254;
+		/* fd00:ec2::/32, AWS IPv6 instance metadata (fd00:ec2::254) */
+		if (b[0] == 0xfd && b[1] == 0x00 && b[2] == 0x0e && b[3] == 0xc2)
+			return true;
+		/* ::ffff:0:0/96 (mapped) and ::/96 (compatible) carrying 169.254/16 */
+		if (memcmp(b, zero10, 10) == 0 &&
+			((b[10] == 0xff && b[11] == 0xff) || (b[10] == 0 && b[11] == 0)))
+			return v4low;
+		/* 64:ff9b::/96, the NAT64 well-known prefix */
+		if (memcmp(b, nat64wkp, 12) == 0)
+			return v4low;
+		/*
+		 * 64:ff9b:1::/48, the NAT64 local-use prefix. Its operator picks the
+		 * prefix length, so the IPv4 address may sit at any RFC 6052 position:
+		 * /48 (bytes 6,7), /56 (7,9), /64 (9,10) or /96 (12,13).
+		 */
+		if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b &&
+			b[4] == 0x00 && b[5] == 0x01)
+			return (b[6] == 169 && b[7] == 254) || (b[7] == 169 && b[9] == 254) ||
+				(b[9] == 169 && b[10] == 254) || v4low;
 	}
 	return false;
 }
@@ -478,8 +504,11 @@ os_connect(PgColumnarObjHandle *h)
 					 errmsg("columnar: \"%s\" resolves into a link-local range, "
 							"which object storage never legitimately uses",
 							h->host),
-					 errdetail("Link-local addresses (169.254.0.0/16, fe80::/10) "
-							   "are refused unconditionally: they are the cloud "
+					 errdetail("Link-local and instance-metadata addresses "
+							   "(169.254.0.0/16, fe80::/10, fd00:ec2::/32, and "
+							   "169.254.0.0/16 inside an IPv4-mapped, "
+							   "IPv4-compatible or NAT64 IPv6 address) are refused "
+							   "unconditionally: they are the cloud "
 							   "instance-metadata surface.")));
 		}
 

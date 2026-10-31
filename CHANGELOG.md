@@ -466,6 +466,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- The object-storage module now refuses the IPv6 forms of the cloud
+  instance-metadata address, even when the host is listed in
+  `pgcolumnar.objstore_allowed_endpoints` (#1808). Before, it refused only
+  `169.254.0.0/16`, `fe80::/10` and `::ffff:169.254.0.0/112`. A listed name that
+  resolved to AWS's IPv6 metadata address `fd00:ec2::254`, or to
+  `169.254.169.254` behind a NAT64 prefix, got a connection attempt instead of
+  SQLSTATE 42501. The guard now also refuses `fd00:ec2::/32`, and
+  `169.254.0.0/16` inside an IPv4-compatible (`::/96`) or NAT64
+  (`64:ff9b::/96`, `64:ff9b:1::/48`) address. `test/objstore_allowlist.sh` and
+  `test_objstore_allowlist.py` resolve test names to each address through a
+  `getaddrinfo()` shim.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write

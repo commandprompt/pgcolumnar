@@ -180,9 +180,16 @@ nothing. It is a superuser-only setting, so a role cannot widen its own reach. K
 it as narrow as the deployment allows.
 
 - **Link-local and instance-metadata addresses are refused unconditionally, even
-  when listed.** The ranges `169.254.0.0/16` and `fe80::/10` are the
-  cloud-credential-theft surface. They have no legitimate object-storage use. You
-  cannot rely on the allow-list alone to block them, and you do not need to.
+  when listed.** These addresses are the cloud-credential-theft surface. They have
+  no legitimate object-storage use. The module refuses a host that resolves to any
+  of them:
+  - `169.254.0.0/16` and `fe80::/10`, the link-local ranges;
+  - `fd00:ec2::/32`, which holds AWS's IPv6 metadata address `fd00:ec2::254`;
+  - `169.254.0.0/16` carried inside an IPv6 address: IPv4-mapped (`::ffff:0:0/96`),
+    IPv4-compatible (`::/96`), or behind a NAT64 prefix (`64:ff9b::/96`,
+    `64:ff9b:1::/48`).
+
+  You cannot rely on the allow-list alone to block them, and you do not need to.
 - **Prefer per-role credentials over ambient environment keys.** The object-storage
   foreign-data wrapper takes `access_key_id`, `secret_access_key`, `session_token`,
   and `credentials_required` from a foreign server and user mapping. Each role then
