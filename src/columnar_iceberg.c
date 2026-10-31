@@ -200,15 +200,49 @@ ice_field(JsonbContainer *c, const char *key)
 										palloc(sizeof(JsonbValue)));
 }
 
-/* interpret a JSON number as an int64; false if v is not a (non-null) number */
+/*
+ * Interpret a JSON number as an int64; false if v is not a (non-null) number.
+ * Every number this reader takes from metadata.json is an integer in the
+ * Iceberg spec. numeric_int8 rounds, so a fraction such as 1.4 used to read as
+ * 1 and could name another field (#1824). Refuse a fraction instead. A number
+ * outside int64 is refused by numeric_int8 itself.
+ */
 static bool
 ice_num_int64(JsonbValue *v, int64 *out)
 {
+	Datum		num;
+
 	if (v == NULL || v->type != jbvNumeric)
 		return false;
-	*out = DatumGetInt64(DirectFunctionCall1(numeric_int8,
-											 NumericGetDatum(v->val.numeric)));
+	num = NumericGetDatum(v->val.numeric);
+	*out = DatumGetInt64(DirectFunctionCall1(numeric_int8, num));
+	if (DatumGetInt32(DirectFunctionCall2(numeric_cmp, num,
+										  NumericGetDatum(int64_to_numeric(*out)))) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: metadata holds the non-integer number %s where an integer is required",
+						DatumGetCString(DirectFunctionCall1(numeric_out, num)))));
 	return true;
+}
+
+/*
+ * A schema field's "id" as an int, or -1 when it has none. A field id is an
+ * int in the Iceberg spec. A larger one used to truncate, so 2^32 + 1 read as
+ * field 1 and the column returned another field's values (#1824).
+ */
+static int64
+ice_schema_field_id(JsonbContainer *f, const char *name, int namelen)
+{
+	int64		fid;
+
+	if (!ice_num_int64(ice_field(f, "id"), &fid))
+		return -1;
+	if (fid < 0 || fid > PG_INT32_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: schema field \"%.*s\" has a field id out of range: " INT64_FORMAT,
+						namelen, name, fid)));
+	return fid;
 }
 
 /* a JSON string field as a palloc'd text Datum, or set the null flag */
@@ -252,9 +286,11 @@ ice_str_required(JsonbContainer *c, const char *key, const char *path)
 static JsonbContainer *
 ice_current_snapshot(JsonbContainer *root, const char *path, int64 *cur)
 {
+	JsonbValue *fv;
 	JsonbValue *csid;
 	JsonbValue *snaps;
 	JsonbContainer *arr;
+	int64		fmtver;
 	uint32		i,
 				n;
 
@@ -264,16 +300,36 @@ ice_current_snapshot(JsonbContainer *root, const char *path, int64 *cur)
 				 errmsg("iceberg: metadata \"%s\" is not a JSON object", path)));
 	/* a minimal is-this-Iceberg gate so a random JSON file is rejected, not
 	 * silently read as an empty table */
-	if (ice_field(root, "format-version") == NULL)
+	fv = ice_field(root, "format-version");
+	if (fv == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("iceberg: \"%s\" has no format-version; not a table metadata file",
 						path)));
+	/* the spec says a reader must refuse a format-version it does not know */
+	if (!ice_num_int64(fv, &fmtver))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" has a non-numeric format-version",
+						path)));
+	if (fmtver < 1 || fmtver > 3)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("iceberg: \"%s\" has an unsupported format-version " INT64_FORMAT,
+						path, fmtver),
+				 errdetail("This reader supports format-version 1, 2 and 3.")));
 
 	csid = ice_field(root, "current-snapshot-id");
 	/* absent, JSON null, or -1: a table with no current snapshot */
-	if (csid == NULL || csid->type == jbvNull ||
-		!ice_num_int64(csid, cur) || *cur < 0)
+	if (csid == NULL || csid->type == jbvNull)
+		return NULL;
+	/* a string here used to read as "no snapshot": an empty table (#1824) */
+	if (!ice_num_int64(csid, cur))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" has a current-snapshot-id that is not an integer",
+						path)));
+	if (*cur < 0)
 		return NULL;
 
 	snaps = ice_field(root, "snapshots");
@@ -1073,7 +1129,9 @@ ice_field_ids_for_columns(JsonbContainer *root, TupleDesc tupdesc,
 			if ((int) strlen(nm) == fn->val.string.len &&
 				strncmp(nm, fn->val.string.val, fn->val.string.len) == 0)
 			{
-				if (ice_num_int64(ice_field(f->val.binary.data, "id"), &fid))
+				fid = ice_schema_field_id(f->val.binary.data,
+										  fn->val.string.val, fn->val.string.len);
+				if (fid >= 0)
 					found = (int) fid;
 				break;
 			}
@@ -1098,7 +1156,6 @@ ice_field_id_by_name(JsonbContainer *fieldsc, uint32 nf, const char *nm)
 	{
 		JsonbValue *sf = getIthJsonbValueFromContainer(fieldsc, j);
 		JsonbValue *sfn;
-		int64		fid;
 
 		if (sf == NULL || sf->type != jbvBinary)
 			continue;
@@ -1107,11 +1164,8 @@ ice_field_id_by_name(JsonbContainer *fieldsc, uint32 nf, const char *nm)
 			continue;
 		if ((int) strlen(nm) == sfn->val.string.len &&
 			strncmp(nm, sfn->val.string.val, sfn->val.string.len) == 0)
-		{
-			if (ice_num_int64(ice_field(sf->val.binary.data, "id"), &fid))
-				return fid;
-			return -1;
-		}
+			return ice_schema_field_id(sf->val.binary.data,
+									   sfn->val.string.val, sfn->val.string.len);
 	}
 	return -1;
 }

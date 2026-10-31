@@ -10543,7 +10543,7 @@ The pytest twin of `test/catalog_filter_reads.sh` (#1637), every check by the sh
 
 ## 265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging
 
-The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, and a dangling current-schema-id. Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
+The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, a dangling current-schema-id, and malformed numbers in edited copies of the `db/events` metadata (#1824: a field id above INT32 or fractional, format-version 99, a string current-snapshot-id). Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
 
 ### Every test
 
@@ -10584,6 +10584,14 @@ One module fixture copies the fixtures into `server_dir`, builds the FIFOs there
 | `test_a_resolvable_current_schema_id_reads_amount` | control: a resolvable current-schema-id reads the correct amount column |
 | `test_a_legacy_only_schema_table_still_reads` | control: a legacy-only-schema table still reads (5 rows) |
 | `test_the_legacy_table_binds_amount` | control: the legacy table binds amount correctly (10..50) |
+| `test_the_unedited_events_metadata_reads_amount` | control: the unedited events metadata reads amount 10..50 |
+| `test_a_field_id_above_int32_is_refused` | a field id above INT32 is refused (XX001), not aliased to another field |
+| `test_a_field_id_above_int32_is_named_beside_its_alias` | a field id above INT32 is named even when its alias is also queried |
+| `test_a_fractional_field_id_is_refused` | a fractional field id is refused (XX001), not rounded |
+| `test_format_version_99_is_refused` | format-version 99 is refused (0A000), not read as v2 |
+| `test_a_string_current_snapshot_id_is_refused` | a string current-snapshot-id is refused (XX001), not read as an empty table |
+| `test_the_backend_survives_the_malformed_number_refusals` | backend still up after the malformed-number refusals |
+| `test_current_snapshot_id_minus_one_still_reads_as_no_snapshot` | control: current-snapshot-id -1 still reads as a table with no snapshot (0 rows) |
 
 ## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping
 
@@ -12209,7 +12217,7 @@ Every test makes one check under the shell's name, on a private database. Each t
 
 ## 318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks
 
-The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range) and a two-column file whose row group carries one column chunk. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, the short chunk list must be refused by the chunk-count guard itself, and the backend must survive.
+The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range) and a two-column file whose row group carries one column chunk. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, the short chunk list must be refused by the chunk-count guard itself, and the backend must survive. For #1822 it also writes variants of a 3000-row file's footer: an invalid Thrift type nibble on each field header, a missing `row_groups`, a missing footer or row-group `num_rows`, a footer total that differs from its row groups, and an unknown map field and list of bools. Each defect must be refused by its own guard, and each valid variant must read 3000 rows with the right sum.
 
 ### Every test
 
@@ -12235,6 +12243,18 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
 | `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
 | `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
+| `test_parquet_hardening_footer_good_file_still_reads` | footer: the good file still reads |
+| `test_parquet_hardening_footer_reencoded_good_file_still_reads` | footer: the re-encoded good file still reads |
+| `test_parquet_hardening_footer_invalid_type_nibble_on_row_groups_is_refused` | footer: an invalid type nibble on row_groups is refused |
+| `test_parquet_hardening_footer_invalid_type_nibble_on_num_rows_is_refused` | footer: an invalid type nibble on a num_rows is refused |
+| `test_parquet_hardening_footer_every_invalid_type_nibble_is_refused` | footer: every invalid type nibble on a field header is refused |
+| `test_parquet_hardening_footer_without_row_groups_is_refused` | footer: no row_groups field is refused |
+| `test_parquet_hardening_footer_row_group_without_num_rows_is_refused` | footer: a row group with no num_rows is refused |
+| `test_parquet_hardening_footer_without_file_num_rows_is_refused` | footer: no file num_rows is refused |
+| `test_parquet_hardening_footer_num_rows_differing_from_row_groups_is_refused` | footer: a file num_rows that differs from its row groups is refused |
+| `test_parquet_hardening_footer_unknown_map_field_is_skipped_whole` | footer: an unknown map field is skipped whole |
+| `test_parquet_hardening_footer_unknown_bool_list_is_skipped_whole` | footer: an unknown list of bools is skipped whole |
+| `test_parquet_hardening_backend_survived_the_malformed_footers` | backend survived the malformed footers |
 
 ## 319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend
 
@@ -12934,7 +12954,7 @@ Every test makes one check under the shell's name; the per-decoder pair is param
 
 ## 340. test_decode_skip_interrupts.py: the Thrift and Avro skip loops of a hostile file yield to a cancel, per skipped value
 
-The twin of `test/decode_skip_interrupts.sh`. It writes the shell's Thrift skip-bomb footer (256 lists of 4.3e9 zero-byte bools in one unrecognised struct) and wants a 1 s statement_timeout to cancel parquet_schema() over it, by the timeout's own 57014, within 3 s, with no backend killed. av_skip's window is too small for a timeout to resolve, so both skip functions are also held by shape: an interrupt check before the switch, in the source with its comments blanked.
+The twin of `test/decode_skip_interrupts.sh`. It writes the shell's Thrift skip-bomb footer (256 lists of 4.3e9 bools in one unrecognised struct). Since #1822 each bool element takes its one byte, so the footer runs off its own end: parquet_schema() over it must be refused by the footer parser (0A000), not cancelled by the 1 s statement_timeout, within 3 s, with no backend killed. av_skip's window is too small for a timeout to resolve, so both skip functions are also held by shape: an interrupt check before the switch, in the source with its comments blanked.
 
 ### Every test
 
@@ -12942,8 +12962,8 @@ Every test makes one check under the shell's name. The functional arm runs once 
 
 | test | what it holds |
 | --- | --- |
-| `test_the_thrift_skip_bomb_is_cancelled_by_the_timeout` | Thrift skip-bomb footer is cancellable, not an uninterruptible hang |
-| `test_the_cancel_lands_inside_the_skip_loop` | the cancel lands within 3 s of the statement's start under a 1 s timeout |
+| `test_the_thrift_skip_bomb_is_refused_as_corrupt` | Thrift skip-bomb footer is refused as corrupt, not an uninterruptible hang |
+| `test_the_skip_bomb_answer_lands_within_3_s` | the skip-bomb answer lands within 3 s of the statement's start under a 1 s timeout |
 | `test_the_backend_survived_the_skip_bomb` | backend survived the Thrift skip-bomb footer |
 | `test_thrift_skip_checks_for_interrupts_before_its_switch` | PgColumnarThriftSkip checks for interrupts |
 | `test_av_skip_checks_for_interrupts_before_its_switch` | av_skip checks for interrupts per element (before the switch, not just per block) |

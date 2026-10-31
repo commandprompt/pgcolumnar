@@ -143,3 +143,199 @@ raw[-8:-4] = (flen - removed).to_bytes(4, "little")
 open(f"{W}/short_chunks.parquet", "wb").write(bytes(raw))
 print(f"  columns list at {target}: 2 chunks -> 1, removed {removed} footer bytes",
       file=sys.stderr)
+
+
+# ---- malformed footer Thrift (#1822) ---------------------------------------
+# A Thrift compact field header carries its type in the low nibble. Types 13, 14
+# and 15 do not exist, and type 11 (map) and a list of bools are valid but were
+# skipped as zero bytes. Either way the parser lost its place in the footer and
+# could return a wrong row count with no error. These files are built from one
+# good file by decoding its footer into a tree and encoding it again, so they do
+# not depend on how a pyarrow version lays the footer out.
+GOOD = f"{W}/footer_good.parquet"
+pq.write_table(pa.table({"id": pa.array(range(3000), pa.int64()),
+                         "name": [f"r{i}" for i in range(3000)]}),
+               GOOD, row_group_size=1000)      # 3 row groups of 1000 rows
+good = open(GOOD, "rb").read()
+gflen = int.from_bytes(good[-8:-4], "little")
+gbase = len(good) - 8 - gflen
+gfoot = good[gbase:gbase + gflen]
+
+
+class Dec:
+    """Decode a compact struct to [(fid, type, value, header_offset)]."""
+
+    def __init__(self, buf):
+        self.b, self.p = buf, 0
+
+    def varint(self):
+        out = shift = 0
+        while True:
+            c = self.b[self.p]; self.p += 1
+            out |= (c & 0x7F) << shift
+            if not c & 0x80:
+                return out
+            shift += 7
+
+    def zz(self):
+        u = self.varint()
+        return (u >> 1) ^ -(u & 1)
+
+    def value(self, t, in_list=False):
+        if t in (1, 2):
+            if in_list:                       # a bool in a list takes one byte
+                c = self.b[self.p]; self.p += 1
+                return c
+            return None                       # a bool field: value is in the header
+        if t == 3:
+            c = self.b[self.p]; self.p += 1
+            return c
+        if t in (4, 5, 6):
+            return self.zz()
+        if t == 7:
+            v = self.b[self.p:self.p + 8]; self.p += 8
+            return v
+        if t == 8:
+            n = self.varint()
+            v = self.b[self.p:self.p + n]; self.p += n
+            return v
+        if t in (9, 10):
+            c = self.b[self.p]; self.p += 1
+            n, et = (c >> 4) & 0x0F, c & 0x0F
+            if n == 0x0F:
+                n = self.varint()
+            return (et, [self.value(et, True) for _ in range(n)])
+        if t == 12:
+            return self.struct()
+        raise ValueError(f"type {t}")
+
+    def struct(self):
+        fields, last = [], 0
+        while True:
+            hdr = self.p
+            c = self.b[self.p]; self.p += 1
+            if c == 0:
+                return fields
+            t, d = c & 0x0F, c >> 4
+            fid = last + d if d else self.zz()
+            last = fid
+            fields.append([fid, t, self.value(t), gbase + hdr])
+
+
+def enc_varint(n):
+    out = bytearray()
+    while True:
+        if n < 0x80:
+            out.append(n)
+            return bytes(out)
+        out.append((n & 0x7F) | 0x80)
+        n >>= 7
+
+
+def enc_zz(n):
+    return enc_varint((n << 1) ^ (n >> 63))
+
+
+def enc_value(t, v, in_list=False):
+    if t in (1, 2):
+        return bytes([v]) if in_list else b""
+    if t == 3:
+        return bytes([v])
+    if t in (4, 5, 6):
+        return enc_zz(v)
+    if t in (7, 8):
+        return bytes(v) if t == 7 else enc_varint(len(v)) + bytes(v)
+    if t in (9, 10):
+        et, items = v
+        hdr = bytes([(len(items) << 4) | et]) if len(items) < 15 else bytes([0xF0 | et]) + enc_varint(len(items))
+        return hdr + b"".join(enc_value(et, x, True) for x in items)
+    if t == 11:                               # map: (ktype, vtype, [(k, v)])
+        kt, vt, items = v
+        if not items:
+            return b"\x00"
+        return (enc_varint(len(items)) + bytes([(kt << 4) | vt])
+                + b"".join(enc_value(kt, k, True) + enc_value(vt, x, True) for k, x in items))
+    if t == 12:
+        return enc_struct(v)
+    raise ValueError(f"type {t}")
+
+
+def enc_struct(fields):
+    out, last = bytearray(), 0
+    for f in fields:
+        fid, t, v = f[0], f[1], f[2]
+        if 0 < fid - last <= 15:
+            out.append(((fid - last) << 4) | t)
+        else:
+            out.append(t)
+            out += enc_zz(fid)
+        last = fid
+        out += enc_value(t, v)
+    out.append(0)
+    return bytes(out)
+
+
+def fld(fields, fid):
+    return next(f for f in fields if f[0] == fid)
+
+
+def write_footer(name, foot):
+    open(f"{W}/{name}.parquet", "wb").write(good[:gbase] + foot + len(foot).to_bytes(4, "little") + b"PAR1")
+
+
+def write_mutant(name, offset):
+    b = bytearray(good)
+    b[offset] = (b[offset] & 0xF0) | 0x0F    # type nibble 15: not a compact type
+    open(f"{W}/{name}.parquet", "wb").write(bytes(b))
+
+
+fmd = Dec(gfoot).struct()
+rgs = fld(fmd, 4)[2][1]
+assert len(rgs) == 3, len(rgs)
+
+# the two named mutants: the row_groups header, and row group 3's num_rows header
+write_mutant("nibble_row_groups", fld(fmd, 4)[3])
+write_mutant("nibble_num_rows", fld(rgs[2], 3)[3])
+
+
+def headers(fields):
+    """Every field header offset in the footer, nested ones included."""
+    for f in fields:
+        yield f[3]
+        if f[1] == 12:
+            yield from headers(f[2])
+        elif f[1] in (9, 10) and f[2][0] == 12:
+            for s in f[2][1]:
+                yield from headers(s)
+
+
+offs = sorted(headers(fmd))
+for i, off in enumerate(offs):
+    write_mutant(f"nibble_sweep_{i:04d}", off)
+open(f"{W}/nibble_sweep.count", "w").write(f"{len(offs)}\n")
+
+
+def strip(fields):
+    return [[f[0], f[1], strip(f[2]) if f[1] == 12 else
+             (f[2][0], [strip(s) for s in f[2][1]]) if f[1] in (9, 10) and f[2][0] == 12 else f[2]]
+            for f in fields]
+
+
+def variant(name, edit):
+    m = strip(fmd)
+    edit(m)
+    write_footer(name, enc_struct(m))
+
+
+variant("footer_reencoded", lambda m: None)
+variant("no_row_groups", lambda m: m.remove(fld(m, 4)))
+variant("no_rg_num_rows", lambda m: fld(m, 4)[2][1][2].remove(fld(fld(m, 4)[2][1][2], 3)))
+variant("no_file_num_rows", lambda m: m.remove(fld(m, 3)))
+variant("file_num_rows_2999", lambda m: fld(m, 3).__setitem__(2, 2999))
+# an unknown field of each skipped-wrong shape, placed before row_groups so a
+# skip that consumes too few bytes loses row_groups
+variant("unknown_map_field", lambda m: m.insert(m.index(fld(m, 4)),
+                                                [100, 11, (8, 5, [(b"a", 1), (b"b", 2)])]))
+variant("unknown_bool_list_field", lambda m: m.insert(m.index(fld(m, 4)),
+                                                      [101, 9, (1, [1, 2, 1])]))
+print(f"  footer {gflen} bytes, {len(offs)} field headers swept", file=sys.stderr)

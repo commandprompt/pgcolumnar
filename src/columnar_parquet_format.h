@@ -85,6 +85,7 @@
 #define TC_BINARY				8
 #define TC_LIST					9
 #define TC_SET					10
+#define TC_MAP					11
 #define TC_STRUCT				12
 
 /*

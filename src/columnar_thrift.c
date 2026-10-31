@@ -20,6 +20,8 @@
 
 #include "columnar_thrift.h"
 
+static void pq_thrift_skip_element(TCReader *r, int etype);
+
 /* -------------------------------------------------------------------------
  * Thrift compact-protocol reader over an in-memory buffer.
  * ------------------------------------------------------------------------- */
@@ -105,6 +107,18 @@ PgColumnarThriftField(TCReader *r, int *ftype, int *fid, int *lastId)
 		return;
 	}
 	*ftype = b & 0x0f;
+
+	/*
+	 * Types 13, 14 and 15 do not exist in the compact protocol. A header with
+	 * one is corrupt, and no skip can know how many bytes its value takes, so
+	 * the parser would lose its place in the struct (#1822).
+	 */
+	if (*ftype > TC_STRUCT)
+	{
+		r->error = true;
+		*ftype = TC_STOP;
+		return;
+	}
 	if ((b >> 4) != 0)
 		*fid = *lastId + (b >> 4);	/* short-form delta */
 	else
@@ -127,14 +141,12 @@ PgColumnarThriftSkip(TCReader *r, int ftype)
 
 	/*
 	 * check_stack_depth bounds recursion depth but not width, and it does not
-	 * process interrupts. TC_BOOL_TRUE, TC_BOOL_FALSE and the default arm consume
-	 * zero bytes and never set r->error, so a TC_LIST of bool with a file-declared
-	 * size up to 0xFFFFFFFF (or a struct holding many such lists) spins billions of
-	 * no-op iterations that touch neither the cursor nor the error flag. Without
-	 * this check that loop ignores SIGINT and statement_timeout -- an
-	 * uninterruptible backend hang from a sub-2 KB footer. It fires once per
-	 * skipped value (each list element is one Skip call) and Skip is off the hot
-	 * data path, so it is free in the honest case and bounds the hostile one.
+	 * process interrupts. A TC_LIST with a file-declared size up to 0xFFFFFFFF
+	 * (or a struct holding many such lists) runs that many iterations. Each
+	 * consumes at least one byte or sets r->error now (#1822), but without this
+	 * check a long run still ignores SIGINT and statement_timeout. It fires once
+	 * per skipped value (each list element is one Skip call) and Skip is off the
+	 * hot data path, so it is free in the honest case and bounds the hostile one.
 	 */
 	CHECK_FOR_INTERRUPTS();
 
@@ -142,9 +154,13 @@ PgColumnarThriftSkip(TCReader *r, int ftype)
 	{
 		case TC_BOOL_TRUE:
 		case TC_BOOL_FALSE:
+			/* a bool field holds its value in the field header: no bytes */
 			break;
 		case TC_BYTE:
-			r->pos += 1;
+			if (r->pos >= r->len)
+				r->error = true;
+			else
+				r->pos += 1;
 			break;
 		case TC_I16:
 		case TC_I32:
@@ -152,7 +168,10 @@ PgColumnarThriftSkip(TCReader *r, int ftype)
 			(void) PgColumnarThriftZigzag(r);
 			break;
 		case TC_DOUBLE:
-			r->pos += 8;
+			if (r->len - r->pos < 8)
+				r->error = true;
+			else
+				r->pos += 8;
 			break;
 		case TC_BINARY:
 			{
@@ -180,7 +199,36 @@ PgColumnarThriftSkip(TCReader *r, int ftype)
 				if (size == 0x0f)
 					size = (uint32) PgColumnarThriftVarint(r);
 				for (i = 0; i < size && !r->error; i++)
-					PgColumnarThriftSkip(r, et);
+					pq_thrift_skip_element(r, et);
+				break;
+			}
+		case TC_MAP:
+			{
+				/*
+				 * A map is a size varint, then, when the size is not zero, one
+				 * byte holding the key type (high nibble) and the value type
+				 * (low nibble), then the keys and values in turn.
+				 */
+				uint32		size = (uint32) PgColumnarThriftVarint(r);
+				int			kt,
+							vt;
+				uint32		i;
+
+				if (r->error || size == 0)
+					break;
+				if (r->pos >= r->len)
+				{
+					r->error = true;
+					return;
+				}
+				kt = (r->buf[r->pos] >> 4) & 0x0f;
+				vt = r->buf[r->pos] & 0x0f;
+				r->pos++;
+				for (i = 0; i < size && !r->error; i++)
+				{
+					pq_thrift_skip_element(r, kt);
+					pq_thrift_skip_element(r, vt);
+				}
 				break;
 			}
 		case TC_STRUCT:
@@ -200,8 +248,33 @@ PgColumnarThriftSkip(TCReader *r, int ftype)
 				break;
 			}
 		default:
+
+			/*
+			 * Not a compact type. Its size is unknown, so skipping nothing would
+			 * read its value bytes as field headers (#1822). Refuse it.
+			 */
+			r->error = true;
 			break;
 	}
+}
+
+/*
+ * Skip one element of a list, set or map. A bool element takes one byte, unlike
+ * a bool field, whose value sits in the field header. Skipping it as zero bytes
+ * read the bool bytes as field headers (#1822).
+ */
+static void
+pq_thrift_skip_element(TCReader *r, int etype)
+{
+	if (etype == TC_BOOL_TRUE || etype == TC_BOOL_FALSE)
+	{
+		if (r->pos >= r->len)
+			r->error = true;
+		else
+			r->pos += 1;
+		return;
+	}
+	PgColumnarThriftSkip(r, etype);
 }
 
 /* list header: returns element count and element compact type */
