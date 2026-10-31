@@ -15,8 +15,10 @@ wrong too, so the array must have been read; a vended endpoint off the allow-lis
 refused by the allow-list itself; a catalog that vends nothing falls back to ambient
 credentials; and no backend died on the way. Each file gets its own longest-prefix
 credential (#1820): with split metadata/ and data/ entries the data/ key signs the data
-files, the flat config covers a file no prefix matches, and a file nothing vended covers
-is refused even when the server holds ambient keys S3 accepts.
+files, the flat config covers a file no prefix matches, the longest prefix wins when it
+is listed before a broader one, an entry with a key id and no secret is ignored without
+killing the backend, and a file nothing vended covers is refused even when the server
+holds ambient keys S3 accepts.
 
 A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED: survival also reads the private
 cluster's server log for killed backends, and an unreadable log fails it.
@@ -252,6 +254,18 @@ def irv(pgc_cluster):
                                   '.parquet" was denied (HTTP 403')
         flat = start_rest(*good, "--storage-cred", f"{tl}/data/=good", "--flat-config", "good")
         r["flat"] = _value(dsn, f"SELECT count(*) FROM {scan(flat)}")
+        # the longer prefix listed FIRST, a broader bad one after it: a reader that
+        # kept the last match instead of the longest reads the bad key
+        longfirst = start_rest(*good, "--storage-cred", f"{tl}/=good",
+                               "--storage-cred", f"s3://{BUCKET}/=bad")
+        r["long first"] = _value(dsn, f"SELECT count(*) FROM {scan(longfirst)}")
+        # a key id with no secret vends nothing: ignored, the broader good entry signs,
+        # and the backend survives it
+        akid_before = _crashes(log)
+        akidonly = start_rest(*good, "--storage-cred", f"s3://{BUCKET}/=good",
+                              "--storage-cred", f"{tl}/=akidonly")
+        r["akid only"] = _value(dsn, f"SELECT count(*) FROM {scan(akidonly)}")
+        r["akid only survived"] = _survived(dsn, log, akid_before)
         # read after the restart below gives the server ambient keys S3 accepts
         dataonly = start_rest(*good, "--storage-cred", f"{tl}/data/=bad")
 
@@ -358,6 +372,25 @@ def test_the_flat_config_signs_an_uncovered_file(irv, expect):
     if _declined(irv, expect):
         return
     expect.text(irv["flat"], "3", "the flat config signs a file no storage-credentials prefix covers")
+
+
+def test_the_longest_prefix_wins_when_listed_first(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["long first"], "3", "the longest prefix wins when it is listed before a broader one")
+
+
+def test_an_entry_with_a_key_id_and_no_secret_is_ignored(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["akid only"], "3", "an entry with a key id and no secret is ignored, not used")
+
+
+def test_the_backend_survives_an_entry_with_no_secret(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["akid only survived"], "1",
+                "backend still up after an entry with a key id and no secret")
 
 
 def test_a_vended_endpoint_off_the_allow_list_is_refused(irv, expect):

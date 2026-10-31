@@ -252,6 +252,10 @@ def irs(pgc_cluster):
         # a body nested too deep to parse is a stack error, not a malformed body
         r["deep"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','db','deepjson') AS t(id bigint)",
                              "stack depth limit exceeded", " by the parser")
+        # a body that starts with "{" and is cut off is not JSON: the parse error is
+        # dropped and the status reported
+        r["bad json"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','db','badjson') AS t(id bigint)",
+                                 "the REST catalog returned HTTP 500 for the table", " with the status")
         r["survived"] = _survived(dsn, log, before)
         yield r
     finally:
@@ -392,6 +396,13 @@ def test_a_catalog_error_body_too_deep_to_parse_raises_its_stack_error(irs, expe
         return
     expect.text(irs["deep"], "54001 by the parser",
                 "a catalog error body too deep to parse raises its stack error (54001)")
+
+
+def test_a_malformed_catalog_error_body_still_reports_the_status(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["bad json"], "08P01 with the status",
+                "a malformed catalog error body still reports the status (08P01)")
 
 
 def test_the_backend_is_still_up_after_the_rest_read(irs, expect):

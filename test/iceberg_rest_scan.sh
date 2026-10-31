@@ -234,6 +234,13 @@ check "a catalog error body too deep to parse raises its stack error (54001)" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','deepjson') AS t(id bigint)" \
 	   "stack depth limit exceeded" " by the parser")" \
 	"54001 by the parser"
+# A body that starts with "{" and is cut off passes the client's pre-check, so
+# only the JSON parse rejects it. That parse error (22P02) is about the body:
+# the client drops it and reports the catalog's status (#1820 review).
+check "a malformed catalog error body still reports the status (08P01)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','badjson') AS t(id bigint)" \
+	   "the REST catalog returned HTTP 500 for the table" " with the status")" \
+	"08P01 with the status"
 
 check "backend still up after the REST read" "$(survived "$CRASHES_BEFORE")" "1"
 

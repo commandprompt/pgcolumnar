@@ -223,6 +223,30 @@ check "the flat config signs a file no storage-credentials prefix covers" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$FLAT_PORT','db','t')
 	      AS t(id bigint, region text, amount int)")" \
 	"3"
+# The longer prefix is listed FIRST and a broader bad one after it. In every
+# arm above the prefixes are listed shortest first or don't overlap, so a
+# reader that kept the last match instead of the longest one read them all.
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/=good" --storage-cred "s3://$BUCKET/=bad"
+LONGFIRST_PORT="$LAST_PORT"
+check "the longest prefix wins when it is listed before a broader one" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$LONGFIRST_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"
+# An entry with a key id and no secret vends no usable credential, so the
+# reader ignores it and the broader good entry signs every file. It is the
+# longest match and listed last, so a reader that kept it would either sign
+# with no secret (a NULL secret reaches the module) or treat its prefix as
+# covered by nothing (28000). The backend must survive it.
+AKIDONLY_CRASHES="$(crashes)"
+start_rest "${VEND_GOOD[@]}" --storage-cred "s3://$BUCKET/=good" --storage-cred "$TL/=akidonly"
+AKIDONLY_PORT="$LAST_PORT"
+check "an entry with a key id and no secret is ignored, not used" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$AKIDONLY_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"
+check "backend still up after an entry with a key id and no secret" \
+	"$(survived "$AKIDONLY_CRASHES")" "1"
+
 # Started now, read after the restart below that gives the server ambient keys.
 start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/data/=bad"
 DATAONLY_PORT="$LAST_PORT"

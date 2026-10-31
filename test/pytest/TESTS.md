@@ -10924,7 +10924,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 ## 274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table
 
-The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, reads a table promoted int -> long, float -> double and decimal(10,2) -> decimal(20,2) from a second fixture server as the promoted types (#1789), lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails. The fixture's 404 for a missing namespace says NoSuchNamespaceException, so the error names a namespace (3F000), and the catalog's ErrorModel message reaches the error detail for the namespace 404, a 404, a 403 and a 500 (#1820). An error body nested too deep to parse raises the parser's stack error (54001), not the HTTP status.
+The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, reads a table promoted int -> long, float -> double and decimal(10,2) -> decimal(20,2) from a second fixture server as the promoted types (#1789), lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails. The fixture's 404 for a missing namespace says NoSuchNamespaceException, so the error names a namespace (3F000), and the catalog's ErrorModel message reaches the error detail for the namespace 404, a 404, a 403 and a 500 (#1820). An error body nested too deep to parse raises the parser's stack error (54001), not the HTTP status. An error body that starts with `{` and is cut off is not JSON: its parse error is dropped and the HTTP status is reported (08P01).
 
 ### Every test
 
@@ -10949,11 +10949,12 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_the_catalogs_403_message_reaches_the_error_detail` | the catalog's 403 message reaches the error detail |
 | `test_the_catalogs_500_message_reaches_the_error_detail` | the catalog's 500 message reaches the error detail |
 | `test_a_catalog_error_body_too_deep_to_parse_raises_its_stack_error` | a catalog error body too deep to parse raises its stack error (54001) |
+| `test_a_malformed_catalog_error_body_still_reports_the_status` | a malformed catalog error body still reports the status (08P01) |
 | `test_the_backend_is_still_up_after_the_rest_read` | backend still up after the REST read |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
-The twin of `test/iceberg_rest_vended.sh`. A private cluster with no AWS_* in its environment reads a table through the shell's REST catalog, which vends the SigV4 S3 fixture's key; the vended secret never reaches either log, a wrong one is refused by S3's 403, the longest storage-credentials prefix wins over a wrong catch-all and a wrong flat config, an endpoint off the allow-list is refused by the allow-list, a catalog vending nothing falls back to ambient credentials, and no backend dies. Each file gets its own longest-prefix credential (#1820): with split metadata/ and data/ entries, the data/ key signs the data files; the flat config covers a file no prefix matches; and a file nothing vended covers is refused, even when the server holds ambient keys S3 accepts.
+The twin of `test/iceberg_rest_vended.sh`. A private cluster with no AWS_* in its environment reads a table through the shell's REST catalog, which vends the SigV4 S3 fixture's key; the vended secret never reaches either log, a wrong one is refused by S3's 403, the longest storage-credentials prefix wins over a wrong catch-all and a wrong flat config, an endpoint off the allow-list is refused by the allow-list, a catalog vending nothing falls back to ambient credentials, and no backend dies. Each file gets its own longest-prefix credential (#1820): with split metadata/ and data/ entries, the data/ key signs the data files; the flat config covers a file no prefix matches; the longest prefix wins when it is listed before a broader one; an entry with a key id and no secret vends nothing, so it is ignored and the backend survives it; and a file nothing vended covers is refused, even when the server holds ambient keys S3 accepts.
 
 ### Every test
 
@@ -10971,6 +10972,9 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_split_credentials_each_sign_their_own_files` | split metadata/ and data/ credentials each sign their own files |
 | `test_the_data_credential_signs_a_data_file` | the data/ credential, not the metadata/ one, signs a data file (28000) |
 | `test_the_flat_config_signs_an_uncovered_file` | the flat config signs a file no storage-credentials prefix covers |
+| `test_the_longest_prefix_wins_when_listed_first` | the longest prefix wins when it is listed before a broader one |
+| `test_an_entry_with_a_key_id_and_no_secret_is_ignored` | an entry with a key id and no secret is ignored, not used |
+| `test_the_backend_survives_an_entry_with_no_secret` | backend still up after an entry with a key id and no secret |
 | `test_a_vended_endpoint_off_the_allow_list_is_refused` | vended creds for an off-allow-list endpoint are refused (42501) |
 | `test_a_catalog_vending_nothing_falls_back_to_ambient` | a table vending no creds still reads with ambient (cfg NULL path) |
 | `test_an_uncovered_file_is_refused_not_read_ambient` | a file no vended credential covers is refused, not read ambient (28000) |

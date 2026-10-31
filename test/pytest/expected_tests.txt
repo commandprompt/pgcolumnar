@@ -1379,4 +1379,7 @@ guard_tests 854
 # message in the detail of the namespace 404, a 403 and a 500, and a too-deep error body), by collection.
 # cluster_tests 4654 at the merge of origin/main (3fae8317) into fix/1820-vended-credential-prefix,
 # by collection: `4654 tests collected`.
-cluster_tests 4654
+# cluster_tests 4654 -> 4658 for #1820's third review: three tests in test_iceberg_rest_vended.py (the
+# longest prefix listed first, an entry with a key id and no secret, and the backend surviving it) and one
+# in test_iceberg_rest_scan.py (a malformed error body), by collection: `4658 tests collected`.
+cluster_tests 4658

@@ -22,6 +22,8 @@
 #   forbidden  loadTable answers 403 with an ErrorModel message (#1820).
 #   failing    loadTable answers 500 with an ErrorModel message (#1820).
 #   deepjson   loadTable answers 500 with a body nested too deep to parse (#1820).
+#   badjson    loadTable answers 500 with a body that starts with "{" and is cut
+#              off, so it is not JSON; the client reports the status (#1820).
 #   toobig   loadTable answers 200 with a huge Content-Length and no body, so a
 #            client honoring a response cap refuses before reading it.
 #   closedelim  loadTable answers 200 with Connection: close and neither
@@ -215,6 +217,17 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if table == "badjson":
+            # a 500 whose body opens like an ErrorModel and stops mid-string. It
+            # passes the client's "starts with {" pre-check, so only the parse
+            # rejects it, and that parse error must be dropped, not raised.
+            body = b'{"error": {"message": "half'
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if table == "closedelim":
             pad = [{"snapshot-id": i, "summary": {"operation": "append"}}
                    for i in range(4000)]
@@ -284,9 +297,10 @@ class Handler(BaseHTTPRequestHandler):
                     "s3.endpoint": ARGS.vend_endpoint}},
                 {"prefix": ARGS.storage_cred_prefix, "config": config},
             ]
-        # --storage-cred PREFIX=good|bad, repeatable (#1820): an explicit
+        # --storage-cred PREFIX=good|bad|akidonly, repeatable (#1820): an explicit
         # storage-credentials array. "good" is the vended key, "bad" a key the
-        # SigV4 fixture refuses with 403. The flat config follows --flat-config:
+        # SigV4 fixture refuses with 403, "akidonly" a key id with no secret,
+        # which vends no usable credential, so the client must ignore it. The flat config follows --flat-config:
         # "none" (the default here) vends nothing flat, "good" the vended key.
         # A reader that matched one entry against the metadata-location only, or
         # fell back to ambient for a path no entry covers, reads where it must not.
@@ -296,8 +310,12 @@ class Handler(BaseHTTPRequestHandler):
             entries = []
             for spec in ARGS.storage_cred:
                 prefix, _, kind = spec.rpartition("=")
-                entries.append({"prefix": prefix,
-                                "config": config if kind == "good" else bad})
+                if kind == "akidonly":
+                    ecfg = {k: v for k, v in config.items()
+                            if k != "s3.secret-access-key"}
+                else:
+                    ecfg = config if kind == "good" else bad
+                entries.append({"prefix": prefix, "config": ecfg})
             resp["storage-credentials"] = entries
             resp["config"] = config if ARGS.flat_config == "good" else {}
         self._send_json(200, resp)
