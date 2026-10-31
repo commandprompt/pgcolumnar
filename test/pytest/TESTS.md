@@ -10909,7 +10909,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 ## 274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table
 
-The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, reads a table promoted int -> long, float -> double and decimal(10,2) -> decimal(20,2) from a second fixture server as the promoted types (#1789), lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails. The fixture's 404 for a missing namespace says NoSuchNamespaceException, so the error names a namespace (3F000), and the catalog's ErrorModel message reaches the error detail (#1820).
+The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, reads a table promoted int -> long, float -> double and decimal(10,2) -> decimal(20,2) from a second fixture server as the promoted types (#1789), lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails. The fixture's 404 for a missing namespace says NoSuchNamespaceException, so the error names a namespace (3F000), and the catalog's ErrorModel message reaches the error detail for the namespace 404, a 404, a 403 and a 500 (#1820). An error body nested too deep to parse raises the parser's stack error (54001), not the HTTP status.
 
 ### Every test
 
@@ -10930,6 +10930,10 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_iceberg_rest_tables_of_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404 |
 | `test_iceberg_rest_scan_in_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404 |
 | `test_the_catalogs_404_message_reaches_the_error_detail` | the catalog's 404 message reaches the error detail |
+| `test_the_catalogs_namespace_404_message_reaches_the_error_detail` | the catalog's namespace 404 message reaches the error detail |
+| `test_the_catalogs_403_message_reaches_the_error_detail` | the catalog's 403 message reaches the error detail |
+| `test_the_catalogs_500_message_reaches_the_error_detail` | the catalog's 500 message reaches the error detail |
+| `test_a_catalog_error_body_too_deep_to_parse_raises_its_stack_error` | a catalog error body too deep to parse raises its stack error (54001) |
 | `test_the_backend_is_still_up_after_the_rest_read` | backend still up after the REST read |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does

@@ -1240,6 +1240,19 @@ multi-warehouse catalog and is sent as the `?warehouse=` parameter on the
 `credentials_required`. A secret on a server, where options are world-readable,
 is rejected. Setting `credentials_required 'false'` is restricted to a superuser.
 
+When the catalog answers with an error status, the call fails with one of these
+SQLSTATEs:
+
+| Catalog reply | SQLSTATE |
+|---|---|
+| HTTP 401 or 403 | `28000` |
+| HTTP 404 of type `NoSuchNamespaceException` | `3F000` |
+| any other HTTP 404 | `42P01` |
+| any other status but 200 | `08P01` |
+
+When the reply carries the catalog's own error message, the error detail repeats
+it as `The catalog said: <message>`. The message is cut to 512 bytes.
+
 ### pgcolumnar.iceberg_rest_scan(catalog_uri text, namespace text, table_name text) returns setof record
 
 Reads a table named by an Iceberg REST catalog at its current snapshot. It takes

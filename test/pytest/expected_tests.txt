@@ -1341,4 +1341,6 @@ guard_tests 854
 # per file) and one in test_iceberg_rest_scan.py (the catalog's 404 message), by collection.
 # cluster_tests 4616 at the merge of origin/main (6968a6f4) into fix/1820-vended-credential-prefix,
 # by collection: `4616 tests collected`.
-cluster_tests 4616
+# cluster_tests 4616 -> 4620 for #1820's review: four tests in test_iceberg_rest_scan.py (the catalog's
+# message in the detail of the namespace 404, a 403 and a 500, and a too-deep error body), by collection.
+cluster_tests 4620

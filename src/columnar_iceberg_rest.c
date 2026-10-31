@@ -371,8 +371,23 @@ rest_error_model(const PgColumnarHttpResult *r, char **msg, char **type)
 	}
 	PG_CATCH();
 	{
-		/* not JSON: drop the parse error, the status alone is reported */
+		ErrorData  *edata;
+
+		/*
+		 * Not JSON: drop the parse error, and the status alone is reported.
+		 * jsonb_in raises a parse error in the data-exception class (22xxx) and
+		 * holds no resource, so no subtransaction is needed to drop it. Any
+		 * other error (stack depth, out of memory, a cancel) is not about the
+		 * body, so it rises unchanged (#1820 review).
+		 */
 		MemoryContextSwitchTo(oldcxt);
+		edata = CopyErrorData();
+		if (ERRCODE_TO_CATEGORY(edata->sqlerrcode) != ERRCODE_DATA_EXCEPTION)
+		{
+			FreeErrorData(edata);
+			PG_RE_THROW();
+		}
+		FreeErrorData(edata);
 		FlushErrorState();
 		doc = NULL;
 	}

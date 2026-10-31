@@ -240,6 +240,18 @@ def irs(pgc_cluster):
         r["detail"] = _detail_refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','db','nosuch') "
                                            f"AS t(id bigint)",
                                       "The catalog said: no such table db.nosuch", " with the catalog's message")
+        # every non-200 branch puts the catalog's message in the detail (#1820)
+        r["ns detail"] = _detail_refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{cat}','nosuchns')",
+                                         "The catalog said: no such namespace nosuchns", " with the catalog's message")
+        r["403 detail"] = _detail_refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','db','forbidden') "
+                                               f"AS t(id bigint)",
+                                          "The catalog said: no read access to db.forbidden", " with the catalog's message")
+        r["500 detail"] = _detail_refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','db','failing') "
+                                               f"AS t(id bigint)",
+                                          "The catalog said: catalog backend unavailable", " with the catalog's message")
+        # a body nested too deep to parse is a stack error, not a malformed body
+        r["deep"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','db','deepjson') AS t(id bigint)",
+                             "stack depth limit exceeded", " by the parser")
         r["survived"] = _survived(dsn, log, before)
         yield r
     finally:
@@ -352,6 +364,34 @@ def test_the_catalogs_404_message_reaches_the_error_detail(irs, expect):
         return
     expect.text(irs["detail"], "42P01 with the catalog's message",
                 "the catalog's 404 message reaches the error detail")
+
+
+def test_the_catalogs_namespace_404_message_reaches_the_error_detail(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["ns detail"], "3F000 with the catalog's message",
+                "the catalog's namespace 404 message reaches the error detail")
+
+
+def test_the_catalogs_403_message_reaches_the_error_detail(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["403 detail"], "28000 with the catalog's message",
+                "the catalog's 403 message reaches the error detail")
+
+
+def test_the_catalogs_500_message_reaches_the_error_detail(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["500 detail"], "08P01 with the catalog's message",
+                "the catalog's 500 message reaches the error detail")
+
+
+def test_a_catalog_error_body_too_deep_to_parse_raises_its_stack_error(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["deep"], "54001 by the parser",
+                "a catalog error body too deep to parse raises its stack error (54001)")
 
 
 def test_the_backend_is_still_up_after_the_rest_read(irs, expect):

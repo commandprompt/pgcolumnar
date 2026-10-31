@@ -199,6 +199,42 @@ check "the catalog's 404 message reaches the error detail" \
 	   "DETAIL:  The catalog said: no such table db.nosuch" " with the catalog's message")" \
 	"42P01 with the catalog's message"
 
+# detail_of SQL TEXT -> "<SQLSTATE> with the catalog's message" when SQL raised with
+# TEXT in its DETAIL line, else "<SQLSTATE> (detail: <the DETAIL line>)", so a
+# failure shows what the detail held. Every non-200 branch adds the detail (#1820).
+detail_of() {
+	local out state detail
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	detail="$(sed -n 's/^DETAIL:  //p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif [ "$detail" = "$2" ]; then echo "$state with the catalog's message"
+	else echo "$state (detail: $detail)"; fi
+}
+check "the catalog's namespace 404 message reaches the error detail" \
+	"$(detail_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$CAT','nosuchns')" \
+	   "The catalog said: no such namespace nosuchns")" \
+	"3F000 with the catalog's message"
+check "the catalog's 403 message reaches the error detail" \
+	"$(detail_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','forbidden') AS t(id bigint)" \
+	   "The catalog said: no read access to db.forbidden")" \
+	"28000 with the catalog's message"
+check "the catalog's 500 message reaches the error detail" \
+	"$(detail_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','failing') AS t(id bigint)" \
+	   "The catalog said: catalog backend unavailable")" \
+	"08P01 with the catalog's message"
+# An error body nested too deep to parse runs the parser out of stack. That is
+# not a malformed body, and the client must not drop it as one (#1820 review).
+check "a catalog error body too deep to parse raises its stack error (54001)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','deepjson') AS t(id bigint)" \
+	   "stack depth limit exceeded" " by the parser")" \
+	"54001 by the parser"
+
 check "backend still up after the REST read" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary
