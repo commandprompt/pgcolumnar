@@ -481,7 +481,8 @@ true until the next version shipped.
   it wrote with the environment's keys. `tier_partition` now needs both
   `pg_write_server_files` and `pg_read_server_files` (`42501`), because it
   reads the file back. And a local `path` is refused (`28000`) when your
-  mapping on the server holds only half a credential. `test/tier_partition.sh` and `test_tier_partition.py`.
+  mapping on the server holds only half a credential. `test/tier_partition.sh`
+  and `test_tier_partition.py`.
 - `parallel_export_parquet` now removes the run's parts when it fails after
   every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
   prefix, the export lists the prefix to remove stale parts, and then it PUTs
