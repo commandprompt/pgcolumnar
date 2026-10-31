@@ -1262,4 +1262,8 @@ guard_tests 854
 # test_iceberg_scan.py for a struct, list or map column declared scalar, by collection: `4521 tests collected`.
 # cluster_tests 4521 -> 4522 for #1788's review: test_field_id_minus_one_over_the_nested_file_is_refused_as_absent
 # in test_native_parquet_fieldid.py, by collection: `4522 tests collected`.
-cluster_tests 4522
+# cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
+# that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
+# cluster_tests 4528 at the merge of origin/main (a247bea0) into fix/1788-iceberg-nested-scalar,
+# by collection: `4528 tests collected`.
+cluster_tests 4528
