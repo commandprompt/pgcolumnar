@@ -497,7 +497,7 @@ check "complete drop: the server survived" "$(survived "$crashes0")" "1"
 # export's single PUT, so the sink never sent POST ?uploads and has no upload
 # id. Its abort must not list the uploads at the key, nor abort that upload.
 : > "$S3_LOG"
-echo 500 > "$PGC_WORKDIR/__put_status__"
+echo "500 $BUCKET/sf/out.parquet" > "$PGC_WORKDIR/__put_status__"
 start_serial export_parquet ou_small "s3://$BUCKET/sf/out.parquet" "$PGC_WORKDIR/sf.out"
 wait "$bgpid" 2>/dev/null || true
 rm -f "$PGC_WORKDIR/__put_status__"

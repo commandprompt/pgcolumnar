@@ -57,10 +57,10 @@
 #                         writes the object at once, waits that long, and then
 #                         closes the connection with no answer, as a store
 #                         that applied the request and lost the connection.
-#   __put_status__        an HTTP status (#1846): a single-request PUT (no
-#                         partNumber) is answered with it and nothing is
-#                         written, so a suite can fail an export before it
-#                         ever sends CreateMultipartUpload.
+#   __put_status__        "STATUS KEY": a plain PUT (no multipart) of exactly
+#                         "bucket/KEY" is answered with STATUS and not stored,
+#                         so a suite can refuse one object, such as a parallel
+#                         export's _SUCCESS marker, and let every other through.
 # --seed-upload KEY (repeatable) opens an upload at KEY ("bucket/key") before
 # the first request: an upload some other writer left, which a client must not
 # abort as its own.
@@ -522,11 +522,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        pustat = os.path.join(self.server.rootdir, "__put_status__")
-        if os.path.exists(pustat):
-            with open(pustat) as f:
-                self._deny(int(f.read().strip()), "InternalError")
-            return
+        putst = os.path.join(self.server.rootdir, "__put_status__")
+        if os.path.exists(putst):
+            with open(putst) as f:
+                code, key = f.read().split()
+            if os.path.relpath(local, self.server.rootdir) == key:
+                self._deny(int(code), "AccessDenied")
+                return
         os.makedirs(os.path.dirname(local), exist_ok=True)
         with open(local, "wb") as f:
             f.write(self._body)

@@ -546,7 +546,7 @@ def ou(pgc_cluster):
         # put refused (#1846): the store refuses a small export's single PUT, so the
         # export fails before it sends any create; another writer's upload is at the key
         s3log.write_text("")
-        (work / "__put_status__").write_text("500\n")
+        (work / "__put_status__").write_text(f"500 {BUCKET}/sf/out.parquet\n")
         got = {}
         _start_serial(dsn, "export_parquet", "ou_small", f"s3://{BUCKET}/sf/out.parquet",
                       got).join(300)

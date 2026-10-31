@@ -141,6 +141,8 @@ typedef struct PqSchemaCol
 	int			time_unit;		/* PQ_TU_* for a TIME/TIMESTAMP column */
 	bool		is_timestamp;	/* the unit belongs to TIMESTAMP, not TIME */
 	bool		adjusted_utc;	/* TIMESTAMP isAdjustedToUTC: an instant, not a wall time */
+	bool		is_unsigned;	/* UINT_* or INTEGER(isSigned=false): the INT32/INT64
+								 * bits are an unsigned value (#1814) */
 	int			type_length;	/* FIXED_LEN_BYTE_ARRAY length */
 	int			scale;			/* DECIMAL scale (0 if none) */
 	int			precision;		/* DECIMAL precision (0 if none) */
@@ -357,9 +359,9 @@ parse_column_chunk(TCReader *r, PqChunk *ch)
 
 /*
  * Parse a LogicalType union into *sc, recording the time unit for TIME and
- * TIMESTAMP. Every other member is skipped: the ConvertedType path already covers
- * what the reader uses of them. TimeUnit is itself a union of empty structs, so
- * the set field id is the whole answer.
+ * TIMESTAMP, and INTEGER's isSigned. Every other member is skipped: the
+ * ConvertedType path already covers what the reader uses of them. TimeUnit is
+ * itself a union of empty structs, so the set field id is the whole answer.
  *
  * This hand-walks nested Thrift unions and assumes the compact-protocol field
  * ordering the spec prescribes. A writer that reorders or partially populates the
@@ -428,6 +430,25 @@ parse_logical_type(TCReader *r, PqSchemaCol *sc)
 					PgColumnarThriftSkip(r, ift);	/* anything later */
 			}
 		}
+		else if (fid == PQ_LT_INTEGER && ft == TC_STRUCT)
+		{
+			/* IntType: 1 bitWidth (i8), 2 isSigned (bool, carried in its type) */
+			int			innerLast = 0;
+
+			for (;;)
+			{
+				int			ift,
+							ifid;
+
+				PgColumnarThriftField(r, &ift, &ifid, &innerLast);
+				if (ift == TC_STOP || r->error)
+					break;
+				if (ifid == 2 && (ift == TC_BOOL_TRUE || ift == TC_BOOL_FALSE))
+					sc->is_unsigned = (ift == TC_BOOL_FALSE);
+				else
+					PgColumnarThriftSkip(r, ift);
+			}
+		}
 		else
 			PgColumnarThriftSkip(r, ft);
 	}
@@ -446,6 +467,7 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 	sc->is_timestamp = false;
 	/* the legacy TIMESTAMP_* converted types are defined as UTC-adjusted */
 	sc->adjusted_utc = true;
+	sc->is_unsigned = false;
 	sc->type_length = 0;
 	sc->scale = 0;
 	sc->precision = 0;
@@ -531,6 +553,9 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 				break;
 		}
 	}
+	/* the deprecated spelling of INTEGER(isSigned=false) */
+	if (sc->converted_type >= PQ_CT_UINT_8 && sc->converted_type <= PQ_CT_UINT_64)
+		sc->is_unsigned = true;
 	return num_children;
 }
 
@@ -885,7 +910,9 @@ typedef struct PqColPlan
 	int			type_length;	/* FIXED_LEN_BYTE_ARRAY width, for uuid/decimal */
 	int			dec_scale;		/* DECIMAL scale, when the target is numeric */
 	bool		is_decimal;		/* the bytes are a DECIMAL unscaled integer */
+	bool		is_unsigned;	/* the INT32/INT64 bits are an unsigned value */
 	int			ts_shift;		/* PQ_TS_*: a cast between wall time and instant */
+	const char *colname;		/* the leaf's Parquet name, for error messages */
 } PqColPlan;
 
 /*
@@ -1094,6 +1121,78 @@ pq_value_out_of_range(bool strict, bool *ok, int sqlerrcode, const char *typname
 	return (Datum) 0;
 }
 
+/* pq_value_out_of_range for an unsigned INT64 value, which an int64 cannot print */
+static Datum
+pq_unsigned_out_of_range(bool strict, bool *ok, const char *typname, uint64 value)
+{
+	if (strict)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("value out of range for type %s", typname),
+				 errdetail("The Parquet file stores " UINT64_FORMAT
+						   ", which cannot be represented as %s.",
+						   value, typname)));
+	*ok = false;
+	return (Datum) 0;
+}
+
+/*
+ * Is a BYTE_ARRAY cell bound to text valid in the server encoding (#1821)?
+ *
+ * A Parquet STRING is UTF-8 by the spec, but the bytes come from outside the
+ * server, and text built from them unchecked holds whatever the writer put there:
+ * invalid sequences that later queries choke on, or an embedded NUL that makes
+ * the value read as a shorter string. COPY validates external text with
+ * pg_verifymbstr for this reason, and so does pq_percent_decode for Hive partition
+ * values; this is the same boundary for the cells themselves.
+ *
+ * Per value, on the decode path, so the common case is kept cheap: bytes that are
+ * all 7-bit ASCII with no NUL are valid in every server encoding and need nothing
+ * more. Only a value with a high bit or a NUL byte reaches the encoding's verifier.
+ * Dictionary entries are decoded once per dictionary page, so a dictionary column
+ * is checked once per distinct value.
+ *
+ * On an invalid value: raise 22021, naming the column and the first bad bytes in
+ * core's format, when strict; otherwise set *ok false, so a caller decoding
+ * statistics refuses to use them rather than raising.
+ */
+static bool
+pq_text_cell_ok(const PqColPlan *plan, const char *s, int len, bool strict)
+{
+	int			i;
+	int			enc;
+	int			valid;
+	int			bad;
+	char		buf[8 * 5 + 1];
+	char	   *b = buf;
+
+	for (i = 0; i < len; i++)
+		if (s[i] == '\0' || IS_HIGHBIT_SET(s[i]))
+			break;
+	if (i == len)
+		return true;
+
+	enc = GetDatabaseEncoding();
+	valid = pg_encoding_verifymbstr(enc, s, len);
+	if (valid == len)
+		return true;
+	if (!strict)
+		return false;
+
+	/* the bytes of the first bad character, at most 8, as report_invalid_encoding */
+	bad = Min(pg_encoding_mblen(enc, s + valid), len - valid);
+	bad = Min(bad, 8);
+	for (i = 0; i < bad; i++)
+		b += sprintf(b, i == 0 ? "0x%02x" : " 0x%02x", (unsigned char) s[valid + i]);
+
+	ereport(ERROR,
+			(errcode(ERRCODE_CHARACTER_NOT_IN_REPERTOIRE),
+			 errmsg("invalid byte sequence for encoding \"%s\" in Parquet column \"%s\": %s",
+					GetDatabaseEncodingName(),
+					plan->colname != NULL ? plan->colname : "?", buf)));
+	return false;				/* not reached */
+}
+
 /*
  * Convert one PLAIN physical value at *p (advancing *p) to a target Datum.
  *
@@ -1102,6 +1201,11 @@ pq_value_out_of_range(bool strict, bool *ok, int sqlerrcode, const char *typname
  * INT64. Those conversions are range-checked rather than cast, so an out-of-range
  * value raises instead of wrapping. See pq_value_out_of_range for what strict
  * selects.
+ *
+ * An unsigned column (UINT_32, UINT_64) is decoded unsigned (#1814). Its upper half
+ * has the sign bit set, so a signed decode would return a negative number. bigint
+ * holds every UINT_32 value and numeric every UINT_64 value; a narrower integer
+ * target is range-checked like int2.
  */
 static Datum
 plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
@@ -1134,6 +1238,21 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 						return (Datum) 0;
 					}
 					return num;
+				}
+				if (plan->is_unsigned &&
+					(plan->typid == INT8OID || plan->typid == INT4OID ||
+					 plan->typid == INT2OID))
+				{
+					uint32		u = (uint32) v;
+
+					if (plan->typid == INT8OID)
+						return Int64GetDatum((int64) u);
+					if (u > (uint32) PG_INT32_MAX)
+						return pq_value_out_of_range(strict, ok,
+													 ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
+													 plan->typid == INT2OID ? "smallint" : "integer",
+													 (int64) u);
+					/* non-negative now, so the int2 check below sees the real value */
 				}
 				if (plan->typid == INT2OID)
 				{
@@ -1193,6 +1312,17 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 					}
 					return num;
 				}
+				if (plan->is_unsigned && plan->typid == NUMERICOID)
+				{
+					char		buf[32];
+
+					snprintf(buf, sizeof(buf), UINT64_FORMAT, (uint64) v);
+					return DirectFunctionCall3(numeric_in, CStringGetDatum(buf),
+											   ObjectIdGetDatum(InvalidOid),
+											   Int32GetDatum(-1));
+				}
+				if (plan->is_unsigned && plan->typid == INT8OID && v < 0)
+					return pq_unsigned_out_of_range(strict, ok, "bigint", (uint64) v);
 				if (plan->typid == TIMESTAMPOID || plan->typid == TIMESTAMPTZOID)
 				{
 					int64		us;
@@ -1295,6 +1425,11 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 					memcpy(VARDATA(b), cur, blen);
 					*p = cur + blen;
 					return PointerGetDatum(b);
+				}
+				if (!pq_text_cell_ok(plan, (const char *) cur, (int) blen, strict))
+				{
+					*ok = false;
+					return (Datum) 0;
 				}
 				t = cstring_to_text_with_len((const char *) cur, blen);
 				*p = cur + blen;
@@ -2307,7 +2442,10 @@ pq_plan_bind_schema(PqColPlan *plan, const PqSchemaCol *sc)
 	plan->dec_scale = sc->scale;
 	plan->is_decimal = (plan->typid == NUMERICOID &&
 						sc->converted_type == PQ_CT_DECIMAL);
+	plan->is_unsigned = (sc->is_unsigned &&
+						 (sc->phys_type == PQ_INT32 || sc->phys_type == PQ_INT64));
 	plan->ts_shift = PQ_TS_NONE;
+	plan->colname = sc->name != NULL ? pstrdup(sc->name) : NULL;
 	if (sc->is_timestamp && !sc->adjusted_utc && plan->typid == TIMESTAMPTZOID)
 		plan->ts_shift = PQ_TS_WALL_TO_INSTANT;
 	else if (sc->is_timestamp && sc->adjusted_utc && plan->typid == TIMESTAMPOID)
@@ -2351,11 +2489,22 @@ pq_ts_shift(int shift, Timestamp in, Timestamp *out)
 }
 
 /*
+ * pq_want_phys_for's answer for a supported target type that this particular
+ * column cannot hold: not -1, which means the target type is unsupported, and
+ * equal to no physical type, so the bind's compatibility check refuses it.
+ */
+#define PQ_PHYS_NO_MATCH	INT_MAX
+
+/*
  * The Parquet physical type a target PostgreSQL type must be stored as, for one
- * specific source column. Only `time` is column-dependent: Parquet spells
+ * specific source column. `time` is column-dependent: Parquet spells
  * TIME_MILLIS as INT32 and TIME_MICROS/TIME_NANOS as INT64, so the same
  * PostgreSQL type binds to either width depending on the unit the file declares.
- * Everything else is a fixed mapping and falls through to pq_want_phys().
+ * So are uuid (an FLBA of width 16 only), bytea (a BYTE_ARRAY or any FLBA) and
+ * a DECIMAL's numeric. An unsigned integer column also binds wider than its
+ * physical type (#1814): bigint to a UINT_32 INT32, numeric to a UINT_64 INT64,
+ * the types that hold every value. Everything else is a fixed mapping and falls
+ * through to pq_want_phys().
  */
 static int
 pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
@@ -2365,8 +2514,21 @@ pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
 		if (typid == TIMEOID &&
 			sc->time_unit == PQ_TU_MILLIS && !sc->is_timestamp)
 			return PQ_INT32;
-		/* uuid is a 16-byte fixed-length binary */
+		if (sc->is_unsigned && typid == INT8OID && sc->phys_type == PQ_INT32)
+			return PQ_INT32;
+		if (sc->is_unsigned && typid == NUMERICOID && sc->phys_type == PQ_INT64)
+			return PQ_INT64;
+		/* uuid is a 16-byte fixed-length binary. An FLBA of any other width
+		 * cannot hold one, so the bind refuses it as incompatible rather than
+		 * leaving the decoder to fail on the first value (#1792). */
 		if (typid == UUIDOID)
+			return (sc->phys_type == PQ_FIXED_LEN_BYTE_ARRAY &&
+					sc->type_length != UUID_LEN)
+				? PQ_PHYS_NO_MATCH : PQ_FIXED_LEN_BYTE_ARRAY;
+		/* bytea holds raw bytes of any width, so a fixed-length binary --
+		 * Iceberg's fixed(L), for which parquet_schema advises bytea -- reads
+		 * as one, its flen bytes copied as they are (#1792) */
+		if (typid == BYTEAOID && sc->phys_type == PQ_FIXED_LEN_BYTE_ARRAY)
 			return PQ_FIXED_LEN_BYTE_ARRAY;
 		/* DECIMAL as fixed or variable big-endian two's-complement bytes, or as
 		 * an INT32/INT64 holding the unscaled integer (what writers use for small
@@ -2444,8 +2606,11 @@ pq_leaf_to_pgtype(const PqSchemaCol *sc, Oid *typid, int32 *typmod)
 				*typid = TIMEOID;	/* TIME_MILLIS is physically INT32 */
 			else if (ct == PQ_CT_INT_8 || ct == PQ_CT_INT_16)
 				*typid = INT2OID;
+			else if (sc->is_unsigned &&
+					 ct != PQ_CT_UINT_8 && ct != PQ_CT_UINT_16)
+				*typid = INT8OID;	/* UINT_32 reaches 2^32-1 (#1814) */
 			else
-				*typid = INT4OID;	/* INT_32 or unannotated */
+				*typid = INT4OID;	/* INT_32, UINT_8, UINT_16 or unannotated */
 			return true;
 		case PQ_INT64:
 
@@ -2468,6 +2633,12 @@ pq_leaf_to_pgtype(const PqSchemaCol *sc, Oid *typid, int32 *typmod)
 			}
 			if (sc->time_unit == PQ_TU_MILLIS || sc->time_unit == PQ_TU_MICROS)
 				*typid = sc->is_timestamp ? TIMESTAMPOID : TIMEOID;
+			else if (sc->is_unsigned)
+			{
+				/* UINT_64 reaches 2^64-1, 20 digits (#1814) */
+				*typid = NUMERICOID;
+				*typmod = (int32) ((20 << 16) + VARHDRSZ);
+			}
 			else
 				*typid = INT8OID;	/* INT_64, nanos, or unannotated */
 			return true;
@@ -2735,7 +2906,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
  * Scope: flat top-level scalars. A requested id must resolve to exactly one
  * non-repeated scalar leaf of a compatible physical type; a nested/array output,
  * an absent id, a duplicate id, or a file with no ids at all is refused rather
- * than silently mis-bound. Reuses the same ImpTop/ImpLeaf output as the
+ * than silently mis-bound, and so is an id carried by a group (a struct, list
+ * or map: #1788). Reuses the same ImpTop/ImpLeaf output as the
  * positional binder, so pq_read_rows is unchanged.
  *
  * Name mapping (Iceberg schema.name-mapping.default): when a leaf carries no
@@ -2863,6 +3035,29 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 		}
 		if (found < 0)
 		{
+			/*
+			 * A struct, list or map carries its field id on a group, not a leaf
+			 * (#1788). The file has the column, so it is neither absent nor null:
+			 * it is nested, and field-id projection reads only scalars. A group
+			 * with no id holds -1, so only a real id (>= 0) can match: without
+			 * that, ARRAY[-1] named a list's or map's inner group as nested.
+			 */
+			for (j = 1; j < pf->nelems; j++)
+			{
+				PqSchemaCol *g = &pf->elems[j];
+
+				if (g->num_children > 0 && g->field_id >= 0 &&
+					g->field_id == req)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("field id %d (requested for output column \"%s\") is a nested %s column; field-id projection supports only scalar columns",
+									req, NameStr(att->attname),
+									g->converted_type == PQ_CT_LIST ? "list" :
+									(g->converted_type == PQ_CT_MAP ||
+									 g->converted_type == PQ_CT_MAP_KEY_VALUE) ? "map" :
+									"struct")));
+			}
+
 			/*
 			 * The projected field id is not present in this file. Under
 			 * Column Projection (Iceberg data files) that is not an error: the
@@ -4645,9 +4840,10 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 	 * Every test below assumes min <= max, and the decoded statistics may not
 	 * satisfy that. plain_value_to_datum() narrows a Parquet INT32 to int16 when
 	 * the column is bound to a PG int2, so a group holding 30000 and 40000
-	 * decodes to min=30000, max=-25536. Parquet's UINT_32/UINT_64 logical types
-	 * sort unsigned while we decode signed, so any group straddling the sign
-	 * boundary inverts the same way, as can a corrupt file. Refuse to skip on an
+	 * decodes to min=30000, max=-25536. An unsigned column is decoded unsigned
+	 * (#1814), so its own statistics do not invert; but an old writer may have
+	 * ordered its deprecated min/max signed, and a group straddling the sign
+	 * boundary then decodes inverted, as can a corrupt file. Refuse to skip on an
 	 * interval we cannot trust: the data path applies the identical narrowing, so
 	 * those rows are real matches and dropping them would be an unsound skip that
 	 * the executor's recheck can never recover.

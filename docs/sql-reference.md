@@ -854,11 +854,12 @@ The `path` may also be an `s3://` prefix. Each worker writes one
 [Object storage](#object-storage) for the endpoint and credential rules, which
 are the same as for `export_parquet`. One difference applies to a remote prefix.
 The local path is created and checked for emptiness before the export. A remote
-prefix cannot be checked for emptiness without a bucket listing, which pgColumnar
-does not yet perform. The prefix must therefore be new or empty by the caller's
-own account. A stale higher-numbered object left in the prefix by a larger prior
-export would be read back by a later directory read. Read each object by its
-exact key until prefix reads land.
+prefix is not checked, so a re-run may write into a used prefix. Before it
+writes the `_SUCCESS` marker, the export lists the prefix to remove stale parts
+a larger prior run left. Its credentials therefore need list permission
+(`s3:ListBucket` on AWS) as well as write and delete. If the listing fails,
+those stale parts can remain, as described below under "A failed listing can
+leave a larger earlier run's parts".
 
 The target may be one of two kinds:
 
@@ -872,12 +873,24 @@ every worker imports it. The files together are the committed image of the table
 at call time. This holds even when the call runs inside a transaction with
 uncommitted rows. There is no coordinator and no shared write state. If any worker
 fails, or the statement is cancelled, the dispatcher removes the files it wrote.
-A partial directory is never left for `read_parquet` to union. Over an `s3://`
-prefix the dispatcher deletes the same objects by key. A worker terminated
-mid-upload can leave one incomplete multipart upload that the dispatcher cannot
-address. Set a bucket lifecycle rule that expires incomplete multipart uploads to
-reclaim it, as [Exporting to object storage](#exporting-to-object-storage)
+It also removes them when every worker has finished but a later step fails:
+removing stale parts or writing the `_SUCCESS` marker. Over an `s3://` prefix
+the dispatcher deletes the same objects by key. A worker terminated mid-upload
+can leave one incomplete multipart upload that the dispatcher cannot address.
+Set a bucket lifecycle rule that expires incomplete multipart uploads to reclaim
+it, as [Exporting to object storage](#exporting-to-object-storage)
 recommends.
+
+**A failed listing can leave a larger earlier run's parts.** The cleanup
+above removes a failed run's own parts. So a partial directory is never left for
+`read_parquet` to union, with one exception: a failed listing of a remote prefix.
+A key that may write but not list fails the run, and the dispatcher removes the
+parts this run wrote. Without the listing, though, the export cannot find the
+higher-numbered parts that a larger earlier run left in the prefix, so they
+remain. A run of 4 workers followed by a failed run of 2 leaves `part-0002` and
+`part-0003`, with no `_SUCCESS` marker. A later directory or prefix read would
+read those stale objects back as if they were a whole table. So check for
+`_SUCCESS` before you read a prefix, and read only a prefix that carries it.
 
 On success the function writes an empty `_SUCCESS` marker at the destination, the
 Hadoop and Spark convention. Its presence means a complete run's output is there;
@@ -926,6 +939,12 @@ that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
 `parquet_schema` to generate the full list.
 
+A string cell read into a `text` or `varchar` column must be valid in the
+server encoding (#1821). A cell with an invalid byte sequence or an embedded
+NUL byte stops the read with SQLSTATE `22021`, as COPY does. The message names
+the Parquet column and the first bad bytes. This applies to the foreign table,
+the import functions and `iceberg_scan` too, because they share the reader.
+
 ```sql
 SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet')
   AS t(id int, ts timestamp, amount numeric(12,2));
@@ -951,8 +970,9 @@ one scalar column of a compatible type. A compatible type includes Iceberg's two
 exact widenings: an integer `INT32` column reads as `bigint`, and a `FLOAT`
 column as `double precision`. The positional form above does not widen. An
 absent id is an error. So is an id that matches more than one column, or an
-array or composite output column. None
-is a silent wrong column. Read the ids a file carries with `parquet_schema`.
+array or composite output column. An id that belongs to a struct, list or map is
+refused as nested, whatever the output column's type (#1788). None is a silent
+wrong column. Read the ids a file carries with `parquet_schema`.
 
 ```sql
 -- the file has columns alpha (id 7), beta (id 3), gamma (id 12);
@@ -966,7 +986,8 @@ SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet', ARRAY[12, 7])
 Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
 without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
-file.
+file. The type it reports holds every value the column can store. So an unsigned
+`UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
 
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when
@@ -1093,6 +1114,12 @@ ids ignores the mapping. An id-less file with no such property is refused,
 because the specification defines no positional fallback, and the error names
 the property. The mapping is read for top-level scalar columns.
 
+Only top-level primitive columns can be read. An output column that names a
+struct, list or map field is an error (SQLSTATE `0A000`). This holds whatever
+type the column definition list gives it. The error names the column and its
+kind (#1788). The same holds for `iceberg_rest_scan` and the
+`pgcolumnar_iceberg` foreign-data wrapper.
+
 A projected column that the file does not carry reads as null. This covers a
 column added to the schema after the file was written. It also covers a column
 an id-less file has but the mapping does not bind. The file's other columns
@@ -1149,7 +1176,9 @@ twice. A probe pass computes the row ordinals to drop.
 
 A malformed manifest is refused, not read as far as it parses. A manifest entry
 that records no data-file path is an error, as is a manifest whose embedded Avro
-schema is not well formed.
+schema is not well formed. An enum value outside the Iceberg spec is refused with
+`XX001` and the value in the message. A data file `content` or an entry
+`status` must be 0, 1 or 2. A manifest list `content` must be 0 or 1.
 
 ```sql
 SELECT id, region, sum(amount)
@@ -1183,7 +1212,11 @@ is never a function argument, so it does not appear in the statement log or in
 `pg_stat_activity`. A catalog that needs no token is queried without one.
 
 When the first argument names a server, the catalog URI comes from the server
-and the token comes from the current role's user mapping. The token lives in
+and the token comes from the current role's user mapping. The role needs `USAGE`
+on the server, as `dblink` requires for a named server. Without it the call is
+refused with SQLSTATE 42501 before any mapping is read or any request is made,
+even through a `PUBLIC` mapping. So `REVOKE USAGE ON FOREIGN SERVER` takes the
+server away from a role. The token lives in
 `pg_user_mapping`, which is not world-readable, so one role's token is not
 visible to another. A role with no mapping and no token is refused. A superuser,
 or a mapping that sets `credentials_required 'false'`, uses the environment token
@@ -1199,7 +1232,8 @@ request is made, even when it also sets a static `token`. A mapping that sets a
 `token` and the complete pair uses the token and mints no bearer.
 
 Multi-level namespaces are given dot-separated, and the function requires the
-`pg_read_server_files` role, like the other Iceberg functions.
+`pg_read_server_files` role, like the other Iceberg functions. The server form
+also requires `USAGE` on the server.
 
 ```sql
 -- URI form: the token, if any, comes from the server environment, not the query
@@ -1210,6 +1244,7 @@ SELECT pgcolumnar.iceberg_rest_table_location(
 -- server form: the token is per-role and stays in pg_user_mapping
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
   OPTIONS (catalog_uri 'https://catalog.example.com');
+GRANT USAGE ON FOREIGN SERVER cat TO analyst;
 CREATE USER MAPPING FOR analyst SERVER cat OPTIONS (token 's3cr3t');
 
 SELECT count(*) FROM pgcolumnar.iceberg_scan(
@@ -1318,6 +1353,9 @@ column can prune this way. All read from the manifest, so a file is skipped
 without a read. Pruning is only an optimization. A file that is not pruned is read
 normally, so a predicate the wrapper cannot decide never changes the rows
 returned. Field-id projection and every delete rule are those of `iceberg_scan`.
+A foreign table may declare a nested Iceberg column (a struct, list or map) as a
+scalar. Such a table refuses every query, even one that does not read that
+column (#1788).
 
 The one table option is `metadata_path`, the table's current `metadata.json`
 (a local path or an object-storage URL). The wrapper requires the
