@@ -99,12 +99,14 @@ rest_objstore(void)
 
 /*
  * Resolve a FOREIGN SERVER (pgcolumnar_iceberg_catalog) into its catalog_uri and
- * the current role's bearer token. The token comes from the role's USER MAPPING
- * (or the PUBLIC mapping), which lives in pg_user_mapping and is not
- * world-readable. When the mapping carries no token, fall back to the
- * environment token only if ambient use is allowed (a superuser, or a mapping
- * that set credentials_required 'false'); otherwise refuse (28000). *out_token
- * may be NULL for an anonymous catalog.
+ * the current role's bearer token. The role must hold USAGE on the server, as
+ * dblink requires before it uses a named server's mapping (#1819): without the
+ * check, REVOKE USAGE did not stop a role using its own mapping, nor a PUBLIC
+ * one. The token comes from the role's USER MAPPING (or the PUBLIC mapping),
+ * which lives in pg_user_mapping and is not world-readable. When the mapping
+ * carries no token, fall back to the environment token only if ambient use is
+ * allowed (a superuser, or a mapping that set credentials_required 'false');
+ * otherwise refuse (28000). *out_token may be NULL for an anonymous catalog.
  */
 static char *rest_oauth_token(const char *catalog_uri, const char *token_uri,
 							  const char *client_id, const char *client_secret,
@@ -125,6 +127,17 @@ rest_resolve_server(const char *name, char **out_uri, char **out_token,
 	char	   *oauthUri = NULL;
 	bool		credRequired = true;
 	HeapTuple	tp;
+	AclResult	aclresult;
+
+	/* before any mapping is read or any request is made */
+#if PG_VERSION_NUM >= 160000
+	aclresult = object_aclcheck(ForeignServerRelationId, srv->serverid,
+								GetUserId(), ACL_USAGE);
+#else
+	aclresult = pg_foreign_server_aclcheck(srv->serverid, GetUserId(), ACL_USAGE);
+#endif
+	if (aclresult != ACLCHECK_OK)
+		aclcheck_error(aclresult, OBJECT_FOREIGN_SERVER, srv->servername);
 
 	foreach(lc, srv->options)
 	{
@@ -182,18 +195,17 @@ rest_resolve_server(const char *name, char **out_uri, char **out_token,
 	}
 
 	/* OAuth2 client-credentials: a half credential (one of id/secret) is refused
-	 * before any request; a complete pair mints the bearer when no static token. */
-	if (token == NULL && (oauthId != NULL || oauthSecret != NULL))
-	{
-		if (oauthId == NULL || oauthSecret == NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
-					 errmsg("iceberg: incomplete OAuth2 credential for REST catalog server \"%s\"",
-							name),
-					 errhint("Set both oauth_client_id and oauth_client_secret on the "
-							 "USER MAPPING.")));
+	 * before any request, whether or not a static token is also set (#1794); a
+	 * complete pair mints the bearer when no static token. */
+	if ((oauthId == NULL) != (oauthSecret == NULL))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+				 errmsg("iceberg: incomplete OAuth2 credential for REST catalog server \"%s\"",
+						name),
+				 errhint("Set both oauth_client_id and oauth_client_secret on the "
+						 "USER MAPPING.")));
+	if (token == NULL && oauthId != NULL)
 		token = rest_oauth_token(uri, oauthUri, oauthId, oauthSecret, oauthScope);
-	}
 
 	if (token == NULL)
 	{

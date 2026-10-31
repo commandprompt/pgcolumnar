@@ -9,11 +9,15 @@ fixture (test/iceberg_rest_server.py), which 401s a wrong or absent token and lo
 request: a server-name call authenticates with the mapping token and with no token in
 the environment; the token and the OAuth2 client secret never reach the server log; a
 wrong token, a missing one, and a wrong OAuth2 secret are each refused by their own
-message; a half OAuth2 credential is refused before any request; secrets are rejected
-on a SERVER and catalog_uri on a USER MAPPING; an oauth_token_uri off the endpoint
-allow-list (link-local or any other host) is refused by the allow-list itself; the URI
-form works with the environment token; and a non-superuser never borrows the
-environment token unless a superuser marked its mapping credentials_required 'false'.
+message; a half OAuth2 credential is refused before any request, even beside a static
+token; a static token wins over a complete pair, with no token request; secrets are
+rejected on a SERVER and catalog_uri on a USER MAPPING; an oauth_token_uri off the
+endpoint allow-list (link-local or any other host) is refused by the allow-list itself;
+the URI form works with the environment token; a non-superuser never borrows the
+environment token unless a superuser marked its mapping credentials_required 'false';
+and a role without USAGE on the server is refused 42501 before any request, through a
+PUBLIC mapping and through its own mapping after a REVOKE, while a foreign table on a
+catalog server reads nothing (#1819).
 
 A STATEMENT THAT RAN IS NOT A SERVER THAT DIDN'T ANSWER: an "accepted" arm reads "ok"
 only when the statement ran, and a failed connection fails it.
@@ -300,8 +304,37 @@ def irs(pgc_cluster):
         n1 = _nlines(olog)
         r["half"] = f"{half}|{n1 - n0}" if isinstance(n0, int) and isinstance(n1, int) else query_error(
             f"fixture log unreadable: {n0} / {n1}")
+        # a static token does not excuse a half pair (#1794); both halves, then back to id-only
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (ADD token 'static-tok')")
+        n0 = _nlines(olog)
+        half = _refusal(dsn, LOCATE.format("ocat"), "incomplete OAuth2 credential")
+        n1 = _nlines(olog)
+        r["half id token"] = f"{half}|{n1 - n0}" if isinstance(n0, int) and isinstance(n1, int) else query_error(
+            f"fixture log unreadable: {n0} / {n1}")
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat"
+                  f" OPTIONS (DROP oauth_client_id, ADD oauth_client_secret '{OCSEC}')")
+        n0 = _nlines(olog)
+        half = _refusal(dsn, LOCATE.format("ocat"), "incomplete OAuth2 credential")
+        n1 = _nlines(olog)
+        r["half secret token"] = f"{half}|{n1 - n0}" if isinstance(n0, int) and isinstance(n1, int) else query_error(
+            f"fixture log unreadable: {n0} / {n1}")
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat"
+                  f" OPTIONS (DROP token, DROP oauth_client_secret, ADD oauth_client_id '{OCID}')")
         r["oauth on mapping"] = _sqlstate(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat"
                                                " OPTIONS (ADD oauth_scope 'catalog')")
+        # a token wins over a complete pair and mints no bearer. The secret is wrong, so
+        # a mint would be refused; the catalog takes only the fixture's minted bearer,
+        # given here as the static token. "no error" means the static token was sent;
+        # the count is the requests to the token endpoint.
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat"
+                  f" OPTIONS (ADD token '{OATOKEN}', ADD oauth_client_secret 'wrong-secret')")
+        tw0 = _lines(olog)
+        won = _refusal(dsn, LOCATE.format("ocat"), "@@ no refusal is expected @@")
+        tw1 = _lines(olog)
+        r["token wins"] = (f"{won}|{sum(1 for l in tw1[len(tw0):] if 'POST /v1/oauth/tokens' in l)}"
+                           if isinstance(tw0, list) and isinstance(tw1, list)
+                           else query_error(f"fixture log unreadable: {tw0} / {tw1}"))
+        _run(dsn, "ALTER USER MAPPING FOR postgres SERVER ocat OPTIONS (DROP token, DROP oauth_client_secret)")
         r["oauth on server"] = _sqlstate(dsn, "CREATE SERVER bad2 FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog"
                                               f" OPTIONS (catalog_uri '{ocat}', oauth_client_secret 'x')")
 
@@ -338,6 +371,45 @@ def irs(pgc_cluster):
                                              " OPTIONS (ADD credentials_required 'false')")
         _run(dsn, "ALTER USER MAPPING FOR ice_r SERVER cat OPTIONS (ADD credentials_required 'false')")
         r["ice_r control"] = _value(ice, LOCATE.format("cat"))
+
+        # ---- #1819: the server form needs USAGE on the server, as core's FDW model does.
+        # ice_n holds every other grant the call needs, so USAGE is all that refuses it,
+        # and the refusal comes before any request reaches the catalog.
+        for g in ("CREATE ROLE ice_n LOGIN NOSUPERUSER", "GRANT pg_read_server_files TO ice_n",
+                  "GRANT USAGE ON SCHEMA pgcolumnar TO ice_n", "CREATE SCHEMA n1819 AUTHORIZATION ice_n",
+                  f"CREATE SERVER pcat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog OPTIONS (catalog_uri '{cat}')",
+                  f"CREATE USER MAPPING FOR PUBLIC SERVER pcat OPTIONS (token '{TOKEN}')"):
+            _run(dsn, g)
+        ice_n = _dsn_as(dsn, "ice_n")
+        r["n usage"] = _value(ice_n, "SELECT CASE WHEN has_server_privilege('pcat','USAGE') THEN 't' ELSE 'f' END")
+
+        def before_any_request(*calls):
+            n0 = _nlines(rest_log)
+            got = [_refusal(ice_n, sql, phrase) for sql, phrase in calls]
+            n1 = _nlines(rest_log)
+            if not isinstance(n0, int) or not isinstance(n1, int):
+                return query_error(f"fixture log unreadable: {n0} / {n1}")
+            return "|".join(got + [str(n1 - n0)])
+
+        denied = "permission denied for foreign server"
+        r["n public"] = before_any_request((LOCATE.format("pcat"), f"{denied} pcat"))
+        r["n others"] = before_any_request(
+            ("SELECT * FROM pgcolumnar.iceberg_rest_namespaces('pcat')", f"{denied} pcat"),
+            ("SELECT * FROM pgcolumnar.iceberg_rest_tables('pcat','db')", f"{denied} pcat"),
+            ("SELECT * FROM pgcolumnar.iceberg_rest_scan('pcat','db','events') AS t(a int)", f"{denied} pcat"))
+        for g in (f"CREATE SERVER bcat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog OPTIONS (catalog_uri '{cat}')",
+                  "GRANT USAGE ON FOREIGN SERVER bcat TO ice_n",
+                  f"CREATE USER MAPPING FOR ice_n SERVER bcat OPTIONS (token '{TOKEN}')",
+                  "REVOKE USAGE ON FOREIGN SERVER bcat FROM ice_n"):
+            _run(dsn, g)
+        r["n revoked"] = before_any_request((LOCATE.format("bcat"), f"{denied} bcat"))
+        # the FDW path: the catalog wrapper has no handler, and core gates a foreign table on USAGE
+        r["n create ft"] = _refusal(ice_n, "CREATE FOREIGN TABLE n1819.ft1819 (a int) SERVER pcat", f"{denied} pcat")
+        _run(dsn, "CREATE FOREIGN TABLE n1819.ft1819 (a int) SERVER pcat")
+        _run(dsn, "GRANT SELECT ON n1819.ft1819 TO ice_n")
+        r["n ft read"] = before_any_request(("SELECT * FROM n1819.ft1819", "has no handler"))
+        _run(dsn, "GRANT USAGE ON FOREIGN SERVER pcat TO ice_n")
+        r["n granted"] = _value(ice_n, LOCATE.format("pcat"))
 
         r["survived"] = _survived(dsn, log, before)
         yield r
@@ -481,10 +553,31 @@ def test_a_half_oauth_credential_is_refused_before_any_request(irs, expect):
                 "a half OAuth2 credential (id, no secret) is refused before any request (28000)")
 
 
+def test_a_half_oauth_id_is_refused_even_with_a_static_token(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["half id token"], "28000|0",
+                "a half OAuth2 credential (id, no secret) is refused even with a static token (28000)")
+
+
+def test_a_half_oauth_secret_is_refused_even_with_a_static_token(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["half secret token"], "28000|0",
+                "a half OAuth2 credential (secret, no id) is refused even with a static token (28000)")
+
+
 def test_oauth_options_are_accepted_on_a_mapping(irs, expect):
     if _declined(irs, expect):
         return
     expect.text(irs["oauth on mapping"], "ok", "oauth options are accepted on a USER MAPPING (no error)")
+
+
+def test_a_static_token_wins_over_a_complete_oauth_pair(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["token wins"], "no error|0",
+                "a static token and a complete OAuth2 pair read by the token, with no token request")
 
 
 def test_an_oauth_option_on_the_server_is_rejected(irs, expect):
@@ -530,6 +623,54 @@ def test_a_superuser_waiver_lets_the_role_read_by_the_env_token(irs, expect):
         return
     expect.text(irs["ice_r control"], MDLOC,
                 "control: with credentials_required false set by a superuser, the same role reads by the environment token")
+
+
+def test_the_role_without_usage_holds_no_usage_on_the_server(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n usage"], "f", "premise: ice_n holds no USAGE on server pcat")
+
+
+def test_a_role_without_usage_is_refused_through_a_public_mapping(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n public"], "42501|0",
+                "a role without USAGE on the server is refused through a PUBLIC mapping (42501), before any request")
+
+
+def test_the_other_rest_functions_refuse_a_role_without_usage(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n others"], "42501|42501|42501|0",
+                "the namespace, table-list and scan functions refuse it too (42501), before any request")
+
+
+def test_a_revoked_role_is_refused_through_its_own_mapping(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n revoked"], "42501|0",
+                "after REVOKE USAGE the role's own mapping is refused (42501), before any request")
+
+
+def test_core_refuses_a_foreign_table_on_the_catalog_server(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n create ft"], "42501",
+                "control: core refuses that role a foreign table on the catalog server (42501)")
+
+
+def test_a_foreign_table_on_a_catalog_server_reads_nothing(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n ft read"], "55000|0",
+                "a foreign table on a catalog server reads nothing (55000, no handler), before any request")
+
+
+def test_a_granted_role_reads_through_the_public_mapping(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n granted"], MDLOC,
+                "control: once granted USAGE the same role reads through the PUBLIC mapping")
 
 
 def test_the_backend_survives_the_rest_server_arms(irs, expect):
