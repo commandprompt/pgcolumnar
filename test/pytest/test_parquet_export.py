@@ -193,6 +193,15 @@ def pqx(pgc_cluster, server_dir):
         r["bytes rows"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 65536"],
                                        f"SELECT pgcolumnar.export_parquet('pq_bytes', '{f['bytes']}')")
         r["bytes digest"] = _value(dsn, BYTES_DIGEST)
+        # #1843 review: the cut counts each row as written, not as stored
+        for t, ddl, gen in (("pq_w4", "id int", "SELECT g FROM generate_series(1, 1000) g"),
+                            ("pq_wnum", "n numeric", "SELECT 1e1000 FROM generate_series(1, 10)"),
+                            ("pq_wlist", "a numeric[]", "SELECT ARRAY[1e300, 1e300, 1e300] FROM generate_series(1, 10)")):
+            f[t] = server_dir / f"{t}.parquet"
+            _run(dsn, f"CREATE TABLE {t} ({ddl}) USING pgcolumnar")
+            _run(dsn, f"INSERT INTO {t} {gen}")
+            r[f"{t} rows"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 1024"],
+                                          f"SELECT pgcolumnar.export_parquet('{t}', '{f[t]}')")
         r["cap refusal"] = _set_refusal(dsn, "SET pgcolumnar.export_group_bytes = 268435457")
         r["dsn"] = dsn
         yield r
@@ -472,3 +481,63 @@ def test_over_1gib_of_one_column_exports_in_several_row_groups(pqx, expect):
     finally:
         path.unlink(missing_ok=True)
         _run(dsn, "DROP TABLE pq_huge")
+
+
+WIDE_NAME = "a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 row groups of 1"
+
+
+def _cut(fix, pa, table):
+    return f"{fix[table + ' rows']}|{_reading(_groups, pa, fix['files'][table])}"
+
+
+def test_a_row_group_cut_counts_an_int4s_level_byte(pqx, expect):
+    """#1843 review: an int4 buffers 4 bytes and a level byte, so a 1024-byte group
+    holds 204 rows (1020 bytes), not 205."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(_cut(pqx, pa, "pq_w4"), "1000|1000|204,204,204,204,184",
+                "the byte cut counts an int4's level byte: 1000 int4 rows under a 1024-byte cap make groups of 204,204,204,204,184")
+
+
+def test_a_row_group_cut_counts_a_numerics_text_form(pqx, expect):
+    """#1843 review: 1e1000 stores in a few bytes but is written as 1001 digits."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(_cut(pqx, pa, "pq_wnum"), "10|10|1,1,1,1,1,1,1,1,1,1",
+                "the byte cut counts a numeric's text form: 10 rows of 1e1000 under a 1024-byte cap make 10 groups of 1")
+
+
+def test_a_row_group_cut_counts_a_lists_elements_as_written(pqx, expect):
+    """#1843 review: three 1e300 elements are written as 301 digits each."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(_cut(pqx, pa, "pq_wlist"), "10|10|1,1,1,1,1,1,1,1,1,1",
+                "the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 groups of 1")
+
+
+def test_a_row_far_wider_as_written_than_stored_goes_in_a_group_of_its_own(pqx, expect):
+    """#1843 review, opt-in as the shell's arm is. Row 1 holds 260 MB of text; row 2
+    holds 8200 numerics of 1e100000, about 98 KB stored but 820 MB as text."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    if os.environ.get("PGC_RUN_OVER_1GB", "0") != "1":
+        expect.cannot_run("UNMET_PRECONDITION",
+                          "PGC_RUN_OVER_1GB is not 1; the arm needs several GB of memory and disk",
+                          name=WIDE_NAME)
+        return
+    dsn = pqx["dsn"]
+    path = pqx["files"]["t"].parent / "wide.parquet"
+    _run(dsn, "CREATE TABLE pq_wide (id int, t text, n numeric[]) USING pgcolumnar")
+    _run(dsn, "INSERT INTO pq_wide VALUES (1, repeat('a', 260000000), NULL)")
+    _run(dsn, "INSERT INTO pq_wide SELECT 2, NULL, array_fill(1e100000::numeric, ARRAY[8200])")
+    try:
+        got = _value_after(dsn, ["SET statement_timeout = '900s'"],
+                           f"SELECT pgcolumnar.export_parquet('pq_wide', '{path}')")
+        expect.text(f"{got}|{_reading(_groups, pa, path)}", "2|2|1,1", WIDE_NAME)
+    finally:
+        path.unlink(missing_ok=True)
+        _run(dsn, "DROP TABLE pq_wide")

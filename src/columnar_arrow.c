@@ -30,6 +30,7 @@
 
 #include "fmgr.h"
 #include "funcapi.h"
+#include "access/detoast.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/table.h"
@@ -978,6 +979,110 @@ arrowcol_bytes(const ArrowCol *c)
 	return bytes;
 }
 
+/*
+ * arrowcol_value_bytes
+ *		An upper bound on the bytes arrowcol_append adds for one value, counted
+ *		in the column's written form (#1811, #1843 review): the validity byte,
+ *		the fixed width or the offset, and the bytes of a variable-length value.
+ *		A numeric or jsonb written as text is measured by its text, which can be
+ *		far longer than the stored value. A value that arrowcol_append folds to
+ *		null adds less than this.
+ */
+static int64
+arrowcol_value_bytes(ArrowCol *c, Datum d, bool isnull)
+{
+	int64		bytes = 1;		/* validity */
+	int			k;
+
+	switch (c->kind)
+	{
+		case A_BOOL:
+			return bytes + 1;
+		case A_UTF8:
+		case A_BINARY:
+			bytes += 4;			/* offset */
+			if (isnull)
+				return bytes;
+			if (c->convertText)
+			{
+				char	   *str = OutputFunctionCall(&c->outFinfo, d);
+
+				bytes += (int64) strlen(str);
+				pfree(str);
+			}
+			else
+				bytes += (int64) toast_raw_datum_size(d) - VARHDRSZ;
+			return bytes;
+		case A_LIST:
+			bytes += 4;			/* list offset */
+			if (!isnull)
+			{
+				ArrowCol   *e = &c->children[0];
+				ArrayType  *arr = DatumGetArrayTypeP(d);
+				int			n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+
+				if (e->nchildren == 0 && !e->convertText &&
+					e->kind != A_UTF8 && e->kind != A_BINARY)
+					bytes += (int64) n * (1 + Max(e->width, 1));
+				else if (e->nchildren == 0 && !e->convertText)
+					bytes += (int64) n * (1 + 4) + ARR_SIZE(arr);
+				else
+				{
+					Datum	   *elems;
+					bool	   *enulls;
+					int			nelems;
+
+					deconstruct_array(arr, c->elemtype, c->elemlen,
+									  c->elembyval, c->elemalign,
+									  &elems, &enulls, &nelems);
+					for (k = 0; k < nelems; k++)
+						bytes += arrowcol_value_bytes(e, elems[k], enulls[k]);
+					pfree(elems);
+					pfree(enulls);
+				}
+				if ((Pointer) arr != DatumGetPointer(d))
+					pfree(arr);
+			}
+			return bytes;
+		case A_STRUCT:
+			if (isnull)
+			{
+				for (k = 0; k < c->nchildren; k++)
+					bytes += arrowcol_value_bytes(&c->children[k], (Datum) 0, true);
+			}
+			else
+			{
+				HeapTupleHeader th = DatumGetHeapTupleHeader(d);
+				TupleDesc	td = lookup_rowtype_tupdesc(HeapTupleHeaderGetTypeId(th),
+														HeapTupleHeaderGetTypMod(th));
+				HeapTupleData tmptup;
+				Datum	   *av = palloc(sizeof(Datum) * td->natts);
+				bool	   *an = palloc(sizeof(bool) * td->natts);
+				int			a;
+				int			fi = 0;
+
+				tmptup.t_len = HeapTupleHeaderGetDatumLength(th);
+				ItemPointerSetInvalid(&tmptup.t_self);
+				tmptup.t_tableOid = InvalidOid;
+				tmptup.t_data = th;
+				heap_deform_tuple(&tmptup, td, av, an);
+				for (a = 0; a < td->natts; a++)
+				{
+					if (TupleDescAttr(td, a)->attisdropped)
+						continue;
+					bytes += arrowcol_value_bytes(&c->children[fi], av[a], an[a]);
+					fi++;
+				}
+				ReleaseTupleDesc(td);
+				pfree(av);
+				pfree(an);
+			}
+			return bytes;
+		default:
+			return bytes + c->width;
+	}
+}
+
 /* write the buffered rows as one RecordBatch, then reset the columns */
 static void
 arrow_flush_batch(PqSink *snk, ArrowCol *cols, int ncols, int64 nrows,
@@ -1160,19 +1265,23 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 	while (PgColumnarReadNextRow(readState, values, nulls, &rowNumber))
 	{
 		int64		batchBytes = 0;
+		int64		rowBytes = 0;
 
 		CHECK_FOR_INTERRUPTS();
 
 		/*
 		 * Cut by bytes too (#1811): write the batch before a row that would
 		 * take its buffered bytes past the cap. The batch body is built in
-		 * one allocation, capped at 1 GiB.
+		 * one allocation, capped at 1 GiB. The row is counted as written,
+		 * not as stored (#1843 review).
 		 */
 		for (i = 0; i < ncols; i++)
+		{
 			batchBytes += arrowcol_bytes(&cols[i]);
+			rowBytes += arrowcol_value_bytes(&cols[i], values[i], nulls[i]);
+		}
 		if (batchRows > 0 &&
-			batchBytes + PgColumnarExportRowBytes(tupdesc, values, nulls) >
-			(int64) pgcolumnar_export_group_bytes)
+			batchBytes + rowBytes > (int64) pgcolumnar_export_group_bytes)
 		{
 			arrow_flush_batch(snk, cols, ncols, batchRows, batchCtx);
 			batchRows = 0;

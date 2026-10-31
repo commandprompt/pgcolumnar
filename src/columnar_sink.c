@@ -16,7 +16,6 @@
 
 #include <unistd.h>
 
-#include "access/detoast.h"
 #include "access/xact.h"
 #include "lib/ilist.h"
 #include "miscadmin.h"
@@ -299,34 +298,4 @@ void
 PgColumnarSinkAbortAndRethrow(PqSink *snk)
 {
 	PgColumnarCleanupAndRethrow(sink_abort_cleanup, snk);
-}
-
-/*
- * PgColumnarExportRowBytes
- *		The bytes a row's values take as PostgreSQL holds them: the fixed width,
- *		or a varlena's full size, or a cstring's length. The writers add a little
- *		per value (a length prefix, a level or validity byte), so this is close to
- *		what the row adds to a group, and well above it for a compressed value.
- *		They use it to start a new group before a row would pass the byte cap.
- */
-int64
-PgColumnarExportRowBytes(TupleDesc tupdesc, const Datum *values, const bool *nulls)
-{
-	int64		bytes = 0;
-	int			i;
-
-	for (i = 0; i < tupdesc->natts; i++)
-	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
-
-		if (nulls[i])
-			continue;
-		if (att->attlen > 0)
-			bytes += att->attlen;
-		else if (att->attlen == -1)
-			bytes += (int64) toast_raw_datum_size(values[i]);
-		else
-			bytes += (int64) strlen(DatumGetCString(values[i])) + 1;
-	}
-	return bytes;
 }

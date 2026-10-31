@@ -298,6 +298,30 @@ check "a row group is cut at the byte cap: 40 rows of 10000 bytes under a 65536-
 	"$pq_bytes_rows|$(pq_groups "$BYTESPQ")" "40|40|6,6,6,6,6,6,4"
 check "and the byte-cut file reads back every row exactly, by id, length and md5" \
 	"$(pq_digest "$BYTESPQ")" "$(q "$BYTES_DIGEST")"
+# The cut counts the bytes the writer buffers for a row, not the bytes PostgreSQL stores
+# (#1843 review). Under a 1024-byte cap: an int4 buffers 4 bytes and a level byte, so a
+# group holds 204 rows (1020 bytes), not 205 (1025). An unconstrained numeric is written
+# as text: 1e1000 stores in a few bytes but buffers 1006 (a 4-byte length, 1001 digits
+# and a level byte), so each row is a group of its own. A numeric[] of three 1e300
+# buffers 921 bytes (each element: 301 digits, a length and two level bytes).
+pq_cut() {	# pq_cut TABLE FILE CAP -> "rows|rows|n1,n2,..." for the export under CAP
+	local n
+	n="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		-c "SET pgcolumnar.export_group_bytes = $3" -c "SELECT pgcolumnar.export_parquet('$1', '$2')" 2>&1 | tail -1)"
+	echo "$n|$(pq_groups "$2")"
+}
+psql_run "CREATE TABLE pq_w4 (id int) USING pgcolumnar;
+          INSERT INTO pq_w4 SELECT g FROM generate_series(1, 1000) g;
+          CREATE TABLE pq_wnum (n numeric) USING pgcolumnar;
+          INSERT INTO pq_wnum SELECT 1e1000 FROM generate_series(1, 10);
+          CREATE TABLE pq_wlist (a numeric[]) USING pgcolumnar;
+          INSERT INTO pq_wlist SELECT ARRAY[1e300, 1e300, 1e300] FROM generate_series(1, 10);"
+check "the byte cut counts an int4's level byte: 1000 int4 rows under a 1024-byte cap make groups of 204,204,204,204,184" \
+	"$(pq_cut pq_w4 "$PGC_WORKDIR/w4.parquet" 1024)" "1000|1000|204,204,204,204,184"
+check "the byte cut counts a numeric's text form: 10 rows of 1e1000 under a 1024-byte cap make 10 groups of 1" \
+	"$(pq_cut pq_wnum "$PGC_WORKDIR/wnum.parquet" 1024)" "10|10|1,1,1,1,1,1,1,1,1,1"
+check "the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 groups of 1" \
+	"$(pq_cut pq_wlist "$PGC_WORKDIR/wlist.parquet" 1024)" "10|10|1,1,1,1,1,1,1,1,1,1"
 check "export_group_bytes refuses a value above its 256 MiB maximum" \
 	"$(out="$(psql_run "SET pgcolumnar.export_group_bytes = 268435457" 2>&1)"; e="$(sed -n 's/^ERROR: *//p' <<<"$out" | head -1)"; echo "${e:-accepted}")" \
 	'268435457 is outside the valid range for parameter "pgcolumnar.export_group_bytes" (1024 .. 268435456)'
@@ -321,6 +345,28 @@ if [ "${PGC_RUN_OVER_1GB:-0}" = 1 ]; then
 	psql_run "DROP TABLE pq_huge;"
 else
 	check_skip "$OVERPQ" "SKIP  $OVERPQ (set PGC_RUN_OVER_1GB=1; it needs several GB of memory and disk)" "opt-in heavy arm"
+fi
+
+# A row whose written form is far larger than its stored form, after a large row (#1843
+# review). Opt-in for the same reason. Row 1 holds 260 MB of text. Row 2 holds 8200
+# numerics of 1e100000: about 98 KB stored, but 820 MB as text. Counted by its stored
+# size, row 2 joined row 1's group and the export failed with the raw string-buffer
+# error. Counted as written, it goes in a group of its own.
+WIDEPQN="a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 row groups of 1"
+if [ "${PGC_RUN_OVER_1GB:-0}" = 1 ]; then
+	WIDEPQ="$PGC_WORKDIR/wide.parquet"
+	psql_run "CREATE TABLE pq_wide (id int, t text, n numeric[]) USING pgcolumnar;
+	          INSERT INTO pq_wide VALUES (1, repeat('a', 260000000), NULL);
+	          INSERT INTO pq_wide SELECT 2, NULL, array_fill(1e100000::numeric, ARRAY[8200]);" >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		-c "SET statement_timeout = '900s'" \
+		-c "SELECT pgcolumnar.export_parquet('pq_wide', '$WIDEPQ')" 2>&1)"
+	got="$(grep -m1 '^ERROR' <<<"$out" || tail -1 <<<"$out")"
+	check "$WIDEPQN" "$got|$(pq_groups "$WIDEPQ")" "2|2|1,1"
+	rm -f "$WIDEPQ"
+	psql_run "DROP TABLE pq_wide;"
+else
+	check_skip "$WIDEPQN" "SKIP  $WIDEPQN (set PGC_RUN_OVER_1GB=1; it needs several GB of memory and disk)" "opt-in heavy arm"
 fi
 
 pgc_summary

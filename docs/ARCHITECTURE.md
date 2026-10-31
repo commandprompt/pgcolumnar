@@ -288,6 +288,7 @@ V5); rows are read in physical order via the scalar reader and buffered one
 RecordBatch at a time (validity bitmap, then values, with utf8/binary offsets).
 A batch holds 16384 rows, or fewer: a new batch starts before a row that would
 take the buffered bytes past `pgcolumnar.export_group_bytes` (256 MiB by default).
+The row is counted as written: a numeric or jsonb by its text.
 No libarrow dependency. Supported types are int2/int4/int8, float4/float8, bool,
 text/varchar, bytea, date/time/timestamp/timestamptz, uuid, numeric, and
 json/jsonb; other types are rejected. Little-endian hosts only.
@@ -301,7 +302,8 @@ levels (Dremel): scalars (one leaf), 1-D arrays (a 3-level LIST), and composites
 (a group with one leaf per field). One row group per 65536 rows, or fewer: a new
 group starts before a row that would take the buffered bytes past
 `pgcolumnar.export_group_bytes` (256 MiB by default), because each leaf buffers
-its values in one allocation and PostgreSQL caps one allocation at 1 GiB. No libparquet
+its values in one allocation and PostgreSQL caps one allocation at 1 GiB. The row
+is counted as written, with its level bytes and value lengths. No libparquet
 dependency; same scalar type coverage as the Arrow writer.
 
 ### columnar_parquet_reader.c
