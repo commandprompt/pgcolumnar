@@ -1262,4 +1262,6 @@ guard_tests 854
 # 8 checks in one test of 8 parameters, by collection over the cluster files.
 # cluster_tests 4518 -> 4520 for #1784's two upper-case scheme checks in test_objstore_listing.py
 # (an S3:// prefix and an S3:// pattern), 2 parameters of the same test, by collection over the cluster files.
-cluster_tests 4520
+# cluster_tests 4520 -> 4521 for #1784's S3://.../glb/[A_]*.parquet check in test_objstore_listing.py (only the
+# scheme ignores case), 1 parameter of the same test: `4521 tests collected` over the cluster files.
+cluster_tests 4521

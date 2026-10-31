@@ -198,6 +198,11 @@ check "an upper-case scheme prefix S3://.../_landing/ reads as s3:// does" \
 	"$(rpqu _landing/)" "3 6"
 check "an upper-case scheme glob S3://.../_landing/*.parquet matches as s3:// does" \
 	"$(rpqu '_landing/*.parquet')" "3 6"
+# Only the scheme ignores case. After it, a pattern matches with case, as a
+# local glob() and S3 keys do: [A_] matches _b.parquet (5 rows, sum 60) and
+# not a.parquet.
+check "an upper-case scheme glob S3://.../glb/[A_]*.parquet is case-sensitive after the scheme" \
+	"$(rpqu 'glb/[A_]*.parquet')" "5 60"
 
 # ---- an exact key is still one GET, no LIST ---------------------------------
 : > "$S3_LOG"
