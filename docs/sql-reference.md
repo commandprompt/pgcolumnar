@@ -1414,8 +1414,8 @@ A remote path is read as an exact key, a prefix, or a pattern. An `s3://` URL
 that names an object reads that one object, with no listing. The read starts
 with one HEAD, then fetches the footer and the column data with ranged GETs. When
 the HEAD returns a strong ETag of at most 79 characters, every GET sends that
-ETag in an `If-Match` header. If another client then overwrites the object during
-the read, the server answers 412. The query then fails with `changed while it was
+ETag in an `If-Match` header. The 79 includes the ETag's two quote marks. If
+another client then overwrites the object during the read, the server answers 412. The query then fails with `changed while it was
 being read`, instead of returning rows from two versions. Run the statement again
 to read the new version. A server that sends no ETag, a weak one, or a longer
 one cannot pin the read (see [limitations](limitations.md#reading-external-parquet)). An

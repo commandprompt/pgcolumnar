@@ -86,6 +86,13 @@ PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
 /* One wait slice; consecutive silent slices add up to the inactivity limit. */
 #define OS_WAIT_SLICE_MS	5000
 #define OS_MAX_QUIET_SLICES	12	/* 60 s of silence is a dead peer */
+/*
+ * Bytes kept of a response ETag, terminator included, so the longest ETag kept
+ * is OS_ETAG_BUF - 1 characters. The parsed ETag and the read pin share this one
+ * size: a pin smaller than the parse buffer would cut a kept ETag short, and a
+ * cut ETag matches nothing, so every pinned GET would fail (#1805 review).
+ */
+#define OS_ETAG_BUF			80
 
 struct PgColumnarObjHandle
 {
@@ -106,7 +113,7 @@ struct PgColumnarObjHandle
 	 * GET so one read sees one version of the object (#1805). "" when the
 	 * server sent none, or only a weak one: then reads are not pinned.
 	 */
-	char		pin_etag[80];
+	char		pin_etag[OS_ETAG_BUF];
 	uint64		served;			/* requests completed on this connection */
 
 	/*
@@ -161,7 +168,7 @@ typedef struct OsResponse
 	int64		content_length; /* -1 when absent */
 	bool		chunked;
 	bool		conn_close;
-	char		etag[80];		/* response ETag, "" when absent or too long */
+	char		etag[OS_ETAG_BUF];	/* response ETag, "" when absent or too long */
 } OsResponse;
 
 static dlist_head os_open_handles = DLIST_STATIC_INIT(os_open_handles);
