@@ -575,6 +575,57 @@ true until the next version shipped.
   `bigint`. `read_parquet` by field id widens the same way; the positional form
   does not. A wider `decimal` already read. `test/iceberg_scan.sh`,
   `test/iceberg_rest_scan.sh` and their pytest twins.
+- `pgcolumnar.iceberg_data_files` lists an Iceberg table after a copy-on-write
+  delete or a filtered overwrite, instead of refusing it with "has delete files"
+  (#1791). Such a commit records the data file it replaced as a removed entry
+  (status 2, DELETED) in the new snapshot's manifest. The lister treated that
+  entry as a delete file and refused the whole table, although the table had no
+  delete files; `iceberg_scan` already skipped it. The lister now skips it too, and
+  still refuses delete manifests and delete files. Measured on a pyiceberg table
+  with 10 rows after deleting 5: an error before, and the one live 5-row file
+  after. `test/iceberg_data_files.sh` and `test_iceberg_data_files.py`, with a new
+  pyiceberg fixture, `test/fixtures/iceberg/warehouse_cow`.
+
+- A user mapping for an Iceberg REST catalog server that sets a static `token`
+  and only one of `oauth_client_id` and `oauth_client_secret` is now refused
+  (#1794), as the docs say. Before, the static token was used and the stray half
+  of the pair was ignored without a word. The call now fails with SQLSTATE 28000,
+  `incomplete OAuth2 credential`, before any request reaches the catalog.
+  `test/iceberg_rest_server.sh` and `test_iceberg_rest_server.py` check both halves.
+- `iceberg_rest_table_location` and `iceberg_rest_scan` read a catalog reply
+  that ends when the server closes the connection (#1787). Such a reply carries
+  neither `Content-Length` nor chunked framing, which HTTP/1.1 allows, and the
+  client refused it with `listing has no length`. The Apache Iceberg REST
+  catalog sends every reply over about 32 KB this way, so a table with about 41
+  or more snapshots could not be read through it. Measured against Apache
+  Iceberg 1.12.0: a 60-snapshot table now resolves, and `iceberg_rest_scan`
+  returns its 60 rows. The 64 MB response cap still applies, and an over-cap
+  reply is refused with SQLSTATE 54000 and the message `response from "..."
+  exceeded ... bytes`, which used to say `object listing from`.
+  `test/iceberg_rest.sh` and `test_iceberg_rest.py`.
+
+- `parallel_export_parquet` to a remote prefix now obeys the calling session's
+  `pgcolumnar.objstore_allowed_endpoints`, `objstore_s3_addressing` and
+  `objstore_part_size` (#1780). Its background workers started from
+  `postgresql.conf` and ignored a `SET`. A session that set the allow-list to
+  `''` still had its workers upload their parts (two objects with two
+  workers); the call then failed and left them behind. The dispatcher now checks the endpoint against the
+  session's list before any worker starts, and passes the three settings to
+  the workers. The check sends no request: the object-store module gains the
+  entry `check_endpoint` (module ABI 7), so the module and the extension must
+  come from the same build. `test/objstore_sink_write.sh` and
+  `test_objstore_sink_write.py`.
+
+- Prefix and pattern reads of `s3://` paths now work under
+  `pgcolumnar.objstore_s3_addressing = 'virtual'` (#1783). The listing request put
+  the bucket in the path although the bucket was already in the host name, so S3
+  read it as a fetch of an object named after the bucket and answered HTTP 404:
+  `LIST to "s3://bucket/_" returned HTTP 404`. Exact-key reads were not affected.
+  The cleanup listing a failed `parallel_export_parquet` runs to abort its
+  unfinished multipart uploads had the same fault. That cleanup discards its
+  errors, so the uploads it should have aborted could stay open. Under virtual-host addressing both listings now
+  go to the bucket root, `/`. Path-style addressing is unchanged.
+  `test/objstore_addressing.sh` and `test_objstore_addressing.py`.
 - `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
   read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
   or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that
