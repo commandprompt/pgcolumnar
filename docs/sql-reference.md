@@ -1147,9 +1147,11 @@ Applying equality deletes reads each affected data file's delete columns
 twice. A probe pass computes the row ordinals to drop. Each applicable
 equality-delete file is read once per scan into an in-memory hash table keyed
 on its `equality_ids` columns. The probe hashes each data row once per delete
-file and compares it only with delete rows that have the same hash. The cost
-therefore grows with the number of data rows plus the number of delete rows,
-not with their product. All delete rows stay in memory until the scan ends.
+file and walks only that hash's bucket. There it compares the data row only
+with delete rows that have the same hash. The cost therefore grows with the number of data
+rows times the number of applicable delete files, plus the number of delete
+rows. It no longer grows with data rows times delete rows. All delete rows stay
+in memory until the scan ends.
 
 A malformed manifest is refused, not read as far as it parses. A manifest entry
 that records no data-file path is an error, as is a manifest whose embedded Avro

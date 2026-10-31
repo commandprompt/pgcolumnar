@@ -430,6 +430,13 @@ emit_eq_variant("eqtwo", [(2, EQ_SEQ, EQ_ID5, [1], 1),
 #   deletes 1,2 (eu) and 5 -> survivors 3,4
 emit_eq_variant("eqmixed", [(1, DATA_SEQ, DEL_PATH, None, 2),
                             (2, EQ_SEQ, EQ_ID5, [1], 1)])
+# a zero-row equality-delete file is legal. The reader builds no bucket array
+# for it, so the probe must skip it rather than read the missing array (#1817).
+# It comes first, so every data row probes it before the id=5 file.
+EQ_EMPTY = write_eqdel("eqdel-empty.parquet", [(F_ID, [])])
+emit_eq_variant("eqempty", [(2, EQ_SEQ, EQ_EMPTY, [1], 0),
+                            (2, EQ_SEQ, EQ_ID5, [1], 1)])
+#   the empty file deletes nothing; id 5 goes -> survivors 1,2,3,4
 #   position deletes (ordinals 1,3 = ids 2,4; seq 5 >= 5 applies) UNION the
 #   equality delete of id 5 -> survivors 1,3
 
@@ -458,19 +465,23 @@ DM_MANY = f"{LOC}/metadata/data-manifest-many.avro"
 open(os.path.join(md, "data-manifest-many.avro"), "wb").write(
     ocf(ENTRY_SCHEMA, entry(1, DATA_SEQ, 0, f"{LOC}/data/data-many.parquet",
                             "PARQUET", len(MANY_IDS), 1000)))
-# on id: 1990 keys that match nothing, then 10 that match, last, so a linear
-# walk reaches them only after every miss
+# on id: 10 keys that match, then 1990 that match nothing. The reader inserts
+# each delete row at the head of its bucket's chain, so a row written early
+# sits behind the rows written after it. Writing the hits first puts most of
+# them deeper than the head of their chain, where a chain-linking bug loses
+# them (review of #1860).
 MANY_ID_HITS = [1001 + 37 * k for k in range(10)]
-MANY_ID_KEYS = list(range(900001, 901991)) + MANY_ID_HITS
+MANY_ID_KEYS = MANY_ID_HITS + list(range(900001, 901991))
 EQ_MANY_ID = write_eqdel("eqdel-many-id.parquet", [(F_ID, MANY_ID_KEYS)])
-# on (id, region): 990 pairs with the right id and a wrong region (AND, not
-# OR; id 2500's region is NULL, so its 'eu' pair is a value against a NULL),
-# 8 exact pairs, 2 NULL-region pairs that match NULL-region rows, and 1
-# NULL-region pair whose row has a region (NULL matches only NULL)
-MANY_PAIR = [(i, next(r for r in MANY_REGIONS if r != many_region(i)))
-             for i in range(2001, 2991)]
-MANY_PAIR += [(i, many_region(i)) for i in range(3001, 3009)]
+# on (id, region), the matching pairs first for the same reason: 8 exact
+# pairs, 2 NULL-region pairs that match NULL-region rows, 1 NULL-region pair
+# whose row has a region (NULL matches only NULL), then 990 pairs with the
+# right id and a wrong region (AND, not OR; id 2500's region is NULL, so its
+# 'eu' pair is a value against a NULL)
+MANY_PAIR = [(i, many_region(i)) for i in range(3001, 3009)]
 MANY_PAIR += [(1500, None), (4000, None), (1003, None)]
+MANY_PAIR += [(i, next(r for r in MANY_REGIONS if r != many_region(i)))
+              for i in range(2001, 2991)]
 EQ_MANY_PAIR = write_eqdel("eqdel-many-pair.parquet",
                            [(F_ID, [p[0] for p in MANY_PAIR]),
                             (F_REGION, [p[1] for p in MANY_PAIR])])
@@ -1204,6 +1215,7 @@ oracle = {"deleted_positions": DELETED_POS,
               "eqtwo": [3, 4],
               "eqmixed": [1, 3],
               "eqmany": MANY_SURVIVORS,
+              "eqempty": [1, 2, 3, 4],
           },
           # deletion-vector arms: surviving ids, hand-derived at each variant
           "dv_surviving": {

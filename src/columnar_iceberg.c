@@ -2810,16 +2810,28 @@ ice_cmp_u64(const void *a, const void *b)
  * are equal; a null delete value matches a null data value (IS NULL semantics,
  * per the spec), and only a null. mape maps E's column index to the union
  * position the probe read that column into. The data row is hashed once and
- * tested only against the delete rows in its bucket with the same hash; each
- * such test adds one to *ncmp.
+ * walks only its bucket's chain. Each chain row it visits adds one to
+ * st->visited; each chain row with the same hash is tested for equality and
+ * adds one to st->compared. st->longest keeps the most chain rows one walk
+ * visited, so a test can see a chain that holds every delete row (#1817).
  */
+typedef struct IceEqProbeStats
+{
+	uint64		visited;		/* chain rows walked, before the hash filter */
+	uint64		compared;		/* chain rows tested for equality */
+	uint64		longest;		/* most chain rows visited by one walk */
+}			IceEqProbeStats;
+
 static bool
 ice_eq_file_matches(IceEqDel *E, const int *mape, const Datum *dv,
-					const bool *dn, uint64 *ncmp)
+					const bool *dn, IceEqProbeStats *st)
 {
 	uint32		h;
 	IceEqRow   *row;
+	uint64		walked = 0;
+	bool		found = false;
 
+	/* a zero-row delete file has no bucket array; it matches nothing */
 	if (E->nbuckets == 0)
 		return false;
 	h = ice_eq_hash(E, dv, dn, mape);
@@ -2828,9 +2840,10 @@ ice_eq_file_matches(IceEqDel *E, const int *mape, const Datum *dv,
 		bool		all = true;
 		int			i;
 
+		walked++;
 		if (row->hash != h)
 			continue;
-		(*ncmp)++;
+		st->compared++;
 		for (i = 0; i < E->nids; i++)
 		{
 			int			k = mape[i];
@@ -2850,9 +2863,15 @@ ice_eq_file_matches(IceEqDel *E, const int *mape, const Datum *dv,
 			}
 		}
 		if (all)
-			return true;
+		{
+			found = true;
+			break;
+		}
 	}
-	return false;
+	st->visited += walked;
+	if (walked > st->longest)
+		st->longest = walked;
+	return found;
 }
 
 /*
@@ -2887,7 +2906,7 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 	int			e;
 	int			k;
 	uint64		ord = 0;
-	uint64		ncmp = 0;
+	IceEqProbeStats st = {0, 0, 0};
 	int64		ndel = 0;
 	int			nmatched = 0;
 
@@ -2954,7 +2973,7 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 		foreach(lc, elig)
 		{
 			if (ice_eq_file_matches((IceEqDel *) lfirst(lc), map[e], dv, dn,
-									&ncmp))
+									&st))
 			{
 				matched = true;
 				break;
@@ -2984,13 +3003,16 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(c->filectx);
 
-	/* the probe's cost, for tests and diagnosis (#1817): how many (data row,
-	 * delete row) pairs it tested for equality */
+	/* the probe's cost, for tests and diagnosis (#1817): how many chain rows
+	 * it walked, how many of them it tested for equality, and the longest
+	 * single walk */
 	foreach(lc, elig)
 		ndel += ((IceEqDel *) lfirst(lc))->nrows;
 	elog(DEBUG1, "pgcolumnar iceberg_scan equality-delete probe: data_rows=" UINT64_FORMAT
-		 " delete_rows=" INT64_FORMAT " comparisons=" UINT64_FORMAT " matched=%d",
-		 ord, ndel, ncmp, nmatched);
+		 " delete_files=%d delete_rows=" INT64_FORMAT " visited=" UINT64_FORMAT
+		 " longest_walk=" UINT64_FORMAT " comparisons=" UINT64_FORMAT " matched=%d",
+		 ord, list_length(elig), ndel, st.visited, st.longest, st.compared,
+		 nmatched);
 	return (int64) ord;
 }
 

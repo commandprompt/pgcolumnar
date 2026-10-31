@@ -3073,6 +3073,7 @@ iceberg_deletes	iceberg_deletes	a position delete with a negative pos is refused
 iceberg_deletes	iceberg_deletes	a position delete with a null pos is refused (XX001, not silently dropped)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position-delete row with a null pos is not refused (the n1 || n2 guard skipped)
 iceberg_deletes	iceberg_deletes	a position delete with an inherited (null-entry) sequence number applies	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
 iceberg_deletes	iceberg_deletes	a v1 manifest without a sequence_number column reads (default 0, 5 rows)	15;16;17;18;19	never	-
+iceberg_deletes	iceberg_deletes	a zero-row equality-delete file deletes nothing and the next file still applies	15;16;17;18;19	2026-10-31	zero-row equality-delete guard removed: the probe reads a NULL bucket array (#1817)
 iceberg_deletes	iceberg_deletes	an EXISTING entry with a null sequence number is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an EXISTING (status 0) manifest entry with a null sequence number is not refused
 iceberg_deletes	iceberg_deletes	an equality column missing from the data file errors (22023)	15;16;17;18;19	never	-
 iceberg_deletes	iceberg_deletes	an equality delete at an equal sequence number does not apply	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete applies at an equal sequence number (both the pre-skip and the per-file strict < relaxed to <=)
@@ -3082,7 +3083,7 @@ iceberg_deletes	iceberg_deletes	an equality-delete path outside the table locati
 iceberg_deletes	iceberg_deletes	an equality_ids value beyond int32 refuses the manifest (XX001)	15;16;17;18;19	2026-10-21	columnar_avro.c: an equality_ids value beyond int32 is not refused (truncated)
 iceberg_deletes	iceberg_deletes	backend still up after the audit arms	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition spec without a fields array is not refused (a NULL deref kills the backend)
 iceberg_deletes	iceberg_deletes	backend still up after the bad-sequence refusal	15;16;17;18;19	never	-
-iceberg_deletes	iceberg_deletes	backend still up after the equality applications	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a null equality-delete value matches any data value (comparing the null Datum kills the backend)
+iceberg_deletes	iceberg_deletes	backend still up after the equality applications	15;16;17;18;19	2026-10-31	columnar_iceberg.c: a null equality-delete value matches any data value (comparing the null Datum kills the backend);zero-row equality-delete guard removed: the probe reads a NULL bucket array (#1817)
 iceberg_deletes	iceberg_deletes	backend still up after the equality refusals	15;16;17;18;19	never	-
 iceberg_deletes	iceberg_deletes	backend still up after the negative-pos refusal	15;16;17;18;19	never	-
 iceberg_deletes	iceberg_deletes	backend still up after the null-pos refusal	15;16;17;18;19	2026-10-21	columnar_iceberg.c: abort() in place of the null-pos refusal
@@ -3090,7 +3091,7 @@ iceberg_deletes	iceberg_deletes	columns beyond equality_ids are ignored for matc
 iceberg_deletes	iceberg_deletes	equality delete drops matching rows (survivors == oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: no equality-delete row ever matches
 iceberg_deletes	iceberg_deletes	equality deletes apply when the delete column is not projected	15;16;17;18;19	2026-10-21	columnar_iceberg.c: no equality-delete row ever matches
 iceberg_deletes	iceberg_deletes	exactly the two deleted rows were removed (5 - 2 = 3)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
-iceberg_deletes	iceberg_deletes	many equality-delete rows drop exactly the matching rows (survivors == oracle)	15;16;17;18;19	2026-10-31	the probe hashes a NULL equality value differently from the delete side (#1817)
+iceberg_deletes	iceberg_deletes	many equality-delete rows drop exactly the matching rows (survivors == oracle)	15;16;17;18;19	2026-10-31	chain link dropped: row->next = NULL, so a delete row behind its bucket head is lost (#1817);the probe hashes a NULL equality value differently from the delete side (#1817)
 iceberg_deletes	iceberg_deletes	multi-column equality matches all columns (AND, not OR)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete compares only its first equality column (multi-column match becomes first-column)
 iceberg_deletes	iceberg_deletes	multiple equality-delete files apply their union	15;16;17;18;19	2026-10-21	columnar_iceberg.c: no equality-delete row ever matches
 iceberg_deletes	iceberg_deletes	position and equality deletes combine	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
@@ -3098,7 +3099,7 @@ iceberg_deletes	iceberg_deletes	position deletes apply under column projection (
 iceberg_deletes	iceberg_deletes	position deletes drop the listed rows (surviving == oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
 iceberg_deletes	iceberg_deletes	the data file has 5 rows before deletes	15;16;17;18;19	never	-
 iceberg_deletes	iceberg_deletes	the deleted ids (2, 4) are gone	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies only when strictly newer than the data (> where the spec says >=)
-iceberg_deletes	iceberg_deletes	the equality-delete probe tests each data row against at most one delete row, not all of them (#1817)	15;16;17;18;19	2026-10-31	equality deletes probed by walking every delete row instead of the hash table (#1817)
+iceberg_deletes	iceberg_deletes	the equality-delete probe walks a short hash chain per data row, not every delete row (#1817)	15;16;17;18;19	2026-10-31	hash table stuck at one bucket, no growth: every data row walks every delete row (#1817)
 iceberg_deletes	iceberg_deletes	the null-region row is gone, the non-null rows remain	15;16;17;18;19	2026-10-31	columnar_iceberg.c: a null equality-delete value matches any data value (comparing the null Datum kills the backend);the probe hashes a NULL equality value differently from the delete side (#1817)
 iceberg_deletes	iceberg_deletes	the us-partition rows survive an eu-scoped delete	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition-scoped equality delete ignores the partition value
 iceberg_deletes	iceberg_deletes	the would-be-deleted ids survive when the delete is older than the data	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies whatever its sequence number
