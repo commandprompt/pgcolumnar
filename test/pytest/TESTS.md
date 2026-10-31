@@ -10708,7 +10708,7 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 
 ## 270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must
 
-The twin of `test/iceberg_deletes.sh`. Hand-crafted snapshots exercise position deletes (the <= sequence rule, inheritance, per-file scoping, ordinal 0), equality deletes (the strict < rule, multi-column AND, nulls, unions, mixed with position deletes) and partition-scoped equality deletes, against the generator's oracle; thirteen corrupt or unsupported snapshots are refused, each by its own guard, and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies.
+The twin of `test/iceberg_deletes.sh`. Hand-crafted snapshots exercise position deletes (the <= sequence rule, inheritance, per-file scoping, ordinal 0), equality deletes (the strict < rule, multi-column AND, nulls, unions, mixed with position deletes, and a hash probe whose comparison count stays bounded with thousands of delete rows, #1817) and partition-scoped equality deletes, against the generator's oracle; thirteen corrupt or unsupported snapshots are refused, each by its own guard, and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies.
 
 ### Every test
 
@@ -10740,6 +10740,8 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_the_null_region_row_is_gone` | the null-region row is gone, the non-null rows remain |
 | `test_multiple_equality_delete_files_apply_their_union` | multiple equality-delete files apply their union |
 | `test_position_and_equality_deletes_combine` | position and equality deletes combine |
+| `test_many_equality_delete_rows_drop_exactly_the_matching_rows` | many equality-delete rows drop exactly the matching rows (survivors == oracle) |
+| `test_the_equality_delete_probe_is_bounded` | the equality-delete probe tests each data row against at most one delete row, not all of them (#1817) |
 | `test_equality_deletes_apply_to_an_unprojected_column` | equality deletes apply when the delete column is not projected |
 | `test_the_backend_survives_the_equality_applications` | backend still up after the equality applications |
 | `test_an_equality_delete_without_equality_ids_is_refused` | an equality delete without equality_ids is refused (XX001) |

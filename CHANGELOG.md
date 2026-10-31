@@ -466,6 +466,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- `iceberg_scan` applies equality deletes through a hash table (#1817). It used
+  to compare every data row with every delete row, so the cost grew with their
+  product: 50,000 rows against 32,000 delete keys took 6 s, and a table with
+  many upserts could take minutes. Each delete file is now hashed once, on its
+  `equality_ids` columns, and each data row is compared only with delete rows
+  that share its hash. On the test fixture, 4,005 data rows against 3,001
+  delete rows, the probe now makes 20 comparisons, one per deleted row, instead of
+  12,008,895. A NULL still matches only a NULL. A new DEBUG1 line reports the
+  probe's data rows, delete rows, comparisons and matches.
+  `test/iceberg_deletes.sh` and `test_iceberg_deletes.py`.
 - `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
   read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
   or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that

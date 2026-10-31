@@ -1260,4 +1260,6 @@ guard_tests 854
 # 16 checks in 16 tests, by collection over the cluster files.
 # cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
 # that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
-cluster_tests 4516
+# cluster_tests 4516 -> 4518 for #1817's two tests in test_iceberg_deletes.py: many equality-delete
+# rows drop the matching rows, and the probe's comparison count stays bounded, by collection.
+cluster_tests 4518

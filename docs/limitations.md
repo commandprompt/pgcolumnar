@@ -1180,5 +1180,8 @@ table at its current snapshot. It has these limits:
   position-delete position, and a `current-schema-id` that names no schema.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet.
+- A scan holds every applicable equality-delete row in memory until it ends.
+  The memory is not bounded by `work_mem`, so a table with very many
+  equality-delete rows needs memory in proportion to them.
 - The reader does not write or commit to an Iceberg table, and it reads only the
   current snapshot. Time travel to an older snapshot is not supported.

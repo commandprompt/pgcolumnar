@@ -28,6 +28,7 @@
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
+#include "common/hashfn.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -2540,15 +2541,20 @@ ice_eq_col_type(JsonbContainer *root, int32 fid, const char *path,
 	return InvalidOid;			/* unreachable */
 }
 
-/* one equality-delete row: the delete-column values, in the file's id order */
+/* one equality-delete row: the delete-column values, in the file's id order,
+ * chained into its file's hash table by the hash of those values */
 typedef struct IceEqRow
 {
 	Datum	   *vals;
 	bool	   *nulls;
+	uint32		hash;
+	struct IceEqRow *next;		/* the next row in the same bucket */
 }			IceEqRow;
 
 /* one equality-delete file, read into memory: its sequence number, the columns
- * that define the match, and every delete row */
+ * that define the match, and every delete row, in a hash table keyed on the
+ * equality columns (#1817: a data row is tested only against the delete rows
+ * in its bucket, not against every delete row) */
 typedef struct IceEqDel
 {
 	int64		seq;
@@ -2557,12 +2563,45 @@ typedef struct IceEqDel
 	Oid		   *types;
 	int16	   *typlen;
 	bool	   *typbyval;
-	List	   *rows;			/* IceEqRow* */
+	TypeCacheEntry **tc;		/* per column: its equality and hash functions */
+	int64		nrows;
+	uint32		nbuckets;		/* a power of two; 0 when the file has no rows */
+	IceEqRow  **buckets;
 	bool		partitioned;	/* delete written under a partitioned spec */
 	int32		spec_id;		/* its partition spec id (partitioned only) */
 	PgColumnarAvroPartCell *part_cells; /* its partition tuple (partitioned) */
 	int			npart_cells;
 }			IceEqDel;
+
+/*
+ * The hash of one row's equality-column values. A NULL hashes to a fixed value
+ * of its own, so a NULL can share a bucket only with rows that may equal it;
+ * the equality test still decides (NULL matches only NULL). map, when given,
+ * maps E's column index to the position of that column in vals/nulls.
+ */
+#define ICE_EQ_NULL_HASH 0x9e3779b9U
+
+static uint32
+ice_eq_hash(IceEqDel *E, const Datum *vals, const bool *nulls, const int *map)
+{
+	uint32		h = 0;
+	int			i;
+
+	for (i = 0; i < E->nids; i++)
+	{
+		int			k = map ? map[i] : i;
+		uint32		hv;
+
+		if (nulls[k])
+			hv = ICE_EQ_NULL_HASH;
+		else
+			hv = DatumGetUInt32(FunctionCall1Coll(&E->tc[i]->hash_proc_finfo,
+												  DEFAULT_COLLATION_OID,
+												  vals[k]));
+		h = hash_combine(h, hv);
+	}
+	return h;
+}
 
 /*
  * Read every applicable equality-delete file into memory. A delete whose
@@ -2602,6 +2641,7 @@ ice_read_eq_deletes(IceScanCtx *c, JsonbContainer *root, const char *path,
 		Tuplestorestate *ts;
 		char	   *safe;
 		MemoryContext old;
+		List	   *rows;
 		int			i;
 
 		/* never applicable: no data file is strictly older than this delete */
@@ -2656,7 +2696,8 @@ ice_read_eq_deletes(IceScanCtx *c, JsonbContainer *root, const char *path,
 		E->types = (Oid *) palloc(E->nids * sizeof(Oid));
 		E->typlen = (int16 *) palloc(E->nids * sizeof(int16));
 		E->typbyval = (bool *) palloc(E->nids * sizeof(bool));
-		E->rows = NIL;
+		E->tc = (TypeCacheEntry **) palloc(E->nids * sizeof(TypeCacheEntry *));
+		rows = NIL;
 
 		old = MemoryContextSwitchTo(filectx);
 		dtd = CreateTemplateTupleDesc(E->nids);
@@ -2666,6 +2707,15 @@ ice_read_eq_deletes(IceScanCtx *c, JsonbContainer *root, const char *path,
 
 			E->types[i] = ice_eq_col_type(root, E->ids[i], path, &fname);
 			get_typlenbyval(E->types[i], &E->typlen[i], &E->typbyval[i]);
+			E->tc[i] = lookup_type_cache(E->types[i],
+										 TYPECACHE_EQ_OPR_FINFO |
+										 TYPECACHE_HASH_PROC_FINFO);
+			if (!OidIsValid(E->tc[i]->eq_opr_finfo.fn_oid) ||
+				!OidIsValid(E->tc[i]->hash_proc_finfo.fn_oid))
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("iceberg: equality delete column \"%s\" has a type with no equality operator or hash function",
+								fname)));
 			TupleDescInitEntry(dtd, i + 1, fname, E->types[i], -1, 0);
 		}
 #if PG_VERSION_NUM >= 190000
@@ -2698,13 +2748,38 @@ ice_read_eq_deletes(IceScanCtx *c, JsonbContainer *root, const char *path,
 				if (!row->nulls[i])
 					row->vals[i] = datumCopy(d, E->typbyval[i], E->typlen[i]);
 			}
-			E->rows = lappend(E->rows, row);
+			row->hash = ice_eq_hash(E, row->vals, row->nulls, NULL);
+			rows = lappend(rows, row);
 			MemoryContextSwitchTo(filectx);
 		}
 		tuplestore_end(ts);
 		ExecDropSingleTupleTableSlot(wslot);
 		ExecDropSingleTupleTableSlot(rslot);
 		MemoryContextSwitchTo(old);
+
+		/* build the hash table: at least one bucket per row, a power of two */
+		E->nrows = list_length(rows);
+		if (E->nrows > 0)
+		{
+			ListCell   *rc;
+
+			E->nbuckets = 16;
+			while (E->nbuckets < E->nrows && E->nbuckets < (1U << 30))
+				E->nbuckets <<= 1;
+			E->buckets = (IceEqRow **)
+				MemoryContextAllocExtended(CurrentMemoryContext,
+										   (Size) E->nbuckets * sizeof(IceEqRow *),
+										   MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+			foreach(rc, rows)
+			{
+				IceEqRow   *row = (IceEqRow *) lfirst(rc);
+				uint32		b = row->hash & (E->nbuckets - 1);
+
+				row->next = E->buckets[b];
+				E->buckets[b] = row;
+			}
+		}
+		list_free(rows);
 		MemoryContextReset(filectx);
 		out = lappend(out, E);
 	}
@@ -2727,20 +2802,28 @@ ice_cmp_u64(const void *a, const void *b)
  * equality-delete file E? A delete row matches when ALL of E's equality columns
  * are equal; a null delete value matches a null data value (IS NULL semantics,
  * per the spec), and only a null. mape maps E's column index to the union
- * position the probe read that column into.
+ * position the probe read that column into. The data row is hashed once and
+ * tested only against the delete rows in its bucket with the same hash; each
+ * such test adds one to *ncmp.
  */
 static bool
 ice_eq_file_matches(IceEqDel *E, const int *mape, const Datum *dv,
-					const bool *dn, TypeCacheEntry **utc)
+					const bool *dn, uint64 *ncmp)
 {
-	ListCell   *lc;
+	uint32		h;
+	IceEqRow   *row;
 
-	foreach(lc, E->rows)
+	if (E->nbuckets == 0)
+		return false;
+	h = ice_eq_hash(E, dv, dn, mape);
+	for (row = E->buckets[h & (E->nbuckets - 1)]; row != NULL; row = row->next)
 	{
-		IceEqRow   *row = (IceEqRow *) lfirst(lc);
 		bool		all = true;
 		int			i;
 
+		if (row->hash != h)
+			continue;
+		(*ncmp)++;
 		for (i = 0; i < E->nids; i++)
 		{
 			int			k = mape[i];
@@ -2751,7 +2834,7 @@ ice_eq_file_matches(IceEqDel *E, const int *mape, const Datum *dv,
 				break;
 			}
 			if (!dn[k] &&
-				!DatumGetBool(FunctionCall2Coll(&utc[k]->eq_opr_finfo,
+				!DatumGetBool(FunctionCall2Coll(&E->tc[i]->eq_opr_finfo,
 												DEFAULT_COLLATION_OID,
 												dv[k], row->vals[i])))
 			{
@@ -2785,7 +2868,6 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 	int		   *uids;
 	Oid		   *utypes;
 	int		  **map;
-	TypeCacheEntry **utc;
 	TupleDesc	ptd;
 	TupleTableSlot *wslot;
 	TupleTableSlot *rslot;
@@ -2798,6 +2880,9 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 	int			e;
 	int			k;
 	uint64		ord = 0;
+	uint64		ncmp = 0;
+	int64		ndel = 0;
+	int			nmatched = 0;
 
 	/* everything below except the skip-set growth is per-data-file scratch,
 	 * reclaimed by the reset at the end */
@@ -2834,17 +2919,6 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 		}
 		e++;
 	}
-	utc = (TypeCacheEntry **) palloc(nuni * sizeof(TypeCacheEntry *));
-	for (k = 0; k < nuni; k++)
-	{
-		utc[k] = lookup_type_cache(utypes[k], TYPECACHE_EQ_OPR_FINFO);
-		if (!OidIsValid(utc[k]->eq_opr_finfo.fn_oid))
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("iceberg: equality delete column with field id %d has no equality operator",
-							uids[k])));
-	}
-
 	ptd = CreateTemplateTupleDesc(nuni);
 	for (k = 0; k < nuni; k++)
 		TupleDescInitEntry(ptd, k + 1, psprintf("eq%d", uids[k]),
@@ -2872,7 +2946,8 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 		e = 0;
 		foreach(lc, elig)
 		{
-			if (ice_eq_file_matches((IceEqDel *) lfirst(lc), map[e], dv, dn, utc))
+			if (ice_eq_file_matches((IceEqDel *) lfirst(lc), map[e], dv, dn,
+									&ncmp))
 			{
 				matched = true;
 				break;
@@ -2881,6 +2956,7 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 		}
 		if (matched)
 		{
+			nmatched++;
 			/* grow the skip set in the caller's context, not the scratch */
 			MemoryContextSwitchTo(old);
 			if (*nskip == *cap)
@@ -2900,6 +2976,14 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 	ExecDropSingleTupleTableSlot(rslot);
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(c->filectx);
+
+	/* the probe's cost, for tests and diagnosis (#1817): how many (data row,
+	 * delete row) pairs it tested for equality */
+	foreach(lc, elig)
+		ndel += ((IceEqDel *) lfirst(lc))->nrows;
+	elog(DEBUG1, "pgcolumnar iceberg_scan equality-delete probe: data_rows=" UINT64_FORMAT
+		 " delete_rows=" INT64_FORMAT " comparisons=" UINT64_FORMAT " matched=%d",
+		 ord, ndel, ncmp, nmatched);
 	return (int64) ord;
 }
 

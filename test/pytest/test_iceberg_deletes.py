@@ -32,6 +32,7 @@ ON A PRIVATE DATABASE, with the warehouse copied into `server_dir`, because the 
 reads it. Where the fixture is missing the first test fails under the shell's pgc_skip
 message, and the rest decline.
 """
+import hashlib
 import json
 import pathlib
 import shutil
@@ -123,6 +124,34 @@ def _names(dsn, sql, phrase):
     return "0"
 
 
+def _probe(dsn, sql):
+    """-> (data_rows, delete_rows, comparisons) summed over the equality-delete
+    probe's DEBUG1 lines while sql runs, as the shell's awk; None when no line came
+    back; query_error() when the server could not be asked."""
+    _await_up(dsn)
+    lines = []
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.add_notice_handler(lambda d: lines.append(d.message_primary or ""))
+            conn.execute("SET client_min_messages = debug1")
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    sums = {"data_rows": 0, "delete_rows": 0, "comparisons": 0}
+    seen = 0
+    for line in lines:
+        if "equality-delete probe:" not in line:
+            continue
+        seen += 1
+        for word in line.split():
+            key, _, val = word.partition("=")
+            if key in sums:
+                sums[key] += int(val)
+    if not seen:
+        return None
+    return sums["data_rows"], sums["delete_rows"], sums["comparisons"]
+
+
 def _crashes(cluster):
     try:
         return (cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
@@ -202,6 +231,10 @@ def dl(pgc_cluster, server_dir):
             r[name] = _read(dsn, ids(name))
             if name == "eqnull":
                 r["eqnull nulls"] = _read(dsn, count("eqnull", "WHERE region IS NULL"))
+        r["eqmany md5"] = _read(dsn, f"SELECT md5(string_agg(id::text, ',' ORDER BY id)) "
+                                     f"FROM pgcolumnar.iceberg_scan('{md('eqmany')}') {COLS}")
+        r["eqmany oracle md5"] = hashlib.md5(r["eq oracle"]["eqmany"].encode()).hexdigest()
+        r["eqmany probe"] = _probe(dsn, count("eqmany"))
         r["eq unprojected"] = _read(dsn, f"SELECT string_agg(amount::text, ',' ORDER BY amount) "
                                          f"FROM pgcolumnar.iceberg_scan('{md('eqapply')}') AS t(amount int)")
         r["up after eq applications"] = _survived(dsn, pgc_cluster, before)
@@ -398,6 +431,27 @@ def test_position_and_equality_deletes_combine(dl, expect):
     if _declined(dl, expect):
         return
     expect.text(str(dl["eqmixed"]), dl["eq oracle"]["eqmixed"], "position and equality deletes combine")
+
+
+def test_many_equality_delete_rows_drop_exactly_the_matching_rows(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["eqmany md5"]), dl["eqmany oracle md5"],
+                "many equality-delete rows drop exactly the matching rows (survivors == oracle)")
+
+
+def test_the_equality_delete_probe_is_bounded(dl, expect):
+    if _declined(dl, expect):
+        return
+    p = dl["eqmany probe"]
+    if isinstance(p, tuple) and p[0] == 4005 and p[1] > 0 and p[2] <= p[0]:
+        got = "bounded"
+    elif isinstance(p, tuple):
+        got = f"unbounded (data_rows={p[0]} delete_rows={p[1]} comparisons={p[2]})"
+    else:
+        got = f"unbounded (no probe line: {p})"
+    expect.text(got, "bounded",
+                "the equality-delete probe tests each data row against at most one delete row, not all of them (#1817)")
 
 
 def test_equality_deletes_apply_to_an_unprojected_column(dl, expect):

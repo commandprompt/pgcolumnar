@@ -243,6 +243,40 @@ check_text "multiple equality-delete files apply their union" \
 await_up
 check_text "position and equality deletes combine" \
 	"$(eq_ids_of eqmixed)" "$(eq_oracle eqmixed)"
+# many delete rows (#1817): 4005 data rows against 2000 id keys and 1001
+# (id, region) pairs. 20 rows match, including two NULL-region pairs. The
+# survivor list is long, so both sides are compared as an md5.
+await_up
+check_text "many equality-delete rows drop exactly the matching rows (survivors == oracle)" \
+	"$(q "SELECT md5(string_agg(id::text, ',' ORDER BY id))
+	      FROM pgcolumnar.iceberg_scan('$MDIR/eqmany.metadata.json')
+	        AS t(id bigint, region text, amount int)")" \
+	"$(eq_oracle eqmany | tr -d '\n' | md5sum | cut -d' ' -f1)"
+# the probe's DEBUG1 line counts the (data row, delete row) pairs it tested
+# for equality. A hash probe tests a data row only against delete rows with
+# the same hash, so the count stays near the number of matches. The old walk
+# tested every data row against every delete row: about 4005 x 3001 pairs.
+await_up
+eqmany_probe="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -qtA -c "SET client_min_messages = debug1" \
+	-c "SELECT count(*) FROM pgcolumnar.iceberg_scan('$MDIR/eqmany.metadata.json')
+	      AS t(id bigint, region text, amount int)" 2>&1 |
+	awk -F'[ =]' '/equality-delete probe:/ {
+		for (i = 1; i <= NF; i++) {
+			if ($i == "data_rows") r += $(i + 1)
+			if ($i == "delete_rows") d += $(i + 1)
+			if ($i == "comparisons") c += $(i + 1)
+		}
+		n++
+	}
+	END { if (n) printf "%d %d %d", r, d, c }')"
+read -r eqmany_rows eqmany_dels eqmany_cmp <<<"$eqmany_probe"
+echo "-- eqmany probe (data_rows delete_rows comparisons): $eqmany_probe"
+check "the equality-delete probe tests each data row against at most one delete row, not all of them (#1817)" \
+	"$(if [ -n "$eqmany_cmp" ] && [ "$eqmany_rows" -eq 4005 ] && [ "$eqmany_dels" -gt 0 ] &&
+	      [ "$eqmany_cmp" -le "$eqmany_rows" ]; then echo bounded
+	   else echo "unbounded (data_rows=${eqmany_rows:-none} delete_rows=${eqmany_dels:-none} comparisons=${eqmany_cmp:-none})"; fi)" \
+	"bounded"
 # the delete columns come from the table schema, not the output list: a scan
 # projecting only amount must still drop the id-matched rows
 await_up
