@@ -8,8 +8,10 @@ each file carries the codec it claims (read from its own metadata, so no arm pas
 a file pyarrow left uncompressed); every file decodes to the generator's rows, built in
 SQL from the same generator the crafter wrote them from -- not to the uncompressed file
 read back through the reader under test, which a defect after decompression corrupts
-alike; each FDW count and a sum read every value; and the crafted header is a clean
-refusal that kills no backend.
+alike; each FDW count and a sum read every value; the crafted header is a clean
+refusal that kills no backend; and a column that is NULL in every row, whose empty
+dictionary page declares an uncompressed size of 0, reads back under GZIP, ZSTD and
+LZ4_RAW as 3 rows with no non-NULL value (#1786).
 
 The files come from `test/craft_parquet_codecs.py`, the shell's own crafter, run as a
 subprocess so the fixture never imports pyarrow: each test declines under the shell's
@@ -133,13 +135,17 @@ def npc(pgc_cluster, server_dir):
             why = crafted_err or (crafted.stderr.strip().splitlines() or ["no codec recorded"])[-1]
             return f"unread ({why})"
 
-        r = {f"codec {c}": codec(c) for c in ("none", "gzip", "zstd", "lz4")}
+        r = {f"codec {c}": codec(c) for c in ("none", "gzip", "zstd", "lz4",
+                                              "allnull_gzip", "allnull_zstd", "allnull_lz4")}
         r["gen"] = _set_hash(dsn, GEN)
         for c in ("none", "gzip", "zstd", "lz4"):
             r[f"rows {c}"] = rp(c)
         for c in ("gzip", "zstd", "lz4"):
             r[f"fdw {c}"] = _num(dsn, f"SELECT count(*) FROM fc_{c}")
         r["gzip sum"] = _num(dsn, f"SELECT sum(id) FROM pgcolumnar.read_parquet('{w}/c_gzip.parquet') AS t({COLS})")
+        for c in ("gzip", "zstd", "lz4"):
+            r[f"allnull {c}"] = _value(dsn, "SELECT count(*) || '|' || count(s) FROM pgcolumnar.read_parquet("
+                                            f"'{w}/allnull_{c}.parquet') AS t(id bigint, s text)")
         before = _crashes(pgc_cluster)
         r["hdr"] = _verdict(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/badhdr.parquet') AS t(a int)")
         r["hdr survived"] = _survived(pgc_cluster, dsn, before)
@@ -232,6 +238,48 @@ def test_the_gzip_sum_matches_the_generator(request, expect):
         return
     r = request.getfixturevalue("npc")  # after the decline: the crafter needs pyarrow
     expect.num(r["gzip sum"], 199990000, "gzip sum matches the generator")
+
+
+def test_the_all_null_gzip_file_is_gzip_with_a_dictionary_page(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; codec suite needs it to write compressed files") is None:
+        return
+    r = request.getfixturevalue("npc")  # after the decline: the crafter needs pyarrow
+    expect.text(r["codec allnull_gzip"], "GZIP dict", "premise: the all-NULL gzip file is GZIP with a dictionary page")
+
+
+def test_the_all_null_zstd_file_is_zstd_with_a_dictionary_page(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; codec suite needs it to write compressed files") is None:
+        return
+    r = request.getfixturevalue("npc")  # after the decline: the crafter needs pyarrow
+    expect.text(r["codec allnull_zstd"], "ZSTD dict", "premise: the all-NULL zstd file is ZSTD with a dictionary page")
+
+
+def test_the_all_null_lz4_file_is_lz4_with_a_dictionary_page(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; codec suite needs it to write compressed files") is None:
+        return
+    r = request.getfixturevalue("npc")  # after the decline: the crafter needs pyarrow
+    expect.text(r["codec allnull_lz4"], "LZ4 dict", "premise: the all-NULL lz4 file is LZ4 with a dictionary page")
+
+
+def test_an_all_null_gzip_column_reads_as_three_null_rows(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; codec suite needs it to write compressed files") is None:
+        return
+    r = request.getfixturevalue("npc")  # after the decline: the crafter needs pyarrow
+    expect.text(r["allnull gzip"], "3|0", "all-NULL gzip column reads as 3 rows, none non-NULL")
+
+
+def test_an_all_null_zstd_column_reads_as_three_null_rows(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; codec suite needs it to write compressed files") is None:
+        return
+    r = request.getfixturevalue("npc")  # after the decline: the crafter needs pyarrow
+    expect.text(r["allnull zstd"], "3|0", "all-NULL zstd column reads as 3 rows, none non-NULL")
+
+
+def test_an_all_null_lz4_column_reads_as_three_null_rows(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; codec suite needs it to write compressed files") is None:
+        return
+    r = request.getfixturevalue("npc")  # after the decline: the crafter needs pyarrow
+    expect.text(r["allnull lz4"], "3|0", "all-NULL lz4 column reads as 3 rows, none non-NULL")
 
 
 def test_a_crafted_uncompressed_size_is_a_clean_decode_error(request, expect):

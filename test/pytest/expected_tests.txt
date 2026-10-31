@@ -1258,6 +1258,8 @@ guard_tests 854
 # native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
 # 16 checks in 16 tests, by collection over the cluster files.
-# cluster_tests 4510 -> 4537 for #1810's and #1813's serial and commit arms in
+# cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
+# that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
+# cluster_tests 4516 -> 4543 for #1810's and #1813's serial and commit arms in
 # test_objstore_export_open_uploads.py: 27 checks in 27 tests, by collection over the cluster files.
-cluster_tests 4537
+cluster_tests 4543
