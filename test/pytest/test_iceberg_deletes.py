@@ -454,11 +454,12 @@ def test_the_equality_delete_probe_walks_a_short_hash_chain_per_data_row(dl, exp
     if _declined(dl, expect):
         return
     p = dl["eqmany probe"]
-    if isinstance(p, tuple) and p[0] == 4005 and p[2] > 0 and p[3] <= 2 * p[1] and p[4] <= 16:
+    if isinstance(p, tuple) and p[0] == 4005 and p[2] > 0 and p[3] <= 2 * p[1] and p[4] <= 16 \
+            and p[5] <= p[0]:
         got = "bounded"
     elif isinstance(p, tuple):
         got = (f"unbounded (data_rows={p[0]} walks={p[1]} delete_rows={p[2]} visited={p[3]} "
-               f"longest_walk={p[4]} comparisons={p[5]}; want visited <= 2 x walks, longest_walk <= 16)")
+               f"longest_walk={p[4]} comparisons={p[5]}; want visited <= 2 x walks, longest_walk <= 16, comparisons <= data_rows)")
     else:
         got = f"unbounded (no probe line: {p})"
     expect.text(got, "bounded",

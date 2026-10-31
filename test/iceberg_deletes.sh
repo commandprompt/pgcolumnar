@@ -279,8 +279,9 @@ read -r eqmany_rows eqmany_walks eqmany_dels eqmany_visited eqmany_longest eqman
 echo "-- eqmany probe (data_rows walks delete_rows visited longest_walk comparisons): $eqmany_probe"
 check "the equality-delete probe walks a short hash chain per data row, not every delete row (#1817)" \
 	"$(if [ -n "$eqmany_cmp" ] && [ "$eqmany_rows" -eq 4005 ] && [ "$eqmany_dels" -gt 0 ] &&
-	      [ "$eqmany_visited" -le $((2 * eqmany_walks)) ] && [ "$eqmany_longest" -le 16 ]; then echo bounded
-	   else echo "unbounded (data_rows=${eqmany_rows:-none} walks=${eqmany_walks:-none} delete_rows=${eqmany_dels:-none} visited=${eqmany_visited:-none} longest_walk=${eqmany_longest:-none} comparisons=${eqmany_cmp:-none}; want visited <= 2 x walks, longest_walk <= 16)"; fi)" \
+	      [ "$eqmany_visited" -le $((2 * eqmany_walks)) ] && [ "$eqmany_longest" -le 16 ] &&
+	      [ "$eqmany_cmp" -le "$eqmany_rows" ]; then echo bounded
+	   else echo "unbounded (data_rows=${eqmany_rows:-none} walks=${eqmany_walks:-none} delete_rows=${eqmany_dels:-none} visited=${eqmany_visited:-none} longest_walk=${eqmany_longest:-none} comparisons=${eqmany_cmp:-none}; want visited <= 2 x walks, longest_walk <= 16, comparisons <= data_rows)"; fi)" \
 	"bounded"
 # a zero-row equality-delete file has no bucket array. The probe must skip it,
 # not read the missing array, and the id=5 file after it must still apply.
