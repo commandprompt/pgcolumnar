@@ -7,14 +7,14 @@ are written in the native on-disk format, PGCN v1. For the forward-looking plan 
 [design/ROADMAP.md](design/ROADMAP.md); for full history see the git log.
 
 The extension's `default_version` is `1.0-alpha5`.
-`v1.0-alpha4` is the latest published pre-release. Upgrade scripts from
+`v1.0-alpha5` is the latest published pre-release. Upgrade scripts from
 every previously shipped version ship with it (`1.0-dev`, which the v1.0-alpha tag
 installed, `1.0-alpha`, `1.0-alpha2`, `1.0-alpha3`, and `1.0-alpha4`), so a single
 `ALTER EXTENSION pgcolumnar UPDATE` reaches `1.0-alpha5` from any of them. Older
 notes in this file describe `default_version` as pinned at an earlier version, each
 true until the next version shipped.
 
-## [Unreleased]
+## [1.0-alpha5] - 2026-10-13
 
 ### Added
 
