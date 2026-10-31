@@ -2553,6 +2553,31 @@ os_list_request(PgColumnarObjHandle *h, const char *rawQuery, int64 *outlen)
 	}
 }
 
+/*
+ * os_target_bucket_root
+ *		Point a handle resolved from a key in `bucket` at the bucket itself, the
+ *		target of a bucket-level request such as a LIST. Path-style addressing
+ *		names the bucket in the path, "/bucket". Virtual-host addressing has
+ *		already put the bucket in the host name (os_resolve_s3 sets auth_host),
+ *		so the path is the bucket root, "/": "/bucket" there would name the key
+ *		"bucket", and S3 answers that as a GetObject of it (#1783).
+ */
+static void
+os_target_bucket_root(PgColumnarObjHandle *h, const char *bucket)
+{
+	MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	StringInfoData bp;
+
+	initStringInfo(&bp);
+	appendStringInfoChar(&bp, '/');
+	if (h->auth_host == NULL)
+		os_uriencode_path(&bp, bucket);
+	if (h->abspath != NULL)
+		pfree(h->abspath);
+	h->abspath = bp.data;
+	MemoryContextSwitchTo(oldcxt);
+}
+
 static char **
 objstore_list_objects(const char *url, const PgColumnarObjStoreConfig *cfg,
 					  int *nkeys)
@@ -2589,18 +2614,7 @@ objstore_list_objects(const char *url, const PgColumnarObjStoreConfig *cfg,
 	 * target at the bucket root and carry the prefix in the signed query */
 	dummyUrl = psprintf("s3://%s/_", bucket);
 	h = os_write_handle(dummyUrl, cfg);
-	{
-		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		StringInfoData bp;
-
-		initStringInfo(&bp);
-		appendStringInfoChar(&bp, '/');
-		os_uriencode_path(&bp, bucket);
-		if (h->abspath != NULL)
-			pfree(h->abspath);
-		h->abspath = bp.data;
-		MemoryContextSwitchTo(oldcxt);
-	}
+	os_target_bucket_root(h, bucket);
 	encPrefix = os_uriencode_query(prefix);
 
 	PG_TRY();
@@ -2806,18 +2820,7 @@ objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
 	/* as objstore_list_objects: resolve from a dummy key, request the bucket */
 	h = os_write_handle(psprintf("s3://%s/_", bucket), cfg);
 	os_set_deadline(h, timeout_ms);
-	{
-		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		StringInfoData bp;
-
-		initStringInfo(&bp);
-		appendStringInfoChar(&bp, '/');
-		os_uriencode_path(&bp, bucket);
-		if (h->abspath != NULL)
-			pfree(h->abspath);
-		h->abspath = bp.data;
-		MemoryContextSwitchTo(oldcxt);
-	}
+	os_target_bucket_root(h, bucket);
 
 	PG_TRY();
 	{

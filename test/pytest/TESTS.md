@@ -360,7 +360,7 @@ behaviour, the source of that number is named.
 - [312. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes](#312-test_native_zonemap_narrowpy-group-skipping-reads-only-the-predicate-columns-zone-maps-and-still-prunes)
 - [313. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values](#313-test_native_vecdecodepy-decode-honours-the-skip-vector-and-the-fold-reads-neither-holes-nor-nulls-as-values)
 - [314. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard](#314-test_native_parquet_fieldidpy-read_parquet-binds-output-columns-by-parquet-field-id-and-refuses-each-misuse-by-its-own-guard)
-- [315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused](#315-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-and-a-crafted-page-size-is-refused)
+- [315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, an all-NULL column's empty dictionary page decodes, and a crafted page size is refused](#315-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-an-all-null-columns-empty-dictionary-page-decodes-and-a-crafted-page-size-is-refused)
 - [316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly](#316-test_native_parquet_unitspy-time-and-timestamp-units-decode-to-the-right-instant-and-their-stats-skip-correctly)
 - [317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows](#317-test_native_parquet_projectionpy-a-projected-parquet-scan-decodes-only-the-columns-it-references-and-reads-the-generators-rows)
 - [318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks](#318-test_native_parquet_hardeningpy-the-parquet-reader-refuses-values-that-do-not-fit-their-column-and-a-row-group-with-too-few-chunks)
@@ -12123,9 +12123,9 @@ Every test makes one check under the shell's name, on a private database. The wr
 | `test_the_duplicate_requested_id_error_names_the_id` | the duplicate-requested-id error names the id, not the file |
 | `test_the_backend_survives_the_fieldid_refusals` | backend still up after the refusals |
 
-## 315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused
+## 315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, an all-NULL column's empty dictionary page decodes, and a crafted page size is refused
 
-The twin of `test/native_parquet_codecs.sh`. `test/craft_parquet_codecs.py`, the shell's own crafter, writes the same 20000 rows with each codec plus an uncompressed control, and a gzip page whose header declares an uncompressed size of -1. Each file's codec is read from its own metadata; every file decodes through `read_parquet` to the generator's rows, built in SQL; each FDW count and a sum read every value; and the crafted header is refused with the reader's own decode error, killing no backend.
+The twin of `test/native_parquet_codecs.sh`. `test/craft_parquet_codecs.py`, the shell's own crafter, writes the same 20000 rows with each codec plus an uncompressed control, and a gzip page whose header declares an uncompressed size of -1. Each file's codec is read from its own metadata; every file decodes through `read_parquet` to the generator's rows, built in SQL; each FDW count and a sum read every value; a column that is NULL in every row, which pyarrow writes with an empty dictionary page of declared size 0, reads back under GZIP, ZSTD and LZ4_RAW as 3 rows with no non-NULL value (#1786); and the crafted header is refused with the reader's own decode error, killing no backend.
 
 ### Every test
 
@@ -12145,6 +12145,12 @@ Every test makes one check under the shell's name, on a private database. Each t
 | `test_the_zstd_fdw_counts_every_row` | zstd FDW count |
 | `test_the_lz4_fdw_counts_every_row` | lz4 FDW count |
 | `test_the_gzip_sum_matches_the_generator` | gzip sum matches the generator |
+| `test_the_all_null_gzip_file_is_gzip_with_a_dictionary_page` | premise: the all-NULL gzip file is GZIP with a dictionary page |
+| `test_the_all_null_zstd_file_is_zstd_with_a_dictionary_page` | premise: the all-NULL zstd file is ZSTD with a dictionary page |
+| `test_the_all_null_lz4_file_is_lz4_with_a_dictionary_page` | premise: the all-NULL lz4 file is LZ4 with a dictionary page |
+| `test_an_all_null_gzip_column_reads_as_three_null_rows` | all-NULL gzip column reads as 3 rows, none non-NULL |
+| `test_an_all_null_zstd_column_reads_as_three_null_rows` | all-NULL zstd column reads as 3 rows, none non-NULL |
+| `test_an_all_null_lz4_column_reads_as_three_null_rows` | all-NULL lz4 column reads as 3 rows, none non-NULL |
 | `test_a_crafted_uncompressed_size_is_a_clean_decode_error` | crafted uncompressed size gives a clean decode error |
 | `test_the_backend_survives_the_crafted_header` | backend survived the crafted header |
 
@@ -12440,7 +12446,7 @@ Every test makes one check under the shell's name, on a private database. The wo
 
 ## 326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received
 
-The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, and a key with a space, '+' and '=' under both addressings. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
+The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, a key with a space, '+' and '=' under both addressings, and prefix and pattern reads, whose LIST must go to the bucket root under virtual-host (#1783), as must the upload cleanup listing of a parallel export whose worker fails, and that cleanup must abort an upload a terminated worker left open. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
 
 ### Every test
 
@@ -12460,6 +12466,16 @@ Every test makes one check under the shell's name. Each addressing check reads t
 | `test_virtual_host_puts_the_key_alone_in_the_path` | virtual-host put the KEY ALONE in the path (no bucket segment) |
 | `test_a_key_needing_encoding_reads_back_virtual_host` | a key with a space, '+' and '=' reads back (virtual-host) |
 | `test_the_virtual_host_request_path_is_the_key_alone_encoded_once` | and its virtual-host request path is the key alone, URI-encoded once |
+| `test_an_s3_prefix_read_path_style` | s3:// prefix read, path-style |
+| `test_the_path_style_list_puts_the_bucket_in_the_path` | and its path-style LIST put the bucket in the request path |
+| `test_an_s3_prefix_read_virtual_host` | s3:// prefix read, virtual-host |
+| `test_the_virtual_host_list_goes_to_the_bucket_root` | and its virtual-host LIST went to the bucket root |
+| `test_an_s3_pattern_read_virtual_host` | s3:// pattern read, virtual-host |
+| `test_the_pattern_read_virtual_host_list_goes_to_the_bucket_root` | and the pattern read's virtual-host LIST went to the bucket root |
+| `test_the_virtual_host_export_fails_in_a_worker` | premise: the virtual-host export fails in a worker |
+| `test_the_virtual_host_upload_cleanup_lists_at_the_bucket_root` | and its virtual-host upload cleanup listed the uploads at the bucket root |
+| `test_a_terminated_workers_upload_is_open_and_unanswered` | premise: a worker's upload is open and its id unanswered when the worker is terminated |
+| `test_the_virtual_host_upload_cleanup_aborts_the_open_upload` | and the virtual-host upload cleanup aborted the upload the worker left open |
 | `test_addressing_path_puts_the_bucket_back_in_the_path` | removal proof: with addressing=path the bucket is back in the path |
 | `test_the_request_path_carries_the_bucket_again` | and the request path carried the bucket again |
 | `test_s3_with_no_endpoint_demands_one` | s3:// with no endpoint demands one (names AWS_ENDPOINT_URL) |
