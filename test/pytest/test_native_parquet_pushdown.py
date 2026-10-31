@@ -6,11 +6,12 @@ proves empty; the executor still rechecks every row, so a skip can only save wor
 Correctness against a heap oracle (skipping never changes results), and the skips
 themselves through EXPLAIN ANALYZE's "Row Groups Skipped". Then soundness: a NaN row
 sits outside the statistics, so float > and >= and = 'NaN' must never skip; an
-inverted interval (UINT_32 stats ordered unsigned, decoded signed) must never drive a
-skip; and an INT64-backed DECIMAL is skippable. Every file is written by pyarrow, an
+inverted interval (a footer whose min and max are swapped) must never drive a skip;
+and an INT64-backed DECIMAL is skippable. Every file is written by pyarrow, an
 independent writer, so the reader and the writer cannot share a misunderstanding.
 """
 import decimal
+import struct
 
 import psycopg
 
@@ -128,11 +129,22 @@ def test_inverted_statistics_never_drive_a_skip(pgc_conn, server_dir, expect):
         return
     pq = expect.require_module("pyarrow.parquet",
                                name="pyarrow not available; predicate-pushdown suite needs it to write stats")
-    # UINT_32 statistics are ordered unsigned and decoded signed: min=1, max=-1294967296
+    # A signed INT32 holding 1 and -1294967296, with the footer's min and max swapped:
+    # the group claims min=1, max=-1294967296. This used to be a UINT_32 column, whose
+    # unsigned statistics the reader decoded signed; since #1814 it decodes unsigned,
+    # so that file no longer inverts and the interval is made directly.
     path = server_dir / "inverted.parquet"
-    _write(path, pa.table({"c": pa.array([1, 3000000000], pa.uint32())}), pq, row_group_size=2)
+    _write(path, pa.table({"c": pa.array([1, -1294967296], pa.int32())}), pq, row_group_size=2)
+    raw = path.read_bytes()
+    base = len(raw) - 8 - int.from_bytes(raw[-8:-4], "little")
+    # each statistic is a Thrift binary: length 4, then the PLAIN little-endian value
+    lo, hi = b"\x04" + struct.pack("<i", -1294967296), b"\x04" + struct.pack("<i", 1)
+    foot = raw[base:-8]
+    assert foot.count(lo) >= 1 and foot.count(lo) == foot.count(hi), (foot.count(lo), foot.count(hi))
+    foot = foot.replace(lo, b"\0SWAP\0").replace(hi, lo).replace(b"\0SWAP\0", hi)
+    path.write_bytes(raw[:base] + foot + raw[-8:])
     st = pq.ParquetFile(str(path)).metadata.row_group(0).column(0).statistics
-    assert st.min == 1 and st.max == 3000000000, (st.min, st.max)
+    assert st.min == 1 and st.max == -1294967296, (st.min, st.max)
     with pgc_conn.cursor() as cur:
         cur.execute("CREATE SERVER IF NOT EXISTS pq_inv FOREIGN DATA WRAPPER pgcolumnar_parquet")
         cur.execute(f"CREATE FOREIGN TABLE fti (c int4) SERVER pq_inv OPTIONS (path '{path}')")

@@ -604,6 +604,18 @@ pexport_cleanup_in_catch(void *arg)
 }
 
 /*
+ * For PgColumnarCleanupAndRethrow once every worker has stopped (#1781): remove
+ * the run's parts and any marker, as the failed-worker branch does.
+ */
+static void
+pexport_remove_outputs_in_catch(void *arg)
+{
+	PexportSpawn *s = (PexportSpawn *) arg;
+
+	pexport_remove_outputs(s->dirpath, s->nkeys);
+}
+
+/*
  * pgcolumnar_parallel_export_worker
  *		Background-worker entry: attach the DSM, connect, import the dispatcher's
  *		snapshot, and write this worker's slice to its Parquet file(s). Read-only,
@@ -1104,14 +1116,22 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	 * Every worker completed. On a remote prefix, first drop any stale
 	 * higher-numbered parts a larger prior run left (see
 	 * pexport_remove_stale_remote_parts), so the marker certifies exactly this
-	 * run's parts. Then write the _SUCCESS marker (#394). Both are past the
-	 * error-cleanup region (PG_END_ENSURE_ERROR_CLEANUP above), so a failure here
-	 * raises without deleting the parts the workers already committed -- the data
-	 * is preserved and the caller learns the completion signal could not be
-	 * finalized, rather than losing a good export to a marker hiccup.
+	 * run's parts. Then write the _SUCCESS marker (#394). A failure in either
+	 * (a key that may write but not list, a refused marker PUT) fails the run,
+	 * and a failed run leaves no parts (#1781): the parts are removed, with any
+	 * marker an earlier run left, before the error is re-thrown, as for a
+	 * failed worker.
 	 */
-	if (PgColumnarPathIsRemote(dir))
-		pexport_remove_stale_remote_parts(dir, single_table ? workers : npart);
-	pexport_write_success_marker(dir);
+	PG_TRY();
+	{
+		if (PgColumnarPathIsRemote(dir))
+			pexport_remove_stale_remote_parts(dir, single_table ? workers : npart);
+		pexport_write_success_marker(dir);
+	}
+	PG_CATCH();
+	{
+		PgColumnarCleanupAndRethrow(pexport_remove_outputs_in_catch, &spawn);
+	}
+	PG_END_TRY();
 	PG_RETURN_INT64(total);
 }

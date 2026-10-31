@@ -305,11 +305,12 @@ SELECT * FROM pgcolumnar.iceberg_rest_scan(
 
 For per-role credentials, pass a foreign server name as the first argument. The
 server holds the catalog URI, and the current role's user mapping supplies the
-token.
+token. The role needs `USAGE` on the server.
 
 ```sql
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
   OPTIONS (catalog_uri 'https://catalog.example.com');
+GRANT USAGE ON FOREIGN SERVER cat TO analyst;
 CREATE USER MAPPING FOR analyst SERVER cat OPTIONS (token 's3cr3t');
 
 SELECT * FROM pgcolumnar.iceberg_rest_scan('cat', 'analytics', 'events')

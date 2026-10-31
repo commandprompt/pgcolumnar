@@ -888,12 +888,14 @@ SELECT * FROM pgcolumnar.iceberg_rest_tables('https://catalog.example.com', 'ana
 
 For per-role credentials, name a foreign server instead of a URI. The server
 holds the catalog URI. The current role's user mapping holds the bearer token,
-kept in `pg_user_mapping` where it is not world-readable. On a multi-warehouse
-catalog, add a `warehouse` server option; it is sent on the config request.
+kept in `pg_user_mapping` where it is not world-readable. The role needs `USAGE`
+on the server. On a multi-warehouse catalog, add a `warehouse` server option; it
+is sent on the config request.
 
 ```sql
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
   OPTIONS (catalog_uri 'https://catalog.example.com', warehouse 'analytics_wh');
+GRANT USAGE ON FOREIGN SERVER cat TO analyst;
 CREATE USER MAPPING FOR analyst SERVER cat OPTIONS (token 's3cr3t');
 
 SELECT * FROM pgcolumnar.iceberg_rest_scan('cat', 'analytics', 'events')

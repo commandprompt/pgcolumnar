@@ -36,6 +36,7 @@
 #include "fmgr.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/cost.h"
@@ -446,6 +447,14 @@ ice_fdw_cell_datum(const PgColumnarAvroPartCell *c, Oid typid, bool *ok)
 		case TEXTOID:
 		case VARCHAROID:
 			if (!c->is_bytes)
+				break;
+			/*
+			 * The manifest's bytes are not known to be valid text (#1821). A
+			 * value that is not valid in the server encoding is undecidable,
+			 * not unequal: compared as raw bytes it matches nothing, and the
+			 * file would be pruned with rows in it that the qual keeps.
+			 */
+			if (!pg_verify_mbstr(GetDatabaseEncoding(), c->bytes, c->blen, true))
 				break;
 			return PointerGetDatum(cstring_to_text_with_len(c->bytes, c->blen));
 		case INT2OID:
