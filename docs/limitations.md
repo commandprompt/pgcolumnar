@@ -1183,5 +1183,12 @@ table at its current snapshot. It has these limits:
   3, and a `current-snapshot-id` that is present but not an integer (#1824).
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet.
+- A promoted column (`int` to `long`, `float` to `double`, or a wider `decimal`)
+  reads as its current type. Files from before the promotion are widened.
+  Declaring it with a narrower type than a live file stores is refused.
 - The reader does not write or commit to an Iceberg table, and it reads only the
   current snapshot. Time travel to an older snapshot is not supported.
+- The foreign-data wrapper does not prune `bucket[N]` files for an equality
+  compared under a nondeterministic collation. Two equal values there need not
+  share bytes, so they need not share a bucket. The wrapper reads every file, and
+  the query returns the same rows.

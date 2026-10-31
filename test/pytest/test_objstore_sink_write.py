@@ -103,6 +103,26 @@ def _refusal(dsn, sql, phrase, label, setup=()):
     return "no error"
 
 
+def _refused_by(dsn, sql, setup=()):
+    """-> "refused by the dispatcher" when `sql` raised the allow-list refusal itself,
+    "refused by worker N" when the dispatcher re-raised a worker's error, or what
+    happened instead."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            for s in setup:
+                conn.execute(s)
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        m = re.search(r"worker [0-9]+(?= failed)", str(exc))
+        if m:
+            return f"refused by {m.group(0)}"
+        if "is not in pgcolumnar.objstore_allowed_endpoints" in str(exc):
+            return "refused by the dispatcher"
+        return f"not refused ({_message(exc)})"
+    return "not refused (no error)"
+
+
 def _logn(log, pattern):
     """-> how many request-log lines match `pattern` (grep -cE), or a query_error()."""
     try:
@@ -123,6 +143,21 @@ def _open_uploads(work, pattern):
 def _parts(d):
     """-> how many part-*.parquet objects are under `d` (0 when it does not exist)."""
     return sum(1 for p in d.iterdir() if re.search(r"part-.*\.parquet$", p.name)) if d.is_dir() else 0
+
+
+def _system_list(dsn, alter, value):
+    """Run an ALTER SYSTEM on the allow-list, reload, and wait up to 10 s for a new
+    session to see `value`. -> what the last session saw, in brackets, so a reload
+    that never lands shows."""
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute(alter)
+        c.execute("SELECT pg_reload_conf()")
+    for _ in range(50):
+        seen = _row(dsn, "SELECT current_setting('pgcolumnar.objstore_allowed_endpoints')")
+        if seen == value:
+            break
+        time.sleep(0.2)
+    return f"[{seen}]"
 
 
 def _pg_ctl(cluster, args, extra_env):
@@ -402,6 +437,36 @@ def osw(pgc_cluster):
             not (sr / "part-0003.parquet").exists() else "present"
         r["sr marker"] = "yes" if (sr / "_SUCCESS").is_file() else "no"
 
+        # #1780: the workers obey the calling session's settings, not only the system's
+        open(s3log, "w").close()
+        r["sa refused"] = _refusal(
+            dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/sa', 2)",
+            "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list",
+            setup=["SET pgcolumnar.objstore_allowed_endpoints = ''"])
+        # who refused: the dispatcher itself, or a worker it re-raises as "worker N failed"
+        r["sa leader"] = _refused_by(
+            dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/sa', 2)",
+            setup=["SET pgcolumnar.objstore_allowed_endpoints = ''"])
+        sa = bucket / "sa"
+        r["sa nothing"] = f"{_logn(s3log, r'^(PUT|POST) /pgc-bucket/sa/')} requests, " \
+                          f"{len(list(sa.iterdir())) if sa.is_dir() else 0} objects"
+        # the reverse: the system list is empty and the session SETs the endpoint
+        try:
+            # the widen arm proves nothing unless the system list really is empty
+            r["sw premise"] = _system_list(
+                dsn, "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = ''", "")
+            r["sw widened"] = _row(
+                dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/sw', 2)",
+                setup=["SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'"])
+        finally:
+            _system_list(dsn, "ALTER SYSTEM RESET pgcolumnar.objstore_allowed_endpoints", "127.0.0.1")
+        # a part far below each worker's object forces multipart only if the workers read it
+        open(s3log, "w").close()
+        _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/pz', 2)",
+             setup=["SET pgcolumnar.objstore_part_size = 16384"])
+        pz = _logn(s3log, r"^POST /pgc-bucket/pz/part-0000\.parquet uploads=")
+        r["pz multipart"] = "yes" if isinstance(pz, int) and pz >= 1 else "no"
+
         # cancel mid-run
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("DROP TABLE IF EXISTS es_parbig")
@@ -567,6 +632,36 @@ def test_the_larger_runs_stale_parts_are_gone(osw, expect):
 
 def test_the_marker_certifies_the_reconciled_prefix(osw, expect):
     expect.text(osw["sr marker"], "yes", "shrink: _SUCCESS certifies the reconciled prefix")
+
+
+def test_a_session_set_to_empty_refuses_the_parallel_export(osw, expect):
+    expect.text(osw["sa refused"], "42501 by the allow-list",
+                "premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check")
+
+
+def test_the_dispatcher_raises_the_refusal_not_a_worker(osw, expect):
+    expect.text(osw["sa leader"], "refused by the dispatcher",
+                "session allow-list: the dispatcher raises the refusal, not a worker")
+
+
+def test_nothing_reached_the_prefix_the_session_refused(osw, expect):
+    expect.text(osw["sa nothing"], "0 requests, 0 objects",
+                "session allow-list: nothing reached the refused prefix (no PUT, no POST)")
+
+
+def test_the_system_list_is_empty_before_the_widen_arm(osw, expect):
+    expect.text(osw["sw premise"], "[]",
+                "session allow-list: a new session sees an empty system list before the widen arm")
+
+
+def test_a_session_set_widens_an_empty_system_list_for_the_workers(osw, expect):
+    expect.text(osw["sw widened"], "80000",
+                "session allow-list: a session SET widens an empty system list for the workers")
+
+
+def test_a_session_part_size_reaches_the_workers(osw, expect):
+    expect.text(osw["pz multipart"], "yes",
+                "parallel: a session SET of objstore_part_size reaches the workers (multipart)")
 
 
 def test_a_worker_was_uploading_before_the_cancel(osw, expect):

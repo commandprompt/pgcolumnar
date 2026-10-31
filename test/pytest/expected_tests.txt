@@ -1258,15 +1258,47 @@ guard_tests 854
 # native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
 # 16 checks in 16 tests, by collection over the cluster files.
+# cluster_tests 4510 -> 4514 for #1818: four tests in test_iceberg_fdw.py for bucket[16] on a string
+# column under a deterministic and a nondeterministic collation, by collection: `4514 tests collected`.
 # cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
 # that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
-# cluster_tests 4516 -> 4536 for #1822's footer tests in test_native_parquet_hardening.py (12) and #1824's
+# cluster_tests 4520 at the merge of origin/main (a247bea0) into fix/1818-iceberg-bucket-collation,
+# by collection: `4520 tests collected`.
+# cluster_tests 4510 -> 4526 for #1789: fourteen tests in test_iceberg_scan.py and two in
+# test_iceberg_rest_scan.py for a column read after an Iceberg type promotion, by collection:
+# `4526 tests collected`.
+# cluster_tests 4532 at the merge of origin/main (a247bea0) into fix/1789-iceberg-type-promotion,
+# by collection: `4532 tests collected`.
+# cluster_tests 4536 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4536 tests collected`.
+# cluster_tests 4516 -> 4524 for #1783's eight prefix, pattern and upload-cleanup tests in
+# test_objstore_addressing.py, by collection over the cluster files.
+# cluster_tests 4524 -> 4526 for #1783's two tests in test_objstore_addressing.py that an upload a
+# terminated worker left open is aborted under virtual-host addressing, by collection over the cluster files.
+# cluster_tests 4526 -> 4532 for #1780's test_objstore_sink_write.py, the twin of objstore_sink_write.sh:
+# 6 checks in 6 new tests (4, then 2 after review), by collection over the cluster files.
+# cluster_tests 4532 -> 4534 for #1787's two close-delimited reply tests in test_iceberg_rest.py (read to
+# the end, and refused past the cap), by collection over the cluster files.
+# cluster_tests 4534 -> 4536 for #1794's two half-pair tests in test_iceberg_rest_server.py (a half OAuth2
+# credential, id or secret, is refused even with a static token), by collection.
+# cluster_tests 4536 -> 4537 for #1794's token-wins test in test_iceberg_rest_server.py (a static token and a
+# complete OAuth2 pair read by the token, with no token request), by collection.
+# cluster_tests 4537 -> 4540 for #1791 in test_iceberg_data_files.py: the DELETED-entry case leaves the
+# refusal table for a test of its own (skipped, not refused), and three copy-on-write tests join it,
+# by collection over the cluster files.
+# cluster_tests 4560 at the merge of origin/main (9fc12386) into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
+# cluster_tests 4556 at the merge of origin/main (9fc12386) into fix/1789-iceberg-type-promotion,
+# by collection: `4556 tests collected`.
+# cluster_tests 4560 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
+# cluster_tests 4560 -> 4580 for #1822's footer tests in test_native_parquet_hardening.py (12) and #1824's
 # malformed-number tests in test_iceberg_malformed.py (8), by collection over the cluster files.
-# cluster_tests 4536 -> 4542 for #1834's review: six tests in test_native_parquet_hardening.py (a UUID field
+# cluster_tests 4580 -> 4586 for #1834's review: six tests in test_native_parquet_hardening.py (a UUID field
 # and list skipped whole, a type-13 sweep, a list of element type 14, and byte and double lists that run off
-# the footer), by collection over the cluster files: `4542 tests collected`.
-# cluster_tests 4542 -> 4549 for #1834's second review: four tests in test_native_parquet_hardening.py (a row
+# the footer), by collection over the cluster files: `4542 tests collected` before main's 44 were merged in.
+# cluster_tests 4586 -> 4593 for #1834's second review: four tests in test_native_parquet_hardening.py (a row
 # group num_rows below the footer total, a footer num_rows above it, a type-0 nibble with a delta, a huge list
 # of element type 15) and three in test_iceberg_malformed.py (format-version 4 and 0, a null
-# current-snapshot-id), by collection over the cluster files: `4549 tests collected`.
-cluster_tests 4549
+# current-snapshot-id), by collection over the cluster files after merging main (6f88f973): `4593 tests collected`.
+cluster_tests 4593
