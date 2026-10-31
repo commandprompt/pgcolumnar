@@ -27,6 +27,7 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 S3_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
 S3_LOG="$PGC_WORKDIR/sink.log"
 SRV_PID=""
+PLAIN_PID=""
 AKID="PGCTESTKEYID"
 SECRET="pgctest-secret-shhh"
 REGION="pgc-test-1"
@@ -34,6 +35,7 @@ BUCKET="pgc-bucket"
 
 objstore_sink_teardown() {
 	[ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
+	[ -n "$PLAIN_PID" ] && kill "$PLAIN_PID" 2>/dev/null
 	pgc_teardown
 }
 trap objstore_sink_teardown EXIT INT TERM
@@ -333,6 +335,79 @@ check "terminate: export workers exit within 75 s while the store is silent" \
 	"$(if [ "$hwrote" != yes ]; then echo "no upload seen"
 	   elif [ "${hs_n:-0}" -ge 1 ] && [ "$hs_left" = 0 ] && [ "$hs_dt" -le 75 ]; then echo bounded
 	   else echo "slow (${hs_n:-?} workers, ${hs_left:-?} left after ${hs_dt}s)"; fi)" "bounded"
+
+# ---- #1779: an allow-listed http:// target is written unsigned --------------
+# The docs accept an object-storage URL, http:// included, wherever a local path
+# is accepted. os_write_request signed every write, and an http:// handle has no
+# region or credentials (only os_resolve_s3, for s3:// and gs://, sets them), so
+# the signer read a NULL region and the backend died with signal 11. Reads sign
+# only when the handle is an S3 one; writes now do the same. A second fixture
+# server WITHOUT the --sigv4-* options accepts the unsigned requests, and every
+# write arm is covered: one PUT, the multipart protocol, and the abort.
+PLAIN_DIR="$PGC_WORKDIR/plain"
+PLAIN_LOG="$PGC_WORKDIR/plain.log"
+mkdir -p "$PLAIN_DIR/pb"
+PLAIN_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
+python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
+	--dir "$PLAIN_DIR" --port "$PLAIN_PORT" --log "$PLAIN_LOG" \
+	> "$PGC_WORKDIR/plain_server.out" 2>&1 &
+PLAIN_PID=$!
+for _ in $(seq 1 50); do
+	grep -q READY "$PGC_WORKDIR/plain_server.out" 2>/dev/null && break
+	sleep 0.1
+done
+check "premise: unsigned http fixture server is up" \
+	"$(grep -c READY "$PGC_WORKDIR/plain_server.out" 2>/dev/null)" "1"
+PLAIN="http://127.0.0.1:$PLAIN_PORT/pb"
+plogn() { grep -cE "$1" "$PLAIN_LOG" | tr -d ' '; }
+
+: > "$PLAIN_LOG"
+check_num "http:// small export succeeds unsigned (no crash)" \
+	"$(q "SELECT pgcolumnar.export_parquet('es_small', '$PLAIN/small.parquet')")" "1000"
+check_num "http:// small object went as ONE plain PUT" \
+	"$(plogn '^PUT /pb/small.parquet -')" "1"
+psql_run "CREATE FOREIGN TABLE fh_small (id int, t text) SERVER wsrv OPTIONS (path '$PLAIN/small.parquet');"
+check "http:// small round trip: read-back == source" \
+	"$(pgc_set_hash "SELECT * FROM fh_small")" "$(pgc_set_hash "$GEN_SMALL")"
+
+: > "$PLAIN_LOG"
+wait_up   # a crash above leaves the cluster in recovery; read this arm on its own
+check_num "http:// large export succeeds unsigned (no crash)" \
+	"$(qset "SELECT pgcolumnar.export_parquet('es_big', '$PLAIN/big.parquet')")" "$BIGROWS"
+pb_s="$(plogn '^POST /pb/big.parquet uploads=')"; pb_p="$(plogn '^PUT /pb/big.parquet partNumber=')"; pb_c="$(plogn '^POST /pb/big.parquet uploadId=')"
+check "the http:// large export took the multipart protocol" \
+	"$(if [ "${pb_s:-0}" -ge 1 ] && [ "${pb_p:-0}" -ge 2 ] && [ "${pb_c:-0}" -eq 1 ]; then echo yes
+	   else echo "no (starts=${pb_s:-?} parts=${pb_p:-?} completes=${pb_c:-?})"; fi)" "yes"
+psql_run "CREATE FOREIGN TABLE fh_big (id int8, pad text) SERVER wsrv OPTIONS (path '$PLAIN/big.parquet');"
+check "http:// large round trip: read-back == source" \
+	"$(pgc_set_hash "SELECT * FROM fh_big")" "$(pgc_set_hash "$GEN_BIG")"
+
+: > "$PLAIN_LOG"
+check "http:// inject: mid-upload failure surfaces as disk-full (53100)" \
+	"$(refusal_of "$PART SET pgcolumnar.sink_fail_after = 900000; SELECT pgcolumnar.export_parquet('es_big', '$PLAIN/fail.parquet')" \
+		"export write failed (injected fault)" " by the injected fault")" "53100 by the injected fault"
+check "the http:// fault landed mid-multipart (an upload was started)" \
+	"$(pf_s="$(plogn '^POST /pb/fail.parquet uploads=')"; if [ "${pf_s:-0}" -ge 1 ]; then echo yes; else echo "no (starts=${pf_s:-?})"; fi)" "yes"
+check_num "http:// inject: the server holds no open upload for the key" \
+	"$(if [ -f "$PLAIN_DIR/__open_uploads__" ]; then grep -cE '^pb/fail\.parquet$' "$PLAIN_DIR/__open_uploads__" | tr -d ' '; else echo 0; fi)" "0"
+kill "$PLAIN_PID" 2>/dev/null
+PLAIN_PID=""
+
+# A 403 from an http(s):// target cannot be about AWS_* credentials: those
+# requests are never signed. The SigV4 fixture server refuses a request with no
+# Authorization header, so an http:// export to it draws the 403 an unsigned
+# target gives. The arm echoes the HINT itself, so a failure shows what it said.
+hint_of() {
+	local out
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA -c "$1" 2>&1)"
+	if grep -q '^HINT:  ' <<<"$out"; then sed -n 's/^HINT:  //p' <<<"$out" | head -1
+	else echo "no hint ($(head -1 <<<"$out"))"; fi
+}
+check "http:// 403: the hint says the request went unsigned, not to check AWS_* credentials" \
+	"$(hint_of "SELECT pgcolumnar.export_parquet('es_small', 'http://127.0.0.1:$S3_PORT/$BUCKET/denied.parquet')")" \
+	"Requests to http:// and https:// URLs are never signed. Use an s3:// or gs:// URL for a store that needs credentials."
 
 # ---- optional: a real S3 implementation (Garage) ----------------------------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then
