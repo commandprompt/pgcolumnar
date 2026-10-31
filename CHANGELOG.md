@@ -466,6 +466,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.iceberg_data_files` lists an Iceberg table after a copy-on-write
+  delete or a filtered overwrite, instead of refusing it with "has delete files"
+  (#1791). Such a commit records the data file it replaced as a removed entry
+  (status 2, DELETED) in the new snapshot's manifest. The lister treated that
+  entry as a delete file and refused the whole table, although the table had no
+  delete files; `iceberg_scan` already skipped it. The lister now skips it too, and
+  still refuses delete manifests and delete files. Measured on a pyiceberg table
+  with 10 rows after deleting 5: an error before, and the one live 5-row file
+  after. `test/iceberg_data_files.sh` and `test_iceberg_data_files.py`, with a new
+  pyiceberg fixture, `test/fixtures/iceberg/warehouse_cow`.
+
 - A user mapping for an Iceberg REST catalog server that sets a static `token`
   and only one of `oauth_client_id` and `oauth_client_secret` is now refused
   (#1794), as the docs say. Before, the static token was used and the stray half
