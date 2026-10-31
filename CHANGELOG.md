@@ -479,6 +479,25 @@ true until the next version shipped.
   the probe's data rows, delete files, delete rows, chain rows visited, longest
   walk, comparisons and matches. `test/iceberg_deletes.sh` and
   `test_iceberg_deletes.py`.
+- A remote prefix or pattern that names a directory beginning with `_` or `.`,
+  such as `s3://bucket/_landing/` or `s3://bucket/.staging/*.parquet`, now reads
+  the objects under it (#1784). Before, it raised `no objects under ... match`,
+  because the hidden-name skip judged every segment of the key, including the
+  prefix you named. The skip now applies only below the prefix, as it does for a
+  local directory. A remote pattern now matches as a local glob does: `*.parquet`
+  returns `_b.parquet`, `_*.parquet` matches at all, and a name beginning with `.`
+  matches only when the pattern spells the dot. The scheme is compared without
+  case for a pattern as for a prefix, so `S3://bucket/_landing/*.parquet` reads
+  as `s3://bucket/_landing/*.parquet` does; before, the pattern raised
+  `no objects ... match`. Measured against Garage S3: each of 8 remote reads
+  returns the same count as the same local read.
+  `test/objstore_listing.sh` and `test_objstore_listing.py`.
+
+  **Behaviour change:** a remote pattern no longer skips `_` names below the
+  literal prefix. Before, `s3://bucket/out/*/*.parquet` skipped
+  `out/_temporary/x.parquet`. Now it reads it, as a local glob of
+  `/data/out/*/*.parquet` does. To skip Spark staging output, read the prefix
+  `s3://bucket/out/` instead, or a pattern such as `s3://bucket/out/[!_]*/*.parquet`.
 - `parallel_export_parquet` now removes the run's parts when it fails after
   every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
   prefix, the export lists the prefix to remove stale parts, and then it PUTs

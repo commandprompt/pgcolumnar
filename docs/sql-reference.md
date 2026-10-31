@@ -898,8 +898,9 @@ The marker is written last, after every worker has finished, so a directory or
 prefix that carries it is a whole export. A remote prefix allows a re-run to
 overwrite a used prefix. A smaller re-run there first removes the stale
 higher-numbered parts a larger prior run left, so the marker certifies exactly
-the parts this run wrote. `read_parquet` and the foreign-data wrapper skip it, as
-they skip any name beginning with an underscore.
+the parts this run wrote. `read_parquet` and the foreign-data wrapper skip it
+when they read the directory or prefix. They skip any name below it that begins
+with an underscore.
 
 When `workers` is omitted the function derives a value from the target.
 
@@ -1422,8 +1423,13 @@ that names an object reads that one object with a single GET, no listing. An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a
-local glob. Listing is a paged ListObjectsV2 call. `_SUCCESS`, `_temporary`, and
-dot-hidden names are skipped, as they are for a local directory. Hive
+local glob. Listing is a paged ListObjectsV2 call. Below a prefix, `_SUCCESS`,
+`_temporary`, and other names that begin with `_` or `.` are skipped, as they are
+below a local directory. The prefix you name may itself begin with `_` or `.`,
+such as `s3://bucket/_landing/`. A pattern matches names as a local glob does.
+It matches a name that begins with `_`. It matches a name that begins with `.`
+only when the pattern spells the dot, such as `.*.parquet`. The scheme is
+compared without case, so `S3://` reads as `s3://` does. Hive
 `partition_columns` work over a remote prefix. A pattern or a prefix requires the
 object-store module, since only it can issue the listing.
 
