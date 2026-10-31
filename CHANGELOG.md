@@ -467,10 +467,11 @@ true until the next version shipped.
 ### Fixed
 
 - An object-store error no longer names `s3://<bucket>/_`, a key nobody gave
-  (#1869). A bucket-level request, the upload listing an export's cleanup makes,
-  the object listing behind `read_parquet` on a prefix, and the endpoint check
-  `parallel_export_parquet` makes before it starts workers, is resolved from
-  that dummy key, and a refusal named it. A refused ListMultipartUploads, or a
+  (#1869). Three bucket-level requests are resolved from that dummy key: the
+  upload listing an export's cleanup makes, the object listing behind
+  `read_parquet` on a prefix, and the endpoint check `parallel_export_parquet`
+  makes before it starts workers. A refusal in any of them named the dummy
+  key. A refused ListMultipartUploads, or a
   region or credential refusal in any of the three, now names the URL the caller
   gave. The export's upload cleanup still never raises, but it now LOGs what it
   discarded, so the server log says why an export's uploads were left open.

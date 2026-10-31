@@ -1785,15 +1785,15 @@ struct PgColumnarObjSink
 	int64		total;			/* bytes handed to sink_write */
 };
 
+static PgColumnarObjHandle *os_write_handle_as(const char *url, const char *name,
+											   const PgColumnarObjStoreConfig *cfg);
+
 /*
  * Resolve a write target into a connection handle exactly as the read path
  * does (endpoint, credentials, path-style key, allow-list and link-local
  * enforced at connect), minus the HEAD. Shares os_resolve_s3 for s3:// and
  * the plain authority parse for http(s)://.
  */
-static PgColumnarObjHandle *os_write_handle_as(const char *url, const char *name,
-											   const PgColumnarObjStoreConfig *cfg);
-
 static PgColumnarObjHandle *
 os_write_handle(const char *url, const PgColumnarObjStoreConfig *cfg)
 {
