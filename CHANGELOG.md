@@ -483,6 +483,68 @@ true until the next version shipped.
   If the connection closes during the wait, the export does not resend the
   request. It fails with an error that says the store may have written the
   object (#1846).
+- `pgcolumnar.import_arrow` now reads the Arrow IPC file format, including
+  Feather v2 (#1806). Before, a file that starts with `ARROW1` failed with
+  `invalid memory alloc request size 1330795073`, because the reader took
+  `ARRO` as a message length. The reader now skips the 8-byte header, reads the
+  stream inside the file, and ignores the footer. A file that starts with
+  `ARROW1` but does not end with it is refused with `XX001`, and so is one whose
+  footer length is negative or larger than the file. A file without the
+  optional end-of-stream marker before its footer is read too. A message or
+  body length larger than the rest of the file is now refused with `XX001`
+  before anything is allocated. `export_arrow` still writes the IPC stream
+  format.
+  `docs/how-to.md` said both functions use the IPC file format; it now names
+  each format and says to read an export with `pyarrow.ipc.open_stream`.
+  `test/arrow_import.sh` and `test_arrow_import.py`. Reported by @OffgridwithJD.
+- `pgcolumnar.parquet_schema` now advises `timestamp with time zone` for a
+  millisecond or microsecond timestamp column that holds instants (#1807). It
+  advised `timestamp without time zone` for every such column, and reading an
+  instant into `timestamp` converts it to a wall time in the session
+  `TimeZone`. This changes the advice for `timestamptz` columns that
+  `export_parquet` writes, for Iceberg `timestamptz` columns, and for files
+  that carry only the older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS` type,
+  which the Parquet format defines as UTC-adjusted. Wall-time columns
+  (`isAdjustedToUTC=false`) are still advised as `timestamp`.
+  `test/parquet_timestamp_zone.sh` and `test_parquet_timestamp_zone.py`.
+  Reported by @OffgridwithJD.
+- The REST catalog functions now follow the catalog's `GET /v1/config` (#1793).
+  They use the advertised `namespace-separator`, so a nested namespace such as
+  `db.x` works on the Apache Iceberg 1.12 REST catalog, which answered HTTP 400
+  before. `iceberg_rest_namespaces` now lists every level: it asks for the
+  children of each namespace with `?parent=`, where it listed only the top level
+  before. `iceberg_rest_namespaces` and `iceberg_rest_tables` now read the
+  config too, so they send the server's `warehouse` and use the catalog's
+  prefix; on a prefixed catalog they returned HTTP 404 before. A prefix with a
+  `/` in it, such as `catalogs/main`, is sent as path segments, not as one
+  `%2F`-encoded segment, and a prefix in the config `defaults` is used. Both list
+  functions follow `next-page-token`, and refuse a page token the catalog
+  already sent. `iceberg_rest_namespaces` returns each namespace once, also on a
+  catalog that lists nested namespaces at the top level. It now makes one more
+  request per namespace, and if the catalog answers an error to any of them,
+  for example to `?parent=`, the whole call fails, where it listed the top level
+  before. `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`. Reported
+  by @OffgridwithJD.
+
+- A remote prefix or pattern that names a directory beginning with `_` or `.`,
+  such as `s3://bucket/_landing/` or `s3://bucket/.staging/*.parquet`, now reads
+  the objects under it (#1784). Before, it raised `no objects under ... match`,
+  because the hidden-name skip judged every segment of the key, including the
+  prefix you named. The skip now applies only below the prefix, as it does for a
+  local directory. A remote pattern now matches as a local glob does: `*.parquet`
+  returns `_b.parquet`, `_*.parquet` matches at all, and a name beginning with `.`
+  matches only when the pattern spells the dot. The scheme is compared without
+  case for a pattern as for a prefix, so `S3://bucket/_landing/*.parquet` reads
+  as `s3://bucket/_landing/*.parquet` does; before, the pattern raised
+  `no objects ... match`. Measured against Garage S3: each of 8 remote reads
+  returns the same count as the same local read.
+  `test/objstore_listing.sh` and `test_objstore_listing.py`.
+
+  **Behaviour change:** a remote pattern no longer skips `_` names below the
+  literal prefix. Before, `s3://bucket/out/*/*.parquet` skipped
+  `out/_temporary/x.parquet`. Now it reads it, as a local glob of
+  `/data/out/*/*.parquet` does. To skip Spark staging output, read the prefix
+  `s3://bucket/out/` instead, or a pattern such as `s3://bucket/out/[!_]*/*.parquet`.
 - `parallel_export_parquet` now removes the run's parts when it fails after
   every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
   prefix, the export lists the prefix to remove stale parts, and then it PUTs

@@ -611,7 +611,9 @@ inspection and testing, not for query use.
 
 ## Import and export
 
-These functions read and write Arrow IPC stream files and Parquet files. They read
+These functions read and write Arrow IPC files and Parquet files. `export_arrow`
+writes the IPC stream format; `import_arrow` reads the stream format and the IPC
+file format. They read
 and write files on the server host, so a reader needs the `pg_read_server_files`
 role and a writer needs the `pg_write_server_files` role. Superusers hold both.
 The Parquet functions also read from and write to object storage. See
@@ -624,7 +626,8 @@ and types that they do not support. See
 ### pgcolumnar.export_arrow(rel regclass, path text) returns bigint
 
 Writes the live rows of `rel` to an Arrow IPC stream file at `path`. Returns the
-number of rows written. `path` can be a local file or an `s3://` URL. See
+number of rows written. The file has no `ARROW1` header or footer, so pyarrow
+reads it with `pyarrow.ipc.open_stream`, not `open_file`. `path` can be a local file or an `s3://` URL. See
 [Object storage](#object-storage).
 
 ### pgcolumnar.export_parquet(rel regclass, path text) returns bigint
@@ -728,9 +731,15 @@ See
 
 ### pgcolumnar.import_arrow(rel regclass, path text) returns bigint
 
-Inserts the rows of an Arrow IPC stream file at `path` into the existing table
+Inserts the rows of an Arrow IPC file at `path` into the existing table
 `rel`. The column types of the table define the types that the function accepts. Returns the number of
 rows inserted.
+
+The file can be in the IPC stream format, which `export_arrow` writes, or in the
+IPC file format, which starts and ends with `ARROW1`. Feather v2 is the IPC file
+format. The function reads the stream inside an IPC file and ignores its footer.
+A message or body length larger than the rest of the file is refused with
+`XX001` before any memory is allocated for it.
 
 Temporal columns are read in the unit the file declares, not the unit
 `export_arrow` writes. A `date` column accepts `date32` and `date64`. A `time`
@@ -899,8 +908,9 @@ The marker is written last, after every worker has finished, so a directory or
 prefix that carries it is a whole export. A remote prefix allows a re-run to
 overwrite a used prefix. A smaller re-run there first removes the stale
 higher-numbered parts a larger prior run left, so the marker certifies exactly
-the parts this run wrote. `read_parquet` and the foreign-data wrapper skip it, as
-they skip any name beginning with an underscore.
+the parts this run wrote. `read_parquet` and the foreign-data wrapper skip it
+when they read the directory or prefix. They skip any name below it that begins
+with an underscore.
 
 When `workers` is omitted the function derives a value from the target.
 
@@ -988,6 +998,13 @@ without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
 file. The type it reports holds every value the column can store. So an unsigned
 `UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
+
+A millisecond or microsecond timestamp column that holds instants
+(`isAdjustedToUTC=true`, or the older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS`
+type) is reported as `timestamp with time zone`. A column of wall times
+(`isAdjustedToUTC=false`) is reported as `timestamp without time zone`. Each
+advised type reads the value unchanged. See
+[Timestamps and time zones](user-guide.md#read-parquet-files-in-place).
 
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when
@@ -1235,6 +1252,17 @@ Multi-level namespaces are given dot-separated, and the function requires the
 `pg_read_server_files` role, like the other Iceberg functions. The server form
 also requires `USAGE` on the server.
 
+Every REST function first reads the catalog configuration (`GET /v1/config`) and
+follows it:
+
+- The `prefix` goes after `/v1/` in every later request. A prefix may contain
+  `/`, such as `catalogs/main`; each part is sent as its own path segment.
+- The `namespace-separator` joins the levels of a multi-level namespace in a
+  request. The default is the unit separator, sent as `%1F`. The Apache Iceberg
+  REST catalog advertises `%2E`.
+- A key can be set in more than one place. The value in `overrides` wins.
+  Next comes a top-level key of the same name, and last the value in `defaults`.
+
 ```sql
 -- URI form: the token, if any, comes from the server environment, not the query
 SELECT pgcolumnar.iceberg_rest_table_location(
@@ -1287,12 +1315,30 @@ SELECT region, sum(amount)
 
 ### pgcolumnar.iceberg_rest_namespaces(catalog_uri text) returns setof text
 
-Lists the namespaces of a catalog, one per row. A multi-level namespace is
-returned dot-joined. Same catalog and authentication rules as above.
+Lists the namespaces of a catalog, one per row, at every level. A multi-level
+namespace is returned dot-joined, for example `analytics.daily`. Same catalog and
+authentication rules as above.
+
+The catalog lists only the direct children of a namespace. So the function asks
+for the top level, then asks for the children of each namespace it finds
+(`?parent=`). That is one request for the top level, plus one for each
+namespace. A namespace can be up to 64 levels deep. If the catalog has a
+namespace 65 levels deep, the function raises an error.
+
+The function needs every one of these requests to succeed. If the catalog
+answers an error to any of them, the function raises that error and returns no
+rows. This includes a catalog that does not accept `?parent=`. On such a
+catalog, list the tables of a namespace you know with `iceberg_rest_tables`.
+
+Some catalogs also list nested namespaces at the top level. The function
+returns each namespace once.
 
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
 
 Lists the table names in a namespace, one per row.
+
+Both list functions follow the catalog's `next-page-token`, so a catalog that
+splits a list into pages is read to the end.
 
 ```sql
 SELECT * FROM pgcolumnar.iceberg_rest_namespaces('https://catalog.example.com');
@@ -1416,8 +1462,13 @@ that names an object reads that one object with a single GET, no listing. An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a
-local glob. Listing is a paged ListObjectsV2 call. `_SUCCESS`, `_temporary`, and
-dot-hidden names are skipped, as they are for a local directory. Hive
+local glob. Listing is a paged ListObjectsV2 call. Below a prefix, `_SUCCESS`,
+`_temporary`, and other names that begin with `_` or `.` are skipped, as they are
+below a local directory. The prefix you name may itself begin with `_` or `.`,
+such as `s3://bucket/_landing/`. A pattern matches names as a local glob does.
+It matches a name that begins with `_`. It matches a name that begins with `.`
+only when the pattern spells the dot, such as `.*.parquet`. The scheme is
+compared without case, so `S3://` reads as `s3://` does. Hive
 `partition_columns` work over a remote prefix. A pattern or a prefix requires the
 object-store module, since only it can issue the listing.
 
