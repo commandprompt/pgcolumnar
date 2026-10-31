@@ -555,20 +555,50 @@ check "and the parent reads every row back through the foreign partition" \
 #
 # The three-argument form is public. Each refusal below must come before the
 # file is opened, so neither fixture may hold an object afterwards.
+#
+# tier_s3pub names fixture B and has a PUBLIC mapping with B's valid secret. A
+# role without USAGE on it would write to B with that mapping if the USAGE gate
+# were gone, so the refusal guards credentials the role was never given.
+# tier_s3half has a mapping for postgres with an access key and no secret.
 psql_run "CREATE FOREIGN DATA WRAPPER tier_dummy; CREATE SERVER tier_other FOREIGN DATA WRAPPER tier_dummy;
+          CREATE SERVER tier_s3pub FOREIGN DATA WRAPPER pgcolumnar_parquet
+          OPTIONS (endpoint 'http://127.0.0.1:$S3B_PORT', region '$S3_REGION');
+          CREATE USER MAPPING FOR PUBLIC SERVER tier_s3pub
+          OPTIONS (access_key_id '$S3_KEY', secret_access_key '$S3B_SECRET');
+          CREATE SERVER tier_s3half FOREIGN DATA WRAPPER pgcolumnar_parquet
+          OPTIONS (endpoint 'http://127.0.0.1:$S3B_PORT', region '$S3_REGION');
+          CREATE USER MAPPING FOR postgres SERVER tier_s3half OPTIONS (access_key_id '$S3_KEY');
           DROP ROLE IF EXISTS tier_s3nouse; CREATE ROLE tier_s3nouse LOGIN NOSUPERUSER;
           GRANT pg_write_server_files TO tier_s3nouse; GRANT SELECT ON sp_jan TO tier_s3nouse;
           GRANT USAGE ON SCHEMA pgcolumnar TO tier_s3nouse;"
-gA="$(objects s3a)"; gB="$(objects s3b)"
+check "premise: the PUBLIC mapping on tier_s3pub writes to fixture B" \
+	"$(errtext "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/pub_premise.parquet', 'tier_s3pub')")|$(objects s3b | tr ' ' '\n' | grep -c '^pub_premise')" \
+	"ok|1"
+# Backends killed by a signal, from the server log: a number, or nothing when the
+# log cannot be read, so that a blind count never reads as "no crashes".
+crashes() {
+	local n
+	n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$n" in '' | *[!0-9]*) ;; *) echo "$n" ;; esac
+}
+gA="$(objects s3a)"; gB="$(objects s3b)"; gcrash="$(crashes)"
 check "export_parquet through a server of another wrapper is refused (42809)" \
 	"$(sqlstate "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/g_other.parquet', 'tier_other')")" "42809"
 check "export_parquet through a server that does not exist is refused (42704)" \
 	"$(sqlstate "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/g_none.parquet', 'tier_nosuch')")" "42704"
+check "export_parquet by a role without USAGE on the server is refused (42501)" \
+	"$(sqlstate_as tier_s3nouse "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/g_usage.parquet', 'tier_s3pub')")" "42501"
+check "export_parquet to a local path through a server whose mapping holds half a credential is refused (28000)" \
+	"$(sqlstate "SELECT pgcolumnar.export_parquet('sp_jan', '$W/g_half.parquet', 'tier_s3half')")|$([ -e "$W/g_half.parquet" ] && echo file || echo nofile)" \
+	"28000|nofile"
+# The null arm runs last, so that a backend it crashes cannot fail the arms above
+# for want of a server in recovery.
 check "export_parquet through a null server is refused (22004)" \
 	"$(sqlstate "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/g_null.parquet', NULL)")" "22004"
-check "export_parquet by a role without USAGE on the server is refused (42501)" \
-	"$(sqlstate_as tier_s3nouse "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/g_usage.parquet', 'tier_s3b')")" "42501"
+check_num "and no refused export crashed a backend" "$(crashes)" "$gcrash"
 check "and no refused export wrote an object to A or B" "A: $(objects s3a)|B: $(objects s3b)" "A: $gA|B: $gB"
+# After a crash the server takes a moment to accept connections again.
+for _ in $(seq 1 60); do [ "$(q "SELECT 1;" 2>/dev/null)" = 1 ] && break; sleep 0.5; done
 
 # ---- a non-superuser gets no environment keys (#1795) -------------------------
 #

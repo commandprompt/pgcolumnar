@@ -741,21 +741,44 @@ def test_tier_partition_writes_through_the_named_server(pgc_cluster, expect):
 
         # export_parquet(rel, path, server) refuses before it writes: neither fixture
         # may hold an object after any of these.
+        # tier_s3pub names fixture B and has a PUBLIC mapping with B's valid secret: a
+        # role without USAGE would write to B with it if the USAGE gate were gone.
+        # tier_s3half has a mapping for postgres with an access key and no secret.
         conn.execute("CREATE FOREIGN DATA WRAPPER tier_dummy")
         conn.execute("CREATE SERVER tier_other FOREIGN DATA WRAPPER tier_dummy")
+        for srv in ("tier_s3pub", "tier_s3half"):
+            conn.execute(f"CREATE SERVER {srv} FOREIGN DATA WRAPPER pgcolumnar_parquet"
+                         f" OPTIONS (endpoint 'http://127.0.0.1:{ports['s3b']}', region '{region}')")
+        conn.execute(f"CREATE USER MAPPING FOR PUBLIC SERVER tier_s3pub"
+                     f" OPTIONS (access_key_id '{key}', secret_access_key '{secret_b}')")
+        conn.execute(f"CREATE USER MAPPING FOR postgres SERVER tier_s3half OPTIONS (access_key_id '{key}')")
         conn.execute("CREATE ROLE tier_s3nouse LOGIN NOSUPERUSER")
         conn.execute("GRANT pg_write_server_files TO tier_s3nouse")
         conn.execute("GRANT SELECT ON sp_mar TO tier_s3nouse")
         conn.execute("GRANT USAGE ON SCHEMA pgcolumnar TO tier_s3nouse")
-        g_a, g_b = objects("s3a"), objects("s3b")
+        pub = _errtext(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/pub_premise.parquet', 'tier_s3pub')")
+        pub_n = sum(1 for n in objects("s3b").split() if n.startswith("pub_premise"))
+        expect.text(f"{pub}|{pub_n}", "ok|1", "premise: the PUBLIC mapping on tier_s3pub writes to fixture B")
+
+        def crashes():
+            # Backends killed by a signal, from the server log.
+            return pathlib.Path(log).read_text(errors="replace").count("terminated by signal")
+
+        g_a, g_b, g_crash = objects("s3a"), objects("s3b"), crashes()
         expect.text(_sqlstate(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_other.parquet', 'tier_other')"),
                     "42809", "export_parquet through a server of another wrapper is refused (42809)")
         expect.text(_sqlstate(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_none.parquet', 'tier_nosuch')"),
                     "42704", "export_parquet through a server that does not exist is refused (42704)")
+        expect.text(state_as("tier_s3nouse", "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_usage.parquet', 'tier_s3pub')"),
+                    "42501", "export_parquet by a role without USAGE on the server is refused (42501)")
+        half = work / "g_half.parquet"
+        expect.text(_sqlstate(conn, f"SELECT pgcolumnar.export_parquet('sp_mar', '{half}', 'tier_s3half')")
+                    + ("|file" if half.exists() else "|nofile"), "28000|nofile",
+                    "export_parquet to a local path through a server whose mapping holds half a credential is refused (28000)")
+        # The null arm runs last, so that a backend it crashes cannot fail the arms above.
         expect.text(_sqlstate(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_null.parquet', NULL)"),
                     "22004", "export_parquet through a null server is refused (22004)")
-        expect.text(state_as("tier_s3nouse", "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_usage.parquet', 'tier_s3b')"),
-                    "42501", "export_parquet by a role without USAGE on the server is refused (42501)")
+        expect.num(crashes(), g_crash, "and no refused export crashed a backend")
         expect.text(f"A: {objects('s3a')}|B: {objects('s3b')}", f"A: {g_a}|B: {g_b}",
                     "and no refused export wrote an object to A or B")
 

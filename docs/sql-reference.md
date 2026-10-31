@@ -655,7 +655,10 @@ The function refuses these before it writes anything:
 - a `server` that does not use the `pgcolumnar_parquet` wrapper (`42809`);
 - a caller without `USAGE` on `server` (`42501`).
 
-A local `path` ignores the server's settings.
+A local `path` writes no object and uses no endpoint, region or key. The
+function still makes every check above and still looks up your credentials on
+the server. So a mapping that holds only half a credential refuses a local
+`path` too (`28000`).
 
 ### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
 

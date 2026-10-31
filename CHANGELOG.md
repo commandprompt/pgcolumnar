@@ -476,11 +476,12 @@ true until the next version shipped.
   `export_parquet(rel, path, server)`, which you can also call directly.
   Before it commits, the move now counts the rows through the new foreign
   partition, so a key that can write but not read rolls the move back.
-  Two changes can refuse a call that used to succeed. A role that is not a
+  Three changes can refuse a call that used to succeed. A role that is not a
   superuser and has no mapping on the server is now refused (`28000`); before,
-  it wrote with the environment's keys. And `tier_partition` now needs both
+  it wrote with the environment's keys. `tier_partition` now needs both
   `pg_write_server_files` and `pg_read_server_files` (`42501`), because it
-  reads the file back. `test/tier_partition.sh` and `test_tier_partition.py`.
+  reads the file back. And a local `path` is refused (`28000`) when your
+  mapping on the server holds only half a credential. `test/tier_partition.sh` and `test_tier_partition.py`.
 - `parallel_export_parquet` now removes the run's parts when it fails after
   every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
   prefix, the export lists the prefix to remove stale parts, and then it PUTs
