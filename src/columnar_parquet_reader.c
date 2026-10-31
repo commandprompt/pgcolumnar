@@ -2435,8 +2435,15 @@ pq_leaf_to_pgtype(const PqSchemaCol *sc, Oid *typid, int32 *typmod)
 				*typmod = pq_decimal_typmod(sc);
 				return true;
 			}
+			/*
+			 * A UTC-adjusted timestamp holds an instant, so advise timestamptz
+			 * (#1807). Advising timestamp made a read convert the instant to a
+			 * wall time in the session zone (PQ_TS_INSTANT_TO_WALL). The legacy
+			 * TIMESTAMP_MILLIS/MICROS types are UTC-adjusted by definition.
+			 */
 			if (sc->time_unit == PQ_TU_MILLIS || sc->time_unit == PQ_TU_MICROS)
-				*typid = sc->is_timestamp ? TIMESTAMPOID : TIMEOID;
+				*typid = !sc->is_timestamp ? TIMEOID
+					: sc->adjusted_utc ? TIMESTAMPTZOID : TIMESTAMPOID;
 			else
 				*typid = INT8OID;	/* INT_64, nanos, or unannotated */
 			return true;

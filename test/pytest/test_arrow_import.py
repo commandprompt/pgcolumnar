@@ -127,6 +127,41 @@ def test_a_round_trip_and_the_documented_lossy_mapping(pgc_conn, server_dir, exp
     expect.text(_state(conn, f"SELECT pgcolumnar.import_arrow('ri_wrong', '{arrow}')"), "42804",
                 "reject column-count mismatch")
 
+    # What export_arrow writes (#1806): the IPC stream format, whose first word is
+    # the 0xFFFFFFFF continuation marker, not the "ARROW1" of the IPC file format.
+    expect.text(arrow.read_bytes()[:4].hex(), "ffffffff",
+                "export_arrow writes the IPC stream format, not the ARROW1 file format (#1806)")
+
+    # Lengths larger than the file are refused before they are allocated (#1806).
+    bigmeta = server_dir / "bigmeta.arrows"
+    bigmeta.write_bytes(struct.pack("<Ii", 0xFFFFFFFF, 1048576) + bytes(8))
+    bigmeta.chmod(0o644)
+    _run(conn, "CREATE TABLE ri_len (a int) USING pgcolumnar")
+    expect.text(_refusal(conn, f"SELECT pgcolumnar.import_arrow('ri_len', '{bigmeta}')"),
+                "XX001 columnar: malformed Arrow IPC file: metadata length 1048576 is larger than"
+                " the 8 bytes left in the file",
+                "a metadata length larger than the file is refused before it is allocated (#1806)")
+    # a one-row export cut halfway through its only record-batch body
+    one = server_dir / "one.arrows"
+    _run(conn, "CREATE TABLE ri_one (a int) USING pgcolumnar", "INSERT INTO ri_one VALUES (7)",
+         f"SELECT pgcolumnar.export_arrow('ri_one', '{one}')")
+    d = one.read_bytes()
+    p = 0
+    for _ in range(2):  # the Schema message, then the RecordBatch metadata
+        cont, mlen = struct.unpack_from("<Ii", d, p)
+        assert cont == 0xFFFFFFFF, cont
+        p += 8 + mlen
+    body = len(d) - 8 - p
+    bigbody = server_dir / "bigbody.arrows"
+    bigbody.write_bytes(d[:p + body // 2])
+    bigbody.chmod(0o644)
+    _run(conn, "CREATE TABLE ri_body (a int) USING pgcolumnar")
+    expect.text(_refusal(conn, f"SELECT pgcolumnar.import_arrow('ri_body', '{bigbody}')")
+                + f"|{_one(conn, 'SELECT count(*) FROM ri_body')}",
+                f"XX001 columnar: malformed Arrow IPC file: body length {body} is larger than"
+                f" the {body // 2} bytes left in the file|0",
+                "a body length larger than the rest of the file is refused before it is allocated (#1806)")
+
 
 def test_a_file_pyarrow_wrote(pgc_conn, server_dir, expect):
     pa = expect.require_module("pyarrow", name="pyarrow import rows")
@@ -143,6 +178,42 @@ def test_a_file_pyarrow_wrote(pgc_conn, server_dir, expect):
     expect.text(_one(conn, "SELECT string_agg(coalesce(a::text,'-')||'/'||coalesce(b::text,'-')||'/'||"
                            "coalesce(c,'-'), ',' ORDER BY a NULLS LAST) FROM ri_for"),
                 "1/1.5/x,2/-/y,4/4.5/-,-/3.5/z", "pyarrow values")
+
+    # The Arrow IPC FILE format (#1806), and Feather v2, which is the same format.
+    tab = pa.table({
+        "a": pa.array([1, 2, None, 4], pa.int64()),
+        "b": pa.array([1.5, None, 3.5, 4.5], pa.float64()),
+        "c": pa.array(["x", "y", "z", None], pa.string())})
+    ipcfile = server_dir / "foreign.arrow"
+    with pa.ipc.new_file(pa.OSFile(str(ipcfile), "wb"), tab.schema) as w:
+        w.write_table(tab)
+    pafeather = expect.require_module("pyarrow.feather", name="a Feather v2 file imports its rows too (#1806)")
+    if pafeather is None:
+        return
+    feather = server_dir / "foreign.feather"
+    pafeather.write_feather(tab, str(feather), compression="uncompressed")
+
+    def file_rows(table, path):
+        _run(conn, f"CREATE TABLE {table} (a bigint, b float8, c text) USING pgcolumnar")
+        got = _refusal(conn, f"SELECT pgcolumnar.import_arrow('{table}', '{path}')")
+        if got == "ok":
+            got = str(_one(conn, f"SELECT count(*) FROM {table}"))
+        vals = _one(conn, "SELECT string_agg(coalesce(a::text,'-')||'/'||coalesce(b::text,'-')||'/'||"
+                          f"coalesce(c,'-'), ',' ORDER BY a NULLS LAST) FROM {table}")
+        return f"{got}|{vals or ''}"
+
+    expect.text(file_rows("ri_ipcfile", ipcfile), "4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z",
+                "an Arrow IPC file (ARROW1 magic) imports its rows (#1806)")
+    expect.text(file_rows("ri_feather", feather), "4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z",
+                "a Feather v2 file imports its rows too (#1806)")
+    nofooter = server_dir / "nofooter.arrow"
+    nofooter.write_bytes(ipcfile.read_bytes()[:-10])
+    nofooter.chmod(0o644)
+    _run(conn, "CREATE TABLE ri_nofooter (a bigint, b float8, c text) USING pgcolumnar")
+    expect.text(_refusal(conn, f"SELECT pgcolumnar.import_arrow('ri_nofooter', '{nofooter}')")
+                + f"|{_one(conn, 'SELECT count(*) FROM ri_nofooter')}",
+                "XX001 columnar: malformed Arrow IPC file: the file starts with ARROW1 but does not end with it|0",
+                "an Arrow IPC file without its trailing magic is refused as malformed (#1806)")
 
 
 def test_nanosecond_narrowing_is_reported_never_refused(pgc_conn, server_dir, expect):

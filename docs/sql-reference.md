@@ -611,7 +611,9 @@ inspection and testing, not for query use.
 
 ## Import and export
 
-These functions read and write Arrow IPC stream files and Parquet files. They read
+These functions read and write Arrow IPC files and Parquet files. `export_arrow`
+writes the IPC stream format; `import_arrow` reads the stream format and the IPC
+file format. They read
 and write files on the server host, so a reader needs the `pg_read_server_files`
 role and a writer needs the `pg_write_server_files` role. Superusers hold both.
 The Parquet functions also read from and write to object storage. See
@@ -624,7 +626,8 @@ and types that they do not support. See
 ### pgcolumnar.export_arrow(rel regclass, path text) returns bigint
 
 Writes the live rows of `rel` to an Arrow IPC stream file at `path`. Returns the
-number of rows written. `path` can be a local file or an `s3://` URL. See
+number of rows written. The file has no `ARROW1` header or footer, so pyarrow
+reads it with `pyarrow.ipc.open_stream`, not `open_file`. `path` can be a local file or an `s3://` URL. See
 [Object storage](#object-storage).
 
 ### pgcolumnar.export_parquet(rel regclass, path text) returns bigint
@@ -728,9 +731,15 @@ See
 
 ### pgcolumnar.import_arrow(rel regclass, path text) returns bigint
 
-Inserts the rows of an Arrow IPC stream file at `path` into the existing table
+Inserts the rows of an Arrow IPC file at `path` into the existing table
 `rel`. The column types of the table define the types that the function accepts. Returns the number of
 rows inserted.
+
+The file can be in the IPC stream format, which `export_arrow` writes, or in the
+IPC file format, which starts and ends with `ARROW1`. Feather v2 is the IPC file
+format. The function reads the stream inside an IPC file and ignores its footer.
+A message or body length larger than the rest of the file is refused with
+`XX001` before any memory is allocated for it.
 
 Temporal columns are read in the unit the file declares, not the unit
 `export_arrow` writes. A `date` column accepts `date32` and `date64`. A `time`
@@ -963,6 +972,13 @@ Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
 without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
 file.
+
+A millisecond or microsecond timestamp column that holds instants
+(`isAdjustedToUTC=true`, or the older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS`
+type) is reported as `timestamp with time zone`. A column of wall times
+(`isAdjustedToUTC=false`) is reported as `timestamp without time zone`. Each
+advised type reads the value unchanged. See
+[Timestamps and time zones](user-guide.md#read-parquet-files-in-place).
 
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when
