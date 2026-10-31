@@ -187,6 +187,22 @@ check "an over-cap catalog response is refused (54000)" \
 	   "exceeded" " by the cap")" \
 	"54000 by the cap"
 
+# ---- a reply ended by connection close is read to the end (#1787) ----------
+# The Apache Iceberg REST catalog sends a loadTable reply over about 32 KB with
+# Connection: close and no Content-Length, so the close ends the body. The client
+# asked for that framing by sending Connection: close; it refused it with
+# "listing has no length". The fixture pads the reply past one 64 KB read.
+check "a close-delimited loadTable reply resolves the metadata-location" \
+	"$(q "SELECT pgcolumnar.iceberg_rest_table_location('$CAT','db','closedelim')")" \
+	"$MDLOC"
+
+# the same framing with a body past the 64 MB response cap is still refused
+check "an over-cap close-delimited catalog response is refused (54000)" \
+	"$(refusal_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
+	                SELECT pgcolumnar.iceberg_rest_table_location('$CAT','db','closebig')" \
+	   "exceeded" " by the cap")" \
+	"54000 by the cap"
+
 # ---- an unknown table surfaces the catalog 404 cleanly (42P01) --------------
 check "an unknown table surfaces a clean not-found (42P01)" \
 	"$(refusal_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
