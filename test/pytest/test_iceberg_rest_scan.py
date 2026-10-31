@@ -6,7 +6,9 @@ for the metadata location the catalog reports: the catalog changes how a table i
 NAMED, never its rows. The shell's own REST fixture (test/iceberg_rest_server.py),
 which verifies the Authorization: Bearer header, points loadTable at the committed
 warehouse, relocated into a work directory. Projection by field id flows through the
-REST path, namespaces and tables list, and an unknown table is the catalog's own 404
+REST path, a table promoted int -> long, float -> double and decimal(10,2) ->
+decimal(20,2) reads its old and new files as the promoted types (#1789, from a second
+fixture server), namespaces and tables list, and an unknown table is the catalog's own 404
 (42P01, read by its message).
 
 A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED: survival also reads the
@@ -32,6 +34,7 @@ from pgc_vacuity import query_error
 
 TEST = pathlib.Path(__file__).resolve().parents[1]
 WH = TEST / "fixtures" / "iceberg" / "warehouse"
+WHP = TEST / "fixtures" / "iceberg" / "warehouse_promo"
 TOKEN = "rest-scan-token-shh"
 TOKEN_ENV = "PGCOLUMNAR_ICEBERG_REST_TOKEN"
 
@@ -145,6 +148,10 @@ def irs(pgc_cluster):
         p.chmod(0o777 if p.is_dir() else 0o666)
     md = sorted((dest / "db" / "events" / "metadata").glob("*.metadata.json"))[-1]
     mdloc = f"file://{md}"
+    pdest = work / "promo"
+    shutil.copytree(WHP / "db", pdest / "db")
+    for p in [pdest, *pdest.rglob("*")]:
+        p.chmod(0o777 if p.is_dir() else 0o666)
 
     rest_port = pick_port(34)
     out = work / "rest_server.out"
@@ -157,12 +164,26 @@ def irs(pgc_cluster):
             break
         time.sleep(0.1)
     cat = f"http://127.0.0.1:{rest_port}"
+    # a second fixture server names warehouse_promo's mixed snapshot db.promo (#1789)
+    promo_port = pick_port(38)
+    promo_out = work / "rest_promo.out"
+    promo_srv = subprocess.Popen([sys.executable, str(TEST / "iceberg_rest_server.py"), "--port", str(promo_port),
+                                  "--log", str(work / "rest_promo.log"), "--token", TOKEN, "--namespace", "db",
+                                  "--table", "promo", "--metadata-location",
+                                  f"file://{pdest}/db/t/metadata/mixed.metadata.json"],
+                                 stdout=open(promo_out, "w"), stderr=subprocess.STDOUT)
+    for _ in range(50):
+        if promo_out.is_file() and "READY" in promo_out.read_text(errors="replace"):
+            break
+        time.sleep(0.1)
 
     datadir = work / "data"
     datadir.mkdir()
     log = str(work / "server.log")
     cluster = Cluster(pgc_cluster.pg_config, "icerestscan", datadir, pick_port(35))
-    r = {"server up": out.read_text(errors="replace").count("READY") if out.is_file() else 0, "mdloc": mdloc}
+    fx_srvs = []
+    r = {"server up": out.read_text(errors="replace").count("READY") if out.is_file() else 0, "mdloc": mdloc,
+         "promo server up": promo_out.read_text(errors="replace").count("READY") if promo_out.is_file() else 0}
     try:
         cluster.initdb()
         with open(datadir / "postgresql.conf", "a") as fh:
@@ -184,6 +205,9 @@ def irs(pgc_cluster):
                                    f"pgcolumnar.iceberg_rest_scan('{cat}','db','events') {cols} ORDER BY id")
         r["projected"] = _rows(dsn, f"SELECT amount || '|' || id FROM pgcolumnar.iceberg_rest_scan('{cat}','db','events') "
                                     f"AS t(amount int, id bigint) ORDER BY id")
+        r["promo"] = _rows(dsn, "SELECT id || '|' || k || '|' || f || '|' || d FROM "
+                                f"pgcolumnar.iceberg_rest_scan('http://127.0.0.1:{promo_port}','db','promo') "
+                                "AS t(id bigint, k bigint, f double precision, d numeric(20,2)) ORDER BY id")
         r["namespaces"] = _rows(dsn, f"SELECT string_agg(ns, ',' ORDER BY ns) "
                                      f"FROM pgcolumnar.iceberg_rest_namespaces('{cat}') AS ns")
         r["tables"] = _rows(dsn, f"SELECT string_agg(t, ',' ORDER BY t) "
@@ -198,12 +222,105 @@ def irs(pgc_cluster):
         r["scan other ns"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{cat}','nosuchns','events') "
                                            f"AS t(id bigint)",
                                       "the REST catalog has no such table", " by the catalog's 404")
+        # #1793: one fixture per catalog behaviour, as the shell starts them.
+        def start_fx(name, *args):
+            port = pick_port(39 + len(fx_srvs) % 9)  # slots 39-47; pick_port walks past a busy port
+            fout = work / f"{name}.out"
+            fx_srvs.append(subprocess.Popen(
+                [sys.executable, str(TEST / "iceberg_rest_server.py"), "--port", str(port),
+                 "--log", str(work / f"{name}.log"), "--token", TOKEN,
+                 "--metadata-location", mdloc, *args],
+                stdout=open(fout, "w"), stderr=subprocess.STDOUT))
+            for _ in range(50):
+                if fout.is_file() and "READY" in fout.read_text(errors="replace"):
+                    break
+                time.sleep(0.1)
+            return f"http://127.0.0.1:{port}"
+
+        def nslist(c):
+            return _rows(dsn, f"SELECT string_agg(ns, ',' ORDER BY ns) FROM pgcolumnar.iceberg_rest_namespaces('{c}') AS ns")
+
+        def tlist(c, ns):
+            return _rows(dsn, f"SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('{c}','{ns}') AS t")
+
+        def scan(c, ns):
+            return _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM "
+                              f"pgcolumnar.iceberg_rest_scan('{c}','{ns}','events') {cols} ORDER BY id")
+
+        def location(c):
+            return _rows(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{c}','db','events')")
+
+        ncat = start_fx("nested", "--namespace", "db.x", "--table", "events", "--extra-table", "more",
+                        "--extra-namespace", "db.x.y", "--extra-namespace", "aa",
+                        "--namespace-separator", "%2E", "--page-size", "1")
+        r["nested namespaces"] = nslist(ncat)
+        r["nested tables"] = tlist(ncat, "db.x")
+        r["nested scan"] = scan(ncat, "db.x")
+        scat = start_fx("slashpfx", "--namespace", "db", "--table", "events", "--prefix", "catalogs/main")
+        r["slash location"] = location(scat)
+        r["slash scan"] = scan(scat, "db")
+        r["slash namespaces"] = nslist(scat)
+        r["slash tables"] = tlist(scat, "db")
+        dcat = start_fx("defpfx", "--namespace", "db", "--table", "events", "--prefix", "wh1",
+                        "--prefix-in-defaults")
+        r["defaults location"] = location(dcat)
+        r["defaults tables"] = tlist(dcat, "db")
+        wcat = start_fx("whcat", "--namespace", "db", "--table", "events", "--prefix", "whp",
+                        "--warehouse", "wh1")
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE SERVER irs_wh FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog "
+                      f"OPTIONS (catalog_uri '{wcat}', warehouse 'wh1')")
+            c.execute(f"CREATE USER MAPPING FOR CURRENT_USER SERVER irs_wh OPTIONS (token '{TOKEN}')")
+        r["warehouse namespaces"] = nslist("irs_wh")
+        r["warehouse tables"] = tlist("irs_wh", "db")
+        # #1859 review: catalogs that bend the spec, and the defensive refusals.
+        r["flat namespaces"] = nslist(start_fx("flat", "--namespace", "a.b", "--table", "events",
+                                               "--extra-namespace", "c", "--top-level-all"))
+        r["flat ignore parent"] = nslist(start_fx("flatig", "--namespace", "a.b", "--table", "events",
+                                                  "--extra-namespace", "c", "--top-level-all",
+                                                  "--ignore-parent"))
+        c = start_fx("parent400", "--namespace", "a", "--table", "events", "--parent-status", "400")
+        r["parent 400"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_namespaces('{c}')",
+                                   "the REST catalog returned HTTP 400 for the namespaces",
+                                   " with the catalog's 400")
+        r["prec3 location"] = location(start_fx(
+            "prec3", "--namespace", "db", "--table", "events", "--prefix", "ovr", "--config-json",
+            '{"defaults":{"prefix":"dft"},"prefix":"top","overrides":{"prefix":"ovr"}}'))
+        r["prec2 location"] = location(start_fx(
+            "prec2", "--namespace", "db", "--table", "events", "--prefix", "top", "--config-json",
+            '{"defaults":{"prefix":"dft"},"prefix":"top","overrides":{}}'))
+        c = start_fx("badsep", "--namespace", "db", "--table", "events", "--config-json",
+                     '{"defaults":{},"overrides":{"namespace-separator":"%G1"}}')
+        r["bad separator"] = _refusal(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{c}','db','events')",
+                                      'advertised an invalid namespace-separator "%G1"', " invalid separator")
+        c = start_fx("badpfx", "--namespace", "db", "--table", "events", "--config-json",
+                     '{"defaults":{},"overrides":{"prefix":"a/../b"}}')
+        r["bad prefix"] = _refusal(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{c}','db','events')",
+                                   'advertised an invalid prefix "a/../b"', " invalid prefix")
+        deep64 = ".".join(f"l{i}" for i in range(1, 65))
+        c = start_fx("deep64", "--namespace", "db", "--table", "events", "--extra-namespace", deep64)
+        r["depth 64"] = _rows(dsn, f"SELECT max(length(ns) - length(replace(ns, '.', '')) + 1) "
+                                   f"FROM pgcolumnar.iceberg_rest_namespaces('{c}') AS ns")
+        c = start_fx("deep65", "--namespace", "db", "--table", "events", "--extra-namespace", deep64 + ".l65")
+        r["depth 65"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_namespaces('{c}')",
+                                 "nests namespaces deeper than 64 levels", " deeper than 64")
+        for mode in ("same", "cycle"):
+            c = start_fx(f"{mode}page", "--namespace", "db", "--table", "events", "--bad-page-token", mode)
+            r[f"{mode} token"] = _refusal(
+                dsn, f"SET statement_timeout = '30s'; SELECT * FROM pgcolumnar.iceberg_rest_tables('{c}','db')",
+                "returned the same page token twice for the table list", " repeated token")
+
         r["survived"] = _survived(dsn, log, before)
         yield r
     finally:
         _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
         srv.kill()
         srv.wait()
+        promo_srv.kill()
+        promo_srv.wait()
+        for fx in fx_srvs:
+            fx.kill()
+            fx.wait()
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -258,6 +375,22 @@ def test_iceberg_rest_scan_projects_and_reorders_by_field_id(irs, expect):
                 "iceberg_rest_scan projects and reorders by field id (amount, id)")
 
 
+def test_the_promoted_table_rest_server_is_up(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(str(irs["promo server up"]), "1", "premise: the promoted-table rest fixture server is up")
+
+
+def test_iceberg_rest_scan_reads_a_promoted_tables_old_and_new_files(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["promo"],
+                "1|-2147483648|1.5|1.25\n2|-1|-2.25|-3.50\n3|0|0.5|0.00\n4|2|1024.75|99999999.99\n"
+                "5|2147483647|3.4028234663852886e+38|-0.01\n6|7|-0.125|10.10\n7|2|2|2.00\n"
+                "8|5000000000|3.25|123456789012345678.90\n9|2|0.1|-1.00",
+                "iceberg_rest_scan reads a promoted table's old and new files as the promoted types")
+
+
 def test_iceberg_rest_namespaces_lists_the_catalogs_namespaces(irs, expect):
     if _declined(irs, expect):
         return
@@ -291,3 +424,154 @@ def test_the_backend_is_still_up_after_the_rest_read(irs, expect):
     if _declined(irs, expect):
         return
     expect.text(irs["survived"], "1", "backend still up after the REST read")
+
+
+ROWS5 = "1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50"
+
+
+def test_nested_namespaces_iceberg_rest_namespaces_lists_every_level(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["nested namespaces"], "aa,db,db.x,db.x.y",
+                "nested namespaces: iceberg_rest_namespaces lists every level, page by page")
+
+
+def test_nested_namespaces_iceberg_rest_tables_lists_both_pages(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["nested tables"], "events,more",
+                "nested namespaces: iceberg_rest_tables of db.x lists both pages")
+
+
+def test_nested_namespaces_iceberg_rest_scan_returns_the_five_rows(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["nested scan"], ROWS5,
+                "nested namespaces: iceberg_rest_scan of db.x.events returns the five rows")
+
+
+def test_multi_segment_prefix_iceberg_rest_table_location_resolves(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["slash location"], irs["mdloc"],
+                "multi-segment prefix: iceberg_rest_table_location resolves the table")
+
+
+def test_multi_segment_prefix_iceberg_rest_scan_returns_the_five_rows(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["slash scan"], ROWS5, "multi-segment prefix: iceberg_rest_scan returns the five rows")
+
+
+def test_multi_segment_prefix_iceberg_rest_namespaces_lists(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["slash namespaces"], "db",
+                "multi-segment prefix: iceberg_rest_namespaces lists the namespaces")
+
+
+def test_multi_segment_prefix_iceberg_rest_tables_lists(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["slash tables"], "events", "multi-segment prefix: iceberg_rest_tables lists the tables")
+
+
+def test_prefix_in_config_defaults_iceberg_rest_table_location_resolves(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["defaults location"], irs["mdloc"],
+                "prefix in config defaults: iceberg_rest_table_location resolves the table")
+
+
+def test_prefix_in_config_defaults_iceberg_rest_tables_lists(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["defaults tables"], "events",
+                "prefix in config defaults: iceberg_rest_tables lists the tables")
+
+
+def test_warehouse_server_iceberg_rest_namespaces_sends_the_warehouse(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["warehouse namespaces"], "db",
+                "warehouse server: iceberg_rest_namespaces sends the warehouse and lists")
+
+
+def test_warehouse_server_iceberg_rest_tables_sends_the_warehouse(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["warehouse tables"], "events",
+                "warehouse server: iceberg_rest_tables sends the warehouse and lists")
+
+
+def test_top_level_lists_nested_namespaces_iceberg_rest_namespaces_lists_each_once(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["flat namespaces"], "a,a.b,c",
+                "top level lists nested namespaces: iceberg_rest_namespaces lists each once")
+
+
+def test_catalog_ignores_parent_iceberg_rest_namespaces_lists_each_once(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["flat ignore parent"], "a,a.b,c",
+                "catalog ignores ?parent=: iceberg_rest_namespaces lists each once")
+
+
+def test_catalog_refuses_parent_iceberg_rest_namespaces_fails_with_its_http_400(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["parent 400"], "08P01 with the catalog's 400",
+                "catalog refuses ?parent=: iceberg_rest_namespaces fails with its HTTP 400")
+
+
+def test_config_precedence_a_prefix_in_overrides_wins(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["prec3 location"], irs["mdloc"],
+                "config precedence: a prefix in overrides wins over the top-level key and defaults")
+
+
+def test_config_precedence_a_top_level_prefix_wins_over_defaults(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["prec2 location"], irs["mdloc"],
+                "config precedence: a top-level prefix wins over defaults")
+
+
+def test_an_invalid_namespace_separator_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["bad separator"], "XX001 invalid separator",
+                "an invalid namespace-separator %G1 is refused")
+
+
+def test_an_invalid_prefix_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["bad prefix"], "XX001 invalid prefix", "an invalid prefix a/../b is refused")
+
+
+def test_namespace_depth_a_namespace_64_levels_deep_is_listed(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["depth 64"], "64", "namespace depth: a namespace 64 levels deep is listed")
+
+
+def test_namespace_depth_a_namespace_65_levels_deep_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["depth 65"], "54000 deeper than 64",
+                "namespace depth: a namespace 65 levels deep is refused")
+
+
+def test_paging_a_page_token_repeated_at_once_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["same token"], "08P01 repeated token", "paging: a page token repeated at once is refused")
+
+
+def test_paging_a_page_token_cycle_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["cycle token"], "08P01 repeated token", "paging: a page token cycle A, B, A is refused")

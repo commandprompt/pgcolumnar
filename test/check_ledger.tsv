@@ -3029,6 +3029,28 @@ iceberg_catalog	iceberg_catalog	malformed JSON is rejected (22P02), backend surv
 iceberg_catalog	iceberg_catalog	resolves the named current snapshot, not snapshots[0]	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the decoy snapshot is not returned	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the first snapshot has no parent (NULL)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a .. traversal manifest-list is refused, not read (22023, not XX001)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a DELETED (status 2) data entry is skipped, not listed and not refused	15;16;17;18;19	2026-10-30	columnar_iceberg.c: the lister refuses a DELETED (status 2) data entry again, the #1791 defect (#1791)
+iceberg_data_files	iceberg_data_files	a foreign absolute manifest-list is refused (22023)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a position-delete entry in a data manifest is refused (0A000)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a sibling-prefix manifest-list is refused (22023)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a snapshot with a delete manifest is refused (feature_not_supported 0A000)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a symlink under the location targeting outside is refused (22023, not XX001)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a table with no current snapshot yields no data files	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	after a copy-on-write delete of every row, no data files are listed	15;16;17;18;19	2026-10-30	columnar_iceberg.c: the lister refuses a DELETED (status 2) data entry again, the #1791 defect (#1791)
+iceberg_data_files	iceberg_data_files	after a copy-on-write delete, data files == pyiceberg plan_files (record_count|basename)	15;16;17;18;19	2026-10-30	columnar_iceberg.c: the lister refuses a DELETED (status 2) data entry again, the #1791 defect (#1791)
+iceberg_data_files	iceberg_data_files	an EXISTING (status 0) data entry is listed, as an ADDED one is	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	an equality-delete entry in a data manifest is refused (0A000)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	an unprivileged role is refused (42501)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	backend still up after the delete refusal	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	backend still up after the entry refusals	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	backend still up after the traversal attempts	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	control: a data manifest with one added data entry lists that one file	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	data files == pyiceberg oracle (record_count|region|basename)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	every data file is PARQUET	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	no returned path leaks the recorded root	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	premise: each copy-on-write fixture's current snapshot carries a DELETED (status 2) data entry	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	returned paths are rebased under the actual location	15;16;17;18;19	never	-
 iceberg_deletes	iceberg_deletes	...and the boundary refusal names the escape	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_rebase does not hold a recorded path under the recorded table location
 iceberg_deletes	iceberg_deletes	...and the negative-pos refusal names the negative pos	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a negative position-delete pos is not refused
 iceberg_deletes	iceberg_deletes	...and the null-pos refusal names pos	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position-delete row with a null pos is not refused (the n1 || n2 guard skipped)
@@ -3104,6 +3126,93 @@ iceberg_dv	iceberg_dv	backend still up after the audit arms	15;16;17;18;19	2026-
 iceberg_dv	iceberg_dv	supersede is per data file, not global	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies to every data file, not only the one it references
 iceberg_dv	iceberg_dv	two DV blobs in one Puffin file each apply to their own data file	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a DV applies to every data file, not only the one it references
 iceberg_dv	iceberg_dv	two DV entries for one data file are refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: two DVs for one data file are not refused
+iceberg_fdw	iceberg_fdw	a bucket-pruned equality matches iceberg_scan (murmur3 oracle)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	a date partition prunes nothing in this release (Files Pruned: 0)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	a date-partitioned FDW reads the whole table (4 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	a day()-pruned query matches iceberg_scan (epoch cross-check)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	a metrics-pruned query matches iceberg_scan (same oracle)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	a truncate-pruned query matches iceberg_scan (same oracle)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount < 100 returns ids 1,2	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount < 100 truncate-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount < 15 prunes the us file by metrics (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount < 15 returns only id 1	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 100 prunes both files by metrics (Files Pruned: 2)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 100 returns no rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 130 returns id 3	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 130 truncate-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 30 prunes the eu file, keeps us (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount = 30 returns id 3	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount > 25 prunes the eu file by metrics (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount > 25 still returns the right rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	amount >= 200 truncate-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	an unknown table option is refused (FDW_INVALID_OPTION_NAME)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	day()-on-timestamp: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	day()-on-timestamptz prunes the Mar-01 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	day()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt < 2020-01-02 day-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt < 2020-01-02 returns id 1	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt = 2020-01-02 day-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt = 2020-01-02 returns id 2	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt >= 2020-02-01 day-prunes 2 files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	dt='2020-01-01' returns its rows, not over-pruned to zero	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	hour() on a naive source read as timestamptz in New York matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	hour() on a timestamptz source read as timestamp in New York matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	hour()-on-timestamptz prunes the 00h file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	hour()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	hour(): boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 1 keeps only its bucket file (Files Pruned: 4)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 1 returns row 1	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 3 returns row 3	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 4 keeps only its bucket file (Files Pruned: 4)	15;16;17;18;19	2026-10-30	columnar_iceberg_fdw.c: bucket pruning runs only under the default collation (the guard tests inputcollid != DEFAULT_COLLATION_OID)
+iceberg_fdw	iceberg_fdw	id = 4 returns row 4	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id = 5 bucket-prunes past metrics (Files Pruned: 4)	15;16;17;18;19	2026-10-30	columnar_iceberg_fdw.c: bucket pruning runs only under the default collation (the guard tests inputcollid != DEFAULT_COLLATION_OID)
+iceberg_fdw	iceberg_fdw	id = 5 returns row 5	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id > 4 prunes by metrics not bucket, correctly (Files Pruned: 2)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	id > 4 still returns the right rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	identity: region = 'EU' COLLATE ice_ci prunes only the us file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	identity: region = 'EU' COLLATE ice_ci returns the eu rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	month()-on-date prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	month()-on-date: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	month()-on-timestamptz prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	month()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	month(): boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	no predicate prunes no files	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='eu' prunes the us file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='eu' returns the eu rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='us' prunes the eu file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='us' returns the three us rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='zz' prunes both files (Files Pruned: 2)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	region='zz' returns no rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	text bucket: a column declared COLLATE ice_ci prunes no file (Files Pruned: 0)	15;16;17;18;19	2026-10-30	columnar_iceberg_fdw.c: bucket pruning ignores the comparison collation, so an equality under a nondeterministic collation prunes by bucket(const) (the #1818 guard removed)
+iceberg_fdw	iceberg_fdw	text bucket: a column declared COLLATE ice_ci returns all four case variants	15;16;17;18;19	2026-10-30	columnar_iceberg_fdw.c: bucket pruning ignores the comparison collation, so an equality under a nondeterministic collation prunes by bucket(const) (the #1818 guard removed)
+iceberg_fdw	iceberg_fdw	text bucket: s = 'ABC' COLLATE ice_ci matches iceberg_scan (same oracle)	15;16;17;18;19	2026-10-30	columnar_iceberg_fdw.c: bucket pruning ignores the comparison collation, so an equality under a nondeterministic collation prunes by bucket(const) (the #1818 guard removed);columnar_iceberg_fdw.c: the bucket collation guard reads the column's collation, not the comparison's (op->inputcollid -> var->varcollid)
+iceberg_fdw	iceberg_fdw	text bucket: s = 'ABC' COLLATE ice_ci prunes no file (Files Pruned: 0)	15;16;17;18;19	2026-10-30	columnar_iceberg_fdw.c: bucket pruning ignores the comparison collation, so an equality under a nondeterministic collation prunes by bucket(const) (the #1818 guard removed);columnar_iceberg_fdw.c: the bucket collation guard reads the column's collation, not the comparison's (op->inputcollid -> var->varcollid)
+iceberg_fdw	iceberg_fdw	text bucket: s = 'ABC' COLLATE ice_ci returns all four case variants	15;16;17;18;19	2026-10-30	columnar_iceberg_fdw.c: bucket pruning ignores the comparison collation, so an equality under a nondeterministic collation prunes by bucket(const) (the #1818 guard removed);columnar_iceberg_fdw.c: the bucket collation guard reads the column's collation, not the comparison's (op->inputcollid -> var->varcollid)
+iceberg_fdw	iceberg_fdw	text bucket: s = 'ABC' under the default collation prunes 5 files	15;16;17;18;19	2026-10-30	columnar_iceberg_fdw.c: bucket pruning skips every qual that has a collation, deterministic or not (!PgColumnarCollationIsDeterministic(op->inputcollid) -> OidIsValid(op->inputcollid))
+iceberg_fdw	iceberg_fdw	text bucket: s = 'ABC' under the default collation returns row 2	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	text bucket: s = 'ABC' under the deterministic C collation still prunes 5 files	15;16;17;18;19	2026-10-30	columnar_iceberg_fdw.c: bucket pruning runs only under the default collation (the guard tests inputcollid != DEFAULT_COLLATION_OID);columnar_iceberg_fdw.c: bucket pruning skips every qual that has a collation, deterministic or not (!PgColumnarCollationIsDeterministic(op->inputcollid) -> OidIsValid(op->inputcollid))
+iceberg_fdw	iceberg_fdw	text bucket: the FDW reads the whole table (6 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the FDW matches iceberg_scan under the same predicate (same oracle)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the FDW reads the whole table (5 rows, no predicate)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the bucket FDW reads the whole table (8 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the date FDW matches iceberg_scan under the same predicate	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the day() FDW reads the whole table (3 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the truncate FDW reads the whole table (5 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	the year() FDW reads the whole table (3 rows)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts = 2021-06-01 returns id 2	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts = 2021-06-01 year-prunes to one file (Files Pruned: 2)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts > 2021-01-01 keeps the boundary-year file, returns ids 2,3	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts > 2021-01-01 year-prunes the 2020 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts >= 2021-02-01 month-prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts >= 2021-03-01 01:00 hour-prunes the 00h file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	ts >= 2021-03-02 day-prunes the Mar-01 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-date equality prunes to one file (Files Pruned: 2)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-date equality returns id 2	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-date prunes the 2020 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-date: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-timestamptz prunes the 2020 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	year(): boundary read matches iceberg_scan (no over-prune)	15;16;17;18;19	never	-
 iceberg_fdw_estimate	iceberg_fdw_estimate	a filtered scan estimates fewer rows than the whole table (selectivity applied)	15;16;17;18;19	2026-10-21	the Iceberg FDW sets rows directly, so the scan's selectivity never applies
 iceberg_fdw_estimate	iceberg_fdw_estimate	backend alive	15;16;17;18;19	never	-
 iceberg_fdw_estimate	iceberg_fdw_estimate	the FDW estimates a positive row count from the manifests	15;16;17;18;19	never	-
@@ -3125,6 +3234,7 @@ iceberg_malformed	iceberg_malformed	a null manifest-list sequence_number decodes
 iceberg_malformed	iceberg_malformed	an array-valued schema fields element is refused, not crashed (XX001)	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the FIFO refusals	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the dangling-schema refusal	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	backend still up after the enum refusals	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the lister refusal	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the malformed-schema refusal	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the manifest-list FIFO refusal	15;16;17;18;19	never	-
@@ -3139,10 +3249,23 @@ iceberg_malformed	iceberg_malformed	control: a present min_sequence_number decod
 iceberg_malformed	iceberg_malformed	control: a resolvable current-schema-id reads the correct amount column	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	control: a well-formed field object still decodes (0 entries)	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	control: the legacy table binds amount correctly (10..50)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: two valid data entries list two data files	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: two valid data entries scan as ten rows (ids 1..10)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	data_file.content -1 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows	15;16;17;18;19	2026-10-30	columnar_iceberg.c: ice_walk_data_files does not range-check data_file.content, so an unknown value reaches ice_scan_cb or the lister's delete-file refusal (#1823)
+iceberg_malformed	iceberg_malformed	data_file.content 3 on the newest file is refused naming the value, not as an equality delete with no ids	15;16;17;18;19	2026-10-30	columnar_iceberg.c: ice_walk_data_files does not range-check data_file.content, so an unknown value reaches ice_scan_cb or the lister's delete-file refusal (#1823)
+iceberg_malformed	iceberg_malformed	data_file.content 3 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows	15;16;17;18;19	2026-10-30	columnar_iceberg.c: ice_walk_data_files does not range-check data_file.content, so an unknown value reaches ice_scan_cb or the lister's delete-file refusal (#1823)
+iceberg_malformed	iceberg_malformed	data_file.content 4294967296 on the oldest file is refused by iceberg_scan (XX001), not wrapped to 0	15;16;17;18;19	2026-10-31	columnar_avro.c: data_file.content read by a plain (int32) cast of av_read_long, not av_read_int32_field (4294967296 wraps to 0)
 iceberg_malformed	iceberg_malformed	iceberg_current_snapshot on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_malformed	iceberg_malformed	iceberg_data_files on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
+iceberg_malformed	iceberg_malformed	iceberg_data_files refuses data_file.content 3 as corrupt (XX001), not as a delete file (0A000)	15;16;17;18;19	2026-10-30	columnar_iceberg.c: ice_walk_data_files does not range-check data_file.content, so an unknown value reaches ice_scan_cb or the lister's delete-file refusal (#1823)
+iceberg_malformed	iceberg_malformed	iceberg_data_files refuses manifest_entry.status 3 (XX001), not listed	15;16;17;18;19	2026-10-30	columnar_iceberg.c: ice_walk_data_files does not range-check manifest_entry.status, so status 3 is read as a live entry (#1823)
+iceberg_malformed	iceberg_malformed	iceberg_data_files refuses manifest_file.content 5 as corrupt (XX001), not as a delete manifest (0A000)	15;16;17;18;19	2026-10-30	columnar_iceberg.c: ice_walk_data_files does not range-check manifest_file.content, so content 5 is read as a data manifest or refused as a delete manifest (#1823)
 iceberg_malformed	iceberg_malformed	iceberg_scan on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_malformed	iceberg_malformed	iceberg_scan refuses a null manifest seq an ADDED entry must inherit (XX001, not a silent wrong row)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an added entry inherits a null manifest sequence number as 0
+iceberg_malformed	iceberg_malformed	manifest_entry.status 3 is refused by iceberg_scan (XX001), not read as a live entry	15;16;17;18;19	2026-10-30	columnar_iceberg.c: ice_walk_data_files does not range-check manifest_entry.status, so status 3 is read as a live entry (#1823)
+iceberg_malformed	iceberg_malformed	manifest_entry.status 4294967297 is refused by iceberg_scan (XX001), not wrapped to 1	15;16;17;18;19	2026-10-31	columnar_avro.c: manifest_entry.status read by a plain (int32) cast of av_read_long, not av_read_int32_field (4294967297 wraps to 1)
+iceberg_malformed	iceberg_malformed	manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not wrapped to 0	15;16;17;18;19	2026-10-31	columnar_avro.c: manifest_file.content read by a plain (int32) cast of av_read_long, not av_read_int32_field (4294967296 wraps to 0)
+iceberg_malformed	iceberg_malformed	manifest_file.content 5 is refused by iceberg_scan (XX001), not read as a data manifest	15;16;17;18;19	2026-10-30	columnar_iceberg.c: ice_walk_data_files does not range-check manifest_file.content, so content 5 is read as a data manifest or refused as a delete manifest (#1823)
 iceberg_malformed	iceberg_malformed	read_avro_manifest on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_malformed	iceberg_malformed	read_manifest_list on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_malformed	iceberg_malformed	read_parquet on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
@@ -3192,11 +3315,13 @@ iceberg_objstore	iceberg_objstore	position deletes read over s3 (surviving == fi
 iceberg_objstore	iceberg_objstore	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 iceberg_objstore	iceberg_objstore	the position-deleted ids are gone over s3	15;16;17;18;19	2026-10-21	columnar_objstore_module.c: os_check_endpoint_allowed refuses every endpoint, the listed one included
 iceberg_rest	iceberg_rest	a catalog endpoint off the allow-list is refused (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: every address reads as link-local and the allow-list is gone
+iceberg_rest	iceberg_rest	a close-delimited loadTable reply resolves the metadata-location	15;16;17;18;19	2026-10-30	objstore/columnar_objstore_module.c: os_slurp_body refuses a body with neither length nor chunking (main d0747e07, the #1787 defect)
 iceberg_rest	iceberg_rest	a link-local catalog host is refused even if allow-listed (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: the allow-list refuses every endpoint and the link-local refusal is gone
 iceberg_rest	iceberg_rest	a non-object catalog config is refused, not walked (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a non-object /v1/config body is not refused
 iceberg_rest	iceberg_rest	a wrong bearer token is refused (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 401/403 is not mapped to 28000
 iceberg_rest	iceberg_rest	an anonymous request to a token-protected catalog is refused (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 401/403 is not mapped to 28000
 iceberg_rest	iceberg_rest	an over-cap catalog response is refused (54000)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: os_slurp_body does not refuse an advertised length over the cap
+iceberg_rest	iceberg_rest	an over-cap close-delimited catalog response is refused (54000)	15;16;17;18;19	2026-10-30	objstore/columnar_objstore_module.c: os_slurp_body refuses a body with neither length nor chunking (main d0747e07, the #1787 defect)
 iceberg_rest	iceberg_rest	an unknown table surfaces a clean not-found (42P01)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 404 is not mapped to 42P01
 iceberg_rest	iceberg_rest	backend still up after the REST refusals	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the backend aborts on a catalog 404 (abort() before the 42P01 refusal)
 iceberg_rest	iceberg_rest	loadTable resolves the current metadata-location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
@@ -3205,36 +3330,69 @@ iceberg_rest	iceberg_rest	premise: the PG server log holds lines to search	15;16
 iceberg_rest	iceberg_rest	the loadTable request carried an Authorization header	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the bearer token also travels in the request URL's query string
 iceberg_rest	iceberg_rest	the token never appears in the server (PG) log	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: rest_get_json logs the bearer token (elog LOG)
 iceberg_rest	iceberg_rest	the token value never appears in the catalog request log	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the bearer token also travels in the request URL's query string
+iceberg_rest_scan	iceberg_rest_scan	an invalid namespace-separator %G1 is refused	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	an invalid prefix a/../b is refused	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	backend still up after the REST read	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the backend aborts on a catalog 404 (abort() before the 42P01 refusal)
+iceberg_rest_scan	iceberg_rest_scan	catalog ignores ?parent=: iceberg_rest_namespaces lists each once	15;16;17;18;19	2026-10-31	the #1859 review fixes reverted: top-level dedupe, 64-level bound, page-token cycle check (#1793)
+iceberg_rest_scan	iceberg_rest_scan	catalog refuses ?parent=: iceberg_rest_namespaces fails with its HTTP 400	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	config precedence: a prefix in overrides wins over the top-level key and defaults	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	config precedence: a top-level prefix wins over defaults	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_namespaces lists the catalog's namespaces	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: iceberg_rest_namespaces drops the catalog's last namespace
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan matches iceberg_scan of the same table (same oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-22	columnar_iceberg_rest.c: loadTable always asks for namespace db, whatever namespace it was given
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan of an unknown table is a clean not-found (42P01)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 404 is not mapped to 42P01
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan projects and reorders by field id (amount, id)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
+iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan reads a promoted table's old and new files as the promoted types	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a FLOAT read into double precision is returned as a float4 Datum (mutation, #1789);columnar_parquet_reader.c: pq_want_phys_for no longer binds a DECIMAL by the file's own physical type (mutation, #1789);columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan returns the five current-snapshot rows	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_tables lists a namespace's tables	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-22	columnar_iceberg_rest.c: iceberg_rest_tables always asks for namespace db, whatever namespace it was given
+iceberg_rest_scan	iceberg_rest_scan	multi-segment prefix: iceberg_rest_namespaces lists the namespaces	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	multi-segment prefix: iceberg_rest_scan returns the five rows	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	multi-segment prefix: iceberg_rest_table_location resolves the table	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	multi-segment prefix: iceberg_rest_tables lists the tables	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	namespace depth: a namespace 64 levels deep is listed	15;16;17;18;19	2026-10-31	the #1859 review fixes reverted: top-level dedupe, 64-level bound, page-token cycle check (#1793)
+iceberg_rest_scan	iceberg_rest_scan	namespace depth: a namespace 65 levels deep is refused	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	nested namespaces: iceberg_rest_namespaces lists every level, page by page	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	nested namespaces: iceberg_rest_scan of db.x.events returns the five rows	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	nested namespaces: iceberg_rest_tables of db.x lists both pages	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	paging: a page token cycle A, B, A is refused	15;16;17;18;19	2026-10-31	the #1859 review fixes reverted: top-level dedupe, 64-level bound, page-token cycle check (#1793)
+iceberg_rest_scan	iceberg_rest_scan	paging: a page token repeated at once is refused	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	prefix in config defaults: iceberg_rest_table_location resolves the table	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	prefix in config defaults: iceberg_rest_tables lists the tables	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
 iceberg_rest_scan	iceberg_rest_scan	premise: rest fixture server is up	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	premise: the promoted-table rest fixture server is up	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	the catalog reports the relocated metadata location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
+iceberg_rest_scan	iceberg_rest_scan	top level lists nested namespaces: iceberg_rest_namespaces lists each once	15;16;17;18;19	2026-10-31	the #1859 review fixes reverted: top-level dedupe, 64-level bound, page-token cycle check (#1793)
+iceberg_rest_scan	iceberg_rest_scan	warehouse server: iceberg_rest_namespaces sends the warehouse and lists	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	warehouse server: iceberg_rest_tables sends the warehouse and lists	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
 iceberg_rest_server	iceberg_rest_server	a catalog_uri option on the USER MAPPING is rejected (HV00D)	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	a foreign table on a catalog server reads nothing (55000, no handler), before any request	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused before any request (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a half OAuth2 credential (id, no secret) is not refused, so the mint runs with a NULL secret and the backend dies
+iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused even with a static token (28000)	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the half-pair refusal runs only when no static token is set, so a token excuses a half OAuth2 pair (the fix reverted, #1794)
+iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (secret, no id) is refused even with a static token (28000)	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the half-pair refusal runs only when no static token is set, so a token excuses a half OAuth2 pair (the fix reverted, #1794)
 iceberg_rest_server	iceberg_rest_server	a link-local oauth_token_uri is refused by the allow-list (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: an endpoint off pgcolumnar.objstore_allowed_endpoints is not refused
-iceberg_rest_server	iceberg_rest_server	a non-superuser with no token mapping is refused (28000) despite the environment token, before any request	15;16;17;18;19	2026-10-15	the REST resolver letting every role borrow the environment token
+iceberg_rest_server	iceberg_rest_server	a non-superuser with no token mapping is refused (28000) despite the environment token, before any request	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the server form refuses every non-superuser, USAGE or not (#1819);the REST resolver letting every role borrow the environment token
+iceberg_rest_server	iceberg_rest_server	a role without USAGE on the server is refused through a PUBLIC mapping (42501), before any request	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the server form never checks USAGE on the catalog server (#1819)
 iceberg_rest_server	iceberg_rest_server	a server with an OAuth2 mapping reads by a minted bearer	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	a static token and a complete OAuth2 pair read by the token, with no token request	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: a complete OAuth2 pair mints a bearer even when a static token is set (mutation, #1794)
 iceberg_rest_server	iceberg_rest_server	a token option on the SERVER is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a warehouse option on the SERVER is accepted (not HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a warehouse-configured server resolves a table location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the USER MAPPING token option is ignored
 iceberg_rest_server	iceberg_rest_server	a wrong OAuth2 client secret is refused (28000)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a wrong mapping token is refused (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: abort() in place of the catalog's 401/403 refusal
+iceberg_rest_server	iceberg_rest_server	after REVOKE USAGE the role's own mapping is refused (42501), before any request	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the server form never checks USAGE on the catalog server (#1819)
 iceberg_rest_server	iceberg_rest_server	an oauth option on the SERVER is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	an off-allow-list oauth_token_uri host is refused (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: an endpoint off pgcolumnar.objstore_allowed_endpoints is not refused
 iceberg_rest_server	iceberg_rest_server	and it cannot mark its own mapping credentials_required false (42501)	15;16;17;18;19	2026-10-15	the catalog validator letting a non-superuser set credentials_required false
 iceberg_rest_server	iceberg_rest_server	backend still up	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a half OAuth2 credential (id, no secret) is not refused, so the mint runs with a NULL secret and the backend dies
-iceberg_rest_server	iceberg_rest_server	control: with credentials_required false set by a superuser, the same role reads by the environment token	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	control: core refuses that role a foreign table on the catalog server (42501)	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	control: once granted USAGE the same role reads through the PUBLIC mapping	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the server form refuses every non-superuser, USAGE or not (#1819)
+iceberg_rest_server	iceberg_rest_server	control: with credentials_required false set by a superuser, the same role reads by the environment token	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the server form refuses every non-superuser, USAGE or not (#1819)
 iceberg_rest_server	iceberg_rest_server	iceberg_rest_table_location('cat',...) reads via the mapping token	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the USER MAPPING token option is ignored
 iceberg_rest_server	iceberg_rest_server	loadTable then carried the minted bearer (Authorization present)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	no mapping and no env token is refused, not bypassed (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: abort() in place of the catalog's 401/403 refusal
 iceberg_rest_server	iceberg_rest_server	oauth options are accepted on a USER MAPPING (no error)	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	premise: ice_n holds no USAGE on server pcat	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	premise: rest fixture up	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	premise: the PG server log holds lines to search, for the client secret	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	premise: the PG server log holds lines to search, for the mapping token	15;16;17;18;19	never	-
@@ -3243,6 +3401,7 @@ iceberg_rest_server	iceberg_rest_server	the catalog-URI form still works with th
 iceberg_rest_server	iceberg_rest_server	the client secret never appears in the PG server log	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the client secret never appears in the fixture request log	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	the mapping token never appears in the PG server log	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	the namespace, table-list and scan functions refuse it too (42501), before any request	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the USAGE check runs only for the functions that pass a warehouse, not namespaces or tables (#1819);columnar_iceberg_rest.c: the server form never checks USAGE on the catalog server (#1819)
 iceberg_rest_server	iceberg_rest_server	the request carried an Authorization header	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the USER MAPPING token option is ignored
 iceberg_rest_server	iceberg_rest_server	the warehouse was sent on GET /v1/config (?warehouse=wh1)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the warehouse server option is never sent on GET /v1/config
 iceberg_rest_vended	iceberg_rest_vended	a table vending no creds still reads with ambient (cfg NULL path)	15;16;17;18;19	never	-
@@ -3255,14 +3414,33 @@ iceberg_rest_vended	iceberg_rest_vended	storage-credentials longest-prefix match
 iceberg_rest_vended	iceberg_rest_vended	the vended secret never appears in the PG server log	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the vended secret is written to the server log
 iceberg_rest_vended	iceberg_rest_vended	the vended secret never appears in the S3 request log	15;16;17;18;19	never	-
 iceberg_rest_vended	iceberg_rest_vended	vended creds for an off-allow-list endpoint are refused (42501)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: vended credentials are never built, so every read falls back to ambient
+iceberg_scan	iceberg_scan	a column declared int over a post-promotion INT64 file is refused (42804)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder also accepts int over INT64 and real over DOUBLE (mutation, #1789)
+iceberg_scan	iceberg_scan	a column declared real over a post-promotion DOUBLE file is refused (42804)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder also accepts int over INT64 and real over DOUBLE (mutation, #1789)
 iceberg_scan	iceberg_scan	a column renamed in the schema still reads by field id (amt2 = amount)	15;16;17;18;19	2026-10-21	iceberg_scan resolves output columns by position rather than field id
+iceberg_scan	iceberg_scan	a date column declared bigint is refused, not widened (42804)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: any INT32 column widens to bigint, a date included (mutation, #1789)
 iceberg_scan	iceberg_scan	a pg_read_server_files member who is not superuser may scan	15;16;17;18;19	2026-10-21	iceberg_scan admits only superusers, refusing every pg_read_server_files member
+iceberg_scan	iceberg_scan	a pgcolumnar_iceberg foreign table applies an equality delete on a promoted column	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
+iceberg_scan	iceberg_scan	a pgcolumnar_iceberg foreign table reads old and new files as the promoted types	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a FLOAT read into double precision is returned as a float4 Datum (mutation, #1789);columnar_parquet_reader.c: pq_want_phys_for no longer binds a DECIMAL by the file's own physical type (mutation, #1789);columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
+iceberg_scan	iceberg_scan	a pgcolumnar_iceberg foreign table refuses a struct column declared text (0A000)	15;16;17;18;19	2026-10-30	columnar_iceberg.c: every schema field is refused as nested, primitive fields too;columnar_iceberg.c: ice_field_ids_for_columns no longer refuses a struct, list or map schema field, so the column reads as null;columnar_iceberg.c: the nested refusal names no kind, only nested
+iceberg_scan	iceberg_scan	a promoted decimal(10,2) -> decimal(20,2) column reads the pre-promotion files	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for no longer binds a DECIMAL by the file's own physical type (mutation, #1789)
+iceberg_scan	iceberg_scan	a promoted float -> double column reads the pre-promotion files as double precision	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a FLOAT read into double precision is returned as a float4 Datum (mutation, #1789);columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
+iceberg_scan	iceberg_scan	a promoted int -> long column reads the pre-promotion files as bigint	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
+iceberg_scan	iceberg_scan	an equality delete on a promoted column applies to old and new files	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
+iceberg_scan	iceberg_scan	an equality delete on a promoted column applies when that column is not projected	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
 iceberg_scan	iceberg_scan	an output column not in the schema is refused (42703)	15;16;17;18;19	2026-10-21	iceberg_scan does not refuse an output column the schema lacks
 iceberg_scan	iceberg_scan	an unprivileged role is refused (42501)	15;16;17;18;19	2026-10-21	iceberg_scan has no server-file gate
 iceberg_scan	iceberg_scan	iceberg_scan projects and reorders by field id (amount, id)	15;16;17;18;19	2026-10-21	iceberg_scan resolves output columns by position rather than field id
 iceberg_scan	iceberg_scan	iceberg_scan reads a subset (region only)	15;16;17;18;19	2026-10-21	iceberg_scan resolves output columns by position rather than field id
 iceberg_scan	iceberg_scan	iceberg_scan reads the current snapshot's rows	15;16;17;18;19	never	-
+iceberg_scan	iceberg_scan	iceberg_scan refuses a list column declared int4 (0A000)	15;16;17;18;19	2026-10-30	columnar_iceberg.c: every schema field is refused as nested, primitive fields too;columnar_iceberg.c: ice_field_ids_for_columns no longer refuses a struct, list or map schema field, so the column reads as null;columnar_iceberg.c: the nested refusal names no kind, only nested
+iceberg_scan	iceberg_scan	iceberg_scan refuses a map column declared int8 (0A000)	15;16;17;18;19	2026-10-30	columnar_iceberg.c: every schema field is refused as nested, primitive fields too;columnar_iceberg.c: ice_field_ids_for_columns no longer refuses a struct, list or map schema field, so the column reads as null;columnar_iceberg.c: the nested refusal names no kind, only nested
+iceberg_scan	iceberg_scan	iceberg_scan refuses a struct column declared text (0A000)	15;16;17;18;19	2026-10-30	columnar_iceberg.c: every schema field is refused as nested, primitive fields too;columnar_iceberg.c: ice_field_ids_for_columns no longer refuses a struct, list or map schema field, so the column reads as null;columnar_iceberg.c: the nested refusal names no kind, only nested
+iceberg_scan	iceberg_scan	iceberg_scan still reads the scalar columns beside nested fields	15;16;17;18;19	2026-10-30	columnar_iceberg.c: every schema field is refused as nested, primitive fields too
+iceberg_scan	iceberg_scan	old and new files both bind to the promoted types in one snapshot	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a FLOAT read into double precision is returned as a float4 Datum (mutation, #1789);columnar_parquet_reader.c: pq_want_phys_for no longer binds a DECIMAL by the file's own physical type (mutation, #1789);columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
+iceberg_scan	iceberg_scan	positional read_parquet still refuses bigint over an INT32 column (42804)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for binds bigint to an INT32 column for every binder, the positional ones included (mutation, #1789)
 iceberg_scan	iceberg_scan	premise: the data file carries field ids (id=1,region=2,amount=3)	15;16;17;18;19	never	-
+iceberg_scan	iceberg_scan	premise: the old files store k, f, d as INT32, FLOAT and decimal(10,2), the new file as INT64, DOUBLE and decimal(20,2)	15;16;17;18;19	never	-
+iceberg_scan	iceberg_scan	read_parquet by field id reads an INT32 column as bigint	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
 import_deferred	import_deferred	SET CONSTRAINTS IMMEDIATE is honoured mid-transaction	15;16;17;18;19	2026-10-21	the deferred-constraint recheck is never queued
 import_deferred	import_deferred	a partial unique index accepts rows it does not cover	15;16;17;18;19	2026-10-21	both importers take the rewrite path, which enforces no constraint
 import_deferred	import_deferred	a rewrite of a uniquely-indexed table still succeeds	15;16;17;18;19	2026-10-21	the rewrites route through the enforcing index path
@@ -4552,12 +4730,19 @@ native_parquet_fieldid	native_parquet_fieldid	a duplicate field id in the file i
 native_parquet_fieldid	native_parquet_fieldid	a duplicate requested field id is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	a field_ids/column-count mismatch is refused (22023)	15;16;17;18;19	never	-
 native_parquet_fieldid	native_parquet_fieldid	a file with no field ids is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the 'file carries no field ids' guard removed, so an id-less file falls to the absent-id refusal
+native_parquet_fieldid	native_parquet_fieldid	a list field id read as int4 is refused as nested (0A000)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder no longer looks for a requested id on the file's group nodes;columnar_parquet_reader.c: the group search matches a group whose id differs from the requested one;columnar_parquet_reader.c: the nested refusal calls a LIST group a struct
+native_parquet_fieldid	native_parquet_fieldid	a map field id read as int8 is refused as nested (0A000)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder no longer looks for a requested id on the file's group nodes;columnar_parquet_reader.c: the group search matches a group whose id differs from the requested one;columnar_parquet_reader.c: the nested refusal calls a MAP group a struct
 native_parquet_fieldid	native_parquet_fieldid	a nested/array output column is refused (0A000)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scalar-only guard on field-id projection removed
+native_parquet_fieldid	native_parquet_fieldid	a struct field id read as text is refused as nested (0A000)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder no longer looks for a requested id on the file's group nodes;columnar_parquet_reader.c: the group search matches a group whose id differs from the requested one
 native_parquet_fieldid	native_parquet_fieldid	an absent field id is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the absent-field-id refusal becomes abort()
 native_parquet_fieldid	native_parquet_fieldid	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the absent-field-id refusal becomes abort()
+native_parquet_fieldid	native_parquet_fieldid	field id -1 over the nested file is refused as absent, not as a group without an id (22023)	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: the nested-group field-id match drops its field_id >= 0 test, so ARRAY[-1] names an id-less inner list or map group as nested
 native_parquet_fieldid	native_parquet_fieldid	field-id projection binds and reorders by id (g=gamma, a=alpha)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	field-id projection reads a subset (only id 3 = beta)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	positional read_parquet is unaffected	15;16;17;18;19	never	-
+native_parquet_fieldid	native_parquet_fieldid	premise: a scalar beside nested columns still reads by field id	15;16;17;18;19	never	-
+native_parquet_fieldid	native_parquet_fieldid	premise: the nested file's groups carry ids st=2 li=3 mp=4	15;16;17;18;19	never	-
+native_parquet_fieldid	native_parquet_fieldid	premise: the nested file's leaves carry ids 1,5,6,7,8,9 and none of 2,3,4	15;16;17;18;19	never	-
 native_parquet_fieldid	native_parquet_fieldid	the duplicate-requested-id error names the id, not the file	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_flba	native_parquet_flba	FDW scan == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	INT32-backed DECIMAL keeps its null	15;16;17;18;19	never	-
@@ -4566,32 +4751,72 @@ native_parquet_flba	native_parquet_flba	INT64-backed DECIMAL reads	15;16;17;18;1
 native_parquet_flba	native_parquet_flba	an INT64 DECIMAL still binds to bigint as the unscaled integer	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a bigint target over a DECIMAL column is scaled like numeric
 native_parquet_flba	native_parquet_flba	backend survived the crafted scale	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	crafted out-of-range scale is rejected, not decoded	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: the bind guard pq_decimal_bounds_ok is dropped from pq_want_phys_for
+native_parquet_flba	native_parquet_flba	fixed(16) reads as bytea through read_parquet	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for binds bytea to a BYTE_ARRAY only, so a fixed-length binary is refused at bind (mutation, #1792);columnar_parquet_reader.c: pq_want_phys_for binds bytea to a fixed-length binary only when it is not 16 bytes wide (mutation, #1792)
+native_parquet_flba	native_parquet_flba	fixed(16) still reads as uuid	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for binds uuid only to a fixed-length binary that is not 16 bytes wide (mutation, #1792)
+native_parquet_flba	native_parquet_flba	fixed(3) reads as bytea through iceberg_scan	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for binds bytea to a BYTE_ARRAY only, so a fixed-length binary is refused at bind (mutation, #1792)
+native_parquet_flba	native_parquet_flba	fixed(3) reads as bytea through read_parquet	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for binds bytea to a BYTE_ARRAY only, so a fixed-length binary is refused at bind (mutation, #1792);columnar_parquet_reader.c: pq_want_phys_for binds uuid only to a fixed-length binary that is not 16 bytes wide (mutation, #1792)
+native_parquet_flba	native_parquet_flba	fixed(3) reads as bytea through read_parquet field ids	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for binds bytea to a BYTE_ARRAY only, so a fixed-length binary is refused at bind (mutation, #1792)
+native_parquet_flba	native_parquet_flba	fixed(3) reads as bytea through the iceberg FDW	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for binds bytea to a BYTE_ARRAY only, so a fixed-length binary is refused at bind (mutation, #1792)
+native_parquet_flba	native_parquet_flba	fixed(3) reads as bytea through the parquet FDW	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for binds bytea to a BYTE_ARRAY only, so a fixed-length binary is refused at bind (mutation, #1792);columnar_parquet_reader.c: pq_want_phys_for binds bytea to a fixed-length binary only when it is not 16 bytes wide (mutation, #1792)
 native_parquet_flba	native_parquet_flba	import_parquet == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	numeric round-trips through export/read	15;16;17;18;19	never	-
+native_parquet_flba	native_parquet_flba	parquet_schema advises bytea for Iceberg fixed(3) and uuid for fixed(16)	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	parquet_schema advises numeric for an INT32 DECIMAL	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema advises an integer for an INT32 DECIMAL
 native_parquet_flba	native_parquet_flba	parquet_schema advises numeric for an INT64 DECIMAL	15;16;17;18;19	never	-
 native_parquet_flba	native_parquet_flba	pyarrow decimal128 values are exact	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: pq_decimal_to_numeric reads a narrower-than-16-byte negative DECIMAL as its unsigned magnitude
 native_parquet_flba	native_parquet_flba	pyarrow uuid reads as uuid	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
+native_parquet_flba	native_parquet_flba	uuid over fixed(3) is refused at bind (42804)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for answers -1 for uuid over a fixed-length binary of the wrong width, so the bind calls uuid unsupported (mutation, #1792);columnar_parquet_reader.c: pq_want_phys_for binds uuid only to a fixed-length binary that is not 16 bytes wide (mutation, #1792);columnar_parquet_reader.c: pq_want_phys_for binds uuid to a fixed-length binary of any width, so a 3-byte column reaches the decoder (mutation, #1792)
+native_parquet_flba	native_parquet_flba	uuid over fixed(3) is refused at field-id bind (42804)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for answers -1 for uuid over a fixed-length binary of the wrong width, so the bind calls uuid unsupported (mutation, #1792);columnar_parquet_reader.c: pq_want_phys_for binds uuid only to a fixed-length binary that is not 16 bytes wide (mutation, #1792);columnar_parquet_reader.c: pq_want_phys_for binds uuid to a fixed-length binary of any width, so a 3-byte column reaches the decoder (mutation, #1792)
 native_parquet_flba	native_parquet_flba	uuid round-trips through export/read	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	whole-row round-trip == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
+native_parquet_hardening	native_parquet_hardening	INSERT SELECT read_parquet stored no row of the invalid file	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the ASCII fast path lets an embedded NUL through (mutation, #1821)
+native_parquet_hardening	native_parquet_hardening	UINT_32 2^32-1 into smallint -> 22003, not -1	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT32 of 2^31 or more read into integer or smallint is not range-checked (mutation, #1814);columnar_parquet_reader.c: an unsigned INT32 read into smallint skips the unsigned range check (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	UINT_32 at or above 2^31 into integer -> 22003	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT32 of 2^31 or more read into integer or smallint is not range-checked (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	UINT_32 into bigint: WHERE c > 0 counts every row	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT32 read into bigint is sign-extended (mutation, #1814);columnar_parquet_reader.c: bigint does not bind to an unsigned INT32 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	UINT_32 marked only by its ConvertedType reads into bigint as unsigned	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a UINT_* ConvertedType does not mark the column unsigned (mutation, #1814);columnar_parquet_reader.c: an unsigned INT32 read into bigint is sign-extended (mutation, #1814);columnar_parquet_reader.c: bigint does not bind to an unsigned INT32 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	UINT_32 marked only by its LogicalType reads into bigint as unsigned	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: LogicalType INTEGER(isSigned=false) does not mark the column unsigned (mutation, #1814);columnar_parquet_reader.c: an unsigned INT32 read into bigint is sign-extended (mutation, #1814);columnar_parquet_reader.c: bigint does not bind to an unsigned INT32 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	UINT_32 reads into bigint as unsigned	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT32 read into bigint is sign-extended (mutation, #1814);columnar_parquet_reader.c: bigint does not bind to an unsigned INT32 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	UINT_64 at or above 2^63 into bigint -> 22003	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT64 of 2^63 or more read into bigint is not range-checked (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	UINT_64 reads into numeric as unsigned	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT64 read into numeric is printed signed (mutation, #1814);columnar_parquet_reader.c: numeric does not bind to an unsigned INT64 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	backend survived short chunk list	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the chunk-count refusal becomes abort()
+native_parquet_hardening	native_parquet_hardening	backend survived the string arms	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	date in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range date decodes one day late
 native_parquet_hardening	native_parquet_hardening	date invalid -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the date validity check removed (the offset-overflow branch kept)
 native_parquet_hardening	native_parquet_hardening	date offset overflow -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the whole date guard removed, so the epoch offset wraps
+native_parquet_hardening	native_parquet_hardening	iceberg FDW reads, not prunes, a file whose partition value is not valid text	15;16;17;18;19	2026-10-30	columnar_iceberg_fdw.c: a manifest partition value that is not valid text is compared as raw bytes and prunes its file (mutation, #1821)
+native_parquet_hardening	native_parquet_hardening	iceberg_scan data file string not UTF-8 -> 22021 naming the column	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821)
+native_parquet_hardening	native_parquet_hardening	import_parquet UINT_32 into integer -> 22003	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT32 of 2^31 or more read into integer or smallint is not range-checked (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	import_parquet also raises 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
 native_parquet_hardening	native_parquet_hardening	import_parquet left no wrapped rows	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	import_parquet reads UINT_32 into bigint and UINT_64 into numeric	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT32 read into bigint is sign-extended (mutation, #1814);columnar_parquet_reader.c: an unsigned INT64 read into numeric is printed signed (mutation, #1814);columnar_parquet_reader.c: bigint does not bind to an unsigned INT32 column (mutation, #1814);columnar_parquet_reader.c: numeric does not bind to an unsigned INT64 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	import_parquet stored no row of the invalid file	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821)
+native_parquet_hardening	native_parquet_hardening	import_parquet string not UTF-8 -> 22021	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821)
 native_parquet_hardening	native_parquet_hardening	int2 in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 guard over-applied, refusing the in-range 30000
 native_parquet_hardening	native_parquet_hardening	int2 out of range -> 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
 native_parquet_hardening	native_parquet_hardening	no wrapped -25536 appears	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	parquet foreign table string not UTF-8 -> 22021	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821)
+native_parquet_hardening	native_parquet_hardening	parquet_schema advises a type that holds every unsigned value	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: parquet_schema advises bigint for UINT_64 (mutation, #1814);columnar_parquet_reader.c: parquet_schema advises bigint for every unsigned INT32, UINT_8 and UINT_16 included (mutation, #1814);columnar_parquet_reader.c: parquet_schema advises integer for UINT_32 (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	parquet_schema still describes a bad chunk list	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	premise: pyarrow reads the unsigned file's values unsigned	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	premise: the patched-manifest table reads all five rows	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	premise: the string arms run in a UTF8 database	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	read_parquet PLAIN string not UTF-8 -> 22021 naming the column	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821)
+native_parquet_hardening	native_parquet_hardening	read_parquet UINT_64 into bigint -> 22003	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT64 of 2^63 or more read into bigint is not range-checked (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	read_parquet also raises 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
+native_parquet_hardening	native_parquet_hardening	read_parquet dictionary string not UTF-8 -> 22021 naming the column	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821)
 native_parquet_hardening	native_parquet_hardening	read_parquet in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 guard over-applied, refusing the in-range 30000
+native_parquet_hardening	native_parquet_hardening	read_parquet reads every unsigned width at its advised type	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT32 read into bigint is sign-extended (mutation, #1814);columnar_parquet_reader.c: an unsigned INT64 read into numeric is printed signed (mutation, #1814);columnar_parquet_reader.c: bigint does not bind to an unsigned INT32 column (mutation, #1814);columnar_parquet_reader.c: numeric does not bind to an unsigned INT64 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	read_parquet string with an embedded NUL -> 22021	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the ASCII fast path lets an embedded NUL through (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821)
 native_parquet_hardening	native_parquet_hardening	short chunk list rejected with a specific error	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the row-group chunk-count guard removed
+native_parquet_hardening	native_parquet_hardening	the UINT_64 refusal names the stored value	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT64 of 2^63 or more read into bigint is not range-checked (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814);columnar_parquet_reader.c: the unsigned INT64 refusal's detail prints the value signed (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	time in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range INT64 time decodes one microsecond late
 native_parquet_hardening	native_parquet_hardening	time out of day -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the INT64 time range guard removed
 native_parquet_hardening	native_parquet_hardening	timestamp in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range timestamp decodes one microsecond late
 native_parquet_hardening	native_parquet_hardening	timestamp overflow -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the timestamp guard removed, so the epoch offset wraps
+native_parquet_hardening	native_parquet_hardening	valid multibyte UTF-8 still reads (PLAIN)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: every string cell with a high-bit byte is refused, valid UTF-8 included (mutation, #1821)
+native_parquet_hardening	native_parquet_hardening	valid multibyte UTF-8 still reads (dictionary)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: every string cell with a high-bit byte is refused, valid UTF-8 included (mutation, #1821)
 native_parquet_hardening	native_parquet_hardening	valid two-column file still reads	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	varchar output column is checked too -> 22021	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821)
 native_parquet_multifile	native_parquet_multifile	EXPLAIN reports 3 files	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
 native_parquet_multifile	native_parquet_multifile	EXPLAIN sums row groups across files	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
 native_parquet_multifile	native_parquet_multifile	FDW(directory) == oracle	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a walked entry is read whatever its extension
@@ -5277,17 +5502,27 @@ nologin_workers	nologin_workers	premise: the server log records the NOLOGIN role
 nologin_workers	nologin_workers	the flush is dispatched to workers	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	a key with a space, '+' and '=' reads back (path-style)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_uriencode_path encodes a space as '+'
 objstore_addressing	objstore_addressing	a key with a space, '+' and '=' reads back (virtual-host)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_uriencode_path encodes a space as '+'
+objstore_addressing	objstore_addressing	and its path-style LIST put the bucket in the request path	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	and its path-style request path is the key URI-encoded once	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	and its virtual-host LIST went to the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	and its virtual-host request path is the key alone, URI-encoded once	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
+objstore_addressing	objstore_addressing	and its virtual-host upload cleanup listed the uploads at the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
+objstore_addressing	objstore_addressing	and the pattern read's virtual-host LIST went to the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	and the request path carried the bucket again	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	and the virtual-host upload cleanup aborted the upload the worker left open	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783)
 objstore_addressing	objstore_addressing	gs:// read round-trips (scheme handled, HMAC creds reused)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	gs:// read-back of the written object	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: gs:// demands AWS_ENDPOINT_URL like s3:// instead of defaulting to storage.googleapis.com
 objstore_addressing	objstore_addressing	gs:// write round-trips	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	path-style put the bucket in the request path	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	premise: a worker's upload is open and its id unanswered when the worker is terminated	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	premise: fixture up	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	premise: the virtual-host export fails in a worker	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	removal proof: with addressing=path the bucket is back in the path	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	s3:// path-style read	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	s3:// pattern read, virtual-host	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
+objstore_addressing	objstore_addressing	s3:// prefix read, path-style	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	s3:// prefix read, virtual-host	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	s3:// with no endpoint demands one (names AWS_ENDPOINT_URL)	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	virtual-host put the KEY ALONE in the path (no bucket segment)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
 objstore_addressing	objstore_addressing	virtual-host read == path-style read (same object, different addressing)	15;16;17;18;19	never	-
@@ -5405,13 +5640,24 @@ objstore_listing	objstore_listing	Hive over a remote prefix stamps the partition
 objstore_listing	objstore_listing	a LIST that returns HTTP 500 is refused, not read as an empty prefix	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a non-2xx LIST read as an empty, untruncated page
 objstore_listing	objstore_listing	a non-advancing continuation token is refused, not an infinite paging loop	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the non-advancing continuation token refusal removed
 objstore_listing	objstore_listing	a partition predicate prunes a remote file (Files Pruned = 1)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last key of every page is dropped
+objstore_listing	objstore_listing	a prefix whose own name starts with . lists the objects below it	15;16;17;18;19	2026-10-31	the whole listed key judged for hidden names again, prefix included, in pq_remote_key_hidden (#1784)
+objstore_listing	objstore_listing	a prefix whose own name starts with _ lists the objects below it, still skipping _temporary/	15;16;17;18;19	2026-10-31	the first segment below the prefix not judged for a hidden name in pq_remote_key_hidden (#1784);the whole listed key judged for hidden names again, prefix included, in pq_remote_key_hidden (#1784)
 objstore_listing	objstore_listing	a truncated page with no keys is refused, not looped	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the truncated-page-with-no-keys refusal removed
 objstore_listing	objstore_listing	an exact-key read issues no ListObjectsV2	15;16;17;18;19	never	-
+objstore_listing	objstore_listing	an upper-case scheme glob S3://.../_landing/*.parquet matches as s3:// does	15;16;17;18;19	2026-10-31	FNM_PATHNAME dropped from pq_remote_glob_match, so * crosses / (#1784);a glob runs the hidden-name skip over the whole key, as before #1784, in pq_resolve_paths;pattern matched with case-sensitive fnmatch over the whole URL, before pq_remote_glob_match (#1784);scheme compared with strncmp instead of pg_strncasecmp in pq_remote_glob_match (#1784)
+objstore_listing	objstore_listing	an upper-case scheme glob S3://.../glb/[A_]*.parquet is case-sensitive after the scheme	15;16;17;18;19	2026-10-31	a glob also runs the hidden-name skip below its listed prefix in pq_resolve_paths (#1784);a glob runs the hidden-name skip over the whole key, as before #1784, in pq_resolve_paths;fnmatch given FNM_CASEFOLD in pq_remote_glob_match, so the pattern ignores case after the scheme too (#1784);scheme compared with strncmp instead of pg_strncasecmp in pq_remote_glob_match (#1784)
+objstore_listing	objstore_listing	an upper-case scheme prefix S3://.../_landing/ reads as s3:// does	15;16;17;18;19	2026-10-31	scheme compared with strncmp instead of pg_strncasecmp in pq_remote_key_hidden (#1784);the first segment below the prefix not judged for a hidden name in pq_remote_key_hidden (#1784);the whole listed key judged for hidden names again, prefix included, in pq_remote_key_hidden (#1784)
 objstore_listing	objstore_listing	and the request log recorded the exact-key read	15;16;17;18;19	never	-
 objstore_listing	objstore_listing	backend still up after the listing refusals	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the non-advancing token refusal (the backend crashes)
 objstore_listing	objstore_listing	exact-key read returns its rows	15;16;17;18;19	never	-
-objstore_listing	objstore_listing	glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	glob glb/*.parquet matches _b.parquet but not .h.parquet, as a local glob does	15;16;17;18;19	2026-10-31	FNM_PATHNAME dropped from pq_remote_glob_match, so * crosses / (#1784);a glob also runs the hidden-name skip below its listed prefix in pq_resolve_paths (#1784);a glob runs the hidden-name skip over the whole key, as before #1784, in pq_resolve_paths
+objstore_listing	objstore_listing	glob glb/.*.parquet matches the dot file it spells	15;16;17;18;19	2026-10-31	a glob also runs the hidden-name skip below its listed prefix in pq_resolve_paths (#1784);a glob runs the hidden-name skip over the whole key, as before #1784, in pq_resolve_paths
+objstore_listing	objstore_listing	glob glb/_*.parquet matches the _ file it spells	15;16;17;18;19	2026-10-31	a glob also runs the hidden-name skip below its listed prefix in pq_resolve_paths (#1784);a glob runs the hidden-name skip over the whole key, as before #1784, in pq_resolve_paths
+objstore_listing	objstore_listing	glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/	15;16;17;18;19	2026-10-31	FNM_PATHNAME dropped from pq_remote_glob_match, so * crosses / (#1784);columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	glob under a named . directory (.dir/*.parquet) matches	15;16;17;18;19	2026-10-31	a glob runs the hidden-name skip over the whole key, as before #1784, in pq_resolve_paths
+objstore_listing	objstore_listing	glob under a named _ directory (_landing/*.parquet) matches	15;16;17;18;19	2026-10-31	FNM_PATHNAME dropped from pq_remote_glob_match, so * crosses / (#1784);a glob runs the hidden-name skip over the whole key, as before #1784, in pq_resolve_paths
 objstore_listing	objstore_listing	hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
+objstore_listing	objstore_listing	prefix glb/ still skips _b.parquet and .h.parquet below it	15;16;17;18;19	2026-10-31	the first segment below the prefix not judged for a hidden name in pq_remote_key_hidden (#1784)
 objstore_listing	objstore_listing	premise: fixture up	15;16;17;18;19	never	-
 objstore_listing	objstore_listing	read_parquet over a prefix reads every object under it (4 parts, recursive)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
 objstore_listing	objstore_listing	the prefix listing paged (more than one list-type=2 request)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the listing stops after its first page
@@ -5466,9 +5712,14 @@ objstore_sink_write	objstore_sink_write	all four workers' uploads were open befo
 objstore_sink_write	objstore_sink_write	allow-list: an unlisted endpoint refuses 42501 before any write	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	and completed it exactly once (POST with uploadId, no partNumber)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: CompleteMultipartUpload is never sent and read as done
 objstore_sink_write	objstore_sink_write	arrow export to s3:// also round-trips	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
+objstore_sink_write	objstore_sink_write	bare bucket: an export to s3://bucket is refused as naming no prefix	15;16;17;18;19	2026-10-30	the stale-part listing of <dir> without the closing / and no bare-bucket refusal, as at 087960ba (#1782)
+objstore_sink_write	objstore_sink_write	bare bucket: an export to s3://bucket/ is refused as naming no prefix	15;16;17;18;19	2026-10-30	the stale-part listing of <dir> without the closing / and no bare-bucket refusal, as at 087960ba (#1782)
+objstore_sink_write	objstore_sink_write	bare bucket: no part object at the bucket root	15;16;17;18;19	2026-10-30	the stale-part listing of <dir> without the closing / and no bare-bucket refusal, as at 087960ba (#1782)
+objstore_sink_write	objstore_sink_write	bare bucket: the refused exports sent no PUT	15;16;17;18;19	2026-10-30	the stale-part listing of <dir> without the closing / and no bare-bucket refusal, as at 087960ba (#1782)
 objstore_sink_write	objstore_sink_write	cancel: no _SUCCESS marker at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	cancel: no completed object remains at the prefix	15;16;17;18;19	never	-
-objstore_sink_write	objstore_sink_write	cancel: the dispatcher issued DELETE over the known keys	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	cancel: no request named a key with an empty segment (//)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
+objstore_sink_write	objstore_sink_write	cancel: the dispatcher issued DELETE over the known keys	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
 objstore_sink_write	objstore_sink_write	cancel: the server holds no open upload under the prefix	15;16;17;18;19	2026-10-22	the before_shmem_exit registration in PgColumnarSinkOpen dropped (noreg)
 objstore_sink_write	objstore_sink_write	http:// 403: the hint says the request went unsigned, not to check AWS_* credentials	15;16;17;18;19	2026-10-31	os_reject_403 gives an unsigned http(s):// 403 the AWS_* credential hint, as before (#1779);os_write_request signs unconditionally (#1779)
 objstore_sink_write	objstore_sink_write	http:// arrow export round-trips unsigned (no crash)	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
@@ -5485,17 +5736,35 @@ objstore_sink_write	objstore_sink_write	inject: the key does not exist	15;16;17;
 objstore_sink_write	objstore_sink_write	inject: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
 objstore_sink_write	objstore_sink_write	large export to s3:// succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	large round trip: s3 read-back == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last part is left out of the CompleteMultipartUpload list
+objstore_sink_write	objstore_sink_write	lister refused: no _SUCCESS marker certifies the failed run's prefix	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT re-throws without removing the run's parts (mutation, #1781)
+objstore_sink_write	objstore_sink_write	lister refused: no part object remains at the prefix	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT re-throws without removing the run's parts (mutation, #1781)
+objstore_sink_write	objstore_sink_write	lister refused: the export fails with the listing's 28000	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT removes the parts and swallows the error, reporting success (mutation, #1781)
+objstore_sink_write	objstore_sink_write	listing error: the refused listing names the prefix it listed, not a dummy key	15;16;17;18;19	2026-10-31	columnar_objstore_module.c: objstore_list_objects leaves the handle's URL as the dummy key s3://<bucket>/_ it resolved from, so a refused listing names it (mutation, #1781)
+objstore_sink_write	objstore_sink_write	listing refused after a larger run: no _SUCCESS marker remains at the prefix	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	listing refused after a larger run: the earlier run's part-0002 and part-0003 remain, and nothing else	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	marker refused: no part object remains at the prefix	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT re-throws without removing the run's parts (mutation, #1781);columnar_parallel_export.c: the cleanup region covers the stale-part listing only, so a refused marker PUT leaves the parts (mutation, #1781)
+objstore_sink_write	objstore_sink_write	marker refused: the export fails with the marker PUT's 28000	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT removes the parts and swallows the error, reporting success (mutation, #1781)
+objstore_sink_write	objstore_sink_write	no slash: a 2-worker re-run to s3://bucket/sl succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet	15;16;17;18;19	2026-10-31	the stale-part reconcile matching any key under <dir>/ by basename, at any depth, as at 9bdc4391 (#1782)
+objstore_sink_write	objstore_sink_write	no slash: a re-run to sl leaves the parts under slx/ and sl2/	15;16;17;18;19	2026-10-30	the stale-part listing of <dir> without the closing / and no bare-bucket refusal, as at 087960ba (#1782)
+objstore_sink_write	objstore_sink_write	no slash: the re-run leaves exactly its own 2 parts under sl/	15;16;17;18;19	2026-10-31	the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
 objstore_sink_write	objstore_sink_write	parallel export to an s3:// prefix succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: a _SUCCESS marker object exists at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: the marker went to the prefix as a PUT	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: a re-run into the same prefix succeeds (overwrite)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: a session SET of objstore_part_size reaches the workers (multipart)	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
 objstore_sink_write	objstore_sink_write	parallel: every worker PUT went to the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: one object per worker was written (4)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: the union of the per-worker objects == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
 objstore_sink_write	objstore_sink_write	part failure: a refused part fails the export (58030)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a part upload the server refused is read as stored
 objstore_sink_write	objstore_sink_write	part failure: the key does not exist	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no multipart, the growing object is PUT to the final key as it grows
 objstore_sink_write	objstore_sink_write	part failure: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
+objstore_sink_write	objstore_sink_write	premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: a worker was uploading before the cancel	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: lister refused: an earlier complete run left its marker at lf/	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: lister refused: both workers' parts were uploaded before the listing	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: listing refused after a larger run: the 4-worker run left 4 parts and its marker at lt/	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: marker refused: both workers' parts were uploaded before the marker	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the export was cancelled, not completed	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the fault landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
@@ -5503,9 +5772,18 @@ objstore_sink_write	objstore_sink_write	premise: the large export took the multi
 objstore_sink_write	objstore_sink_write	premise: the part failure landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: unsigned http fixture server is up	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	s3:// 403: a signed request that is refused still hints to check AWS_* credentials	15;16;17;18;19	2026-10-31	os_reject_403 gives every 403 the unsigned http(s):// hint, a signed s3:// one included (mutation, #1779)
+objstore_sink_write	objstore_sink_write	session allow-list: a new session sees an empty system list before the widen arm	15;16;17;18;19	2026-10-31	objstore_sink_write.sh: the pg_reload_conf() after ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '' removed, so the system list never becomes '' (#1780)
+objstore_sink_write	objstore_sink_write	session allow-list: a session SET widens an empty system list for the workers	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
+objstore_sink_write	objstore_sink_write	session allow-list: nothing reached the refused prefix (no PUT, no POST)	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
+objstore_sink_write	objstore_sink_write	session allow-list: the dispatcher raises the refusal, not a worker	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: pexport_prepare_dir's api->check_endpoint(dir, NULL) removed, the GUC hand-off to the workers kept (#1780)
+objstore_sink_write	objstore_sink_write	several slashes: a 3-worker export to s3://bucket/sl// succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	several slashes: an export to sl// leaves the parts under slx/ and sl2/	15;16;17;18;19	2026-10-30	the stale-part listing of <dir> without the closing / and no bare-bucket refusal, as at 087960ba (#1782)
+objstore_sink_write	objstore_sink_write	several slashes: every worker PUT went to sl/part- (one slash)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
+objstore_sink_write	objstore_sink_write	several slashes: no request named a key with an empty segment (//)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
+objstore_sink_write	objstore_sink_write	several slashes: sl/ holds exactly this run's 3 parts	15;16;17;18;19	2026-10-31	the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
 objstore_sink_write	objstore_sink_write	shrink: _SUCCESS certifies the reconciled prefix	15;16;17;18;19	never	-
-objstore_sink_write	objstore_sink_write	shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped)	15;16;17;18;19	never	-
-objstore_sink_write	objstore_sink_write	shrink: parts 0002/0003 from the larger run are gone	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped)	15;16;17;18;19	2026-10-31	the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
+objstore_sink_write	objstore_sink_write	shrink: parts 0002/0003 from the larger run are gone	15;16;17;18;19	2026-10-31	the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
 objstore_sink_write	objstore_sink_write	shrink: the 4-worker run wrote 4 parts + marker	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	small export to s3:// succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	small object went as ONE plain PUT (no multipart)	15;16;17;18;19	never	-
@@ -5513,6 +5791,15 @@ objstore_sink_write	objstore_sink_write	small round trip: s3 read-back == source
 objstore_sink_write	objstore_sink_write	terminate: export workers exit within 75 s while the store is silent	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_wait without WL_TIMEOUT, so a silent store never counts a quiet slice
 objstore_sink_write	objstore_sink_write	the http:// fault landed mid-multipart (an upload was started)	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
 objstore_sink_write	objstore_sink_write	the http:// large export took the multipart protocol	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
+objstore_sink_write	objstore_sink_write	trailing slash: an export to sl/ leaves the parts under slx/ and sl2/	15;16;17;18;19	2026-10-30	the stale-part listing of <dir> without the closing / and no bare-bucket refusal, as at 087960ba (#1782)
+objstore_sink_write	objstore_sink_write	trailing slash: every worker PUT went to sl/part- (one slash)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
+objstore_sink_write	objstore_sink_write	trailing slash: no request named a key with an empty segment (//)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
+objstore_sink_write	objstore_sink_write	trailing slash: parallel export to an s3:// prefix ending in / succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	trailing slash: the documented glob read-back equals the source	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	trailing slash: the marker went to sl/_SUCCESS (one slash)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
+objstore_sink_write	objstore_sink_write	uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts	15;16;17;18;19	2026-10-31	the S3:// scheme normalisation in pgcolumnar_parallel_export_parquet removed, as at d0fd4f8a (#1782);the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
+objstore_sink_write	objstore_sink_write	uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003	15;16;17;18;19	2026-10-31	the S3:// scheme normalisation in pgcolumnar_parallel_export_parquet removed, as at d0fd4f8a (#1782);the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
 objstore_stash_recovery	objstore_stash_recovery	and the installed module is still the one that was there, not the debris	15;16;17;18;19	2026-10-22	objstore_module.sh start guard with no debris branch: every stash restored over the installed module
 objstore_stash_recovery	objstore_stash_recovery	and the module left installed is still valid	15;16;17;18;19	never	-
 objstore_stash_recovery	objstore_stash_recovery	and the stash is cleared	15;16;17;18;19	2026-10-22	objstore_module.sh start guard refuses on any stash, as before #393's fix

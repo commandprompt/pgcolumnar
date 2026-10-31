@@ -45,6 +45,8 @@ from pgc_vacuity import query_error
 TEST = pathlib.Path(__file__).resolve().parents[1]
 AKID, SECRET, REGION, BUCKET = "PGCTESTKEYID", "pgctest-secret-shhh", "pgc-test-1", "pgc-bucket"
 DENIED_BUCKET = "pgc-denied"   # the fixture checks this bucket's signatures against another secret
+# the sibling-prefix part objects every #1782 export must leave in place
+SIBLINGS = "sl2/part-0005.parquet slx/part-0007.parquet"
 PART = "SET pgcolumnar.objstore_part_size = 262144"
 
 GEN_SMALL = "SELECT g, 'row-'||g FROM generate_series(1,1000) g"
@@ -117,6 +119,38 @@ def _hint(dsn, sql):
     return "no error"
 
 
+def _denied_url(dsn, sql):
+    """-> the URL that `sql`'s access-denied error names, or what happened instead."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        m = re.search(r'access to "([^"]*)" was denied', str(exc))
+        return m.group(1) if m else f"no access-denied error ({_message(exc)})"
+    return "no access-denied error (no error)"
+
+
+def _refused_by(dsn, sql, setup=()):
+    """-> "refused by the dispatcher" when `sql` raised the allow-list refusal itself,
+    "refused by worker N" when the dispatcher re-raised a worker's error, or what
+    happened instead."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            for s in setup:
+                conn.execute(s)
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        m = re.search(r"worker [0-9]+(?= failed)", str(exc))
+        if m:
+            return f"refused by {m.group(0)}"
+        if "is not in pgcolumnar.objstore_allowed_endpoints" in str(exc):
+            return "refused by the dispatcher"
+        return f"not refused ({_message(exc)})"
+    return "not refused (no error)"
+
+
 def _logn(log, pattern):
     """-> how many request-log lines match `pattern` (grep -cE), or a query_error()."""
     try:
@@ -137,6 +171,21 @@ def _open_uploads(work, pattern):
 def _parts(d):
     """-> how many part-*.parquet objects are under `d` (0 when it does not exist)."""
     return sum(1 for p in d.iterdir() if re.search(r"part-.*\.parquet$", p.name)) if d.is_dir() else 0
+
+
+def _system_list(dsn, alter, value):
+    """Run an ALTER SYSTEM on the allow-list, reload, and wait up to 10 s for a new
+    session to see `value`. -> what the last session saw, in brackets, so a reload
+    that never lands shows."""
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute(alter)
+        c.execute("SELECT pg_reload_conf()")
+    for _ in range(50):
+        seen = _row(dsn, "SELECT current_setting('pgcolumnar.objstore_allowed_endpoints')")
+        if seen == value:
+            break
+        time.sleep(0.2)
+    return f"[{seen}]"
 
 
 def _pg_ctl(cluster, args, extra_env):
@@ -163,7 +212,8 @@ def _restart(cluster, datadir, log, env):
 
 def _cancel_run(dsn, s3log, bucket, r):
     """The shell's cancel arm: a 4-worker export of es_parbig in the background, cancelled
-    once a worker has PUT a part."""
+    once a worker has PUT a part. The prefix ends in a slash (#1782), so the cleanup
+    DELETEs and the multipart listing run on the stripped prefix."""
     out = {}
 
     def run():
@@ -171,7 +221,7 @@ def _cancel_run(dsn, s3log, bucket, r):
             with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
                 conn.execute(PART)
                 conn.execute("SELECT pgcolumnar.parallel_export_parquet("
-                             f"'es_parbig'::regclass, 's3://{BUCKET}/cx', 4)").fetchall()
+                             f"'es_parbig'::regclass, 's3://{BUCKET}/cx/', 4)").fetchall()
             out["result"] = "completed"
         except psycopg.Error as exc:
             out["result"] = str(exc)
@@ -182,7 +232,7 @@ def _cancel_run(dsn, s3log, bucket, r):
     bg.start()
     wrote = "no"
     for _ in range(300):
-        n = _logn(s3log, r"^PUT /pgc-bucket/cx/part-")
+        n = _logn(s3log, r"^PUT /pgc-bucket/cx/+part-")
         if isinstance(n, int) and n >= 1:
             wrote = "yes"
             break
@@ -214,6 +264,7 @@ def _cancel_run(dsn, s3log, bucket, r):
                          else "completed")
     n = _logn(s3log, r"^DELETE /pgc-bucket/cx/part-")
     r["cx delete"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
+    r["cx empty segment"] = str(_logn(s3log, r"^[A-Z]+ /pgc-bucket/[^ ]*//"))
     r["cx parts"] = str(_parts(bucket / "cx"))
     r["cx marker"] = "present" if (bucket / "cx" / "_SUCCESS").exists() else "absent"
     r["cx open"] = _open_uploads(bucket.parent, r"^pgc-bucket/cx/")
@@ -480,6 +531,55 @@ def osw(pgc_cluster):
         open(s3log, "w").close()
         r["par rerun"] = _row(dsn, pexp)
 
+        # #1781: a refused stale-part listing after every worker finished fails the run,
+        # and the dispatcher removes its parts and the earlier run's marker
+        _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/lf', 2)")
+        r["lf first marker"] = "yes" if (bucket / "lf" / "_SUCCESS").is_file() else "no"
+        open(s3log, "w").close()
+        (work / "__listing_status__").write_text("403\n")
+        try:
+            r["lf refusal"] = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                            f"'es_par'::regclass, 's3://{BUCKET}/lf', 2)",
+                                       "was denied", " by the listing")
+        finally:
+            (work / "__listing_status__").unlink()
+        n = _logn(s3log, r"^PUT /pgc-bucket/lf/part-")
+        r["lf uploaded"] = ("yes" if n >= 2 else f"no ({n} part PUTs)") if isinstance(n, int) else n
+        r["lf parts"] = str(_parts(bucket / "lf"))
+        r["lf marker"] = "present" if (bucket / "lf" / "_SUCCESS").exists() else "absent"
+
+        # the same for a refused _SUCCESS PUT
+        open(s3log, "w").close()
+        (work / "__put_status__").write_text(f"403 {BUCKET}/mf/_SUCCESS\n")
+        try:
+            r["mf refusal"] = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                            f"'es_par'::regclass, 's3://{BUCKET}/mf', 2)",
+                                       "mf/_SUCCESS", " by the marker PUT")
+        finally:
+            (work / "__put_status__").unlink()
+        n = _logn(s3log, r"^PUT /pgc-bucket/mf/part-")
+        r["mf uploaded"] = ("yes" if n >= 2 else f"no ({n} part PUTs)") if isinstance(n, int) else n
+        r["mf parts"] = str(_parts(bucket / "mf"))
+
+        # #1781 review: the documented limit of a refused listing. A 4-worker run, then
+        # a 2-worker re-run whose listing is refused, leaves the earlier part-0002/0003
+        # and no marker; the refusal names the prefix it listed, not "s3://pgc-bucket/_"
+        lt = bucket / "lt"
+        _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/lt', 4)")
+        r["lt first"] = f"{_parts(lt)} parts, marker " + \
+            ("present" if (lt / "_SUCCESS").is_file() else "absent")
+        (work / "__listing_status__").write_text("403\n")
+        try:
+            r["lt url"] = _denied_url(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                           f"'es_par'::regclass, 's3://{BUCKET}/lt', 2)")
+        finally:
+            (work / "__listing_status__").unlink()
+        r["lt left"] = " ".join(sorted(p.name for p in lt.iterdir())) if lt.is_dir() else ""
+        print(f"LT error names: {r['lt url']}")
+        print(f"LT contents: {r['lt left'] or '(empty)'}")
+        r["lt left"] = r["lt left"] or "(empty)"
+        r["lt marker"] = "present" if (lt / "_SUCCESS").exists() else "absent"
+
         # shrink: a smaller re-run drops the stale tail
         _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/sr', 4)")
         sr = bucket / "sr"
@@ -490,6 +590,120 @@ def osw(pgc_cluster):
         r["sr gone"] = "gone" if not (sr / "part-0002.parquet").exists() and \
             not (sr / "part-0003.parquet").exists() else "present"
         r["sr marker"] = "yes" if (sr / "_SUCCESS").is_file() else "no"
+
+        # #1782: a prefix ending in '/' must not put an empty segment in the keys.
+        # The fixture stores files, which collapse '//', so only the log shows it.
+        # An S3 listing matches leading characters, so each export runs beside part
+        # objects under the sibling prefixes slx/ and sl2/, which must survive.
+        sl = bucket / "sl"
+
+        def plant():
+            for d, name in (("slx", "part-0007.parquet"), ("sl2", "part-0005.parquet")):
+                (bucket / d).mkdir(parents=True, exist_ok=True)
+                (bucket / d / name).write_text("x")
+
+        def siblings_left():
+            left = [f"{d}/{n}" for d, n in (("sl2", "part-0005.parquet"), ("slx", "part-0007.parquet"))
+                    if (bucket / d / n).exists()]
+            return " ".join(left) or "none"
+
+        def sl_put_keys():
+            try:
+                lines = pathlib.Path(s3log).read_text(errors="replace").splitlines()
+            except OSError as exc:
+                return query_error(f"request log unreadable: {exc}")
+            return str(len({m.group(0) for m in
+                            (re.match(r"^PUT /pgc-bucket/sl/part-[0-9]+\.parquet", ln) for ln in lines)
+                            if m}))
+
+        def pexport(prefix, workers):
+            return _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                             f"'es_par'::regclass, 's3://{BUCKET}/{prefix}', {workers})")
+
+        plant()
+        open(s3log, "w").close()
+        r["sl export"] = pexport("sl/", 4)
+        r["sl puts"] = sl_put_keys()
+        n = _logn(s3log, r"^PUT /pgc-bucket/sl/_SUCCESS")
+        r["sl marker put"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
+        r["sl empty segment"] = str(_logn(s3log, r"^[A-Z]+ /pgc-bucket/[^ ]*//"))
+        r["sl glob back"] = _set_hash(dsn, f"SELECT * FROM pgcolumnar.read_parquet("
+                                           f"'s3://{BUCKET}/sl/*.parquet') AS t(id int8, v int)")
+        r["sl siblings"] = siblings_left()
+
+        # a listing with no delimiter also returns keys below sl/, so a part
+        # under sl/sub/ (another export's prefix) must survive the reconcile too
+        plant()
+        nested = sl / "sub" / "part-0009.parquet"
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        nested.write_text("x")
+        r["ns export"] = pexport("sl", 2)
+        r["ns parts"] = str(_parts(sl))
+        r["ns siblings"] = siblings_left()
+        r["ns nested"] = "sl/sub/part-0009.parquet" if nested.exists() else "none"
+
+        plant()
+        open(s3log, "w").close()
+        r["ss export"] = pexport("sl//", 3)
+        r["ss puts"] = sl_put_keys()
+        r["ss empty segment"] = str(_logn(s3log, r"^[A-Z]+ /pgc-bucket/[^ ]*//"))
+        r["ss parts"] = str(_parts(sl))
+        r["ss siblings"] = siblings_left()
+
+        # The scheme is matched in any case, but the listing returns keys spelled
+        # "s3://...": the reconcile must still drop the stale tail for "S3://".
+        _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/up', 4)")
+        open(s3log, "w").close()
+        r["up export"] = _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                   f"'es_par'::regclass, 'S3://{BUCKET}/up/', 2)")
+        r["up parts"] = str(_parts(bucket / "up"))
+        try:
+            lines = pathlib.Path(s3log).read_text(errors="replace").splitlines()
+            r["up deletes"] = " ".join(sorted({m.group(1) for m in
+                                               (re.match(r"^DELETE /pgc-bucket/(up/part-000[23]\.parquet)", ln)
+                                                for ln in lines) if m}))
+        except OSError as exc:
+            r["up deletes"] = query_error(f"request log unreadable: {exc}")
+
+        # a bare bucket names no prefix: refused before any worker starts
+        open(s3log, "w").close()
+        for key, prefix in (("bb slash", "/"), ("bb bare", "")):
+            r[key] = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                   f"'es_par'::regclass, 's3://{BUCKET}{prefix}', 2)",
+                              "names no prefix under the bucket", " (no prefix)")
+        r["bb puts"] = str(_logn(s3log, r"^PUT "))
+        r["bb root parts"] = str(sum(1 for p in bucket.iterdir()
+                                     if p.is_file() and re.search(r"^part-.*\.parquet$", p.name)))
+
+        # #1780: the workers obey the calling session's settings, not only the system's
+        open(s3log, "w").close()
+        r["sa refused"] = _refusal(
+            dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/sa', 2)",
+            "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list",
+            setup=["SET pgcolumnar.objstore_allowed_endpoints = ''"])
+        # who refused: the dispatcher itself, or a worker it re-raises as "worker N failed"
+        r["sa leader"] = _refused_by(
+            dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/sa', 2)",
+            setup=["SET pgcolumnar.objstore_allowed_endpoints = ''"])
+        sa = bucket / "sa"
+        r["sa nothing"] = f"{_logn(s3log, r'^(PUT|POST) /pgc-bucket/sa/')} requests, " \
+                          f"{len(list(sa.iterdir())) if sa.is_dir() else 0} objects"
+        # the reverse: the system list is empty and the session SETs the endpoint
+        try:
+            # the widen arm proves nothing unless the system list really is empty
+            r["sw premise"] = _system_list(
+                dsn, "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = ''", "")
+            r["sw widened"] = _row(
+                dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/sw', 2)",
+                setup=["SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'"])
+        finally:
+            _system_list(dsn, "ALTER SYSTEM RESET pgcolumnar.objstore_allowed_endpoints", "127.0.0.1")
+        # a part far below each worker's object forces multipart only if the workers read it
+        open(s3log, "w").close()
+        _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/pz', 2)",
+             setup=["SET pgcolumnar.objstore_part_size = 16384"])
+        pz = _logn(s3log, r"^POST /pgc-bucket/pz/part-0000\.parquet uploads=")
+        r["pz multipart"] = "yes" if isinstance(pz, int) and pz >= 1 else "no"
 
         # cancel mid-run
         with psycopg.connect(dsn, autocommit=True) as c:
@@ -654,6 +868,63 @@ def test_a_rerun_into_the_same_prefix_succeeds(osw, expect):
     expect.text(osw["par rerun"], "80000", "parallel: a re-run into the same prefix succeeds (overwrite)")
 
 
+def test_an_earlier_complete_run_left_its_marker(osw, expect):
+    expect.text(osw["lf first marker"], "yes",
+                "premise: lister refused: an earlier complete run left its marker at lf/")
+
+
+def test_a_refused_listing_fails_the_export(osw, expect):
+    expect.text(osw["lf refusal"], "28000 by the listing", "lister refused: the export fails with the listing's 28000")
+
+
+def test_the_parts_were_uploaded_before_the_refused_listing(osw, expect):
+    expect.text(osw["lf uploaded"], "yes",
+                "premise: lister refused: both workers' parts were uploaded before the listing")
+
+
+def test_a_refused_listing_leaves_no_part(osw, expect):
+    expect.text(osw["lf parts"], "0", "lister refused: no part object remains at the prefix")
+
+
+def test_a_refused_listing_leaves_no_marker(osw, expect):
+    expect.text(osw["lf marker"], "absent", "lister refused: no _SUCCESS marker certifies the failed run's prefix")
+
+
+def test_a_refused_marker_fails_the_export(osw, expect):
+    expect.text(osw["mf refusal"], "28000 by the marker PUT",
+                "marker refused: the export fails with the marker PUT's 28000")
+
+
+def test_the_parts_were_uploaded_before_the_refused_marker(osw, expect):
+    expect.text(osw["mf uploaded"], "yes",
+                "premise: marker refused: both workers' parts were uploaded before the marker")
+
+
+def test_a_refused_marker_leaves_no_part(osw, expect):
+    expect.text(osw["mf parts"], "0", "marker refused: no part object remains at the prefix")
+
+
+def test_the_larger_run_left_four_parts_and_a_marker(osw, expect):
+    expect.text(osw["lt first"], "4 parts, marker present",
+                "premise: listing refused after a larger run: the 4-worker run left 4 parts and its marker at lt/")
+
+
+def test_a_refused_listing_names_the_prefix_it_listed(osw, expect):
+    got = osw["lt url"]
+    expect.text(got, f"s3://{BUCKET}/lt" + ("/" if got.endswith("/") else ""),
+                "listing error: the refused listing names the prefix it listed, not a dummy key")
+
+
+def test_a_refused_listing_leaves_the_larger_runs_tail(osw, expect):
+    expect.text(osw["lt left"], "part-0002.parquet part-0003.parquet",
+                "listing refused after a larger run: the earlier run's part-0002 and part-0003 remain, and nothing else")
+
+
+def test_a_refused_listing_after_a_larger_run_leaves_no_marker(osw, expect):
+    expect.text(osw["lt marker"], "absent",
+                "listing refused after a larger run: no _SUCCESS marker remains at the prefix")
+
+
 def test_the_four_worker_run_wrote_four_parts_and_a_marker(osw, expect):
     expect.text(osw["sr four"], "ok", "shrink: the 4-worker run wrote 4 parts + marker")
 
@@ -670,6 +941,138 @@ def test_the_marker_certifies_the_reconciled_prefix(osw, expect):
     expect.text(osw["sr marker"], "yes", "shrink: _SUCCESS certifies the reconciled prefix")
 
 
+def test_a_parallel_export_to_a_prefix_ending_in_a_slash_succeeds(osw, expect):
+    expect.text(osw["sl export"], "80000",
+                "trailing slash: parallel export to an s3:// prefix ending in / succeeds")
+
+
+def test_a_trailing_slash_prefix_puts_parts_with_one_slash(osw, expect):
+    expect.text(osw["sl puts"], "4", "trailing slash: every worker PUT went to sl/part- (one slash)")
+
+
+def test_a_trailing_slash_prefix_puts_the_marker_with_one_slash(osw, expect):
+    expect.text(osw["sl marker put"], "yes", "trailing slash: the marker went to sl/_SUCCESS (one slash)")
+
+
+def test_a_trailing_slash_prefix_names_no_key_with_an_empty_segment(osw, expect):
+    expect.text(osw["sl empty segment"], "0",
+                "trailing slash: no request named a key with an empty segment (//)")
+
+
+def test_a_trailing_slash_export_reads_back_through_the_documented_glob(osw, expect):
+    expect.text(osw["sl glob back"], osw["par gen"],
+                "trailing slash: the documented glob read-back equals the source")
+
+
+def test_a_trailing_slash_export_leaves_the_sibling_prefixes_parts(osw, expect):
+    expect.text(osw["sl siblings"], SIBLINGS,
+                "trailing slash: an export to sl/ leaves the parts under slx/ and sl2/")
+
+
+def test_a_smaller_rerun_without_the_slash_succeeds(osw, expect):
+    expect.text(osw["ns export"], "80000", "no slash: a 2-worker re-run to s3://bucket/sl succeeds")
+
+
+def test_a_smaller_rerun_without_the_slash_leaves_its_own_parts(osw, expect):
+    expect.text(osw["ns parts"], "2", "no slash: the re-run leaves exactly its own 2 parts under sl/")
+
+
+def test_a_smaller_rerun_without_the_slash_leaves_the_sibling_prefixes_parts(osw, expect):
+    expect.text(osw["ns siblings"], SIBLINGS,
+                "no slash: a re-run to sl leaves the parts under slx/ and sl2/")
+
+
+def test_a_smaller_rerun_without_the_slash_leaves_a_nested_prefixes_part(osw, expect):
+    expect.text(osw["ns nested"], "sl/sub/part-0009.parquet",
+                "no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet")
+
+
+def test_an_export_to_a_prefix_with_several_slashes_succeeds(osw, expect):
+    expect.text(osw["ss export"], "80000",
+                "several slashes: a 3-worker export to s3://bucket/sl// succeeds")
+
+
+def test_several_slashes_put_parts_with_one_slash(osw, expect):
+    expect.text(osw["ss puts"], "3", "several slashes: every worker PUT went to sl/part- (one slash)")
+
+
+def test_several_slashes_name_no_key_with_an_empty_segment(osw, expect):
+    expect.text(osw["ss empty segment"], "0",
+                "several slashes: no request named a key with an empty segment (//)")
+
+
+def test_several_slashes_leave_exactly_this_runs_parts(osw, expect):
+    expect.text(osw["ss parts"], "3", "several slashes: sl/ holds exactly this run's 3 parts")
+
+
+def test_several_slashes_leave_the_sibling_prefixes_parts(osw, expect):
+    expect.text(osw["ss siblings"], SIBLINGS,
+                "several slashes: an export to sl// leaves the parts under slx/ and sl2/")
+
+
+def test_an_uppercase_scheme_rerun_succeeds(osw, expect):
+    expect.text(osw["up export"], "80000",
+                "uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds")
+
+
+def test_an_uppercase_scheme_rerun_leaves_exactly_its_own_parts(osw, expect):
+    expect.text(osw["up parts"], "2",
+                "uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts")
+
+
+def test_an_uppercase_scheme_rerun_deletes_the_stale_parts(osw, expect):
+    expect.text(osw["up deletes"], "up/part-0002.parquet up/part-0003.parquet",
+                "uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003")
+
+
+def test_a_bare_bucket_with_a_slash_is_refused(osw, expect):
+    expect.text(osw["bb slash"], "22023 (no prefix)",
+                "bare bucket: an export to s3://bucket/ is refused as naming no prefix")
+
+
+def test_a_bare_bucket_without_a_slash_is_refused(osw, expect):
+    expect.text(osw["bb bare"], "22023 (no prefix)",
+                "bare bucket: an export to s3://bucket is refused as naming no prefix")
+
+
+def test_the_refused_bare_bucket_exports_sent_no_put(osw, expect):
+    expect.text(osw["bb puts"], "0", "bare bucket: the refused exports sent no PUT")
+
+
+def test_no_part_object_lands_at_the_bucket_root(osw, expect):
+    expect.text(osw["bb root parts"], "0", "bare bucket: no part object at the bucket root")
+
+
+def test_a_session_set_to_empty_refuses_the_parallel_export(osw, expect):
+    expect.text(osw["sa refused"], "42501 by the allow-list",
+                "premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check")
+
+
+def test_the_dispatcher_raises_the_refusal_not_a_worker(osw, expect):
+    expect.text(osw["sa leader"], "refused by the dispatcher",
+                "session allow-list: the dispatcher raises the refusal, not a worker")
+
+
+def test_nothing_reached_the_prefix_the_session_refused(osw, expect):
+    expect.text(osw["sa nothing"], "0 requests, 0 objects",
+                "session allow-list: nothing reached the refused prefix (no PUT, no POST)")
+
+
+def test_the_system_list_is_empty_before_the_widen_arm(osw, expect):
+    expect.text(osw["sw premise"], "[]",
+                "session allow-list: a new session sees an empty system list before the widen arm")
+
+
+def test_a_session_set_widens_an_empty_system_list_for_the_workers(osw, expect):
+    expect.text(osw["sw widened"], "80000",
+                "session allow-list: a session SET widens an empty system list for the workers")
+
+
+def test_a_session_part_size_reaches_the_workers(osw, expect):
+    expect.text(osw["pz multipart"], "yes",
+                "parallel: a session SET of objstore_part_size reaches the workers (multipart)")
+
+
 def test_a_worker_was_uploading_before_the_cancel(osw, expect):
     expect.text(osw["cx wrote"], "yes", "premise: a worker was uploading before the cancel")
 
@@ -684,6 +1087,11 @@ def test_the_export_was_cancelled_not_completed(osw, expect):
 
 def test_the_dispatcher_deleted_the_known_keys_on_cancel(osw, expect):
     expect.text(osw["cx delete"], "yes", "cancel: the dispatcher issued DELETE over the known keys")
+
+
+def test_the_cancel_names_no_key_with_an_empty_segment(osw, expect):
+    expect.text(osw["cx empty segment"], "0",
+                "cancel: no request named a key with an empty segment (//)")
 
 
 def test_no_completed_object_remains_after_the_cancel(osw, expect):

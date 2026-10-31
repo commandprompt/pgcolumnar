@@ -72,6 +72,7 @@
 #define PEXPORT_KEY_HEADER	0
 #define PEXPORT_KEY_SLOTS	1
 #define PEXPORT_KEY_LEAVES	2
+#define PEXPORT_KEY_GUCS	3
 #define PEXPORT_MAX_WORKERS 32
 
 typedef enum PexportState
@@ -118,6 +119,22 @@ typedef struct PexportSpawn
 } PexportSpawn;
 
 PGDLLEXPORT void pgcolumnar_parallel_export_worker(Datum main_arg);
+
+/*
+ * The settings the object-store module reads by name (#1780). A background
+ * worker gets postgresql.conf, ALTER SYSTEM, and the ALTER ROLE and ALTER
+ * DATABASE settings applied when it connects, but never the caller's SET, so
+ * without these a worker ignored the caller's SET: it uploaded to an endpoint the session
+ * had refused, and ignored its part size and addressing. The dispatcher copies
+ * the caller's values into the segment, in this order, each ending in a NUL,
+ * and every worker applies them before it writes.
+ */
+static const char *const pexport_session_gucs[] = {
+	"pgcolumnar.objstore_allowed_endpoints",
+	"pgcolumnar.objstore_s3_addressing",
+	"pgcolumnar.objstore_part_size",
+};
+#define PEXPORT_NGUCS lengthof(pexport_session_gucs)
 
 /* ------------------------------------------------------------------------- */
 
@@ -199,14 +216,16 @@ pexport_prepare_dir(const char *dir)
 	struct dirent *de;
 
 	/*
-	 * A remote prefix (#623) has no directory to create, and require-empty
-	 * cannot be checked without a bucket listing, which is #619 and
-	 * deliberately deferred. So the remote branch does not verify the prefix
-	 * is empty: the documented rule is that a remote prefix must be new or
-	 * empty, and a stale higher-numbered part from a larger prior export into
-	 * the same prefix would be unioned by a later read. The one thing done
-	 * here is to load the module and reject an unsupported scheme up front, so
-	 * a missing module fails before any worker is spawned rather than N times.
+	 * A remote prefix (#623) has no directory to create, so this branch runs
+	 * the checks that must fail once, in the dispatcher, before any worker
+	 * starts, rather than once per worker:
+	 *   - the object-store module is installed;
+	 *   - it handles the scheme;
+	 *   - this session's pgcolumnar.objstore_allowed_endpoints lists the
+	 *     endpoint (#1780). The module checks the list without a request.
+	 * It does not require the prefix to be empty. A stale part from a larger
+	 * earlier export into the same prefix is removed after the workers finish
+	 * (pexport_remove_stale_remote_parts), before the _SUCCESS marker.
 	 */
 	if (PgColumnarPathIsRemote(dir))
 	{
@@ -226,6 +245,13 @@ pexport_prepare_dir(const char *dir)
 					 errhint("A remote prefix must be new or empty; "
 							 "pgcolumnar cannot verify this without a bucket "
 							 "listing.")));
+
+		/*
+		 * The workers apply this session's allow-list too (see
+		 * pexport_session_gucs), but each would refuse on its own, and the
+		 * error would arrive as "worker N failed".
+		 */
+		api->check_endpoint(dir, NULL);
 		return;
 	}
 
@@ -374,19 +400,35 @@ static void
 pexport_remove_stale_remote_parts(const char *dir, int nkeys)
 {
 	const PgColumnarObjStoreApi *api = PgColumnarObjStoreGet();
+	char	   *prefix;
+	size_t		plen;
 	char	  **keys;
 	int			n = 0;
 	int			i;
 
 	if (api == NULL || api->list_objects == NULL)
 		return;
-	keys = api->list_objects(dir, NULL, &n);
+	/*
+	 * List "<dir>/", not "<dir>": a listing matches leading characters, so
+	 * "out" would also return "outer/..." and "out2/...", and their parts would
+	 * be deleted (#1782). The listing has no delimiter, so it also returns
+	 * keys below the prefix, such as "out/sub/part-0009.parquet", which belong
+	 * to another export. So the name is taken as the whole key after the
+	 * prefix, not as the text after the key's last '/': pexport_part_index
+	 * accepts only "part-NNNN.parquet", so a name with a further '/' is never
+	 * one of this export's parts.
+	 */
+	prefix = psprintf("%s/", dir);	/* never truncated, so always ends in '/' */
+	plen = strlen(prefix);
+	keys = api->list_objects(prefix, NULL, &n);
 	for (i = 0; i < n; i++)
 	{
-		const char *slash = strrchr(keys[i], '/');
-		const char *base = slash ? slash + 1 : keys[i];
+		const char *base;
 		int			idx;
 
+		if (strncmp(keys[i], prefix, plen) != 0)
+			continue;
+		base = keys[i] + plen;
 		if (pexport_part_index(base, &idx) && idx >= nkeys)
 			api->delete_object(keys[i], NULL);
 	}
@@ -578,6 +620,18 @@ pexport_cleanup_in_catch(void *arg)
 }
 
 /*
+ * For PgColumnarCleanupAndRethrow once every worker has stopped (#1781): remove
+ * the run's parts and any marker, as the failed-worker branch does.
+ */
+static void
+pexport_remove_outputs_in_catch(void *arg)
+{
+	PexportSpawn *s = (PexportSpawn *) arg;
+
+	pexport_remove_outputs(s->dirpath, s->nkeys);
+}
+
+/*
  * pgcolumnar_parallel_export_worker
  *		Background-worker entry: attach the DSM, connect, import the dispatcher's
  *		snapshot, and write this worker's slice to its Parquet file(s). Read-only,
@@ -617,6 +671,18 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
+
+	/* the caller's object-store settings (#1780); the caller could SET each */
+	{
+		const char *v = (const char *) shm_toc_lookup(toc, PEXPORT_KEY_GUCS, false);
+		int			g;
+
+		for (g = 0; g < (int) PEXPORT_NGUCS; g++)
+		{
+			SetConfigOption(pexport_session_gucs[g], v, PGC_SUSET, PGC_S_SESSION);
+			v += strlen(v) + 1;
+		}
+	}
 
 	/*
 	 * Adopt the dispatcher's exact snapshot. ImportSnapshot requires a
@@ -736,6 +802,9 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	PexportHeader *hdr;
 	PexportWorkerSlot *slots;
 	Oid		   *leafchunk;
+	char	   *gucvals[PEXPORT_NGUCS];
+	Size		gucsize;
+	char	   *gucchunk;
 	uint32		dsmh;
 	BackgroundWorker bw;
 	BackgroundWorkerHandle **handles;
@@ -754,6 +823,57 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 				 errmsg("target and path must not be null")));
 	relid = PG_GETARG_OID(0);
 	dir = text_to_cstring(PG_GETARG_TEXT_PP(1));
+
+	/*
+	 * Every key below is built as "<dir>/...", and every listing of the prefix
+	 * as "<dir>/". A remote prefix written in the documented
+	 * "s3://bucket/prefix/" form would otherwise give keys such as
+	 * "prefix//part-0000.parquet", which S3 stores as a different key and the
+	 * documented glob never matches (#1782). So strip every trailing slash,
+	 * down to the first '/' after "scheme://" and never past it.
+	 *
+	 * What is left must name a prefix under the bucket. "s3://bucket/" and
+	 * "s3://bucket" name none: the parts would go to the bucket root and the
+	 * reconcile would list the whole bucket. Refuse them here, before any
+	 * worker starts. A local path is left as given, since the filesystem
+	 * already collapses "//".
+	 *
+	 * Both rules treat the first segment after "scheme://" as the bucket,
+	 * which holds for s3:// and gs:// style URLs. For a path-style
+	 * http(s)://host/bucket/ URL the first segment is the host, so the strip
+	 * may remove the slash after the bucket, and "http://host/bucket/" is not
+	 * refused as naming no prefix.
+	 */
+	if (PgColumnarPathIsRemote(dir))
+	{
+		const char *sep;
+		const char *slash;
+		size_t		len;
+
+		/*
+		 * The scheme is matched in any case, but a listing returns every key
+		 * spelled "s3://". Spell the scheme that way here, so the reconcile and
+		 * the upload cleanup, which compare listed keys with "<dir>/", match
+		 * them for "S3://bucket/prefix" too (#1782).
+		 */
+		if (pg_strncasecmp(dir, "s3://", 5) == 0)
+			memcpy(dir, "s3", 2);
+		sep = strstr(dir, "://");
+		slash = sep ? strchr(sep + 3, '/') : NULL;
+		len = strlen(dir);
+
+		if (slash != NULL)
+			while (len > (size_t) (slash - dir) + 1 && dir[len - 1] == '/')
+				dir[--len] = '\0';
+		if (slash == NULL || slash[1] == '\0')
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("columnar: \"%s\" names no prefix under the bucket",
+							dir),
+					 errhint("parallel_export_parquet writes its parts under a "
+							 "prefix, as in s3://bucket/prefix/.")));
+	}
+
 	workers = PG_ARGISNULL(2) ? pexport_auto_workers() : PG_GETARG_INT32(2);
 	if (workers < 1)
 		ereport(ERROR,
@@ -882,7 +1002,14 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	shm_toc_estimate_chunk(&est, sizeof(PexportHeader));
 	shm_toc_estimate_chunk(&est, mul_size(sizeof(PexportWorkerSlot), workers));
 	shm_toc_estimate_chunk(&est, mul_size(sizeof(Oid), Max(npart, 1)));
-	shm_toc_estimate_keys(&est, 3);
+	gucsize = 0;
+	for (i = 0; i < (int) PEXPORT_NGUCS; i++)
+	{
+		gucvals[i] = pstrdup(GetConfigOption(pexport_session_gucs[i], false, false));
+		gucsize = add_size(gucsize, strlen(gucvals[i]) + 1);
+	}
+	shm_toc_estimate_chunk(&est, gucsize);
+	shm_toc_estimate_keys(&est, 4);
 	segsize = shm_toc_estimate(&est);
 
 	seg = dsm_create(segsize, 0);
@@ -896,6 +1023,15 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	shm_toc_insert(toc, PEXPORT_KEY_LEAVES, leafchunk);
 	for (i = 0; i < npart; i++)
 		leafchunk[i] = leafoids[i];
+	gucchunk = (char *) shm_toc_allocate(toc, gucsize);
+	shm_toc_insert(toc, PEXPORT_KEY_GUCS, gucchunk);
+	for (i = 0; i < (int) PEXPORT_NGUCS; i++)
+	{
+		size_t		len = strlen(gucvals[i]) + 1;
+
+		memcpy(gucchunk, gucvals[i], len);
+		gucchunk += len;
+	}
 	dsmh = dsm_segment_handle(seg);
 
 	hdr->dbid = MyDatabaseId;
@@ -1047,14 +1183,22 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	 * Every worker completed. On a remote prefix, first drop any stale
 	 * higher-numbered parts a larger prior run left (see
 	 * pexport_remove_stale_remote_parts), so the marker certifies exactly this
-	 * run's parts. Then write the _SUCCESS marker (#394). Both are past the
-	 * error-cleanup region (PG_END_ENSURE_ERROR_CLEANUP above), so a failure here
-	 * raises without deleting the parts the workers already committed -- the data
-	 * is preserved and the caller learns the completion signal could not be
-	 * finalized, rather than losing a good export to a marker hiccup.
+	 * run's parts. Then write the _SUCCESS marker (#394). A failure in either
+	 * (a key that may write but not list, a refused marker PUT) fails the run,
+	 * and a failed run leaves no parts (#1781): the parts are removed, with any
+	 * marker an earlier run left, before the error is re-thrown, as for a
+	 * failed worker.
 	 */
-	if (PgColumnarPathIsRemote(dir))
-		pexport_remove_stale_remote_parts(dir, single_table ? workers : npart);
-	pexport_write_success_marker(dir);
+	PG_TRY();
+	{
+		if (PgColumnarPathIsRemote(dir))
+			pexport_remove_stale_remote_parts(dir, single_table ? workers : npart);
+		pexport_write_success_marker(dir);
+	}
+	PG_CATCH();
+	{
+		PgColumnarCleanupAndRethrow(pexport_remove_outputs_in_catch, &spawn);
+	}
+	PG_END_TRY();
 	PG_RETURN_INT64(total);
 }

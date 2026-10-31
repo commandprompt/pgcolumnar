@@ -226,6 +226,66 @@ check "parallel: the union of the per-worker objects == source" \
 check_num "parallel: a re-run into the same prefix succeeds (overwrite)" \
 	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/par', 4)")" "$PARROWS"
 
+# #1781: a failure after every worker finished, in the stale-part listing or in the
+# marker PUT, is a failed run, so the dispatcher removes this run's parts as it does
+# for a failed worker (docs: a failed run leaves none). lf first holds a complete
+# 2-worker run with its marker; the re-run's listing is then refused 403. The parts
+# the re-run wrote must go, and so must the earlier marker, or it would certify them.
+q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/lf', 2)" >/dev/null
+check "premise: lister refused: an earlier complete run left its marker at lf/" \
+	"$([ -f "$PGC_WORKDIR/$BUCKET/lf/_SUCCESS" ] && echo yes || echo no)" "yes"
+: > "$S3_LOG"
+echo 403 > "$PGC_WORKDIR/__listing_status__"
+check "lister refused: the export fails with the listing's 28000" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/lf', 2)" \
+		"was denied" " by the listing")" "28000 by the listing"
+rm -f "$PGC_WORKDIR/__listing_status__"
+check "premise: lister refused: both workers' parts were uploaded before the listing" \
+	"$(n=$(logn '^PUT /pgc-bucket/lf/part-'); [ "$n" -ge 2 ] && echo yes || echo "no ($n part PUTs)")" "yes"
+check_num "lister refused: no part object remains at the prefix" \
+	"$(ls "$PGC_WORKDIR/$BUCKET/lf/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "0"
+check "lister refused: no _SUCCESS marker certifies the failed run's prefix" \
+	"$([ -e "$PGC_WORKDIR/$BUCKET/lf/_SUCCESS" ] && echo present || echo absent)" "absent"
+
+# The same for a refused marker PUT: the listing succeeds, the _SUCCESS PUT is 403.
+: > "$S3_LOG"
+echo "403 $BUCKET/mf/_SUCCESS" > "$PGC_WORKDIR/__put_status__"
+check "marker refused: the export fails with the marker PUT's 28000" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/mf', 2)" \
+		"mf/_SUCCESS" " by the marker PUT")" "28000 by the marker PUT"
+rm -f "$PGC_WORKDIR/__put_status__"
+check "premise: marker refused: both workers' parts were uploaded before the marker" \
+	"$(n=$(logn '^PUT /pgc-bucket/mf/part-'); [ "$n" -ge 2 ] && echo yes || echo "no ($n part PUTs)")" "yes"
+check_num "marker refused: no part object remains at the prefix" \
+	"$(ls "$PGC_WORKDIR/$BUCKET/mf/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "0"
+
+# #1781 review: what docs/sql-reference.md says a refused listing leaves. Without
+# the listing the export cannot find a LARGER earlier run's higher-numbered parts:
+# a 4-worker run, then a 2-worker re-run whose listing is refused, removes the
+# re-run's part-0000/0001 and the marker but leaves the earlier part-0002/0003. A
+# reader must check for _SUCCESS first. Pinned so a change to either side is seen.
+# The same refusal's message must name the prefix it listed (lt, or lt/ once the
+# reconcile lists with a slash), not the dummy key "s3://pgc-bucket/_" the
+# listing's handle was resolved from.
+q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/lt', 4)" >/dev/null
+check "premise: listing refused after a larger run: the 4-worker run left 4 parts and its marker at lt/" \
+	"$(echo "$(ls "$PGC_WORKDIR/$BUCKET/lt/" 2>/dev/null | grep -c 'part-.*\.parquet$') parts, marker $([ -f "$PGC_WORKDIR/$BUCKET/lt/_SUCCESS" ] && echo present || echo absent)")" \
+	"4 parts, marker present"
+echo 403 > "$PGC_WORKDIR/__listing_status__"
+LT_ERR="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
+	-c "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/lt', 2)" 2>&1)"
+rm -f "$PGC_WORKDIR/__listing_status__"
+LT_URL="$(sed -n 's/^ERROR:  columnar: access to "\([^"]*\)" was denied.*/\1/p' <<<"$LT_ERR" | head -1)"
+echo "LT error: $(head -1 <<<"$LT_ERR")"
+check "listing error: the refused listing names the prefix it listed, not a dummy key" \
+	"${LT_URL:-no access-denied error ($(head -1 <<<"$LT_ERR"))}" "s3://$BUCKET/lt$( [ "${LT_URL: -1}" = / ] && echo /)"
+LT_LEFT="$(ls "$PGC_WORKDIR/$BUCKET/lt/" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+echo "LT contents: ${LT_LEFT:-(empty)}"
+check "listing refused after a larger run: the earlier run's part-0002 and part-0003 remain, and nothing else" \
+	"${LT_LEFT:-(empty)}" "part-0002.parquet part-0003.parquet"
+check "listing refused after a larger run: no _SUCCESS marker remains at the prefix" \
+	"$([ -e "$PGC_WORKDIR/$BUCKET/lt/_SUCCESS" ] && echo present || echo absent)" "absent"
+
 # #632 review: a SMALLER re-run into a used prefix must not leave the prior
 # larger run's higher-numbered parts under a freshly-stamped _SUCCESS. First 4
 # workers, then 2: the reconcile drops the stale part-0002/0003, so the marker
@@ -241,8 +301,169 @@ check "shrink: parts 0002/0003 from the larger run are gone" \
 check "shrink: _SUCCESS certifies the reconciled prefix" \
 	"$([ -f "$PGC_WORKDIR/$BUCKET/sr/_SUCCESS" ] && echo yes)" "yes"
 
+# #1782: the documented prefix form ends in a slash. The keys must not gain an
+# empty segment ("sl//part-0000.parquet"): S3 stores that as a different key,
+# and the documented glob then matches nothing. This fixture stores objects as
+# files, which collapse "//", so only the request log shows the defect.
+#
+# The stale-part reconcile lists the prefix, and an S3 listing matches leading
+# characters, not folders: a listing of "sl" also returns "slx/..." and
+# "sl2/...". So each export below runs beside part objects under two sibling
+# prefixes, slx/ and sl2/, with indexes above the run's worker count, and every
+# form of the prefix must leave them where they are.
+plant_siblings() {
+	mkdir -p "$PGC_WORKDIR/$BUCKET/slx" "$PGC_WORKDIR/$BUCKET/sl2"
+	printf 'x' > "$PGC_WORKDIR/$BUCKET/slx/part-0007.parquet"
+	printf 'x' > "$PGC_WORKDIR/$BUCKET/sl2/part-0005.parquet"
+}
+# siblings_left -> which planted sibling objects are still there, or "none"
+siblings_left() {
+	local left
+	left="$(cd "$PGC_WORKDIR/$BUCKET" && ls slx/part-0007.parquet sl2/part-0005.parquet 2>/dev/null | sort | tr '\n' ' ')"
+	left="${left% }"
+	echo "${left:-none}"
+}
+SIBLINGS="sl2/part-0005.parquet slx/part-0007.parquet"
+# sl_put_keys -> how many distinct sl/part-NNNN.parquet keys (one slash) took a PUT
+sl_put_keys() { grep -oE '^PUT /pgc-bucket/sl/part-[0-9]+\.parquet' "$S3_LOG" | sort -u | wc -l | tr -d ' '; }
+sl_parts() { ls "$PGC_WORKDIR/$BUCKET/sl/" 2>/dev/null | grep -c 'part-.*\.parquet$'; }
+
+plant_siblings
+: > "$S3_LOG"
+check_num "trailing slash: parallel export to an s3:// prefix ending in / succeeds" \
+	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sl/', 4)")" "$PARROWS"
+check_num "trailing slash: every worker PUT went to sl/part- (one slash)" "$(sl_put_keys)" "4"
+check "trailing slash: the marker went to sl/_SUCCESS (one slash)" \
+	"$([ "$(logn '^PUT /pgc-bucket/sl/_SUCCESS')" -ge 1 ] && echo yes)" "yes"
+check_num "trailing slash: no request named a key with an empty segment (//)" \
+	"$(logn '^[A-Z]+ /pgc-bucket/[^ ]*//')" "0"
+check "trailing slash: the documented glob read-back equals the source" \
+	"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('s3://$BUCKET/sl/*.parquet') AS t(id int8, v int)")" \
+	"$(pgc_set_hash "$GEN_PAR")"
+check "trailing slash: an export to sl/ leaves the parts under slx/ and sl2/" \
+	"$(siblings_left)" "$SIBLINGS"
+
+# the same prefix without the slash, and fewer workers: the reconcile must drop
+# sl/part-0002 and 0003 and nothing outside sl/. A listing with no delimiter
+# also returns keys below sl/, so a part under sl/sub/ (another export's
+# prefix) is planted too, with an index above this run's 2 workers.
+plant_siblings
+mkdir -p "$PGC_WORKDIR/$BUCKET/sl/sub"
+printf 'x' > "$PGC_WORKDIR/$BUCKET/sl/sub/part-0009.parquet"
+check_num "no slash: a 2-worker re-run to s3://bucket/sl succeeds" \
+	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sl', 2)")" "$PARROWS"
+check_num "no slash: the re-run leaves exactly its own 2 parts under sl/" "$(sl_parts)" "2"
+check "no slash: a re-run to sl leaves the parts under slx/ and sl2/" \
+	"$(siblings_left)" "$SIBLINGS"
+check "no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet" \
+	"$(cd "$PGC_WORKDIR/$BUCKET" && ls sl/sub/part-0009.parquet 2>/dev/null || echo none)" \
+	"sl/sub/part-0009.parquet"
+
+# several trailing slashes strip to the one prefix
+plant_siblings
+: > "$S3_LOG"
+check_num "several slashes: a 3-worker export to s3://bucket/sl// succeeds" \
+	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sl//', 3)")" "$PARROWS"
+check_num "several slashes: every worker PUT went to sl/part- (one slash)" "$(sl_put_keys)" "3"
+check_num "several slashes: no request named a key with an empty segment (//)" \
+	"$(logn '^[A-Z]+ /pgc-bucket/[^ ]*//')" "0"
+check_num "several slashes: sl/ holds exactly this run's 3 parts" "$(sl_parts)" "3"
+check "several slashes: an export to sl// leaves the parts under slx/ and sl2/" \
+	"$(siblings_left)" "$SIBLINGS"
+
+# The scheme is matched in any case, so "S3://bucket/up/" names the same
+# prefix as "s3://bucket/up". The listing returns keys spelled "s3://...", so
+# a reconcile that compared them with the prefix as given dropped nothing for
+# "S3://", and the marker then certified a mixed set of parts. First 4 workers
+# with "s3://", then 2 with "S3://...up/": parts 0002 and 0003 must go.
+q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/up', 4)" >/dev/null
+: > "$S3_LOG"
+check_num "uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds" \
+	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 'S3://$BUCKET/up/', 2)")" "$PARROWS"
+check_num "uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts" \
+	"$(ls "$PGC_WORKDIR/$BUCKET/up/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "2"
+check "uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003" \
+	"$(grep -oE '^DELETE /pgc-bucket/up/part-000[23]\.parquet' "$S3_LOG" | sort -u | sed 's|^DELETE /pgc-bucket/||' | tr '\n' ' ' | sed 's/ $//')" \
+	"up/part-0002.parquet up/part-0003.parquet"
+
+# A bare bucket names no prefix. The export refuses it before any worker
+# starts, so nothing is written at the bucket root.
+: > "$S3_LOG"
+check "bare bucket: an export to s3://bucket/ is refused as naming no prefix" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/', 2)" \
+		"names no prefix under the bucket" " (no prefix)")" "22023 (no prefix)"
+check "bare bucket: an export to s3://bucket is refused as naming no prefix" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET', 2)" \
+		"names no prefix under the bucket" " (no prefix)")" "22023 (no prefix)"
+check_num "bare bucket: the refused exports sent no PUT" "$(logn '^PUT ')" "0"
+check_num "bare bucket: no part object at the bucket root" \
+	"$(ls -p "$PGC_WORKDIR/$BUCKET/" 2>/dev/null | grep -c '^part-.*\.parquet$')" "0"
+
+# #1780: the workers obey the calling session's settings, not only the system's. A
+# background worker starts from postgresql.conf, so before the fix a session that SET
+# the allow-list to '' still had its workers upload part-0000, and the error came only
+# afterwards, from the dispatcher, with the part left behind.
+: > "$S3_LOG"
+check "premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check" \
+	"$(refusal_of "SET pgcolumnar.objstore_allowed_endpoints = ''; SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sa', 2)" \
+		"is not in pgcolumnar.objstore_allowed_endpoints" " by the allow-list")" "42501 by the allow-list"
+# who refused: the dispatcher itself, or a worker, whose error the dispatcher re-raises
+# as "worker N failed". With the settings handed to the workers but no allow-list check
+# in the dispatcher, worker 0 refuses. (With neither, the dispatcher refuses only after
+# the workers uploaded; the next check catches that.)
+refused_by() {  # refused_by SQL -> "refused by the dispatcher" | "refused by worker N" | what happened
+	local out
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA -c "$1" 2>&1)"
+	if grep -qE 'worker [0-9]+ failed' <<<"$out"; then
+		echo "refused by $(grep -oE 'worker [0-9]+' <<<"$out" | head -1)"
+	elif grep -qF "is not in pgcolumnar.objstore_allowed_endpoints" <<<"$out"; then
+		echo "refused by the dispatcher"
+	else echo "not refused ($(head -1 <<<"$out"))"; fi
+}
+check "session allow-list: the dispatcher raises the refusal, not a worker" \
+	"$(refused_by "SET pgcolumnar.objstore_allowed_endpoints = ''; SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sa', 2)")" \
+	"refused by the dispatcher"
+check "session allow-list: nothing reached the refused prefix (no PUT, no POST)" \
+	"$(logn '^(PUT|POST) /pgc-bucket/sa/') requests, $(ls "$PGC_WORKDIR/$BUCKET/sa/" 2>/dev/null | wc -l | tr -d ' ') objects" \
+	"0 requests, 0 objects"
+# the reverse: the system list is empty and the session SETs the endpoint
+sys_list_is() {  # sys_list_is VALUE: wait up to 10 s for a new session to see VALUE;
+	# prints what the last session saw, in brackets, so a reload that never lands shows
+	local seen
+	for _ in $(seq 1 50); do
+		seen="$(q "SELECT current_setting('pgcolumnar.objstore_allowed_endpoints')")"
+		[ "$seen" = "$1" ] && break
+		sleep 0.2
+	done
+	echo "[$seen]"
+}
+psql_run "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = ''"
+psql_run "SELECT pg_reload_conf()" >/dev/null
+# the widen arm proves nothing unless the system list really is empty: record what a
+# new session sees, so a reload that never lands fails here rather than passing below
+check "session allow-list: a new session sees an empty system list before the widen arm" \
+	"$(sys_list_is "")" "[]"
+check "session allow-list: a session SET widens an empty system list for the workers" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-c "SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'" \
+		-c "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sw', 2)" 2>&1 | tail -1)" "80000"
+psql_run "ALTER SYSTEM RESET pgcolumnar.objstore_allowed_endpoints"
+psql_run "SELECT pg_reload_conf()" >/dev/null
+sys_list_is "127.0.0.1" >/dev/null
+# a part far below each worker's object forces multipart only if the workers read it
+: > "$S3_LOG"
+q "SET pgcolumnar.objstore_part_size = 16384; SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/pz', 2)" >/dev/null
+check "parallel: a session SET of objstore_part_size reaches the workers (multipart)" \
+	"$([ "$(logn '^POST /pgc-bucket/pz/part-0000.parquet uploads=')" -ge 1 ] && echo yes || echo no)" "yes"
+
 # cancel mid-run: the dispatcher removes the completed keys it wrote. Big table
 # + small parts so a worker is mid-multipart when the cancel lands.
+# The prefix ends in a slash (#1782), so the cancel-time DELETEs and the
+# multipart cleanup listing run on the stripped prefix as well. The premise
+# waits for "cx/+part-", so a build that keeps the "//" is still cancelled and
+# fails the DELETE and empty-segment checks rather than the premise.
 psql_run "DROP TABLE IF EXISTS es_parbig;
           CREATE TABLE es_parbig (id int8, pad text) USING pgcolumnar;
           SELECT pgcolumnar.set_options('es_parbig', stripe_row_limit => 4000);
@@ -252,12 +473,12 @@ psql_run "DROP TABLE IF EXISTS es_parbig;
 rm -rf "$PGC_WORKDIR/$BUCKET/cx"
 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
 	-c "SET pgcolumnar.objstore_part_size = 262144" \
-	-c "SELECT pgcolumnar.parallel_export_parquet('es_parbig'::regclass, 's3://$BUCKET/cx', 4)" \
+	-c "SELECT pgcolumnar.parallel_export_parquet('es_parbig'::regclass, 's3://$BUCKET/cx/', 4)" \
 	>"$PGC_WORKDIR/cx_bg.out" 2>&1 &
 bgpid=$!
 wrote=no
 for _ in $(seq 1 300); do
-	[ "$(logn '^PUT /pgc-bucket/cx/part-')" -ge 1 ] && { wrote=yes; break; }
+	[ "$(logn '^PUT /pgc-bucket/cx/+part-')" -ge 1 ] && { wrote=yes; break; }
 	sleep 0.1
 done
 check "premise: a worker was uploading before the cancel" "$wrote" "yes"
@@ -287,6 +508,8 @@ check "premise: the export was cancelled, not completed" \
 	"$(grep -qiE 'canceling statement|canceled on user request' "$PGC_WORKDIR/cx_bg.out" && echo cancelled || echo completed)" "cancelled"
 check "cancel: the dispatcher issued DELETE over the known keys" \
 	"$([ "$(logn '^DELETE /pgc-bucket/cx/part-')" -ge 1 ] && echo yes)" "yes"
+check_num "cancel: no request named a key with an empty segment (//)" \
+	"$(logn '^[A-Z]+ /pgc-bucket/[^ ]*//')" "0"
 check_num "cancel: no completed object remains at the prefix" \
 	"$(ls "$PGC_WORKDIR/$BUCKET/cx/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "0"
 # #394: a cancelled remote run writes no completion marker (it is written last,
