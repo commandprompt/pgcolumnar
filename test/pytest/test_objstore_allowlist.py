@@ -197,6 +197,9 @@ static const char *const map[][2] = {
 	{"n64wide", "64:ff9b::1:a9fe:a9fe"},
 	{"local2", "64:ff9b:2::a9fe:a9fe"},
 	{"compat9", "::1:0:a9fe:a9fe"},
+	{"l48only", "64:ff9b:1:a9fe:0:100::"},
+	{"gce253", "fd20:ce::253"},
+	{"n64sec", "64:ff9b::aafe:a9fe"},
 };
 
 int
@@ -298,7 +301,8 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
                       "gcp6.pgc-shim.invalid, local48.pgc-shim.invalid, local56.pgc-shim.invalid, "
                       "local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid, "
                       "loop6.pgc-shim.invalid, ula.pgc-shim.invalid, n64ok.pgc-shim.invalid, "
-                      "n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid'")
+                      "n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid, "
+                      "l48only.pgc-shim.invalid, gce253.pgc-shim.invalid, n64sec.pgc-shim.invalid'")
             c.execute("SELECT pg_reload_conf()")
         time.sleep(0.5)
 
@@ -329,6 +333,11 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
         # so 169.254.169.254 can sit at four byte positions. One check per position.
         expect.text(shim_read("local48")[0], "42501",
                     "NAT64 local-use /48 64:ff9b:1:a9fe:a9:fe00::: refused 42501 despite being listed")
+        # 169.254.169.254 repeats itself, so the /48 address above also matches the
+        # /64 position. 169.254.0.1 at /48 matches the /48 position only.
+        expect.text(shim_read("l48only")[0], "42501",
+                    "NAT64 local-use /48 only 64:ff9b:1:a9fe:0:100:: (169.254.0.1): refused 42501 "
+                    "despite being listed")
         expect.text(shim_read("local56")[0], "42501",
                     "NAT64 local-use /56 64:ff9b:1:a9:fe:a9fe::: refused 42501 despite being listed")
         expect.text(shim_read("local64")[0], "42501",
@@ -370,6 +379,10 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
                     "64:ff9b:2::a9fe:a9fe (outside 64:ff9b:1::/48): not refused, a connect is tried")
         expect.text(connect_tried("compat9"), "connect tried",
                     "::1:0:a9fe:a9fe (outside ::/96): not refused, a connect is tried")
+        expect.text(connect_tried("gce253"), "connect tried",
+                    "fd20:ce::253 (next to fd20:ce::254): not refused, a connect is tried")
+        expect.text(connect_tried("n64sec"), "connect tried",
+                    "NAT64 64:ff9b::aafe:a9fe (170.254.169.254): not refused, a connect is tried")
         # The range when the DETAIL names it, else the whole error as the measurement.
         try:
             with psycopg.connect(cluster.dsn(), autocommit=True) as c:
