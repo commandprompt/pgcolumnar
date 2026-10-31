@@ -8222,7 +8222,7 @@ The pytest twin of `test/native_parquet_pushdown.sh` (ported for #1341), every c
 
 ## 170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays
 
-The pytest twin of `test/native_parquet_flba.sh` (ported for #1341), every check by the shell's name. The reader handles uuid as a 16-byte FLBA, and DECIMAL as big-endian two's complement at the column's scale, in FLBA, BYTE_ARRAY or a little-endian INT32/INT64. Our own export is read back through `read_parquet`, `import_parquet` and the FDW and compared with the source table. pyarrow-written files serve as the foreign producer. A footer whose DECIMAL scale has been patched out of range must be refused at bind (42804), before any decoding.
+The pytest twin of `test/native_parquet_flba.sh` (ported for #1341), every check by the shell's name. The reader handles uuid as a 16-byte FLBA, and DECIMAL as big-endian two's complement at the column's scale, in FLBA, BYTE_ARRAY or a little-endian INT32/INT64. Our own export is read back through `read_parquet`, `import_parquet` and the FDW and compared with the source table. pyarrow-written files serve as the foreign producer. A footer whose DECIMAL scale has been patched out of range must be refused at bind (42804), before any decoding. An unannotated FLBA, which is how Iceberg writes `fixed(L)`, reads as the `bytea` that `parquet_schema` advises for it, through `read_parquet` by position and by field id, `iceberg_scan`, and both FDWs (#1792). The file is a committed pyiceberg table, `test/fixtures/iceberg/warehouse_fixed`, with a `fixed(3)` and a `fixed(16)` column. uuid still binds to the 16-byte column, and a 3-byte column declared uuid is refused at bind (42804) by both bind steps, not by the decoder (XX001). Each of those checks is its own test, so a red on one surface does not hide the others.
 
 ### Every test
 
@@ -8231,6 +8231,16 @@ The pytest twin of `test/native_parquet_flba.sh` (ported for #1341), every check
 | `test_our_export_reads_back_through_every_surface` | uuid, numeric and whole rows round-trip through `read_parquet`, `import_parquet` and the FDW |
 | `test_pyarrow_written_flba_reads_exactly` | both pyarrow uuids read in order, decimal128 values are exact, and a crafted scale is refused at bind with the backend alive |
 | `test_a_decimal_held_in_an_integer_reads_as_numeric` | INT32 and INT64 DECIMALs read at their scale with their null, `parquet_schema` advises numeric, and bigint still binds to the unscaled integer |
+| `test_parquet_schema_advises_bytea_for_fixed3` | parquet_schema advises bytea for Iceberg fixed(3) and uuid for fixed(16) |
+| `test_fixed3_reads_as_bytea_through_read_parquet` | fixed(3) reads as bytea through read_parquet |
+| `test_fixed16_reads_as_bytea_through_read_parquet` | fixed(16) reads as bytea through read_parquet |
+| `test_fixed3_reads_as_bytea_through_field_ids` | fixed(3) reads as bytea through read_parquet field ids |
+| `test_fixed3_reads_as_bytea_through_iceberg_scan` | fixed(3) reads as bytea through iceberg_scan |
+| `test_fixed3_reads_as_bytea_through_the_parquet_fdw` | fixed(3) reads as bytea through the parquet FDW |
+| `test_fixed3_reads_as_bytea_through_the_iceberg_fdw` | fixed(3) reads as bytea through the iceberg FDW |
+| `test_fixed16_still_reads_as_uuid` | fixed(16) still reads as uuid |
+| `test_uuid_over_fixed3_is_refused_at_bind` | uuid over fixed(3) is refused at bind (42804) |
+| `test_uuid_over_fixed3_is_refused_at_field_id_bind` | uuid over fixed(3) is refused at field-id bind (42804) |
 
 ## 171. test_native_parquet_multifile.py: directories and globs read as one relation
 

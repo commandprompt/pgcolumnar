@@ -466,6 +466,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `read_parquet`, `iceberg_scan` and the `pgcolumnar_parquet` and
+  `pgcolumnar_iceberg` foreign tables now read a Parquet fixed-length binary
+  column with no logical type into `bytea` (#1792). Iceberg writes `fixed(L)`
+  that way, and `parquet_schema` reports the column as `bytea`, but the bind
+  step accepted `bytea` only over a variable-length binary column, so the
+  column definition `parquet_schema` advised was refused with `physical type is
+  not compatible`. A `uuid` declared over a fixed-length column that is not 16
+  bytes wide is now refused at bind with that message (42804), where it used to
+  reach the decoder and fail as `could not decode Parquet column N`.
+  `test/native_parquet_flba.sh` and `test_native_parquet_flba.py`, over a
+  committed pyiceberg table, `test/fixtures/iceberg/warehouse_fixed`.
 - `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign-data
   wrapper now refuse a struct, list or map column declared with a scalar type
   (#1788). Such a column used to read as null on every row, with no error, even
