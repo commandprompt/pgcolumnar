@@ -18,7 +18,9 @@ a row written twice would collapse into one. The shell skips whole
 without pyarrow, so every test declines by the shell's skip name first. The files live
 in `server_dir`, because the backend writes them.
 """
+import hashlib
 import math
+import os
 
 import psycopg
 import pytest
@@ -60,6 +62,9 @@ EXT_ORACLE = """SELECT id,
     CASE WHEN numun IS NULL THEN NULL ELSE numun::text END,
     j::text, jb::text
    FROM t_ext_heap ORDER BY id"""
+BYTES_DIGEST = "SELECT string_agg(id || ':' || length(s) || ':' || md5(s), ' ' ORDER BY id) FROM ar_bytes"
+OVER_NAME = ("over 1 GiB of one column (2200 values of 500000 bytes) exports whole, "
+             "in 5 record batches of at most 536 rows")
 SCHEMA = "id:int32,a:int16,b:int32,c:int64,d:float,e:double,f:bool,g:string,h:binary"
 EXT_SCHEMA = ("id:int32,dt:date32[day],tm:time64[us],ts:timestamp[us],tz:timestamp[us, tz=UTC],"
               "u:fixed_size_binary[16],num:decimal128(20, 4),numun:string,j:string,jb:string")
@@ -109,6 +114,23 @@ def _refusal(dsn, sql, msg):
     return "succeeded"
 
 
+def _value_after(dsn, setup, sql):
+    """-> `sql`'s first value after the `setup` statements on the same session, or the
+    failure as a query_error(). A failed setup statement is passed over, as psql passes
+    over a failed -c, so the reading is what `sql` did without it."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            for st in setup:
+                try:
+                    conn.execute(st)
+                except psycopg.Error:
+                    pass
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        return _failed(exc)
+    return "" if row is None or row[0] is None else str(row[0])
+
+
 @pytest.fixture(scope="module")
 def ae(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -141,6 +163,14 @@ def ae(pgc_cluster, server_dir):
         _run(dsn, "INSERT INTO t_ext_col SELECT * FROM t_ext_heap")
         r["ext rows"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('t_ext_col', '{f['ext']}')")
         r["ext oracle"] = _rows(dsn, EXT_ORACLE)
+        # #1811: record batches cut by bytes, shown at small scale under a lowered cap
+        f["bytes"] = server_dir / "bytes.arrows"
+        _run(dsn, "CREATE TABLE ar_bytes (id int, s text) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_bytes SELECT g, repeat(chr(64 + g % 26), 10000) FROM generate_series(1, 40) g")
+        r["bytes rows"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 65536"],
+                                       f"SELECT pgcolumnar.export_arrow('ar_bytes', '{f['bytes']}')")
+        r["bytes digest"] = _value(dsn, BYTES_DIGEST)
+        r["dsn"] = dsn
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -287,3 +317,59 @@ def test_the_extended_schema_has_the_expected_types(ae, expect):
     if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
         return
     expect.text(_reading(_schema, pa, ae["files"]["ext"]), EXT_SCHEMA, "extended arrow schema")
+
+
+def _batches(pa, path):
+    """-> "rows|n1,n2,..." from the stream: the rows in each record batch."""
+    with pa.OSFile(str(path), "rb") as fh:
+        sizes = [b.num_rows for b in pa.ipc.open_stream(fh)]
+    return f"{sum(sizes)}|" + ",".join(str(n) for n in sizes)
+
+
+def _digest(pa, path):
+    """-> "id:length:md5 ..." by id, as BYTES_DIGEST reads the table."""
+    t = _read(pa, path).to_pydict()
+    return " ".join(f"{i}:{len(v)}:{hashlib.md5(v.encode()).hexdigest()}" for i, v in sorted(zip(t["id"], t["s"])))
+
+
+def test_a_record_batch_is_cut_at_the_byte_cap(ae, expect):
+    """#1811: 40 rows that each buffer 10010 bytes, under a 65536-byte cap. The writer
+    starts a new batch before a row that would pass the cap, so batches hold 6 rows."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(f"{ae['bytes rows']}|{_reading(_batches, pa, ae['files']['bytes'])}", "40|40|6,6,6,6,6,6,4",
+                "a record batch is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make batches of 6,6,6,6,6,6,4")
+
+
+def test_the_byte_cut_arrow_stream_reads_back_exactly(ae, expect):
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(_reading(_digest, pa, ae["files"]["bytes"]), ae["bytes digest"],
+                "and the byte-cut stream reads back every row exactly, by id, length and md5")
+
+
+def test_over_1gib_of_one_column_exports_in_several_record_batches(ae, expect):
+    """#1811's repro, opt-in as the shell's arm is: about 1.1 GB in the table and in the
+    stream. Each row buffers 500010 bytes, so a 256 MiB batch holds 536 rows."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    if os.environ.get("PGC_RUN_OVER_1GB", "0") != "1":
+        expect.cannot_run("UNMET_PRECONDITION",
+                          "PGC_RUN_OVER_1GB is not 1; the arm needs several GB of memory and disk",
+                          name=OVER_NAME)
+        return
+    dsn = ae["dsn"]
+    path = ae["files"]["t"].parent / "huge.arrows"
+    _run(dsn, "CREATE TABLE ar_huge (id int, s text) USING pgcolumnar")
+    _run(dsn, "SELECT pgcolumnar.set_options('ar_huge', stripe_row_limit => 1000)")
+    _run(dsn, "INSERT INTO ar_huge SELECT g, repeat('x', 500000) FROM generate_series(1, 2200) g")
+    try:
+        got = _value_after(dsn, ["SET statement_timeout = '900s'"],
+                           f"SELECT pgcolumnar.export_arrow('ar_huge', '{path}')")
+        expect.text(f"{got}|{_reading(_batches, pa, path)}", "2200|2200|536,536,536,536,56", OVER_NAME)
+    finally:
+        path.unlink(missing_ok=True)
+        _run(dsn, "DROP TABLE ar_huge")

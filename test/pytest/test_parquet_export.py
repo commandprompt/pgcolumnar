@@ -24,7 +24,9 @@ CI sets PGC_REQUIRE=pyarrow,duckdb, which turns either decline into a failure. T
 files live in `server_dir`, because the backend writes them. A failed query is a
 `query_error()`.
 """
+import hashlib
 import math
+import os
 
 import psycopg
 import pytest
@@ -72,6 +74,10 @@ EXT_ORACLE = """SELECT id,
    FROM t_ext_heap ORDER BY id"""
 SCHEMA = "id:int32,a:int16,b:int32,c:int64,d:float,e:double,f:bool,g:string,h:binary"
 EXT_TYPES = "date32[day]|time64[us]|fixed_size_binary[16]|decimal128(20, 4)"
+BYTES_DIGEST = "SELECT string_agg(id || ':' || length(s) || ':' || md5(s), ' ' ORDER BY id) FROM pq_bytes"
+CAP_REFUSAL = '268435457 is outside the valid range for parameter "pgcolumnar.export_group_bytes" (1024 .. 268435456)'
+OVER_NAME = ("over 1 GiB of one column (2200 values of 500000 bytes) exports whole, "
+             "in 5 row groups of at most 536 rows")
 NOT_COLUMNAR = "is not a columnar table"
 UNSUPPORTED = 'column "p" has type point, which columnar parquet export does not support'
 
@@ -121,6 +127,33 @@ def _refusal(dsn, sql, msg):
     return "succeeded"
 
 
+def _value_after(dsn, setup, sql):
+    """-> `sql`'s first value after the `setup` statements on the same session, or the
+    failure as a query_error(). A failed setup statement is passed over, as psql passes
+    over a failed -c, so the reading is what `sql` did without it."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            for st in setup:
+                try:
+                    conn.execute(st)
+                except psycopg.Error:
+                    pass
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        return _failed(exc)
+    return "" if row is None or row[0] is None else str(row[0])
+
+
+def _set_refusal(dsn, sql):
+    """-> "accepted", or the message of the refusal, as the shell reads its ERROR line."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql)
+    except psycopg.Error as exc:
+        return _failed(exc) if not exc.diag.message_primary else exc.diag.message_primary
+    return "accepted"
+
+
 @pytest.fixture(scope="module")
 def pqx(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -153,6 +186,15 @@ def pqx(pgc_cluster, server_dir):
         _run(dsn, "INSERT INTO t_ext_col SELECT * FROM t_ext_heap")
         r["ext rows"] = _value(dsn, f"SELECT pgcolumnar.export_parquet('t_ext_col', '{f['ext']}')")
         r["ext oracle"] = _rows(dsn, EXT_ORACLE)
+        # #1811: row groups cut by bytes, shown at small scale under a lowered cap
+        f["bytes"] = server_dir / "bytes.parquet"
+        _run(dsn, "CREATE TABLE pq_bytes (id int, s text) USING pgcolumnar")
+        _run(dsn, "INSERT INTO pq_bytes SELECT g, repeat(chr(64 + g % 26), 10000) FROM generate_series(1, 40) g")
+        r["bytes rows"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 65536"],
+                                       f"SELECT pgcolumnar.export_parquet('pq_bytes', '{f['bytes']}')")
+        r["bytes digest"] = _value(dsn, BYTES_DIGEST)
+        r["cap refusal"] = _set_refusal(dsn, "SET pgcolumnar.export_group_bytes = 268435457")
+        r["dsn"] = dsn
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -369,3 +411,64 @@ def test_duckdb_counts_every_extended_parquet_row(pqx, expect):
         return
     expect.num(_duckdb_value(db, f"SELECT count(*) FROM read_parquet('{pqx['files']['ext']}')"), 4,
                "duckdb extended row count")
+
+
+def _groups(pa, path):
+    """-> "rows|n1,n2,..." from the file's footer: the rows in each row group."""
+    md = pa.parquet.ParquetFile(str(path)).metadata
+    return f"{md.num_rows}|" + ",".join(str(md.row_group(i).num_rows) for i in range(md.num_row_groups))
+
+
+def _digest(pa, path):
+    """-> "id:length:md5 ..." by id, as BYTES_DIGEST reads the table."""
+    t = _read(pa, path).to_pydict()
+    return " ".join(f"{i}:{len(v)}:{hashlib.md5(v.encode()).hexdigest()}" for i, v in sorted(zip(t["id"], t["s"])))
+
+
+def test_a_row_group_is_cut_at_the_byte_cap(pqx, expect):
+    """#1811: 40 rows that each buffer 10010 bytes, under a 65536-byte cap. The writer
+    starts a new group before a row that would pass the cap, so groups hold 6 rows."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(f"{pqx['bytes rows']}|{_reading(_groups, pa, pqx['files']['bytes'])}", "40|40|6,6,6,6,6,6,4",
+                "a row group is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make groups of 6,6,6,6,6,6,4")
+
+
+def test_the_byte_cut_parquet_file_reads_back_exactly(pqx, expect):
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(_reading(_digest, pa, pqx["files"]["bytes"]), pqx["bytes digest"],
+                "and the byte-cut file reads back every row exactly, by id, length and md5")
+
+
+def test_the_group_byte_cap_refuses_more_than_256_mib(pqx, expect):
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(pqx["cap refusal"], CAP_REFUSAL, "export_group_bytes refuses a value above its 256 MiB maximum")
+
+
+def test_over_1gib_of_one_column_exports_in_several_row_groups(pqx, expect):
+    """#1811's repro, opt-in as the shell's arm is: about 1.1 GB in the table and in the
+    file. Each row buffers 500010 bytes, so a 256 MiB group holds 536 rows."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    if os.environ.get("PGC_RUN_OVER_1GB", "0") != "1":
+        expect.cannot_run("UNMET_PRECONDITION",
+                          "PGC_RUN_OVER_1GB is not 1; the arm needs several GB of memory and disk",
+                          name=OVER_NAME)
+        return
+    dsn = pqx["dsn"]
+    path = pqx["files"]["t"].parent / "huge.parquet"
+    _run(dsn, "CREATE TABLE pq_huge (id int, s text) USING pgcolumnar")
+    _run(dsn, "SELECT pgcolumnar.set_options('pq_huge', stripe_row_limit => 1000)")
+    _run(dsn, "INSERT INTO pq_huge SELECT g, repeat('x', 500000) FROM generate_series(1, 2200) g")
+    try:
+        got = _value_after(dsn, ["SET statement_timeout = '900s'"],
+                           f"SELECT pgcolumnar.export_parquet('pq_huge', '{path}')")
+        expect.text(f"{got}|{_reading(_groups, pa, path)}", "2200|2200|536,536,536,536,56", OVER_NAME)
+    finally:
+        path.unlink(missing_ok=True)
+        _run(dsn, "DROP TABLE pq_huge")

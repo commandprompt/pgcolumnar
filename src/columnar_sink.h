@@ -16,6 +16,8 @@
 
 #include "postgres.h"
 
+#include "access/tupdesc.h"
+
 typedef struct PqSink PqSink;
 
 /* Open a sink for `path`: local (temp-and-rename) or remote (#394) by scheme. */
@@ -53,5 +55,21 @@ extern void PgColumnarSinkAbortAndRethrow(PqSink *snk);
  * (the helper the 13-site census missed).
  */
 extern int	pgcolumnar_sink_fail_after;
+
+/*
+ * Byte cap for one Parquet row group or one Arrow record batch (#1811). The
+ * writers buffer a group in allocations that PostgreSQL caps at 1 GiB, so a
+ * group cut by rows alone failed once one column passed 1 GiB in a group. The
+ * writers now also start a new group before a row that would take the group's
+ * buffered bytes past this cap. A row larger than the cap still goes in a group
+ * of its own. pgcolumnar.export_group_bytes sets it; the default is also the
+ * maximum, which leaves room under 1 GiB for one large value on top.
+ */
+#define PGC_EXPORT_GROUP_BYTES_MAX	(256 * 1024 * 1024)
+extern int	pgcolumnar_export_group_bytes;
+
+/* An upper estimate of the bytes one row adds to an export group (#1811). */
+extern int64 PgColumnarExportRowBytes(TupleDesc tupdesc, const Datum *values,
+									  const bool *nulls);
 
 #endif							/* COLUMNAR_SINK_H */
