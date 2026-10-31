@@ -5425,6 +5425,8 @@ objstore_http_read	objstore_http_read	C: EOF mid-body is refused	15;16;17;18;19	
 objstore_http_read	objstore_http_read	C: a dropped keep-alive connection is retried (http == local)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_request never retries a stale keep-alive connection
 objstore_http_read	objstore_http_read	C: a server that hangs up on a fresh connection is refused	15;16;17;18;19	never	-
 objstore_http_read	objstore_http_read	C: a short 206 body is refused	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_read_body accepts a 206 body shorter than the range (cl > want only)
+objstore_http_read	objstore_http_read	C: a weak ETag is not sent as If-Match (http == local)	15;16;17;18;19	2026-10-31	objstore_open: a weak ETag kept as the pin and sent as If-Match (#1805)
+objstore_http_read	objstore_http_read	C: an object overwritten mid-read is refused	15;16;17;18;19	2026-10-31	objstore_open/objstore_read: no ETag pin, no If-Match, no 412 error (the whole fix reverted) (#1805)
 objstore_http_read	objstore_http_read	C: and that fresh connection is not retried (one request logged)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_request retries a fresh connection that failed before a response
 objstore_http_read	objstore_http_read	C: http 404 SQLSTATE	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a HEAD 404 read as an empty object
 objstore_http_read	objstore_http_read	C: range-ignoring server SQLSTATE	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range-ignored guard dropped (a 200 falls through to unexpected HTTP status)
@@ -5434,6 +5436,7 @@ objstore_http_read	objstore_http_read	D: stalled transfer cancelled with query_c
 objstore_http_read	objstore_http_read	premise: buffered run logged requests	15;16;17;18;19	never	-
 objstore_http_read	objstore_http_read	premise: fixture server is up	15;16;17;18;19	never	-
 objstore_http_read	objstore_http_read	premise: fixture written	15;16;17;18;19	never	-
+objstore_http_read	objstore_http_read	premise: the overwrite pair has one byte length	15;16;17;18;19	never	-
 objstore_http_read	objstore_http_read	premise: the range-audit phase logged GETs	15;16;17;18;19	never	-
 objstore_http_read	objstore_http_read	premise: unbuffered run logged requests	15;16;17;18;19	never	-
 objstore_http_read	objstore_http_read	survival: the server answers and no backend crashed	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: abort() in place of the HEAD 404 refusal
