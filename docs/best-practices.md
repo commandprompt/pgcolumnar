@@ -190,7 +190,8 @@ it as narrow as the deployment allows.
   world-readable, rather than in a process-wide `AWS_*` environment variable.
 - **Leave buffered reads on** (`pgcolumnar.objstore_buffered`). They coalesce a
   column chunk into one request instead of many ranged reads. For a fast link and a
-  large export, raise `pgcolumnar.objstore_part_size` above its 8 MiB default.
+  large export, raise `pgcolumnar.objstore_part_size` above its 8 MiB default. Its
+  maximum is 512 MiB.
 - **Grant the server-file roles sparingly.** `parallel_copy` and Parquet reads
   require `pg_read_server_files`. `parallel_export_parquet` requires
   `pg_write_server_files`. Both roles also reach remote endpoints through the

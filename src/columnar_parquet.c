@@ -1165,6 +1165,79 @@ PgColumnarParquetCheckExportable(Relation rel)
 }
 
 /*
+ * pq_group_bytes
+ *		The bytes the current row group has buffered, over all leaves (#1811).
+ */
+static int64
+pq_group_bytes(const PqLeaf *leaves, int nleaves)
+{
+	int64		bytes = 0;
+	int			i;
+
+	for (i = 0; i < nleaves; i++)
+		bytes += (int64) leaves[i].defs.len + leaves[i].reps.len +
+			leaves[i].values.len + leaves[i].boolbits.len;
+	return bytes;
+}
+
+/*
+ * pq_flush_row_group
+ *		Write the buffered rows as one row group: a data page per leaf, then
+ *		record the group for the footer and reset the leaves.
+ */
+static void
+pq_flush_row_group(PqSink *snk, PqLeaf *leaves, int nleaves, int64 groupRows,
+				   int64 *offset, PqRowGroup **rgs, int *nrgs, int *rgCap,
+				   MemoryContext rgCtx)
+{
+	PqRowGroup *rg;
+	int			i;
+
+	if (*nrgs == *rgCap)
+	{
+		*rgCap = *rgCap ? *rgCap * 2 : 8;
+		*rgs = *rgs ? repalloc(*rgs, sizeof(PqRowGroup) * *rgCap)
+			: palloc(sizeof(PqRowGroup) * *rgCap);
+	}
+	rg = &(*rgs)[(*nrgs)++];
+	rg->cols = MemoryContextAlloc(rgCtx, sizeof(PqColMeta) * Max(nleaves, 1));
+	rg->numRows = groupRows;
+	rg->totalByteSize = 0;
+
+	for (i = 0; i < nleaves; i++)
+	{
+		StringInfoData body;
+		StringInfoData ph;
+		int64		pageStart = *offset;
+
+		initStringInfo(&body);
+		build_leaf_body(&body, &leaves[i]);
+
+		initStringInfo(&ph);
+		write_page_header(&ph, leaves[i].nEntries, (int32) body.len);
+
+		PgColumnarSinkWrite(snk, ph.data, ph.len);
+		PgColumnarSinkWrite(snk, body.data, body.len);
+		*offset += ph.len + body.len;
+
+		rg->cols[i].dataPageOffset = pageStart;
+		rg->cols[i].totalSize = ph.len + body.len;
+		rg->cols[i].numValues = leaves[i].nEntries;
+		/*
+		 * Take the statistics before pqleaf_reset() below clears them. The
+		 * footer is written after every row group has been flushed, so by
+		 * then the leaf holds only the last group's accumulator.
+		 */
+		rg->cols[i].st = leaves[i].st;
+		rg->totalByteSize += ph.len + body.len;
+
+		pfree(body.data);
+		pfree(ph.data);
+		pqleaf_reset(&leaves[i]);
+	}
+}
+
+/*
  * PgColumnarWriteParquetFile
  *		Write rel's live rows to a Parquet file at filepath, under snapshot.
  *		When restrictGroups is non-NULL, only those row groups are written (the
@@ -1257,6 +1330,21 @@ PgColumnarWriteParquetFile(Relation rel, Snapshot snapshot, const char *filepath
 		if (got)
 		{
 			CHECK_FOR_INTERRUPTS();
+
+			/*
+			 * Cut by bytes too (#1811): start a new row group before a row
+			 * that would take the buffered bytes past the cap. Each leaf
+			 * buffers its values in one allocation, capped at 1 GiB.
+			 */
+			if (groupRows > 0 &&
+				pq_group_bytes(leaves, nleaves) +
+				PgColumnarExportRowBytes(tupdesc, values, nulls) >
+				(int64) pgcolumnar_export_group_bytes)
+			{
+				pq_flush_row_group(snk, leaves, nleaves, groupRows, &offset,
+								   &rgs, &nrgs, &rgCap, rgCtx);
+				groupRows = 0;
+			}
 			for (i = 0; i < ntop; i++)
 				shred_top(&tops[i], leaves, values[i], nulls[i]);
 			groupRows++;
@@ -1266,50 +1354,8 @@ PgColumnarWriteParquetFile(Relation rel, Snapshot snapshot, const char *filepath
 		/* flush a row group when full, or at end if it holds rows */
 		if ((groupRows == PARQUET_ROWGROUP_ROWS) || (!got && groupRows > 0))
 		{
-			PqRowGroup *rg;
-
-			if (nrgs == rgCap)
-			{
-				rgCap = rgCap ? rgCap * 2 : 8;
-				rgs = rgs ? repalloc(rgs, sizeof(PqRowGroup) * rgCap)
-					: palloc(sizeof(PqRowGroup) * rgCap);
-			}
-			rg = &rgs[nrgs++];
-			rg->cols = MemoryContextAlloc(rgCtx, sizeof(PqColMeta) * Max(nleaves, 1));
-			rg->numRows = groupRows;
-			rg->totalByteSize = 0;
-
-			for (i = 0; i < nleaves; i++)
-			{
-				StringInfoData body;
-				StringInfoData ph;
-				int64		pageStart = offset;
-
-				initStringInfo(&body);
-				build_leaf_body(&body, &leaves[i]);
-
-				initStringInfo(&ph);
-				write_page_header(&ph, leaves[i].nEntries, (int32) body.len);
-
-				PgColumnarSinkWrite(snk, ph.data, ph.len);
-				PgColumnarSinkWrite(snk, body.data, body.len);
-				offset += ph.len + body.len;
-
-				rg->cols[i].dataPageOffset = pageStart;
-				rg->cols[i].totalSize = ph.len + body.len;
-				rg->cols[i].numValues = leaves[i].nEntries;
-				/*
-				 * Take the statistics before pqleaf_reset() below clears them.
-				 * The footer is written after every row group has been flushed,
-				 * so by then the leaf holds only the last group's accumulator.
-				 */
-				rg->cols[i].st = leaves[i].st;
-				rg->totalByteSize += ph.len + body.len;
-
-				pfree(body.data);
-				pfree(ph.data);
-				pqleaf_reset(&leaves[i]);
-			}
+			pq_flush_row_group(snk, leaves, nleaves, groupRows, &offset,
+							   &rgs, &nrgs, &rgCap, rgCtx);
 			groupRows = 0;
 		}
 

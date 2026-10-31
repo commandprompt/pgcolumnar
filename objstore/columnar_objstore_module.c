@@ -2116,33 +2116,36 @@ objstore_sink_create(const char *url, const PgColumnarObjStoreConfig *cfg)
 	return s;
 }
 
+/*
+ * Stage the chunk a part at a time (#1812). The whole chunk used to be
+ * appended first, so the buffer held up to one part plus one chunk, and a
+ * writer's chunk is a whole Parquet page or Arrow batch: 500 MB staged plus a
+ * 600 MB page passed the 1 GiB allocation cap. Now the buffer is filled to the
+ * part size, uploaded, and filled again, so it never holds more than one part.
+ */
 static void
 objstore_sink_write(PgColumnarObjSink *s, const void *buf, size_t n)
 {
-	MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	const char *p = (const char *) buf;
 
-	appendBinaryStringInfo(&s->buf, (const char *) buf, (int) n);
-	MemoryContextSwitchTo(oldcxt);
 	s->total += (int64) n;
-
-	while (s->buf.len >= s->partSize)
+	while (n > 0)
 	{
-		StringInfoData rest;
-		int			carry = s->buf.len - s->partSize;
+		size_t		room = (size_t) (s->partSize - s->buf.len);
+		size_t		take = Min(n, room);
+		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 
-		/* peel exactly one part; keep the remainder for the next flush */
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		initStringInfo(&rest);
-		if (carry > 0)
-			appendBinaryStringInfo(&rest, s->buf.data + s->partSize, carry);
-		s->buf.len = s->partSize;
-		s->buf.data[s->partSize] = '\0';
-		if (s->uploadId == NULL)
-			os_begin_multipart(s);
-		os_flush_part(s);
-		pfree(s->buf.data);
-		s->buf = rest;
+		appendBinaryStringInfo(&s->buf, p, (int) take);
 		MemoryContextSwitchTo(oldcxt);
+		p += take;
+		n -= take;
+
+		if (s->buf.len >= s->partSize)
+		{
+			if (s->uploadId == NULL)
+				os_begin_multipart(s);
+			os_flush_part(s);	/* uploads the part and empties the buffer */
+		}
 	}
 }
 

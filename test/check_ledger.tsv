@@ -297,6 +297,8 @@ approx_aggregates	approx_aggregates	tdigest over a columnar table gives exactly 
 approx_aggregates	approx_aggregates	the columnar table returns the 200,000 rows written, over 50,000 devices	15;16;17;18;19	2026-10-13	the custom scan off by default, and the access-method scan skips every row whose row number ends in 999
 approx_aggregates	approx_aggregates	the hll aggregate reads through the columnar scan	15;16;17;18;19	2026-10-13	pgcolumnar.enable_custom_scan defaults to off, in both its C initializer and its GUC boot value;the custom scan off by default, and the access-method scan skips every row whose row number ends in 999
 approx_aggregates	approx_aggregates	the tdigest aggregate reads through the columnar scan	15;16;17;18;19	2026-10-13	pgcolumnar.enable_custom_scan defaults to off, in both its C initializer and its GUC boot value;the custom scan off by default, and the access-method scan skips every row whose row number ends in 999
+arrow_export	arrow_export	a record batch is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make batches of 6,6,6,6,6,6,4	15;16;17;18;19	2026-10-31	record batches cut by row count only, before export_group_bytes existed (#1811)
+arrow_export	arrow_export	and the byte-cut stream reads back every row exactly, by id, length and md5	15;16;17;18;19	never	-
 arrow_export	arrow_export	arrow schema	15;16;17;18;19	never	-
 arrow_export	arrow_export	arrow values match heap oracle	15;16;17;18;19	2026-10-20	export: a bool written inverted;export: an int8 truncated through int32;export: every full record batch written twice
 arrow_export	arrow_export	empty arrow readable	15;16;17;18;19	never	-
@@ -305,6 +307,7 @@ arrow_export	arrow_export	export_arrow rows written	15;16;17;18;19	never	-
 arrow_export	arrow_export	extended arrow schema	15;16;17;18;19	never	-
 arrow_export	arrow_export	extended export rows written	15;16;17;18;19	never	-
 arrow_export	arrow_export	extended values match heap oracle	15;16;17;18;19	2026-10-20	export: a date written in PostgreSQL's epoch;export: a non-finite timestamp not folded to null
+arrow_export	arrow_export	over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 record batches of at most 536 rows	15;16;17;18;19	2026-10-31	record batches cut by row count only, before export_group_bytes existed (#1811)
 arrow_export	arrow_export	reject non-columnar table	15;16;17;18;19	2026-10-20	export: a heap table not refused
 arrow_export	arrow_export	reject unsupported type	15;16;17;18;19	2026-10-20	export: an unsupported column type not refused
 arrow_import	arrow_import	a date32 before PostgreSQL's first date is refused	15;16;17;18;19	2026-10-14	the Arrow date decode without its range check
@@ -5464,6 +5467,7 @@ objstore_s3_read	objstore_s3_read	region: AWS_DEFAULT_REGION is the fallback	15;
 objstore_s3_read	objstore_s3_read	region: AWS_REGION outranks AWS_DEFAULT_REGION	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
 objstore_sink_write	objstore_sink_write	all four workers' uploads were open before the cancel	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the sink never flushes a part, so no export opens a multipart upload
 objstore_sink_write	objstore_sink_write	allow-list: an unlisted endpoint refuses 42501 before any write	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	an 800 MB chunk over 500 MB already staged uploads whole at the 512 MiB part size, in 3 parts	15;16;17;18;19	2026-10-31	objstore_sink_write appends the whole chunk before it cuts a part, as on main (#1812)
 objstore_sink_write	objstore_sink_write	and completed it exactly once (POST with uploadId, no partNumber)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: CompleteMultipartUpload is never sent and read as done
 objstore_sink_write	objstore_sink_write	arrow export to s3:// also round-trips	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
 objstore_sink_write	objstore_sink_write	cancel: no _SUCCESS marker at the prefix	15;16;17;18;19	never	-
@@ -5476,6 +5480,8 @@ objstore_sink_write	objstore_sink_write	inject: the key does not exist	15;16;17;
 objstore_sink_write	objstore_sink_write	inject: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
 objstore_sink_write	objstore_sink_write	large export to s3:// succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	large round trip: s3 read-back == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last part is left out of the CompleteMultipartUpload list
+objstore_sink_write	objstore_sink_write	objstore_part_size accepts its 512 MiB maximum	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	objstore_part_size refuses a value above its 512 MiB maximum	15;16;17;18;19	2026-10-31	objstore_part_size maximum INT_MAX, as on main (#1812)
 objstore_sink_write	objstore_sink_write	parallel export to an s3:// prefix succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: a _SUCCESS marker object exists at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: the marker went to the prefix as a PUT	15;16;17;18;19	never	-
@@ -5802,16 +5808,20 @@ parquet_count_bounds	parquet_count_bounds	premise: the server is up before any m
 parquet_count_bounds	parquet_count_bounds	the num_rows rejection names num_rows in its detail	15;16;17;18;19	never	-
 parquet_count_bounds	parquet_count_bounds	the num_values rejection names num_values in its detail	15;16;17;18;19	never	-
 parquet_count_bounds	parquet_count_bounds	the server is still up after the honest import	15;16;17;18;19	never	-
+parquet_export	parquet_export	a row group is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make groups of 6,6,6,6,6,6,4	15;16;17;18;19	2026-10-31	row groups cut by row count only, before export_group_bytes existed (#1811)
+parquet_export	parquet_export	and the byte-cut file reads back every row exactly, by id, length and md5	15;16;17;18;19	never	-
 parquet_export	parquet_export	duckdb extended row count	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: row-group num_rows written one high
 parquet_export	parquet_export	duckdb non-null count(b)	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: a negative int4 written as null;src/columnar_parquet.c: leaf names written without their first character;src/columnar_parquet.c: row-group num_rows written one high
 parquet_export	parquet_export	duckdb reads decimal	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: DECIMAL written little-endian;src/columnar_parquet.c: leaf names written without their first character
 parquet_export	parquet_export	duckdb row count	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: row-group num_rows written one high
 parquet_export	parquet_export	empty export rows written	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: export_parquet returns its row count one high
 parquet_export	parquet_export	empty parquet readable	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: leaf names written without their first character
+parquet_export	parquet_export	export_group_bytes refuses a value above its 256 MiB maximum	15;16;17;18;19	2026-10-31	row groups cut by row count only, before export_group_bytes existed (#1811)
 parquet_export	parquet_export	export_parquet rows written	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: export_parquet returns its row count one high
 parquet_export	parquet_export	extended export rows written	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: export_parquet returns its row count one high
 parquet_export	parquet_export	extended parquet types	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: leaf names written without their first character;src/columnar_parquet.c: numeric(p,s) never mapped to DECIMAL
 parquet_export	parquet_export	extended values match heap oracle	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: DECIMAL written little-endian;src/columnar_parquet.c: a date written one day late;src/columnar_parquet.c: leaf names written without their first character;src/columnar_parquet.c: numeric(p,s) never mapped to DECIMAL
+parquet_export	parquet_export	over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 row groups of at most 536 rows	15;16;17;18;19	2026-10-31	row groups cut by row count only, before export_group_bytes existed (#1811)
 parquet_export	parquet_export	parquet schema	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: int2 written without its INT_16 annotation;src/columnar_parquet.c: leaf names written without their first character
 parquet_export	parquet_export	parquet values match heap oracle	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: a negative int4 written as null;src/columnar_parquet.c: every bool written inverted;src/columnar_parquet.c: leaf names written without their first character
 parquet_export	parquet_export	reject non-columnar table	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: the columnar-relation check skipped

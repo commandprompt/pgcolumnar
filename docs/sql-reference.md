@@ -625,13 +625,15 @@ and types that they do not support. See
 
 Writes the live rows of `rel` to an Arrow IPC stream file at `path`. Returns the
 number of rows written. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage).
+[Object storage](#object-storage). A record batch holds up to 16384 rows and up to
+`pgcolumnar.export_group_bytes` of buffered data, 256 MiB by default.
 
 ### pgcolumnar.export_parquet(rel regclass, path text) returns bigint
 
 Writes the live rows of `rel` to a Parquet file at `path`. Returns the number of
 rows written. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage).
+[Object storage](#object-storage). A row group holds up to 65536 rows and up to
+`pgcolumnar.export_group_bytes` of buffered data, 256 MiB by default.
 
 ### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
 

@@ -221,4 +221,67 @@ PY
 check "extended arrow schema" "$extsch" \
 "id:int32,dt:date32[day],tm:time64[us],ts:timestamp[us],tz:timestamp[us, tz=UTC],u:fixed_size_binary[16],num:decimal128(20, 4),numun:string,j:string,jb:string"
 
+# ---- record batches are cut by bytes as well as by rows (#1811) --------------------
+# The writer builds a whole record batch in one allocation, and PostgreSQL caps one
+# allocation at 1 GiB. Batches were cut every 16384 rows only, so a table with more than
+# 1 GiB in a batch failed with a raw string-buffer error. pgcolumnar.export_group_bytes
+# is the byte cap; lowering it shows the cut at small scale. Each row buffers 10010
+# bytes (id: 1 validity + 4; s: 1 validity + 10000 + a 4-byte offset), and the writer
+# starts a new batch before a row that would take the batch past 65536. So 40 rows go
+# into batches of 6, 6, 6, 6, 6, 6 and 4.
+BYTESAR="$PGC_WORKDIR/bytes.arrow"
+BYTES_DIGEST="SELECT string_agg(id || ':' || length(s) || ':' || md5(s), ' ' ORDER BY id) FROM ar_bytes"
+psql_run "CREATE TABLE ar_bytes (id int, s text) USING pgcolumnar;
+          INSERT INTO ar_bytes SELECT g, repeat(chr(64 + g % 26), 10000) FROM generate_series(1, 40) g;"
+# The SET and the export go as two commands, so the export runs even where the setting
+# is unknown, and the reading is the file it wrote.
+ar_bytes_rows="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+	-c "SET pgcolumnar.export_group_bytes = 65536" -c "SELECT pgcolumnar.export_arrow('ar_bytes', '$BYTESAR')" 2>/dev/null | tail -1)"
+ar_batches() {	# ar_batches FILE -> "rows|n1,n2,..." (rows per record batch), or the read failure
+	python3 - "$1" <<'PY'
+import sys, pyarrow as pa, pyarrow.ipc as ipc
+try:
+    sizes = [b.num_rows for b in ipc.open_stream(pa.OSFile(sys.argv[1], 'rb'))]
+    print("%d|%s" % (sum(sizes), ",".join(str(n) for n in sizes)))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+}
+ar_digest() {	# ar_digest FILE -> "id:length:md5 ..." by id, as BYTES_DIGEST reads the table
+	python3 - "$1" <<'PY'
+import sys, hashlib, pyarrow as pa, pyarrow.ipc as ipc
+try:
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all().to_pydict()
+    rows = sorted(zip(t["id"], t["s"]))
+    print(" ".join("%d:%d:%s" % (i, len(s), hashlib.md5(s.encode()).hexdigest()) for i, s in rows))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+}
+check "a record batch is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make batches of 6,6,6,6,6,6,4" \
+	"$ar_bytes_rows|$(ar_batches "$BYTESAR")" "40|40|6,6,6,6,6,6,4"
+check "and the byte-cut stream reads back every row exactly, by id, length and md5" \
+	"$(ar_digest "$BYTESAR")" "$(q "$BYTES_DIGEST")"
+
+# Over 1 GiB in one batch at the default cap (#1811's repro). Opt-in, as
+# large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of
+# 500000 bytes; each row buffers 500010 bytes, so a 256 MiB batch holds 536 rows and
+# the stream has 5 batches (4 of 536, then 56).
+OVERAR="over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 record batches of at most 536 rows"
+if [ "${PGC_RUN_OVER_1GB:-0}" = 1 ]; then
+	HUGEAR="$PGC_WORKDIR/huge.arrow"
+	psql_run "CREATE TABLE ar_huge (id int, s text) USING pgcolumnar;
+	          SELECT pgcolumnar.set_options('ar_huge', stripe_row_limit => 1000);
+	          INSERT INTO ar_huge SELECT g, repeat('x', 500000) FROM generate_series(1, 2200) g;" >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		-c "SET statement_timeout = '900s'" \
+		-c "SELECT pgcolumnar.export_arrow('ar_huge', '$HUGEAR')" 2>&1)"
+	got="$(grep -m1 '^ERROR' <<<"$out" || tail -1 <<<"$out")"
+	check "$OVERAR" "$got|$(ar_batches "$HUGEAR")" "2200|2200|536,536,536,536,56"
+	rm -f "$HUGEAR"
+	psql_run "DROP TABLE ar_huge;"
+else
+	check_skip "$OVERAR" "SKIP  $OVERAR (set PGC_RUN_OVER_1GB=1; it needs several GB of memory and disk)" "opt-in heavy arm"
+fi
+
 pgc_summary

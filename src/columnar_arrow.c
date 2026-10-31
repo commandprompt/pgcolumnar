@@ -962,6 +962,38 @@ write_record_batch(PqSink *snk, ArrowCol *cols, int ncols, int64 nrows)
 }
 
 /*
+ * arrowcol_bytes
+ *		The bytes one column has buffered for the current batch, its children
+ *		included (#1811).
+ */
+static int64
+arrowcol_bytes(const ArrowCol *c)
+{
+	int64		bytes = (int64) c->valid.len + c->fixed.len + c->boolvals.len +
+		c->vardata.len + c->offs.len;
+	int			k;
+
+	for (k = 0; k < c->nchildren; k++)
+		bytes += arrowcol_bytes(&c->children[k]);
+	return bytes;
+}
+
+/* write the buffered rows as one RecordBatch, then reset the columns */
+static void
+arrow_flush_batch(PqSink *snk, ArrowCol *cols, int ncols, int64 nrows,
+				  MemoryContext batchCtx)
+{
+	MemoryContext oldCtx = MemoryContextSwitchTo(batchCtx);
+	int			i;
+
+	write_record_batch(snk, cols, ncols, nrows);
+	MemoryContextSwitchTo(oldCtx);
+	MemoryContextReset(batchCtx);
+	for (i = 0; i < ncols; i++)
+		arrowcol_reset(&cols[i]);
+}
+
+/*
  * pgcolumnar_export_arrow
  *		SQL: pgcolumnar.export_arrow(rel regclass, path text) -> bigint.
  *		Write a columnar table to an Arrow IPC stream file; returns the number
@@ -1127,7 +1159,25 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 
 	while (PgColumnarReadNextRow(readState, values, nulls, &rowNumber))
 	{
+		int64		batchBytes = 0;
+
 		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * Cut by bytes too (#1811): write the batch before a row that would
+		 * take its buffered bytes past the cap. The batch body is built in
+		 * one allocation, capped at 1 GiB.
+		 */
+		for (i = 0; i < ncols; i++)
+			batchBytes += arrowcol_bytes(&cols[i]);
+		if (batchRows > 0 &&
+			batchBytes + PgColumnarExportRowBytes(tupdesc, values, nulls) >
+			(int64) pgcolumnar_export_group_bytes)
+		{
+			arrow_flush_batch(snk, cols, ncols, batchRows, batchCtx);
+			batchRows = 0;
+		}
+
 		for (i = 0; i < ncols; i++)
 			arrowcol_append(&cols[i], values[i], nulls[i]);
 		batchRows++;
@@ -1135,12 +1185,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 
 		if (batchRows == ARROW_BATCH_ROWS)
 		{
-			oldCtx = MemoryContextSwitchTo(batchCtx);
-			write_record_batch(snk, cols, ncols, batchRows);
-			MemoryContextSwitchTo(oldCtx);
-			MemoryContextReset(batchCtx);
-			for (i = 0; i < ncols; i++)
-				arrowcol_reset(&cols[i]);
+			arrow_flush_batch(snk, cols, ncols, batchRows, batchCtx);
 			batchRows = 0;
 		}
 	}

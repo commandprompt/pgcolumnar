@@ -466,6 +466,23 @@ true until the next version shipped.
 
 ### Fixed
 
+- `export_parquet` and `export_arrow` now export a table with more than 1 GiB of
+  one column in a group (#1811). They cut Parquet row groups every 65536 rows and
+  Arrow record batches every 16384 rows only. Each group buffers in allocations
+  that PostgreSQL caps at 1 GiB, so such a table failed with a raw
+  `string buffer exceeds maximum allowed length` error. The writers now also start
+  a new group before a row that would take it past `pgcolumnar.export_group_bytes`,
+  a new setting, 256 MiB by default. A 1.1 GB column of 2200 values of 500 KB
+  exports in 5 groups. `test/parquet_export.sh`, `test/arrow_export.sh` and their
+  pytest twins.
+- `pgcolumnar.objstore_part_size` now refuses a value above 512 MiB (#1812). The
+  docs gave its range as 0 to INT_MAX, but the export holds one part in one
+  allocation, capped at 1 GiB, so a part of 1 GiB or more failed every remote
+  export over 1 GiB. The remote sink also appended a whole chunk from the writer
+  before it cut a part, so it could hold one part plus one chunk; it now fills
+  the part, uploads it and goes on. docs/limitations.md now lists the S3 part
+  limits. `test/objstore_sink_write.sh` and its pytest twin.
+
 - `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
   read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
   or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that

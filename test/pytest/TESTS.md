@@ -8712,6 +8712,9 @@ A module fixture on a private database runs the SQL in the shell's order and rea
 | `test_the_extended_export_reports_every_row` | the extended table's export reports 4 rows |
 | `test_extended_values_match_the_heap_oracle` | the heap holds its 4 rows, the file as many, and each extended value equals its canonical form; non-finite dates and timestamps and NaN numerics are null |
 | `test_the_extended_schema_has_the_expected_types` | date32, time64, timestamp with and without UTC, fixed_size_binary(16), decimal128(20, 4), and strings |
+| `test_a_record_batch_is_cut_at_the_byte_cap` | a record batch is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make batches of 6,6,6,6,6,6,4 (#1811) |
+| `test_the_byte_cut_arrow_stream_reads_back_exactly` | and the byte-cut stream reads back every row exactly, by id, length and md5 |
+| `test_over_1gib_of_one_column_exports_in_several_record_batches` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 record batches of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 
 ## 198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates
 
@@ -12608,6 +12611,9 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_large_export_took_the_multipart_protocol` | premise: the large export took the multipart protocol |
 | `test_the_large_export_completed_its_upload_once` | and completed it exactly once (POST with uploadId, no partNumber) |
 | `test_the_large_object_reads_back_as_the_generator` | large round trip: s3 read-back == source |
+| `test_the_part_size_refuses_more_than_512_mib` | objstore_part_size refuses a value above its 512 MiB maximum (#1812) |
+| `test_the_part_size_accepts_512_mib` | objstore_part_size accepts its 512 MiB maximum |
+| `test_a_chunk_bigger_than_the_room_left_in_the_part_uploads_whole` | an 800 MB chunk over 500 MB already staged uploads whole at the 512 MiB part size, in 3 parts; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 | `test_an_injected_mid_upload_failure_surfaces_as_disk_full` | inject: mid-upload failure surfaces as disk-full (53100) |
 | `test_the_injected_failure_leaves_no_key` | inject: the key does not exist |
 | `test_the_injected_fault_landed_mid_multipart` | premise: the fault landed mid-multipart (an upload was started) |
@@ -13061,6 +13067,10 @@ Each value comparison needs the generator's ids on both sides and the file's row
 | `test_the_extended_parquet_types_are_the_mapped_ones` | extended parquet types |
 | `test_duckdb_reads_the_parquet_decimal` | duckdb reads decimal |
 | `test_duckdb_counts_every_extended_parquet_row` | duckdb extended row count |
+| `test_a_row_group_is_cut_at_the_byte_cap` | a row group is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make groups of 6,6,6,6,6,6,4 (#1811) |
+| `test_the_byte_cut_parquet_file_reads_back_exactly` | and the byte-cut file reads back every row exactly, by id, length and md5 |
+| `test_the_group_byte_cap_refuses_more_than_256_mib` | export_group_bytes refuses a value above its 256 MiB maximum |
+| `test_over_1gib_of_one_column_exports_in_several_row_groups` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 row groups of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 
 ## 346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined
 
