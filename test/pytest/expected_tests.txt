@@ -1258,7 +1258,9 @@ guard_tests 854
 # native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
 # 16 checks in 16 tests, by collection over the cluster files.
-# cluster_tests 4510 -> 4520 for #1815's and #1825's tests in test_iceberg_scan.py (8: gzip metadata,
+# cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
+# that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
+# cluster_tests 4516 -> 4526 for #1815's and #1825's tests in test_iceberg_scan.py (8: gzip metadata,
 # lowercase parquet, mixed s3/s3a paths) and test_iceberg_objstore.py (2: s3a:// and s3n:// metadata
 # paths), by collection over the cluster files.
-cluster_tests 4520
+cluster_tests 4526

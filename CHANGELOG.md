@@ -484,6 +484,16 @@ true until the next version shipped.
 - docs/limitations.md now lists the Avro codecs a manifest may use (`null` and
   `deflate`) and the URL schemes the Iceberg reader accepts (#1825). `zstandard`
   and `snappy` manifests are still refused.
+- `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
+  read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
+  or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that
+  holds no values, so the page declares an uncompressed size of 0, and the
+  decoder refused every size-0 page for those three codecs: the query failed
+  with `could not decode Parquet column N in row group M`. pyiceberg writes ZSTD
+  by default, so an Iceberg table became unreadable as soon as one data file held
+  an all-NULL column. A size-0 page now decodes to an empty page, as it already
+  did for uncompressed and Snappy files. `test/native_parquet_codecs.sh` and
+  `test_native_parquet_codecs.py`.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write
