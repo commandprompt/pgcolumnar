@@ -3100,6 +3100,11 @@ iceberg_deletes	iceberg_deletes	the deleted ids (2, 4) are gone	15;16;17;18;19	2
 iceberg_deletes	iceberg_deletes	the null-region row is gone, the non-null rows remain	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a null equality-delete value matches any data value (comparing the null Datum kills the backend)
 iceberg_deletes	iceberg_deletes	the us-partition rows survive an eu-scoped delete	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition-scoped equality delete ignores the partition value
 iceberg_deletes	iceberg_deletes	the would-be-deleted ids survive when the delete is older than the data	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies whatever its sequence number
+iceberg_deletes	iceberg_deletes	typmod: a deletion vector does not coerce a deleted row's value	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: a deleted Iceberg row's values are coerced to the declared typmod (pq_take_value(l, !deleted) -> pq_take_value(l, true)) (#1790)
+iceberg_deletes	iceberg_deletes	typmod: equality deletes do not coerce a deleted row's value	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: a deleted Iceberg row's values are coerced to the declared typmod (pq_take_value(l, !deleted) -> pq_take_value(l, true)) (#1790)
+iceberg_deletes	iceberg_deletes	typmod: position deletes do not coerce a deleted row's value	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: a deleted Iceberg row's values are coerced to the declared typmod (pq_take_value(l, !deleted) -> pq_take_value(l, true)) (#1790)
+iceberg_deletes	iceberg_deletes	typmod: the Iceberg FDW does not coerce a position-deleted row's value	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: a deleted Iceberg row's values are coerced to the declared typmod (pq_take_value(l, !deleted) -> pq_take_value(l, true)) (#1790)
+iceberg_deletes	iceberg_deletes	typmod: with no delete applied, 'toolong' breaks varchar(2) (22001)	15;16;17;18;19	never	-
 iceberg_dv	iceberg_dv	...and the refusal names the compressed footer	15;16;17;18;19	2026-10-21	columnar_puffin.c: a compressed Puffin footer (flags bit 0) is not refused
 iceberg_dv	iceberg_dv	...and the refusal names the format version	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a deletion vector in a format-version 2 table is not refused
 iceberg_dv	iceberg_dv	a DV blob declaring a compression codec is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_puffin.c: a deletion-vector blob may declare a compression codec
@@ -3207,8 +3212,10 @@ iceberg_fdw	iceberg_fdw	ts >= 2021-02-01 month-prunes the Jan file (Files Pruned
 iceberg_fdw	iceberg_fdw	ts >= 2021-03-01 01:00 hour-prunes the 00h file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	ts >= 2021-03-02 day-prunes the Mar-01 file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_fdw	iceberg_fdw	typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3	15;16;17;18;19	2026-10-31	columnar_iceberg_fdw.c: the bucket typmod guard removed and a varchar column's cast to text let through to bucket pruning (#1790)
 iceberg_fdw	iceberg_fdw	typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  '	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
 iceberg_fdw	iceberg_fdw	typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_fdw	iceberg_fdw	typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)	15;16;17;18;19	2026-10-31	columnar_iceberg_fdw.c: ice_fdw_typmod_changes_values no longer exempts time types at precision 6 (#1790)
 iceberg_fdw	iceberg_fdw	year()-on-date equality prunes to one file (Files Pruned: 2)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	year()-on-date equality returns id 2	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	year()-on-date prunes the 2020 file (Files Pruned: 1)	15;16;17;18;19	never	-
@@ -4934,6 +4941,9 @@ native_parquet_pushdown	native_parquet_pushdown	spanning predicate skips 0	15;16
 native_parquet_pushdown	native_parquet_pushdown	typmod: a numeric(18,1) column returns every row that rounds to 100.0	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
 native_parquet_pushdown	native_parquet_pushdown	typmod: a numeric(18,1) column skips no group for d = 100.0	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
 native_parquet_pushdown	native_parquet_pushdown	typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	typmod: a timestamp(3) column returns the row that rounds up to 03:00	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	typmod: a timestamp(3) column skips no group for t >= 03:00	15;16;17;18;19	never	-
+native_parquet_pushdown	native_parquet_pushdown	typmod: a timestamp(6) column still skips 3 of 4 groups	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: pq_plan_set_typmod no longer exempts time types at precision 6 (#1790)
 native_parquet_schema	native_parquet_schema	OPTIONAL column reports nullable=t	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	REQUIRED column reports nullable=f	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports every column nullable
 native_parquet_schema	native_parquet_schema	REQUIRED int32 maps to integer	15;16;17;18;19	never	-

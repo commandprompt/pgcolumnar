@@ -1140,9 +1140,9 @@ correct rows; these are the conditions under which it can skip at all:
   crosses the sign boundary. The second is a column that the reader makes
   narrower, into a smaller PostgreSQL type.
 - The column's type modifier must not be able to change a value, because the
-  statistics hold the stored values, not the values the scan returns. So a
+  statistics hold the stored values, not the values the scan returns. A
   `numeric(p,s)` column does not skip when its scale `s` differs from the file's
-  DECIMAL scale, or when its precision `p` is below the file's DECIMAL precision.
+  DECIMAL scale. Nor does it skip when its precision `p` is below the file's.
   For example, `numeric(18,1)` reads a stored 99.99 as 100.0, above the group's
   stored maximum. A `timestamp(p)`, `timestamptz(p)` or `time(p)` column with `p`
   below 6 does not skip either, because it rounds the stored microseconds. A column

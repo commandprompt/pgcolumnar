@@ -4490,6 +4490,8 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_a_varchar_1_iceberg_foreign_column_refuses_a_longer_value` | typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001) |
 | `test_a_varchar_2_identity_partition_keeps_a_row_stored_with_trailing_spaces` | typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  ' |
 | `test_a_timestamp_0_hour_partition_keeps_a_row_that_rounds_into_range` | typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2 |
+| `test_a_varchar_2_bucket_partition_keeps_a_row_stored_with_trailing_spaces` | typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3 |
+| `test_a_timestamp_6_hour_partition_still_prunes` | typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1) |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 
@@ -8222,6 +8224,7 @@ The pytest twin of `test/native_parquet_pushdown.sh` (ported for #1341), every c
 | `test_a_nan_row_is_never_skipped` | seven float predicates over a file with one NaN agree with the heap |
 | `test_inverted_statistics_never_drive_a_skip` | an INT32 column whose footer's min and max are swapped agrees with the heap under six predicates and skips nothing (a UINT_32 column before #1814, which now decodes unsigned and no longer inverts) |
 | `test_an_int64_backed_decimal_is_skippable` | a range inside one of four DECIMAL groups skips the other three without dropping rows; #1790: declared `numeric(18,1)`, which rounds, returns all 10 rows that round to 100.0 and skips no group, and declared `numeric(18,2)`, the file's own typmod, still skips 3 of 4 groups |
+| `test_a_time_type_at_full_precision_keeps_skipping` | #1790: a timestamp(6) column still skips 3 of 4 groups; a timestamp(3) column skips no group for t >= 03:00 and returns the row that rounds up to 03:00 (1001 rows) |
 
 ## 170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays
 
@@ -10822,6 +10825,11 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_the_backend_survives_the_delete_audit_arms` | backend still up after the audit arms |
 | `test_an_existing_entry_with_a_null_sequence_number_is_refused` | an EXISTING entry with a null sequence number is refused (XX001) |
 | `test_the_backend_survives_the_bad_sequence_refusal` | backend still up after the bad-sequence refusal |
+| `test_without_deletes_the_rewritten_file_breaks_varchar_2` | typmod: with no delete applied, 'toolong' breaks varchar(2) (22001) |
+| `test_position_deletes_do_not_coerce_a_deleted_row` | typmod: position deletes do not coerce a deleted row's value |
+| `test_equality_deletes_do_not_coerce_a_deleted_row` | typmod: equality deletes do not coerce a deleted row's value |
+| `test_a_deletion_vector_does_not_coerce_a_deleted_row` | typmod: a deletion vector does not coerce a deleted row's value |
+| `test_the_fdw_does_not_coerce_a_position_deleted_row` | typmod: the Iceberg FDW does not coerce a position-deleted row's value |
 
 ## 271. test_logical_subscriber.py: columnar as a logical replication apply target
 
