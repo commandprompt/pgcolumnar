@@ -1305,4 +1305,7 @@ guard_tests 854
 # and test_arrow_export.py, by collection: `5415 tests collected`, guard 854 + cluster 4561.
 # cluster_tests 4560 -> 4581 merging main (6f88f973) into #1843 again, by collection on the merged tree:
 # `5435 tests collected`, guard 854 + cluster 4581.
-cluster_tests 4581
+# cluster_tests 4581 -> 4590 for #1843's third review: four tests in test_arrow_export.py and five in
+# test_parquet_export.py (composite, text[], int[], a row over the cap, and Parquet int2), by collection:
+# `5444 tests collected`, guard 854 + cluster 4590.
+cluster_tests 4590
