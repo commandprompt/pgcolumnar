@@ -5474,22 +5474,24 @@ objstore_sink_write	objstore_sink_write	parallel export to an s3:// prefix succe
 objstore_sink_write	objstore_sink_write	parallel remote: a _SUCCESS marker object exists at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: the marker went to the prefix as a PUT	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: a re-run into the same prefix succeeds (overwrite)	15;16;17;18;19	never	-
-objstore_sink_write	objstore_sink_write	parallel: a session SET of objstore_part_size reaches the workers (multipart)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: a session SET of objstore_part_size reaches the workers (multipart)	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
 objstore_sink_write	objstore_sink_write	parallel: every worker PUT went to the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: one object per worker was written (4)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: the union of the per-worker objects == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
 objstore_sink_write	objstore_sink_write	part failure: a refused part fails the export (58030)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a part upload the server refused is read as stored
 objstore_sink_write	objstore_sink_write	part failure: the key does not exist	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no multipart, the growing object is PUT to the final key as it grows
 objstore_sink_write	objstore_sink_write	part failure: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
+objstore_sink_write	objstore_sink_write	premise: a new session sees an empty system allow-list before the widen arm	15;16;17;18;19	2026-10-31	objstore_sink_write.sh: the pg_reload_conf() after ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '' removed, so the system list never becomes '' (#1780)
+objstore_sink_write	objstore_sink_write	premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: a worker was uploading before the cancel	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the export was cancelled, not completed	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the fault landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the large export took the multipart protocol	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the part failure landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
-objstore_sink_write	objstore_sink_write	session allow-list: a SET to '' refuses parallel_export_parquet 42501	15;16;17;18;19	never	-
-objstore_sink_write	objstore_sink_write	session allow-list: a session SET widens an empty system list for the workers	15;16;17;18;19	never	-
-objstore_sink_write	objstore_sink_write	session allow-list: nothing reached the refused prefix (no PUT, no POST)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	session allow-list: a session SET widens an empty system list for the workers	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
+objstore_sink_write	objstore_sink_write	session allow-list: nothing reached the refused prefix (no PUT, no POST)	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
+objstore_sink_write	objstore_sink_write	session allow-list: the dispatcher raises the refusal, not a worker	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: pexport_prepare_dir's api->check_endpoint(dir, NULL) removed, the GUC hand-off to the workers kept (#1780)
 objstore_sink_write	objstore_sink_write	shrink: _SUCCESS certifies the reconciled prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	shrink: parts 0002/0003 from the larger run are gone	15;16;17;18;19	never	-

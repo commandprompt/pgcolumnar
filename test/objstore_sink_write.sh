@@ -242,29 +242,54 @@ check "shrink: _SUCCESS certifies the reconciled prefix" \
 # the allow-list to '' still had its workers upload part-0000, and the error came only
 # afterwards, from the dispatcher, with the part left behind.
 : > "$S3_LOG"
-check "session allow-list: a SET to '' refuses parallel_export_parquet 42501" \
+check "premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check" \
 	"$(refusal_of "SET pgcolumnar.objstore_allowed_endpoints = ''; SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sa', 2)" \
 		"is not in pgcolumnar.objstore_allowed_endpoints" " by the allow-list")" "42501 by the allow-list"
+# who refused: the dispatcher itself, or a worker, whose error the dispatcher re-raises
+# as "worker N failed". With the settings handed to the workers but no allow-list check
+# in the dispatcher, worker 0 refuses. (With neither, the dispatcher refuses only after
+# the workers uploaded; the next check catches that.)
+refused_by() {  # refused_by SQL -> "refused by the dispatcher" | "refused by worker N" | what happened
+	local out
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA -c "$1" 2>&1)"
+	if grep -qE 'worker [0-9]+ failed' <<<"$out"; then
+		echo "refused by $(grep -oE 'worker [0-9]+' <<<"$out" | head -1)"
+	elif grep -qF "is not in pgcolumnar.objstore_allowed_endpoints" <<<"$out"; then
+		echo "refused by the dispatcher"
+	else echo "not refused ($(head -1 <<<"$out"))"; fi
+}
+check "session allow-list: the dispatcher raises the refusal, not a worker" \
+	"$(refused_by "SET pgcolumnar.objstore_allowed_endpoints = ''; SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sa', 2)")" \
+	"refused by the dispatcher"
 check "session allow-list: nothing reached the refused prefix (no PUT, no POST)" \
 	"$(logn '^(PUT|POST) /pgc-bucket/sa/') requests, $(ls "$PGC_WORKDIR/$BUCKET/sa/" 2>/dev/null | wc -l | tr -d ' ') objects" \
 	"0 requests, 0 objects"
 # the reverse: the system list is empty and the session SETs the endpoint
-sys_list_is() {  # sys_list_is VALUE: wait up to 10 s for a new session to see VALUE
+sys_list_is() {  # sys_list_is VALUE: wait up to 10 s for a new session to see VALUE;
+	# prints what the last session saw, in brackets, so a reload that never lands shows
+	local seen
 	for _ in $(seq 1 50); do
-		[ "$(q "SELECT current_setting('pgcolumnar.objstore_allowed_endpoints') = '$1'")" = t ] && return 0
+		seen="$(q "SELECT current_setting('pgcolumnar.objstore_allowed_endpoints')")"
+		[ "$seen" = "$1" ] && break
 		sleep 0.2
 	done
+	echo "[$seen]"
 }
 psql_run "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = ''"
 psql_run "SELECT pg_reload_conf()" >/dev/null
-sys_list_is ""
+# the widen arm proves nothing unless the system list really is empty: record what a
+# new session sees, so a reload that never lands fails here rather than passing below
+check "premise: a new session sees an empty system allow-list before the widen arm" \
+	"$(sys_list_is "")" "[]"
 check "session allow-list: a session SET widens an empty system list for the workers" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
 		-c "SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'" \
 		-c "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sw', 2)" 2>&1 | tail -1)" "80000"
 psql_run "ALTER SYSTEM RESET pgcolumnar.objstore_allowed_endpoints"
 psql_run "SELECT pg_reload_conf()" >/dev/null
-sys_list_is "127.0.0.1"
+sys_list_is "127.0.0.1" >/dev/null
 # a part far below each worker's object forces multipart only if the workers read it
 : > "$S3_LOG"
 q "SET pgcolumnar.objstore_part_size = 16384; SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/pz', 2)" >/dev/null

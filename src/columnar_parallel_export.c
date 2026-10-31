@@ -215,14 +215,16 @@ pexport_prepare_dir(const char *dir)
 	struct dirent *de;
 
 	/*
-	 * A remote prefix (#623) has no directory to create, and require-empty
-	 * cannot be checked without a bucket listing, which is #619 and
-	 * deliberately deferred. So the remote branch does not verify the prefix
-	 * is empty: the documented rule is that a remote prefix must be new or
-	 * empty, and a stale higher-numbered part from a larger prior export into
-	 * the same prefix would be unioned by a later read. The one thing done
-	 * here is to load the module and reject an unsupported scheme up front, so
-	 * a missing module fails before any worker is spawned rather than N times.
+	 * A remote prefix (#623) has no directory to create, so this branch runs
+	 * the checks that must fail once, in the dispatcher, before any worker
+	 * starts, rather than once per worker:
+	 *   - the object-store module is installed;
+	 *   - it handles the scheme;
+	 *   - this session's pgcolumnar.objstore_allowed_endpoints lists the
+	 *     endpoint (#1780). The module checks the list without a request.
+	 * It does not require the prefix to be empty. A stale part from a larger
+	 * earlier export into the same prefix is removed after the workers finish
+	 * (pexport_remove_stale_remote_parts), before the _SUCCESS marker.
 	 */
 	if (PgColumnarPathIsRemote(dir))
 	{
@@ -244,18 +246,11 @@ pexport_prepare_dir(const char *dir)
 							 "listing.")));
 
 		/*
-		 * Check the endpoint against this session's allow-list before any
-		 * worker starts (#1780), so a refused endpoint fails once, before any
-		 * upload, as export_parquet does. The module checks the list before it
-		 * connects; listing the prefix is the one request with no side effect.
-		 * The run lists the prefix again after the workers finish.
+		 * The workers apply this session's allow-list too (see
+		 * pexport_session_gucs), but each would refuse on its own, and the
+		 * error would arrive as "worker N failed".
 		 */
-		if (api->list_objects != NULL)
-		{
-			int			n = 0;
-
-			(void) api->list_objects(dir, NULL, &n);
-		}
+		api->check_endpoint(dir, NULL);
 		return;
 	}
 

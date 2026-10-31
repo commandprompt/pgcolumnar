@@ -473,7 +473,10 @@ true until the next version shipped.
   `''` still had its workers upload `part-0000.parquet`; the call then failed
   and left the part behind. The dispatcher now checks the endpoint against the
   session's list before any worker starts, and passes the three settings to
-  the workers. `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+  the workers. The check sends no request: the object-store module gains the
+  entry `check_endpoint` (module ABI 7), so the module and the extension must
+  come from the same build. `test/objstore_sink_write.sh` and
+  `test_objstore_sink_write.py`.
 
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
