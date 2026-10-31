@@ -4452,9 +4452,8 @@ the tool grades THIS tree.
 
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
-Ports `test/iceberg_fdw.sh`. 74 of its 76 check names, one for one; the two it cannot
-carry are `pgc_skip`'s refusal names, which are structural and declared in
-`INCOMPLETE` with their reason.
+Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
+89 literal matches and 0 missing (#1818's twelve included).
 
 | test | asserts |
 | --- | --- |
@@ -4469,6 +4468,10 @@ carry are `pgc_skip`'s refusal names, which are structural and declared in
 | `test_a_bucket_partition_keeps_only_the_matching_bucket` | `bucket[8]`: our murmur3 agrees with the one pyiceberg wrote |
 | `test_a_bucket_pruned_equality_returns_its_row` | and the kept file holds the row |
 | `test_a_range_predicate_cannot_bucket_prune` | the hash destroys order, so a range prunes by metrics only |
+| `test_a_text_bucket_prunes_under_a_deterministic_collation` | #1818's control: `bucket[16](s)` on a string, one row per file; `s = 'ABC'` under the default and the `C` collation still prunes 5 of 6 files, so the collation guard has not switched text bucket pruning off |
+| `test_a_nondeterministic_collation_on_the_qual_does_not_bucket_prune` | #1818: `s = 'ABC' COLLATE ice_ci` (ICU, level 2) returns `abc`, `ABC`, `Abc`, `aBc` from four buckets, as `iceberg_scan` does, and prunes no file |
+| `test_a_nondeterministic_collation_on_the_column_does_not_bucket_prune` | #1818: the same with the column declared `COLLATE ice_ci` and no collation in the query, so the guard must read the comparison's input collation |
+| `test_an_identity_partition_prunes_under_the_quals_own_collation` | identity pruning evaluates the qual under its own collation: `region = 'EU' COLLATE ice_ci` keeps the eu file and prunes the us one |
 | `test_a_truncate_partition_prunes_by_range` | `truncate[100]` with metrics disabled, so the transform is the only mechanism |
 | `test_a_truncate_pruned_scan_still_returns_its_rows` | and the rows survive |
 | `test_the_bucket_table_reads_whole_and_matches_the_murmur3_oracle` | the bucket table's premise and its same-oracle read |
