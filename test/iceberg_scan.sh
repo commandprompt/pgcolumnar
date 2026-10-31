@@ -152,9 +152,18 @@ check "iceberg_current_snapshot reads a gzip metadata file of two members as it 
 check "iceberg_current_snapshot reads a gzip metadata file followed by zero padding" \
 	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_padded)')")" \
 	"${PLAIN_SNAP:-no snapshot from the plain file}"
+# about 2 MB once inflated, from a few KiB on disk: the reader grows its first buffer
+# (8 times the file size, at least 64 KiB) several times, and keeps what it inflated
+check "iceberg_current_snapshot reads a gzip metadata file that outgrows the first inflate buffer" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_large)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
 # az:// counts as remote, but no object-store module reads it. The refusal names the
 # URL as one it cannot read remotely (0A000), not "could not open file" as for a
 # local path. Its wording depends on whether the object-store module is installed.
+# a data file_format that is not Parquet in any spelling is refused, not read as Parquet
+check "iceberg_scan refuses a data file whose file_format is not Parquet (0A000)" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(vpath notpq)') AS t(id bigint)" \
+	   "only PARQUET is supported" " naming PARQUET")" "0A000 naming PARQUET"
 check "an az:// metadata path is refused as a remote URL it cannot read (0A000)" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_current_snapshot('az://b/t/metadata/v1.metadata.json')" \
 	   'reading "az://' " remote refusal")" "0A000 remote refusal"

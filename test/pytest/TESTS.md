@@ -9726,6 +9726,8 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed me
 | `test_a_cut_short_gzip_metadata_file_is_refused` | a cut-short gzip metadata file is refused as corrupt gzip (XX001) |
 | `test_iceberg_current_snapshot_reads_a_two_member_gzip_file` | iceberg_current_snapshot reads a gzip metadata file of two members as it reads the plain file |
 | `test_iceberg_current_snapshot_reads_a_zero_padded_gzip_file` | iceberg_current_snapshot reads a gzip metadata file followed by zero padding |
+| `test_iceberg_scan_refuses_a_data_file_format_that_is_not_parquet` | iceberg_scan refuses a data file whose file_format is not Parquet (0A000) |
+| `test_iceberg_current_snapshot_reads_a_gzip_file_that_outgrows_the_first_buffer` | iceberg_current_snapshot reads a gzip metadata file that outgrows the first inflate buffer |
 | `test_an_az_metadata_path_is_refused_as_remote` | an az:// metadata path is refused as a remote URL it cannot read (0A000) |
 | `test_iceberg_scan_reads_a_lowercase_parquet_file_format` | iceberg_scan reads a data file whose file_format is lowercase parquet |
 | `test_iceberg_scan_reads_mixed_s3_and_s3a_paths` | iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a:// |

@@ -143,6 +143,9 @@ def isc(pgc_cluster, server_dir):
                                  "gzip", " naming gzip"),
             "gz_multi snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_multi')}')"),
             "gz_padded snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_padded')}')"),
+            "notpq": _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{vpath('notpq')}') AS t(id bigint)",
+                              "only PARQUET is supported", " naming PARQUET"),
+            "gz_large snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_large')}')"),
             "az": _refusal(dsn, "SELECT * FROM pgcolumnar.iceberg_current_snapshot('az://b/t/metadata/v1.metadata.json')",
                            'reading "az://', " remote refusal"),
             "unpriv": _sqlstate(dsn, f"SELECT * FROM {scan.format(md)} AS t(id bigint)", UNPRIV, pgc_cluster.port),
@@ -280,6 +283,15 @@ def test_iceberg_current_snapshot_reads_a_zero_padded_gzip_file(isc, expect):
                 "iceberg_current_snapshot reads a gzip metadata file followed by zero padding")
 
 
+def test_iceberg_current_snapshot_reads_a_gzip_file_that_outgrows_the_first_buffer(isc, expect):
+    # about 2 MB once inflated, from a few KiB on disk: the reader grows its first
+    # buffer (8 times the file size, at least 64 KiB) several times
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["gz_large snap"]), _plain_snapshot(isc),
+                "iceberg_current_snapshot reads a gzip metadata file that outgrows the first inflate buffer")
+
+
 def test_an_az_metadata_path_is_refused_as_remote(isc, expect):
     if _declined(isc, expect):
         return
@@ -292,6 +304,14 @@ def test_iceberg_scan_reads_a_lowercase_parquet_file_format(isc, expect):
         return
     expect.text(_lines(isc["lower rows"]), ROWS5,
                 "iceberg_scan reads a data file whose file_format is lowercase parquet")
+
+
+def test_iceberg_scan_refuses_a_data_file_format_that_is_not_parquet(isc, expect):
+    # a data file_format that is not Parquet in any spelling is refused, not read as Parquet
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["notpq"]), "0A000 naming PARQUET",
+                "iceberg_scan refuses a data file whose file_format is not Parquet (0A000)")
 
 
 def test_iceberg_scan_reads_mixed_s3_and_s3a_paths(isc, expect):

@@ -23,9 +23,16 @@ The variants:
               gzip format allows this, and `cat a.gz b.gz` makes one.
   gz_padded   gz_infix followed by 8 zero bytes, as some tools pad a file. Readers
               such as Java's GZIPInputStream ignore such trailing bytes.
+  gz_large    The current metadata.json with a 2,000,000-byte table property
+              added, gzip-compressed. It inflates far past the reader's first
+              buffer (8 times the file size, at least 64 KiB), so reading it
+              grows that buffer several times, as most real gzip metadata does.
   lower       A copy of the table (db/lower) whose manifest records the data
               files' file_format as "parquet", the spelling the Iceberg spec uses
               (#1825).
+  notpq       A copy of the table (db/notpq) whose manifest records the data
+              files' file_format as "PARQUEX", a format the reader does not
+              read. The reader must refuse it, not read the file as Parquet.
   mixed       A copy of the table (db/mixed) whose metadata records the location
               as s3://bucket77/pgc_ice/db/events while the manifest list and the
               manifests record every path as s3a://bucket77/pgc_ice/... (#1825).
@@ -58,6 +65,8 @@ RECORDED = "file:///tmp/pgc_ice_wh"
 # the same length as RECORDED, so a byte-for-byte swap keeps every Avro length prefix
 S3A_ROOT = "s3a://bucket77/pgc_ice"
 S3_ROOT = "s3://bucket77/pgc_ice"
+# the gz_large table property: far more than 64 KiB once inflated
+LARGE_PAD = 2_000_000
 CAP = 64 * 1024 * 1024
 assert len(RECORDED) == len(S3A_ROOT)
 # the warehouse_del table's recorded root, and two same-length S3 forms of it
@@ -165,6 +174,16 @@ def main(root):
     assert os.path.exists(ml), ml
     out["lower"] = current_metadata(lower)
 
+    # notpq: a data file_format that is not Parquet in any spelling
+    notpq = os.path.join(db, "notpq")
+    shutil.copytree(events, notpq)
+    n = 0
+    for mf in glob.glob(os.path.join(notpq, "metadata", "*-m*.avro")):
+        n += rewrite_ocf(mf, [(b"PARQUET", b"PARQUEX")])
+    if n == 0:
+        sys.exit("gen_iceberg_variants: no PARQUET file_format found to replace")
+    out["notpq"] = current_metadata(notpq)
+
     # mixed: location s3://, every recorded path s3a://
     mixed = os.path.join(db, "mixed")
     shutil.copytree(events, mixed)
@@ -193,6 +212,12 @@ def main(root):
     open(out["gz_multi"], "wb").write(gzip.compress(body[:half]) + gzip.compress(body[half:]))
     out["gz_padded"] = os.path.join(events, "metadata", "padded.gz.metadata.json")
     open(out["gz_padded"], "wb").write(whole + b"\0" * 8)
+    # gz_large: a padded copy of the metadata, so the inflated text outgrows the
+    # first buffer; the snapshot fields are unchanged
+    m = json.loads(body)
+    m.setdefault("properties", {})["pgc.test.padding"] = "x" * LARGE_PAD
+    out["gz_large"] = os.path.join(events, "metadata", "large.gz.metadata.json")
+    open(out["gz_large"], "wb").write(gzip.compress(json.dumps(m).encode()))
 
     for p in out.values():
         os.chmod(p, 0o644)

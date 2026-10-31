@@ -1267,4 +1267,7 @@ guard_tests 854
 # two-member gzip file, zero padding after gzip, an az:// refusal) and test_iceberg_deletes.py (5:
 # lowercase parquet position and equality deletes, a million s3:// and s3a:// delete rows, and their
 # memory), by collection over the cluster files.
-cluster_tests 4534
+# cluster_tests 4534 -> 4536 for the second review of PR #1835 (#1815, #1825): two tests in
+# test_iceberg_scan.py (a gzip file that outgrows the first inflate buffer, and a data file_format
+# that is not Parquet), by collection over the cluster files: `4536 tests collected`.
+cluster_tests 4536
