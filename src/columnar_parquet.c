@@ -191,6 +191,7 @@ typedef struct PqLeaf
 	StringInfoData boolbits;	/* 1 byte per non-null bool value */
 	int64		nEntries;		/* level entries in the current row group */
 	PqStats		st;				/* statistics for the current row group */
+	PgcTextQueue pending;		/* this row's texts, made by pq_row_bytes */
 }			PqLeaf;
 
 /* how a top-level column shreds into leaves */
@@ -508,9 +509,19 @@ write_leaf_value(PqLeaf *c, Datum d, __int128 dec)
 		case P_BINARY:
 			if (c->convertText)
 			{
-				/* numeric/jsonb fallback: canonical text via output function */
-				char	   *str = OutputFunctionCall(&c->outFinfo, d);
-				int32		len = (int32) strlen(str);
+				/*
+				 * numeric/jsonb fallback: canonical text via output function,
+				 * or the text pq_row_bytes already made for this row
+				 */
+				int			plen = 0;
+				char	   *str = PgcTextQueuePop(&c->pending, d, &plen);
+				int32		len = plen;
+
+				if (str == NULL)
+				{
+					str = OutputFunctionCall(&c->outFinfo, d);
+					len = (int32) strlen(str);
+				}
 
 				appendBinaryStringInfo(&c->values, (char *) &len, 4);
 				if (len > 0)
@@ -1204,7 +1215,9 @@ pq_value_width(const PqLeaf *c)
  *		An upper bound on the bytes leaf_entry adds for one entry, counted in
  *		the written form (#1811, #1843 review): the level bytes, then the PLAIN
  *		value. A numeric or jsonb written as text is measured by its text, which
- *		can be far longer than the stored value.
+ *		can be far longer than the stored value. The leaf keeps that text for
+ *		write_leaf_value, which takes the texts in the same order, so each value
+ *		converts once.
  */
 static int64
 pq_entry_bytes(PqLeaf *c, bool hasValue, Datum d)
@@ -1218,9 +1231,10 @@ pq_entry_bytes(PqLeaf *c, bool hasValue, Datum d)
 	if (c->convertText)
 	{
 		char	   *str = OutputFunctionCall(&c->outFinfo, d);
+		int32		len = (int32) strlen(str);
 
-		bytes += 4 + (int64) strlen(str);
-		pfree(str);
+		bytes += 4 + (int64) len;
+		PgcTextQueuePush(&c->pending, d, str, len);
 	}
 	else
 		bytes += 4 + (int64) toast_raw_datum_size(d) - VARHDRSZ;

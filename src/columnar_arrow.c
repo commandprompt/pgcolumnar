@@ -303,6 +303,7 @@ typedef struct ArrowCol
 	int16		elemlen;
 	bool		elembyval;
 	char		elemalign;
+	PgcTextQueue pending;		/* this row's texts, made by arrowcol_value_bytes */
 }			ArrowCol;
 
 static void
@@ -622,8 +623,15 @@ arrowcol_append(ArrowCol *c, Datum d, bool isnull)
 				{
 					if (c->convertText)
 					{
-						char	   *str = OutputFunctionCall(&c->outFinfo, d);
-						int			len = (int) strlen(str);
+						/* the text arrowcol_value_bytes made, or a new one */
+						int			len = 0;
+						char	   *str = PgcTextQueuePop(&c->pending, d, &len);
+
+						if (str == NULL)
+						{
+							str = OutputFunctionCall(&c->outFinfo, d);
+							len = (int) strlen(str);
+						}
 
 						if (len > 0)
 							appendBinaryStringInfo(&c->vardata, str, len);
@@ -986,7 +994,8 @@ arrowcol_bytes(const ArrowCol *c)
  *		the fixed width or the offset, and the bytes of a variable-length value.
  *		A numeric or jsonb written as text is measured by its text, which can be
  *		far longer than the stored value. A value that arrowcol_append folds to
- *		null adds less than this.
+ *		null adds less than this. The column keeps that text for arrowcol_append,
+ *		which takes the texts in the same order, so each value converts once.
  */
 static int64
 arrowcol_value_bytes(ArrowCol *c, Datum d, bool isnull)
@@ -1006,9 +1015,10 @@ arrowcol_value_bytes(ArrowCol *c, Datum d, bool isnull)
 			if (c->convertText)
 			{
 				char	   *str = OutputFunctionCall(&c->outFinfo, d);
+				int			len = (int) strlen(str);
 
-				bytes += (int64) strlen(str);
-				pfree(str);
+				bytes += (int64) len;
+				PgcTextQueuePush(&c->pending, d, str, len);
 			}
 			else
 				bytes += (int64) toast_raw_datum_size(d) - VARHDRSZ;

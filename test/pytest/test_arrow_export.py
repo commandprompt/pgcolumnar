@@ -63,6 +63,8 @@ EXT_ORACLE = """SELECT id,
     j::text, jb::text
    FROM t_ext_heap ORDER BY id"""
 BYTES_DIGEST = "SELECT string_agg(id || ':' || length(s) || ':' || md5(s), ' ' ORDER BY id) FROM ar_bytes"
+TXT_DIGEST = ("SELECT string_agg(id || '|' || coalesce(n::text, 'NULL') || '|' || coalesce(array_to_string(a, ',', 'N'), 'NULL')"
+              " || '|' || j::text || '|' || (c).x::text || '|' || (c).y, ' ' ORDER BY id) FROM ar_txt")
 OVER_NAME = ("over 1 GiB of one column (2200 values of 500000 bytes) exports whole, "
              "in 5 record batches of at most 536 rows")
 SCHEMA = "id:int32,a:int16,b:int32,c:int64,d:float,e:double,f:bool,g:string,h:binary"
@@ -179,6 +181,16 @@ def ae(pgc_cluster, server_dir):
             _run(dsn, f"INSERT INTO {t} {gen}")
             r[f"{t} rows"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 1024"],
                                           f"SELECT pgcolumnar.export_arrow('{t}', '{f[t]}')")
+        # #1843 review: each kept numeric or jsonb text reaches its own value
+        _run(dsn, "CREATE TYPE ar_tpair AS (x numeric, y text)")
+        _run(dsn, "CREATE TABLE ar_txt (id int, n numeric, a numeric[], j jsonb, c ar_tpair) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_txt SELECT g, CASE WHEN g % 10 = 0 THEN NULL ELSE g::numeric / 7 END, "
+                  "CASE WHEN g % 7 = 0 THEN NULL ELSE ARRAY[g::numeric / 3, NULL, g * 1e20] END, "
+                  "jsonb_build_object('k', g, 'v', g::numeric / 9), ROW(g::numeric / 11, 't' || g)::ar_tpair "
+                  "FROM generate_series(1, 300) g")
+        f["txt"] = server_dir / "txt.arrows"
+        r["txt rows"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_txt', '{f['txt']}')")
+        r["txt digest"] = _value(dsn, TXT_DIGEST)
         r["dsn"] = dsn
         yield r
     finally:
@@ -442,3 +454,24 @@ def test_a_row_far_wider_as_written_than_stored_goes_in_a_batch_of_its_own(ae, e
     finally:
         path.unlink(missing_ok=True)
         _run(dsn, "DROP TABLE ar_wide")
+
+
+def _texts(pa, path):
+    """-> "id|n|a|j|x|y ..." by id, as TXT_DIGEST prints the table."""
+    t = _read(pa, path).to_pydict()
+
+    def arr(v):
+        return "NULL" if v is None else ",".join("N" if e is None else e for e in v)
+    return " ".join(f"{i}|{'NULL' if n is None else n}|{arr(a)}|{j}|{c['x']}|{c['y']}"
+                    for i, n, a, j, c in sorted(zip(t["id"], t["n"], t["a"], t["j"], t["c"])))
+
+
+def test_every_kept_text_reaches_its_own_value_in_the_stream(ae, expect):
+    """#1843 review: the writer converts a numeric or jsonb once, while it counts the
+    row, and keeps the text for the append. Scalars, list elements and a composite's
+    field each get their own text."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(f"{ae['txt rows']}|{_reading(_texts, pa, ae['files']['txt'])}", f"300|{ae['txt digest']}",
+                "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them")

@@ -68,4 +68,27 @@ extern int	pgcolumnar_sink_fail_after;
 #define PGC_EXPORT_GROUP_BYTES_MAX	(256 * 1024 * 1024)
 extern int	pgcolumnar_export_group_bytes;
 
+/*
+ * The texts a writer made while it counted a row's bytes, kept in order so the
+ * append that follows uses each one instead of converting the value again
+ * (#1811). A numeric or jsonb is written as text, and its output function is
+ * the costly part of exporting it. Each text records the value it was made
+ * from, and a pop for another value drops the queue, so a text never goes
+ * to the wrong value.
+ */
+typedef struct PgcTextQueue
+{
+	char	  **text;
+	int		   *len;
+	Datum	   *value;
+	int			n;				/* texts pushed for the current row */
+	int			next;			/* the next one to pop */
+	int			cap;
+}			PgcTextQueue;
+
+#define PGC_TEXT_QUEUE_KEEP_MAX		8192
+
+extern void PgcTextQueuePush(PgcTextQueue *q, Datum value, char *text, int len);
+extern char *PgcTextQueuePop(PgcTextQueue *q, Datum value, int *len);
+
 #endif							/* COLUMNAR_SINK_H */

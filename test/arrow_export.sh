@@ -288,6 +288,36 @@ check "the byte cut counts a numeric's text form: 10 rows of 1e1000 under a 1024
 check "the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 batches of 1" \
 	"$(ar_cut ar_wlist "$PGC_WORKDIR/wlist.arrow" 1024)" "10|10|1,1,1,1,1,1,1,1,1,1"
 
+# The writer converts a numeric or jsonb to text once, while it counts the row, and
+# keeps the text for the append (#1843 review). Each kept text must reach its own
+# value: scalars, list elements (with a NULL among them), and a composite's field.
+psql_run "CREATE TYPE ar_tpair AS (x numeric, y text);
+          CREATE TABLE ar_txt (id int, n numeric, a numeric[], j jsonb, c ar_tpair) USING pgcolumnar;
+          INSERT INTO ar_txt SELECT g,
+                 CASE WHEN g % 10 = 0 THEN NULL ELSE g::numeric / 7 END,
+                 CASE WHEN g % 7 = 0 THEN NULL ELSE ARRAY[g::numeric / 3, NULL, g * 1e20] END,
+                 jsonb_build_object('k', g, 'v', g::numeric / 9),
+                 ROW(g::numeric / 11, 't' || g)::ar_tpair
+            FROM generate_series(1, 300) g;"
+TXT_DIGEST="SELECT string_agg(id || '|' || coalesce(n::text, 'NULL') || '|' || coalesce(array_to_string(a, ',', 'N'), 'NULL')
+                   || '|' || j::text || '|' || (c).x::text || '|' || (c).y, ' ' ORDER BY id) FROM ar_txt"
+ar_txt_rows="$(q "SELECT pgcolumnar.export_arrow('ar_txt', '$PGC_WORKDIR/txt.arrow')")"
+ar_txt_read="$(python3 - "$PGC_WORKDIR/txt.arrow" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all().to_pydict()
+    def arr(v):
+        return "NULL" if v is None else ",".join("N" if e is None else e for e in v)
+    print(" ".join("%d|%s|%s|%s|%s|%s" % (i, "NULL" if n is None else n, arr(a), j, c["x"], c["y"])
+                   for i, n, a, j, c in sorted(zip(t["id"], t["n"], t["a"], t["j"], t["c"]))))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them" \
+	"$ar_txt_rows|$ar_txt_read" "300|$(q "$TXT_DIGEST")"
+
 # Over 1 GiB in one batch at the default cap (#1811's repro). Opt-in, as
 # large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of
 # 500000 bytes; each row buffers 500010 bytes, so a 256 MiB batch holds 536 rows and

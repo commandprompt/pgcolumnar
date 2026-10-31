@@ -322,6 +322,35 @@ check "the byte cut counts a numeric's text form: 10 rows of 1e1000 under a 1024
 	"$(pq_cut pq_wnum "$PGC_WORKDIR/wnum.parquet" 1024)" "10|10|1,1,1,1,1,1,1,1,1,1"
 check "the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 groups of 1" \
 	"$(pq_cut pq_wlist "$PGC_WORKDIR/wlist.parquet" 1024)" "10|10|1,1,1,1,1,1,1,1,1,1"
+# The writer converts a numeric or jsonb to text once, while it counts the row, and
+# keeps the text for the append (#1843 review). Each kept text must reach its own
+# value: scalars, list elements (with a NULL among them), and a composite's field.
+psql_run "CREATE TYPE pq_tpair AS (x numeric, y text);
+          CREATE TABLE pq_txt (id int, n numeric, a numeric[], j jsonb, c pq_tpair) USING pgcolumnar;
+          INSERT INTO pq_txt SELECT g,
+                 CASE WHEN g % 10 = 0 THEN NULL ELSE g::numeric / 7 END,
+                 CASE WHEN g % 7 = 0 THEN NULL ELSE ARRAY[g::numeric / 3, NULL, g * 1e20] END,
+                 jsonb_build_object('k', g, 'v', g::numeric / 9),
+                 ROW(g::numeric / 11, 't' || g)::pq_tpair
+            FROM generate_series(1, 300) g;"
+TXT_DIGEST="SELECT string_agg(id || '|' || coalesce(n::text, 'NULL') || '|' || coalesce(array_to_string(a, ',', 'N'), 'NULL')
+                   || '|' || j::text || '|' || (c).x::text || '|' || (c).y, ' ' ORDER BY id) FROM pq_txt"
+pq_txt_rows="$(q "SELECT pgcolumnar.export_parquet('pq_txt', '$PGC_WORKDIR/txt.parquet')")"
+pq_txt_read="$(python3 - "$PGC_WORKDIR/txt.parquet" <<'PY'
+import sys
+try:
+    import pyarrow.parquet as pq
+    t = pq.read_table(sys.argv[1]).to_pydict()
+    def arr(v):
+        return "NULL" if v is None else ",".join("N" if e is None else e for e in v)
+    print(" ".join("%d|%s|%s|%s|%s|%s" % (i, "NULL" if n is None else n, arr(a), j, c["x"], c["y"])
+                   for i, n, a, j, c in sorted(zip(t["id"], t["n"], t["a"], t["j"], t["c"]))))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the file as PostgreSQL prints them" \
+	"$pq_txt_rows|$pq_txt_read" "300|$(q "$TXT_DIGEST")"
 check "export_group_bytes refuses a value above its 256 MiB maximum" \
 	"$(out="$(psql_run "SET pgcolumnar.export_group_bytes = 268435457" 2>&1)"; e="$(sed -n 's/^ERROR: *//p' <<<"$out" | head -1)"; echo "${e:-accepted}")" \
 	'268435457 is outside the valid range for parameter "pgcolumnar.export_group_bytes" (1024 .. 268435456)'

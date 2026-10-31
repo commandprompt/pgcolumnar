@@ -75,6 +75,8 @@ EXT_ORACLE = """SELECT id,
 SCHEMA = "id:int32,a:int16,b:int32,c:int64,d:float,e:double,f:bool,g:string,h:binary"
 EXT_TYPES = "date32[day]|time64[us]|fixed_size_binary[16]|decimal128(20, 4)"
 BYTES_DIGEST = "SELECT string_agg(id || ':' || length(s) || ':' || md5(s), ' ' ORDER BY id) FROM pq_bytes"
+TXT_DIGEST = ("SELECT string_agg(id || '|' || coalesce(n::text, 'NULL') || '|' || coalesce(array_to_string(a, ',', 'N'), 'NULL')"
+              " || '|' || j::text || '|' || (c).x::text || '|' || (c).y, ' ' ORDER BY id) FROM pq_txt")
 CAP_REFUSAL = '268435457 is outside the valid range for parameter "pgcolumnar.export_group_bytes" (1024 .. 268435456)'
 OVER_NAME = ("over 1 GiB of one column (2200 values of 500000 bytes) exports whole, "
              "in 5 row groups of at most 536 rows")
@@ -202,6 +204,16 @@ def pqx(pgc_cluster, server_dir):
             _run(dsn, f"INSERT INTO {t} {gen}")
             r[f"{t} rows"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 1024"],
                                           f"SELECT pgcolumnar.export_parquet('{t}', '{f[t]}')")
+        # #1843 review: each kept numeric or jsonb text reaches its own value
+        _run(dsn, "CREATE TYPE pq_tpair AS (x numeric, y text)")
+        _run(dsn, "CREATE TABLE pq_txt (id int, n numeric, a numeric[], j jsonb, c pq_tpair) USING pgcolumnar")
+        _run(dsn, "INSERT INTO pq_txt SELECT g, CASE WHEN g % 10 = 0 THEN NULL ELSE g::numeric / 7 END, "
+                  "CASE WHEN g % 7 = 0 THEN NULL ELSE ARRAY[g::numeric / 3, NULL, g * 1e20] END, "
+                  "jsonb_build_object('k', g, 'v', g::numeric / 9), ROW(g::numeric / 11, 't' || g)::pq_tpair "
+                  "FROM generate_series(1, 300) g")
+        f["txt"] = server_dir / "txt.parquet"
+        r["txt rows"] = _value(dsn, f"SELECT pgcolumnar.export_parquet('pq_txt', '{f['txt']}')")
+        r["txt digest"] = _value(dsn, TXT_DIGEST)
         r["cap refusal"] = _set_refusal(dsn, "SET pgcolumnar.export_group_bytes = 268435457")
         r["dsn"] = dsn
         yield r
@@ -541,3 +553,24 @@ def test_a_row_far_wider_as_written_than_stored_goes_in_a_group_of_its_own(pqx, 
     finally:
         path.unlink(missing_ok=True)
         _run(dsn, "DROP TABLE pq_wide")
+
+
+def _texts(pa, path):
+    """-> "id|n|a|j|x|y ..." by id, as TXT_DIGEST prints the table."""
+    t = _read(pa, path).to_pydict()
+
+    def arr(v):
+        return "NULL" if v is None else ",".join("N" if e is None else e for e in v)
+    return " ".join(f"{i}|{'NULL' if n is None else n}|{arr(a)}|{j}|{c['x']}|{c['y']}"
+                    for i, n, a, j, c in sorted(zip(t["id"], t["n"], t["a"], t["j"], t["c"])))
+
+
+def test_every_kept_text_reaches_its_own_value_in_the_file(pqx, expect):
+    """#1843 review: the writer converts a numeric or jsonb once, while it counts the
+    row, and keeps the text for the append. Scalars, list elements and a composite's
+    field each get their own text."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(f"{pqx['txt rows']}|{_reading(_texts, pa, pqx['files']['txt'])}", f"300|{pqx['txt digest']}",
+                "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the file as PostgreSQL prints them")
