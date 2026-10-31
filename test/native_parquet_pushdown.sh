@@ -156,28 +156,39 @@ do
 done
 
 # ---- inverted statistics must never drive a skip ---------------------------
-# Parquet's UINT_32 logical type is stored as physical INT32 but its statistics
-# are ordered UNSIGNED, while the reader decodes signed. A group spanning the
-# sign boundary therefore reports min=1, max=-1294967296: an inverted interval.
 # Every skip test assumes min <= max, so without a guard the equality and range
-# tests skip groups that really do contain matching rows. The values themselves
-# read back fine as int4, so this is a well-formed file producing bad bounds.
+# tests skip groups that really do contain matching rows. A corrupt or misannotated
+# file can carry such an interval while its values read back fine.
+#
+# This used to be a UINT_32 column, whose statistics are ordered unsigned while the
+# reader decoded signed. Since #1814 the reader decodes unsigned, so that file no
+# longer inverts; the interval is now made directly. pyarrow writes a signed INT32
+# column holding 1 and -1294967296, and the footer's min and max are swapped, so the
+# group claims min=1, max=-1294967296: the same values the UINT_32 file used to give.
 #
 # (The same inversion arises from narrowing a wide INT32 into int2, but that now
 # raises rather than wrapping -- see native_parquet_hardening.sh -- so it cannot
 # be used to reach this code path.)
 INVP="$PGC_WORKDIR/inverted.parquet"
 python3 - "$INVP" <<'PY'
-import sys, pyarrow as pa, pyarrow.parquet as pq
-pq.write_table(pa.table({"c": pa.array([1, 3000000000], pa.uint32())}),
+import struct, sys, pyarrow as pa, pyarrow.parquet as pq
+pq.write_table(pa.table({"c": pa.array([1, -1294967296], pa.int32())}),
                sys.argv[1], row_group_size=2)
+raw = open(sys.argv[1], "rb").read()
+flen = int.from_bytes(raw[-8:-4], "little")
+base = len(raw) - 8 - flen
+# each statistic is a Thrift binary: length 4, then the PLAIN little-endian value
+lo, hi = b"\x04" + struct.pack("<i", -1294967296), b"\x04" + struct.pack("<i", 1)
+foot = raw[base:-8]
+assert foot.count(lo) >= 1 and foot.count(lo) == foot.count(hi), (foot.count(lo), foot.count(hi))
+foot = foot.replace(lo, b"\0SWAP\0").replace(hi, lo).replace(b"\0SWAP\0", hi)
+open(sys.argv[1], "wb").write(raw[:base] + foot + raw[-8:])
 st = pq.ParquetFile(sys.argv[1]).metadata.row_group(0).column(0).statistics
-assert st.min == 1 and st.max == 3000000000, (st.min, st.max)
+assert st.min == 1 and st.max == -1294967296, (st.min, st.max)
 PY
 
 psql_run "CREATE FOREIGN TABLE fti (c int4) SERVER pq OPTIONS (path '$INVP');"
-# oracle: the signed reading of those two stored values, which is what the data
-# path yields; 3000000000 unsigned is -1294967296 as int4
+# oracle: the two stored values, which is what the data path yields
 psql_run "CREATE TABLE hi (c int4);"
 psql_run "INSERT INTO hi VALUES (1), (-1294967296);"
 

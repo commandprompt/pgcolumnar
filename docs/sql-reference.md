@@ -925,6 +925,12 @@ that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
 `parquet_schema` to generate the full list.
 
+A string cell read into a `text` or `varchar` column must be valid in the
+server encoding (#1821). A cell with an invalid byte sequence or an embedded
+NUL byte stops the read with SQLSTATE `22021`, as COPY does. The message names
+the Parquet column and the first bad bytes. This applies to the foreign table,
+the import functions and `iceberg_scan` too, because they share the reader.
+
 ```sql
 SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet')
   AS t(id int, ts timestamp, amount numeric(12,2));
@@ -946,8 +952,11 @@ old name, and columns are selected by id.
 
 The file must carry field ids. A file written without them is an error that
 directs you to the positional form above. Each requested id must match exactly
-one scalar column of a compatible type. An absent id is an error. So is an id
-that matches more than one column, or an array or composite output column. None
+one scalar column of a compatible type. A compatible type includes Iceberg's two
+exact widenings: an integer `INT32` column reads as `bigint`, and a `FLOAT`
+column as `double precision`. The positional form above does not widen. An
+absent id is an error. So is an id that matches more than one column, or an
+array or composite output column. None
 is a silent wrong column. Read the ids a file carries with `parquet_schema`.
 
 ```sql
@@ -962,7 +971,8 @@ SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet', ARRAY[12, 7])
 Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
 without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
-file.
+file. The type it reports holds every value the column can store. So an unsigned
+`UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
 
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when
@@ -1094,6 +1104,16 @@ column added to the schema after the file was written. It also covers a column
 an id-less file has but the mapping does not bind. The file's other columns
 return their real values.
 
+A column whose type was promoted reads as its current type. Iceberg allows three
+promotions: `int` to `long`, `float` to `double`, and a `decimal` to a larger
+precision at the same scale. A data file written before the promotion still
+stores the old type, and its values are widened as they are read. Declare such a
+column with the current schema's type: `bigint`, `double precision` or `numeric`.
+Files from before and after the promotion read together. An equality delete on a
+promoted column applies to both, whichever type its own file stores. A declared
+type narrower than a file's stored type is refused. So a column declared with its
+pre-promotion type errors once a file written after the promotion is live.
+
 Row-level deletes are applied, each kind under its own Iceberg sequence rule.
 A position delete drops the row ordinals it lists from the data file it names.
 It applies when that data file's data sequence number is at or below the
@@ -1135,7 +1155,9 @@ twice. A probe pass computes the row ordinals to drop.
 
 A malformed manifest is refused, not read as far as it parses. A manifest entry
 that records no data-file path is an error, as is a manifest whose embedded Avro
-schema is not well formed.
+schema is not well formed. An enum value outside the Iceberg spec is refused with
+`XX001` and the value in the message. A data file `content` or an entry
+`status` must be 0, 1 or 2. A manifest list `content` must be 0 or 1.
 
 ```sql
 SELECT id, region, sum(amount)
@@ -1169,7 +1191,11 @@ is never a function argument, so it does not appear in the statement log or in
 `pg_stat_activity`. A catalog that needs no token is queried without one.
 
 When the first argument names a server, the catalog URI comes from the server
-and the token comes from the current role's user mapping. The token lives in
+and the token comes from the current role's user mapping. The role needs `USAGE`
+on the server, as `dblink` requires for a named server. Without it the call is
+refused with SQLSTATE 42501 before any mapping is read or any request is made,
+even through a `PUBLIC` mapping. So `REVOKE USAGE ON FOREIGN SERVER` takes the
+server away from a role. The token lives in
 `pg_user_mapping`, which is not world-readable, so one role's token is not
 visible to another. A role with no mapping and no token is refused. A superuser,
 or a mapping that sets `credentials_required 'false'`, uses the environment token
@@ -1185,7 +1211,8 @@ request is made, even when it also sets a static `token`. A mapping that sets a
 `token` and the complete pair uses the token and mints no bearer.
 
 Multi-level namespaces are given dot-separated, and the function requires the
-`pg_read_server_files` role, like the other Iceberg functions.
+`pg_read_server_files` role, like the other Iceberg functions. The server form
+also requires `USAGE` on the server.
 
 ```sql
 -- URI form: the token, if any, comes from the server environment, not the query
@@ -1196,6 +1223,7 @@ SELECT pgcolumnar.iceberg_rest_table_location(
 -- server form: the token is per-role and stays in pg_user_mapping
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
   OPTIONS (catalog_uri 'https://catalog.example.com');
+GRANT USAGE ON FOREIGN SERVER cat TO analyst;
 CREATE USER MAPPING FOR analyst SERVER cat OPTIONS (token 's3cr3t');
 
 SELECT count(*) FROM pgcolumnar.iceberg_scan(
@@ -1317,7 +1345,10 @@ The one table option is `metadata_path`, the table's current `metadata.json`
 
 Partition pruning covers the identity, `bucket[N]`, `truncate[W]`, and temporal
 transforms. Identity partitioning prunes on any predicate. `bucket[N]` prunes on
-an equality predicate on the source column. `truncate[W]` prunes on a predicate
+an equality predicate on the source column under a deterministic collation.
+Iceberg buckets a string by its UTF-8 bytes, and under a nondeterministic
+collation two equal strings can differ in bytes. So such an equality reads every
+file. `truncate[W]` prunes on a predicate
 on an integer source column. `day()` on a date source column prunes on a
 predicate on that column.
 
