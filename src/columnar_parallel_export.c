@@ -387,8 +387,10 @@ pexport_remove_stale_remote_parts(const char *dir, int nkeys)
 	 * "out" would also return "outer/..." and "out2/...", and their parts would
 	 * be deleted (#1782). The listing has no delimiter, so it also returns
 	 * keys below the prefix, such as "out/sub/part-0009.parquet", which belong
-	 * to another export. Only a key that is the prefix followed by a name with
-	 * no further '/' is one of this export's parts.
+	 * to another export. So the name is taken as the whole key after the
+	 * prefix, not as the text after the key's last '/': pexport_part_index
+	 * accepts only "part-NNNN.parquet", so a name with a further '/' is never
+	 * one of this export's parts.
 	 */
 	snprintf(prefix, sizeof(prefix), "%s/", dir);
 	plen = strlen(prefix);
@@ -401,8 +403,6 @@ pexport_remove_stale_remote_parts(const char *dir, int nkeys)
 		if (strncmp(keys[i], prefix, plen) != 0)
 			continue;
 		base = keys[i] + plen;
-		if (strchr(base, '/') != NULL)
-			continue;
 		if (pexport_part_index(base, &idx) && idx >= nkeys)
 			api->delete_object(keys[i], NULL);
 	}

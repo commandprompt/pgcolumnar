@@ -482,8 +482,9 @@ true until the next version shipped.
   directly under it: a part under a deeper prefix, such as
   `out/sub/part-0009.parquet`, belongs to another export and is kept.
 - `parallel_export_parquet` refuses `s3://bucket/` and `s3://bucket`, which name
-  no prefix, with SQLSTATE 22023 before any worker starts (#1782). It used to
-  write the parts at the bucket root and then fail, leaving them there.
+  no prefix, with SQLSTATE 22023 before any worker starts (#1782). Before,
+  `s3://bucket` wrote the parts at the bucket root and then failed, leaving them
+  there, and `s3://bucket/` wrote them at the bucket root and succeeded.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write
