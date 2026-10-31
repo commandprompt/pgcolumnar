@@ -493,6 +493,44 @@ true until the next version shipped.
   docs/sql-reference.md lists `az://`, which pgcolumnar treats as remote and
   refuses, since no module reads it yet. `zstandard`
   and `snappy` manifests are still refused.
+- The `iceberg_rest_*` functions now check `USAGE` on the
+  `pgcolumnar_iceberg_catalog` server they are given, as dblink does before it
+  uses a named server's user mapping (#1819). Before, any role with `pg_read_server_files` could
+  name a server it held no `USAGE` on, and the function sent that server's mapping
+  token for it: through a `PUBLIC` mapping, and through the role's own mapping
+  after `REVOKE USAGE ON FOREIGN SERVER`. Such a call is now refused with SQLSTATE
+  42501 (`permission denied for foreign server ...`) before any mapping is read or
+  any request reaches the catalog. The catalog-URI form is unchanged. Grant
+  `USAGE` on the server to each role that uses the server form.
+  `test/iceberg_rest_server.sh` and `test_iceberg_rest_server.py`.
+- `read_parquet`, the `pgcolumnar_parquet` foreign table, `import_parquet` and
+  `iceberg_scan` now refuse a Parquet string cell that is not valid in the
+  server encoding, with 22021 and a message that names the column:
+  `invalid byte sequence for encoding "UTF8" in Parquet column "name": 0xff`
+  (#1821). The reader used to turn the bytes into `text` unchecked, so invalid
+  UTF-8 came back as text the server would never accept from COPY, `INSERT ...
+  SELECT` stored it, and later queries on the table failed; a cell with an
+  embedded NUL read as a shorter string that was not equal to it. PLAIN and
+  dictionary-encoded columns are both checked, the dictionary once per distinct
+  value, and a value that is all 7-bit ASCII with no NUL skips the encoding
+  verifier. The `pgcolumnar_iceberg` foreign table no longer prunes a data file
+  whose manifest partition value is not valid text: it reads the file and
+  re-filters its rows, where comparing the raw bytes had dropped rows the qual
+  keeps. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
+
+- `read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table now
+  read an unsigned Parquet integer as the value it stores (#1814). pyarrow writes
+  `uint32` and `uint64` columns as INT32 and INT64 marked `UINT_32` and `UINT_64`.
+  The reader ignored the mark, so a value of 2^31 or more (`UINT_32`) or 2^63 or
+  more (`UINT_64`) came back negative with no error, through the very types
+  `parquet_schema` advised: `integer` and `bigint`. `bigint` for a `UINT_32`
+  column and `numeric` for a `UINT_64` column were refused. Now those two types
+  read every value, `parquet_schema` advises them (`numeric(20,0)` for
+  `UINT_64`), and a narrower type raises `value out of range` (22003) for a value
+  it cannot hold. The pushdown suite's inverted-statistics file, which relied on
+  the signed decode, now swaps the footer's min and max instead.
+  `test/native_parquet_hardening.sh` and `test_native_parquet_hardening.py`.
 - The `pgcolumnar_iceberg` foreign-data wrapper no longer prunes `bucket[N]`
   files for an equality compared under a nondeterministic collation (#1818).
   Iceberg buckets a string by its UTF-8 bytes, and the wrapper hashed the

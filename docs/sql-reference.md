@@ -925,6 +925,12 @@ that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
 `parquet_schema` to generate the full list.
 
+A string cell read into a `text` or `varchar` column must be valid in the
+server encoding (#1821). A cell with an invalid byte sequence or an embedded
+NUL byte stops the read with SQLSTATE `22021`, as COPY does. The message names
+the Parquet column and the first bad bytes. This applies to the foreign table,
+the import functions and `iceberg_scan` too, because they share the reader.
+
 ```sql
 SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet')
   AS t(id int, ts timestamp, amount numeric(12,2));
@@ -965,7 +971,8 @@ SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet', ARRAY[12, 7])
 Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
 without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
-file.
+file. The type it reports holds every value the column can store. So an unsigned
+`UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
 
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when
@@ -1183,7 +1190,11 @@ is never a function argument, so it does not appear in the statement log or in
 `pg_stat_activity`. A catalog that needs no token is queried without one.
 
 When the first argument names a server, the catalog URI comes from the server
-and the token comes from the current role's user mapping. The token lives in
+and the token comes from the current role's user mapping. The role needs `USAGE`
+on the server, as `dblink` requires for a named server. Without it the call is
+refused with SQLSTATE 42501 before any mapping is read or any request is made,
+even through a `PUBLIC` mapping. So `REVOKE USAGE ON FOREIGN SERVER` takes the
+server away from a role. The token lives in
 `pg_user_mapping`, which is not world-readable, so one role's token is not
 visible to another. A role with no mapping and no token is refused. A superuser,
 or a mapping that sets `credentials_required 'false'`, uses the environment token
@@ -1199,7 +1210,8 @@ request is made, even when it also sets a static `token`. A mapping that sets a
 `token` and the complete pair uses the token and mints no bearer.
 
 Multi-level namespaces are given dot-separated, and the function requires the
-`pg_read_server_files` role, like the other Iceberg functions.
+`pg_read_server_files` role, like the other Iceberg functions. The server form
+also requires `USAGE` on the server.
 
 ```sql
 -- URI form: the token, if any, comes from the server environment, not the query
@@ -1210,6 +1222,7 @@ SELECT pgcolumnar.iceberg_rest_table_location(
 -- server form: the token is per-role and stays in pg_user_mapping
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
   OPTIONS (catalog_uri 'https://catalog.example.com');
+GRANT USAGE ON FOREIGN SERVER cat TO analyst;
 CREATE USER MAPPING FOR analyst SERVER cat OPTIONS (token 's3cr3t');
 
 SELECT count(*) FROM pgcolumnar.iceberg_scan(

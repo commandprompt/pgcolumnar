@@ -8217,7 +8217,7 @@ The pytest twin of `test/native_parquet_pushdown.sh` (ported for #1341), every c
 | --- | --- |
 | `test_skipping_never_changes_the_answer_and_really_skips` | eight predicates agree with the heap, each confining range skips the groups it should, float `>=` is not pushed, and `read_parquet` reads the same rows |
 | `test_a_nan_row_is_never_skipped` | seven float predicates over a file with one NaN agree with the heap |
-| `test_inverted_statistics_never_drive_a_skip` | a UINT_32 column whose statistics decode inverted agrees with the heap under six predicates and skips nothing |
+| `test_inverted_statistics_never_drive_a_skip` | an INT32 column whose footer's min and max are swapped agrees with the heap under six predicates and skips nothing (a UINT_32 column before #1814, which now decodes unsigned and no longer inverts) |
 | `test_an_int64_backed_decimal_is_skippable` | a range inside one of four DECIMAL groups skips the other three without dropping rows |
 
 ## 170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays
@@ -10960,7 +10960,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 ## 276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else
 
-The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request and even beside a static token; a static token wins over a complete pair, with no token request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; and a non-superuser borrows the environment token only when a superuser waived its credentials.
+The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request and even beside a static token; a static token wins over a complete pair, with no token request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; a non-superuser borrows the environment token only when a superuser waived its credentials; and a role without USAGE on the server is refused 42501 before any request reaches the catalog, through a PUBLIC mapping and through its own mapping after a REVOKE, by every iceberg_rest_* function, while a foreign table on a catalog server reads nothing and a granted role still reads (#1819).
 
 ### Every test
 
@@ -10999,6 +10999,13 @@ Every test makes one check under the shell's name. An "accepted" arm reads `ok` 
 | `test_a_non_superuser_does_not_borrow_the_env_token` | a non-superuser with no token mapping is refused (28000) despite the environment token, before any request |
 | `test_a_non_superuser_cannot_waive_its_own_credentials` | and it cannot mark its own mapping credentials_required false (42501) |
 | `test_a_superuser_waiver_lets_the_role_read_by_the_env_token` | control: with credentials_required false set by a superuser, the same role reads by the environment token |
+| `test_the_role_without_usage_holds_no_usage_on_the_server` | premise: ice_n holds no USAGE on server pcat |
+| `test_a_role_without_usage_is_refused_through_a_public_mapping` | a role without USAGE on the server is refused through a PUBLIC mapping (42501), before any request |
+| `test_the_other_rest_functions_refuse_a_role_without_usage` | the namespace, table-list and scan functions refuse it too (42501), before any request |
+| `test_a_revoked_role_is_refused_through_its_own_mapping` | after REVOKE USAGE the role's own mapping is refused (42501), before any request |
+| `test_core_refuses_a_foreign_table_on_the_catalog_server` | control: core refuses that role a foreign table on the catalog server (42501) |
+| `test_a_foreign_table_on_a_catalog_server_reads_nothing` | a foreign table on a catalog server reads nothing (55000, no handler), before any request |
+| `test_a_granted_role_reads_through_the_public_mapping` | control: once granted USAGE the same role reads through the PUBLIC mapping |
 | `test_the_backend_survives_the_rest_server_arms` | backend still up |
 
 ## 277. test_hilbert_curve.py: the Hilbert clustering curve, pinned by its properties and by frozen bytes
@@ -12263,11 +12270,11 @@ Every test makes one check under the shell's name, on a private database. Each t
 
 ## 318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks
 
-The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range) and a two-column file whose row group carries one column chunk. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, the short chunk list must be refused by the chunk-count guard itself, and the backend must survive.
+The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range), the unsigned files (pyarrow's uint8 to uint64, and a UINT_32 file re-encoded with only its LogicalType or only its ConvertedType mark), a two-column file whose row group carries one column chunk, string files whose cells are not valid UTF-8 (PLAIN and dictionary-encoded, plus an embedded NUL), and two copies of the committed Iceberg events table: one whose eu data file holds an invalid string, and one whose manifest records the eu partition value as invalid bytes. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, an unsigned column must read as the stored value into bigint or numeric (which `parquet_schema` advises) and refuse a narrower type with 22003 rather than come back negative (#1814), the short chunk list must be refused by the chunk-count guard itself, and the backend must survive. Each invalid string cell must be refused with 22021 and a message naming the column, through read_parquet, the Parquet foreign table, import_parquet and iceberg_scan, with no row stored; valid multibyte UTF-8 must still read whole; and the Iceberg FDW must read, not prune, a file whose partition value is not valid text (#1821).
 
 ### Every test
 
-Every test makes one check under the shell's name, on a private database. The crafter runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A refusal reads as 'SQLSTATE: message' through the shell's own pgc_try; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+Every test makes one check under the shell's name, on a private database. The crafter runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A refusal reads as 'SQLSTATE: message' through the shell's own pgc_try; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved. The string tests read a second private database created as UTF8, because the check is against the server encoding and a SQL_ASCII cluster accepts any byte but NUL.
 
 | test | what it holds |
 | --- | --- |
@@ -12285,10 +12292,40 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_read_parquet_in_range_still_reads` | read_parquet in range still reads |
 | `test_parquet_hardening_import_parquet_also_raises_22003` | import_parquet also raises 22003 |
 | `test_parquet_hardening_import_parquet_left_no_wrapped_rows` | import_parquet left no wrapped rows |
+| `test_parquet_hardening_unsigned_premise_pyarrow_reads_unsigned` | premise: pyarrow reads the unsigned file's values unsigned |
+| `test_parquet_hardening_parquet_schema_advises_types_that_hold_unsigned_values` | parquet_schema advises a type that holds every unsigned value |
+| `test_parquet_hardening_uint32_reads_into_bigint_as_unsigned` | UINT_32 reads into bigint as unsigned |
+| `test_parquet_hardening_uint64_reads_into_numeric_as_unsigned` | UINT_64 reads into numeric as unsigned |
+| `test_parquet_hardening_uint32_into_bigint_where_counts_every_row` | UINT_32 into bigint: WHERE c > 0 counts every row |
+| `test_parquet_hardening_uint32_above_2_31_into_integer_raises_22003` | UINT_32 at or above 2^31 into integer -> 22003 |
+| `test_parquet_hardening_uint64_above_2_63_into_bigint_raises_22003` | UINT_64 at or above 2^63 into bigint -> 22003 |
+| `test_parquet_hardening_uint32_max_into_smallint_raises_22003` | UINT_32 2^32-1 into smallint -> 22003, not -1 |
+| `test_parquet_hardening_uint64_refusal_names_the_stored_value` | the UINT_64 refusal names the stored value |
+| `test_parquet_hardening_read_parquet_reads_every_unsigned_width` | read_parquet reads every unsigned width at its advised type |
+| `test_parquet_hardening_read_parquet_uint64_into_bigint_raises_22003` | read_parquet UINT_64 into bigint -> 22003 |
+| `test_parquet_hardening_uint32_logical_type_alone_marks_it_unsigned` | UINT_32 marked only by its LogicalType reads into bigint as unsigned |
+| `test_parquet_hardening_uint32_converted_type_alone_marks_it_unsigned` | UINT_32 marked only by its ConvertedType reads into bigint as unsigned |
+| `test_parquet_hardening_import_parquet_reads_unsigned_into_wider_types` | import_parquet reads UINT_32 into bigint and UINT_64 into numeric |
+| `test_parquet_hardening_import_parquet_uint32_into_integer_raises_22003` | import_parquet UINT_32 into integer -> 22003 |
 | `test_parquet_hardening_short_chunk_list_is_a_clean_reject` | short chunk list rejected with a specific error |
 | `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
 | `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
 | `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
+| `test_parquet_hardening_strings_run_in_a_utf8_database` | premise: the string arms run in a UTF8 database |
+| `test_parquet_hardening_read_parquet_plain_string_not_utf8_raises_22021` | read_parquet PLAIN string not UTF-8 -> 22021 naming the column |
+| `test_parquet_hardening_read_parquet_dictionary_string_not_utf8_raises_22021` | read_parquet dictionary string not UTF-8 -> 22021 naming the column |
+| `test_parquet_hardening_read_parquet_embedded_nul_raises_22021` | read_parquet string with an embedded NUL -> 22021 |
+| `test_parquet_hardening_varchar_output_column_is_checked_too` | varchar output column is checked too -> 22021 |
+| `test_parquet_hardening_parquet_foreign_table_string_not_utf8_raises_22021` | parquet foreign table string not UTF-8 -> 22021 |
+| `test_parquet_hardening_import_parquet_string_not_utf8_raises_22021` | import_parquet string not UTF-8 -> 22021 |
+| `test_parquet_hardening_import_parquet_stored_no_row_of_the_invalid_file` | import_parquet stored no row of the invalid file |
+| `test_parquet_hardening_insert_select_read_parquet_stored_no_row_of_the_invalid_file` | INSERT SELECT read_parquet stored no row of the invalid file |
+| `test_parquet_hardening_valid_multibyte_utf8_still_reads_plain` | valid multibyte UTF-8 still reads (PLAIN) |
+| `test_parquet_hardening_valid_multibyte_utf8_still_reads_dictionary` | valid multibyte UTF-8 still reads (dictionary) |
+| `test_parquet_hardening_iceberg_scan_data_file_string_not_utf8_raises_22021` | iceberg_scan data file string not UTF-8 -> 22021 naming the column |
+| `test_parquet_hardening_patched_manifest_table_reads_all_five_rows` | premise: the patched-manifest table reads all five rows |
+| `test_parquet_hardening_iceberg_fdw_reads_a_file_whose_partition_value_is_not_valid_text` | iceberg FDW reads, not prunes, a file whose partition value is not valid text |
+| `test_parquet_hardening_backend_survives_the_string_arms` | backend survived the string arms |
 
 ## 319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend
 
