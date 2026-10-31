@@ -9735,6 +9735,7 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed me
 | `test_iceberg_current_snapshot_reads_a_zero_padded_gzip_file` | iceberg_current_snapshot reads a gzip metadata file followed by zero padding |
 | `test_iceberg_scan_refuses_a_data_file_format_that_is_not_parquet` | iceberg_scan refuses a data file whose file_format is not Parquet (0A000) |
 | `test_iceberg_current_snapshot_reads_a_gzip_file_that_outgrows_the_first_buffer` | iceberg_current_snapshot reads a gzip metadata file that outgrows the first inflate buffer |
+| `test_iceberg_current_snapshot_reads_a_two_member_gzip_file_that_grows_in_its_second_member` | iceberg_current_snapshot reads a two-member gzip file that grows the buffer in its second member |
 | `test_an_az_metadata_path_is_refused_as_remote` | an az:// metadata path is refused as a remote URL it cannot read (0A000) |
 | `test_iceberg_scan_reads_a_lowercase_parquet_file_format` | iceberg_scan reads a data file whose file_format is lowercase parquet |
 | `test_iceberg_scan_reads_mixed_s3_and_s3a_paths` | iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a:// |
@@ -10817,6 +10818,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_the_backend_survives_the_bad_sequence_refusal` | backend still up after the bad-sequence refusal |
 | `test_a_lowercase_parquet_position_delete_file_is_applied` | a position-delete file whose file_format is lowercase parquet is applied |
 | `test_a_lowercase_parquet_equality_delete_file_is_applied` | an equality-delete file whose file_format is lowercase parquet is applied |
+| `test_a_position_delete_naming_s3_data_as_s3a_is_applied` | a position delete naming its s3:// data file as s3a:// is applied |
 | `test_a_million_s3_position_delete_rows_apply` | a million s3:// position-delete rows apply (3 rows left) |
 | `test_a_million_s3a_position_delete_rows_apply` | a million s3a:// position-delete rows apply (3 rows left) |
 | `test_s3a_position_deletes_cost_no_more_memory_than_s3` | s3a:// position deletes cost no more memory than s3:// ones (within 16 MiB) |

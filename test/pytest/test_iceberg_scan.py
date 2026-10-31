@@ -172,6 +172,7 @@ def isc(pgc_cluster, server_dir):
             "notpq": _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{vpath('notpq')}') AS t(id bigint)",
                               "only PARQUET is supported", " naming PARQUET"),
             "gz_large snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_large')}')"),
+            "gz_grow snap": _rows(dsn, f"SELECT {SNAPCOLS} FROM pgcolumnar.iceberg_current_snapshot('{vpath('gz_grow')}')"),
             "az": _refusal(dsn, "SELECT * FROM pgcolumnar.iceberg_current_snapshot('az://b/t/metadata/v1.metadata.json')",
                            'reading "az://', " remote refusal"),
             "unpriv": _sqlstate(dsn, f"SELECT * FROM {scan.format(md)} AS t(id bigint)", UNPRIV, pgc_cluster.port),
@@ -356,6 +357,15 @@ def test_iceberg_current_snapshot_reads_a_gzip_file_that_outgrows_the_first_buff
         return
     expect.text(_lines(isc["gz_large snap"]), _plain_snapshot(isc),
                 "iceberg_current_snapshot reads a gzip metadata file that outgrows the first inflate buffer")
+
+
+def test_iceberg_current_snapshot_reads_a_two_member_gzip_file_that_grows_in_its_second_member(isc, expect):
+    # the metadata between two 1 MB pads, as two members split mid-text: the buffer
+    # grows while the second member inflates
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["gz_grow snap"]), _plain_snapshot(isc),
+                "iceberg_current_snapshot reads a two-member gzip file that grows the buffer in its second member")
 
 
 def test_an_az_metadata_path_is_refused_as_remote(isc, expect):

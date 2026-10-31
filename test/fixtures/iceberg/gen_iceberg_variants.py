@@ -27,6 +27,11 @@ The variants:
               added, gzip-compressed. It inflates far past the reader's first
               buffer (8 times the file size, at least 64 KiB), so reading it
               grows that buffer several times, as most real gzip metadata does.
+  gz_grow     The current metadata.json between two 1,000,000-byte top-level
+              pad fields, as two gzip members split in the middle of the text.
+              The reader grows its buffer while it inflates the second member,
+              so it must count the bytes the first member wrote; if it counts
+              from the second member's start, the fields drop out.
   lower       A copy of the table (db/lower) whose manifest records the data
               files' file_format as "parquet", the spelling the Iceberg spec uses
               (#1825).
@@ -48,6 +53,9 @@ The --deletes variants, from the warehouse_del table (#1815, #1825):
               data.parquet, each deleting row 1 or row 3.
   bloat_s3a   The same table with every recorded path s3a://. Matching a delete
               row to its data file must cost no more memory here than in bloat_s3.
+  mix_s3a     A copy of the table (db/mix_s3a) whose metadata and manifests record
+              every path as s3://, while its position-delete file names the data
+              file as s3a:// in the same bucket. The delete must still apply.
 
 The copied tables keep their own metadata, so a suite reads each one by its
 own metadata path. The Avro rewrite keeps every string the same length, so no
@@ -73,6 +81,8 @@ assert len(RECORDED) == len(S3A_ROOT)
 DEL_RECORDED = "file:///tmp/pgc_ice_del"
 DEL_S3 = "s3://bb/tmp/pgc_ice_del"
 DEL_S3A = "s3a://b/tmp/pgc_ice_del"
+# mix_s3a's position-delete file: DEL_S3's bucket and key, under s3a://
+MIX_S3A = "s3a://bb/tmp/pgc_ice_del"
 BLOAT_ROWS = 1000000
 assert len(DEL_RECORDED) == len(DEL_S3) == len(DEL_S3A)
 
@@ -217,7 +227,18 @@ def main(root):
     m = json.loads(body)
     m.setdefault("properties", {})["pgc.test.padding"] = "x" * LARGE_PAD
     out["gz_large"] = os.path.join(events, "metadata", "large.gz.metadata.json")
-    open(out["gz_large"], "wb").write(gzip.compress(json.dumps(m).encode()))
+    large = json.dumps(m).encode()
+    open(out["gz_large"], "wb").write(gzip.compress(large))
+    # gz_grow: the metadata fields between two pads, split mid-text into two
+    # members. A reader that loses its place when the buffer grows in the second
+    # member keeps the start of one pad and the end of the other: still valid
+    # JSON, but without the fields, so the snapshot read fails
+    out["gz_grow"] = os.path.join(events, "metadata", "grow.gz.metadata.json")
+    pad = "x" * (LARGE_PAD // 2)
+    grow = json.dumps({"pgc-test-pad-head": pad, **json.loads(body),
+                       "pgc-test-pad-tail": pad}).encode()
+    h = len(grow) // 2
+    open(out["gz_grow"], "wb").write(gzip.compress(grow[:h]) + gzip.compress(grow[h:]))
 
     for p in out.values():
         os.chmod(p, 0o644)
@@ -259,6 +280,25 @@ def deletes(root):
         }, schema=old.schema)
         pq.write_table(table, os.path.join(d, "data", "posdel.parquet"))
         out[name] = md
+
+    # mix_s3a: everything recorded as s3://, but the delete file names s3a://
+    d = os.path.join(root, "db", "mix_s3a")
+    shutil.copytree(t, d)
+    for f in ("manifest-list-apply.avro", "data-manifest.avro", "delete-manifest-apply.avro"):
+        if rewrite_ocf(os.path.join(d, "metadata", f),
+                       [(DEL_RECORDED.encode(), DEL_S3.encode())]) == 0:
+            sys.exit(f"gen_iceberg_variants: no recorded path found in {f}")
+    md = os.path.join(d, "metadata", "apply.metadata.json")
+    text = open(md).read().replace(DEL_RECORDED, DEL_S3)
+    open(md, "w").write(text)
+    old = pq.read_table(os.path.join(d, "data", "posdel.parquet"))
+    paths = [p.replace(DEL_RECORDED, MIX_S3A, 1) for p in old.column("file_path").to_pylist()]
+    if not paths or any(not p.startswith(MIX_S3A) for p in paths):
+        sys.exit(f"gen_iceberg_variants: posdel.parquet does not name {DEL_RECORDED}: {paths}")
+    pq.write_table(old.set_column(old.schema.get_field_index("file_path"), old.schema.field("file_path"),
+                                  pa.array(paths, pa.string())),
+                   os.path.join(d, "data", "posdel.parquet"))
+    out["mix_s3a"] = md
 
     for p in out.values():
         if os.path.isfile(p):

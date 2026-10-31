@@ -280,6 +280,8 @@ def dl(pgc_cluster, server_dir):
                                        f"FROM pgcolumnar.iceberg_scan('{vpath('plower')}/apply.metadata.json') {COLS}")
         r["plower eqapply"] = _read(dsn, f"SELECT string_agg(id::text, ',' ORDER BY id) "
                                          f"FROM pgcolumnar.iceberg_scan('{vpath('plower')}/eqapply.metadata.json') {COLS}")
+        r["mix_s3a"] = _read(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, E'\\n' ORDER BY id) "
+                                  f"FROM pgcolumnar.iceberg_scan('{vpath('mix_s3a')}') {COLS}")
         for name in ("bloat_s3", "bloat_s3a"):
             r[name] = _peak(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{vpath(name)}') {COLS}")
         yield r
@@ -626,6 +628,14 @@ def test_a_lowercase_parquet_equality_delete_file_is_applied(dl, expect):
         return
     expect.text(str(dl["plower eqapply"]), dl["eq oracle"]["eqapply"],
                 "an equality-delete file whose file_format is lowercase parquet is applied")
+
+
+def test_a_position_delete_naming_s3_data_as_s3a_is_applied(dl, expect):
+    # the data file is recorded as s3://bb/..., the delete names s3a://bb/...
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["mix_s3a"]), dl["oracle"],
+                "a position delete naming its s3:// data file as s3a:// is applied")
 
 
 def test_a_million_s3_position_delete_rows_apply(dl, expect):

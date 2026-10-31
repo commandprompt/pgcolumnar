@@ -392,8 +392,9 @@ check "backend still up after the bad-sequence refusal" "$(survived "$CRASHES_BE
 
 # ---- delete files other writers describe (#1815, #1825) --------------------
 # The variants come from gen_iceberg_variants.py --deletes, written next to the
-# relocated table: delete manifests that spell file_format "parquet", and two tables
-# with one position-delete file of a million rows, recorded under s3:// and s3a://.
+# relocated table: delete manifests that spell file_format "parquet", two tables
+# with one position-delete file of a million rows, recorded under s3:// and s3a://,
+# and a table recorded under s3:// whose delete file names s3a://.
 DVARIANTS="$(python3 "$FX/gen_iceberg_variants.py" --deletes "$DEST" 2>&1)"
 chmod -R a+rwX "$DEST" 2>/dev/null
 dvar() { local p; p="$(sed -n "s/^$1=//p" <<<"$DVARIANTS")"; echo "${p:-no variant $1: $DVARIANTS}"; }
@@ -411,6 +412,12 @@ check_text "an equality-delete file whose file_format is lowercase parquet is ap
 	"$(qe "SELECT string_agg(id::text, ',' ORDER BY id)
 	       FROM pgcolumnar.iceberg_scan('$(dvar plower)/eqapply.metadata.json')
 	         AS t(id bigint, region text, amount int)")" "$(eq_oracle eqapply)"
+# mix_s3a records the data file as s3://bb/... and its delete file names it as
+# s3a://bb/...: the same object, so the delete applies (#1825 review)
+check_text "a position delete naming its s3:// data file as s3a:// is applied" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(dvar mix_s3a)')
+	         AS t(id bigint, region text, amount int) ORDER BY id")" "$ORACLE"
 
 # peak QUERY -> "<kB the backend's peak rose by> <the query's last output line>",
 # or the reason there is no reading. VmHWM is the backend's peak resident memory and

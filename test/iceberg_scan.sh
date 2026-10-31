@@ -159,6 +159,12 @@ check "iceberg_current_snapshot reads a gzip metadata file followed by zero padd
 check "iceberg_current_snapshot reads a gzip metadata file that outgrows the first inflate buffer" \
 	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_large)')")" \
 	"${PLAIN_SNAP:-no snapshot from the plain file}"
+# the metadata between two 1 MB pads, as two members split mid-text: the buffer grows
+# while the second member inflates, so the reader must keep counting from the bytes
+# the first member wrote; counting from 0 again drops the fields between the pads
+check "iceberg_current_snapshot reads a two-member gzip file that grows the buffer in its second member" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_grow)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
 # a data file_format that is not Parquet in any spelling is refused, not read as Parquet
 check "iceberg_scan refuses a data file whose file_format is not Parquet (0A000)" \
 	"$(refusal_of "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(vpath notpq)') AS t(id bigint)" \
