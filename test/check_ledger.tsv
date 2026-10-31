@@ -3029,6 +3029,28 @@ iceberg_catalog	iceberg_catalog	malformed JSON is rejected (22P02), backend surv
 iceberg_catalog	iceberg_catalog	resolves the named current snapshot, not snapshots[0]	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the decoy snapshot is not returned	15;16;17;18;19	2026-10-21	the resolver returns the first snapshot rather than the one named current
 iceberg_catalog	iceberg_catalog	the first snapshot has no parent (NULL)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a .. traversal manifest-list is refused, not read (22023, not XX001)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a DELETED (status 2) data entry is skipped, not listed and not refused	15;16;17;18;19	2026-10-30	columnar_iceberg.c: the lister refuses a DELETED (status 2) data entry again, the #1791 defect (#1791)
+iceberg_data_files	iceberg_data_files	a foreign absolute manifest-list is refused (22023)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a position-delete entry in a data manifest is refused (0A000)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a sibling-prefix manifest-list is refused (22023)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a snapshot with a delete manifest is refused (feature_not_supported 0A000)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a symlink under the location targeting outside is refused (22023, not XX001)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a table with no current snapshot yields no data files	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	after a copy-on-write delete of every row, no data files are listed	15;16;17;18;19	2026-10-30	columnar_iceberg.c: the lister refuses a DELETED (status 2) data entry again, the #1791 defect (#1791)
+iceberg_data_files	iceberg_data_files	after a copy-on-write delete, data files == pyiceberg plan_files (record_count|basename)	15;16;17;18;19	2026-10-30	columnar_iceberg.c: the lister refuses a DELETED (status 2) data entry again, the #1791 defect (#1791)
+iceberg_data_files	iceberg_data_files	an EXISTING (status 0) data entry is listed, as an ADDED one is	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	an equality-delete entry in a data manifest is refused (0A000)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	an unprivileged role is refused (42501)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	backend still up after the delete refusal	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	backend still up after the entry refusals	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	backend still up after the traversal attempts	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	control: a data manifest with one added data entry lists that one file	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	data files == pyiceberg oracle (record_count|region|basename)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	every data file is PARQUET	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	no returned path leaks the recorded root	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	premise: each copy-on-write fixture's current snapshot carries a DELETED (status 2) data entry	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	returned paths are rebased under the actual location	15;16;17;18;19	never	-
 iceberg_deletes	iceberg_deletes	...and the boundary refusal names the escape	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_rebase does not hold a recorded path under the recorded table location
 iceberg_deletes	iceberg_deletes	...and the negative-pos refusal names the negative pos	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a negative position-delete pos is not refused
 iceberg_deletes	iceberg_deletes	...and the null-pos refusal names pos	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position-delete row with a null pos is not refused (the n1 || n2 guard skipped)
@@ -3279,11 +3301,13 @@ iceberg_objstore	iceberg_objstore	position deletes read over s3 (surviving == fi
 iceberg_objstore	iceberg_objstore	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 iceberg_objstore	iceberg_objstore	the position-deleted ids are gone over s3	15;16;17;18;19	2026-10-21	columnar_objstore_module.c: os_check_endpoint_allowed refuses every endpoint, the listed one included
 iceberg_rest	iceberg_rest	a catalog endpoint off the allow-list is refused (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: every address reads as link-local and the allow-list is gone
+iceberg_rest	iceberg_rest	a close-delimited loadTable reply resolves the metadata-location	15;16;17;18;19	2026-10-30	objstore/columnar_objstore_module.c: os_slurp_body refuses a body with neither length nor chunking (main d0747e07, the #1787 defect)
 iceberg_rest	iceberg_rest	a link-local catalog host is refused even if allow-listed (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: the allow-list refuses every endpoint and the link-local refusal is gone
 iceberg_rest	iceberg_rest	a non-object catalog config is refused, not walked (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a non-object /v1/config body is not refused
 iceberg_rest	iceberg_rest	a wrong bearer token is refused (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 401/403 is not mapped to 28000
 iceberg_rest	iceberg_rest	an anonymous request to a token-protected catalog is refused (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 401/403 is not mapped to 28000
 iceberg_rest	iceberg_rest	an over-cap catalog response is refused (54000)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: os_slurp_body does not refuse an advertised length over the cap
+iceberg_rest	iceberg_rest	an over-cap close-delimited catalog response is refused (54000)	15;16;17;18;19	2026-10-30	objstore/columnar_objstore_module.c: os_slurp_body refuses a body with neither length nor chunking (main d0747e07, the #1787 defect)
 iceberg_rest	iceberg_rest	an unknown table surfaces a clean not-found (42P01)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 404 is not mapped to 42P01
 iceberg_rest	iceberg_rest	backend still up after the REST refusals	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the backend aborts on a catalog 404 (abort() before the 42P01 refusal)
 iceberg_rest	iceberg_rest	loadTable resolves the current metadata-location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
@@ -3307,9 +3331,12 @@ iceberg_rest_scan	iceberg_rest_scan	premise: the promoted-table rest fixture ser
 iceberg_rest_scan	iceberg_rest_scan	the catalog reports the relocated metadata location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_server	iceberg_rest_server	a catalog_uri option on the USER MAPPING is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused before any request (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a half OAuth2 credential (id, no secret) is not refused, so the mint runs with a NULL secret and the backend dies
+iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused even with a static token (28000)	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the half-pair refusal runs only when no static token is set, so a token excuses a half OAuth2 pair (the fix reverted, #1794)
+iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (secret, no id) is refused even with a static token (28000)	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the half-pair refusal runs only when no static token is set, so a token excuses a half OAuth2 pair (the fix reverted, #1794)
 iceberg_rest_server	iceberg_rest_server	a link-local oauth_token_uri is refused by the allow-list (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: an endpoint off pgcolumnar.objstore_allowed_endpoints is not refused
 iceberg_rest_server	iceberg_rest_server	a non-superuser with no token mapping is refused (28000) despite the environment token, before any request	15;16;17;18;19	2026-10-15	the REST resolver letting every role borrow the environment token
 iceberg_rest_server	iceberg_rest_server	a server with an OAuth2 mapping reads by a minted bearer	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	a static token and a complete OAuth2 pair read by the token, with no token request	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: a complete OAuth2 pair mints a bearer even when a static token is set (mutation, #1794)
 iceberg_rest_server	iceberg_rest_server	a token option on the SERVER is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a warehouse option on the SERVER is accepted (not HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a warehouse-configured server resolves a table location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the USER MAPPING token option is ignored
@@ -5410,17 +5437,27 @@ nologin_workers	nologin_workers	premise: the server log records the NOLOGIN role
 nologin_workers	nologin_workers	the flush is dispatched to workers	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	a key with a space, '+' and '=' reads back (path-style)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_uriencode_path encodes a space as '+'
 objstore_addressing	objstore_addressing	a key with a space, '+' and '=' reads back (virtual-host)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_uriencode_path encodes a space as '+'
+objstore_addressing	objstore_addressing	and its path-style LIST put the bucket in the request path	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	and its path-style request path is the key URI-encoded once	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	and its virtual-host LIST went to the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	and its virtual-host request path is the key alone, URI-encoded once	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
+objstore_addressing	objstore_addressing	and its virtual-host upload cleanup listed the uploads at the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
+objstore_addressing	objstore_addressing	and the pattern read's virtual-host LIST went to the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	and the request path carried the bucket again	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	and the virtual-host upload cleanup aborted the upload the worker left open	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783)
 objstore_addressing	objstore_addressing	gs:// read round-trips (scheme handled, HMAC creds reused)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	gs:// read-back of the written object	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: gs:// demands AWS_ENDPOINT_URL like s3:// instead of defaulting to storage.googleapis.com
 objstore_addressing	objstore_addressing	gs:// write round-trips	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	path-style put the bucket in the request path	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
+objstore_addressing	objstore_addressing	premise: a worker's upload is open and its id unanswered when the worker is terminated	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	premise: fixture up	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	premise: the virtual-host export fails in a worker	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	removal proof: with addressing=path the bucket is back in the path	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	s3:// path-style read	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	s3:// pattern read, virtual-host	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
+objstore_addressing	objstore_addressing	s3:// prefix read, path-style	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	s3:// prefix read, virtual-host	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	s3:// with no endpoint demands one (names AWS_ENDPOINT_URL)	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	virtual-host put the KEY ALONE in the path (no bucket segment)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
 objstore_addressing	objstore_addressing	virtual-host read == path-style read (same object, different addressing)	15;16;17;18;19	never	-
@@ -5613,18 +5650,24 @@ objstore_sink_write	objstore_sink_write	parallel export to an s3:// prefix succe
 objstore_sink_write	objstore_sink_write	parallel remote: a _SUCCESS marker object exists at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel remote: the marker went to the prefix as a PUT	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: a re-run into the same prefix succeeds (overwrite)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	parallel: a session SET of objstore_part_size reaches the workers (multipart)	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
 objstore_sink_write	objstore_sink_write	parallel: every worker PUT went to the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: one object per worker was written (4)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel: the union of the per-worker objects == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a single-PUT object loses its last byte
 objstore_sink_write	objstore_sink_write	part failure: a refused part fails the export (58030)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a part upload the server refused is read as stored
 objstore_sink_write	objstore_sink_write	part failure: the key does not exist	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no multipart, the growing object is PUT to the final key as it grows
 objstore_sink_write	objstore_sink_write	part failure: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
+objstore_sink_write	objstore_sink_write	premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: a worker was uploading before the cancel	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the export was cancelled, not completed	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the fault landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the large export took the multipart protocol	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the part failure landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	session allow-list: a new session sees an empty system list before the widen arm	15;16;17;18;19	2026-10-31	objstore_sink_write.sh: the pg_reload_conf() after ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '' removed, so the system list never becomes '' (#1780)
+objstore_sink_write	objstore_sink_write	session allow-list: a session SET widens an empty system list for the workers	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
+objstore_sink_write	objstore_sink_write	session allow-list: nothing reached the refused prefix (no PUT, no POST)	15;16;17;18;19	2026-10-31	columnar_parallel_export.c reverted to d0747e07, before #1780: no dispatcher check and no session settings handed to the workers
+objstore_sink_write	objstore_sink_write	session allow-list: the dispatcher raises the refusal, not a worker	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: pexport_prepare_dir's api->check_endpoint(dir, NULL) removed, the GUC hand-off to the workers kept (#1780)
 objstore_sink_write	objstore_sink_write	shrink: _SUCCESS certifies the reconciled prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	shrink: parts 0002/0003 from the larger run are gone	15;16;17;18;19	never	-
