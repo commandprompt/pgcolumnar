@@ -3,13 +3,23 @@ whose column-chunk list is shorter than the schema. The pytest twin of
 `test/native_parquet_hardening.sh`, every check by the shell's name.
 
 int2 and date ride on INT32, time and timestamp on INT64, because Parquet has no
-narrower physical type. An out-of-range value must raise, not wrap. Four of the five
-range refusals share 22008, so each check wants its guard's own message ("value out of
-range for type <T>") as well as the SQLSTATE. Each "still reads" check compares the
-decoded values with the ones the writer stored, not a row count, and the no-wrap check
-reads the out-of-range file itself, which must refuse. Every reading waits for the
-server first, and survival also reads the server log's count of killed backends, since
-SELECT 1 answers again after crash recovery.
+narrower physical type. An out-of-range value must raise, not wrap. An unsigned column
+(UINT_32, UINT_64) reads as the stored value into bigint or numeric, which parquet_schema
+now advises, and refuses a narrower type with 22003 rather than coming back negative
+(#1814). Four of the five range refusals share 22008, so each check wants its guard's
+own message ("value out of range for type <T>") as well as the SQLSTATE. Each "still
+reads" check compares the decoded values with the ones the writer stored, not a row
+count, and the no-wrap check reads the out-of-range file itself, which must refuse.
+Every reading waits for the server first, and survival also reads the server log's
+count of killed backends, since SELECT 1 answers again after crash recovery.
+
+STRING CELLS (#1821). A Parquet STRING is UTF-8 by the spec, and a cell holding
+invalid UTF-8 or an embedded NUL must be refused with 22021 and a message that names
+the column, wherever the decoder is reached: read_parquet (PLAIN and dictionary), the
+Parquet foreign table, import_parquet and iceberg_scan. Those readings run in a second
+private database created as UTF8, since the check is against the server encoding and a
+SQL_ASCII cluster accepts any byte but NUL. The Iceberg FDW must read, not prune, a
+file whose manifest partition value is not valid text.
 
 ON A PRIVATE DATABASE. The shell skips whole without pyarrow, so every test declines
 under the shell's skip name before it asks for the fixture. The files are written by
@@ -27,7 +37,10 @@ import pytest
 from pgc_vacuity import query_error
 
 DB = "pgc_native_parquet_hardening"
+DB8 = "pgc_native_parquet_hardening_utf8"
 CRAFTER = pathlib.Path(__file__).resolve().parent.parent / "craft_parquet_hardening.py"
+WAREHOUSE = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "iceberg" / "warehouse"
+ENC_MSG = '22021: invalid byte sequence for encoding "UTF8" in Parquet column "name"'
 SKIP = "pyarrow not available; Parquet hardening suite needs it"
 
 TABLES = [
@@ -36,7 +49,15 @@ TABLES = [
     ("f_date_bad", "date", "date_bad"), ("f_date_ovf", "date", "date_ovf"),
     ("f_date_ok", "date", "date_ok"),
     ("f_ts_bad", "timestamp", "ts_bad"), ("f_ts_ok", "timestamp", "ts_ok"),
+    ("f_u32_i8", "int8", "u32"), ("f_u32_i4", "int4", "u32"),
+    ("f_u64_num", "numeric", "u64"), ("f_u64_i8", "int8", "u64"),
+    ("f_u32max_i2", "int2", "u32_max"),
 ]
+
+# the premise reader: pyarrow's own reading of the unsigned file, in a subprocess so
+# this module imports no pyarrow
+UNSIGNED_READER = ("import sys, pyarrow.parquet as pq; t = pq.read_table(sys.argv[1]); "
+                   "print(' '.join(str(v) for c in ('u32', 'u64') for v in t.column(c).to_pylist()))")
 
 
 def _message(exc):
@@ -59,6 +80,19 @@ def _value(dsn, sql):
     _wait_up(dsn)
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    return "" if row is None or row[0] is None else str(row[0])
+
+
+def _value_capped(dsn, sql):
+    """-> _value's reading of sql under a 5 s statement_timeout, as the shell's
+    footer_capped reads it."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("SET statement_timeout = '5s'")
             row = conn.execute(sql).fetchone()
     except psycopg.Error as exc:
         return query_error(_message(exc))
@@ -101,6 +135,21 @@ def _short_verdict(dsn, sql):
     return "NO ERROR"
 
 
+def _detail_verdict(dsn, sql, want):
+    """-> "names <value>" when SQL raised with the DETAIL `want` names, NO ERROR when it
+    raised nothing, or any other failure as a query_error() that names it."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        detail = exc.diag.message_detail or ""
+        if detail == f"The Parquet file stores {want}, which cannot be represented as bigint.":
+            return f"names {want}"
+        return query_error(f"{exc.sqlstate}: {exc.diag.message_primary} / {detail}")
+    return "NO ERROR"
+
+
 def _crashes(cluster):
     try:
         return (cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
@@ -119,6 +168,16 @@ def _survived(dsn, cluster, before):
     return f"no ([{up if up == '1' else ''}], {now - before} backend crashes)"
 
 
+FOOTER_FILES = ("footer_good", "footer_reencoded", "nibble_row_groups", "nibble_num_rows", "no_row_groups",
+                "no_rg_num_rows", "no_file_num_rows", "file_num_rows_2999", "unknown_map_field",
+                "unknown_bool_list_field", "unknown_uuid_field", "unknown_uuid_list_field", "list_of_type_14",
+                "rg3_999", "file_num_rows_3001", "nibble0_row_groups")
+TIMED_FILES = ("byte_list_off_end", "double_list_off_end")
+CAPPED_FILES = ("list_elem15_huge",)    # read under a 5 s statement_timeout
+UNPARSED = '0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
+GOOD_READ = "NO ERROR: 3000/4498500"
+
+
 def _int(v):
     """-> v as an int when it is one, else v unchanged, so num() names a failed reading."""
     return int(v) if isinstance(v, str) and v.lstrip("-").isdigit() else v
@@ -129,12 +188,15 @@ def pqh(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
         a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
         a.execute(f"CREATE DATABASE {DB}")
+        a.execute(f"DROP DATABASE IF EXISTS {DB8} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {DB8} TEMPLATE template0 ENCODING 'UTF8' LOCALE 'C'")
     try:
         dsn = pgc_cluster.dsn(dbname=DB)
         w = server_dir / "pqh"
         w.mkdir(exist_ok=True)
         w.chmod(0o777)
-        subprocess.run([sys.executable, str(CRAFTER), str(w)], capture_output=True, text=True)
+        subprocess.run([sys.executable, str(CRAFTER), str(w), str(WAREHOUSE)],
+                       capture_output=True, text=True)
         for f in w.glob("*.parquet"):
             f.chmod(0o644)
         r = {}
@@ -151,7 +213,22 @@ def pqh(pgc_cluster, server_dir):
             "DECLARE r text; BEGIN EXECUTE q INTO r; RETURN coalesce(r, '<null>'); "
             "EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE; END $$",
             "CREATE TABLE imp_bad (c int2)",
+            "CREATE TABLE imp_u (u8 int, u16 int, u32 bigint, u64 numeric)",
+            "CREATE TABLE imp_u32_i4 (c int4)",
             f"CREATE FOREIGN TABLE f_short (a int4, b int4) SERVER pq OPTIONS (path '{w}/short_chunks.parquet')",
+            # #1822: a refusal as "SQLSTATE: message / detail" with the path masked
+            "CREATE FUNCTION pgc_err(q text) RETURNS text LANGUAGE plpgsql AS $$ "
+            "DECLARE r text; d text; "
+            "BEGIN EXECUTE q INTO r; RETURN 'NO ERROR: ' || coalesce(r, '<null>'); "
+            "EXCEPTION WHEN OTHERS OR query_canceled THEN GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL; "
+            "RETURN SQLSTATE || ': ' || regexp_replace(SQLERRM, '\"[^\"]*\"', '\"<file>\"') "
+            "|| coalesce(' / ' || nullif(d, ''), ''); END $$",
+            # pgc_err's reading, then "within 3 s" or "after N ms"
+            "CREATE FUNCTION pgc_timed(q text) RETURNS text LANGUAGE plpgsql AS $$ "
+            "DECLARE t0 timestamptz := clock_timestamp(); v text; ms bigint; "
+            "BEGIN v := pgc_err(q); "
+            "ms := (extract(epoch FROM clock_timestamp() - t0) * 1000)::bigint; "
+            "RETURN v || CASE WHEN ms < 3000 THEN ' within 3 s' ELSE ' after ' || ms || ' ms' END; END $$",
         ]
         for stmt in setup:
             # a failed setup step surfaces in the readings that depend on it, by name
@@ -172,16 +249,123 @@ def pqh(pgc_cluster, server_dir):
                                  f"pgcolumnar.read_parquet('{w}/i2_ok.parquet') AS t(c int2)")
         r["imp bad"] = _sqlstate(dsn, f"SELECT pgcolumnar.import_parquet('imp_bad'::regclass, '{w}/i2_bad.parquet')")
         r["imp rows"] = _value(dsn, "SELECT count(*) FROM imp_bad")
+        pre = subprocess.run([sys.executable, "-c", UNSIGNED_READER, f"{w}/unsigned.parquet"],
+                             capture_output=True, text=True)
+        r["u premise"] = (pre.stdout.strip() if pre.returncode == 0
+                          else query_error((pre.stderr.strip().splitlines() or ["no output"])[-1]))
+        r["u schema"] = _value(dsn, "SELECT string_agg(column_name || ' ' || data_type, '|' ORDER BY column_name) "
+                                    f"FROM pgcolumnar.parquet_schema('{w}/unsigned.parquet')")
+        r["u32 i8"] = _value(dsn, "SELECT string_agg(c::text, ' ' ORDER BY c) FROM f_u32_i8")
+        r["u64 num"] = _value(dsn, "SELECT string_agg(c::text, ' ' ORDER BY c) FROM f_u64_num")
+        r["u32 where"] = _value(dsn, "SELECT count(*) FROM f_u32_i8 WHERE c > 0")
+        r["u32 i4"] = _sqlstate(dsn, "SELECT * FROM f_u32_i4")
+        r["u64 i8"] = _sqlstate(dsn, "SELECT * FROM f_u64_i8")
+        r["u32max i2"] = _sqlstate(dsn, "SELECT * FROM f_u32max_i2")
+        r["u64 detail"] = _detail_verdict(dsn, "SELECT * FROM f_u64_i8", "9223372036854775808")
+        r["u rp"] = _value(dsn, "SELECT string_agg(u8 || '|' || u16 || '|' || u32 || '|' || u64, ' ' ORDER BY u64) "
+                                f"FROM pgcolumnar.read_parquet('{w}/unsigned.parquet') "
+                                "AS t(u8 int, u16 int, u32 bigint, u64 numeric)")
+        r["u rp i8"] = _sqlstate(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/u64.parquet') AS t(c bigint)")
+        for mark in ("logical", "converted"):
+            r[f"u32 {mark} only"] = _value(dsn, "SELECT string_agg(c::text, ' ' ORDER BY c) FROM pgcolumnar.read_parquet("
+                                                f"'{w}/u32_{mark}_only.parquet') AS t(c bigint)")
+        imp = _value(dsn, f"SELECT pgc_value($q$SELECT pgcolumnar.import_parquet('imp_u'::regclass, "
+                          f"'{w}/unsigned.parquet')$q$)")
+        rows = _value(dsn, "SELECT string_agg(u32 || '|' || u64, ' ' ORDER BY u64) FROM imp_u")
+        r["u imp"] = (f"{imp}:{rows}" if isinstance(imp, str) and isinstance(rows, str)
+                      else imp if not isinstance(imp, str) else rows)
+        r["u imp i4"] = _sqlstate(dsn, f"SELECT pgcolumnar.import_parquet('imp_u32_i4'::regclass, '{w}/u32.parquet')")
         r["short"] = _short_verdict(dsn, "SELECT * FROM f_short")
         r["survived"] = _survived(dsn, pgc_cluster, before)
         r["schema"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.parquet_schema('{w}/short_chunks.parquet')")
         r["two"] = _value(dsn, f"SELECT string_agg(a || '|' || b, ' ' ORDER BY a) FROM "
                                f"pgcolumnar.read_parquet('{w}/two.parquet') AS t(a int4, b int4)")
+        # ---- malformed footer Thrift (#1822) ----
+        footer_before = _crashes(pgc_cluster)
+        for name in FOOTER_FILES:
+            r[name] = _value(dsn, f"SELECT pgc_err($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+                                  f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
+        for name in TIMED_FILES:
+            r[name] = _value(dsn, f"SELECT pgc_timed($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+                                  f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
+        for name in CAPPED_FILES:
+            r[name] = _value_capped(dsn, f"SELECT pgc_timed($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+                                         f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
+        try:
+            nsweep = (w / "nibble_sweep.count").read_text().strip()
+        except OSError:
+            nsweep = ""
+        r["nsweep"] = nsweep
+        r["sweep"] = _value(dsn, (
+            f"SELECT count(*) || ' of {nsweep} read without an error' "
+            "|| coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '') "
+            "FROM (SELECT i, pgc_err(format($f$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+            "pgcolumnar.read_parquet(%L) AS t(id bigint, name text)$f$, "
+            f"'{w}/nibble_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v "
+            f"FROM generate_series(0, {nsweep or 0} - 1) AS i) s WHERE v LIKE 'NO ERROR%'"))
+        r["uuid sweep"] = _value(dsn, (
+            f"SELECT count(*) || ' of {nsweep} read a wrong answer' "
+            "|| coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '') "
+            "FROM (SELECT i, pgc_err(format($f$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+            "pgcolumnar.read_parquet(%L) AS t(id bigint, name text)$f$, "
+            f"'{w}/uuid_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v "
+            f"FROM generate_series(0, {nsweep or 0} - 1) AS i) s "
+            f"WHERE v LIKE 'NO ERROR%' AND v <> '{GOOD_READ}'"))
+        r["footer survived"] = _survived(dsn, pgc_cluster, footer_before)
+
+        # ---- string cells, in the UTF8 database (#1821) ----
+        d8 = pgc_cluster.dsn(dbname=DB8)
+        ice_bad = sorted((w / "ice_bad" / "db" / "events" / "metadata").glob("*.metadata.json"))
+        ice_part = sorted((w / "ice_part" / "db" / "events" / "metadata").glob("*.metadata.json"))
+        ice_bad_md = ice_bad[-1] if ice_bad else w / "ice_bad-missing"
+        ice_part_md = ice_part[-1] if ice_part else w / "ice_part-missing"
+        for stmt in [
+            "CREATE EXTENSION pgcolumnar",
+            "CREATE SERVER pq FOREIGN DATA WRAPPER pgcolumnar_parquet",
+            "CREATE FUNCTION pgc_try(q text) RETURNS text LANGUAGE plpgsql AS $$ "
+            "BEGIN EXECUTE q; RETURN 'NO ERROR'; "
+            "EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ': ' || SQLERRM; END $$",
+            f"CREATE FOREIGN TABLE f_str_dict (id bigint, name text) SERVER pq "
+            f"OPTIONS (path '{w}/str_dict_bad.parquet')",
+            "CREATE TABLE imp_str (id bigint, name text)",
+            "CREATE TABLE heap_str (id bigint, name text) USING heap",
+            "CREATE SERVER ice FOREIGN DATA WRAPPER pgcolumnar_iceberg",
+            f"CREATE FOREIGN TABLE ev_part (id bigint, region text, amount int) "
+            f"SERVER ice OPTIONS (metadata_path '{ice_part_md}')",
+        ]:
+            _exec(d8, stmt)
+        r["s enc"] = _value(d8, "SELECT pg_encoding_to_char(encoding) FROM pg_database "
+                                "WHERE datname = current_database()")
+
+        def rp(f, typ="text"):
+            return f"SELECT * FROM pgcolumnar.read_parquet('{w}/{f}.parquet') AS t(id bigint, name {typ})"
+
+        r["s plain"] = _sqlstate(d8, rp("str_plain_bad"))
+        r["s dict"] = _sqlstate(d8, rp("str_dict_bad"))
+        r["s nul"] = _sqlstate(d8, rp("str_nul"))
+        r["s varchar"] = _sqlstate(d8, rp("str_plain_bad", "varchar"))
+        r["s fdw"] = _sqlstate(d8, "SELECT * FROM f_str_dict")
+        r["s imp"] = _sqlstate(d8, f"SELECT pgcolumnar.import_parquet('imp_str'::regclass, "
+                                   f"'{w}/str_plain_bad.parquet')")
+        r["s imp rows"] = _value(d8, "SELECT count(*) FROM imp_str")
+        _sqlstate(d8, "INSERT INTO heap_str " + rp("str_nul"))
+        r["s heap rows"] = _value(d8, "SELECT count(*) FROM heap_str")
+        r["s ok"] = _value(d8, f"SELECT string_agg(name || ':' || octet_length(name), ' ' ORDER BY id) "
+                               f"FROM pgcolumnar.read_parquet('{w}/str_ok.parquet') AS t(id bigint, name text)")
+        r["s ok dict"] = _value(d8, f"SELECT string_agg(name, ' ' ORDER BY id) "
+                                    f"FROM pgcolumnar.read_parquet('{w}/str_ok_dict.parquet') AS t(id bigint, name text)")
+        r["s ice"] = _sqlstate(d8, f"SELECT * FROM pgcolumnar.iceberg_scan('{ice_bad_md}') "
+                                   f"AS t(id bigint, region text)")
+        r["s part all"] = _value(d8, "SELECT string_agg(id || region, ',' ORDER BY id) FROM ev_part")
+        r["s part eu"] = _value(d8, "SELECT string_agg(id::text, ',' ORDER BY id) FROM ev_part "
+                                    "WHERE region = 'eu'")
+        r["s survived"] = _survived(d8, pgc_cluster, before)
         yield r
     finally:
         _wait_up(pgc_cluster.dsn())
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {DB8} WITH (FORCE)")
 
 
 def test_parquet_hardening_int2_out_of_range_raises_22003(request, expect):
@@ -282,6 +466,111 @@ def test_parquet_hardening_import_parquet_left_no_wrapped_rows(request, expect):
     expect.num(_int(r["imp rows"]), 0, "import_parquet left no wrapped rows")
 
 
+def test_parquet_hardening_unsigned_premise_pyarrow_reads_unsigned(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u premise"], "1 2147483648 4294967295 1 9223372036854775808 18446744073709551615", "premise: pyarrow reads the unsigned file's values unsigned")
+
+
+def test_parquet_hardening_parquet_schema_advises_types_that_hold_unsigned_values(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u schema"], "u16 integer|u32 bigint|u64 numeric(20,0)|u8 integer", "parquet_schema advises a type that holds every unsigned value")
+
+
+def test_parquet_hardening_uint32_reads_into_bigint_as_unsigned(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32 i8"], "1 2147483648 4294967295", "UINT_32 reads into bigint as unsigned")
+
+
+def test_parquet_hardening_uint64_reads_into_numeric_as_unsigned(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u64 num"], "1 9223372036854775808 18446744073709551615", "UINT_64 reads into numeric as unsigned")
+
+
+def test_parquet_hardening_uint32_into_bigint_where_counts_every_row(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32 where"], "3", "UINT_32 into bigint: WHERE c > 0 counts every row")
+
+
+def test_parquet_hardening_uint32_above_2_31_into_integer_raises_22003(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32 i4"], "22003: value out of range for type integer", "UINT_32 at or above 2^31 into integer -> 22003")
+
+
+def test_parquet_hardening_uint64_above_2_63_into_bigint_raises_22003(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u64 i8"], "22003: value out of range for type bigint", "UINT_64 at or above 2^63 into bigint -> 22003")
+
+
+def test_parquet_hardening_uint32_max_into_smallint_raises_22003(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32max i2"], "22003: value out of range for type smallint", "UINT_32 2^32-1 into smallint -> 22003, not -1")
+
+
+def test_parquet_hardening_uint64_refusal_names_the_stored_value(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u64 detail"], "names 9223372036854775808", "the UINT_64 refusal names the stored value")
+
+
+def test_parquet_hardening_read_parquet_reads_every_unsigned_width(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u rp"], "1|1|1|1 200|40000|2147483648|9223372036854775808 255|65535|4294967295|18446744073709551615", "read_parquet reads every unsigned width at its advised type")
+
+
+def test_parquet_hardening_read_parquet_uint64_into_bigint_raises_22003(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u rp i8"], "22003: value out of range for type bigint", "read_parquet UINT_64 into bigint -> 22003")
+
+
+def test_parquet_hardening_uint32_logical_type_alone_marks_it_unsigned(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32 logical only"], "1 2147483648 4294967295", "UINT_32 marked only by its LogicalType reads into bigint as unsigned")
+
+
+def test_parquet_hardening_uint32_converted_type_alone_marks_it_unsigned(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u32 converted only"], "1 2147483648 4294967295", "UINT_32 marked only by its ConvertedType reads into bigint as unsigned")
+
+
+def test_parquet_hardening_import_parquet_reads_unsigned_into_wider_types(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u imp"], "3:1|1 2147483648|9223372036854775808 4294967295|18446744073709551615", "import_parquet reads UINT_32 into bigint and UINT_64 into numeric")
+
+
+def test_parquet_hardening_import_parquet_uint32_into_integer_raises_22003(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["u imp i4"], "22003: value out of range for type integer", "import_parquet UINT_32 into integer -> 22003")
+
+
 def test_parquet_hardening_short_chunk_list_is_a_clean_reject(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
         return
@@ -308,3 +597,300 @@ def test_parquet_hardening_a_valid_two_column_file_still_reads(request, expect):
         return
     r = request.getfixturevalue("pqh")
     expect.text(r["two"], "1|4 2|5 3|6", "valid two-column file still reads")
+
+
+# ---- malformed footer Thrift (#1822) -----------------------------------------
+# The crafter decoded a good 3000-row file's footer and wrote variants of it. A field
+# header with an invalid type nibble was skipped as zero bytes, so the parser lost its
+# place and could lose row_groups or a num_rows. Each reading is "count/sum(id)" or the
+# refusal as "SQLSTATE: message / detail", so a silent wrong answer shows its numbers.
+
+def _footer(request, expect):
+    """-> the fixture's readings, or None when pyarrow is missing (declined by name)."""
+    if expect.require_module("pyarrow.parquet", name=SKIP) is None:
+        return None
+    return request.getfixturevalue("pqh")
+
+
+def test_parquet_hardening_footer_good_file_still_reads(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["footer_good"], GOOD_READ, "footer: the good file still reads")
+
+
+def test_parquet_hardening_footer_reencoded_good_file_still_reads(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["footer_reencoded"], GOOD_READ, "footer: the re-encoded good file still reads")
+
+
+def test_parquet_hardening_footer_invalid_type_nibble_on_row_groups_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["nibble_row_groups"], UNPARSED,
+                "footer: an invalid type nibble on row_groups is refused")
+
+
+def test_parquet_hardening_footer_invalid_type_nibble_on_num_rows_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["nibble_num_rows"], UNPARSED,
+                "footer: an invalid type nibble on a num_rows is refused")
+
+
+def test_parquet_hardening_footer_every_invalid_type_nibble_is_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name=SKIP) is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["sweep"], f"0 of {r['nsweep']} read without an error",
+                "footer: every invalid type nibble on a field header is refused")
+
+
+def test_parquet_hardening_footer_no_uuid_nibble_reads_a_wrong_answer(request, expect):
+    if expect.require_module("pyarrow.parquet", name=SKIP) is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["uuid sweep"], f"0 of {r['nsweep']} read a wrong answer",
+                "footer: no type-13 (UUID) nibble on a field header reads a wrong answer")
+
+
+def test_parquet_hardening_footer_without_row_groups_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["no_row_groups"],
+                'XX001: Parquet file "<file>" has a malformed footer / The footer has no row_groups field.',
+                "footer: no row_groups field is refused")
+
+
+def test_parquet_hardening_footer_row_group_without_num_rows_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["no_rg_num_rows"],
+                'XX001: Parquet file "<file>" has a malformed row group / Row group 2 has no num_rows field.',
+                "footer: a row group with no num_rows is refused")
+
+
+def test_parquet_hardening_footer_without_file_num_rows_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["no_file_num_rows"],
+                'XX001: Parquet file "<file>" has a malformed footer / The footer has no num_rows field.',
+                "footer: no file num_rows is refused")
+
+
+def test_parquet_hardening_footer_num_rows_differing_from_row_groups_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["file_num_rows_2999"],
+                'XX001: Parquet file "<file>" has a malformed footer / '
+                'The footer declares num_rows 2999, but its row groups hold 3000 rows.',
+                "footer: a file num_rows that differs from its row groups is refused")
+
+
+def test_parquet_hardening_footer_row_group_num_rows_below_total_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["rg3_999"],
+                'XX001: Parquet file "<file>" has a malformed footer / '
+                'The footer declares num_rows 3000, but its row groups hold 2999 rows.',
+                "footer: a row group num_rows below the footer's total is refused")
+
+
+def test_parquet_hardening_footer_num_rows_above_row_groups_total_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["file_num_rows_3001"],
+                'XX001: Parquet file "<file>" has a malformed footer / '
+                'The footer declares num_rows 3001, but its row groups hold 3000 rows.',
+                "footer: a file num_rows above its row groups' total is refused")
+
+
+def test_parquet_hardening_footer_type_0_nibble_with_delta_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["nibble0_row_groups"], UNPARSED,
+                "footer: a type-0 nibble with a field-id delta is refused as corrupt")
+
+
+def test_parquet_hardening_footer_unknown_map_field_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_map_field"], GOOD_READ, "footer: an unknown map field is skipped whole")
+
+
+def test_parquet_hardening_footer_unknown_bool_list_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_bool_list_field"], GOOD_READ,
+                "footer: an unknown list of bools is skipped whole")
+
+
+def test_parquet_hardening_footer_unknown_uuid_field_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_uuid_field"], GOOD_READ, "footer: an unknown UUID field is skipped whole")
+
+
+def test_parquet_hardening_footer_unknown_uuid_list_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_uuid_list_field"], GOOD_READ, "footer: an unknown list of UUIDs is skipped whole")
+
+
+def test_parquet_hardening_footer_list_of_non_compact_type_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["list_of_type_14"], UNPARSED,
+                "footer: a list whose element type is not a compact type is refused")
+
+
+def test_parquet_hardening_footer_huge_list_of_non_compact_type_is_refused_at_once(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["list_elem15_huge"], UNPARSED + " within 3 s",
+                "footer: a huge list whose element type is not a compact type is refused at once")
+
+
+def test_parquet_hardening_footer_byte_list_off_the_end_is_refused_at_once(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["byte_list_off_end"], UNPARSED + " within 3 s",
+                "footer: a list of bytes that runs off the footer is refused at once")
+
+
+def test_parquet_hardening_footer_double_list_off_the_end_is_refused_at_once(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["double_list_off_end"], UNPARSED + " within 3 s",
+                "footer: a list of doubles that runs off the footer is refused at once")
+
+
+def test_parquet_hardening_backend_survived_the_malformed_footers(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["footer survived"], "1", "backend survived the malformed footers")
+
+
+def test_parquet_hardening_strings_run_in_a_utf8_database(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s enc"], "UTF8", "premise: the string arms run in a UTF8 database")
+
+
+def test_parquet_hardening_read_parquet_plain_string_not_utf8_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s plain"], ENC_MSG + ": 0xff", "read_parquet PLAIN string not UTF-8 -> 22021 naming the column")
+
+
+def test_parquet_hardening_read_parquet_dictionary_string_not_utf8_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s dict"], ENC_MSG + ": 0xc0 0xaf", "read_parquet dictionary string not UTF-8 -> 22021 naming the column")
+
+
+def test_parquet_hardening_read_parquet_embedded_nul_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s nul"], ENC_MSG + ": 0x00", "read_parquet string with an embedded NUL -> 22021")
+
+
+def test_parquet_hardening_varchar_output_column_is_checked_too(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s varchar"], ENC_MSG + ": 0xff", "varchar output column is checked too -> 22021")
+
+
+def test_parquet_hardening_parquet_foreign_table_string_not_utf8_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s fdw"], ENC_MSG + ": 0xc0 0xaf", "parquet foreign table string not UTF-8 -> 22021")
+
+
+def test_parquet_hardening_import_parquet_string_not_utf8_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s imp"], ENC_MSG + ": 0xff", "import_parquet string not UTF-8 -> 22021")
+
+
+def test_parquet_hardening_import_parquet_stored_no_row_of_the_invalid_file(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.num(_int(r["s imp rows"]), 0, "import_parquet stored no row of the invalid file")
+
+
+def test_parquet_hardening_insert_select_read_parquet_stored_no_row_of_the_invalid_file(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.num(_int(r["s heap rows"]), 0, "INSERT SELECT read_parquet stored no row of the invalid file")
+
+
+def test_parquet_hardening_valid_multibyte_utf8_still_reads_plain(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s ok"], "ok:2 caf\u00e9:5 \u65e5\u672c:6", "valid multibyte UTF-8 still reads (PLAIN)")
+
+
+def test_parquet_hardening_valid_multibyte_utf8_still_reads_dictionary(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s ok dict"], "caf\u00e9 caf\u00e9 caf\u00e9 ok", "valid multibyte UTF-8 still reads (dictionary)")
+
+
+def test_parquet_hardening_iceberg_scan_data_file_string_not_utf8_raises_22021(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s ice"], '22021: invalid byte sequence for encoding "UTF8" in Parquet column "region": 0xff', "iceberg_scan data file string not UTF-8 -> 22021 naming the column")
+
+
+def test_parquet_hardening_patched_manifest_table_reads_all_five_rows(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s part all"], "1eu,2eu,3us,4us,5us", "premise: the patched-manifest table reads all five rows")
+
+
+def test_parquet_hardening_iceberg_fdw_reads_a_file_whose_partition_value_is_not_valid_text(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s part eu"], "1,2", "iceberg FDW reads, not prunes, a file whose partition value is not valid text")
+
+
+def test_parquet_hardening_backend_survives_the_string_arms(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["s survived"], "1", "backend survived the string arms")

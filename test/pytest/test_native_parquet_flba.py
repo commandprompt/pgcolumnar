@@ -6,13 +6,26 @@ scale, fixed (FLBA) or variable (BYTE_ARRAY) width, or as a little-endian INT32/
 Our own export is read back through read_parquet, import_parquet and the FDW against
 the source table; pyarrow-written files are the foreign producer. A footer whose
 DECIMAL scale has been patched out of range must be refused at bind, not decoded.
+An unannotated FLBA -- Iceberg's fixed(L), read from a committed pyiceberg table --
+reads as the bytea parquet_schema advises, on every surface (#1792).
 """
 import decimal
+import os
+import pathlib
+import shutil
+import tempfile
 import uuid
 
 import psycopg
+import pytest
 
 from pgc_vacuity import query_error
+
+SRCDIR = pathlib.Path(__file__).resolve().parents[2]
+# Committed fixture data both harnesses read (gen_iceberg_fixed.py), not the other harness.
+FIXED_WH = SRCDIR / "test" / "fixtures" / "iceberg" / "warehouse_fixed" / "db" / "fixed"
+FX3 = "1:616263,2:78797a,3:NULL"
+FX16 = "1:000102030405060708090a0b0c0d0e0f,2:ffffffffffffffffffffffffffffffff,3:NULL"
 
 HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
         "FROM (SELECT _row::text AS t FROM ({}) _row) _s")
@@ -210,3 +223,155 @@ def test_a_decimal_held_in_an_integer_reads_as_numeric(pgc_conn, server_dir, exp
         # the integer reading is not silently reinterpreted: bigint binds to the raw integer
         expect.text(_one(cur, agg.format(i64, "bigint")), "-3500000,0,1250000",
                     "an INT64 DECIMAL still binds to bigint as the unscaled integer")
+
+
+
+def _hexrows(cur, col, frm):
+    """-> "id:hex(col),..." in id order (a NULL reads as the word), or the error."""
+    return _one(cur, f"SELECT string_agg(id || ':' || coalesce(encode({col}, 'hex'), 'NULL'), ',' ORDER BY id) "
+                     f"FROM {frm}")
+
+
+def _refusal(cur, sql):
+    """-> "NO ERROR", or "SQLSTATE: message" for the statement's refusal."""
+    try:
+        cur.execute(sql)
+        cur.fetchall()
+        return "NO ERROR"
+    except psycopg.Error as exc:
+        return f"{exc.sqlstate}: {exc.diag.message_primary}"
+
+
+# ---- an unannotated FLBA (Iceberg fixed(L)) reads as bytea (#1792) ------------
+#
+# Iceberg writes fixed(L) as a FIXED_LEN_BYTE_ARRAY of width L with no logical type,
+# and parquet_schema advises bytea for it (uuid at L = 16). Every surface must accept
+# that advice, and uuid binds only to the 16-byte width: a 3-byte column declared uuid
+# is refused at bind (42804), not by the decoder (XX001). One test per check, so a red
+# on one surface cannot hide the others. The table is a committed pyiceberg fixture:
+# id bigint (field 1), fx fixed(3) (field 2), f16 fixed(16) (field 3).
+@pytest.fixture(scope="module")
+def fixed_wh():
+    """-> (data file, metadata.json) of a copy of warehouse_fixed the server can read,
+    or None when the tree does not carry the fixture."""
+    if not any((FIXED_WH / "data").glob("*.parquet")):
+        yield None
+        return
+    root = pathlib.Path(tempfile.mkdtemp(prefix="pgc_fixed_wh_"))
+    os.chmod(root, 0o755)
+    dest = root / "fixed"
+    shutil.copytree(FIXED_WH, dest)
+    for where, _dirs, files in os.walk(root):
+        os.chmod(where, 0o755)
+        for f in files:
+            os.chmod(os.path.join(where, f), 0o644)
+    yield (sorted((dest / "data").glob("*.parquet"))[0],
+           sorted((dest / "metadata").glob("*.metadata.json"))[-1])
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def _staged(fixed_wh, expect, name):
+    if fixed_wh is None:
+        expect.cannot_run("the warehouse_fixed fixture is missing", name=name)
+    return fixed_wh
+
+
+def test_parquet_schema_advises_bytea_for_fixed3(pgc_conn, fixed_wh, expect):
+    if not _staged(fixed_wh, expect, "parquet_schema advises bytea for Iceberg fixed(3) and uuid for fixed(16)"):
+        return
+    df, _md = fixed_wh
+    with pgc_conn.cursor() as cur:
+        expect.text(_one(cur, f"SELECT string_agg(column_name || '|' || data_type, ',') "
+                              f"FROM pgcolumnar.parquet_schema('{df}')"),
+                    "id|bigint,fx|bytea,f16|uuid",
+                    "parquet_schema advises bytea for Iceberg fixed(3) and uuid for fixed(16)")
+
+
+def test_fixed3_reads_as_bytea_through_read_parquet(pgc_conn, fixed_wh, expect):
+    if not _staged(fixed_wh, expect, "fixed(3) reads as bytea through read_parquet"):
+        return
+    df, _md = fixed_wh
+    with pgc_conn.cursor() as cur:
+        expect.text(_hexrows(cur, "fx", f"pgcolumnar.read_parquet('{df}') AS t(id bigint, fx bytea, f16 uuid)"),
+                    FX3, "fixed(3) reads as bytea through read_parquet")
+
+
+def test_fixed16_reads_as_bytea_through_read_parquet(pgc_conn, fixed_wh, expect):
+    if not _staged(fixed_wh, expect, "fixed(16) reads as bytea through read_parquet"):
+        return
+    df, _md = fixed_wh
+    with pgc_conn.cursor() as cur:
+        expect.text(_hexrows(cur, "f16", f"pgcolumnar.read_parquet('{df}') AS t(id bigint, fx bytea, f16 bytea)"),
+                    FX16, "fixed(16) reads as bytea through read_parquet")
+
+
+def test_fixed3_reads_as_bytea_through_field_ids(pgc_conn, fixed_wh, expect):
+    if not _staged(fixed_wh, expect, "fixed(3) reads as bytea through read_parquet field ids"):
+        return
+    df, _md = fixed_wh
+    with pgc_conn.cursor() as cur:
+        expect.text(_hexrows(cur, "fx", f"pgcolumnar.read_parquet('{df}', ARRAY[2,1]) AS t(fx bytea, id bigint)"),
+                    FX3, "fixed(3) reads as bytea through read_parquet field ids")
+
+
+def test_fixed3_reads_as_bytea_through_iceberg_scan(pgc_conn, fixed_wh, expect):
+    if not _staged(fixed_wh, expect, "fixed(3) reads as bytea through iceberg_scan"):
+        return
+    _df, md = fixed_wh
+    with pgc_conn.cursor() as cur:
+        expect.text(_hexrows(cur, "fx", f"pgcolumnar.iceberg_scan('{md}') AS t(id bigint, fx bytea)"),
+                    FX3, "fixed(3) reads as bytea through iceberg_scan")
+
+
+def test_fixed3_reads_as_bytea_through_the_parquet_fdw(pgc_conn, fixed_wh, expect):
+    if not _staged(fixed_wh, expect, "fixed(3) reads as bytea through the parquet FDW"):
+        return
+    df, _md = fixed_wh
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE SERVER IF NOT EXISTS pq_fixed FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        cur.execute(f"CREATE FOREIGN TABLE ft_fixed (id bigint, fx bytea, f16 bytea) "
+                    f"SERVER pq_fixed OPTIONS (path '{df}')")
+        expect.text(_hexrows(cur, "fx", "ft_fixed"), FX3, "fixed(3) reads as bytea through the parquet FDW")
+
+
+def test_fixed3_reads_as_bytea_through_the_iceberg_fdw(pgc_conn, fixed_wh, expect):
+    if not _staged(fixed_wh, expect, "fixed(3) reads as bytea through the iceberg FDW"):
+        return
+    _df, md = fixed_wh
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE SERVER IF NOT EXISTS ice_fixed FOREIGN DATA WRAPPER pgcolumnar_iceberg")
+        cur.execute(f"CREATE FOREIGN TABLE ice_ft_fixed (id bigint, fx bytea) "
+                    f"SERVER ice_fixed OPTIONS (metadata_path '{md}')")
+        expect.text(_hexrows(cur, "fx", "ice_ft_fixed"), FX3, "fixed(3) reads as bytea through the iceberg FDW")
+
+
+def test_fixed16_still_reads_as_uuid(pgc_conn, fixed_wh, expect):
+    if not _staged(fixed_wh, expect, "fixed(16) still reads as uuid"):
+        return
+    df, _md = fixed_wh
+    with pgc_conn.cursor() as cur:
+        # by field id, so this reading does not depend on the fixed(3) column binding too
+        expect.text(_one(cur, f"SELECT string_agg(coalesce(f16::text, 'NULL'), ',' ORDER BY id) "
+                              f"FROM pgcolumnar.read_parquet('{df}', ARRAY[1,3]) AS t(id bigint, f16 uuid)"),
+                    "00010203-0405-0607-0809-0a0b0c0d0e0f,ffffffff-ffff-ffff-ffff-ffffffffffff,NULL",
+                    "fixed(16) still reads as uuid")
+
+
+def test_uuid_over_fixed3_is_refused_at_bind(pgc_conn, fixed_wh, expect):
+    if not _staged(fixed_wh, expect, "uuid over fixed(3) is refused at bind (42804)"):
+        return
+    df, _md = fixed_wh
+    with pgc_conn.cursor() as cur:
+        expect.text(_refusal(cur, f"SELECT * FROM pgcolumnar.read_parquet('{df}') AS t(id bigint, fx uuid, f16 uuid)"),
+                    '42804: Parquet column 1 physical type is not compatible with target column "fx" (uuid)',
+                    "uuid over fixed(3) is refused at bind (42804)")
+
+
+def test_uuid_over_fixed3_is_refused_at_field_id_bind(pgc_conn, fixed_wh, expect):
+    if not _staged(fixed_wh, expect, "uuid over fixed(3) is refused at field-id bind (42804)"):
+        return
+    _df, md = fixed_wh
+    with pgc_conn.cursor() as cur:
+        expect.text(_refusal(cur, f"SELECT * FROM pgcolumnar.iceberg_scan('{md}') AS t(id bigint, fx uuid)"),
+                    '42804: Parquet column with field id 2 has a physical type incompatible with output column "fx" (uuid)',
+                    "uuid over fixed(3) is refused at field-id bind (42804)")

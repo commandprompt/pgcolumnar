@@ -200,15 +200,49 @@ ice_field(JsonbContainer *c, const char *key)
 										palloc(sizeof(JsonbValue)));
 }
 
-/* interpret a JSON number as an int64; false if v is not a (non-null) number */
+/*
+ * Interpret a JSON number as an int64; false if v is not a (non-null) number.
+ * Every number this reader takes from metadata.json is an integer in the
+ * Iceberg spec. numeric_int8 rounds, so a fraction such as 1.4 used to read as
+ * 1 and could name another field (#1824). Refuse a fraction instead. A number
+ * outside int64 is refused by numeric_int8 itself.
+ */
 static bool
 ice_num_int64(JsonbValue *v, int64 *out)
 {
+	Datum		num;
+
 	if (v == NULL || v->type != jbvNumeric)
 		return false;
-	*out = DatumGetInt64(DirectFunctionCall1(numeric_int8,
-											 NumericGetDatum(v->val.numeric)));
+	num = NumericGetDatum(v->val.numeric);
+	*out = DatumGetInt64(DirectFunctionCall1(numeric_int8, num));
+	if (DatumGetInt32(DirectFunctionCall2(numeric_cmp, num,
+										  NumericGetDatum(int64_to_numeric(*out)))) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: metadata holds the non-integer number %s where an integer is required",
+						DatumGetCString(DirectFunctionCall1(numeric_out, num)))));
 	return true;
+}
+
+/*
+ * A schema field's "id" as an int, or -1 when it has none. A field id is an
+ * int in the Iceberg spec. A larger one used to truncate, so 2^32 + 1 read as
+ * field 1 and the column returned another field's values (#1824).
+ */
+static int64
+ice_schema_field_id(JsonbContainer *f, const char *name, int namelen)
+{
+	int64		fid;
+
+	if (!ice_num_int64(ice_field(f, "id"), &fid))
+		return -1;
+	if (fid < 0 || fid > PG_INT32_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: schema field \"%.*s\" has a field id out of range: " INT64_FORMAT,
+						namelen, name, fid)));
+	return fid;
 }
 
 /* a JSON string field as a palloc'd text Datum, or set the null flag */
@@ -252,9 +286,11 @@ ice_str_required(JsonbContainer *c, const char *key, const char *path)
 static JsonbContainer *
 ice_current_snapshot(JsonbContainer *root, const char *path, int64 *cur)
 {
+	JsonbValue *fv;
 	JsonbValue *csid;
 	JsonbValue *snaps;
 	JsonbContainer *arr;
+	int64		fmtver;
 	uint32		i,
 				n;
 
@@ -264,16 +300,36 @@ ice_current_snapshot(JsonbContainer *root, const char *path, int64 *cur)
 				 errmsg("iceberg: metadata \"%s\" is not a JSON object", path)));
 	/* a minimal is-this-Iceberg gate so a random JSON file is rejected, not
 	 * silently read as an empty table */
-	if (ice_field(root, "format-version") == NULL)
+	fv = ice_field(root, "format-version");
+	if (fv == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("iceberg: \"%s\" has no format-version; not a table metadata file",
 						path)));
+	/* the spec says a reader must refuse a format-version it does not know */
+	if (!ice_num_int64(fv, &fmtver))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" has a non-numeric format-version",
+						path)));
+	if (fmtver < 1 || fmtver > 3)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("iceberg: \"%s\" has an unsupported format-version " INT64_FORMAT,
+						path, fmtver),
+				 errdetail("This reader supports format-version 1, 2 and 3.")));
 
 	csid = ice_field(root, "current-snapshot-id");
 	/* absent, JSON null, or -1: a table with no current snapshot */
-	if (csid == NULL || csid->type == jbvNull ||
-		!ice_num_int64(csid, cur) || *cur < 0)
+	if (csid == NULL || csid->type == jbvNull)
+		return NULL;
+	/* a string here used to read as "no snapshot": an empty table (#1824) */
+	if (!ice_num_int64(csid, cur))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" has a current-snapshot-id that is not an integer",
+						path)));
+	if (*cur < 0)
 		return NULL;
 
 	snaps = ice_field(root, "snapshots");
@@ -701,7 +757,9 @@ typedef void (*IceDataFileCb) (void *ctx, PgColumnarAvroManifestEntry *e,
  * is false (the lister), any delete manifest or delete file is refused loudly
  * (0A000). When true (the scan), position-delete (content 1) and
  * equality-delete (content 2) entries are passed to `cb` alongside data entries
- * (content 0). Does nothing when there is no current snapshot.
+ * (content 0). Either way a manifest content, entry content or entry status
+ * outside the spec is refused as corrupt metadata (XX001). Does nothing when
+ * there is no current snapshot.
  */
 static void
 ice_walk_data_files(const char *path, JsonbContainer *root,
@@ -763,6 +821,14 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 
 		CHECK_FOR_INTERRUPTS();
 
+		/* the spec allows only 0 (data) and 1 (deletes); anything else is
+		 * corrupt metadata, not a delete manifest */
+		if (mfs[mi].content != 0 && mfs[mi].content != 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: manifest \"%s\" has invalid content %d",
+							mfs[mi].manifest_path, mfs[mi].content)));
+
 		/* the lister refuses a delete manifest without even opening it */
 		if (mfs[mi].content != 0 && !collect_deletes)
 			ereport(ERROR,
@@ -782,6 +848,22 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 			PgColumnarAvroManifestEntry *e = &entries[ei];
 
 			CHECK_FOR_INTERRUPTS();
+
+			/* the spec allows content 0 (data), 1 (position deletes) and 2
+			 * (equality deletes), and status 0 (existing), 1 (added) and 2
+			 * (deleted). Any other value is corrupt metadata: an unknown
+			 * content was once taken for an equality delete, which dropped the
+			 * file's rows with no error (#1823). */
+			if (e->content < 0 || e->content > 2)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("iceberg: manifest entry \"%s\" has invalid content %d",
+								e->file_path ? e->file_path : "(null)", e->content)));
+			if (e->status < 0 || e->status > 2)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("iceberg: manifest entry \"%s\" has invalid status %d",
+								e->file_path ? e->file_path : "(null)", e->status)));
 
 			if (!collect_deletes)
 			{
@@ -1038,6 +1120,11 @@ ice_current_schema_fields(JsonbContainer *root, const char *path)
  * A column name absent from the schema is an error. Name matching is exact and
  * case-sensitive against the schema (quote a mixed-case name in the column
  * definition list to preserve its case).
+ *
+ * So is a field whose type is nested -- a struct, list or map, written as a JSON
+ * object rather than a primitive's type string (#1788). Its id belongs to a
+ * Parquet group, not a leaf, so the reader would find no column to bind and
+ * return null on every row, whatever the output column's declared type.
  */
 static int *
 ice_field_ids_for_columns(JsonbContainer *root, TupleDesc tupdesc,
@@ -1080,7 +1167,23 @@ ice_field_ids_for_columns(JsonbContainer *root, TupleDesc tupdesc,
 			if ((int) strlen(nm) == fn->val.string.len &&
 				strncmp(nm, fn->val.string.val, fn->val.string.len) == 0)
 			{
-				if (ice_num_int64(ice_field(f->val.binary.data, "id"), &fid))
+				JsonbValue *ft = ice_field(f->val.binary.data, "type");
+
+				if (ft != NULL && ft->type == jbvBinary)
+				{
+					JsonbValue *kind = ice_field(ft->val.binary.data, "type");
+
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("iceberg: output column \"%s\" is a %s field; only top-level primitive columns can be read",
+									nm,
+									kind != NULL && kind->type == jbvString
+									? pnstrdup(kind->val.string.val, kind->val.string.len)
+									: "nested")));
+				}
+				fid = ice_schema_field_id(f->val.binary.data,
+										  fn->val.string.val, fn->val.string.len);
+				if (fid >= 0)
 					found = (int) fid;
 				break;
 			}
@@ -1105,7 +1208,6 @@ ice_field_id_by_name(JsonbContainer *fieldsc, uint32 nf, const char *nm)
 	{
 		JsonbValue *sf = getIthJsonbValueFromContainer(fieldsc, j);
 		JsonbValue *sfn;
-		int64		fid;
 
 		if (sf == NULL || sf->type != jbvBinary)
 			continue;
@@ -1114,11 +1216,8 @@ ice_field_id_by_name(JsonbContainer *fieldsc, uint32 nf, const char *nm)
 			continue;
 		if ((int) strlen(nm) == sfn->val.string.len &&
 			strncmp(nm, sfn->val.string.val, sfn->val.string.len) == 0)
-		{
-			if (ice_num_int64(ice_field(sf->val.binary.data, "id"), &fid))
-				return fid;
-			return -1;
-		}
+			return ice_schema_field_id(sf->val.binary.data,
+									   sfn->val.string.val, sfn->val.string.len);
 	}
 	return -1;
 }
@@ -2185,8 +2284,11 @@ ice_scan_cb(void *ctx, PgColumnarAvroManifestEntry *e,
 		c->data = lappend(c->data, ie);
 	else if (e->content == 1)
 		c->posdel = lappend(c->posdel, ie);
-	else
+	else if (e->content == 2)
 		c->eqdel = lappend(c->eqdel, ie);
+	else						/* ice_walk_data_files refuses any other */
+		elog(ERROR, "iceberg: unexpected content %d for \"%s\"",
+			 e->content, e->file_path);
 }
 
 /*

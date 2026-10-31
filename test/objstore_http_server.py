@@ -46,6 +46,21 @@
 #   __list_uploads_delay__ a number of seconds: ListMultipartUploads (GET
 #                         ?uploads) is answered only after that long, a silent
 #                         store for the client's bounded wait.
+#   __complete_delay__    a number of seconds (#1813): CompleteMultipartUpload
+#                         (POST ?uploadId=) writes the object at once and
+#                         answers only after that long, so a suite can end the
+#                         client after the store committed the object.
+#   __put_delay__         a number of seconds (#1813): a single-request PUT
+#                         (no partNumber) writes the object at once and answers
+#                         only after that long, for the same window.
+#   __complete_drop__     a number of seconds (#1846): CompleteMultipartUpload
+#                         writes the object at once, waits that long, and then
+#                         closes the connection with no answer, as a store
+#                         that applied the request and lost the connection.
+#   __put_status__        "STATUS KEY": a plain PUT (no multipart) of exactly
+#                         "bucket/KEY" is answered with STATUS and not stored,
+#                         so a suite can refuse one object, such as a parallel
+#                         export's _SUCCESS marker, and let every other through.
 # --seed-upload KEY (repeatable) opens an upload at KEY ("bucket/key") before
 # the first request: an upload some other writer left, which a client must not
 # abort as its own.
@@ -197,6 +212,12 @@ class Handler(BaseHTTPRequestHandler):
         """True when the request may proceed. Answers 403 itself otherwise."""
         srv = self.server
         if srv.sigv4_secret is None:
+            # Unsigned mode still reads a write's body (#1779): the PUT and
+            # POST handlers use self._body, which only the verifier below set,
+            # so an unsigned write killed the handler before any answer.
+            if self.command in ("PUT", "POST"):
+                clen = int(self.headers.get("Content-Length", "0") or "0")
+                self._body = self.rfile.read(clen) if clen else b""
             return True
         auth = self.headers.get("Authorization", "")
         m = AUTH_RE.match(auth)
@@ -507,9 +528,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        putst = os.path.join(self.server.rootdir, "__put_status__")
+        if os.path.exists(putst):
+            with open(putst) as f:
+                code, key = f.read().split()
+            if os.path.relpath(local, self.server.rootdir) == key:
+                self._deny(int(code), "AccessDenied")
+                return
         os.makedirs(os.path.dirname(local), exist_ok=True)
         with open(local, "wb") as f:
             f.write(self._body)
+        _hook_sleep(self.server.rootdir, "__put_delay__")
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -568,6 +597,11 @@ class Handler(BaseHTTPRequestHandler):
             with open(local, "wb") as f:
                 for n, _ in listed:
                     f.write(up["parts"][n])
+            if os.path.exists(os.path.join(self.server.rootdir, "__complete_drop__")):
+                _hook_sleep(self.server.rootdir, "__complete_drop__")
+                self.close_connection = True
+                return
+            _hook_sleep(self.server.rootdir, "__complete_delay__")
             body = b"<?xml version=\"1.0\"?><CompleteMultipartUploadResult/>"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))

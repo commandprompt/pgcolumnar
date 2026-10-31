@@ -95,6 +95,7 @@ WHM="$FX/warehouse_malformed"
 	&& [ -f "$WHM/nullminseq_ml/ml.avro" ] \
 	&& [ -f "$WHM/nullmanifestpath/db/t/metadata/t.metadata.json" ] \
 	&& [ -f "$WHM/danglingschema/db/t/metadata/t.metadata.json" ] \
+	&& [ -f "$WHM/enum_ctl/db/t/metadata/t.metadata.json" ] \
 	|| pgc_skip fixture "malformed iceberg fixtures are missing"
 python3 -c 'import json' 2>/dev/null || pgc_skip python "python3 is needed"
 
@@ -272,5 +273,141 @@ check "control: the legacy table binds amount correctly (10..50)" \
 	"$(q "SELECT string_agg(amount::text, ',' ORDER BY amount)
 	      FROM pgcolumnar.iceberg_scan('$LS') AS t(id bigint, region text, amount int)")" \
 	"10,20,30,40,50"
+
+
+# =========================================================================
+# #1824  malformed numbers in metadata.json were read, not refused. A field id
+#     above INT32 truncated to another field's id (4294967297 -> 1), a fraction
+#     rounded (1.4 -> 1), so "amount" returned the "id" column. format-version 99
+#     read as v2, and a string current-snapshot-id read as an empty table. The
+#     variants are edited copies of the db/events fixture (id 1, region 2,
+#     amount 3), written next to the original so they read its data files.
+# =========================================================================
+LAX="$PGC_WORKDIR/lax"
+rm -rf "$LAX"; mkdir -p "$LAX"
+cp -r "$FX/warehouse/db" "$LAX/"; chmod -R u+rwX "$LAX"
+LAXMD="$LAX/db/events/metadata"
+LAXSRC="$LAXMD/00001-6808fe8c-acd3-4fbf-9fbe-1ac447a16b3c.metadata.json"
+python3 - "$LAXSRC" <<'PYEOF'
+import json, os, sys
+src = sys.argv[1]; d = os.path.dirname(src)
+def variant(name, edit):
+    m = json.load(open(src)); edit(m)
+    json.dump(m, open(os.path.join(d, name + ".metadata.json"), "w"))
+def amount_id(v):
+    def edit(m):
+        for s in m["schemas"]:
+            for f in s["fields"]:
+                if f["name"] == "amount": f["id"] = v
+    return edit
+variant("bigid", amount_id(4294967297))   # 2^32 + 1 truncates to 1, the id field
+variant("fracid", amount_id(1.4))          # rounds to 1
+variant("fv99", lambda m: m.__setitem__("format-version", 99))
+variant("csidx", lambda m: m.__setitem__("current-snapshot-id", "x"))
+variant("csidneg", lambda m: m.__setitem__("current-snapshot-id", -1))
+variant("fv4", lambda m: m.__setitem__("format-version", 4))   # the bounds of 1..3
+variant("fv0", lambda m: m.__setitem__("format-version", 0))
+variant("csidnull", lambda m: m.__setitem__("current-snapshot-id", None))
+PYEOF
+FIDRANGE='schema field "amount" has a field id out of range: 4294967297'
+NONINT='holds the non-integer number 1.4 where an integer is required'
+check "control: the unedited events metadata reads amount 10..50" \
+	"$(q "SELECT string_agg(amount::text, ',' ORDER BY id) FROM pgcolumnar.iceberg_scan('$LAXSRC') AS t(id bigint, amount int)")" \
+	"10,20,30,40,50"
+B="$(crashes)"
+check "a field id above INT32 is refused (XX001), not aliased to another field" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$LAXMD/bigid.metadata.json') AS t(amount bigint)" \
+		"$FIDRANGE" "field id out of range")" "XX001 (field id out of range)"
+check "a field id above INT32 is named even when its alias is also queried" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$LAXMD/bigid.metadata.json') AS t(id bigint, amount bigint)" \
+		"$FIDRANGE" "field id out of range")" "XX001 (field id out of range)"
+check "a fractional field id is refused (XX001), not rounded" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$LAXMD/fracid.metadata.json') AS t(amount bigint)" \
+		"$NONINT" "non-integer number")" "XX001 (non-integer number)"
+check "format-version 99 is refused (0A000), not read as v2" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv99.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 99' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "format-version 4 is refused (0A000), one above the newest known" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv4.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 4' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "format-version 0 is refused (0A000), one below the oldest known" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv0.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 0' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "a string current-snapshot-id is refused (XX001), not read as an empty table" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidx.metadata.json') AS t(id bigint)" \
+		'has a current-snapshot-id that is not an integer' "non-integer current-snapshot-id")" \
+	"XX001 (non-integer current-snapshot-id)"
+check "backend still up after the malformed-number refusals" "$(survived "$B")" "1"
+check "control: current-snapshot-id -1 still reads as a table with no snapshot (0 rows)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidneg.metadata.json') AS t(id bigint)")" "0"
+check "control: a null current-snapshot-id still reads as a table with no snapshot (0 rows)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidnull.metadata.json') AS t(id bigint)")" "0"
+
+# =========================================================================
+# #1823  manifest enum fields outside the spec. data_file.content may be only
+#     0 (data), 1 (position deletes) or 2 (equality deletes); any other value was
+#     sorted as an equality delete. On the OLDEST data file that delete was then
+#     skipped as never applicable, so the file's five rows vanished with no error;
+#     on the newest the scan failed with a misleading "has no equality_ids". The
+#     lister called it a delete file (0A000). manifest_entry.status (0..2) and
+#     manifest_file.content (0..1) were not range-checked either. Each variant is
+#     enum_ctl with ONE value changed, and each refusal must name the value.
+# =========================================================================
+md_of() { echo "$DEST/$1/db/t/metadata/t.metadata.json"; }
+EN="AS t(id bigint, region text, amount int)"
+check "control: two valid data entries scan as ten rows (ids 1..10)" \
+	"$(q "SELECT count(*) || '|' || min(id) || '|' || max(id) FROM pgcolumnar.iceberg_scan('$(md_of enum_ctl)') $EN")" \
+	"10|1|10"
+check "control: two valid data entries list two data files" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$(md_of enum_ctl)')")" "2"
+B="$(crashes)"
+check "data_file.content 3 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of content3_old)') $EN" \
+		'manifest entry ".*/old\.parquet" has invalid content 3$' "invalid content 3")" \
+	"XX001 (invalid content 3)"
+check "data_file.content -1 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of contentm1_old)') $EN" \
+		'manifest entry ".*/old\.parquet" has invalid content -1$' "invalid content -1")" \
+	"XX001 (invalid content -1)"
+check "data_file.content 3 on the newest file is refused naming the value, not as an equality delete with no ids" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of content3_new)') $EN" \
+		'manifest entry ".*/new\.parquet" has invalid content 3$' "invalid content 3")" \
+	"XX001 (invalid content 3)"
+check "iceberg_data_files refuses data_file.content 3 as corrupt (XX001), not as a delete file (0A000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_data_files('$(md_of content3_old)')" \
+		'manifest entry ".*/old\.parquet" has invalid content 3$' "invalid content 3")" \
+	"XX001 (invalid content 3)"
+check "manifest_entry.status 3 is refused by iceberg_scan (XX001), not read as a live entry" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of status3_old)') $EN" \
+		'manifest entry ".*/old\.parquet" has invalid status 3$' "invalid status 3")" \
+	"XX001 (invalid status 3)"
+check "iceberg_data_files refuses manifest_entry.status 3 (XX001), not listed" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_data_files('$(md_of status3_old)')" \
+		'manifest entry ".*/old\.parquet" has invalid status 3$' "invalid status 3")" \
+	"XX001 (invalid status 3)"
+check "manifest_file.content 5 is refused by iceberg_scan (XX001), not read as a data manifest" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of mfcontent5)') $EN" \
+		'manifest ".*/dm\.avro" has invalid content 5$' "invalid manifest content 5")" \
+	"XX001 (invalid manifest content 5)"
+check "iceberg_data_files refuses manifest_file.content 5 as corrupt (XX001), not as a delete manifest (0A000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_data_files('$(md_of mfcontent5)')" \
+		'manifest ".*/dm\.avro" has invalid content 5$' "invalid manifest content 5")" \
+	"XX001 (invalid manifest content 5)"
+# A value outside int32 was cast before that range check, so 2^32 wrapped to 0
+# and 2^32+1 to 1: valid values, read as live data with no error. The decoder
+# refuses it before the cast; no path is decoded yet for an entry's enum.
+check "data_file.content 4294967296 on the oldest file is refused by iceberg_scan (XX001), not wrapped to 0" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of content4g_old)') $EN" \
+		'manifest entry has invalid content 4294967296$' "invalid content 4294967296")" \
+	"XX001 (invalid content 4294967296)"
+check "manifest_entry.status 4294967297 is refused by iceberg_scan (XX001), not wrapped to 1" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of status4g_old)') $EN" \
+		'manifest entry has invalid status 4294967297$' "invalid status 4294967297")" \
+	"XX001 (invalid status 4294967297)"
+check "manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not wrapped to 0" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of mfcontent4g)') $EN" \
+		'manifest ".*/dm\.avro" has invalid content 4294967296$' "invalid manifest content 4294967296")" \
+	"XX001 (invalid manifest content 4294967296)"
+check "backend still up after the enum refusals" "$(survived "$B")" "1"
 
 pgc_summary

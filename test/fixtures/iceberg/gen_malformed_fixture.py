@@ -16,6 +16,12 @@
 #   arrayfield/evil.avro  an Avro OCF whose record schema "fields" element is a
 #                 JSON array [[0]] -> was an assert-abort / OOB heap read
 #   arrayfield/good.avro  same framing, a well-formed field object (control)
+#   enum_ctl      two data files, one manifest (control: ten rows, two files)
+#   content3_old / contentm1_old / content3_new / status3_old / mfcontent5
+#                 enum_ctl with one data_file.content, manifest_entry.status or
+#                 manifest_file.content outside the spec (#1823)
+#   content4g_old / status4g_old / mfcontent4g
+#                 the same three fields at 2^32 or 2^32+1, outside int32 (#1823)
 import sys, os, json, shutil
 import pyarrow as pa, pyarrow.parquet as pq
 
@@ -58,9 +64,9 @@ SCHEMA = {"schema-id": 0, "type": "struct", "fields": ICE_FIELDS}
 SNAP = 4242
 
 
-def write_data_parquet(dest):
+def write_data_parquet(dest, ids=(1, 2, 3, 4, 5)):
     data = pa.table({
-        "id": pa.array([1, 2, 3, 4, 5], pa.int64()),
+        "id": pa.array(list(ids), pa.int64()),
         "region": pa.array(["eu", "eu", "us", "us", "us"], pa.string()),
         "amount": pa.array([10, 20, 30, 40, 50], pa.int32()),
     }, schema=pa.schema([
@@ -318,6 +324,49 @@ mfrec = zz(0) + zz(1000) + zz(0) + zz(0) + (zz(1) + zz(5)) + zz(5) + zz(SNAP)
 open(os.path.join(nmp, "ml.avro"), "wb").write(ocf(MFILE_NULLPATH, [mfrec]))
 open(os.path.join(nmp, "t.metadata.json"), "w").write(
     metadata_json(nmp_loc, "ml.avro", 2, 5))
+
+
+# ============================ enum fields (#1823) ==
+# Two data files in one data manifest: old.parquet (ids 1..5, entry seq 4) and
+# new.parquet (ids 6..10, entry seq 5). The Iceberg spec allows only 0, 1 and 2 for
+# data_file.content and for manifest_entry.status, and only 0 and 1 for
+# manifest_file.content. An unknown data_file.content was sorted as an equality
+# delete: on the OLDEST file it was then skipped as never applicable, so that
+# file's five rows vanished with no error; on the newest it failed with a
+# misleading "has no equality_ids". Each variant below changes ONE value of the
+# control; the reader must refuse it as corrupt metadata, naming the value.
+def build_enum(name, old_content=0, new_content=0, old_status=1, mf_content=0):
+    root = os.path.join(OUT, name)
+    md = os.path.join(root, "db", "t", "metadata")
+    dd = os.path.join(root, "db", "t", "data")
+    os.makedirs(md); os.makedirs(dd)
+    loc = f"file://{ROOT}/{name}/db/t"
+    write_data_parquet(os.path.join(dd, "old.parquet"))                  # ids 1..5
+    write_data_parquet(os.path.join(dd, "new.parquet"), range(6, 11))    # ids 6..10
+    ents = []
+    for fname, status, seq, content in (("old", old_status, 4, old_content),
+                                        ("new", 1, 5, new_content)):
+        fp = zz(1) + s(f"{loc}/data/{fname}.parquet".encode())
+        ents.append(zz(status) + (zz(1) + zz(seq)) + zz(content) + fp +
+                    s(b"PARQUET") + zz(5) + zz(1000))
+    open(os.path.join(md, "dm.avro"), "wb").write(ocf(ENTRY_NULLPATH, ents))
+    open(os.path.join(md, "ml.avro"), "wb").write(
+        ocf(MFILE_V2, [mfile_v2(f"{loc}/metadata/dm.avro", mf_content, 5, SNAP)]))
+    open(os.path.join(md, "t.metadata.json"), "w").write(
+        metadata_json(loc, "ml.avro", 2, 5))
+
+
+build_enum("enum_ctl")                          # control: 10 rows, 2 files listed
+build_enum("content3_old", old_content=3)       # was: 5 rows, no error
+build_enum("contentm1_old", old_content=-1)     # was: 5 rows, no error
+build_enum("content3_new", new_content=3)       # was: "has no equality_ids"
+build_enum("status3_old", old_status=3)         # was: read as live data
+build_enum("mfcontent5", mf_content=5)          # was: read as a data manifest
+# A value outside int32 was cast to int32 before the range check, so 2^32 wrapped
+# to 0 and 2^32+1 to 1, both valid: each read as live data with no error.
+build_enum("content4g_old", old_content=2**32)  # was: 10 rows, read as data
+build_enum("status4g_old", old_status=2**32 + 1)  # was: 10 rows, read as added
+build_enum("mfcontent4g", mf_content=2**32)     # was: read as a data manifest
 
 
 print("malformed fixtures written under", OUT)

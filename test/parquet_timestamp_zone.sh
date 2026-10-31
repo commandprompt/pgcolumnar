@@ -136,4 +136,21 @@ check_text "a legacy TIMESTAMP_MICROS file read into timestamp is the session-zo
 check_text "a legacy TIMESTAMP_MICROS file read into timestamptz keeps its instant" \
 	"$(q "SELECT t::text FROM f_leg_tz;")" "2024-06-01 08:00:00-04"
 
+# parquet_schema advises the type that reads each column unchanged (#1807).
+# It advised timestamp for every millis or micros timestamp, so a user who
+# copied the advice read an instant as its wall time in the session zone (the
+# a_ts reading above). An instant (isAdjustedToUTC=true, or the legacy
+# TIMESTAMP_MICROS type) must be advised as timestamptz.
+pq_advice() {	# pq_advice FILE -> "name|type" per leaf, comma-separated
+	q "SELECT string_agg(column_name || '|' || data_type, ',' ORDER BY n)
+	   FROM pgcolumnar.parquet_schema('$1') WITH ORDINALITY AS s(column_name, data_type, nullable, field_id, n);"
+}
+check_text "parquet_schema advises timestamptz for an adjusted file and timestamp for a naive one (#1807)" \
+	"$(pq_advice "$W/adjusted.parquet") $(pq_advice "$W/naive.parquet")" \
+	"t|timestamp with time zone t|timestamp without time zone"
+check_text "parquet_schema advises the source types for export_parquet's timestamp and timestamptz (#1807)" \
+	"$(pq_advice "$W/rt.parquet")" "ts|timestamp without time zone,tz|timestamp with time zone"
+check_text "parquet_schema advises timestamptz for a legacy TIMESTAMP_MICROS column (#1807)" \
+	"$(pq_advice "$W/legacy.parquet")" "t|timestamp with time zone"
+
 pgc_summary
