@@ -946,8 +946,11 @@ old name, and columns are selected by id.
 
 The file must carry field ids. A file written without them is an error that
 directs you to the positional form above. Each requested id must match exactly
-one scalar column of a compatible type. An absent id is an error. So is an id
-that matches more than one column, or an array or composite output column. None
+one scalar column of a compatible type. A compatible type includes Iceberg's two
+exact widenings: an integer `INT32` column reads as `bigint`, and a `FLOAT`
+column as `double precision`. The positional form above does not widen. An
+absent id is an error. So is an id that matches more than one column, or an
+array or composite output column. None
 is a silent wrong column. Read the ids a file carries with `parquet_schema`.
 
 ```sql
@@ -1047,8 +1050,12 @@ location. That location is taken from where `metadata.json` sits. A table copied
 to a new directory therefore still reads. A recorded path that points outside
 the table location is refused, not read.
 
+A data file that the current snapshot removed is not live, so it is skipped. A
+copy-on-write delete or a filtered overwrite records the file it replaced this
+way, as a manifest entry with status 2 (DELETED).
+
 Delete files are refused, not ignored. A snapshot that carries any delete
-manifest or delete entry raises an error here. It does not return rows the table
+manifest or delete file raises an error here. It does not return rows the table
 says are gone. To read a table that uses deletes, use `iceberg_scan`, which
 applies position, equality, and deletion-vector deletes.
 
@@ -1090,6 +1097,16 @@ A projected column that the file does not carry reads as null. This covers a
 column added to the schema after the file was written. It also covers a column
 an id-less file has but the mapping does not bind. The file's other columns
 return their real values.
+
+A column whose type was promoted reads as its current type. Iceberg allows three
+promotions: `int` to `long`, `float` to `double`, and a `decimal` to a larger
+precision at the same scale. A data file written before the promotion still
+stores the old type, and its values are widened as they are read. Declare such a
+column with the current schema's type: `bigint`, `double precision` or `numeric`.
+Files from before and after the promotion read together. An equality delete on a
+promoted column applies to both, whichever type its own file stores. A declared
+type narrower than a file's stored type is refused. So a column declared with its
+pre-promotion type errors once a file written after the promotion is live.
 
 Row-level deletes are applied, each kind under its own Iceberg sequence rule.
 A position delete drops the row ordinals it lists from the data file it names.
@@ -1178,7 +1195,8 @@ mint a bearer by the client-credentials grant. The request goes to
 `oauth_token_uri` when set, otherwise to `{catalog_uri}/v1/oauth/tokens`, with an
 optional `oauth_scope`. The client secret travels in the request body, never a
 URL or a log line. A mapping that sets only one of the pair is refused before any
-request is made.
+request is made, even when it also sets a static `token`. A mapping that sets a
+`token` and the complete pair uses the token and mints no bearer.
 
 Multi-level namespaces are given dot-separated, and the function requires the
 `pg_read_server_files` role, like the other Iceberg functions.
@@ -1366,7 +1384,11 @@ object-store module, since only it can issue the listing.
 On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes one
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`
 marker beside them on completion. Every other write function writes a single
-object at the exact key.
+object at the exact key. The workers use the calling session's values of
+`pgcolumnar.objstore_allowed_endpoints`, `pgcolumnar.objstore_s3_addressing` and
+`pgcolumnar.objstore_part_size`, including any set with `SET`. The endpoint is
+checked against the session's allow-list before any worker starts, so a refused
+endpoint fails before anything is uploaded.
 
 Remote paths carry the same privilege as local ones. A read needs
 `pg_read_server_files` and a write needs `pg_write_server_files`, over and above

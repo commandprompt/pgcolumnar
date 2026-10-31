@@ -7604,7 +7604,8 @@ The port of `test/iceberg_data_files.sh`, by name, one check per test (#1341). T
 
 - **The oracle is pyiceberg's own view,** committed as `expected_files.json`, so pyiceberg is not needed at test time.
 - **A manifest list outside the table's location is refused with 22023, by four routes:** a foreign absolute path, a `..` traversal, a sibling sharing the byte prefix, and a symlink under the location that targets a file outside it. XX001 would mean the backend opened the file.
-- **Deletes are refused, not ignored:** a delete manifest in the list, and a delete or removed entry inside a data manifest (#1341 item 49). Each table is crafted Avro, because no available writer emits these shapes. The added and the EXISTING entry must be listed, so a refusal comes from the entry, and a lister that keeps only ADDED entries fails.
+- **Deletes are refused, not ignored:** a delete manifest in the list, and a delete entry inside a data manifest (#1341 item 49). Each table is crafted Avro, because no available writer emits these shapes. The added and the EXISTING entry must be listed, so a refusal comes from the entry, and a lister that keeps only ADDED entries fails.
+- **A removed entry is skipped, not refused (#1791).** A DELETED (status 2) entry is a data file the current snapshot took out, so it is not live. A crafted entry shows it alone. A real pyiceberg table after a copy-on-write delete (`warehouse_cow`, written by `gen_iceberg_cow.py`) shows it against pyiceberg's own `plan_files`, and a second table whose delete removed every row lists nothing. A premise counts the status-2 entries of both tables in the committed Avro manifests, read with json and zlib only, and in the oracle, and shows both counts, so an oracle that drifted from the fixture fails it.
 - **The privilege** is read under `SET ROLE` to a role without `pg_read_server_files`.
 
 The shell's two skip names, "iceberg warehouse fixture is missing" and "python3 (json, zlib) is needed", are carried as the same declines.
@@ -7618,7 +7619,10 @@ The shell's two skip names, "iceberg warehouse fixture is missing" and "python3 
 | `test_returned_paths_are_rebased_under_the_actual_location`, `test_no_returned_path_leaks_the_recorded_root` | the rebasing |
 | `test_a_manifest_list_outside_the_location_is_refused`, `test_the_backend_survives_the_traversal_attempts` | the four escapes, refused with 22023 |
 | `test_a_snapshot_with_a_delete_manifest_is_refused`, `test_the_backend_survives_the_delete_refusal` | a delete manifest in the list, refused with 0A000 |
-| `test_the_control_entry_is_listed`, `test_an_existing_entry_is_listed`, `test_a_delete_entry_is_refused`, `test_the_backend_survives_the_entry_refusals` | an added and an existing entry are listed; a position-delete, an equality-delete and a DELETED entry are refused with 0A000 |
+| `test_the_control_entry_is_listed`, `test_an_existing_entry_is_listed`, `test_a_delete_entry_is_refused`, `test_the_backend_survives_the_entry_refusals` | an added and an existing entry are listed; a position-delete and an equality-delete entry are refused with 0A000 |
+| `test_a_deleted_entry_is_skipped` | a DELETED (status 2) entry is neither listed nor refused (#1791) |
+| `test_the_copy_on_write_fixture_carries_a_deleted_entry` | **premise**: both copy-on-write tables carry a DELETED (status 2) data entry, counted in the committed Avro manifests and in the oracle |
+| `test_a_copy_on_write_delete_lists_the_live_files`, `test_a_copy_on_write_delete_of_every_row_lists_nothing` | after a copy-on-write delete, the live files equal pyiceberg's `plan_files`; after deleting every row, nothing is listed (#1791) |
 | `test_a_table_with_no_current_snapshot_yields_no_data_files`, `test_an_unprivileged_role_is_refused` | no current snapshot lists nothing; a caller without `pg_read_server_files` gets 42501 |
 
 ## 133. test_native_skip.py: a type binary-coercible to its opclass's type prunes
@@ -9702,7 +9706,7 @@ One module fixture runs the three scenarios in a private database; session 2's b
 
 ## 231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate
 
-The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row.
+The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row. Over `warehouse_promo` (#1789), files written before an int -> long, float -> double or decimal(10,2) -> decimal(20,2) promotion read as the current types: alone, mixed with a newer file, under equality deletes on the promoted column written on both sides of it, and through a `pgcolumnar_iceberg` foreign table. A narrower declared type, a date declared bigint and positional `read_parquet`'s bigint over INT32 are refused with 42804, and `read_parquet` by field id widens.
 
 ### Every test
 
@@ -9731,6 +9735,20 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed me
 | `test_an_az_metadata_path_is_refused_as_remote` | an az:// metadata path is refused as a remote URL it cannot read (0A000) |
 | `test_iceberg_scan_reads_a_lowercase_parquet_file_format` | iceberg_scan reads a data file whose file_format is lowercase parquet |
 | `test_iceberg_scan_reads_mixed_s3_and_s3a_paths` | iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a:// |
+| `test_the_promotion_fixture_stores_the_old_and_new_physical_types` | premise: the old files store k, f, d as INT32, FLOAT and decimal(10,2), the new file as INT64, DOUBLE and decimal(20,2) |
+| `test_a_promoted_int_column_reads_old_files_as_bigint` | a promoted int -> long column reads the pre-promotion files as bigint |
+| `test_a_promoted_float_column_reads_old_files_as_double` | a promoted float -> double column reads the pre-promotion files as double precision |
+| `test_a_promoted_decimal_column_reads_old_files` | a promoted decimal(10,2) -> decimal(20,2) column reads the pre-promotion files |
+| `test_old_and_new_files_bind_to_the_promoted_types` | old and new files both bind to the promoted types in one snapshot |
+| `test_an_equality_delete_on_a_promoted_column_applies` | an equality delete on a promoted column applies to old and new files |
+| `test_an_equality_delete_on_an_unprojected_promoted_column_applies` | an equality delete on a promoted column applies when that column is not projected |
+| `test_a_foreign_table_reads_the_promoted_types` | a pgcolumnar_iceberg foreign table reads old and new files as the promoted types |
+| `test_a_foreign_table_applies_an_equality_delete_on_a_promoted_column` | a pgcolumnar_iceberg foreign table applies an equality delete on a promoted column |
+| `test_a_column_declared_int_over_an_int64_file_is_refused` | a column declared int over a post-promotion INT64 file is refused (42804) |
+| `test_a_column_declared_real_over_a_double_file_is_refused` | a column declared real over a post-promotion DOUBLE file is refused (42804) |
+| `test_a_date_column_declared_bigint_is_refused` | a date column declared bigint is refused, not widened (42804) |
+| `test_read_parquet_by_field_id_widens_an_int32_column` | read_parquet by field id reads an INT32 column as bigint |
+| `test_positional_read_parquet_keeps_its_exact_type_map` | positional read_parquet still refuses bigint over an INT32 column (42804) |
 
 ## 232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot
 
@@ -10867,7 +10885,7 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 
 ## 273. test_iceberg_rest.py: the Iceberg REST catalog resolves a table, keeps its token out of every log, and refuses what it must
 
-The twin of `test/iceberg_rest.sh`. A private cluster is restarted with the bearer token in its postmaster environment (and with a wrong one, and with none) against the shell's own REST fixture server, which verifies the Authorization header. The table resolves to its metadata location, the token reaches neither the server log nor the catalog's request log, and each refusal comes from its own guard.
+The twin of `test/iceberg_rest.sh`. A private cluster is restarted with the bearer token in its postmaster environment (and with a wrong one, and with none) against the shell's own REST fixture server, which verifies the Authorization header. The table resolves to its metadata location, also when the catalog ends the reply by closing the connection, the token reaches neither the server log nor the catalog's request log, and each refusal comes from its own guard.
 
 ### Every test
 
@@ -10886,13 +10904,15 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_a_catalog_endpoint_off_the_allow_list_is_refused` | a catalog endpoint off the allow-list is refused (42501) |
 | `test_a_link_local_catalog_host_is_refused_even_if_allow_listed` | a link-local catalog host is refused even if allow-listed (42501) |
 | `test_an_over_cap_catalog_response_is_refused` | an over-cap catalog response is refused (54000) |
+| `test_a_close_delimited_loadtable_reply_resolves` | a close-delimited loadTable reply resolves the metadata-location |
+| `test_an_over_cap_close_delimited_catalog_response_is_refused` | an over-cap close-delimited catalog response is refused (54000) |
 | `test_an_unknown_rest_table_surfaces_a_clean_not_found` | an unknown table surfaces a clean not-found (42P01) |
 | `test_a_non_object_catalog_config_is_refused` | a non-object catalog config is refused, not walked (XX001) |
 | `test_the_backend_is_still_up_after_the_rest_refusals` | backend still up after the REST refusals |
 
 ## 274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table
 
-The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails.
+The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, reads a table promoted int -> long, float -> double and decimal(10,2) -> decimal(20,2) from a second fixture server as the promoted types (#1789), lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails.
 
 ### Every test
 
@@ -10905,6 +10925,8 @@ Every test makes one check under the shell's name. The not-found reads as 42P01 
 | `test_iceberg_rest_scan_returns_the_five_current_snapshot_rows` | iceberg_rest_scan returns the five current-snapshot rows |
 | `test_iceberg_rest_scan_matches_iceberg_scan_of_the_same_table` | iceberg_rest_scan matches iceberg_scan of the same table (same oracle) |
 | `test_iceberg_rest_scan_projects_and_reorders_by_field_id` | iceberg_rest_scan projects and reorders by field id (amount, id) |
+| `test_the_promoted_table_rest_server_is_up` | premise: the promoted-table rest fixture server is up |
+| `test_iceberg_rest_scan_reads_a_promoted_tables_old_and_new_files` | iceberg_rest_scan reads a promoted table's old and new files as the promoted types |
 | `test_iceberg_rest_namespaces_lists_the_catalogs_namespaces` | iceberg_rest_namespaces lists the catalog's namespaces |
 | `test_iceberg_rest_tables_lists_a_namespaces_tables` | iceberg_rest_tables lists a namespace's tables |
 | `test_iceberg_rest_scan_of_an_unknown_table_is_a_clean_not_found` | iceberg_rest_scan of an unknown table is a clean not-found (42P01) |
@@ -10935,7 +10957,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 ## 276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else
 
-The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; and a non-superuser borrows the environment token only when a superuser waived its credentials.
+The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request and even beside a static token; a static token wins over a complete pair, with no token request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; and a non-superuser borrows the environment token only when a superuser waived its credentials.
 
 ### Every test
 
@@ -10963,7 +10985,10 @@ Every test makes one check under the shell's name. An "accepted" arm reads `ok` 
 | `test_the_client_secret_is_not_in_the_server_log` | the client secret never appears in the PG server log |
 | `test_a_wrong_oauth_client_secret_is_refused` | a wrong OAuth2 client secret is refused (28000) |
 | `test_a_half_oauth_credential_is_refused_before_any_request` | a half OAuth2 credential (id, no secret) is refused before any request (28000) |
+| `test_a_half_oauth_id_is_refused_even_with_a_static_token` | a half OAuth2 credential (id, no secret) is refused even with a static token (28000) |
+| `test_a_half_oauth_secret_is_refused_even_with_a_static_token` | a half OAuth2 credential (secret, no id) is refused even with a static token (28000) |
 | `test_oauth_options_are_accepted_on_a_mapping` | oauth options are accepted on a USER MAPPING (no error) |
+| `test_a_static_token_wins_over_a_complete_oauth_pair` | a static token and a complete OAuth2 pair read by the token, with no token request |
 | `test_an_oauth_option_on_the_server_is_rejected` | an oauth option on the SERVER is rejected (HV00D) |
 | `test_a_link_local_token_uri_is_refused_by_the_allow_list` | a link-local oauth_token_uri is refused by the allow-list (42501) |
 | `test_an_off_list_token_uri_host_is_refused` | an off-allow-list oauth_token_uri host is refused (42501) |
@@ -12466,7 +12491,7 @@ Every test makes one check under the shell's name, on a private database. The wo
 
 ## 326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received
 
-The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, and a key with a space, '+' and '=' under both addressings. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
+The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, a key with a space, '+' and '=' under both addressings, and prefix and pattern reads, whose LIST must go to the bucket root under virtual-host (#1783), as must the upload cleanup listing of a parallel export whose worker fails, and that cleanup must abort an upload a terminated worker left open. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
 
 ### Every test
 
@@ -12486,6 +12511,16 @@ Every test makes one check under the shell's name. Each addressing check reads t
 | `test_virtual_host_puts_the_key_alone_in_the_path` | virtual-host put the KEY ALONE in the path (no bucket segment) |
 | `test_a_key_needing_encoding_reads_back_virtual_host` | a key with a space, '+' and '=' reads back (virtual-host) |
 | `test_the_virtual_host_request_path_is_the_key_alone_encoded_once` | and its virtual-host request path is the key alone, URI-encoded once |
+| `test_an_s3_prefix_read_path_style` | s3:// prefix read, path-style |
+| `test_the_path_style_list_puts_the_bucket_in_the_path` | and its path-style LIST put the bucket in the request path |
+| `test_an_s3_prefix_read_virtual_host` | s3:// prefix read, virtual-host |
+| `test_the_virtual_host_list_goes_to_the_bucket_root` | and its virtual-host LIST went to the bucket root |
+| `test_an_s3_pattern_read_virtual_host` | s3:// pattern read, virtual-host |
+| `test_the_pattern_read_virtual_host_list_goes_to_the_bucket_root` | and the pattern read's virtual-host LIST went to the bucket root |
+| `test_the_virtual_host_export_fails_in_a_worker` | premise: the virtual-host export fails in a worker |
+| `test_the_virtual_host_upload_cleanup_lists_at_the_bucket_root` | and its virtual-host upload cleanup listed the uploads at the bucket root |
+| `test_a_terminated_workers_upload_is_open_and_unanswered` | premise: a worker's upload is open and its id unanswered when the worker is terminated |
+| `test_the_virtual_host_upload_cleanup_aborts_the_open_upload` | and the virtual-host upload cleanup aborted the upload the worker left open |
 | `test_addressing_path_puts_the_bucket_back_in_the_path` | removal proof: with addressing=path the bucket is back in the path |
 | `test_the_request_path_carries_the_bucket_again` | and the request path carried the bucket again |
 | `test_s3_with_no_endpoint_demands_one` | s3:// with no endpoint demands one (names AWS_ENDPOINT_URL) |
@@ -12612,7 +12647,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, the workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780), and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
 
 ### Every test
 
@@ -12650,6 +12685,12 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_smaller_rerun_leaves_exactly_its_own_parts` | shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped) |
 | `test_the_larger_runs_stale_parts_are_gone` | shrink: parts 0002/0003 from the larger run are gone |
 | `test_the_marker_certifies_the_reconciled_prefix` | shrink: _SUCCESS certifies the reconciled prefix |
+| `test_a_session_set_to_empty_refuses_the_parallel_export` | premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check |
+| `test_the_dispatcher_raises_the_refusal_not_a_worker` | session allow-list: the dispatcher raises the refusal, not a worker -- with the settings handed to the workers but no check in the dispatcher, worker 0 refused |
+| `test_nothing_reached_the_prefix_the_session_refused` | session allow-list: nothing reached the refused prefix (no PUT, no POST) -- #1780: the workers uploaded part-0000 before the error |
+| `test_the_system_list_is_empty_before_the_widen_arm` | session allow-list: a new session sees an empty system list before the widen arm |
+| `test_a_session_set_widens_an_empty_system_list_for_the_workers` | session allow-list: a session SET widens an empty system list for the workers |
+| `test_a_session_part_size_reaches_the_workers` | parallel: a session SET of objstore_part_size reaches the workers (multipart) |
 | `test_a_worker_was_uploading_before_the_cancel` | premise: a worker was uploading before the cancel |
 | `test_all_four_uploads_were_open_before_the_cancel` | all four workers' uploads were open before the cancel -- an upload whose POST ?uploads is in flight is #1743's window |
 | `test_the_export_was_cancelled_not_completed` | premise: the export was cancelled, not completed |

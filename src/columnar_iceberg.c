@@ -875,11 +875,11 @@ typedef void (*IceDataFileCb) (void *ctx, PgColumnarAvroManifestEntry *e,
  * parsed once per call), reads its manifest list and each manifest (opening both
  * through ice_open_path's path boundary).
  *
- * When `collect_deletes` is false (the lister), any delete file or removed entry
- * is refused loudly (0A000). When true (the scan), position-delete (content 1)
- * and equality-delete (content 2) entries are passed to `cb` alongside data
- * entries (content 0), and removed entries (status 2) are skipped. Does nothing
- * when there is no current snapshot.
+ * Removed entries (status 2) are skipped in both modes. When `collect_deletes`
+ * is false (the lister), any delete manifest or delete file is refused loudly
+ * (0A000). When true (the scan), position-delete (content 1) and
+ * equality-delete (content 2) entries are passed to `cb` alongside data entries
+ * (content 0). Does nothing when there is no current snapshot.
  */
 static void
 ice_walk_data_files(const char *path, JsonbContainer *root,
@@ -963,14 +963,19 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 
 			if (!collect_deletes)
 			{
-				/* the lister refuses any delete file or removed entry */
-				if (e->content != 0 || e->status == 2)
+				/* the lister refuses any delete file. A removed entry (status
+				 * 2, DELETED) is a data file this snapshot took out, such as
+				 * the old file of a copy-on-write delete: it is not live, so
+				 * the lister skips it, as the scan does (#1791) */
+				if (e->content != 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("iceberg: snapshot " INT64_FORMAT " has delete files; reading tables with deletes is not supported",
 									cur),
 							 errdetail("Entry \"%s\" has content %d, status %d.",
 									   e->file_path, e->content, e->status)));
+				if (e->status == 2)
+					continue;
 			}
 			else
 			{
@@ -1081,9 +1086,11 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_data_files);
  * rows for a table with no current snapshot.
  *
  * Deletes are refused, not ignored: a snapshot that carries any delete manifest
- * (manifest_file.content != 0) or any delete/removed entry (data_file.content
- * != 0, or a DELETED status) raises feature_not_supported (0A000). A reader that
- * silently dropped deletes would return rows the table says are gone.
+ * (manifest_file.content != 0) or any delete-file entry (data_file.content != 0)
+ * raises feature_not_supported (0A000). A reader that silently dropped deletes
+ * would return rows the table says are gone. A removed entry (status 2, DELETED)
+ * is a data file this snapshot took out, such as the file a copy-on-write delete
+ * rewrote. It is not live, so it is skipped: neither listed nor refused (#1791).
  */
 Datum
 pgcolumnar_iceberg_data_files(PG_FUNCTION_ARGS)
