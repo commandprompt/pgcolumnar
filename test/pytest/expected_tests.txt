@@ -1258,13 +1258,47 @@ guard_tests 854
 # native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
 # 16 checks in 16 tests, by collection over the cluster files.
+# cluster_tests 4510 -> 4514 for #1818: four tests in test_iceberg_fdw.py for bucket[16] on a string
+# column under a deterministic and a nondeterministic collation, by collection: `4514 tests collected`.
 # cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
 # that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
-# cluster_tests 4516 -> 4543 for #1810's and #1813's serial and commit arms in
+# cluster_tests 4520 at the merge of origin/main (a247bea0) into fix/1818-iceberg-bucket-collation,
+# by collection: `4520 tests collected`.
+# cluster_tests 4510 -> 4526 for #1789: fourteen tests in test_iceberg_scan.py and two in
+# test_iceberg_rest_scan.py for a column read after an Iceberg type promotion, by collection:
+# `4526 tests collected`.
+# cluster_tests 4532 at the merge of origin/main (a247bea0) into fix/1789-iceberg-type-promotion,
+# by collection: `4532 tests collected`.
+# cluster_tests 4536 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4536 tests collected`.
+# cluster_tests 4516 -> 4524 for #1783's eight prefix, pattern and upload-cleanup tests in
+# test_objstore_addressing.py, by collection over the cluster files.
+# cluster_tests 4524 -> 4526 for #1783's two tests in test_objstore_addressing.py that an upload a
+# terminated worker left open is aborted under virtual-host addressing, by collection over the cluster files.
+# cluster_tests 4526 -> 4532 for #1780's test_objstore_sink_write.py, the twin of objstore_sink_write.sh:
+# 6 checks in 6 new tests (4, then 2 after review), by collection over the cluster files.
+# cluster_tests 4532 -> 4534 for #1787's two close-delimited reply tests in test_iceberg_rest.py (read to
+# the end, and refused past the cap), by collection over the cluster files.
+# cluster_tests 4534 -> 4536 for #1794's two half-pair tests in test_iceberg_rest_server.py (a half OAuth2
+# credential, id or secret, is refused even with a static token), by collection.
+# cluster_tests 4536 -> 4537 for #1794's token-wins test in test_iceberg_rest_server.py (a static token and a
+# complete OAuth2 pair read by the token, with no token request), by collection.
+# cluster_tests 4537 -> 4540 for #1791 in test_iceberg_data_files.py: the DELETED-entry case leaves the
+# refusal table for a test of its own (skipped, not refused), and three copy-on-write tests join it,
+# by collection over the cluster files.
+# cluster_tests 4560 at the merge of origin/main (9fc12386) into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
+# cluster_tests 4556 at the merge of origin/main (9fc12386) into fix/1789-iceberg-type-promotion,
+# by collection: `4556 tests collected`.
+# cluster_tests 4560 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
+# cluster_tests 4560 -> 4587 for #1810's and #1813's serial and commit arms in
 # test_objstore_export_open_uploads.py: 27 checks in 27 tests, by collection over the cluster files.
-# cluster_tests 4543 -> 4549 for #1846's complete-drop arm in test_objstore_export_open_uploads.py:
-# 6 checks in 6 tests, by collection over the cluster files: `4549 tests collected`.
-# cluster_tests 4549 -> 4562 for the #1846 review's serial double-cancel, put-refused and
+# cluster_tests 4587 -> 4593 for #1846's complete-drop arm in test_objstore_export_open_uploads.py:
+# 6 checks in 6 tests, by collection over the cluster files (`4549 tests collected` before main was merged).
+# cluster_tests 4593 -> 4606 for the #1846 review's serial double-cancel, put-refused and
 # earlier-export-warning checks in test_objstore_export_open_uploads.py: 13 checks in 13 tests,
-# by collection over the cluster files: `4562 tests collected`.
-cluster_tests 4562
+# by collection over the cluster files (`4562 tests collected` before main was merged).
+# cluster_tests 4606 at the merge of origin/main (6f88f973) into fix/1810-serial-export-cancel,
+# by collection: `4606 tests collected`.
+cluster_tests 4606
