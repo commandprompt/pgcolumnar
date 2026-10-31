@@ -10940,7 +10940,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 ## 276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else
 
-The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request and even beside a static token; a static token wins over a complete pair, with no token request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; and a non-superuser borrows the environment token only when a superuser waived its credentials.
+The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request and even beside a static token; a static token wins over a complete pair, with no token request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; a non-superuser borrows the environment token only when a superuser waived its credentials; and a role without USAGE on the server is refused 42501 before any request reaches the catalog, through a PUBLIC mapping and through its own mapping after a REVOKE, by every iceberg_rest_* function, while a foreign table on a catalog server reads nothing and a granted role still reads (#1819).
 
 ### Every test
 
@@ -10979,6 +10979,13 @@ Every test makes one check under the shell's name. An "accepted" arm reads `ok` 
 | `test_a_non_superuser_does_not_borrow_the_env_token` | a non-superuser with no token mapping is refused (28000) despite the environment token, before any request |
 | `test_a_non_superuser_cannot_waive_its_own_credentials` | and it cannot mark its own mapping credentials_required false (42501) |
 | `test_a_superuser_waiver_lets_the_role_read_by_the_env_token` | control: with credentials_required false set by a superuser, the same role reads by the environment token |
+| `test_the_role_without_usage_holds_no_usage_on_the_server` | premise: ice_n holds no USAGE on server pcat |
+| `test_a_role_without_usage_is_refused_through_a_public_mapping` | a role without USAGE on the server is refused through a PUBLIC mapping (42501), before any request |
+| `test_the_other_rest_functions_refuse_a_role_without_usage` | the namespace, table-list and scan functions refuse it too (42501), before any request |
+| `test_a_revoked_role_is_refused_through_its_own_mapping` | after REVOKE USAGE the role's own mapping is refused (42501), before any request |
+| `test_core_refuses_a_foreign_table_on_the_catalog_server` | control: core refuses that role a foreign table on the catalog server (42501) |
+| `test_a_foreign_table_on_a_catalog_server_reads_nothing` | a foreign table on a catalog server reads nothing (55000, no handler), before any request |
+| `test_a_granted_role_reads_through_the_public_mapping` | control: once granted USAGE the same role reads through the PUBLIC mapping |
 | `test_the_backend_survives_the_rest_server_arms` | backend still up |
 
 ## 277. test_hilbert_curve.py: the Hilbert clustering curve, pinned by its properties and by frozen bytes

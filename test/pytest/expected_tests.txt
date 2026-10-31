@@ -1258,10 +1258,14 @@ guard_tests 854
 # native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
 # 16 checks in 16 tests, by collection over the cluster files.
-# cluster_tests 4510 -> 4525 for #1821: fifteen tests in test_native_parquet_hardening.py for Parquet
-# string cells that are not valid in the server encoding, by collection: `4525 tests collected`.
+# cluster_tests 4510 -> 4517 for #1819: seven tests in test_iceberg_rest_server.py for USAGE on a
+# catalog server, by collection: `4517 tests collected`.
 # cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
 # that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
+# cluster_tests 4523 at the merge of origin/main (a247bea0) into fix/1819-rest-server-usage,
+# by collection: `4523 tests collected`.
+# cluster_tests 4510 -> 4525 for #1821: fifteen tests in test_native_parquet_hardening.py for Parquet
+# string cells that are not valid in the server encoding, by collection: `4525 tests collected`.
 # cluster_tests 4531 at the merge of origin/main (a247bea0) into fix/1821-parquet-string-encoding,
 # by collection: `4531 tests collected`.
 # cluster_tests 4510 -> 4525 for #1814: fifteen tests in test_native_parquet_hardening.py for
@@ -1285,6 +1289,8 @@ guard_tests 854
 # by collection: `4551 tests collected`.
 # cluster_tests 4566 at the merge of fix/1814-parquet-unsigned into fix/1821-parquet-string-encoding,
 # by collection: `4566 tests collected`.
+# cluster_tests 4573 at the merge of fix/1821-parquet-string-encoding into fix/1819-rest-server-usage,
+# by collection: `4573 tests collected`.
 # cluster_tests 4516 -> 4524 for #1783's eight prefix, pattern and upload-cleanup tests in
 # test_objstore_addressing.py, by collection over the cluster files.
 # cluster_tests 4524 -> 4526 for #1783's two tests in test_objstore_addressing.py that an upload a
@@ -1300,6 +1306,8 @@ guard_tests 854
 # cluster_tests 4537 -> 4540 for #1791 in test_iceberg_data_files.py: the DELETED-entry case leaves the
 # refusal table for a test of its own (skipped, not refused), and three copy-on-write tests join it,
 # by collection over the cluster files.
+# cluster_tests 4597 at the merge of origin/main (9fc12386) into fix/1819-rest-server-usage,
+# by collection: `4597 tests collected`.
 # cluster_tests 4590 at the merge of origin/main (9fc12386) into fix/1821-parquet-string-encoding,
 # by collection: `4590 tests collected`.
 # cluster_tests 4575 at the merge of origin/main (9fc12386) into fix/1814-parquet-unsigned,
@@ -1314,4 +1322,6 @@ guard_tests 854
 # by collection: `4575 tests collected`.
 # cluster_tests 4590 at the merge of fix/1814-parquet-unsigned into fix/1821-parquet-string-encoding,
 # by collection: `4590 tests collected`.
-cluster_tests 4590
+# cluster_tests 4597 at the merge of fix/1821-parquet-string-encoding into fix/1819-rest-server-usage,
+# by collection: `4597 tests collected`.
+cluster_tests 4597
