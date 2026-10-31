@@ -466,6 +466,23 @@ true until the next version shipped.
 
 ### Fixed
 
+- A serial `export_parquet` or `export_arrow` to `s3://` that is cancelled or
+  terminated while it waits for the store to start its multipart upload no
+  longer leaves that upload open (#1810). The export had no upload id, so it
+  sent no abort. It now lists the open uploads for its own key and aborts them,
+  within 10 seconds. Uploads at other keys stay open. A `gs://` export still
+  leaves the upload open (#1854).
+- An `export_parquet` or `export_arrow` to `s3://` that is cancelled while the
+  store holds the answer to its last request now says what it wrote (#1813).
+  That request commits the object: the single PUT, or the completion of the
+  multipart upload. The statement used to end with the cancel error only, while
+  the new object had already replaced the old one at the key. The export now
+  waits for that answer and issues a warning that it wrote the object. The wait
+  ends when the answer arrives or after 60 seconds in which the store sends
+  nothing. The store cannot take a committed object back, so the object stays.
+  If the connection closes during the wait, the export does not resend the
+  request. It fails with an error that says the store may have written the
+  object (#1846).
 - `pgcolumnar.import_arrow` now reads the Arrow IPC file format, including
   Feather v2 (#1806). Before, a file that starts with `ARROW1` failed with
   `invalid memory alloc request size 1330795073`, because the reader took
