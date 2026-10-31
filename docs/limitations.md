@@ -1006,7 +1006,7 @@ listed are rejected.
 | `bytea` | yes | yes | yes | yes |
 | `date`, `time`, `timestamp`, `timestamptz` | yes | yes | yes | yes |
 | `uuid` | yes | yes | yes | yes |
-| `numeric` | yes | yes (`numeric(p,s)`, `p` <= 38) | yes | yes (DECIMAL only) |
+| `numeric` | yes | yes (`numeric(p,s)`, `p` <= 38) | yes | yes (DECIMAL, or UINT_64) |
 | `json`, `jsonb` | yes | yes | yes | no |
 | one-dimensional array of the above | yes | yes | yes | yes |
 | composite of the above | yes | yes | yes | yes |
@@ -1016,6 +1016,14 @@ imports `numeric` from a DECIMAL column with a precision up to 38. That column
 holds big-endian bytes, of fixed or variable length. The reader also imports
 `numeric` from an INT32 or an INT64 that holds the unscaled integer. Writers use
 that form for a small precision.
+
+An unsigned Parquet integer reads as the value it stores. A `UINT_32` column reads
+into `bigint`, and a `UINT_64` column reads into `numeric`, the types that hold its
+whole range. `parquet_schema` advises those two types. A narrower type is allowed
+too. A value that does not fit it raises `value out of range` (SQLSTATE 22003).
+Examples are 2^31 or more read into `integer`, and 2^63 or more read into `bigint`.
+`UINT_8` and `UINT_16` read into `integer`, and into `smallint` while each value
+fits.
 
 `numeric` needs a declared precision for a Parquet round trip. The exporter writes DECIMAL only for a column that you
 declare as `numeric(p,s)`, with `p` up to 38. It writes a `numeric` column with
@@ -1130,10 +1138,11 @@ correct rows; these are the conditions under which it can skip at all:
   time zone. Across a spring-forward gap that does not keep their order, so the
   statistics would not bound the rows.
 - The row group's statistics must carry both a minimum and a maximum, and the
-  interval must not be inverted. Two cases decode to an interval that the reader
-  does not trust for skipping. The first is an unsigned Parquet column that
-  crosses the sign boundary. The second is a column that the reader makes
-  narrower, into a smaller PostgreSQL type.
+  interval must not be inverted. A corrupt file can carry an inverted interval,
+  and so can an old writer that ordered an unsigned column's statistics as
+  signed. The reader does not skip on such an interval. A minimum or maximum
+  that does not fit the column's declared type also turns skipping off for that
+  row group.
 
 The `Row Groups Skipped` counter in `EXPLAIN ANALYZE` reports what was actually
 skipped.
@@ -1192,5 +1201,12 @@ table at its current snapshot. It has these limits:
   position-delete position, and a `current-schema-id` that names no schema.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet.
+- A promoted column (`int` to `long`, `float` to `double`, or a wider `decimal`)
+  reads as its current type. Files from before the promotion are widened.
+  Declaring it with a narrower type than a live file stores is refused.
 - The reader does not write or commit to an Iceberg table, and it reads only the
   current snapshot. Time travel to an older snapshot is not supported.
+- The foreign-data wrapper does not prune `bucket[N]` files for an equality
+  compared under a nondeterministic collation. Two equal values there need not
+  share bytes, so they need not share a bucket. The wrapper reads every file, and
+  the query returns the same rows.
