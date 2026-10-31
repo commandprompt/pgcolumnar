@@ -466,6 +466,22 @@ true until the next version shipped.
 
 ### Fixed
 
+- `read_parquet`, the `pgcolumnar_parquet` foreign table, `import_parquet` and
+  `iceberg_scan` now refuse a Parquet string cell that is not valid in the
+  server encoding, with 22021 and a message that names the column:
+  `invalid byte sequence for encoding "UTF8" in Parquet column "name": 0xff`
+  (#1821). The reader used to turn the bytes into `text` unchecked, so invalid
+  UTF-8 came back as text the server would never accept from COPY, `INSERT ...
+  SELECT` stored it, and later queries on the table failed; a cell with an
+  embedded NUL read as a shorter string that was not equal to it. PLAIN and
+  dictionary-encoded columns are both checked, the dictionary once per distinct
+  value, and a value that is all 7-bit ASCII with no NUL skips the encoding
+  verifier. The `pgcolumnar_iceberg` foreign table no longer prunes a data file
+  whose manifest partition value is not valid text: it reads the file and
+  re-filters its rows, where comparing the raw bytes had dropped rows the qual
+  keeps. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
+
 - `read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table now
   read an unsigned Parquet integer as the value it stores (#1814). pyarrow writes
   `uint32` and `uint64` columns as INT32 and INT64 marked `UINT_32` and `UINT_64`.

@@ -925,6 +925,12 @@ that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
 `parquet_schema` to generate the full list.
 
+A string cell read into a `text` or `varchar` column must be valid in the
+server encoding (#1821). A cell with an invalid byte sequence or an embedded
+NUL byte stops the read with SQLSTATE `22021`, as COPY does. The message names
+the Parquet column and the first bad bytes. This applies to the foreign table,
+the import functions and `iceberg_scan` too, because they share the reader.
+
 ```sql
 SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet')
   AS t(id int, ts timestamp, amount numeric(12,2));

@@ -29,6 +29,14 @@
 # reads the out-of-range file itself, which must refuse; it used to count a wrapped
 # value in the in-range file, which never holds one, so it could not fail.
 #
+# HOW A STRING CELL IS READ (#1821). A Parquet STRING is UTF-8 by the spec, and the
+# reader used to turn its bytes into text unchecked, so a file holding invalid
+# UTF-8 or an embedded NUL returned text the server would never accept from COPY.
+# These arms run in a database created as UTF8, because the check is against the
+# server encoding and a SQL_ASCII cluster (initdb under LANG=C) accepts any byte
+# but NUL. Each refusal wants 22021 and the reader's message, which names the
+# column and the first bad bytes, as core's own message does.
+#
 # Usage:  test/native_parquet_hardening.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -81,7 +89,9 @@ errs() {
 }
 
 # ---- narrowing: out-of-range values must raise, not wrap --------------------
-python3 "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_hardening.py" "$W"
+# The second argument is the committed Iceberg warehouse the string arms copy.
+python3 "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_hardening.py" "$W" \
+	"$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg/warehouse"
 
 psql_run "CREATE FOREIGN TABLE f_i2_bad   (c int2)      SERVER pq OPTIONS (path '$W/i2_bad.parquet');"
 psql_run "CREATE FOREIGN TABLE f_i2_ok    (c int2)      SERVER pq OPTIONS (path '$W/i2_ok.parquet');"
@@ -216,5 +226,72 @@ check "parquet_schema still describes a bad chunk list" \
 	"$(qw "SELECT count(*) FROM pgcolumnar.parquet_schema('$W/short_chunks.parquet');")" "2"
 check "valid two-column file still reads" \
 	"$(qw "SELECT string_agg(a || '|' || b, ' ' ORDER BY a) FROM pgcolumnar.read_parquet('$W/two.parquet') AS t(a int4, b int4);")" "1|4 2|5 3|6"
+
+# ---- string cells that are not valid in the server encoding (#1821) --------
+# A database created as UTF8 whatever the cluster's encoding (see the header).
+psql_admin "CREATE DATABASE pqh_utf8 TEMPLATE template0 ENCODING 'UTF8' LOCALE 'C';"
+U8() { PGC_DB=pqh_utf8 "$@"; }
+U8 psql_run "CREATE EXTENSION pgcolumnar;
+	CREATE SERVER pq FOREIGN DATA WRAPPER pgcolumnar_parquet;
+	CREATE FUNCTION pgc_try(q text) RETURNS text LANGUAGE plpgsql AS \$\$
+	BEGIN EXECUTE q; RETURN 'NO ERROR';
+	EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ': ' || SQLERRM; END \$\$;
+	CREATE FOREIGN TABLE f_str_dict (id bigint, name text) SERVER pq
+		OPTIONS (path '$W/str_dict_bad.parquet');
+	CREATE TABLE imp_str (id bigint, name text);
+	CREATE TABLE heap_str (id bigint, name text) USING heap;"
+check "premise: the string arms run in a UTF8 database" \
+	"$(U8 qw "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database();")" "UTF8"
+
+ENC_MSG='22021: invalid byte sequence for encoding "UTF8" in Parquet column "name"'
+check "read_parquet PLAIN string not UTF-8 -> 22021 naming the column" \
+	"$(U8 sqlstate "SELECT * FROM pgcolumnar.read_parquet('$W/str_plain_bad.parquet') AS t(id bigint, name text)")" \
+	"$ENC_MSG: 0xff"
+check "read_parquet dictionary string not UTF-8 -> 22021 naming the column" \
+	"$(U8 sqlstate "SELECT * FROM pgcolumnar.read_parquet('$W/str_dict_bad.parquet') AS t(id bigint, name text)")" \
+	"$ENC_MSG: 0xc0 0xaf"
+check "read_parquet string with an embedded NUL -> 22021" \
+	"$(U8 sqlstate "SELECT * FROM pgcolumnar.read_parquet('$W/str_nul.parquet') AS t(id bigint, name text)")" \
+	"$ENC_MSG: 0x00"
+check "varchar output column is checked too -> 22021" \
+	"$(U8 sqlstate "SELECT * FROM pgcolumnar.read_parquet('$W/str_plain_bad.parquet') AS t(id bigint, name varchar)")" \
+	"$ENC_MSG: 0xff"
+check "parquet foreign table string not UTF-8 -> 22021" \
+	"$(U8 sqlstate "SELECT * FROM f_str_dict")" "$ENC_MSG: 0xc0 0xaf"
+check "import_parquet string not UTF-8 -> 22021" \
+	"$(U8 sqlstate "SELECT pgcolumnar.import_parquet('imp_str'::regclass, '$W/str_plain_bad.parquet')")" \
+	"$ENC_MSG: 0xff"
+check_num "import_parquet stored no row of the invalid file" "$(U8 qw 'SELECT count(*) FROM imp_str;')" "0"
+U8 sqlstate "INSERT INTO heap_str SELECT * FROM pgcolumnar.read_parquet('$W/str_nul.parquet') AS t(id bigint, name text)" >/dev/null
+check_num "INSERT SELECT read_parquet stored no row of the invalid file" "$(U8 qw 'SELECT count(*) FROM heap_str;')" "0"
+
+# valid multibyte UTF-8, PLAIN and dictionary: the check must not refuse it. The
+# octet lengths say the bytes arrived whole (caf\u00e9 is 5 bytes, \u65e5\u672c 6).
+check "valid multibyte UTF-8 still reads (PLAIN)" \
+	"$(U8 qw "SELECT string_agg(name || ':' || octet_length(name), ' ' ORDER BY id)
+	          FROM pgcolumnar.read_parquet('$W/str_ok.parquet') AS t(id bigint, name text);")" \
+	"ok:2 caf$(printf '\303\251'):5 $(printf '\346\227\245\346\234\254'):6"
+check "valid multibyte UTF-8 still reads (dictionary)" \
+	"$(U8 qw "SELECT string_agg(name, ' ' ORDER BY id)
+	          FROM pgcolumnar.read_parquet('$W/str_ok_dict.parquet') AS t(id bigint, name text);")" \
+	"caf$(printf '\303\251') caf$(printf '\303\251') caf$(printf '\303\251') ok"
+
+# Iceberg: iceberg_scan reads its data files through the same decoder.
+ICE_BAD_MD="$(ls "$W"/ice_bad/db/events/metadata/*.metadata.json 2>/dev/null | sort | tail -1)"
+check "iceberg_scan data file string not UTF-8 -> 22021 naming the column" \
+	"$(U8 sqlstate "SELECT * FROM pgcolumnar.iceberg_scan('$ICE_BAD_MD') AS t(id bigint, region text)")" \
+	'22021: invalid byte sequence for encoding "UTF8" in Parquet column "region": 0xff'
+# The Iceberg FDW prunes a file by its manifest partition value before opening it.
+# A value that is not valid text is undecidable, so the file must be read, not
+# pruned: compared as raw bytes, 0xff 0xfe is not 'eu', and the eu rows vanished.
+ICE_PART_MD="$(ls "$W"/ice_part/db/events/metadata/*.metadata.json 2>/dev/null | sort | tail -1)"
+U8 psql_run "CREATE SERVER ice FOREIGN DATA WRAPPER pgcolumnar_iceberg;
+	CREATE FOREIGN TABLE ev_part (id bigint, region text, amount int)
+		SERVER ice OPTIONS (metadata_path '$ICE_PART_MD');"
+check "premise: the patched-manifest table reads all five rows" \
+	"$(U8 qw "SELECT string_agg(id || region, ',' ORDER BY id) FROM ev_part;")" "1eu,2eu,3us,4us,5us"
+check "iceberg FDW reads, not prunes, a file whose partition value is not valid text" \
+	"$(U8 qw "SELECT string_agg(id::text, ',' ORDER BY id) FROM ev_part WHERE region = 'eu';")" "1,2"
+check "backend survived the string arms" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

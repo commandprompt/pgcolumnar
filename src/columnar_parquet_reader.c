@@ -912,6 +912,7 @@ typedef struct PqColPlan
 	bool		is_decimal;		/* the bytes are a DECIMAL unscaled integer */
 	bool		is_unsigned;	/* the INT32/INT64 bits are an unsigned value */
 	int			ts_shift;		/* PQ_TS_*: a cast between wall time and instant */
+	const char *colname;		/* the leaf's Parquet name, for error messages */
 } PqColPlan;
 
 /*
@@ -1133,6 +1134,63 @@ pq_unsigned_out_of_range(bool strict, bool *ok, const char *typname, uint64 valu
 						   value, typname)));
 	*ok = false;
 	return (Datum) 0;
+}
+
+/*
+ * Is a BYTE_ARRAY cell bound to text valid in the server encoding (#1821)?
+ *
+ * A Parquet STRING is UTF-8 by the spec, but the bytes come from outside the
+ * server, and text built from them unchecked holds whatever the writer put there:
+ * invalid sequences that later queries choke on, or an embedded NUL that makes
+ * the value read as a shorter string. COPY validates external text with
+ * pg_verifymbstr for this reason, and so does pq_percent_decode for Hive partition
+ * values; this is the same boundary for the cells themselves.
+ *
+ * Per value, on the decode path, so the common case is kept cheap: bytes that are
+ * all 7-bit ASCII with no NUL are valid in every server encoding and need nothing
+ * more. Only a value with a high bit or a NUL byte reaches the encoding's verifier.
+ * Dictionary entries are decoded once per dictionary page, so a dictionary column
+ * is checked once per distinct value.
+ *
+ * On an invalid value: raise 22021, naming the column and the first bad bytes in
+ * core's format, when strict; otherwise set *ok false, so a caller decoding
+ * statistics refuses to use them rather than raising.
+ */
+static bool
+pq_text_cell_ok(const PqColPlan *plan, const char *s, int len, bool strict)
+{
+	int			i;
+	int			enc;
+	int			valid;
+	int			bad;
+	char		buf[8 * 5 + 1];
+	char	   *b = buf;
+
+	for (i = 0; i < len; i++)
+		if (s[i] == '\0' || IS_HIGHBIT_SET(s[i]))
+			break;
+	if (i == len)
+		return true;
+
+	enc = GetDatabaseEncoding();
+	valid = pg_encoding_verifymbstr(enc, s, len);
+	if (valid == len)
+		return true;
+	if (!strict)
+		return false;
+
+	/* the bytes of the first bad character, at most 8, as report_invalid_encoding */
+	bad = Min(pg_encoding_mblen(enc, s + valid), len - valid);
+	bad = Min(bad, 8);
+	for (i = 0; i < bad; i++)
+		b += sprintf(b, i == 0 ? "0x%02x" : " 0x%02x", (unsigned char) s[valid + i]);
+
+	ereport(ERROR,
+			(errcode(ERRCODE_CHARACTER_NOT_IN_REPERTOIRE),
+			 errmsg("invalid byte sequence for encoding \"%s\" in Parquet column \"%s\": %s",
+					GetDatabaseEncodingName(),
+					plan->colname != NULL ? plan->colname : "?", buf)));
+	return false;				/* not reached */
 }
 
 /*
@@ -1367,6 +1425,11 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 					memcpy(VARDATA(b), cur, blen);
 					*p = cur + blen;
 					return PointerGetDatum(b);
+				}
+				if (!pq_text_cell_ok(plan, (const char *) cur, (int) blen, strict))
+				{
+					*ok = false;
+					return (Datum) 0;
 				}
 				t = cstring_to_text_with_len((const char *) cur, blen);
 				*p = cur + blen;
@@ -2382,6 +2445,7 @@ pq_plan_bind_schema(PqColPlan *plan, const PqSchemaCol *sc)
 	plan->is_unsigned = (sc->is_unsigned &&
 						 (sc->phys_type == PQ_INT32 || sc->phys_type == PQ_INT64));
 	plan->ts_shift = PQ_TS_NONE;
+	plan->colname = sc->name != NULL ? pstrdup(sc->name) : NULL;
 	if (sc->is_timestamp && !sc->adjusted_utc && plan->typid == TIMESTAMPTZOID)
 		plan->ts_shift = PQ_TS_WALL_TO_INSTANT;
 	else if (sc->is_timestamp && sc->adjusted_utc && plan->typid == TIMESTAMPOID)
