@@ -466,6 +466,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- The `iceberg_rest_*` functions now check `USAGE` on the
+  `pgcolumnar_iceberg_catalog` server they are given, as dblink does before it
+  uses a named server's user mapping (#1819). Before, any role with `pg_read_server_files` could
+  name a server it held no `USAGE` on, and the function sent that server's mapping
+  token for it: through a `PUBLIC` mapping, and through the role's own mapping
+  after `REVOKE USAGE ON FOREIGN SERVER`. Such a call is now refused with SQLSTATE
+  42501 (`permission denied for foreign server ...`) before any mapping is read or
+  any request reaches the catalog. The catalog-URI form is unchanged. Grant
+  `USAGE` on the server to each role that uses the server form.
+  `test/iceberg_rest_server.sh` and `test_iceberg_rest_server.py`.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write
