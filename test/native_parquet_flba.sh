@@ -271,4 +271,92 @@ else
 	done
 fi
 
+# ---- an unannotated FLBA (Iceberg fixed(L)) reads as bytea (#1792) ----------
+#
+# Iceberg writes fixed(L) as a FIXED_LEN_BYTE_ARRAY of width L with no logical
+# type, and parquet_schema advises bytea for it (uuid at L = 16). The bind step
+# wanted a BYTE_ARRAY for every bytea target, so the advised column definition
+# was refused by read_parquet, iceberg_scan and both FDWs. And uuid bound to an
+# FLBA of any width, so a 3-byte column declared uuid reached the decoder and
+# failed there as XX001 instead of at bind.
+#
+# The fixture is a committed pyiceberg table (gen_iceberg_fixed.py), so the file
+# is what an Iceberg writer really produces and no pyarrow is needed to run this:
+# id bigint (field 1), fx fixed(3) (field 2), f16 fixed(16) (field 3), with rows
+# (1,'abc',00..0f), (2,'xyz',ff..ff), (3,NULL,NULL).
+FXWH="$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg/warehouse_fixed/db/fixed"
+if [ -f "$(ls "$FXWH"/data/*.parquet 2>/dev/null | head -1)" ]; then
+	FXD="$W/ice_fixed"
+	rm -rf "$FXD"; mkdir -p "$FXD"
+	cp -r "$FXWH" "$FXD/fixed"
+	chmod -R u+rwX,go+rX "$FXD"
+	FXMD="$(ls "$FXD"/fixed/metadata/*.metadata.json | sort | tail -1)"
+	FXDF="$(ls "$FXD"/fixed/data/*.parquet | head -1)"
+	FX3="1:616263,2:78797a,3:NULL"
+	FX16="1:000102030405060708090a0b0c0d0e0f,2:ffffffffffffffffffffffffffffffff,3:NULL"
+	# pgc_fixed_q: the query's one value, or "SQLSTATE: message" when it fails, so
+	# a red names the refusal rather than reading as an empty string.
+	# pgc_fixed_err: "NO ERROR", or the same reading of the refusal.
+	psql_run "CREATE FUNCTION pgc_fixed_q(q text) RETURNS text LANGUAGE plpgsql AS \$\$
+	          DECLARE r text; BEGIN EXECUTE q INTO r; RETURN r;
+	          EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ': ' || SQLERRM; END \$\$;"
+	psql_run "CREATE FUNCTION pgc_fixed_err(q text) RETURNS text LANGUAGE plpgsql AS \$\$
+	          BEGIN EXECUTE q; RETURN 'NO ERROR';
+	          EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ': ' || SQLERRM; END \$\$;"
+	# id:hex(COL) per row in id order; a NULL reads as the word, not as ''
+	hexrows() {	# hexrows COL FROM -> "id:hex,..." or "SQLSTATE: message"
+		q "SELECT pgc_fixed_q(\$q\$SELECT string_agg(id || ':' || coalesce(encode($1, 'hex'), 'NULL'), ',' ORDER BY id) FROM $2\$q\$);"
+	}
+
+	check "parquet_schema advises bytea for Iceberg fixed(3) and uuid for fixed(16)" \
+		"$(q "SELECT string_agg(column_name || '|' || data_type, ',') FROM pgcolumnar.parquet_schema('$FXDF');")" \
+		"id|bigint,fx|bytea,f16|uuid"
+	check "fixed(3) reads as bytea through read_parquet" \
+		"$(hexrows fx "pgcolumnar.read_parquet('$FXDF') AS t(id bigint, fx bytea, f16 uuid)")" "$FX3"
+	check "fixed(16) reads as bytea through read_parquet" \
+		"$(hexrows f16 "pgcolumnar.read_parquet('$FXDF') AS t(id bigint, fx bytea, f16 bytea)")" "$FX16"
+	check "fixed(3) reads as bytea through read_parquet field ids" \
+		"$(hexrows fx "pgcolumnar.read_parquet('$FXDF', ARRAY[2,1]) AS t(fx bytea, id bigint)")" "$FX3"
+	check "fixed(3) reads as bytea through iceberg_scan" \
+		"$(hexrows fx "pgcolumnar.iceberg_scan('$FXMD') AS t(id bigint, fx bytea)")" "$FX3"
+	psql_run "CREATE FOREIGN TABLE ft_fixed (id bigint, fx bytea, f16 bytea)
+	          SERVER pq OPTIONS (path '$FXDF');"
+	check "fixed(3) reads as bytea through the parquet FDW" \
+		"$(hexrows fx "ft_fixed")" "$FX3"
+	psql_run "CREATE SERVER ice_fixed FOREIGN DATA WRAPPER pgcolumnar_iceberg;"
+	psql_run "CREATE FOREIGN TABLE ice_ft_fixed (id bigint, fx bytea)
+	          SERVER ice_fixed OPTIONS (metadata_path '$FXMD');"
+	check "fixed(3) reads as bytea through the iceberg FDW" \
+		"$(hexrows fx "ice_ft_fixed")" "$FX3"
+	# uuid still binds to the 16-byte column, and only to it. By field id, so the
+	# reading does not depend on the fixed(3) column binding as well.
+	check "fixed(16) still reads as uuid" \
+		"$(q "SELECT pgc_fixed_q(\$q\$SELECT string_agg(coalesce(f16::text, 'NULL'), ',' ORDER BY id) FROM pgcolumnar.read_parquet('$FXDF', ARRAY[1,3]) AS t(id bigint, f16 uuid)\$q\$);")" \
+		"00010203-0405-0607-0809-0a0b0c0d0e0f,ffffffff-ffff-ffff-ffff-ffffffffffff,NULL"
+	# Refused BY THE BIND, which says why; the decoder's XX001 "could not decode"
+	# is what the unfixed width check gave.
+	check "uuid over fixed(3) is refused at bind (42804)" \
+		"$(q "SELECT pgc_fixed_err(\$q\$SELECT * FROM pgcolumnar.read_parquet('$FXDF') AS t(id bigint, fx uuid, f16 uuid)\$q\$);")" \
+		'42804: Parquet column 1 physical type is not compatible with target column "fx" (uuid)'
+	check "uuid over fixed(3) is refused at field-id bind (42804)" \
+		"$(q "SELECT pgc_fixed_err(\$q\$SELECT * FROM pgcolumnar.iceberg_scan('$FXMD') AS t(id bigint, fx uuid)\$q\$);")" \
+		'42804: Parquet column with field id 2 has a physical type incompatible with output column "fx" (uuid)'
+else
+	# ONE SKIP PER ARM, UNDER THE ARM'S OWN NAME (#994)
+	for _fl_x in "parquet_schema advises bytea for Iceberg fixed(3) and uuid for fixed(16)" \
+			"fixed(3) reads as bytea through read_parquet" \
+			"fixed(16) reads as bytea through read_parquet" \
+			"fixed(3) reads as bytea through read_parquet field ids" \
+			"fixed(3) reads as bytea through iceberg_scan" \
+			"fixed(3) reads as bytea through the parquet FDW" \
+			"fixed(3) reads as bytea through the iceberg FDW" \
+			"fixed(16) still reads as uuid" \
+			"uuid over fixed(3) is refused at bind (42804)" \
+			"uuid over fixed(3) is refused at field-id bind (42804)"; do
+		check_skip "$_fl_x" \
+			"SKIP  $_fl_x (the warehouse_fixed fixture is missing)" \
+			"the warehouse_fixed fixture is missing"
+	done
+fi
+
 pgc_summary

@@ -51,6 +51,10 @@
 #   __list_uploads_delay__ a number of seconds: ListMultipartUploads (GET
 #                         ?uploads) is answered only after that long, a silent
 #                         store for the client's bounded wait.
+#   __put_status__        "STATUS KEY": a plain PUT (no multipart) of exactly
+#                         "bucket/KEY" is answered with STATUS and not stored,
+#                         so a suite can refuse one object, such as a parallel
+#                         export's _SUCCESS marker, and let every other through.
 # --seed-upload KEY (repeatable) opens an upload at KEY ("bucket/key") before
 # the first request: an upload some other writer left, which a client must not
 # abort as its own.
@@ -523,6 +527,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        putst = os.path.join(self.server.rootdir, "__put_status__")
+        if os.path.exists(putst):
+            with open(putst) as f:
+                code, key = f.read().split()
+            if os.path.relpath(local, self.server.rootdir) == key:
+                self._deny(int(code), "AccessDenied")
+                return
         os.makedirs(os.path.dirname(local), exist_ok=True)
         with open(local, "wb") as f:
             f.write(self._body)
