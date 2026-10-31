@@ -1183,5 +1183,12 @@ table at its current snapshot. It has these limits:
 - A scan holds every applicable equality-delete row in memory until it ends.
   The memory is not bounded by `work_mem`, so a table with very many
   equality-delete rows needs memory in proportion to them.
+- A promoted column (`int` to `long`, `float` to `double`, or a wider `decimal`)
+  reads as its current type. Files from before the promotion are widened.
+  Declaring it with a narrower type than a live file stores is refused.
 - The reader does not write or commit to an Iceberg table, and it reads only the
   current snapshot. Time travel to an older snapshot is not supported.
+- The foreign-data wrapper does not prune `bucket[N]` files for an equality
+  compared under a nondeterministic collation. Two equal values there need not
+  share bytes, so they need not share a bucket. The wrapper reads every file, and
+  the query returns the same rows.
