@@ -3220,9 +3220,12 @@ iceberg_rest_scan	iceberg_rest_scan	premise: rest fixture server is up	15;16;17;
 iceberg_rest_scan	iceberg_rest_scan	the catalog reports the relocated metadata location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_server	iceberg_rest_server	a catalog_uri option on the USER MAPPING is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused before any request (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a half OAuth2 credential (id, no secret) is not refused, so the mint runs with a NULL secret and the backend dies
+iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused even with a static token (28000)	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the half-pair refusal runs only when no static token is set, so a token excuses a half OAuth2 pair (the fix reverted, #1794)
+iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (secret, no id) is refused even with a static token (28000)	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: the half-pair refusal runs only when no static token is set, so a token excuses a half OAuth2 pair (the fix reverted, #1794)
 iceberg_rest_server	iceberg_rest_server	a link-local oauth_token_uri is refused by the allow-list (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: an endpoint off pgcolumnar.objstore_allowed_endpoints is not refused
 iceberg_rest_server	iceberg_rest_server	a non-superuser with no token mapping is refused (28000) despite the environment token, before any request	15;16;17;18;19	2026-10-15	the REST resolver letting every role borrow the environment token
 iceberg_rest_server	iceberg_rest_server	a server with an OAuth2 mapping reads by a minted bearer	15;16;17;18;19	never	-
+iceberg_rest_server	iceberg_rest_server	a static token and a complete OAuth2 pair read by the token, with no token request	15;16;17;18;19	2026-10-30	columnar_iceberg_rest.c: a complete OAuth2 pair mints a bearer even when a static token is set (mutation, #1794)
 iceberg_rest_server	iceberg_rest_server	a token option on the SERVER is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a warehouse option on the SERVER is accepted (not HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a warehouse-configured server resolves a table location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the USER MAPPING token option is ignored

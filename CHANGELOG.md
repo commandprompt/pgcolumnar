@@ -466,6 +466,12 @@ true until the next version shipped.
 
 ### Fixed
 
+- A user mapping for an Iceberg REST catalog server that sets a static `token`
+  and only one of `oauth_client_id` and `oauth_client_secret` is now refused
+  (#1794), as the docs say. Before, the static token was used and the stray half
+  of the pair was ignored without a word. The call now fails with SQLSTATE 28000,
+  `incomplete OAuth2 credential`, before any request reaches the catalog.
+  `test/iceberg_rest_server.sh` and `test_iceberg_rest_server.py` check both halves.
 - `iceberg_rest_table_location` and `iceberg_rest_scan` read a catalog reply
   that ends when the server closes the connection (#1787). Such a reply carries
   neither `Content-Length` nor chunked framing, which HTTP/1.1 allows, and the
