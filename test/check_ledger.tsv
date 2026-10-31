@@ -5285,6 +5285,12 @@ objstore_addressing	objstore_addressing	s3:// path-style read	15;16;17;18;19	nev
 objstore_addressing	objstore_addressing	s3:// with no endpoint demands one (names AWS_ENDPOINT_URL)	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	virtual-host put the KEY ALONE in the path (no bucket segment)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
 objstore_addressing	objstore_addressing	virtual-host read == path-style read (same object, different addressing)	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	IPv4-compatible ::169.254.169.254: refused 42501 despite being listed	15;16;17;18;19	2026-10-31	os_addr_is_linklocal() without the fd00:ec2::/32, IPv4-compatible and NAT64 cases (#1808)
+objstore_allowlist	objstore_allowlist	IPv4-mapped ::ffff:169.254.169.254: refused 42501 despite being listed	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	IPv6 IMDS fd00:ec2::254: refused 42501 despite being listed	15;16;17;18;19	2026-10-31	os_addr_is_linklocal() without the fd00:ec2::/32, IPv4-compatible and NAT64 cases (#1808)
+objstore_allowlist	objstore_allowlist	IPv6 IMDS: the refusal detail names fd00:ec2::/32	15;16;17;18;19	2026-10-31	os_addr_is_linklocal() without the fd00:ec2::/32, IPv4-compatible and NAT64 cases (#1808)
+objstore_allowlist	objstore_allowlist	NAT64 64:ff9b::a9fe:a9fe: refused 42501 despite being listed	15;16;17;18;19	2026-10-31	os_addr_is_linklocal() without the fd00:ec2::/32, IPv4-compatible and NAT64 cases (#1808)
+objstore_allowlist	objstore_allowlist	NAT64 local-use 64:ff9b:1::a9fe:a9fe: refused 42501 despite being listed	15;16;17;18;19	2026-10-31	os_addr_is_linklocal() without the fd00:ec2::/32, IPv4-compatible and NAT64 cases (#1808)
 objstore_allowlist	objstore_allowlist	a multi-entry list matches any entry	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	a non-superuser cannot widen the list (42501)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
 objstore_allowlist	objstore_allowlist	a superuser session SET works (admin override)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
@@ -5297,8 +5303,11 @@ objstore_allowlist	objstore_allowlist	link-local: refused 42501 despite being li
 objstore_allowlist	objstore_allowlist	link-local: the listed ordinary host still works beside it	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	link-local: the refusal names the range, not the list	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	listed host: the read works	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	premise: a shim name that maps to 127.0.0.1 reads the fixture	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	premise: fixture server is up	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	premise: the resolver shim compiles	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	premise: the role can open a session	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	premise: the server restarts with the resolver shim	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	the list defaults to empty	15;16;17;18;19	2026-10-14	the allow-list's default is 127.0.0.1, not empty
 objstore_allowlist	objstore_allowlist	unlisted host: refused 42501	15;16;17;18;19	2026-10-14	the allow-list check never refuses
 objstore_credentials	objstore_credentials	a mapping with an access key and no secret is refused before any request (28000)	15;16;17;18;19	2026-10-14	the user-mapping credential pairing check removed (an access key alone crashes the backend)

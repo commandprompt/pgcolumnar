@@ -120,4 +120,114 @@ check "link-local: the refusal names the range, not the list" \
 		| grep -c "link-local")" "1"
 check_num "link-local: the listed ordinary host still works beside it" "$(q "$Q")" "1000"
 
+# ---- metadata addresses beyond 169.254/16 and fe80::/10 (#1808) -------------
+# AWS serves IPv6 instance metadata at fd00:ec2::254, and a NAT64 path reaches
+# 169.254.169.254 as 64:ff9b::a9fe:a9fe. A URL cannot carry an IPv6 literal, so a
+# host NAME must resolve to these addresses. A small getaddrinfo() shim, loaded
+# into the server with LD_PRELOAD, maps names under pgc-shim.invalid to fixed
+# addresses and passes every other name to the real resolver. No DNS, no
+# /etc/hosts edit. Each read gets statement_timeout 3s: without the guard a
+# connect() to these addresses can hang, and 57014 then shows that it was tried.
+SHIM_C="$PGC_WORKDIR/gai_shim.c"
+SHIM_SO="$PGC_WORKDIR/gai_shim.so"
+cat > "$SHIM_C" <<'CEOF'
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <netdb.h>
+#include <stdlib.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
+static const char *const map[][2] = {
+	{"ok", "127.0.0.1"},
+	{"imds6", "fd00:ec2::254"},
+	{"nat64", "64:ff9b::a9fe:a9fe"},
+	{"nat64local", "64:ff9b:1::a9fe:a9fe"},
+	{"mapped", "::ffff:169.254.169.254"},
+	{"compat", "::169.254.169.254"},
+};
+
+int
+getaddrinfo(const char *node, const char *service,
+			const struct addrinfo *hints, struct addrinfo **res)
+{
+	static const char sfx[] = ".pgc-shim.invalid";
+	size_t		n = node ? strlen(node) : 0;
+
+	if (n > sizeof(sfx) - 1 && strcmp(node + n - (sizeof(sfx) - 1), sfx) == 0)
+	{
+		size_t		len = n - (sizeof(sfx) - 1);
+
+		for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++)
+		{
+			int			v6 = strchr(map[i][1], ':') != NULL;
+			size_t		salen = v6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+			struct addrinfo *ai;
+			int			port = service ? atoi(service) : 0;
+
+			if (strlen(map[i][0]) != len || strncmp(node, map[i][0], len) != 0)
+				continue;
+			/* one block, as glibc allocates it, so its freeaddrinfo() frees it */
+			ai = calloc(1, sizeof(*ai) + salen);
+			if (ai == NULL)
+				return EAI_MEMORY;
+			ai->ai_family = v6 ? AF_INET6 : AF_INET;
+			ai->ai_socktype = SOCK_STREAM;
+			ai->ai_protocol = IPPROTO_TCP;
+			ai->ai_addrlen = salen;
+			ai->ai_addr = (struct sockaddr *) (ai + 1);
+			if (v6)
+			{
+				struct sockaddr_in6 *s6 = (struct sockaddr_in6 *) ai->ai_addr;
+
+				s6->sin6_family = AF_INET6;
+				s6->sin6_port = htons(port);
+				inet_pton(AF_INET6, map[i][1], &s6->sin6_addr);
+			}
+			else
+			{
+				struct sockaddr_in *s4 = (struct sockaddr_in *) ai->ai_addr;
+
+				s4->sin_family = AF_INET;
+				s4->sin_port = htons(port);
+				inet_pton(AF_INET, map[i][1], &s4->sin_addr);
+			}
+			*res = ai;
+			return 0;
+		}
+		return EAI_NONAME;
+	}
+	return ((int (*) (const char *, const char *, const struct addrinfo *,
+					  struct addrinfo **)) dlsym(RTLD_NEXT, "getaddrinfo"))
+		(node, service, hints, res);
+}
+CEOF
+SHIM_CC_OUT="$(cc -shared -fPIC -o "$SHIM_SO" "$SHIM_C" -ldl 2>&1)"
+chmod 755 "$SHIM_SO" 2>/dev/null
+check "premise: the resolver shim compiles" "${SHIM_CC_OUT:-ok}" "ok"
+pgc_pg "LD_PRELOAD='$SHIM_SO' pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' restart -w" >/dev/null 2>&1
+check "premise: the server restarts with the resolver shim" \
+	"$(q "SELECT 'up'")" "up"
+
+shim_read() {  # shim_read <name> -> the SQLSTATE of a read from that name, port 1
+	sqlstate_of "SET statement_timeout = '3s'; SELECT count(*) FROM pgcolumnar.read_parquet('http://$1.pgc-shim.invalid:1/x.parquet') AS (a int8)"
+}
+set_list "ok.pgc-shim.invalid, imds6.pgc-shim.invalid, nat64.pgc-shim.invalid, nat64local.pgc-shim.invalid, mapped.pgc-shim.invalid, compat.pgc-shim.invalid"
+check_num "premise: a shim name that maps to 127.0.0.1 reads the fixture" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('http://ok.pgc-shim.invalid:$HTTP_PORT/fixture.parquet') AS (a int8)")" "1000"
+check "IPv6 IMDS fd00:ec2::254: refused 42501 despite being listed" "$(shim_read imds6)" "42501"
+check "NAT64 64:ff9b::a9fe:a9fe: refused 42501 despite being listed" "$(shim_read nat64)" "42501"
+check "NAT64 local-use 64:ff9b:1::a9fe:a9fe: refused 42501 despite being listed" "$(shim_read nat64local)" "42501"
+check "IPv4-mapped ::ffff:169.254.169.254: refused 42501 despite being listed" "$(shim_read mapped)" "42501"
+check "IPv4-compatible ::169.254.169.254: refused 42501 despite being listed" "$(shim_read compat)" "42501"
+IMDS6_OUT="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
+	-c "SET statement_timeout = '3s'" \
+	-c "SELECT count(*) FROM pgcolumnar.read_parquet('http://imds6.pgc-shim.invalid:1/x.parquet') AS (a int8)" 2>&1)"
+# The range when the DETAIL names it, else the whole first ERROR line as the measurement.
+check "IPv6 IMDS: the refusal detail names fd00:ec2::/32" \
+	"$(printf '%s\n' "$IMDS6_OUT" | grep -o 'fd00:ec2::/32' | head -1 | grep . \
+		|| printf '%s\n' "$IMDS6_OUT" | grep -m1 'ERROR')" "fd00:ec2::/32"
+
 pgc_summary
