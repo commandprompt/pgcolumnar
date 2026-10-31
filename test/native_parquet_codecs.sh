@@ -37,7 +37,7 @@ psql_run "CREATE SERVER pq FOREIGN DATA WRAPPER pgcolumnar_parquet;"
 # Enough rows and enough repetition that compression actually engages and pages are
 # non-trivial (dictionary + multiple data pages), across a few types.
 python3 "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_codecs.py" "$W"
-codec_of() { awk -v c="$1" '$1 == c { print $2 }' "$W/codecs.txt" 2>/dev/null; }
+codec_of() { awk -v c="$1" '$1 == c { sub(/^[^ ]* /, ""); print }' "$W/codecs.txt" 2>/dev/null; }
 
 # Backends killed by a signal, from the server log: a number, or nothing when the log
 # can't be read. A fresh connection answers again after crash recovery, so "SELECT 1"
@@ -84,6 +84,18 @@ check_num "lz4 FDW count" "$(q "SELECT count(*) FROM fc_lz4;")" "20000"
 # sum(0 .. 19999) = 199990000
 check_num "gzip sum matches the generator" \
 	"$(q "SELECT sum(id) FROM pgcolumnar.read_parquet('$W/c_gzip.parquet') AS t($cols);")" "199990000"
+
+# ---- an all-NULL column under GZIP, ZSTD and LZ4_RAW (#1786) ----------------
+# pyarrow writes a column that is NULL in every row with a dictionary page that holds
+# no values, so the page declares an uncompressed size of 0. The decoder refused every
+# size-0 page for these three codecs, so the column could not be read at all.
+check "premise: the all-NULL gzip file is GZIP with a dictionary page" "$(codec_of allnull_gzip)" "GZIP dict"
+check "premise: the all-NULL zstd file is ZSTD with a dictionary page" "$(codec_of allnull_zstd)" "ZSTD dict"
+check "premise: the all-NULL lz4 file is LZ4 with a dictionary page" "$(codec_of allnull_lz4)" "LZ4 dict"
+allnull() { q "SELECT count(*) || '|' || count(s) FROM pgcolumnar.read_parquet('$W/allnull_$1.parquet') AS t(id bigint, s text);"; }
+check "all-NULL gzip column reads as 3 rows, none non-NULL" "$(allnull gzip)" "3|0"
+check "all-NULL zstd column reads as 3 rows, none non-NULL" "$(allnull zstd)" "3|0"
+check "all-NULL lz4 column reads as 3 rows, none non-NULL" "$(allnull lz4)" "3|0"
 
 # ---- crafted page-header size must yield a clean decode error --------------
 # uncompressed_page_size comes from the page header unvalidated; the codec consumes it.
