@@ -478,6 +478,34 @@ true until the next version shipped.
   it cannot hold. The pushdown suite's inverted-statistics file, which relied on
   the signed decode, now swaps the footer's min and max instead.
   `test/native_parquet_hardening.sh` and `test_native_parquet_hardening.py`.
+- The `pgcolumnar_iceberg` foreign-data wrapper no longer prunes `bucket[N]`
+  files for an equality compared under a nondeterministic collation (#1818).
+  Iceberg buckets a string by its UTF-8 bytes, and the wrapper hashed the
+  constant's bytes and skipped every file in another bucket. Under a
+  case-insensitive ICU collation, `'abc'`, `'Abc'` and `'aBc'` equal `'ABC'` but
+  sit in other buckets, so `WHERE s = 'ABC' COLLATE ci` returned 1 row where
+  `iceberg_scan` returned 4, with no error. The same happened with the column
+  declared `COLLATE ci`. The wrapper now prunes by bucket only when the
+  comparison's collation is deterministic, as the bloom filters already do, and
+  otherwise reads every file. Identity pruning evaluates the qual itself and
+  was correct. `truncate[W]` and metrics pruning do not prune on a string column.
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`, on a new pyiceberg fixture
+  (`test/fixtures/iceberg/gen_iceberg_bucket_text.py`).
+- `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign table
+  now read a column after an Iceberg `int` to `long` or `float` to `double`
+  promotion (#1789). A data file written before the promotion still stores
+  `INT32` or `FLOAT`, and the field-id binder required the exact type the output
+  column wanted, so it refused `bigint` and `double precision` with `Parquet
+  column with field id N has a physical type incompatible with output column`.
+  Once files from both sides of the promotion were live, no declared type read
+  the column. An equality delete on a promoted column made every query on the
+  table fail, because its probe always binds the current schema's type. The
+  binder now accepts a plain integer `INT32` for `bigint` and a `FLOAT` for
+  `double precision`, and the decoder widens the value. Both widenings are
+  exact. A narrower declared type is still refused, as is a date read as
+  `bigint`. `read_parquet` by field id widens the same way; the positional form
+  does not. A wider `decimal` already read. `test/iceberg_scan.sh`,
+  `test/iceberg_rest_scan.sh` and their pytest twins.
 - `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
   read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
   or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that

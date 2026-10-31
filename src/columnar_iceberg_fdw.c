@@ -69,6 +69,7 @@ typedef enum IceTemporalKind
 	ICE_TEMPORAL_HOUR
 }			IceTemporalKind;
 
+#include "columnar.h"
 #include "columnar_avro.h"
 #include "columnar_compat.h"
 #include "columnar_iceberg.h"
@@ -689,7 +690,8 @@ ice_fdw_metric_quals(ForeignScanState *node, TupleDesc tupdesc,
  * Compile "bucket-source-column = const" predicates into IceBucketQuals. A
  * bucket[N] partition stores the bucket of the source value; an equality
  * predicate on the source column can prune a file whose stored bucket differs
- * from bucket(const, N). Only "=" prunes (the hash destroys order).
+ * from bucket(const, N). Only "=" prunes (the hash destroys order), and only
+ * under a deterministic collation, where equal values are equal bytes.
  */
 static List *
 ice_fdw_bucket_quals(ForeignScanState *node, TupleDesc tupdesc,
@@ -745,6 +747,15 @@ ice_fdw_bucket_quals(ForeignScanState *node, TupleDesc tupdesc,
 		}
 		if (strategy != BTEqualStrategyNumber)
 			continue;			/* bucket prunes on equality only */
+
+		/*
+		 * Iceberg buckets a string by its bytes. Under a nondeterministic
+		 * collation two equal values need not share bytes, nor a bucket, so
+		 * bucket(const) cannot rule a file out (#1818): read it, and let the
+		 * executor's filter decide.
+		 */
+		if (!PgColumnarCollationIsDeterministic(op->inputcollid))
+			continue;
 
 		/* is this Var the source column of a bucket partition field? */
 		for (bi = 0; bi < bcount; bi++)

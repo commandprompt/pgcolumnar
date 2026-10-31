@@ -1266,4 +1266,17 @@ guard_tests 854
 # that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
 # cluster_tests 4531 at the merge of origin/main (a247bea0) into fix/1814-parquet-unsigned,
 # by collection: `4531 tests collected`.
-cluster_tests 4531
+# cluster_tests 4510 -> 4514 for #1818: four tests in test_iceberg_fdw.py for bucket[16] on a string
+# column under a deterministic and a nondeterministic collation, by collection: `4514 tests collected`.
+# cluster_tests 4520 at the merge of origin/main (a247bea0) into fix/1818-iceberg-bucket-collation,
+# by collection: `4520 tests collected`.
+# cluster_tests 4510 -> 4526 for #1789: fourteen tests in test_iceberg_scan.py and two in
+# test_iceberg_rest_scan.py for a column read after an Iceberg type promotion, by collection:
+# `4526 tests collected`.
+# cluster_tests 4532 at the merge of origin/main (a247bea0) into fix/1789-iceberg-type-promotion,
+# by collection: `4532 tests collected`.
+# cluster_tests 4536 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4536 tests collected`.
+# cluster_tests 4551 at the merge of fix/1818-iceberg-bucket-collation into fix/1814-parquet-unsigned,
+# by collection: `4551 tests collected`.
+cluster_tests 4551
