@@ -154,6 +154,25 @@ class Handler(BaseHTTPRequestHandler):
             f.write("%s %s %s %s\n" % (self.command, rawpath,
                                         query or "-", rng))
 
+    def _vhost_bucket(self):
+        """The bucket a virtual-host request names in its Host header (the
+        leftmost label(s) before --virtual-host-base), or None for a
+        path-style request."""
+        base = getattr(self.server, "vhost_base", None)
+        if base:
+            hosthdr = self.headers.get("Host", "").split(":", 1)[0]
+            if hosthdr.endswith("." + base):
+                return hosthdr[: -len(base) - 1]
+        return None
+
+    def _list_bucket(self):
+        """The bucket a LIST names: from the Host header under virtual-host
+        addressing (#1783), else the first path segment."""
+        bucket = self._vhost_bucket()
+        if bucket is not None:
+            return bucket
+        return self.path.partition("?")[0].lstrip("/").split("/", 1)[0]
+
     def _resolve(self):
         # SigV4 verification runs over the RAW request target (that is what
         # the client signed); only the filesystem lookup decodes it, and the
@@ -169,12 +188,9 @@ class Handler(BaseHTTPRequestHandler):
         # virtual-host addressing (#621): the bucket is the leftmost Host
         # label(s) before the configured base, and the request path is the key
         # alone, so re-attach the bucket for the on-disk lookup.
-        base = getattr(self.server, "vhost_base", None)
-        if base:
-            hosthdr = self.headers.get("Host", "").split(":", 1)[0]
-            if hosthdr.endswith("." + base):
-                bucket = hosthdr[: -len(base) - 1]
-                path = "/" + bucket + path
+        bucket = self._vhost_bucket()
+        if bucket is not None:
+            path = "/" + bucket + path
         local = os.path.join(self.server.rootdir, path.lstrip("/"))
         return mode, local
 
@@ -305,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         q = urllib.parse.parse_qs(query)
-        bucket = self.path.partition("?")[0].lstrip("/").split("/", 1)[0]
+        bucket = self._list_bucket()
         prefix = q.get("prefix", [""])[0]
         token = q.get("continuation-token", [None])[0]
         base = os.path.join(self.server.rootdir, bucket)
@@ -354,7 +370,7 @@ class Handler(BaseHTTPRequestHandler):
         # with key-marker/upload-id-marker as S3 does it.
         _hook_sleep(self.server.rootdir, "__list_uploads_delay__")
         q = self._qdict()
-        bucket = self.path.partition("?")[0].lstrip("/").split("/", 1)[0]
+        bucket = self._list_bucket()
         prefix = q.get("prefix", "")
         kmark = q.get("key-marker")
         umark = q.get("upload-id-marker", "")
@@ -401,10 +417,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._sigv4_check():
             return
         _rawpath, _, _query = self.path.partition("?")
-        if "list-type=2" in _query:
+        # Under virtual-host addressing a LIST goes to the bucket root, "/".
+        # S3 reads a GET with any other path as a GetObject of that key, so
+        # this server does too (#1783): a client that sends
+        # GET /bucket?list-type=2 to bucket.endpoint gets the 404 S3 gives it.
+        is_get_object = self._vhost_bucket() is not None and _rawpath != "/"
+        if "list-type=2" in _query and not is_get_object:
             self._do_list_v2(_query)
             return
-        if "uploads" in self._qdict():
+        if "uploads" in self._qdict() and not is_get_object:
             self._do_list_uploads()
             return
         mode, local = self._resolve()
