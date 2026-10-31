@@ -90,6 +90,69 @@ check "an output column not in the schema is refused (42703)" \
 
 # deletes (apply position, refuse equality) are covered by iceberg_deletes.sh
 
+# ---- metadata and manifest shapes other writers produce (#1815, #1825) -----
+# qe SQL -> the rows, or the server's ERROR line, so a failed read shows its cause
+qe() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1 | sed -n '/^ERROR:/{p;q};p'
+}
+# refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
+# message, else "<SQLSTATE>: <message>", or "no error (<first line>)"
+refusal_of() {
+	local out state msg
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	msg="$(sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif grep -qF "$2" <<<"$msg"; then echo "$state$3"
+	else echo "$state: $msg"; fi
+}
+# the variants: gzip copies of the current metadata.json, a gzip bomb, a cut-short gzip
+# stream, a table whose manifest spells file_format "parquet", and a table whose location
+# is s3:// while its recorded paths are s3a://. Written next to the relocated table.
+VARIANTS="$(python3 "$FX/gen_iceberg_variants.py" "$DEST" 2>&1)"
+var() { sed -n "s/^$1=//p" <<<"$VARIANTS"; }
+# the path, or a value no file can have, so a missing variant fails its arm loudly
+vpath() { local p; p="$(var "$1")"; echo "${p:-no variant $1: $VARIANTS}"; }
+SNAPCOLS="snapshot_id || '|' || coalesce(parent_snapshot_id::text, '-') || '|' || sequence_number || '|' || manifest_list"
+PLAIN_SNAP="$(q "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$MD')")"
+ROWS5="$(printf '1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50')"
+check "iceberg_current_snapshot reads a .gz.metadata.json file as it reads the plain file" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_infix)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
+check "iceberg_current_snapshot reads a .metadata.json.gz file as it reads the plain file" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_suffix)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
+check "iceberg_scan reads the rows of a table whose metadata is .gz.metadata.json" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(vpath gz_infix)') AS t(id bigint, region text, amount int)
+	       ORDER BY id")" "$ROWS5"
+check "iceberg_scan reads the rows of a table whose metadata is .metadata.json.gz" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(vpath gz_suffix)') AS t(id bigint, region text, amount int)
+	       ORDER BY id")" "$ROWS5"
+# 64 MiB + 1 byte once inflated, from about 64 KiB on disk: the cap holds on the
+# inflated size, so a small file cannot make the backend allocate without bound
+check "a gzip metadata file that inflates past the 64 MiB cap is refused (54000)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_bomb)')" \
+	   "inflates past" " past the cap")" "54000 past the cap"
+check "a cut-short gzip metadata file is refused as corrupt gzip (XX001)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_trunc)')" \
+	   "gzip" " naming gzip")" "XX001 naming gzip"
+check "iceberg_scan reads a data file whose file_format is lowercase parquet" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(vpath lower)') AS t(id bigint, region text, amount int)
+	       ORDER BY id")" "$ROWS5"
+check "iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a://" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(vpath mixed)') AS t(id bigint, region text, amount int)
+	       ORDER BY id")" "$ROWS5"
+
 # ---- privilege -------------------------------------------------------------
 # USAGE on the schema, so the refusal is the FILE gate's: without it the role was
 # refused by "permission denied for schema pgcolumnar", also 42501, and with the

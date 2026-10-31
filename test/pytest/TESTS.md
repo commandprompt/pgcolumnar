@@ -9706,7 +9706,7 @@ The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse t
 
 ### Every test
 
-One module fixture copies the warehouse into `server_dir`, writes the renamed metadata beside it, and reads every value from a private database; the two roles log in on their own and are dropped at teardown.
+One module fixture copies the warehouse into `server_dir`, writes the renamed metadata and the variants of `fixtures/iceberg/gen_iceberg_variants.py` beside it, and reads every value from a private database; the two roles log in on their own and are dropped at teardown.
 
 | test | what it holds |
 | --- | --- |
@@ -9718,6 +9718,14 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed me
 | `test_an_output_column_not_in_the_schema_is_refused` | an output column not in the schema is refused (42703) |
 | `test_an_unprivileged_role_is_refused_the_scan` | an unprivileged role is refused (42501) |
 | `test_a_pg_read_server_files_member_may_scan` | a pg_read_server_files member who is not superuser may scan |
+| `test_iceberg_current_snapshot_reads_a_gz_metadata_json_file` | iceberg_current_snapshot reads a .gz.metadata.json file as it reads the plain file |
+| `test_iceberg_current_snapshot_reads_a_metadata_json_gz_file` | iceberg_current_snapshot reads a .metadata.json.gz file as it reads the plain file |
+| `test_iceberg_scan_reads_a_table_whose_metadata_is_gz_metadata_json` | iceberg_scan reads the rows of a table whose metadata is .gz.metadata.json |
+| `test_iceberg_scan_reads_a_table_whose_metadata_is_metadata_json_gz` | iceberg_scan reads the rows of a table whose metadata is .metadata.json.gz |
+| `test_a_gzip_metadata_file_past_the_cap_is_refused` | a gzip metadata file that inflates past the 64 MiB cap is refused (54000) |
+| `test_a_cut_short_gzip_metadata_file_is_refused` | a cut-short gzip metadata file is refused as corrupt gzip (XX001) |
+| `test_iceberg_scan_reads_a_lowercase_parquet_file_format` | iceberg_scan reads a data file whose file_format is lowercase parquet |
+| `test_iceberg_scan_reads_mixed_s3_and_s3a_paths` | iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a:// |
 
 ## 232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot
 
@@ -10636,6 +10644,8 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_deletion_vectors_read_over_s3` | deletion vectors read over s3 (survivors == oracle) |
 | `test_a_scan_whose_delete_does_not_apply_reads_all_rows_over_s3` | a scan whose delete does not apply reads all rows over s3 |
 | `test_name_mapping_reads_an_id_less_file_over_s3` | name mapping reads an id-less file over s3 (5 rows) |
+| `test_an_s3a_metadata_path_reads_over_s3_as_s3_does` | an s3a:// metadata path reads over s3 as s3:// does (3 rows) |
+| `test_an_s3n_metadata_path_reads_over_s3_as_s3_does` | an s3n:// metadata path reads over s3 as s3:// does (3 rows) |
 | `test_the_backend_is_still_up_after_the_s3_reads` | backend still up after the s3 reads |
 | `test_a_delete_path_outside_the_table_location_is_refused_over_s3` | a delete path outside the table location is refused over s3 (22023) |
 | `test_a_dotdot_escaping_delete_path_is_refused_over_s3` | a dotdot-escaping delete path is refused over s3 (22023) |
