@@ -78,6 +78,7 @@ DUPREQ = (r"field id 7 is requested more than once", "requested twice")
 NSTRUCT = (r'field id 2 \(requested for output column "st"\) is a nested struct column', "nested struct")
 NLIST = (r'field id 3 \(requested for output column "li"\) is a nested list column', "nested list")
 NMAP = (r'field id 4 \(requested for output column "mp"\) is a nested map column', "nested map")
+NABSENT = (r"no Parquet column has field id -1", "absent id")
 
 
 def _message(exc):
@@ -198,6 +199,9 @@ def pfid(pgc_cluster, server_dir):
                                          f"AS t(id int8, st text)", NSTRUCT)
         r["nest list"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{nest}', ARRAY[3]) AS t(li int4)", NLIST)
         r["nest map"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{nest}', ARRAY[4]) AS t(mp int8)", NMAP)
+        # the list's and map's inner groups carry no id (-1): -1 must still be absent
+        r["nest minus one"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{nest}', ARRAY[-1]) AS t(x int4)",
+                                       NABSENT)
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -315,6 +319,13 @@ def test_a_map_field_id_read_as_int8_is_refused_as_nested(request, expect):
         return
     r = request.getfixturevalue("pfid")
     expect.text(r["nest map"], "0A000 (nested map)", "a map field id read as int8 is refused as nested (0A000)")
+
+
+def test_field_id_minus_one_over_the_nested_file_is_refused_as_absent(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow is needed to write the field-id fixture") is None:
+        return
+    r = request.getfixturevalue("pfid")
+    expect.text(r["nest minus one"], "22023 (absent id)", "field id -1 over the nested file is refused as absent, not as a group without an id (22023)")
 
 
 def test_the_backend_survives_the_fieldid_refusals(request, expect):

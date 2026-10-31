@@ -12132,6 +12132,7 @@ Every test makes one check under the shell's name, on a private database. The wr
 | `test_a_struct_field_id_read_as_text_is_refused_as_nested` | a struct field id read as text is refused as nested (0A000) |
 | `test_a_list_field_id_read_as_int4_is_refused_as_nested` | a list field id read as int4 is refused as nested (0A000) |
 | `test_a_map_field_id_read_as_int8_is_refused_as_nested` | a map field id read as int8 is refused as nested (0A000) |
+| `test_field_id_minus_one_over_the_nested_file_is_refused_as_absent` | field id -1 over the nested file is refused as absent, not as a group without an id (22023) |
 | `test_the_backend_survives_the_fieldid_refusals` | backend still up after the refusals |
 
 ## 315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused

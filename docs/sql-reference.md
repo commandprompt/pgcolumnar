@@ -1307,6 +1307,9 @@ column can prune this way. All read from the manifest, so a file is skipped
 without a read. Pruning is only an optimization. A file that is not pruned is read
 normally, so a predicate the wrapper cannot decide never changes the rows
 returned. Field-id projection and every delete rule are those of `iceberg_scan`.
+A foreign table may declare a nested Iceberg column (a struct, list or map) as a
+scalar. Such a table refuses every query, even one that does not read that
+column (#1788).
 
 The one table option is `metadata_path`, the table's current `metadata.json`
 (a local path or an object-storage URL). The wrapper requires the

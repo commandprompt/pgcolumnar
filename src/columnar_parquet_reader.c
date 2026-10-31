@@ -2836,13 +2836,16 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 			/*
 			 * A struct, list or map carries its field id on a group, not a leaf
 			 * (#1788). The file has the column, so it is neither absent nor null:
-			 * it is nested, and field-id projection reads only scalars.
+			 * it is nested, and field-id projection reads only scalars. A group
+			 * with no id holds -1, so only a real id (>= 0) can match: without
+			 * that, ARRAY[-1] named a list's or map's inner group as nested.
 			 */
 			for (j = 1; j < pf->nelems; j++)
 			{
 				PqSchemaCol *g = &pf->elems[j];
 
-				if (g->num_children > 0 && g->field_id == req)
+				if (g->num_children > 0 && g->field_id >= 0 &&
+					g->field_id == req)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("field id %d (requested for output column \"%s\") is a nested %s column; field-id projection supports only scalar columns",

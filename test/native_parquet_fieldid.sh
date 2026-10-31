@@ -191,6 +191,13 @@ check "a map field id read as int8 is refused as nested (0A000)" \
 	"$(refusal "SELECT * FROM pgcolumnar.read_parquet('$NEST', ARRAY[4]) AS t(mp int8)" \
 	   'field id 4 \(requested for output column "mp"\) is a nested map column' 'nested map')" \
 	"0A000 (nested map)"
+# The list's and the map's inner groups carry no field id, which the reader holds
+# as -1. The group match must want a real id, or ARRAY[-1] names a group without
+# one as a nested column instead of an id no column has.
+check "field id -1 over the nested file is refused as absent, not as a group without an id (22023)" \
+	"$(refusal "SELECT * FROM pgcolumnar.read_parquet('$NEST', ARRAY[-1]) AS t(x int4)" \
+	   'no Parquet column has field id -1' 'absent id')" \
+	"22023 (absent id)"
 check "backend still up after the refusals" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

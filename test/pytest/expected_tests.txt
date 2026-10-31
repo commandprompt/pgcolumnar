@@ -1260,4 +1260,6 @@ guard_tests 854
 # 16 checks in 16 tests, by collection over the cluster files.
 # cluster_tests 4510 -> 4521 for #1788: six tests in test_native_parquet_fieldid.py and five in
 # test_iceberg_scan.py for a struct, list or map column declared scalar, by collection: `4521 tests collected`.
-cluster_tests 4521
+# cluster_tests 4521 -> 4522 for #1788's review: test_field_id_minus_one_over_the_nested_file_is_refused_as_absent
+# in test_native_parquet_fieldid.py, by collection: `4522 tests collected`.
+cluster_tests 4522
