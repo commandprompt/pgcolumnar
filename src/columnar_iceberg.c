@@ -702,7 +702,9 @@ typedef void (*IceDataFileCb) (void *ctx, PgColumnarAvroManifestEntry *e,
  * is false (the lister), any delete manifest or delete file is refused loudly
  * (0A000). When true (the scan), position-delete (content 1) and
  * equality-delete (content 2) entries are passed to `cb` alongside data entries
- * (content 0). Does nothing when there is no current snapshot.
+ * (content 0). Either way a manifest content, entry content or entry status
+ * outside the spec is refused as corrupt metadata (XX001). Does nothing when
+ * there is no current snapshot.
  */
 static void
 ice_walk_data_files(const char *path, JsonbContainer *root,
@@ -764,6 +766,14 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 
 		CHECK_FOR_INTERRUPTS();
 
+		/* the spec allows only 0 (data) and 1 (deletes); anything else is
+		 * corrupt metadata, not a delete manifest */
+		if (mfs[mi].content != 0 && mfs[mi].content != 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: manifest \"%s\" has invalid content %d",
+							mfs[mi].manifest_path, mfs[mi].content)));
+
 		/* the lister refuses a delete manifest without even opening it */
 		if (mfs[mi].content != 0 && !collect_deletes)
 			ereport(ERROR,
@@ -783,6 +793,22 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 			PgColumnarAvroManifestEntry *e = &entries[ei];
 
 			CHECK_FOR_INTERRUPTS();
+
+			/* the spec allows content 0 (data), 1 (position deletes) and 2
+			 * (equality deletes), and status 0 (existing), 1 (added) and 2
+			 * (deleted). Any other value is corrupt metadata: an unknown
+			 * content was once taken for an equality delete, which dropped the
+			 * file's rows with no error (#1823). */
+			if (e->content < 0 || e->content > 2)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("iceberg: manifest entry \"%s\" has invalid content %d",
+								e->file_path ? e->file_path : "(null)", e->content)));
+			if (e->status < 0 || e->status > 2)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("iceberg: manifest entry \"%s\" has invalid status %d",
+								e->file_path ? e->file_path : "(null)", e->status)));
 
 			if (!collect_deletes)
 			{
@@ -1039,6 +1065,11 @@ ice_current_schema_fields(JsonbContainer *root, const char *path)
  * A column name absent from the schema is an error. Name matching is exact and
  * case-sensitive against the schema (quote a mixed-case name in the column
  * definition list to preserve its case).
+ *
+ * So is a field whose type is nested -- a struct, list or map, written as a JSON
+ * object rather than a primitive's type string (#1788). Its id belongs to a
+ * Parquet group, not a leaf, so the reader would find no column to bind and
+ * return null on every row, whatever the output column's declared type.
  */
 static int *
 ice_field_ids_for_columns(JsonbContainer *root, TupleDesc tupdesc,
@@ -1081,6 +1112,20 @@ ice_field_ids_for_columns(JsonbContainer *root, TupleDesc tupdesc,
 			if ((int) strlen(nm) == fn->val.string.len &&
 				strncmp(nm, fn->val.string.val, fn->val.string.len) == 0)
 			{
+				JsonbValue *ft = ice_field(f->val.binary.data, "type");
+
+				if (ft != NULL && ft->type == jbvBinary)
+				{
+					JsonbValue *kind = ice_field(ft->val.binary.data, "type");
+
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("iceberg: output column \"%s\" is a %s field; only top-level primitive columns can be read",
+									nm,
+									kind != NULL && kind->type == jbvString
+									? pnstrdup(kind->val.string.val, kind->val.string.len)
+									: "nested")));
+				}
 				if (ice_num_int64(ice_field(f->val.binary.data, "id"), &fid))
 					found = (int) fid;
 				break;
@@ -2186,8 +2231,11 @@ ice_scan_cb(void *ctx, PgColumnarAvroManifestEntry *e,
 		c->data = lappend(c->data, ie);
 	else if (e->content == 1)
 		c->posdel = lappend(c->posdel, ie);
-	else
+	else if (e->content == 2)
 		c->eqdel = lappend(c->eqdel, ie);
+	else						/* ice_walk_data_files refuses any other */
+		elog(ERROR, "iceberg: unexpected content %d for \"%s\"",
+			 e->content, e->file_path);
 }
 
 /*

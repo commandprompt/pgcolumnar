@@ -7,7 +7,9 @@
 # argument or a log line). The proof: with NO PGCOLUMNAR_ICEBERG_REST_TOKEN in
 # the environment, a server-name call still authenticates -- so the mapping
 # token, not ambient, is what signed the request (the hermetic fixture 401s a
-# wrong/absent token).
+# wrong/absent token). And the server form needs USAGE on the server (#1819): a
+# role without it is refused 42501 before any request, even through a PUBLIC
+# mapping or its own mapping after a REVOKE.
 #
 # Usage:  test/iceberg_rest_server.sh [PG_CONFIG]
 
@@ -49,7 +51,8 @@ SQLEOF
 	fi
 }
 
-# refusal SQL PHRASE -> the SQLSTATE when SQL is refused with PHRASE in its message;
+# refusal SQL PHRASE [ROLE] -> the SQLSTATE when SQL, run as ROLE (postgres by
+# default), is refused with PHRASE in its message;
 # "SQLSTATE (another refusal: MESSAGE)" when something else refused it; "no error"
 # when it ran; nothing when the server could not be asked. 28000 and 42501 each come
 # from more than one guard here: with the endpoint allow-list removed, the link-local
@@ -58,8 +61,8 @@ SQLEOF
 refusal() {
 	local out st msg
 	await_up
-	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "${3:-postgres}" \
+		-d "$PGC_DB" -X -qtA 2>&1 <<SQLEOF
 \\set VERBOSITY verbose
 $1;
 SQLEOF
@@ -353,6 +356,64 @@ check "and it cannot mark its own mapping credentials_required false (42501)" \
 q "ALTER USER MAPPING FOR ice_r SERVER cat OPTIONS (ADD credentials_required 'false')" >/dev/null
 check "control: with credentials_required false set by a superuser, the same role reads by the environment token" \
 	"$(as_ice_r "SELECT pgcolumnar.iceberg_rest_table_location('cat','db','events')")" "$MDLOC"
+
+# ---- #1819: the server form needs USAGE on the server, as core's FDW model does
+# A role names a catalog server, and the call used to send that server's mapping
+# token for it whether or not the role held USAGE on the server: through a PUBLIC
+# mapping on a server the role was never granted, and through the role's own mapping
+# after the owner revoked USAGE. ice_n holds every other grant the call needs, so
+# USAGE is all that refuses it, and the refusal comes before any request reaches
+# the catalog (the fixture logs every request it gets). Core refuses the same role
+# the same server, which is the control.
+q "CREATE ROLE ice_n LOGIN NOSUPERUSER; GRANT pg_read_server_files TO ice_n;
+   GRANT USAGE ON SCHEMA pgcolumnar TO ice_n; CREATE SCHEMA n1819 AUTHORIZATION ice_n;
+   CREATE SERVER pcat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog OPTIONS (catalog_uri '$CAT');
+   CREATE USER MAPPING FOR PUBLIC SERVER pcat OPTIONS (token '$TOKEN');" >/dev/null
+as_ice_n() {	# as_ice_n SQL -> the single value, or the SQLSTATE it fails with, or noconnect
+	local out rc st v
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U ice_n -d "$PGC_DB" \
+		-X -qtA -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$1" 2>&1)"
+	rc=$?
+	st="$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)"
+	if [ -n "$st" ]; then echo "$st"
+	elif [ "$rc" = 0 ]; then v="$(printf '%s\n' "$out" | tail -1)"; echo "${v:-ok}"
+	else echo noconnect; fi
+}
+DENIED="permission denied for foreign server"
+check "premise: ice_n holds no USAGE on server pcat" \
+	"$(as_ice_n "SELECT has_server_privilege('pcat','USAGE')")" "f"
+before="$(wc -l < "$REST_LOG")"
+check "a role without USAGE on the server is refused through a PUBLIC mapping (42501), before any request" \
+	"$(refusal "SELECT pgcolumnar.iceberg_rest_table_location('pcat','db','events')" "$DENIED pcat" ice_n)|$(( $(wc -l < "$REST_LOG") - before ))" \
+	"42501|0"
+before="$(wc -l < "$REST_LOG")"
+_n1819_ns="$(refusal "SELECT * FROM pgcolumnar.iceberg_rest_namespaces('pcat')" "$DENIED pcat" ice_n)"
+_n1819_tb="$(refusal "SELECT * FROM pgcolumnar.iceberg_rest_tables('pcat','db')" "$DENIED pcat" ice_n)"
+_n1819_sc="$(refusal "SELECT * FROM pgcolumnar.iceberg_rest_scan('pcat','db','events') AS t(a int)" "$DENIED pcat" ice_n)"
+check "the namespace, table-list and scan functions refuse it too (42501), before any request" \
+	"$_n1819_ns|$_n1819_tb|$_n1819_sc|$(( $(wc -l < "$REST_LOG") - before ))" \
+	"42501|42501|42501|0"
+q "CREATE SERVER bcat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog OPTIONS (catalog_uri '$CAT');
+   GRANT USAGE ON FOREIGN SERVER bcat TO ice_n;
+   CREATE USER MAPPING FOR ice_n SERVER bcat OPTIONS (token '$TOKEN');
+   REVOKE USAGE ON FOREIGN SERVER bcat FROM ice_n;" >/dev/null
+before="$(wc -l < "$REST_LOG")"
+check "after REVOKE USAGE the role's own mapping is refused (42501), before any request" \
+	"$(refusal "SELECT pgcolumnar.iceberg_rest_table_location('bcat','db','events')" "$DENIED bcat" ice_n)|$(( $(wc -l < "$REST_LOG") - before ))" \
+	"42501|0"
+# The FDW path. The catalog wrapper has no handler, so no foreign table on its
+# server reads anything, and core gates creating one on USAGE. ice_n owns schema
+# n1819, so USAGE on the server is the only grant CREATE FOREIGN TABLE lacks.
+check "control: core refuses that role a foreign table on the catalog server (42501)" \
+	"$(refusal "CREATE FOREIGN TABLE n1819.ft1819 (a int) SERVER pcat" "$DENIED pcat" ice_n)" "42501"
+q "CREATE FOREIGN TABLE n1819.ft1819 (a int) SERVER pcat; GRANT SELECT ON n1819.ft1819 TO ice_n" >/dev/null
+before="$(wc -l < "$REST_LOG")"
+check "a foreign table on a catalog server reads nothing (55000, no handler), before any request" \
+	"$(refusal "SELECT * FROM n1819.ft1819" "has no handler" ice_n)|$(( $(wc -l < "$REST_LOG") - before ))" \
+	"55000|0"
+q "GRANT USAGE ON FOREIGN SERVER pcat TO ice_n" >/dev/null
+check "control: once granted USAGE the same role reads through the PUBLIC mapping" \
+	"$(as_ice_n "SELECT pgcolumnar.iceberg_rest_table_location('pcat','db','events')")" "$MDLOC"
 
 check "backend still up" "$(survived "$CRASHES_BEFORE")" "1"
 pgc_summary
