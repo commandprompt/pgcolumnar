@@ -1263,4 +1263,7 @@ guard_tests 854
 # cluster_tests 4516 -> 4526 for #1811's and #1812's tests in test_parquet_export.py (4), test_arrow_export.py (3)
 # and test_objstore_sink_write.py (3). Re-derived by collection on the merged tree, not by adding
 # the deltas: `4526 tests collected`.
-cluster_tests 4526
+# cluster_tests 4526 -> 4535 for #1811's review fixes on #1843: test_parquet_export.py (4),
+# test_arrow_export.py (4) and test_parallel_export_parquet.py (1), by collection: the whole
+# corpus collects `5389 tests collected`, guard 854 + cluster 4535.
+cluster_tests 4535

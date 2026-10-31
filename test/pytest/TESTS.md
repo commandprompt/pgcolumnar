@@ -8714,7 +8714,11 @@ A module fixture on a private database runs the SQL in the shell's order and rea
 | `test_the_extended_schema_has_the_expected_types` | date32, time64, timestamp with and without UTC, fixed_size_binary(16), decimal128(20, 4), and strings |
 | `test_a_record_batch_is_cut_at_the_byte_cap` | a record batch is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make batches of 6,6,6,6,6,6,4 (#1811) |
 | `test_the_byte_cut_arrow_stream_reads_back_exactly` | and the byte-cut stream reads back every row exactly, by id, length and md5 |
+| `test_a_record_batch_cut_counts_an_int4s_validity_byte` | the byte cut counts an int4's validity byte: 1000 int4 rows under a 1024-byte cap make batches of 204,204,204,204,184 (#1843 review) |
+| `test_a_record_batch_cut_counts_a_numerics_text_form` | the byte cut counts a numeric's text form: 10 rows of 1e1000 under a 1024-byte cap make 10 batches of 1 |
+| `test_a_record_batch_cut_counts_a_lists_elements_as_written` | the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 batches of 1 |
 | `test_over_1gib_of_one_column_exports_in_several_record_batches` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 record batches of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
+| `test_a_row_far_wider_as_written_than_stored_goes_in_a_batch_of_its_own` | a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 record batches of 1 (#1843 review); opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 
 ## 198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates
 
@@ -11768,6 +11772,7 @@ The source hashes and counts come from the generator that fills each table, not 
 | `test_pexport_rejects_a_non_empty_directory` | reject a non-empty output directory |
 | `test_pexport_rejects_a_non_columnar_target` | reject a non-columnar target |
 | `test_pexport_the_server_survives_the_exports` | server still up after the exports |
+| `test_pexport_workers_use_the_callers_group_byte_cap` | the workers cut row groups at the caller's export_group_bytes: 4000 rows of 3000 bytes under a 65536-byte cap, at most 21 rows a group (#1843 review) |
 
 ## 301. test_native_fold_deferral.py: the batch fold defers payload until a row passes its keys, and the work is measured
 
@@ -13070,7 +13075,11 @@ Each value comparison needs the generator's ids on both sides and the file's row
 | `test_a_row_group_is_cut_at_the_byte_cap` | a row group is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make groups of 6,6,6,6,6,6,4 (#1811) |
 | `test_the_byte_cut_parquet_file_reads_back_exactly` | and the byte-cut file reads back every row exactly, by id, length and md5 |
 | `test_the_group_byte_cap_refuses_more_than_256_mib` | export_group_bytes refuses a value above its 256 MiB maximum |
+| `test_a_row_group_cut_counts_an_int4s_level_byte` | the byte cut counts an int4's level byte: 1000 int4 rows under a 1024-byte cap make groups of 204,204,204,204,184 (#1843 review) |
+| `test_a_row_group_cut_counts_a_numerics_text_form` | the byte cut counts a numeric's text form: 10 rows of 1e1000 under a 1024-byte cap make 10 groups of 1 |
+| `test_a_row_group_cut_counts_a_lists_elements_as_written` | the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 groups of 1 |
 | `test_over_1gib_of_one_column_exports_in_several_row_groups` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 row groups of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
+| `test_a_row_far_wider_as_written_than_stored_goes_in_a_group_of_its_own` | a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 row groups of 1 (#1843 review); opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 
 ## 346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined
 
