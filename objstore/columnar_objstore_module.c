@@ -2463,7 +2463,7 @@ os_list_parse_page(const char *body, int64 blen, const char *bucket,
 }
 
 /* Read the whole response body into a palloc'd NUL-terminated buffer, bounded by
- * cap; handles chunked and content-length framing. */
+ * cap; handles chunked, content-length and close-delimited framing. */
 static char *
 os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 			  int64 *outlen)
@@ -2496,7 +2496,7 @@ os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 			if ((int64) s.len + sz > cap)
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("columnar: object listing from \"%s\" exceeded %lld bytes",
+						 errmsg("columnar: response from \"%s\" exceeded %lld bytes",
 								h->url, (long long) cap)));
 			enlargeStringInfo(&s, (int) sz);
 			os_read_exact(h, (uint8 *) s.data + s.len, sz);
@@ -2505,18 +2505,46 @@ os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 			os_read_line(h, line, sizeof(line));	/* chunk-terminating CRLF */
 		}
 	}
+	else if (resp->content_length < 0)
+	{
+		/*
+		 * Neither chunked nor a length: the body ends when the server closes
+		 * the connection (RFC 9112 section 6.3, rule 8). Every request on the
+		 * generic HTTP path sends Connection: close, and the Apache Iceberg
+		 * REST catalog answers a reply over about 32 KB this way (#1787).
+		 * Over plain TCP, os_fill returns false only on an orderly close (FIN)
+		 * and raises on a read error, so a reset connection is refused rather
+		 * than read as a short body. Over TLS, os_fill also returns false on
+		 * EOF without close_notify, so a body cut off that way is accepted as
+		 * complete; that is existing behaviour and is not changed here.
+		 */
+		for (;;)
+		{
+			int64		avail = h->rb_len - h->rb_off;
+
+			if ((int64) s.len + avail > cap)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("columnar: response from \"%s\" exceeded %lld bytes",
+								h->url, (long long) cap)));
+			if (avail > 0)
+			{
+				enlargeStringInfo(&s, (int) avail);
+				s.len += (int) os_take(h, (uint8 *) s.data + s.len, avail);
+				s.data[s.len] = '\0';
+			}
+			if (!os_fill(h))
+				break;
+		}
+	}
 	else
 	{
 		int64		cl = resp->content_length;
 
-		if (cl < 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg("columnar: \"%s\" listing has no length", h->url)));
 		if (cl > cap)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("columnar: object listing from \"%s\" exceeded %lld bytes",
+					 errmsg("columnar: response from \"%s\" exceeded %lld bytes",
 							h->url, (long long) cap)));
 		enlargeStringInfo(&s, (int) cl);
 		os_read_exact(h, (uint8 *) s.data, cl);
@@ -2585,12 +2613,38 @@ os_list_request(PgColumnarObjHandle *h, const char *rawQuery, int64 *outlen)
 	{
 		char	   *body = os_slurp_body(h, &resp, OS_LIST_MAX_BODY, outlen);
 
-		if (resp.conn_close)
+		/* a close-delimited body leaves the connection at end of stream */
+		if (resp.conn_close || (!resp.chunked && resp.content_length < 0))
 			os_disconnect(h);
 		else
 			h->served++;
 		return body;
 	}
+}
+
+/*
+ * os_target_bucket_root
+ *		Point a handle resolved from a key in `bucket` at the bucket itself, the
+ *		target of a bucket-level request such as a LIST. Path-style addressing
+ *		names the bucket in the path, "/bucket". Virtual-host addressing has
+ *		already put the bucket in the host name (os_resolve_s3 sets auth_host),
+ *		so the path is the bucket root, "/": "/bucket" there would name the key
+ *		"bucket", and S3 answers that as a GetObject of it (#1783).
+ */
+static void
+os_target_bucket_root(PgColumnarObjHandle *h, const char *bucket)
+{
+	MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	StringInfoData bp;
+
+	initStringInfo(&bp);
+	appendStringInfoChar(&bp, '/');
+	if (h->auth_host == NULL)
+		os_uriencode_path(&bp, bucket);
+	if (h->abspath != NULL)
+		pfree(h->abspath);
+	h->abspath = bp.data;
+	MemoryContextSwitchTo(oldcxt);
 }
 
 static char **
@@ -2629,18 +2683,7 @@ objstore_list_objects(const char *url, const PgColumnarObjStoreConfig *cfg,
 	 * target at the bucket root and carry the prefix in the signed query */
 	dummyUrl = psprintf("s3://%s/_", bucket);
 	h = os_write_handle(dummyUrl, cfg);
-	{
-		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		StringInfoData bp;
-
-		initStringInfo(&bp);
-		appendStringInfoChar(&bp, '/');
-		os_uriencode_path(&bp, bucket);
-		if (h->abspath != NULL)
-			pfree(h->abspath);
-		h->abspath = bp.data;
-		MemoryContextSwitchTo(oldcxt);
-	}
+	os_target_bucket_root(h, bucket);
 	encPrefix = os_uriencode_query(prefix);
 
 	PG_TRY();
@@ -2846,18 +2889,7 @@ objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
 	/* as objstore_list_objects: resolve from a dummy key, request the bucket */
 	h = os_write_handle(psprintf("s3://%s/_", bucket), cfg);
 	os_set_deadline(h, timeout_ms);
-	{
-		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		StringInfoData bp;
-
-		initStringInfo(&bp);
-		appendStringInfoChar(&bp, '/');
-		os_uriencode_path(&bp, bucket);
-		if (h->abspath != NULL)
-			pfree(h->abspath);
-		h->abspath = bp.data;
-		MemoryContextSwitchTo(oldcxt);
-	}
+	os_target_bucket_root(h, bucket);
 
 	PG_TRY();
 	{
@@ -3109,6 +3141,36 @@ objstore_http_request(const char *url, const char *method,
 	return result;
 }
 
+/*
+ * The allow-list check with no request (#1780). See columnar_objstore.h. An
+ * s3:// or gs:// URL resolves from a dummy key in its bucket, as
+ * objstore_list_objects does, so a bare or empty prefix resolves too.
+ */
+static void
+objstore_check_endpoint(const char *url, const PgColumnarObjStoreConfig *cfg)
+{
+	PgColumnarObjHandle *h;
+	char	   *target = (char *) url;
+
+	if (pg_strncasecmp(url, "s3://", 5) == 0 || pg_strncasecmp(url, "gs://", 5) == 0)
+	{
+		const char *bstart = url + 5;
+		const char *slash = strchr(bstart, '/');
+		int			blen = (slash != NULL) ? (int) (slash - bstart) : (int) strlen(bstart);
+
+		if (blen == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("columnar: \"%s\" names no bucket", url)));
+		target = psprintf("%.5s%.*s/_", url, blen, bstart);
+	}
+	h = os_write_handle(target, cfg);
+	os_check_endpoint_allowed(h);
+	os_free_handle(h);
+	if (target != url)
+		pfree(target);
+}
+
 static const PgColumnarObjStoreApi objstore_api = {
 	.abi_version = PGCOLUMNAR_OBJSTORE_ABI,
 	.handles_url = objstore_handles_url,
@@ -3124,6 +3186,7 @@ static const PgColumnarObjStoreApi objstore_api = {
 	.http_request = objstore_http_request,
 	.list_uploads = objstore_list_uploads,
 	.abort_upload = objstore_abort_upload,
+	.check_endpoint = objstore_check_endpoint,
 };
 
 const PgColumnarObjStoreApi *
