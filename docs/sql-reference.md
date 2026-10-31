@@ -1046,8 +1046,12 @@ location. That location is taken from where `metadata.json` sits. A table copied
 to a new directory therefore still reads. A recorded path that points outside
 the table location is refused, not read.
 
+A data file that the current snapshot removed is not live, so it is skipped. A
+copy-on-write delete or a filtered overwrite records the file it replaced this
+way, as a manifest entry with status 2 (DELETED).
+
 Delete files are refused, not ignored. A snapshot that carries any delete
-manifest or delete entry raises an error here. It does not return rows the table
+manifest or delete file raises an error here. It does not return rows the table
 says are gone. To read a table that uses deletes, use `iceberg_scan`, which
 applies position, equality, and deletion-vector deletes.
 
@@ -1177,7 +1181,8 @@ mint a bearer by the client-credentials grant. The request goes to
 `oauth_token_uri` when set, otherwise to `{catalog_uri}/v1/oauth/tokens`, with an
 optional `oauth_scope`. The client secret travels in the request body, never a
 URL or a log line. A mapping that sets only one of the pair is refused before any
-request is made.
+request is made, even when it also sets a static `token`. A mapping that sets a
+`token` and the complete pair uses the token and mints no bearer.
 
 Multi-level namespaces are given dot-separated, and the function requires the
 `pg_read_server_files` role, like the other Iceberg functions.
@@ -1383,7 +1388,11 @@ object-store module, since only it can issue the listing.
 On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes one
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`
 marker beside them on completion. Every other write function writes a single
-object at the exact key.
+object at the exact key. The workers use the calling session's values of
+`pgcolumnar.objstore_allowed_endpoints`, `pgcolumnar.objstore_s3_addressing` and
+`pgcolumnar.objstore_part_size`, including any set with `SET`. The endpoint is
+checked against the session's allow-list before any worker starts, so a refused
+endpoint fails before anything is uploaded.
 
 Remote paths carry the same privilege as local ones. A read needs
 `pg_read_server_files` and a write needs `pg_write_server_files`, over and above
