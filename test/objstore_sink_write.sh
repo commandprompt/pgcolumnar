@@ -281,7 +281,7 @@ psql_run "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = ''"
 psql_run "SELECT pg_reload_conf()" >/dev/null
 # the widen arm proves nothing unless the system list really is empty: record what a
 # new session sees, so a reload that never lands fails here rather than passing below
-check "premise: a new session sees an empty system allow-list before the widen arm" \
+check "session allow-list: a new session sees an empty system list before the widen arm" \
 	"$(sys_list_is "")" "[]"
 check "session allow-list: a session SET widens an empty system list for the workers" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \

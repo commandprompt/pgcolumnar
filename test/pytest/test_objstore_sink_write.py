@@ -651,7 +651,7 @@ def test_nothing_reached_the_prefix_the_session_refused(osw, expect):
 
 def test_the_system_list_is_empty_before_the_widen_arm(osw, expect):
     expect.text(osw["sw premise"], "[]",
-                "premise: a new session sees an empty system allow-list before the widen arm")
+                "session allow-list: a new session sees an empty system list before the widen arm")
 
 
 def test_a_session_set_widens_an_empty_system_list_for_the_workers(osw, expect):
