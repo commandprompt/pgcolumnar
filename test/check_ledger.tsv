@@ -5476,6 +5476,7 @@ objstore_sink_write	objstore_sink_write	inject: the server holds no open upload 
 objstore_sink_write	objstore_sink_write	large export to s3:// succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	large round trip: s3 read-back == source	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the last part is left out of the CompleteMultipartUpload list
 objstore_sink_write	objstore_sink_write	no slash: a 2-worker re-run to s3://bucket/sl succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet	15;16;17;18;19	2026-10-31	the stale-part reconcile matching any key under <dir>/ by basename, at any depth, as at 9bdc4391 (#1782)
 objstore_sink_write	objstore_sink_write	no slash: a re-run to sl leaves the parts under slx/ and sl2/	15;16;17;18;19	2026-10-30	the stale-part listing of <dir> without the closing / and no bare-bucket refusal, as at 087960ba (#1782)
 objstore_sink_write	objstore_sink_write	no slash: the re-run leaves exactly its own 2 parts under sl/	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	parallel export to an s3:// prefix succeeds	15;16;17;18;19	never	-

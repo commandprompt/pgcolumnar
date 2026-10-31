@@ -1262,4 +1262,6 @@ guard_tests 854
 # in 5 tests, by collection over the cluster files.
 # cluster_tests 4515 -> 4529 for #1782's test_objstore_sink_write.py review round: 14 checks in
 # 14 tests (sibling prefixes, no slash, several slashes, bare bucket, cancel), by collection.
-cluster_tests 4529
+# cluster_tests 4529 -> 4530 for #1782's test_objstore_sink_write.py re-review: 1 nested-prefix check
+# in 1 test, by collection over the cluster files.
+cluster_tests 4530

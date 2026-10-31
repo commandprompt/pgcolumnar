@@ -280,13 +280,20 @@ check "trailing slash: an export to sl/ leaves the parts under slx/ and sl2/" \
 	"$(siblings_left)" "$SIBLINGS"
 
 # the same prefix without the slash, and fewer workers: the reconcile must drop
-# sl/part-0002 and 0003 and nothing outside sl/
+# sl/part-0002 and 0003 and nothing outside sl/. A listing with no delimiter
+# also returns keys below sl/, so a part under sl/sub/ (another export's
+# prefix) is planted too, with an index above this run's 2 workers.
 plant_siblings
+mkdir -p "$PGC_WORKDIR/$BUCKET/sl/sub"
+printf 'x' > "$PGC_WORKDIR/$BUCKET/sl/sub/part-0009.parquet"
 check_num "no slash: a 2-worker re-run to s3://bucket/sl succeeds" \
 	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/sl', 2)")" "$PARROWS"
 check_num "no slash: the re-run leaves exactly its own 2 parts under sl/" "$(sl_parts)" "2"
 check "no slash: a re-run to sl leaves the parts under slx/ and sl2/" \
 	"$(siblings_left)" "$SIBLINGS"
+check "no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet" \
+	"$(cd "$PGC_WORKDIR/$BUCKET" && ls sl/sub/part-0009.parquet 2>/dev/null || echo none)" \
+	"sl/sub/part-0009.parquet"
 
 # several trailing slashes strip to the one prefix
 plant_siblings

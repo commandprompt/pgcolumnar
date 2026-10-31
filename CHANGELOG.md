@@ -478,7 +478,9 @@ true until the next version shipped.
   the stale `part-NNNN.parquet` objects a larger earlier run left. It listed
   `s3://bucket/out` without the closing `/`, and an S3 listing matches leading
   characters, so it also deleted `outer/part-0007.parquet` and
-  `out2/part-0005.parquet`. It now lists `out/` only.
+  `out2/part-0005.parquet`. It now lists `out/` only, and deletes only keys
+  directly under it: a part under a deeper prefix, such as
+  `out/sub/part-0009.parquet`, belongs to another export and is kept.
 - `parallel_export_parquet` refuses `s3://bucket/` and `s3://bucket`, which name
   no prefix, with SQLSTATE 22023 before any worker starts (#1782). It used to
   write the parts at the bucket root and then fail, leaving them there.

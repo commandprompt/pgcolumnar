@@ -375,6 +375,7 @@ pexport_remove_stale_remote_parts(const char *dir, int nkeys)
 {
 	const PgColumnarObjStoreApi *api = PgColumnarObjStoreGet();
 	char		prefix[MAXPGPATH];
+	size_t		plen;
 	char	  **keys;
 	int			n = 0;
 	int			i;
@@ -384,16 +385,24 @@ pexport_remove_stale_remote_parts(const char *dir, int nkeys)
 	/*
 	 * List "<dir>/", not "<dir>": a listing matches leading characters, so
 	 * "out" would also return "outer/..." and "out2/...", and their parts would
-	 * be deleted (#1782).
+	 * be deleted (#1782). The listing has no delimiter, so it also returns
+	 * keys below the prefix, such as "out/sub/part-0009.parquet", which belong
+	 * to another export. Only a key that is the prefix followed by a name with
+	 * no further '/' is one of this export's parts.
 	 */
 	snprintf(prefix, sizeof(prefix), "%s/", dir);
+	plen = strlen(prefix);
 	keys = api->list_objects(prefix, NULL, &n);
 	for (i = 0; i < n; i++)
 	{
-		const char *slash = strrchr(keys[i], '/');
-		const char *base = slash ? slash + 1 : keys[i];
+		const char *base;
 		int			idx;
 
+		if (strncmp(keys[i], prefix, plen) != 0)
+			continue;
+		base = keys[i] + plen;
+		if (strchr(base, '/') != NULL)
+			continue;
 		if (pexport_part_index(base, &idx) && idx >= nkeys)
 			api->delete_object(keys[i], NULL);
 	}
@@ -775,6 +784,12 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	 * reconcile would list the whole bucket. Refuse them here, before any
 	 * worker starts. A local path is left as given, since the filesystem
 	 * already collapses "//".
+	 *
+	 * Both rules treat the first segment after "scheme://" as the bucket,
+	 * which holds for s3:// and gs:// style URLs. For a path-style
+	 * http(s)://host/bucket/ URL the first segment is the host, so the strip
+	 * may remove the slash after the bucket, and "http://host/bucket/" is not
+	 * refused as naming no prefix.
 	 */
 	if (PgColumnarPathIsRemote(dir))
 	{

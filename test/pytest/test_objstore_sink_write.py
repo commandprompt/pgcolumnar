@@ -446,10 +446,16 @@ def osw(pgc_cluster):
                                            f"'s3://{BUCKET}/sl/*.parquet') AS t(id int8, v int)")
         r["sl siblings"] = siblings_left()
 
+        # a listing with no delimiter also returns keys below sl/, so a part
+        # under sl/sub/ (another export's prefix) must survive the reconcile too
         plant()
+        nested = sl / "sub" / "part-0009.parquet"
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        nested.write_text("x")
         r["ns export"] = pexport("sl", 2)
         r["ns parts"] = str(_parts(sl))
         r["ns siblings"] = siblings_left()
+        r["ns nested"] = "sl/sub/part-0009.parquet" if nested.exists() else "none"
 
         plant()
         open(s3log, "w").close()
@@ -675,6 +681,11 @@ def test_a_smaller_rerun_without_the_slash_leaves_its_own_parts(osw, expect):
 def test_a_smaller_rerun_without_the_slash_leaves_the_sibling_prefixes_parts(osw, expect):
     expect.text(osw["ns siblings"], SIBLINGS,
                 "no slash: a re-run to sl leaves the parts under slx/ and sl2/")
+
+
+def test_a_smaller_rerun_without_the_slash_leaves_a_nested_prefixes_part(osw, expect):
+    expect.text(osw["ns nested"], "sl/sub/part-0009.parquet",
+                "no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet")
 
 
 def test_an_export_to_a_prefix_with_several_slashes_succeeds(osw, expect):
