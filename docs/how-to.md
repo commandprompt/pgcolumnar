@@ -807,12 +807,17 @@ skipped.
 
 ## Import and export Arrow
 
-The Arrow IPC file format works the same way as Parquet.
+`export_arrow` writes the Arrow IPC stream format. `import_arrow` reads the
+stream format and the Arrow IPC file format, which includes Feather v2.
 
 ```sql
-SELECT pgcolumnar.import_arrow('events', '/data/events.arrow');
-SELECT pgcolumnar.export_arrow('events', '/data/events.arrow');
+SELECT pgcolumnar.export_arrow('events', '/data/events.arrows');
+SELECT pgcolumnar.import_arrow('events', '/data/events.arrows');
+SELECT pgcolumnar.import_arrow('events', '/data/events.arrow');  -- IPC file or Feather v2
 ```
+
+To read an export with pyarrow, use `pyarrow.ipc.open_stream`. The export has no
+file footer, so `pyarrow.ipc.open_file` and Feather readers refuse it.
 
 **Tuning.** Use Arrow to exchange data with an in-process analytic engine without
 a Parquet encode step. Use Parquet for durable, compressed files.
@@ -842,7 +847,7 @@ even when it is listed. See
 [the refused ranges](best-practices.md#run-object-storage-safely).
 
 **Tuning.** Raise `pgcolumnar.objstore_part_size` to use larger multipart parts
-over a high-latency network. Choose `pgcolumnar.objstore_s3_addressing` to match
+over a high-latency network. Its maximum is 512 MiB. Choose `pgcolumnar.objstore_s3_addressing` to match
 your provider's path or virtual-host style. Keep the allow-list as small as your
 buckets require.
 
@@ -885,12 +890,14 @@ SELECT * FROM pgcolumnar.iceberg_rest_tables('https://catalog.example.com', 'ana
 
 For per-role credentials, name a foreign server instead of a URI. The server
 holds the catalog URI. The current role's user mapping holds the bearer token,
-kept in `pg_user_mapping` where it is not world-readable. On a multi-warehouse
-catalog, add a `warehouse` server option; it is sent on the config request.
+kept in `pg_user_mapping` where it is not world-readable. The role needs `USAGE`
+on the server. On a multi-warehouse catalog, add a `warehouse` server option; it
+is sent on the config request.
 
 ```sql
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
   OPTIONS (catalog_uri 'https://catalog.example.com', warehouse 'analytics_wh');
+GRANT USAGE ON FOREIGN SERVER cat TO analyst;
 CREATE USER MAPPING FOR analyst SERVER cat OPTIONS (token 's3cr3t');
 
 SELECT * FROM pgcolumnar.iceberg_rest_scan('cat', 'analytics', 'events')

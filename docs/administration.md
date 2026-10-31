@@ -432,7 +432,9 @@ A REST catalog needs a bearer token. It is read from the
 `PGCOLUMNAR_ICEBERG_REST_TOKEN` server environment variable, or per role from a
 foreign server and user mapping of the `pgcolumnar_iceberg_catalog` wrapper. The
 per-role token lives in `pg_user_mapping`, which is not world-readable, so one
-role's token is private from another. A token is never a function argument, so it
+role's token is private from another. A role needs `USAGE` on the server to use
+it, and is refused with SQLSTATE 42501 without it, even through a `PUBLIC`
+mapping. A token is never a function argument, so it
 does not appear in the statement log or in `pg_stat_activity`. A user mapping may
 carry OAuth2 client credentials instead, and the client secret travels only in the
 token-request body.

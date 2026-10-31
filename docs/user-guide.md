@@ -261,7 +261,9 @@ the conversion does not keep order across a daylight-saving change. For the same
 reason the Iceberg foreign table does not prune files on a `year()`, `month()`,
 `day()` or `hour()` partition of such a column. A column marked only with the
 older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS` type, with no `isAdjustedToUTC`
-flag, holds instants: the Parquet format defines it so.
+flag, holds instants: the Parquet format defines it so. `parquet_schema` advises
+`timestamptz` for every column that holds instants, and `timestamp` for wall
+times.
 
 The `path` may also be an object-storage URL. Every read and export function, and
 both foreign-data wrappers, accept an `s3://`, `http://`, or `https://` URL where
@@ -303,11 +305,12 @@ SELECT * FROM pgcolumnar.iceberg_rest_scan(
 
 For per-role credentials, pass a foreign server name as the first argument. The
 server holds the catalog URI, and the current role's user mapping supplies the
-token.
+token. The role needs `USAGE` on the server.
 
 ```sql
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
   OPTIONS (catalog_uri 'https://catalog.example.com');
+GRANT USAGE ON FOREIGN SERVER cat TO analyst;
 CREATE USER MAPPING FOR analyst SERVER cat OPTIONS (token 's3cr3t');
 
 SELECT * FROM pgcolumnar.iceberg_rest_scan('cat', 'analytics', 'events')
