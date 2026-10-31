@@ -4452,9 +4452,8 @@ the tool grades THIS tree.
 
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
-Ports `test/iceberg_fdw.sh`. 74 of its 76 check names, one for one; the two it cannot
-carry are `pgc_skip`'s refusal names, which are structural and declared in
-`INCOMPLETE` with their reason.
+Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
+89 literal matches and 0 missing (#1818's twelve included).
 
 | test | asserts |
 | --- | --- |
@@ -4469,6 +4468,10 @@ carry are `pgc_skip`'s refusal names, which are structural and declared in
 | `test_a_bucket_partition_keeps_only_the_matching_bucket` | `bucket[8]`: our murmur3 agrees with the one pyiceberg wrote |
 | `test_a_bucket_pruned_equality_returns_its_row` | and the kept file holds the row |
 | `test_a_range_predicate_cannot_bucket_prune` | the hash destroys order, so a range prunes by metrics only |
+| `test_a_text_bucket_prunes_under_a_deterministic_collation` | #1818's control: `bucket[16](s)` on a string, one row per file; `s = 'ABC'` under the default and the `C` collation still prunes 5 of 6 files, so the collation guard has not switched text bucket pruning off |
+| `test_a_nondeterministic_collation_on_the_qual_does_not_bucket_prune` | #1818: `s = 'ABC' COLLATE ice_ci` (ICU, level 2) returns `abc`, `ABC`, `Abc`, `aBc` from four buckets, as `iceberg_scan` does, and prunes no file |
+| `test_a_nondeterministic_collation_on_the_column_does_not_bucket_prune` | #1818: the same with the column declared `COLLATE ice_ci` and no collation in the query, so the guard must read the comparison's input collation |
+| `test_an_identity_partition_prunes_under_the_quals_own_collation` | identity pruning evaluates the qual under its own collation: `region = 'EU' COLLATE ice_ci` keeps the eu file and prunes the us one |
 | `test_a_truncate_partition_prunes_by_range` | `truncate[100]` with metrics disabled, so the transform is the only mechanism |
 | `test_a_truncate_pruned_scan_still_returns_its_rows` | and the rows survive |
 | `test_the_bucket_table_reads_whole_and_matches_the_murmur3_oracle` | the bucket table's premise and its same-oracle read |
@@ -9706,7 +9709,7 @@ One module fixture runs the three scenarios in a private database; session 2's b
 
 ## 231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate
 
-The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row.
+The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row. Over `warehouse_promo` (#1789), files written before an int -> long, float -> double or decimal(10,2) -> decimal(20,2) promotion read as the current types: alone, mixed with a newer file, under equality deletes on the promoted column written on both sides of it, and through a `pgcolumnar_iceberg` foreign table. A narrower declared type, a date declared bigint and positional `read_parquet`'s bigint over INT32 are refused with 42804, and `read_parquet` by field id widens.
 
 ### Every test
 
@@ -9722,6 +9725,20 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed me
 | `test_an_output_column_not_in_the_schema_is_refused` | an output column not in the schema is refused (42703) |
 | `test_an_unprivileged_role_is_refused_the_scan` | an unprivileged role is refused (42501) |
 | `test_a_pg_read_server_files_member_may_scan` | a pg_read_server_files member who is not superuser may scan |
+| `test_the_promotion_fixture_stores_the_old_and_new_physical_types` | premise: the old files store k, f, d as INT32, FLOAT and decimal(10,2), the new file as INT64, DOUBLE and decimal(20,2) |
+| `test_a_promoted_int_column_reads_old_files_as_bigint` | a promoted int -> long column reads the pre-promotion files as bigint |
+| `test_a_promoted_float_column_reads_old_files_as_double` | a promoted float -> double column reads the pre-promotion files as double precision |
+| `test_a_promoted_decimal_column_reads_old_files` | a promoted decimal(10,2) -> decimal(20,2) column reads the pre-promotion files |
+| `test_old_and_new_files_bind_to_the_promoted_types` | old and new files both bind to the promoted types in one snapshot |
+| `test_an_equality_delete_on_a_promoted_column_applies` | an equality delete on a promoted column applies to old and new files |
+| `test_an_equality_delete_on_an_unprojected_promoted_column_applies` | an equality delete on a promoted column applies when that column is not projected |
+| `test_a_foreign_table_reads_the_promoted_types` | a pgcolumnar_iceberg foreign table reads old and new files as the promoted types |
+| `test_a_foreign_table_applies_an_equality_delete_on_a_promoted_column` | a pgcolumnar_iceberg foreign table applies an equality delete on a promoted column |
+| `test_a_column_declared_int_over_an_int64_file_is_refused` | a column declared int over a post-promotion INT64 file is refused (42804) |
+| `test_a_column_declared_real_over_a_double_file_is_refused` | a column declared real over a post-promotion DOUBLE file is refused (42804) |
+| `test_a_date_column_declared_bigint_is_refused` | a date column declared bigint is refused, not widened (42804) |
+| `test_read_parquet_by_field_id_widens_an_int32_column` | read_parquet by field id reads an INT32 column as bigint |
+| `test_positional_read_parquet_keeps_its_exact_type_map` | positional read_parquet still refuses bigint over an INT32 column (42804) |
 
 ## 232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot
 
@@ -10878,7 +10895,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 ## 274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table
 
-The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails.
+The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, reads a table promoted int -> long, float -> double and decimal(10,2) -> decimal(20,2) from a second fixture server as the promoted types (#1789), lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails.
 
 ### Every test
 
@@ -10891,6 +10908,8 @@ Every test makes one check under the shell's name. The not-found reads as 42P01 
 | `test_iceberg_rest_scan_returns_the_five_current_snapshot_rows` | iceberg_rest_scan returns the five current-snapshot rows |
 | `test_iceberg_rest_scan_matches_iceberg_scan_of_the_same_table` | iceberg_rest_scan matches iceberg_scan of the same table (same oracle) |
 | `test_iceberg_rest_scan_projects_and_reorders_by_field_id` | iceberg_rest_scan projects and reorders by field id (amount, id) |
+| `test_the_promoted_table_rest_server_is_up` | premise: the promoted-table rest fixture server is up |
+| `test_iceberg_rest_scan_reads_a_promoted_tables_old_and_new_files` | iceberg_rest_scan reads a promoted table's old and new files as the promoted types |
 | `test_iceberg_rest_namespaces_lists_the_catalogs_namespaces` | iceberg_rest_namespaces lists the catalog's namespaces |
 | `test_iceberg_rest_tables_lists_a_namespaces_tables` | iceberg_rest_tables lists a namespace's tables |
 | `test_iceberg_rest_scan_of_an_unknown_table_is_a_clean_not_found` | iceberg_rest_scan of an unknown table is a clean not-found (42P01) |

@@ -1166,6 +1166,9 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 													 "date", (int64) v);
 					return DateADTGetDatum((DateADT) d);
 				}
+				/* an Iceberg int -> long promotion (pq_field_id_widens) */
+				if (plan->typid == INT8OID)
+					return Int64GetDatum((int64) v);
 				return Int32GetDatum(v);
 			}
 		case PQ_INT64:
@@ -1232,6 +1235,9 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 				}
 				memcpy(&v, cur, 4);
 				*p = cur + 4;
+				/* an Iceberg float -> double promotion (pq_field_id_widens) */
+				if (plan->typid == FLOAT8OID)
+					return Float8GetDatum((float8) v);
 				return Float4GetDatum(v);
 			}
 		case PQ_DOUBLE:
@@ -2379,6 +2385,31 @@ pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
 }
 
 /*
+ * Does a field-id bind read this leaf into a WIDER type than pq_want_phys_for
+ * names? Iceberg's spec-legal type promotions, int -> long and float -> double,
+ * leave the data files written before the promotion with the old physical type,
+ * while the current schema (and so the output column) has the new one (#1789).
+ * Both widenings are exact, and plain_value_to_datum performs them. Only a plain
+ * integer qualifies: an INT32 that is a date, a time or a decimal is not an
+ * Iceberg int. decimal(P,S) -> decimal(P',S) needs nothing here, because
+ * pq_want_phys_for already binds a DECIMAL by the file's own physical type.
+ *
+ * The positional binders do not call this: they are not schema-evolution reads,
+ * and keep their exact type map.
+ */
+static bool
+pq_field_id_widens(const PqSchemaCol *sc, Oid typid)
+{
+	if (typid == INT8OID && sc->phys_type == PQ_INT32)
+		return sc->time_unit == PQ_TU_NONE &&
+			(sc->converted_type < 0 ||
+			 sc->converted_type == PQ_CT_INT_8 ||
+			 sc->converted_type == PQ_CT_INT_16 ||
+			 sc->converted_type == PQ_CT_INT_32);
+	return typid == FLOAT8OID && sc->phys_type == PQ_FLOAT;
+}
+
+/*
  * Infer the PostgreSQL column type a Parquet leaf should map to. This is the
  * inverse of the exporter's parquet_kind_for_type (pgcolumnar_parquet.c): it reads
  * the physical type plus the ConvertedType annotation, so a round-tripped file
@@ -2882,6 +2913,8 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 		if (want < 0)
 			IMP_FAIL("output column \"%s\" has type %s, which columnar.read_parquet does not support",
 					 NameStr(att->attname), format_type_be(typid));
+		if (pq_field_id_widens(pf->leaves[found].sc, typid))
+			want = pf->leaves[found].sc->phys_type;
 		if (pf->leaves[found].sc->phys_type != want)
 			IMP_FAIL("Parquet column with field id %d has a physical type incompatible with output column \"%s\" (%s)",
 					 req, NameStr(att->attname), format_type_be(typid));
