@@ -28,12 +28,14 @@
 #include "catalog/pg_type_d.h"
 #include "catalog/pg_user_mapping.h"
 #include "commands/defrem.h"
+#include "common/hashfn.h"
 #include "fmgr.h"
 #include "foreign/foreign.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/hsearch.h"
 #include "utils/jsonb.h"
 #include "utils/syscache.h"
 #include "utils/tuplestore.h"
@@ -910,6 +912,59 @@ pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
 #define REST_MAX_NAMESPACE_DEPTH	64
 
 /*
+ * A set of strings, for "seen before?" questions about values a catalog sends.
+ * Keyed by a 64-bit hash; each entry keeps every string with that hash, so a
+ * collision never makes two different strings look equal.
+ */
+typedef struct RestStrSetEntry
+{
+	uint64		hash;			/* the key; must be first */
+	List	   *strs;
+} RestStrSetEntry;
+
+/*
+ * Is `s` in *set? With `add`, also put it there. *set starts NULL and is made
+ * on the first add, in the current memory context.
+ */
+static bool
+rest_strset_lookup(HTAB **set, const char *s, bool add)
+{
+	uint64		h = hash_bytes_extended((const unsigned char *) s, (int) strlen(s), 0);
+	RestStrSetEntry *e;
+	bool		found;
+	ListCell   *lc;
+
+	if (*set == NULL)
+	{
+		HASHCTL		ctl;
+
+		if (!add)
+			return false;
+		memset(&ctl, 0, sizeof(ctl));
+		ctl.keysize = sizeof(uint64);
+		ctl.entrysize = sizeof(RestStrSetEntry);
+		ctl.hcxt = CurrentMemoryContext;
+		*set = hash_create("pgcolumnar REST string set", 64, &ctl,
+						   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	e = (RestStrSetEntry *) hash_search(*set, &h, add ? HASH_ENTER : HASH_FIND, &found);
+	if (!found)
+	{
+		if (e != NULL)
+			e->strs = list_make1(pstrdup(s));
+		return false;
+	}
+	foreach(lc, e->strs)
+	{
+		if (strcmp((const char *) lfirst(lc), s) == 0)
+			return true;
+	}
+	if (add)
+		e->strs = lappend(e->strs, pstrdup(s));
+	return false;
+}
+
+/*
  * GET a list resource and return the elements of its `key` array, following
  * next-page-token across pages (the REST spec's pageToken query parameter).
  * `path` may already hold a query string. Each element is a JsonbValue that
@@ -922,6 +977,7 @@ rest_get_list(const char *catalog_uri, const char *path, const char *key,
 	List	   *items = NIL;
 	char	   *pagetoken = NULL;
 	int			pages = 0;
+	HTAB	   *seen = NULL;	/* every token sent so far */
 
 	for (;;)
 	{
@@ -970,7 +1026,8 @@ rest_get_list(const char *catalog_uri, const char *path, const char *key,
 		next = rest_json_string_opt(&doc->root, "next-page-token");
 		if (next == NULL || next[0] == '\0')
 			break;
-		if (pagetoken != NULL && strcmp(next, pagetoken) == 0)
+		/* any earlier token, not only the last one: an A, B, A cycle never ends */
+		if (rest_strset_lookup(&seen, next, true))
 			ereport(ERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
 					 errmsg("iceberg: the REST catalog returned the same page token twice for the %s",
@@ -1007,16 +1064,42 @@ rest_namespace_levels(JsonbValue *lv)
 }
 
 /*
+ * A key for a namespace's levels that no two different namespaces share: each
+ * level with its length in front, so ["a.b"] and ["a","b"] differ.
+ */
+static char *
+rest_levels_key(List *levels)
+{
+	StringInfoData k;
+	ListCell   *lc;
+
+	initStringInfo(&k);
+	foreach(lc, levels)
+	{
+		const char *l = (const char *) lfirst(lc);
+
+		appendStringInfo(&k, "%zu:%s", strlen(l), l);
+	}
+	return k.data;
+}
+
+/*
  * Emit every namespace under `parent` (NIL: the top level), then walk into
  * each one with ?parent=. The REST spec lists only the direct children of
- * `parent`, so a nested namespace appears only through this walk (#1793). A
- * child must extend its parent by exactly one level; anything else (such as a
- * catalog that ignores ?parent= and repeats the top level) is skipped, so the
- * walk always goes deeper and ends.
+ * `parent`, so a nested namespace appears only through this walk (#1793).
+ *
+ * Below the top level, a child must extend its parent by exactly one level;
+ * anything else (such as a catalog that ignores ?parent= and repeats the top
+ * level) is skipped, so the walk always goes deeper and ends.
+ *
+ * Some catalogs list nested namespaces at the top level too. Each one is
+ * emitted there, as before #1793, but not walked from there, and *topnested
+ * remembers it so the walk below does not emit it a second time. The walk
+ * still goes into it, to find its own children.
  */
 static void
 rest_walk_namespaces(const char *catalog_uri, const char *token,
-					 RestCatalogConfig *cc, List *parent,
+					 RestCatalogConfig *cc, List *parent, HTAB **topnested,
 					 Tuplestorestate *ts, TupleDesc td)
 {
 	StringInfoData rp;
@@ -1024,7 +1107,8 @@ rest_walk_namespaces(const char *catalog_uri, const char *token,
 	ListCell   *lc;
 	int			depth = list_length(parent);
 
-	if (depth >= REST_MAX_NAMESPACE_DEPTH)
+	/* a namespace REST_MAX_NAMESPACE_DEPTH levels deep is still walked */
+	if (depth > REST_MAX_NAMESPACE_DEPTH)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("iceberg: the REST catalog nests namespaces deeper than %d levels",
@@ -1040,6 +1124,17 @@ rest_walk_namespaces(const char *catalog_uri, const char *token,
 		rest_append_levels(&rp, parent, cc->sep);
 	}
 	items = rest_get_list(catalog_uri, rp.data, "namespaces", "namespaces", token);
+
+	if (parent == NIL)
+	{
+		foreach(lc, items)
+		{
+			List	   *levels = rest_namespace_levels((JsonbValue *) lfirst(lc));
+
+			if (list_length(levels) > 1)
+				rest_strset_lookup(topnested, rest_levels_key(levels), true);
+		}
+	}
 
 	foreach(lc, items)
 	{
@@ -1067,19 +1162,27 @@ rest_walk_namespaces(const char *catalog_uri, const char *token,
 				continue;
 		}
 
-		/* dot-join the levels */
-		initStringInfo(&name);
-		foreach(l2, levels)
+		/* emitted already when the top level listed it */
+		if (parent == NIL ||
+			!rest_strset_lookup(topnested, rest_levels_key(levels), false))
 		{
-			if (name.len > 0)
-				appendStringInfoChar(&name, '.');
-			appendStringInfoString(&name, (const char *) lfirst(l2));
+			/* dot-join the levels */
+			initStringInfo(&name);
+			foreach(l2, levels)
+			{
+				if (name.len > 0)
+					appendStringInfoChar(&name, '.');
+				appendStringInfoString(&name, (const char *) lfirst(l2));
+			}
+			values[0] = PointerGetDatum(cstring_to_text_with_len(name.data, name.len));
+			tuplestore_putvalues(ts, td, values, nulls);
+			pfree(name.data);
 		}
-		values[0] = PointerGetDatum(cstring_to_text_with_len(name.data, name.len));
-		tuplestore_putvalues(ts, td, values, nulls);
-		pfree(name.data);
 
-		rest_walk_namespaces(catalog_uri, token, cc, levels, ts, td);
+		/* a nested namespace on the top-level list is walked from its parent */
+		if (parent == NIL && list_length(levels) > 1)
+			continue;
+		rest_walk_namespaces(catalog_uri, token, cc, levels, topnested, ts, td);
 	}
 }
 
@@ -1100,6 +1203,7 @@ pgcolumnar_iceberg_rest_namespaces(PG_FUNCTION_ARGS)
 	char	   *token;
 	char	   *warehouse;
 	RestCatalogConfig cc;
+	HTAB	   *topnested = NULL;
 
 	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
 		ereport(ERROR,
@@ -1109,7 +1213,7 @@ pgcolumnar_iceberg_rest_namespaces(PG_FUNCTION_ARGS)
 
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	rest_catalog_config(catalog_uri, token, warehouse, &cc);
-	rest_walk_namespaces(catalog_uri, token, &cc, NIL, ts, td);
+	rest_walk_namespaces(catalog_uri, token, &cc, NIL, &topnested, ts, td);
 	return (Datum) 0;
 }
 

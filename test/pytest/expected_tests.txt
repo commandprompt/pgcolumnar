@@ -1276,5 +1276,9 @@ guard_tests 854
 # refusal table for a test of its own (skipped, not refused), and three copy-on-write tests join it,
 # by collection over the cluster files.
 # cluster_tests 4540 -> 4551 for #1793's test_iceberg_rest_scan.py: eleven checks for nested namespaces,
-# a multi-segment prefix, a prefix in defaults and a warehouse server, by collection: `4527 tests collected`.
-cluster_tests 4551
+# a multi-segment prefix, a prefix in defaults and a warehouse server, by collection: `5405 tests collected`
+# after the merge of main, minus guard_tests 854.
+# cluster_tests 4551 -> 4562 for #1793's PR #1859 review in test_iceberg_rest_scan.py: eleven checks for a
+# top level that lists nested namespaces, ?parent= ignored or refused, config precedence, invalid separator
+# and prefix, the 64-level bound and page-token cycles, by collection: `5416 tests collected`, minus 854.
+cluster_tests 4562

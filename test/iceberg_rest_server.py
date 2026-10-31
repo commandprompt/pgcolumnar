@@ -34,6 +34,14 @@
 #   --page-size N               return list results N at a time with a
 #                               next-page-token, even when no pageToken was sent
 #   --extra-table T             list T in the table's namespace as well
+#   --top-level-all             list every namespace, at every level, when no
+#                               ?parent= is given (not what the spec says)
+#   --ignore-parent             answer ?parent= as if it were absent
+#   --parent-status N           answer HTTP N to any ?parent= request
+#   --config-json J             answer /v1/config with the JSON text J
+#   --bad-page-token same|cycle return every list item on the first page, then
+#                               page tokens that never end: "same" repeats one
+#                               token, "cycle" goes A, B, A, B, ...
 #
 # Special table names drive the failure arms:
 #   toobig   loadTable answers 200 with a huge Content-Length and no body, so a
@@ -114,6 +122,13 @@ class Handler(BaseHTTPRequestHandler):
         # offset of the next page. Without --page-size, everything in one reply.
         start = 0
         tok = query.get("pageToken", [""])[0]
+        if ARGS.bad_page_token:
+            if ARGS.bad_page_token == "same":
+                nxt = "T"
+            else:
+                nxt = "B" if tok == "A" else "A"
+            self._send_json(200, {key: [] if tok else items, "next-page-token": nxt})
+            return
         if tok:
             try:
                 start = int(tok)
@@ -166,6 +181,9 @@ class Handler(BaseHTTPRequestHandler):
                         "message": "warehouse %r is required" % ARGS.warehouse,
                         "type": "BadRequestException", "code": 400}})
                     return
+            if ARGS.config_json:
+                self._send_json(200, json.loads(ARGS.config_json))
+                return
             overrides = {}
             defaults = {}
             if ARGS.prefix:
@@ -194,6 +212,13 @@ class Handler(BaseHTTPRequestHandler):
         if rest == "namespaces":
             known = self._all_namespaces()
             parent = query.get("parent", [""])[0]
+            if parent and ARGS.parent_status:
+                self._send_json(ARGS.parent_status, {"error": {
+                    "message": "parent is not supported", "type": "BadRequestException",
+                    "code": ARGS.parent_status}})
+                return
+            if ARGS.ignore_parent:
+                parent = ""
             if parent:
                 ptuple = tuple(parent.split(self._sep()))
                 if ptuple not in known:
@@ -201,6 +226,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 kids = [n for n in known
                         if len(n) == len(ptuple) + 1 and n[:len(ptuple)] == ptuple]
+            elif ARGS.top_level_all:
+                kids = list(known)
             else:
                 kids = [n for n in known if len(n) == 1]
             self._page("namespaces", [list(n) for n in sorted(kids)], query)
@@ -360,6 +387,11 @@ def main():
     ap.add_argument("--prefix-in-defaults", action="store_true")
     ap.add_argument("--warehouse", default="")
     ap.add_argument("--page-size", type=int, default=0)
+    ap.add_argument("--top-level-all", action="store_true")
+    ap.add_argument("--ignore-parent", action="store_true")
+    ap.add_argument("--parent-status", type=int, default=0)
+    ap.add_argument("--config-json", default="")
+    ap.add_argument("--bad-page-token", choices=["same", "cycle"], default="")
     ARGS = ap.parse_args()
     open(ARGS.log, "w").close()
     httpd = ThreadingHTTPServer(("127.0.0.1", ARGS.port), Handler)

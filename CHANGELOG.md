@@ -476,8 +476,13 @@ true until the next version shipped.
   prefix; on a prefixed catalog they returned HTTP 404 before. A prefix with a
   `/` in it, such as `catalogs/main`, is sent as path segments, not as one
   `%2F`-encoded segment, and a prefix in the config `defaults` is used. Both list
-  functions follow `next-page-token`. `test/iceberg_rest_scan.sh` and
-  `test_iceberg_rest_scan.py`. Reported by @OffgridwithJD.
+  functions follow `next-page-token`, and refuse a page token the catalog
+  already sent. `iceberg_rest_namespaces` returns each namespace once, also on a
+  catalog that lists nested namespaces at the top level. It now makes one more
+  request per namespace, and if the catalog answers an error to any of them,
+  for example to `?parent=`, the whole call fails, where it listed the top level
+  before. `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`. Reported
+  by @OffgridwithJD.
 
 - `pgcolumnar.iceberg_data_files` lists an Iceberg table after a copy-on-write
   delete or a filtered overwrite, instead of refusing it with "has delete files"

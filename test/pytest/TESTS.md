@@ -10882,6 +10882,8 @@ The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the
 
 Four more fixtures cover #1793, one catalog behaviour each. One nests namespaces (db, db.x, db.x.y, aa), advertises the separator `%2E`, answers 400 to a `%1F` path and pages every list one item at a time. One has the prefix `catalogs/main`. One puts its prefix in the config `defaults`. One requires `?warehouse=wh1` on the config request and is reached through a FOREIGN SERVER. A failed reading shows the catalog's error text.
 
+Eleven more fixtures cover the review of PR #1859. Two list nested namespaces at the top level, and one of them also ignores `?parent=`; each namespace must come out once. One answers 400 to `?parent=`, and the call must fail with that status. Two serve a `/v1/config` that sets the prefix in more than one place, and only the winning prefix leads to the table. Two advertise an invalid separator or prefix. Two hold a namespace 64 and 65 levels deep. Two send page tokens that never end: one repeats a token at once, one cycles A, B, A. The paging readings run under a 30-second statement timeout, so a client that walks to the page bound reads as 57014.
+
 ### Every test
 
 Every test makes one check under the shell's name. The not-found reads as 42P01 only when the message is the catalog's 404, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer.
@@ -10910,6 +10912,17 @@ Every test makes one check under the shell's name. The not-found reads as 42P01 
 | `test_prefix_in_config_defaults_iceberg_rest_tables_lists` | prefix in config defaults: iceberg_rest_tables lists the tables |
 | `test_warehouse_server_iceberg_rest_namespaces_sends_the_warehouse` | warehouse server: iceberg_rest_namespaces sends the warehouse and lists |
 | `test_warehouse_server_iceberg_rest_tables_sends_the_warehouse` | warehouse server: iceberg_rest_tables sends the warehouse and lists |
+| `test_top_level_lists_nested_namespaces_iceberg_rest_namespaces_lists_each_once` | top level lists nested namespaces: iceberg_rest_namespaces lists each once |
+| `test_catalog_ignores_parent_iceberg_rest_namespaces_lists_each_once` | catalog ignores ?parent=: iceberg_rest_namespaces lists each once |
+| `test_catalog_refuses_parent_iceberg_rest_namespaces_fails_with_its_http_400` | catalog refuses ?parent=: iceberg_rest_namespaces fails with its HTTP 400 |
+| `test_config_precedence_a_prefix_in_overrides_wins` | config precedence: a prefix in overrides wins over the top-level key and defaults |
+| `test_config_precedence_a_top_level_prefix_wins_over_defaults` | config precedence: a top-level prefix wins over defaults |
+| `test_an_invalid_namespace_separator_is_refused` | an invalid namespace-separator %G1 is refused |
+| `test_an_invalid_prefix_is_refused` | an invalid prefix a/../b is refused |
+| `test_namespace_depth_a_namespace_64_levels_deep_is_listed` | namespace depth: a namespace 64 levels deep is listed |
+| `test_namespace_depth_a_namespace_65_levels_deep_is_refused` | namespace depth: a namespace 65 levels deep is refused |
+| `test_paging_a_page_token_repeated_at_once_is_refused` | paging: a page token repeated at once is refused |
+| `test_paging_a_page_token_cycle_is_refused` | paging: a page token cycle A, B, A is refused |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
