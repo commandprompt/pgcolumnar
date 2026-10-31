@@ -9,7 +9,9 @@ as "<SQLSTATE> (<label>)" only when the error's primary message is the refusal u
 test: every arm refuses with XX001, and so do later parse steps, so a FIFO read as an
 empty file passed on its SQLSTATE alone with the regular-file guard removed. A FIFO
 read that is still running after 5s is a HANG; its write end is then opened, so the
-backend is released.
+backend is released. A manifest enum value outside the spec (data_file.content,
+manifest_entry.status, manifest_file.content) is refused in the scan and the lister,
+naming the value, against a two-file control that reads ten rows (#1823).
 
 A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED. A fresh connection answers
 again after crash recovery, so every survival check also reads the server log's count
@@ -33,7 +35,8 @@ from pgc_vacuity import query_error
 DB = "pgc_iceberg_malformed"
 WHM = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "iceberg" / "warehouse_malformed"
 NEEDED = ("nullpath/db/t/metadata/t.metadata.json", "nullseq_ml/ml.avro", "nullminseq_ml/ml.avro",
-          "nullmanifestpath/db/t/metadata/t.metadata.json", "danglingschema/db/t/metadata/t.metadata.json")
+          "nullmanifestpath/db/t/metadata/t.metadata.json", "danglingschema/db/t/metadata/t.metadata.json",
+          "enum_ctl/db/t/metadata/t.metadata.json")
 # the refusal each arm wants, matched against the primary message as the shell does
 SCHEMA = (r"unsupported or malformed Avro schema in manifest", "malformed schema")
 NOPATH = (r"has no data file path", "no data file path")
@@ -50,6 +53,14 @@ FV99 = (r"has an unsupported format-version 99", "unsupported format-version")
 FV4 = (r"has an unsupported format-version 4", "unsupported format-version")
 FV0 = (r"has an unsupported format-version 0", "unsupported format-version")
 CSIDX = (r"has a current-snapshot-id that is not an integer", "non-integer current-snapshot-id")
+OLD3 = (r'manifest entry ".*/old\.parquet" has invalid content 3$', "invalid content 3")
+OLDM1 = (r'manifest entry ".*/old\.parquet" has invalid content -1$', "invalid content -1")
+NEW3 = (r'manifest entry ".*/new\.parquet" has invalid content 3$', "invalid content 3")
+STATUS3 = (r'manifest entry ".*/old\.parquet" has invalid status 3$', "invalid status 3")
+MF5 = (r'manifest ".*/dm\.avro" has invalid content 5$', "invalid manifest content 5")
+OLD4G = (r'manifest entry has invalid content 4294967296$', "invalid content 4294967296")
+STATUS4G = (r'manifest entry has invalid status 4294967297$', "invalid status 4294967297")
+MF4G = (r'manifest ".*/dm\.avro" has invalid content 4294967296$', "invalid manifest content 4294967296")
 
 
 def _message(exc):
@@ -275,6 +286,27 @@ def imf(pgc_cluster, server_dir):
                                        "AS t(id bigint)")
         r["lax csidnull"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{laxmd}/csidnull.metadata.json') "
                                         "AS t(id bigint)")
+        # #1823: enum_ctl with one data_file.content, manifest_entry.status or
+        # manifest_file.content outside the spec
+        scan = lambda d: f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{md(d)}') {scan3}"  # noqa: E731
+        lst = lambda d: f"SELECT * FROM pgcolumnar.iceberg_data_files('{md(d)}')"  # noqa: E731
+        r["enum ctl scan"] = _value(dsn, "SELECT count(*) || '|' || min(id) || '|' || max(id) "
+                                         f"FROM pgcolumnar.iceberg_scan('{md('enum_ctl')}') {scan3}")
+        r["enum ctl list"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_data_files('{md('enum_ctl')}')")
+        b = crashes()
+        r["old3 scan"] = _refusal(dsn, scan("content3_old"), OLD3)
+        r["oldm1 scan"] = _refusal(dsn, scan("contentm1_old"), OLDM1)
+        r["new3 scan"] = _refusal(dsn, scan("content3_new"), NEW3)
+        r["old3 list"] = _refusal(dsn, lst("content3_old"), OLD3)
+        r["status3 scan"] = _refusal(dsn, scan("status3_old"), STATUS3)
+        r["status3 list"] = _refusal(dsn, lst("status3_old"), STATUS3)
+        r["mf5 scan"] = _refusal(dsn, scan("mfcontent5"), MF5)
+        r["mf5 list"] = _refusal(dsn, lst("mfcontent5"), MF5)
+        # outside int32: a cast before the range check wrapped these to 0 and 1
+        r["old4g scan"] = _refusal(dsn, scan("content4g_old"), OLD4G)
+        r["status4g scan"] = _refusal(dsn, scan("status4g_old"), STATUS4G)
+        r["mf4g scan"] = _refusal(dsn, scan("mfcontent4g"), MF4G)
+        r["enum up"] = alive(b)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -584,3 +616,95 @@ def test_a_null_current_snapshot_id_still_reads_as_no_snapshot(imf, expect):
         return
     expect.text(imf["lax csidnull"], "0",
                 "control: a null current-snapshot-id still reads as a table with no snapshot (0 rows)")
+
+
+def test_two_valid_data_entries_scan_as_ten_rows(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["enum ctl scan"], "10|1|10", "control: two valid data entries scan as ten rows (ids 1..10)")
+
+
+def test_two_valid_data_entries_list_two_files(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["enum ctl list"], "2", "control: two valid data entries list two data files")
+
+
+def test_content_3_on_the_oldest_file_is_refused_by_the_scan(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["old3 scan"], "XX001 (invalid content 3)",
+                "data_file.content 3 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows")
+
+
+def test_content_minus_1_on_the_oldest_file_is_refused_by_the_scan(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["oldm1 scan"], "XX001 (invalid content -1)",
+                "data_file.content -1 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows")
+
+
+def test_content_3_on_the_newest_file_is_refused_naming_the_value(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["new3 scan"], "XX001 (invalid content 3)",
+                "data_file.content 3 on the newest file is refused naming the value, not as an equality delete with no ids")
+
+
+def test_the_lister_refuses_content_3_as_corrupt(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["old3 list"], "XX001 (invalid content 3)",
+                "iceberg_data_files refuses data_file.content 3 as corrupt (XX001), not as a delete file (0A000)")
+
+
+def test_status_3_is_refused_by_the_scan(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["status3 scan"], "XX001 (invalid status 3)",
+                "manifest_entry.status 3 is refused by iceberg_scan (XX001), not read as a live entry")
+
+
+def test_the_lister_refuses_status_3(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["status3 list"], "XX001 (invalid status 3)",
+                "iceberg_data_files refuses manifest_entry.status 3 (XX001), not listed")
+
+
+def test_manifest_content_5_is_refused_by_the_scan(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["mf5 scan"], "XX001 (invalid manifest content 5)",
+                "manifest_file.content 5 is refused by iceberg_scan (XX001), not read as a data manifest")
+
+
+def test_the_lister_refuses_manifest_content_5_as_corrupt(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["mf5 list"], "XX001 (invalid manifest content 5)",
+                "iceberg_data_files refuses manifest_file.content 5 as corrupt (XX001), not as a delete manifest (0A000)")
+
+
+def test_content_2_32_on_the_oldest_file_is_refused_not_wrapped(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["old4g scan"], "XX001 (invalid content 4294967296)", "data_file.content 4294967296 on the oldest file is refused by iceberg_scan (XX001), not wrapped to 0")
+
+
+def test_status_2_32_plus_1_is_refused_not_wrapped(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["status4g scan"], "XX001 (invalid status 4294967297)", "manifest_entry.status 4294967297 is refused by iceberg_scan (XX001), not wrapped to 1")
+
+
+def test_manifest_content_2_32_is_refused_not_wrapped(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["mf4g scan"], "XX001 (invalid manifest content 4294967296)", "manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not wrapped to 0")
+
+
+def test_the_backend_survives_the_enum_refusals(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["enum up"], "1", "backend still up after the enum refusals")
