@@ -12586,7 +12586,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a refused stale-part listing or a refused `_SUCCESS` PUT after every worker finished fails the run by its own 28000 and leaves no part and no earlier marker (`__listing_status__` and the fixture's `__put_status__`, #1781), a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
 
 ### Every test
 
@@ -12620,6 +12620,14 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_marker_went_to_the_prefix_as_a_put` | parallel remote: the marker went to the prefix as a PUT |
 | `test_the_per_worker_objects_read_back_as_the_generator` | parallel: the union of the per-worker objects == source |
 | `test_a_rerun_into_the_same_prefix_succeeds` | parallel: a re-run into the same prefix succeeds (overwrite) |
+| `test_an_earlier_complete_run_left_its_marker` | premise: lister refused: an earlier complete run left its marker at lf/ |
+| `test_a_refused_listing_fails_the_export` | lister refused: the export fails with the listing's 28000 |
+| `test_the_parts_were_uploaded_before_the_refused_listing` | premise: lister refused: both workers' parts were uploaded before the listing |
+| `test_a_refused_listing_leaves_no_part` | lister refused: no part object remains at the prefix |
+| `test_a_refused_listing_leaves_no_marker` | lister refused: no _SUCCESS marker certifies the failed run's prefix |
+| `test_a_refused_marker_fails_the_export` | marker refused: the export fails with the marker PUT's 28000 |
+| `test_the_parts_were_uploaded_before_the_refused_marker` | premise: marker refused: both workers' parts were uploaded before the marker |
+| `test_a_refused_marker_leaves_no_part` | marker refused: no part object remains at the prefix |
 | `test_the_four_worker_run_wrote_four_parts_and_a_marker` | shrink: the 4-worker run wrote 4 parts + marker |
 | `test_a_smaller_rerun_leaves_exactly_its_own_parts` | shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped) |
 | `test_the_larger_runs_stale_parts_are_gone` | shrink: parts 0002/0003 from the larger run are gone |

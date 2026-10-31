@@ -222,6 +222,39 @@ check "parallel: the union of the per-worker objects == source" \
 check_num "parallel: a re-run into the same prefix succeeds (overwrite)" \
 	"$(q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/par', 4)")" "$PARROWS"
 
+# #1781: a failure after every worker finished, in the stale-part listing or in the
+# marker PUT, is a failed run, so the dispatcher removes this run's parts as it does
+# for a failed worker (docs: a failed run leaves none). lf first holds a complete
+# 2-worker run with its marker; the re-run's listing is then refused 403. The parts
+# the re-run wrote must go, and so must the earlier marker, or it would certify them.
+q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/lf', 2)" >/dev/null
+check "premise: lister refused: an earlier complete run left its marker at lf/" \
+	"$([ -f "$PGC_WORKDIR/$BUCKET/lf/_SUCCESS" ] && echo yes || echo no)" "yes"
+: > "$S3_LOG"
+echo 403 > "$PGC_WORKDIR/__listing_status__"
+check "lister refused: the export fails with the listing's 28000" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/lf', 2)" \
+		"was denied" " by the listing")" "28000 by the listing"
+rm -f "$PGC_WORKDIR/__listing_status__"
+check "premise: lister refused: both workers' parts were uploaded before the listing" \
+	"$(n=$(logn '^PUT /pgc-bucket/lf/part-'); [ "$n" -ge 2 ] && echo yes || echo "no ($n part PUTs)")" "yes"
+check_num "lister refused: no part object remains at the prefix" \
+	"$(ls "$PGC_WORKDIR/$BUCKET/lf/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "0"
+check "lister refused: no _SUCCESS marker certifies the failed run's prefix" \
+	"$([ -e "$PGC_WORKDIR/$BUCKET/lf/_SUCCESS" ] && echo present || echo absent)" "absent"
+
+# The same for a refused marker PUT: the listing succeeds, the _SUCCESS PUT is 403.
+: > "$S3_LOG"
+echo "403 $BUCKET/mf/_SUCCESS" > "$PGC_WORKDIR/__put_status__"
+check "marker refused: the export fails with the marker PUT's 28000" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/mf', 2)" \
+		"mf/_SUCCESS" " by the marker PUT")" "28000 by the marker PUT"
+rm -f "$PGC_WORKDIR/__put_status__"
+check "premise: marker refused: both workers' parts were uploaded before the marker" \
+	"$(n=$(logn '^PUT /pgc-bucket/mf/part-'); [ "$n" -ge 2 ] && echo yes || echo "no ($n part PUTs)")" "yes"
+check_num "marker refused: no part object remains at the prefix" \
+	"$(ls "$PGC_WORKDIR/$BUCKET/mf/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "0"
+
 # #632 review: a SMALLER re-run into a used prefix must not leave the prior
 # larger run's higher-numbered parts under a freshly-stamped _SUCCESS. First 4
 # workers, then 2: the reconcile drops the stale part-0002/0003, so the marker

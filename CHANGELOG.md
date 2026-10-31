@@ -466,6 +466,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `parallel_export_parquet` now removes the run's parts when it fails after
+  every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
+  prefix, the export lists the prefix to remove stale parts, and then it PUTs
+  the marker. A failure in either step, such as a key that may write but not
+  list or a refused marker PUT, raised an ERROR and left every part, with no
+  marker, and with any earlier run's marker still in place. `read_parquet` read
+  those parts as a whole table. Now the dispatcher removes the parts and any
+  marker before the error is raised, as the documentation promises for a
+  failed run. The docs no longer say that no bucket listing is done, and they
+  say that a remote prefix needs list permission.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write
