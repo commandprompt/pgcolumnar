@@ -185,6 +185,12 @@ static const char *const map[][2] = {
 	{"nat64local", "64:ff9b:1::a9fe:a9fe"},
 	{"mapped", "::ffff:169.254.169.254"},
 	{"compat", "::169.254.169.254"},
+	{"gcp6", "fd20:ce::254"},
+	{"local48", "64:ff9b:1:a9fe:a9:fe00::"},
+	{"local56", "64:ff9b:1:a9:fe:a9fe::"},
+	{"local64", "64:ff9b:1:0:a9:fea9:fe00::"},
+	{"over48", "64:ff9b:1:aa9:fe:500::"},
+	{"ctl96", "64:ff9b:1::a00:5"},
 };
 
 int
@@ -282,7 +288,9 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
             c.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
             c.execute("ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = "
                       "'ok.pgc-shim.invalid, imds6.pgc-shim.invalid, nat64.pgc-shim.invalid, "
-                      "nat64local.pgc-shim.invalid, mapped.pgc-shim.invalid, compat.pgc-shim.invalid'")
+                      "nat64local.pgc-shim.invalid, mapped.pgc-shim.invalid, compat.pgc-shim.invalid, "
+                      "gcp6.pgc-shim.invalid, local48.pgc-shim.invalid, local56.pgc-shim.invalid, "
+                      "local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid'")
             c.execute("SELECT pg_reload_conf()")
         time.sleep(0.5)
 
@@ -307,6 +315,28 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
                     "IPv4-mapped ::ffff:169.254.169.254: refused 42501 despite being listed")
         expect.text(shim_read("compat")[0], "42501",
                     "IPv4-compatible ::169.254.169.254: refused 42501 despite being listed")
+        expect.text(shim_read("gcp6")[0], "42501",
+                    "GCP IPv6 metadata fd20:ce::254: refused 42501 despite being listed")
+        # The local-use prefix 64:ff9b:1::/48 may be cut at /48, /56, /64 or /96 (RFC 6052),
+        # so 169.254.169.254 can sit at four byte positions. One check per position.
+        expect.text(shim_read("local48")[0], "42501",
+                    "NAT64 local-use /48 64:ff9b:1:a9fe:a9:fe00::: refused 42501 despite being listed")
+        expect.text(shim_read("local56")[0], "42501",
+                    "NAT64 local-use /56 64:ff9b:1:a9:fe:a9fe::: refused 42501 despite being listed")
+        expect.text(shim_read("local64")[0], "42501",
+                    "NAT64 local-use /64 64:ff9b:1:0:a9:fea9:fe00::: refused 42501 despite being listed")
+        # The guard cannot know the operator's prefix length, so it checks all four
+        # positions at once and fails closed: 10.169.254.5 at /48 puts 169 and 254 where
+        # the /56 layout looks. This over-refusal is documented in best-practices.md.
+        expect.text(shim_read("over48")[0], "42501",
+                    "NAT64 local-use /48 10.169.254.5 (64:ff9b:1:aa9:fe:500::): refused 42501, "
+                    "documented over-refusal")
+        # Control: an ordinary address under the local-use prefix is not refused; a
+        # connect is tried (08006 unreachable, or 57014 at the 3s timeout).
+        ctl = shim_read("ctl96")[0]
+        ctl = "connect tried" if ctl in ("08006", "57014") else (ctl or "no error")
+        expect.text(ctl, "connect tried",
+                    "NAT64 local-use /96 10.0.0.5 (64:ff9b:1::a00:5): not refused, a connect is tried")
         # The range when the DETAIL names it, else the whole error as the measurement.
         try:
             with psycopg.connect(cluster.dsn(), autocommit=True) as c:

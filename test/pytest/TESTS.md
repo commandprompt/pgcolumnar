@@ -7553,7 +7553,7 @@ The list is changed by ALTER SYSTEM and a reload, and reset in a `finally`. The 
 | test | what it holds |
 | --- | --- |
 | `test_the_endpoint_allow_list` | the default deny, the list's matching, SUSET and the admin override, and the link-local refusal |
-| `test_metadata_addresses_behind_ipv6_forms` | a listed name resolving to `fd00:ec2::254`, `64:ff9b::a9fe:a9fe`, `64:ff9b:1::a9fe:a9fe`, `::ffff:169.254.169.254` or `::169.254.169.254` is refused 42501 and the detail names `fd00:ec2::/32` (#1808). A private cluster loads a `getaddrinfo()` shim with LD_PRELOAD; a shim name mapped to 127.0.0.1 reads the fixture, so the shim is proven live |
+| `test_metadata_addresses_behind_ipv6_forms` | a listed name resolving to `fd00:ec2::254`, `fd20:ce::254`, `64:ff9b::a9fe:a9fe`, `64:ff9b:1::a9fe:a9fe`, `::ffff:169.254.169.254` or `::169.254.169.254` is refused 42501 and the detail names `fd00:ec2::/32` (#1808). 169.254.169.254 at each local-use position (/48, /56, /64) is refused; `10.169.254.5` at /48 is refused too, the documented over-refusal; `10.0.0.5` at /96 is not refused, so a connect is tried. A private cluster loads a `getaddrinfo()` shim with LD_PRELOAD; a shim name mapped to 127.0.0.1 reads the fixture, so the shim is proven live |
 
 ## 128. test_objstore_userinfo.py: userinfo in a URL is refused on every entry point
 

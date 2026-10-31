@@ -379,7 +379,8 @@ os_check_endpoint_allowed(PgColumnarObjHandle *h)
  * Link-local refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
  * the cloud-metadata credential-theft surface (IMDS lives at
  * 169.254.169.254) and have no legitimate object-storage use. The same
- * surface has IPv6 forms (#1808): AWS's IPv6 IMDS in fd00:ec2::/32, and
+ * surface has IPv6 forms (#1808): AWS's IPv6 IMDS in fd00:ec2::/32, Google
+ * Compute Engine's at fd20:ce::254, and
  * 169.254/16 carried inside an IPv6 address -- IPv4-mapped ::ffff:0:0/96,
  * IPv4-compatible ::/96, and the NAT64 prefixes 64:ff9b::/96 and
  * 64:ff9b:1::/48 (RFC 6052, RFC 8215). Checked after
@@ -404,12 +405,17 @@ os_addr_is_linklocal(const struct addrinfo *ai)
 		const uint8_t *b = a6->s6_addr;
 		static const uint8_t zero10[10] = {0};
 		static const uint8_t nat64wkp[12] = {0x00, 0x64, 0xff, 0x9b};
+		static const uint8_t gceimds6[16] = {0xfd, 0x20, 0x00, 0xce,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x54};
 		bool		v4low = (b[12] == 169 && b[13] == 254);
 
 		if (IN6_IS_ADDR_LINKLOCAL(a6))
 			return true;
 		/* fd00:ec2::/32, AWS IPv6 instance metadata (fd00:ec2::254) */
 		if (b[0] == 0xfd && b[1] == 0x00 && b[2] == 0x0e && b[3] == 0xc2)
+			return true;
+		/* fd20:ce::254, Google Compute Engine IPv6 instance metadata */
+		if (memcmp(b, gceimds6, 16) == 0)
 			return true;
 		/* ::ffff:0:0/96 (mapped) and ::/96 (compatible) carrying 169.254/16 */
 		if (memcmp(b, zero10, 10) == 0 &&
@@ -421,7 +427,11 @@ os_addr_is_linklocal(const struct addrinfo *ai)
 		/*
 		 * 64:ff9b:1::/48, the NAT64 local-use prefix. Its operator picks the
 		 * prefix length, so the IPv4 address may sit at any RFC 6052 position:
-		 * /48 (bytes 6,7), /56 (7,9), /64 (9,10) or /96 (12,13).
+		 * /48 (bytes 6,7), /56 (7,9), /64 (9,10) or /96 (12,13). The guard
+		 * cannot tell which, so it checks all four and fails closed. That
+		 * also refuses some ordinary addresses whose bytes land on another
+		 * layout's position, e.g. 10.169.254.5 behind a /48 prefix; the
+		 * docs say so.
 		 */
 		if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b &&
 			b[4] == 0x00 && b[5] == 0x01)
@@ -505,7 +515,8 @@ os_connect(PgColumnarObjHandle *h)
 							"which object storage never legitimately uses",
 							h->host),
 					 errdetail("Link-local and instance-metadata addresses "
-							   "(169.254.0.0/16, fe80::/10, fd00:ec2::/32, and "
+							   "(169.254.0.0/16, fe80::/10, fd00:ec2::/32, "
+							   "fd20:ce::254, and "
 							   "169.254.0.0/16 inside an IPv4-mapped, "
 							   "IPv4-compatible or NAT64 IPv6 address) are refused "
 							   "unconditionally: they are the cloud "

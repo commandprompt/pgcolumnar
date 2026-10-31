@@ -1149,8 +1149,10 @@ location. That location is an ordinary metadata path, so it is read with
 `iceberg_scan` and the other functions above.
 
 The catalog endpoint is subject to `pgcolumnar.objstore_allowed_endpoints`, the
-allow-list that governs every other remote access. A host that resolves to a
-link-local or instance-metadata address is refused whether or not it is listed.
+allow-list that governs every other remote access. The module refuses a host
+that resolves to a link-local range or a known instance-metadata address, whether
+or not it is listed. See
+[the refused ranges](best-practices.md#run-object-storage-safely).
 The request is carried by the `pgcolumnar_objstore` module, so no additional TLS
 library is loaded into the server process. HTTPS requires the module to be built
 with OpenSSL, as for object storage.
@@ -1427,10 +1429,11 @@ SELECT pg_reload_conf();
 ```
 
 Each entry is a host or a `host:port`. A request whose endpoint matches no entry
-is refused before any connection is made. Link-local addresses, including the
-cloud instance-metadata address `169.254.169.254`, are refused unconditionally,
-whether or not they appear in the list. The setting is superuser-only, so a role
-cannot widen its own reach.
+is refused before any connection is made. The link-local ranges and the known
+cloud instance-metadata addresses, such as `169.254.169.254`, are refused
+unconditionally, whether or not they appear in the list. For every refused range,
+see [Run object storage safely](best-practices.md#run-object-storage-safely). The
+setting is superuser-only, so a role cannot widen its own reach.
 
 ### Exporting to object storage
 
