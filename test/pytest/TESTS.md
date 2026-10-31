@@ -360,7 +360,7 @@ behaviour, the source of that number is named.
 - [312. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes](#312-test_native_zonemap_narrowpy-group-skipping-reads-only-the-predicate-columns-zone-maps-and-still-prunes)
 - [313. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values](#313-test_native_vecdecodepy-decode-honours-the-skip-vector-and-the-fold-reads-neither-holes-nor-nulls-as-values)
 - [314. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard](#314-test_native_parquet_fieldidpy-read_parquet-binds-output-columns-by-parquet-field-id-and-refuses-each-misuse-by-its-own-guard)
-- [315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused](#315-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-and-a-crafted-page-size-is-refused)
+- [315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, an all-NULL column's empty dictionary page decodes, and a crafted page size is refused](#315-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-an-all-null-columns-empty-dictionary-page-decodes-and-a-crafted-page-size-is-refused)
 - [316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly](#316-test_native_parquet_unitspy-time-and-timestamp-units-decode-to-the-right-instant-and-their-stats-skip-correctly)
 - [317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows](#317-test_native_parquet_projectionpy-a-projected-parquet-scan-decodes-only-the-columns-it-references-and-reads-the-generators-rows)
 - [318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks](#318-test_native_parquet_hardeningpy-the-parquet-reader-refuses-values-that-do-not-fit-their-column-and-a-row-group-with-too-few-chunks)
@@ -10851,7 +10851,7 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 
 ## 273. test_iceberg_rest.py: the Iceberg REST catalog resolves a table, keeps its token out of every log, and refuses what it must
 
-The twin of `test/iceberg_rest.sh`. A private cluster is restarted with the bearer token in its postmaster environment (and with a wrong one, and with none) against the shell's own REST fixture server, which verifies the Authorization header. The table resolves to its metadata location, the token reaches neither the server log nor the catalog's request log, and each refusal comes from its own guard.
+The twin of `test/iceberg_rest.sh`. A private cluster is restarted with the bearer token in its postmaster environment (and with a wrong one, and with none) against the shell's own REST fixture server, which verifies the Authorization header. The table resolves to its metadata location, also when the catalog ends the reply by closing the connection, the token reaches neither the server log nor the catalog's request log, and each refusal comes from its own guard.
 
 ### Every test
 
@@ -10870,6 +10870,8 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_a_catalog_endpoint_off_the_allow_list_is_refused` | a catalog endpoint off the allow-list is refused (42501) |
 | `test_a_link_local_catalog_host_is_refused_even_if_allow_listed` | a link-local catalog host is refused even if allow-listed (42501) |
 | `test_an_over_cap_catalog_response_is_refused` | an over-cap catalog response is refused (54000) |
+| `test_a_close_delimited_loadtable_reply_resolves` | a close-delimited loadTable reply resolves the metadata-location |
+| `test_an_over_cap_close_delimited_catalog_response_is_refused` | an over-cap close-delimited catalog response is refused (54000) |
 | `test_an_unknown_rest_table_surfaces_a_clean_not_found` | an unknown table surfaces a clean not-found (42P01) |
 | `test_a_non_object_catalog_config_is_refused` | a non-object catalog config is refused, not walked (XX001) |
 | `test_the_backend_is_still_up_after_the_rest_refusals` | backend still up after the REST refusals |
@@ -10919,7 +10921,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 ## 276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else
 
-The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; and a non-superuser borrows the environment token only when a superuser waived its credentials.
+The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request and even beside a static token; a static token wins over a complete pair, with no token request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; and a non-superuser borrows the environment token only when a superuser waived its credentials.
 
 ### Every test
 
@@ -10947,7 +10949,10 @@ Every test makes one check under the shell's name. An "accepted" arm reads `ok` 
 | `test_the_client_secret_is_not_in_the_server_log` | the client secret never appears in the PG server log |
 | `test_a_wrong_oauth_client_secret_is_refused` | a wrong OAuth2 client secret is refused (28000) |
 | `test_a_half_oauth_credential_is_refused_before_any_request` | a half OAuth2 credential (id, no secret) is refused before any request (28000) |
+| `test_a_half_oauth_id_is_refused_even_with_a_static_token` | a half OAuth2 credential (id, no secret) is refused even with a static token (28000) |
+| `test_a_half_oauth_secret_is_refused_even_with_a_static_token` | a half OAuth2 credential (secret, no id) is refused even with a static token (28000) |
 | `test_oauth_options_are_accepted_on_a_mapping` | oauth options are accepted on a USER MAPPING (no error) |
+| `test_a_static_token_wins_over_a_complete_oauth_pair` | a static token and a complete OAuth2 pair read by the token, with no token request |
 | `test_an_oauth_option_on_the_server_is_rejected` | an oauth option on the SERVER is rejected (HV00D) |
 | `test_a_link_local_token_uri_is_refused_by_the_allow_list` | a link-local oauth_token_uri is refused by the allow-list (42501) |
 | `test_an_off_list_token_uri_host_is_refused` | an off-allow-list oauth_token_uri host is refused (42501) |
@@ -12127,9 +12132,9 @@ Every test makes one check under the shell's name, on a private database. The wr
 | `test_the_duplicate_requested_id_error_names_the_id` | the duplicate-requested-id error names the id, not the file |
 | `test_the_backend_survives_the_fieldid_refusals` | backend still up after the refusals |
 
-## 315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused
+## 315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, an all-NULL column's empty dictionary page decodes, and a crafted page size is refused
 
-The twin of `test/native_parquet_codecs.sh`. `test/craft_parquet_codecs.py`, the shell's own crafter, writes the same 20000 rows with each codec plus an uncompressed control, and a gzip page whose header declares an uncompressed size of -1. Each file's codec is read from its own metadata; every file decodes through `read_parquet` to the generator's rows, built in SQL; each FDW count and a sum read every value; and the crafted header is refused with the reader's own decode error, killing no backend.
+The twin of `test/native_parquet_codecs.sh`. `test/craft_parquet_codecs.py`, the shell's own crafter, writes the same 20000 rows with each codec plus an uncompressed control, and a gzip page whose header declares an uncompressed size of -1. Each file's codec is read from its own metadata; every file decodes through `read_parquet` to the generator's rows, built in SQL; each FDW count and a sum read every value; a column that is NULL in every row, which pyarrow writes with an empty dictionary page of declared size 0, reads back under GZIP, ZSTD and LZ4_RAW as 3 rows with no non-NULL value (#1786); and the crafted header is refused with the reader's own decode error, killing no backend.
 
 ### Every test
 
@@ -12149,6 +12154,12 @@ Every test makes one check under the shell's name, on a private database. Each t
 | `test_the_zstd_fdw_counts_every_row` | zstd FDW count |
 | `test_the_lz4_fdw_counts_every_row` | lz4 FDW count |
 | `test_the_gzip_sum_matches_the_generator` | gzip sum matches the generator |
+| `test_the_all_null_gzip_file_is_gzip_with_a_dictionary_page` | premise: the all-NULL gzip file is GZIP with a dictionary page |
+| `test_the_all_null_zstd_file_is_zstd_with_a_dictionary_page` | premise: the all-NULL zstd file is ZSTD with a dictionary page |
+| `test_the_all_null_lz4_file_is_lz4_with_a_dictionary_page` | premise: the all-NULL lz4 file is LZ4 with a dictionary page |
+| `test_an_all_null_gzip_column_reads_as_three_null_rows` | all-NULL gzip column reads as 3 rows, none non-NULL |
+| `test_an_all_null_zstd_column_reads_as_three_null_rows` | all-NULL zstd column reads as 3 rows, none non-NULL |
+| `test_an_all_null_lz4_column_reads_as_three_null_rows` | all-NULL lz4 column reads as 3 rows, none non-NULL |
 | `test_a_crafted_uncompressed_size_is_a_clean_decode_error` | crafted uncompressed size gives a clean decode error |
 | `test_the_backend_survives_the_crafted_header` | backend survived the crafted header |
 
@@ -12444,7 +12455,7 @@ Every test makes one check under the shell's name, on a private database. The wo
 
 ## 326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received
 
-The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, and a key with a space, '+' and '=' under both addressings. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
+The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, a key with a space, '+' and '=' under both addressings, and prefix and pattern reads, whose LIST must go to the bucket root under virtual-host (#1783), as must the upload cleanup listing of a parallel export whose worker fails, and that cleanup must abort an upload a terminated worker left open. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
 
 ### Every test
 
@@ -12464,6 +12475,16 @@ Every test makes one check under the shell's name. Each addressing check reads t
 | `test_virtual_host_puts_the_key_alone_in_the_path` | virtual-host put the KEY ALONE in the path (no bucket segment) |
 | `test_a_key_needing_encoding_reads_back_virtual_host` | a key with a space, '+' and '=' reads back (virtual-host) |
 | `test_the_virtual_host_request_path_is_the_key_alone_encoded_once` | and its virtual-host request path is the key alone, URI-encoded once |
+| `test_an_s3_prefix_read_path_style` | s3:// prefix read, path-style |
+| `test_the_path_style_list_puts_the_bucket_in_the_path` | and its path-style LIST put the bucket in the request path |
+| `test_an_s3_prefix_read_virtual_host` | s3:// prefix read, virtual-host |
+| `test_the_virtual_host_list_goes_to_the_bucket_root` | and its virtual-host LIST went to the bucket root |
+| `test_an_s3_pattern_read_virtual_host` | s3:// pattern read, virtual-host |
+| `test_the_pattern_read_virtual_host_list_goes_to_the_bucket_root` | and the pattern read's virtual-host LIST went to the bucket root |
+| `test_the_virtual_host_export_fails_in_a_worker` | premise: the virtual-host export fails in a worker |
+| `test_the_virtual_host_upload_cleanup_lists_at_the_bucket_root` | and its virtual-host upload cleanup listed the uploads at the bucket root |
+| `test_a_terminated_workers_upload_is_open_and_unanswered` | premise: a worker's upload is open and its id unanswered when the worker is terminated |
+| `test_the_virtual_host_upload_cleanup_aborts_the_open_upload` | and the virtual-host upload cleanup aborted the upload the worker left open |
 | `test_addressing_path_puts_the_bucket_back_in_the_path` | removal proof: with addressing=path the bucket is back in the path |
 | `test_the_request_path_carries_the_bucket_again` | and the request path carried the bucket again |
 | `test_s3_with_no_endpoint_demands_one` | s3:// with no endpoint demands one (names AWS_ENDPOINT_URL) |
@@ -12590,7 +12611,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, the workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780), and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
 
 ### Every test
 
@@ -12628,6 +12649,12 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_smaller_rerun_leaves_exactly_its_own_parts` | shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped) |
 | `test_the_larger_runs_stale_parts_are_gone` | shrink: parts 0002/0003 from the larger run are gone |
 | `test_the_marker_certifies_the_reconciled_prefix` | shrink: _SUCCESS certifies the reconciled prefix |
+| `test_a_session_set_to_empty_refuses_the_parallel_export` | premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check |
+| `test_the_dispatcher_raises_the_refusal_not_a_worker` | session allow-list: the dispatcher raises the refusal, not a worker -- with the settings handed to the workers but no check in the dispatcher, worker 0 refused |
+| `test_nothing_reached_the_prefix_the_session_refused` | session allow-list: nothing reached the refused prefix (no PUT, no POST) -- #1780: the workers uploaded part-0000 before the error |
+| `test_the_system_list_is_empty_before_the_widen_arm` | session allow-list: a new session sees an empty system list before the widen arm |
+| `test_a_session_set_widens_an_empty_system_list_for_the_workers` | session allow-list: a session SET widens an empty system list for the workers |
+| `test_a_session_part_size_reaches_the_workers` | parallel: a session SET of objstore_part_size reaches the workers (multipart) |
 | `test_a_worker_was_uploading_before_the_cancel` | premise: a worker was uploading before the cancel |
 | `test_all_four_uploads_were_open_before_the_cancel` | all four workers' uploads were open before the cancel -- an upload whose POST ?uploads is in flight is #1743's window |
 | `test_the_export_was_cancelled_not_completed` | premise: the export was cancelled, not completed |
