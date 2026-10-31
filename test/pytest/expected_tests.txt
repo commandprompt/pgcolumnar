@@ -1258,23 +1258,19 @@ guard_tests 854
 # native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
 # 16 checks in 16 tests, by collection over the cluster files.
+# cluster_tests 4510 -> 4514 for #1818: four tests in test_iceberg_fdw.py for bucket[16] on a string
+# column under a deterministic and a nondeterministic collation, by collection: `4514 tests collected`.
+# cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
+# that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
+# cluster_tests 4520 at the merge of origin/main (a247bea0) into fix/1818-iceberg-bucket-collation,
+# by collection: `4520 tests collected`.
 # cluster_tests 4510 -> 4526 for #1789: fourteen tests in test_iceberg_scan.py and two in
 # test_iceberg_rest_scan.py for a column read after an Iceberg type promotion, by collection:
 # `4526 tests collected`.
-# cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
-# that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
-# cluster_tests 4516 -> 4526 for #1815's and #1825's tests in test_iceberg_scan.py (8: gzip metadata,
-# lowercase parquet, mixed s3/s3a paths) and test_iceberg_objstore.py (2: s3a:// and s3n:// metadata
-# paths), by collection over the cluster files.
-# cluster_tests 4526 -> 4534 for #1815's and #1825's review tests (PR #1835) in test_iceberg_scan.py (3: a
-# two-member gzip file, zero padding after gzip, an az:// refusal) and test_iceberg_deletes.py (5:
-# lowercase parquet position and equality deletes, a million s3:// and s3a:// delete rows, and their
-# memory), by collection over the cluster files.
-# cluster_tests 4534 -> 4536 for the second review of PR #1835 (#1815, #1825): two tests in
-# test_iceberg_scan.py (a gzip file that outgrows the first inflate buffer, and a data file_format
-# that is not Parquet), by collection over the cluster files: `4536 tests collected`.
 # cluster_tests 4532 at the merge of origin/main (a247bea0) into fix/1789-iceberg-type-promotion,
 # by collection: `4532 tests collected`.
+# cluster_tests 4536 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4536 tests collected`.
 # cluster_tests 4516 -> 4524 for #1783's eight prefix, pattern and upload-cleanup tests in
 # test_objstore_addressing.py, by collection over the cluster files.
 # cluster_tests 4524 -> 4526 for #1783's two tests in test_objstore_addressing.py that an upload a
@@ -1290,8 +1286,24 @@ guard_tests 854
 # cluster_tests 4537 -> 4540 for #1791 in test_iceberg_data_files.py: the DELETED-entry case leaves the
 # refusal table for a test of its own (skipped, not refused), and three copy-on-write tests join it,
 # by collection over the cluster files.
+# cluster_tests 4560 at the merge of origin/main (9fc12386) into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
 # cluster_tests 4556 at the merge of origin/main (9fc12386) into fix/1789-iceberg-type-promotion,
 # by collection: `4556 tests collected`.
+# cluster_tests 4560 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
+# cluster_tests 4520 -> 4530 for #1815's and #1825's tests in test_iceberg_scan.py (8: gzip metadata,
+# lowercase parquet, mixed s3/s3a paths) and test_iceberg_objstore.py (2: s3a:// and s3n:// metadata
+# paths), by collection over the cluster files.
+# cluster_tests 4530 -> 4538 for #1815's and #1825's review tests (PR #1835) in test_iceberg_scan.py (3: a
+# two-member gzip file, zero padding after gzip, an az:// refusal) and test_iceberg_deletes.py (5:
+# lowercase parquet position and equality deletes, a million s3:// and s3a:// delete rows, and their
+# memory), by collection over the cluster files.
+# cluster_tests 4538 -> 4540 for the second review of PR #1835 (#1815, #1825): two tests in
+# test_iceberg_scan.py (a gzip file that outgrows the first inflate buffer, and a data file_format
+# that is not Parquet), by collection over the cluster files: `4536 tests collected`.
 # cluster_tests 4576 at the merge of origin/main (1a1c4018) into fix/1815-iceberg-metadata-formats,
 # by collection: `5430 tests collected` in all, less the 854 guard tests.
-cluster_tests 4576
+# cluster_tests 4580 at the merge of origin/main (6f88f973) into fix/1815-iceberg-metadata-formats,
+# by collection over the cluster files: `4580 tests collected`.
+cluster_tests 4580

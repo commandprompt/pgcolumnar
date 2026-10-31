@@ -493,6 +493,19 @@ true until the next version shipped.
   docs/sql-reference.md lists `az://`, which pgcolumnar treats as remote and
   refuses, since no module reads it yet. `zstandard`
   and `snappy` manifests are still refused.
+- The `pgcolumnar_iceberg` foreign-data wrapper no longer prunes `bucket[N]`
+  files for an equality compared under a nondeterministic collation (#1818).
+  Iceberg buckets a string by its UTF-8 bytes, and the wrapper hashed the
+  constant's bytes and skipped every file in another bucket. Under a
+  case-insensitive ICU collation, `'abc'`, `'Abc'` and `'aBc'` equal `'ABC'` but
+  sit in other buckets, so `WHERE s = 'ABC' COLLATE ci` returned 1 row where
+  `iceberg_scan` returned 4, with no error. The same happened with the column
+  declared `COLLATE ci`. The wrapper now prunes by bucket only when the
+  comparison's collation is deterministic, as the bloom filters already do, and
+  otherwise reads every file. Identity pruning evaluates the qual itself and
+  was correct. `truncate[W]` and metrics pruning do not prune on a string column.
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`, on a new pyiceberg fixture
+  (`test/fixtures/iceberg/gen_iceberg_bucket_text.py`).
 - `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign table
   now read a column after an Iceberg `int` to `long` or `float` to `double`
   promotion (#1789). A data file written before the promotion still stores
