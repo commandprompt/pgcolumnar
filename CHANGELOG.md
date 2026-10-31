@@ -466,6 +466,28 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.import_arrow` now reads the Arrow IPC file format, including
+  Feather v2 (#1806). Before, a file that starts with `ARROW1` failed with
+  `invalid memory alloc request size 1330795073`, because the reader took
+  `ARRO` as a message length. The reader now skips the 8-byte header, reads the
+  stream inside the file, and ignores the footer. A file that starts with
+  `ARROW1` but does not end with it is refused with `XX001`. A message or body
+  length larger than the rest of the file is now refused with `XX001` before
+  anything is allocated. `export_arrow` still writes the IPC stream format.
+  `docs/how-to.md` said both functions use the IPC file format; it now names
+  each format and says to read an export with `pyarrow.ipc.open_stream`.
+  `test/arrow_import.sh` and `test_arrow_import.py`. Reported by @OffgridwithJD.
+- `pgcolumnar.parquet_schema` now advises `timestamp with time zone` for a
+  millisecond or microsecond timestamp column that holds instants (#1807). It
+  advised `timestamp without time zone` for every such column, and reading an
+  instant into `timestamp` converts it to a wall time in the session
+  `TimeZone`. This changes the advice for `timestamptz` columns that
+  `export_parquet` writes, for Iceberg `timestamptz` columns, and for files
+  that carry only the older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS` type,
+  which the Parquet format defines as UTC-adjusted. Wall-time columns
+  (`isAdjustedToUTC=false`) are still advised as `timestamp`.
+  `test/parquet_timestamp_zone.sh` and `test_parquet_timestamp_zone.py`.
+  Reported by @OffgridwithJD.
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write
