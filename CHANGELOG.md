@@ -466,6 +466,24 @@ true until the next version shipped.
 
 ### Fixed
 
+- The REST catalog functions now follow the catalog's `GET /v1/config` (#1793).
+  They use the advertised `namespace-separator`, so a nested namespace such as
+  `db.x` works on the Apache Iceberg 1.12 REST catalog, which answered HTTP 400
+  before. `iceberg_rest_namespaces` now lists every level: it asks for the
+  children of each namespace with `?parent=`, where it listed only the top level
+  before. `iceberg_rest_namespaces` and `iceberg_rest_tables` now read the
+  config too, so they send the server's `warehouse` and use the catalog's
+  prefix; on a prefixed catalog they returned HTTP 404 before. A prefix with a
+  `/` in it, such as `catalogs/main`, is sent as path segments, not as one
+  `%2F`-encoded segment, and a prefix in the config `defaults` is used. Both list
+  functions follow `next-page-token`, and refuse a page token the catalog
+  already sent. `iceberg_rest_namespaces` returns each namespace once, also on a
+  catalog that lists nested namespaces at the top level. It now makes one more
+  request per namespace, and if the catalog answers an error to any of them,
+  for example to `?parent=`, the whole call fails, where it listed the top level
+  before. `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`. Reported
+  by @OffgridwithJD.
+
 - A remote prefix or pattern that names a directory beginning with `_` or `.`,
   such as `s3://bucket/_landing/` or `s3://bucket/.staging/*.parquet`, now reads
   the objects under it (#1784). Before, it raised `no objects under ... match`,

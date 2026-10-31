@@ -3330,7 +3330,13 @@ iceberg_rest	iceberg_rest	premise: the PG server log holds lines to search	15;16
 iceberg_rest	iceberg_rest	the loadTable request carried an Authorization header	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the bearer token also travels in the request URL's query string
 iceberg_rest	iceberg_rest	the token never appears in the server (PG) log	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: rest_get_json logs the bearer token (elog LOG)
 iceberg_rest	iceberg_rest	the token value never appears in the catalog request log	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the bearer token also travels in the request URL's query string
+iceberg_rest_scan	iceberg_rest_scan	an invalid namespace-separator %G1 is refused	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	an invalid prefix a/../b is refused	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	backend still up after the REST read	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the backend aborts on a catalog 404 (abort() before the 42P01 refusal)
+iceberg_rest_scan	iceberg_rest_scan	catalog ignores ?parent=: iceberg_rest_namespaces lists each once	15;16;17;18;19	2026-10-31	the #1859 review fixes reverted: top-level dedupe, 64-level bound, page-token cycle check (#1793)
+iceberg_rest_scan	iceberg_rest_scan	catalog refuses ?parent=: iceberg_rest_namespaces fails with its HTTP 400	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	config precedence: a prefix in overrides wins over the top-level key and defaults	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	config precedence: a top-level prefix wins over defaults	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_namespaces lists the catalog's namespaces	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: iceberg_rest_namespaces drops the catalog's last namespace
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan matches iceberg_scan of the same table (same oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-22	columnar_iceberg_rest.c: loadTable always asks for namespace db, whatever namespace it was given
@@ -3340,9 +3346,25 @@ iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan reads a promoted table's o
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan returns the five current-snapshot rows	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_tables lists a namespace's tables	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-22	columnar_iceberg_rest.c: iceberg_rest_tables always asks for namespace db, whatever namespace it was given
+iceberg_rest_scan	iceberg_rest_scan	multi-segment prefix: iceberg_rest_namespaces lists the namespaces	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	multi-segment prefix: iceberg_rest_scan returns the five rows	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	multi-segment prefix: iceberg_rest_table_location resolves the table	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	multi-segment prefix: iceberg_rest_tables lists the tables	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	namespace depth: a namespace 64 levels deep is listed	15;16;17;18;19	2026-10-31	the #1859 review fixes reverted: top-level dedupe, 64-level bound, page-token cycle check (#1793)
+iceberg_rest_scan	iceberg_rest_scan	namespace depth: a namespace 65 levels deep is refused	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	nested namespaces: iceberg_rest_namespaces lists every level, page by page	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	nested namespaces: iceberg_rest_scan of db.x.events returns the five rows	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	nested namespaces: iceberg_rest_tables of db.x lists both pages	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	paging: a page token cycle A, B, A is refused	15;16;17;18;19	2026-10-31	the #1859 review fixes reverted: top-level dedupe, 64-level bound, page-token cycle check (#1793)
+iceberg_rest_scan	iceberg_rest_scan	paging: a page token repeated at once is refused	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	prefix in config defaults: iceberg_rest_table_location resolves the table	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	prefix in config defaults: iceberg_rest_tables lists the tables	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
 iceberg_rest_scan	iceberg_rest_scan	premise: rest fixture server is up	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	premise: the promoted-table rest fixture server is up	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	the catalog reports the relocated metadata location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
+iceberg_rest_scan	iceberg_rest_scan	top level lists nested namespaces: iceberg_rest_namespaces lists each once	15;16;17;18;19	2026-10-31	the #1859 review fixes reverted: top-level dedupe, 64-level bound, page-token cycle check (#1793)
+iceberg_rest_scan	iceberg_rest_scan	warehouse server: iceberg_rest_namespaces sends the warehouse and lists	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
+iceberg_rest_scan	iceberg_rest_scan	warehouse server: iceberg_rest_tables sends the warehouse and lists	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
 iceberg_rest_server	iceberg_rest_server	a catalog_uri option on the USER MAPPING is rejected (HV00D)	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a foreign table on a catalog server reads nothing (55000, no handler), before any request	15;16;17;18;19	never	-
 iceberg_rest_server	iceberg_rest_server	a half OAuth2 credential (id, no secret) is refused before any request (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a half OAuth2 credential (id, no secret) is not refused, so the mint runs with a NULL secret and the backend dies
