@@ -2683,6 +2683,19 @@ objstore_list_objects(const char *url, const PgColumnarObjStoreConfig *cfg,
 	os_target_bucket_root(h, bucket);
 	encPrefix = os_uriencode_query(prefix);
 
+	/*
+	 * h->url only names the target in error messages. Name the prefix being
+	 * listed, not the dummy key: a refused listing used to report
+	 * "s3://bucket/_" (#1781). Signing and the host were resolved above.
+	 */
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+
+		pfree(h->url);
+		h->url = pstrdup(url);
+		MemoryContextSwitchTo(oldcxt);
+	}
+
 	PG_TRY();
 	{
 		for (;;)

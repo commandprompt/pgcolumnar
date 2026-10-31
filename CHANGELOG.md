@@ -478,6 +478,54 @@ true until the next version shipped.
   sends a new ETag for the same bytes on each request is refused (#1866 asks for
   an opt-out); docs/limitations.md says so. `test/objstore_http_read.sh` and
   `test_objstore_http_read.py`.
+- `parallel_export_parquet` now removes the run's parts when it fails after
+  every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
+  prefix, the export lists the prefix to remove stale parts, and then it PUTs
+  the marker. A failure in either step, such as a key that may write but not
+  list or a refused marker PUT, raised an ERROR and left every part, with no
+  marker, and with any earlier run's marker still in place. `read_parquet` read
+  those parts as a whole table. Now the dispatcher removes the parts and any
+  marker before the error is raised, as the documentation promises for a
+  failed run. The docs no longer say that no bucket listing is done, and they
+  say that a remote prefix needs list permission. They also say what a failed
+  listing cannot clean up: without it, the export cannot find a larger earlier
+  run's higher-numbered parts, so those remain with no marker, and a reader
+  should check for `_SUCCESS` before reading the prefix. A refused listing's
+  error now names the prefix it listed, not the dummy key `s3://<bucket>/_`
+  its connection was resolved from.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+- `read_parquet`, `iceberg_scan` and the `pgcolumnar_parquet` and
+  `pgcolumnar_iceberg` foreign tables now read a Parquet fixed-length binary
+  column with no logical type into `bytea` (#1792). Iceberg writes `fixed(L)`
+  that way, and `parquet_schema` reports the column as `bytea`, but the bind
+  step accepted `bytea` only over a variable-length binary column, so the
+  column definition `parquet_schema` advised was refused with `physical type is
+  not compatible`. A `uuid` declared over a fixed-length column that is not 16
+  bytes wide is now refused at bind with that message (42804), where it used to
+  reach the decoder and fail as `could not decode Parquet column N`.
+  `test/native_parquet_flba.sh` and `test_native_parquet_flba.py`, over a
+  committed pyiceberg table, `test/fixtures/iceberg/warehouse_fixed`.
+- `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign-data
+  wrapper now refuse a struct, list or map column declared with a scalar type
+  (#1788). Such a column used to read as null on every row, with no error, even
+  when the data file held values for it. The error is `0A000` and names the
+  column and its kind. `read_parquet(path, field_ids)` now refuses an id that a
+  struct, list or map carries the same way. It used to say the file had no
+  column with that id. `test/iceberg_scan.sh`, `test/native_parquet_fieldid.sh`
+  and their pytest twins.
+- `iceberg_scan`, `iceberg_data_files` and the `pgcolumnar_iceberg` foreign
+  table now refuse a manifest whose `content` or `status` value is outside the
+  Iceberg spec, with `XX001` and a message that names the file and the value
+  (#1823). A data file `content` other than 0, 1 or 2 was treated as an
+  equality delete. When that file was the oldest in the snapshot, the delete was
+  skipped as never applicable, so the file's rows dropped out of the result with
+  no error. A newer one failed with a misleading `has no equality_ids`, and the
+  lister called it a delete file (`0A000`). An entry `status` other than 0, 1 or
+  2 was read as a live entry, and a manifest list `content` other than 0 or 1
+  was read as a data manifest. A value outside the 32-bit range, such as
+  4294967296, is refused the same way. It used to wrap to a valid value, 0 or
+  1, and read as data. `test/iceberg_malformed.sh` and
+  `test_iceberg_malformed.py`.
 - The `iceberg_rest_*` functions now check `USAGE` on the
   `pgcolumnar_iceberg_catalog` server they are given, as dblink does before it
   uses a named server's user mapping (#1819). Before, any role with `pg_read_server_files` could
