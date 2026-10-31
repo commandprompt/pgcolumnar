@@ -1369,4 +1369,6 @@ guard_tests 854
 # by collection: `4633 tests collected`.
 # cluster_tests 4641 at the merge of fix/1792-flba-bytea into fix/1781-reconcile-cleanup,
 # by collection: `4641 tests collected`.
-cluster_tests 4641
+# cluster_tests 4641 -> 4645 for #1781's review: test_objstore_sink_write.py gains the twins of
+# objstore_sink_write.sh's refused-listing-after-a-larger-run arm (4 tests), by collection: `4645 tests collected`.
+cluster_tests 4645

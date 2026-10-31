@@ -255,6 +255,33 @@ check "premise: marker refused: both workers' parts were uploaded before the mar
 check_num "marker refused: no part object remains at the prefix" \
 	"$(ls "$PGC_WORKDIR/$BUCKET/mf/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "0"
 
+# #1781 review: what docs/sql-reference.md says a refused listing leaves. Without
+# the listing the export cannot find a LARGER earlier run's higher-numbered parts:
+# a 4-worker run, then a 2-worker re-run whose listing is refused, removes the
+# re-run's part-0000/0001 and the marker but leaves the earlier part-0002/0003. A
+# reader must check for _SUCCESS first. Pinned so a change to either side is seen.
+# The same refusal's message must name the prefix it listed (lt, or lt/ once the
+# reconcile lists with a slash), not the dummy key "s3://pgc-bucket/_" the
+# listing's handle was resolved from.
+q "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/lt', 4)" >/dev/null
+check "premise: listing refused after a larger run: the 4-worker run left 4 parts and its marker at lt/" \
+	"$(echo "$(ls "$PGC_WORKDIR/$BUCKET/lt/" 2>/dev/null | grep -c 'part-.*\.parquet$') parts, marker $([ -f "$PGC_WORKDIR/$BUCKET/lt/_SUCCESS" ] && echo present || echo absent)")" \
+	"4 parts, marker present"
+echo 403 > "$PGC_WORKDIR/__listing_status__"
+LT_ERR="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
+	-c "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/lt', 2)" 2>&1)"
+rm -f "$PGC_WORKDIR/__listing_status__"
+LT_URL="$(sed -n 's/^ERROR:  columnar: access to "\([^"]*\)" was denied.*/\1/p' <<<"$LT_ERR" | head -1)"
+echo "LT error: $(head -1 <<<"$LT_ERR")"
+check "listing error: the refused listing names the prefix it listed, not a dummy key" \
+	"${LT_URL:-no access-denied error ($(head -1 <<<"$LT_ERR"))}" "s3://$BUCKET/lt$( [ "${LT_URL: -1}" = / ] && echo /)"
+LT_LEFT="$(ls "$PGC_WORKDIR/$BUCKET/lt/" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+echo "LT contents: ${LT_LEFT:-(empty)}"
+check "listing refused after a larger run: the earlier run's part-0002 and part-0003 remain, and nothing else" \
+	"${LT_LEFT:-(empty)}" "part-0002.parquet part-0003.parquet"
+check "listing refused after a larger run: no _SUCCESS marker remains at the prefix" \
+	"$([ -e "$PGC_WORKDIR/$BUCKET/lt/_SUCCESS" ] && echo present || echo absent)" "absent"
+
 # #632 review: a SMALLER re-run into a used prefix must not leave the prior
 # larger run's higher-numbered parts under a freshly-stamped _SUCCESS. First 4
 # workers, then 2: the reconcile drops the stale part-0002/0003, so the marker
