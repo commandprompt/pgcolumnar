@@ -107,7 +107,6 @@ typedef struct PexportHeader
 	bool		single_table;
 	char		dirpath[MAXPGPATH];		/* output directory */
 	char		snapname[64];	/* ExportSnapshot() name workers ImportSnapshot() */
-	int			exportGroupBytes;	/* the caller's pgcolumnar.export_group_bytes */
 } PexportHeader;
 
 /* handles + output dir for the error-cleanup callback */
@@ -122,7 +121,8 @@ typedef struct PexportSpawn
 PGDLLEXPORT void pgcolumnar_parallel_export_worker(Datum main_arg);
 
 /*
- * The settings the object-store module reads by name (#1780). A background
+ * The caller's settings a worker needs: the ones the object-store module
+ * reads by name (#1780), and the Parquet writer's byte cap (#1811). A background
  * worker gets postgresql.conf, ALTER SYSTEM, and the ALTER ROLE and ALTER
  * DATABASE settings applied when it connects, but never the caller's SET, so
  * without these a worker ignored the caller's SET: it uploaded to an endpoint the session
@@ -134,6 +134,7 @@ static const char *const pexport_session_gucs[] = {
 	"pgcolumnar.objstore_allowed_endpoints",
 	"pgcolumnar.objstore_s3_addressing",
 	"pgcolumnar.objstore_part_size",
+	"pgcolumnar.export_group_bytes",	/* the Parquet writer's byte cap (#1811) */
 };
 #define PEXPORT_NGUCS lengthof(pexport_session_gucs)
 
@@ -641,7 +642,6 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	slots = (PexportWorkerSlot *) shm_toc_lookup(toc, PEXPORT_KEY_SLOTS, false);
 	leaves = (Oid *) shm_toc_lookup(toc, PEXPORT_KEY_LEAVES, false);
 	me = &slots[widx];
-	pgcolumnar_export_group_bytes = hdr->exportGroupBytes;	/* the caller's cap */
 
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
@@ -968,11 +968,6 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	hdr->single_table = single_table;
 	strlcpy(hdr->dirpath, dir, sizeof(hdr->dirpath));
 	strlcpy(hdr->snapname, snapname, sizeof(hdr->snapname));
-	/*
-	 * A background worker starts with the server's settings, not the caller's,
-	 * so a session's SET of the byte cap would not reach it (#1843 review).
-	 */
-	hdr->exportGroupBytes = pgcolumnar_export_group_bytes;
 
 	/* even-ish contiguous [startIdx, endIdx) task ranges */
 	per = ntasks / workers;
