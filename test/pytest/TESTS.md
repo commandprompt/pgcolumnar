@@ -10941,6 +10941,10 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 
 The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, reads a table promoted int -> long, float -> double and decimal(10,2) -> decimal(20,2) from a second fixture server as the promoted types (#1789), lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails.
 
+Four more fixtures cover #1793, one catalog behaviour each. One nests namespaces (db, db.x, db.x.y, aa), advertises the separator `%2E`, answers 400 to a `%1F` path and pages every list one item at a time. One has the prefix `catalogs/main`. One puts its prefix in the config `defaults`. One requires `?warehouse=wh1` on the config request and is reached through a FOREIGN SERVER. A failed reading shows the catalog's error text.
+
+Eleven more fixtures cover the review of PR #1859. Two list nested namespaces at the top level, and one of them also ignores `?parent=`; each namespace must come out once. One answers 400 to `?parent=`, and the call must fail with that status. Two serve a `/v1/config` that sets the prefix in more than one place, and only the winning prefix leads to the table. Two advertise an invalid separator or prefix. Two hold a namespace 64 and 65 levels deep. Two send page tokens that never end: one repeats a token at once, one cycles A, B, A. The paging readings run under a 30-second statement timeout, so a client that walks to the page bound reads as 57014.
+
 ### Every test
 
 Every test makes one check under the shell's name. The not-found reads as 42P01 only when the message is the catalog's 404, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer.
@@ -10960,6 +10964,28 @@ Every test makes one check under the shell's name. The not-found reads as 42P01 
 | `test_iceberg_rest_tables_of_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404 |
 | `test_iceberg_rest_scan_in_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404 |
 | `test_the_backend_is_still_up_after_the_rest_read` | backend still up after the REST read |
+| `test_nested_namespaces_iceberg_rest_namespaces_lists_every_level` | nested namespaces: iceberg_rest_namespaces lists every level, page by page |
+| `test_nested_namespaces_iceberg_rest_tables_lists_both_pages` | nested namespaces: iceberg_rest_tables of db.x lists both pages |
+| `test_nested_namespaces_iceberg_rest_scan_returns_the_five_rows` | nested namespaces: iceberg_rest_scan of db.x.events returns the five rows |
+| `test_multi_segment_prefix_iceberg_rest_table_location_resolves` | multi-segment prefix: iceberg_rest_table_location resolves the table |
+| `test_multi_segment_prefix_iceberg_rest_scan_returns_the_five_rows` | multi-segment prefix: iceberg_rest_scan returns the five rows |
+| `test_multi_segment_prefix_iceberg_rest_namespaces_lists` | multi-segment prefix: iceberg_rest_namespaces lists the namespaces |
+| `test_multi_segment_prefix_iceberg_rest_tables_lists` | multi-segment prefix: iceberg_rest_tables lists the tables |
+| `test_prefix_in_config_defaults_iceberg_rest_table_location_resolves` | prefix in config defaults: iceberg_rest_table_location resolves the table |
+| `test_prefix_in_config_defaults_iceberg_rest_tables_lists` | prefix in config defaults: iceberg_rest_tables lists the tables |
+| `test_warehouse_server_iceberg_rest_namespaces_sends_the_warehouse` | warehouse server: iceberg_rest_namespaces sends the warehouse and lists |
+| `test_warehouse_server_iceberg_rest_tables_sends_the_warehouse` | warehouse server: iceberg_rest_tables sends the warehouse and lists |
+| `test_top_level_lists_nested_namespaces_iceberg_rest_namespaces_lists_each_once` | top level lists nested namespaces: iceberg_rest_namespaces lists each once |
+| `test_catalog_ignores_parent_iceberg_rest_namespaces_lists_each_once` | catalog ignores ?parent=: iceberg_rest_namespaces lists each once |
+| `test_catalog_refuses_parent_iceberg_rest_namespaces_fails_with_its_http_400` | catalog refuses ?parent=: iceberg_rest_namespaces fails with its HTTP 400 |
+| `test_config_precedence_a_prefix_in_overrides_wins` | config precedence: a prefix in overrides wins over the top-level key and defaults |
+| `test_config_precedence_a_top_level_prefix_wins_over_defaults` | config precedence: a top-level prefix wins over defaults |
+| `test_an_invalid_namespace_separator_is_refused` | an invalid namespace-separator %G1 is refused |
+| `test_an_invalid_prefix_is_refused` | an invalid prefix a/../b is refused |
+| `test_namespace_depth_a_namespace_64_levels_deep_is_listed` | namespace depth: a namespace 64 levels deep is listed |
+| `test_namespace_depth_a_namespace_65_levels_deep_is_refused` | namespace depth: a namespace 65 levels deep is refused |
+| `test_paging_a_page_token_repeated_at_once_is_refused` | paging: a page token repeated at once is refused |
+| `test_paging_a_page_token_cycle_is_refused` | paging: a page token cycle A, B, A is refused |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
@@ -12529,7 +12555,7 @@ Every test makes one check under the shell's name, on a private database. Every 
 
 ## 324. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused
 
-The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, an exact key is read with no LIST, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard, and the backend survives.
+The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, the hidden-name skip applies only below the prefix the user named and a remote glob matches `_` and dot names as a local glob does (#1784), an exact key is read with no LIST, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard, and the backend survives.
 
 ### Every test
 
@@ -12543,6 +12569,7 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_fdw_over_a_prefix_reads_what_read_parquet_reads` | FDW over a prefix == read_parquet over the prefix |
 | `test_hidden_and_non_parquet_objects_are_excluded_from_the_listing` | hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded |
 | `test_a_remote_glob_matches_only_the_top_level_parts` | glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/ |
+| `test_hidden_names_are_judged_below_the_named_prefix_and_globs_match_as_local` | #1784, eleven parameters, one check each: a prefix the user names may itself start with `_` or `.` (`_landing/`, `.dir/`, and a glob under each) and still reads, with `_temporary/` below it skipped; a glob matches `_` names and a dot name only when it spells the dot (`glb/*.parquet`, `glb/_*.parquet`, `glb/.*.parquet`), as a local glob does; the `glb/` prefix still skips both below it; an upper-case scheme (`S3://.../_landing/` and `S3://.../_landing/*.parquet`) reads as `s3://` does, for a prefix and a pattern; only the scheme ignores case, so `S3://.../glb/[A_]*.parquet` matches `_b.parquet` and not `a.parquet` |
 | `test_an_exact_key_read_returns_its_rows` | exact-key read returns its rows |
 | `test_an_exact_key_read_issues_no_list` | an exact-key read issues no ListObjectsV2 |
 | `test_the_exact_key_read_reached_the_request_log` | and the request log recorded the exact-key read |

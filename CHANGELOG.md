@@ -479,6 +479,43 @@ true until the next version shipped.
   one. `test/native_read_parquet.sh`, `native_parquet_fdw.sh`,
   `native_parquet_pushdown.sh`, `iceberg_scan.sh`, `iceberg_fdw.sh` and their
   pytest twins.
+- The REST catalog functions now follow the catalog's `GET /v1/config` (#1793).
+  They use the advertised `namespace-separator`, so a nested namespace such as
+  `db.x` works on the Apache Iceberg 1.12 REST catalog, which answered HTTP 400
+  before. `iceberg_rest_namespaces` now lists every level: it asks for the
+  children of each namespace with `?parent=`, where it listed only the top level
+  before. `iceberg_rest_namespaces` and `iceberg_rest_tables` now read the
+  config too, so they send the server's `warehouse` and use the catalog's
+  prefix; on a prefixed catalog they returned HTTP 404 before. A prefix with a
+  `/` in it, such as `catalogs/main`, is sent as path segments, not as one
+  `%2F`-encoded segment, and a prefix in the config `defaults` is used. Both list
+  functions follow `next-page-token`, and refuse a page token the catalog
+  already sent. `iceberg_rest_namespaces` returns each namespace once, also on a
+  catalog that lists nested namespaces at the top level. It now makes one more
+  request per namespace, and if the catalog answers an error to any of them,
+  for example to `?parent=`, the whole call fails, where it listed the top level
+  before. `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`. Reported
+  by @OffgridwithJD.
+
+- A remote prefix or pattern that names a directory beginning with `_` or `.`,
+  such as `s3://bucket/_landing/` or `s3://bucket/.staging/*.parquet`, now reads
+  the objects under it (#1784). Before, it raised `no objects under ... match`,
+  because the hidden-name skip judged every segment of the key, including the
+  prefix you named. The skip now applies only below the prefix, as it does for a
+  local directory. A remote pattern now matches as a local glob does: `*.parquet`
+  returns `_b.parquet`, `_*.parquet` matches at all, and a name beginning with `.`
+  matches only when the pattern spells the dot. The scheme is compared without
+  case for a pattern as for a prefix, so `S3://bucket/_landing/*.parquet` reads
+  as `s3://bucket/_landing/*.parquet` does; before, the pattern raised
+  `no objects ... match`. Measured against Garage S3: each of 8 remote reads
+  returns the same count as the same local read.
+  `test/objstore_listing.sh` and `test_objstore_listing.py`.
+
+  **Behaviour change:** a remote pattern no longer skips `_` names below the
+  literal prefix. Before, `s3://bucket/out/*/*.parquet` skipped
+  `out/_temporary/x.parquet`. Now it reads it, as a local glob of
+  `/data/out/*/*.parquet` does. To skip Spark staging output, read the prefix
+  `s3://bucket/out/` instead, or a pattern such as `s3://bucket/out/[!_]*/*.parquet`.
 - `parallel_export_parquet` now removes the run's parts when it fails after
   every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
   prefix, the export lists the prefix to remove stale parts, and then it PUTs
