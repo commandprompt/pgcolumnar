@@ -25,7 +25,12 @@ object, CompleteMultipartUpload (__complete_delay__) or a single PUT (__put_dela
 after it wrote the object over an earlier one. What the export reports must match what
 the key holds. The complete-drop arm (#1846) has the store close the connection with
 no answer after it applied the complete and the cancel arrived: the export must not send
-the request again, and must say the object may be written.
+the request again, and must say the object may be written. The serial double-cancel arm
+(#1846) cancels export_parquet while its POST ?uploads is held and again while the store
+holds its cleanup's listing (__list_uploads_delay__): the cleanup holds interrupts, so no
+upload at the key may stay open. The put-refused arm (#1846) has the store refuse a small
+export's single PUT (__put_status__), with another writer's upload open at the key: the
+export sent no create, so it must not list the uploads nor abort that upload.
 
 A PRIVATE CLUSTER, because the postmaster starts with AWS_* in its environment, which
 the shared cluster cannot do: every AWS_* variable of this process is removed and the
@@ -51,7 +56,7 @@ from pgc_vacuity import query_error
 TEST = pathlib.Path(__file__).resolve().parents[1]
 AKID, SECRET, REGION, BUCKET = "PGCTESTKEYID", "pgctest-secret-shhh", "pgc-test-1", "pgc-bucket"
 OWN = re.compile(r"^part-000[0-3]\.parquet$")
-SERIAL_KEYS = {"sc": "out.parquet", "sa": "out.arrow", "st": "out.parquet"}
+SERIAL_KEYS = {"sc": "out.parquet", "sa": "out.arrow", "st": "out.parquet", "sd": "out.parquet"}
 
 
 def _message(exc):
@@ -281,6 +286,7 @@ def ou(pgc_cluster):
     for p, key in SERIAL_KEYS.items():
         seeds += ["--seed-upload", f"{BUCKET}/{p}/notes.parquet",
                   "--seed-upload", f"{BUCKET}/{p}/{key}.old"]
+    seeds += ["--seed-upload", f"{BUCKET}/sf/out.parquet"]
     srv = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
                             "--port", str(s3_port), "--log", str(s3log),
                             "--sigv4-key", AKID, "--sigv4-secret", SECRET, "--sigv4-region", REGION,
@@ -439,6 +445,31 @@ def ou(pgc_cluster):
             r[f"{pfx} foreign"] = _key_foreign(work, pfx, key)
             r[f"{pfx} survived"] = _survived(dsn, log, crashes0)
 
+        # serial double cancel (#1846): a second cancel lands in the cleanup's listing,
+        # which the store holds 3 s a page
+        lists = re.compile(rf"^GET /{BUCKET} .*uploads=")
+        s3log.write_text("")
+        uploads_delay.write_text("20\n")
+        list_delay.write_text("3\n")
+        got = {}
+        t = _start_serial(dsn, "export_parquet", "ou_big", f"s3://{BUCKET}/sd/out.parquet", got)
+        r["sd unanswered"] = _wait_key_unanswered(work, s3log, "sd", "out.parquet")
+        _signal_serial(dsn, "pg_cancel_backend")
+        r["sd listing"] = "no"
+        for _ in range(100):
+            if any(lists.match(ln) for ln in s3log.read_text(errors="replace").splitlines()):
+                r["sd listing"] = "yes"
+                break
+            time.sleep(0.1)
+        _signal_serial(dsn, "pg_cancel_backend")
+        t.join(300)
+        uploads_delay.unlink()
+        list_delay.unlink()
+        r["sd outcome"] = got.get("outcome", query_error("the export did not return"))
+        r["sd own"] = _key_open(work, "sd", "out.parquet")
+        r["sd foreign"] = _key_foreign(work, "sd", "out.parquet")
+        r["sd survived"] = _survived(dsn, log, crashes0)
+
         # commit (#1813): a cancel while the store holds the commit's answer
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("CREATE TABLE ou_small (id int8) USING pgcolumnar")
@@ -455,6 +486,7 @@ def ou(pgc_cluster):
             _start_serial(dsn, "export_parquet", "ou_small", url, got).join(300)
             old = _md5(path)
             r[f"{pfx} earlier"] = "yes" if old else f"no: {got.get('outcome')}"
+            r[f"{pfx} earlier warnings"] = len(got["warnings"])
             s3log.write_text("")
             (work / hook).write_text("5\n")
             got = {}
@@ -510,6 +542,23 @@ def ou(pgc_cluster):
         r[f"{pfx} outcome"] = got.get("outcome", "the export did not return") \
             .replace(f"s3://{BUCKET}/", "s3://B/")
         r[f"{pfx} survived"] = _survived(dsn, log, crashes0)
+
+        # put refused (#1846): the store refuses a small export's single PUT, so the
+        # export fails before it sends any create; another writer's upload is at the key
+        s3log.write_text("")
+        (work / "__put_status__").write_text("500\n")
+        got = {}
+        _start_serial(dsn, "export_parquet", "ou_small", f"s3://{BUCKET}/sf/out.parquet",
+                      got).join(300)
+        (work / "__put_status__").unlink()
+        lines = s3log.read_text(errors="replace").splitlines()
+        r["sf outcome"] = got.get("outcome", "the export did not return") \
+            .replace(f"s3://{BUCKET}/", "s3://B/")
+        creates = re.compile(rf"^POST /{BUCKET}/sf/out\.parquet .*uploads=")
+        r["sf creates"] = sum(1 for ln in lines if creates.match(ln))
+        r["sf listed"] = sum(1 for ln in lines if lists.match(ln))
+        r["sf own"] = _key_open(work, "sf", "out.parquet")
+        r["sf survived"] = _survived(dsn, log, crashes0)
         yield r
     finally:
         _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
@@ -705,9 +754,44 @@ def test_serial_the_server_survived(ou, expect, arm, pfx, fn, want):
 COMMIT_ARMS = [("complete cancel", "cc"), ("put cancel", "pc")]
 
 
+def test_serial_double_cancel_first_cancel_landed_while_the_create_was_unanswered(ou, expect):
+    expect.text(ou["sd unanswered"], "1 open, 0 parts",
+                "premise: serial double cancel: the export_parquet CreateMultipartUpload was "
+                "unanswered when the first cancel landed")
+
+
+def test_serial_double_cancel_second_cancel_landed_in_the_listing(ou, expect):
+    expect.text(ou["sd listing"], "yes",
+                "premise: serial double cancel: the cleanup was listing the uploads when the "
+                "second cancel landed")
+
+
+def test_serial_double_cancel_reports_its_own_cancel(ou, expect):
+    expect.text(ou["sd outcome"], "57014: canceling statement due to user request",
+                "serial double cancel: the export reports its own cancel (57014)")
+
+
+def test_serial_double_cancel_leaves_no_upload_at_the_key_open(ou, expect):
+    expect.num(ou["sd own"], 0, "serial double cancel: no upload at the export's key is left open")
+
+
+def test_serial_double_cancel_leaves_the_foreign_uploads_open(ou, expect):
+    expect.text(ou["sd foreign"], f"{BUCKET}/sd/notes.parquet {BUCKET}/sd/out.parquet.old",
+                "serial double cancel: the foreign uploads under the prefix are left open")
+
+
+def test_serial_double_cancel_the_server_survived(ou, expect):
+    expect.text(ou["sd survived"], "1", "serial double cancel: the server survived")
+
+
 @pytest.mark.parametrize("arm,pfx", COMMIT_ARMS, ids=[a[1] for a in COMMIT_ARMS])
 def test_commit_an_earlier_object_is_at_the_key(ou, expect, arm, pfx):
     expect.text(ou[f"{pfx} earlier"], "yes", f"premise: {arm}: an earlier object is at the key")
+
+
+@pytest.mark.parametrize("arm,pfx", COMMIT_ARMS, ids=[a[1] for a in COMMIT_ARMS])
+def test_commit_the_earlier_export_issued_no_commit_warning(ou, expect, arm, pfx):
+    expect.num(ou[f"{pfx} earlier warnings"], 0, f"{arm}: the earlier export issued no commit warning")
 
 
 @pytest.mark.parametrize("arm,pfx", COMMIT_ARMS, ids=[a[1] for a in COMMIT_ARMS])
@@ -769,3 +853,24 @@ def test_complete_drop_says_the_store_may_have_written_the_object(ou, expect):
 
 def test_complete_drop_the_server_survived(ou, expect):
     expect.text(ou["cd survived"], "1", "complete drop: the server survived")
+
+
+def test_put_refused_the_export_failed_on_the_refusal(ou, expect):
+    expect.text(ou["sf outcome"], '58030: columnar: writing "s3://B/sf/out.parquet" failed (HTTP 500)',
+                "premise: put refused: the export failed on the store's refusal of its single PUT")
+
+
+def test_put_refused_the_export_sent_no_create(ou, expect):
+    expect.num(ou["sf creates"], 0, "premise: put refused: the export sent no CreateMultipartUpload")
+
+
+def test_put_refused_the_export_asked_for_no_open_uploads(ou, expect):
+    expect.num(ou["sf listed"], 0, "put refused: the export asked the store for no open uploads")
+
+
+def test_put_refused_the_other_writers_upload_is_left_open(ou, expect):
+    expect.num(ou["sf own"], 1, "put refused: the other writer's upload at the key is left open")
+
+
+def test_put_refused_the_server_survived(ou, expect):
+    expect.text(ou["sf survived"], "1", "put refused: the server survived")

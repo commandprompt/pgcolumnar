@@ -1264,4 +1264,7 @@ guard_tests 854
 # test_objstore_export_open_uploads.py: 27 checks in 27 tests, by collection over the cluster files.
 # cluster_tests 4543 -> 4549 for #1846's complete-drop arm in test_objstore_export_open_uploads.py:
 # 6 checks in 6 tests, by collection over the cluster files: `4549 tests collected`.
-cluster_tests 4549
+# cluster_tests 4549 -> 4562 for the #1846 review's serial double-cancel, put-refused and
+# earlier-export-warning checks in test_objstore_export_open_uploads.py: 13 checks in 13 tests,
+# by collection over the cluster files: `4562 tests collected`.
+cluster_tests 4562
