@@ -360,7 +360,7 @@ behaviour, the source of that number is named.
 - [312. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes](#312-test_native_zonemap_narrowpy-group-skipping-reads-only-the-predicate-columns-zone-maps-and-still-prunes)
 - [313. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values](#313-test_native_vecdecodepy-decode-honours-the-skip-vector-and-the-fold-reads-neither-holes-nor-nulls-as-values)
 - [314. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard](#314-test_native_parquet_fieldidpy-read_parquet-binds-output-columns-by-parquet-field-id-and-refuses-each-misuse-by-its-own-guard)
-- [315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused](#315-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-and-a-crafted-page-size-is-refused)
+- [315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, an all-NULL column's empty dictionary page decodes, and a crafted page size is refused](#315-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-an-all-null-columns-empty-dictionary-page-decodes-and-a-crafted-page-size-is-refused)
 - [316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly](#316-test_native_parquet_unitspy-time-and-timestamp-units-decode-to-the-right-instant-and-their-stats-skip-correctly)
 - [317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows](#317-test_native_parquet_projectionpy-a-projected-parquet-scan-decodes-only-the-columns-it-references-and-reads-the-generators-rows)
 - [318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks](#318-test_native_parquet_hardeningpy-the-parquet-reader-refuses-values-that-do-not-fit-their-column-and-a-row-group-with-too-few-chunks)
@@ -12139,9 +12139,9 @@ Every test makes one check under the shell's name, on a private database. The wr
 | `test_the_duplicate_requested_id_error_names_the_id` | the duplicate-requested-id error names the id, not the file |
 | `test_the_backend_survives_the_fieldid_refusals` | backend still up after the refusals |
 
-## 315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, and a crafted page size is refused
+## 315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, an all-NULL column's empty dictionary page decodes, and a crafted page size is refused
 
-The twin of `test/native_parquet_codecs.sh`. `test/craft_parquet_codecs.py`, the shell's own crafter, writes the same 20000 rows with each codec plus an uncompressed control, and a gzip page whose header declares an uncompressed size of -1. Each file's codec is read from its own metadata; every file decodes through `read_parquet` to the generator's rows, built in SQL; each FDW count and a sum read every value; and the crafted header is refused with the reader's own decode error, killing no backend.
+The twin of `test/native_parquet_codecs.sh`. `test/craft_parquet_codecs.py`, the shell's own crafter, writes the same 20000 rows with each codec plus an uncompressed control, and a gzip page whose header declares an uncompressed size of -1. Each file's codec is read from its own metadata; every file decodes through `read_parquet` to the generator's rows, built in SQL; each FDW count and a sum read every value; a column that is NULL in every row, which pyarrow writes with an empty dictionary page of declared size 0, reads back under GZIP, ZSTD and LZ4_RAW as 3 rows with no non-NULL value (#1786); and the crafted header is refused with the reader's own decode error, killing no backend.
 
 ### Every test
 
@@ -12161,6 +12161,12 @@ Every test makes one check under the shell's name, on a private database. Each t
 | `test_the_zstd_fdw_counts_every_row` | zstd FDW count |
 | `test_the_lz4_fdw_counts_every_row` | lz4 FDW count |
 | `test_the_gzip_sum_matches_the_generator` | gzip sum matches the generator |
+| `test_the_all_null_gzip_file_is_gzip_with_a_dictionary_page` | premise: the all-NULL gzip file is GZIP with a dictionary page |
+| `test_the_all_null_zstd_file_is_zstd_with_a_dictionary_page` | premise: the all-NULL zstd file is ZSTD with a dictionary page |
+| `test_the_all_null_lz4_file_is_lz4_with_a_dictionary_page` | premise: the all-NULL lz4 file is LZ4 with a dictionary page |
+| `test_an_all_null_gzip_column_reads_as_three_null_rows` | all-NULL gzip column reads as 3 rows, none non-NULL |
+| `test_an_all_null_zstd_column_reads_as_three_null_rows` | all-NULL zstd column reads as 3 rows, none non-NULL |
+| `test_an_all_null_lz4_column_reads_as_three_null_rows` | all-NULL lz4 column reads as 3 rows, none non-NULL |
 | `test_a_crafted_uncompressed_size_is_a_clean_decode_error` | crafted uncompressed size gives a clean decode error |
 | `test_the_backend_survives_the_crafted_header` | backend survived the crafted header |
 
