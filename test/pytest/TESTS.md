@@ -8222,7 +8222,7 @@ The pytest twin of `test/native_parquet_pushdown.sh` (ported for #1341), every c
 
 ## 170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays
 
-The pytest twin of `test/native_parquet_flba.sh` (ported for #1341), every check by the shell's name. The reader handles uuid as a 16-byte FLBA, and DECIMAL as big-endian two's complement at the column's scale, in FLBA, BYTE_ARRAY or a little-endian INT32/INT64. Our own export is read back through `read_parquet`, `import_parquet` and the FDW and compared with the source table. pyarrow-written files serve as the foreign producer. A footer whose DECIMAL scale has been patched out of range must be refused at bind (42804), before any decoding.
+The pytest twin of `test/native_parquet_flba.sh` (ported for #1341), every check by the shell's name. The reader handles uuid as a 16-byte FLBA, and DECIMAL as big-endian two's complement at the column's scale, in FLBA, BYTE_ARRAY or a little-endian INT32/INT64. Our own export is read back through `read_parquet`, `import_parquet` and the FDW and compared with the source table. pyarrow-written files serve as the foreign producer. A footer whose DECIMAL scale has been patched out of range must be refused at bind (42804), before any decoding. An unannotated FLBA, which is how Iceberg writes `fixed(L)`, reads as the `bytea` that `parquet_schema` advises for it, through `read_parquet` by position and by field id, `iceberg_scan`, and both FDWs (#1792). The file is a committed pyiceberg table, `test/fixtures/iceberg/warehouse_fixed`, with a `fixed(3)` and a `fixed(16)` column. uuid still binds to the 16-byte column, and a 3-byte column declared uuid is refused at bind (42804) by both bind steps, not by the decoder (XX001). Each of those checks is its own test, so a red on one surface does not hide the others.
 
 ### Every test
 
@@ -8231,6 +8231,16 @@ The pytest twin of `test/native_parquet_flba.sh` (ported for #1341), every check
 | `test_our_export_reads_back_through_every_surface` | uuid, numeric and whole rows round-trip through `read_parquet`, `import_parquet` and the FDW |
 | `test_pyarrow_written_flba_reads_exactly` | both pyarrow uuids read in order, decimal128 values are exact, and a crafted scale is refused at bind with the backend alive |
 | `test_a_decimal_held_in_an_integer_reads_as_numeric` | INT32 and INT64 DECIMALs read at their scale with their null, `parquet_schema` advises numeric, and bigint still binds to the unscaled integer |
+| `test_parquet_schema_advises_bytea_for_fixed3` | parquet_schema advises bytea for Iceberg fixed(3) and uuid for fixed(16) |
+| `test_fixed3_reads_as_bytea_through_read_parquet` | fixed(3) reads as bytea through read_parquet |
+| `test_fixed16_reads_as_bytea_through_read_parquet` | fixed(16) reads as bytea through read_parquet |
+| `test_fixed3_reads_as_bytea_through_field_ids` | fixed(3) reads as bytea through read_parquet field ids |
+| `test_fixed3_reads_as_bytea_through_iceberg_scan` | fixed(3) reads as bytea through iceberg_scan |
+| `test_fixed3_reads_as_bytea_through_the_parquet_fdw` | fixed(3) reads as bytea through the parquet FDW |
+| `test_fixed3_reads_as_bytea_through_the_iceberg_fdw` | fixed(3) reads as bytea through the iceberg FDW |
+| `test_fixed16_still_reads_as_uuid` | fixed(16) still reads as uuid |
+| `test_uuid_over_fixed3_is_refused_at_bind` | uuid over fixed(3) is refused at bind (42804) |
+| `test_uuid_over_fixed3_is_refused_at_field_id_bind` | uuid over fixed(3) is refused at field-id bind (42804) |
 
 ## 171. test_native_parquet_multifile.py: directories and globs read as one relation
 
@@ -12515,7 +12525,7 @@ Every test makes one check under the shell's name, on a private database. Every 
 
 ## 324. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused
 
-The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, an exact key is read with no LIST, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard, and the backend survives.
+The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, the hidden-name skip applies only below the prefix the user named and a remote glob matches `_` and dot names as a local glob does (#1784), an exact key is read with no LIST, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard, and the backend survives.
 
 ### Every test
 
@@ -12529,6 +12539,7 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_fdw_over_a_prefix_reads_what_read_parquet_reads` | FDW over a prefix == read_parquet over the prefix |
 | `test_hidden_and_non_parquet_objects_are_excluded_from_the_listing` | hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded |
 | `test_a_remote_glob_matches_only_the_top_level_parts` | glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/ |
+| `test_hidden_names_are_judged_below_the_named_prefix_and_globs_match_as_local` | #1784, eleven parameters, one check each: a prefix the user names may itself start with `_` or `.` (`_landing/`, `.dir/`, and a glob under each) and still reads, with `_temporary/` below it skipped; a glob matches `_` names and a dot name only when it spells the dot (`glb/*.parquet`, `glb/_*.parquet`, `glb/.*.parquet`), as a local glob does; the `glb/` prefix still skips both below it; an upper-case scheme (`S3://.../_landing/` and `S3://.../_landing/*.parquet`) reads as `s3://` does, for a prefix and a pattern; only the scheme ignores case, so `S3://.../glb/[A_]*.parquet` matches `_b.parquet` and not `a.parquet` |
 | `test_an_exact_key_read_returns_its_rows` | exact-key read returns its rows |
 | `test_an_exact_key_read_issues_no_list` | an exact-key read issues no ListObjectsV2 |
 | `test_the_exact_key_read_reached_the_request_log` | and the request log recorded the exact-key read |
@@ -12719,7 +12730,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, the workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780), and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a refused stale-part listing or a refused `_SUCCESS` PUT after every worker finished fails the run by its own 28000 and leaves no part and no earlier marker (`__listing_status__` and the fixture's `__put_status__`, #1781). A refused listing after a larger 4-worker run leaves that run's part-0002 and part-0003 and no marker, which is the limit docs/sql-reference.md documents, and its error names the prefix it listed rather than the dummy key `s3://pgc-bucket/_`. A smaller re-run drops the stale tail, the workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780), and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
 
 ### Every test
 
@@ -12753,6 +12764,18 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_marker_went_to_the_prefix_as_a_put` | parallel remote: the marker went to the prefix as a PUT |
 | `test_the_per_worker_objects_read_back_as_the_generator` | parallel: the union of the per-worker objects == source |
 | `test_a_rerun_into_the_same_prefix_succeeds` | parallel: a re-run into the same prefix succeeds (overwrite) |
+| `test_an_earlier_complete_run_left_its_marker` | premise: lister refused: an earlier complete run left its marker at lf/ |
+| `test_a_refused_listing_fails_the_export` | lister refused: the export fails with the listing's 28000 |
+| `test_the_parts_were_uploaded_before_the_refused_listing` | premise: lister refused: both workers' parts were uploaded before the listing |
+| `test_a_refused_listing_leaves_no_part` | lister refused: no part object remains at the prefix |
+| `test_a_refused_listing_leaves_no_marker` | lister refused: no _SUCCESS marker certifies the failed run's prefix |
+| `test_a_refused_marker_fails_the_export` | marker refused: the export fails with the marker PUT's 28000 |
+| `test_the_parts_were_uploaded_before_the_refused_marker` | premise: marker refused: both workers' parts were uploaded before the marker |
+| `test_a_refused_marker_leaves_no_part` | marker refused: no part object remains at the prefix |
+| `test_the_larger_run_left_four_parts_and_a_marker` | premise: listing refused after a larger run: the 4-worker run left 4 parts and its marker at lt/ |
+| `test_a_refused_listing_names_the_prefix_it_listed` | listing error: the refused listing names the prefix it listed, not a dummy key |
+| `test_a_refused_listing_leaves_the_larger_runs_tail` | listing refused after a larger run: the earlier run's part-0002 and part-0003 remain, and nothing else |
+| `test_a_refused_listing_after_a_larger_run_leaves_no_marker` | listing refused after a larger run: no _SUCCESS marker remains at the prefix |
 | `test_the_four_worker_run_wrote_four_parts_and_a_marker` | shrink: the 4-worker run wrote 4 parts + marker |
 | `test_a_smaller_rerun_leaves_exactly_its_own_parts` | shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped) |
 | `test_the_larger_runs_stale_parts_are_gone` | shrink: parts 0002/0003 from the larger run are gone |

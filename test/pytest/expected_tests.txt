@@ -1258,12 +1258,20 @@ guard_tests 854
 # native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
 # 16 checks in 16 tests, by collection over the cluster files.
+# cluster_tests 4510 -> 4518 for #1781's 8 new tests in test_objstore_sink_write.py, the twin of
+# objstore_sink_write.sh's refused-listing and refused-marker arms, by collection over the cluster files.
+# cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
+# that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
+# cluster_tests 4524 at the merge of origin/main (a247bea0) into fix/1781-reconcile-cleanup,
+# by collection: `4524 tests collected`.
+# cluster_tests 4510 -> 4520 for #1792: ten tests in test_native_parquet_flba.py for an Iceberg
+# fixed(L) column read as bytea, by collection: `4520 tests collected`.
+# cluster_tests 4526 at the merge of origin/main (a247bea0) into fix/1792-flba-bytea,
+# by collection: `4526 tests collected`.
 # cluster_tests 4510 -> 4521 for #1788: six tests in test_native_parquet_fieldid.py and five in
 # test_iceberg_scan.py for a struct, list or map column declared scalar, by collection: `4521 tests collected`.
 # cluster_tests 4521 -> 4522 for #1788's review: test_field_id_minus_one_over_the_nested_file_is_refused_as_absent
 # in test_native_parquet_fieldid.py, by collection: `4522 tests collected`.
-# cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
-# that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
 # cluster_tests 4528 at the merge of origin/main (a247bea0) into fix/1788-iceberg-nested-scalar,
 # by collection: `4528 tests collected`.
 # cluster_tests 4510 -> 4521 for #1823: eleven tests in test_iceberg_malformed.py for a manifest enum value
@@ -1308,6 +1316,10 @@ guard_tests 854
 # by collection: `4587 tests collected`.
 # cluster_tests 4599 at the merge of fix/1823-iceberg-content-enum into fix/1788-iceberg-nested-scalar,
 # by collection: `4599 tests collected`.
+# cluster_tests 4609 at the merge of fix/1788-iceberg-nested-scalar into fix/1792-flba-bytea,
+# by collection: `4609 tests collected`.
+# cluster_tests 4617 at the merge of fix/1792-flba-bytea into fix/1781-reconcile-cleanup,
+# by collection: `4617 tests collected`.
 # cluster_tests 4516 -> 4524 for #1783's eight prefix, pattern and upload-cleanup tests in
 # test_objstore_addressing.py, by collection over the cluster files.
 # cluster_tests 4524 -> 4526 for #1783's two tests in test_objstore_addressing.py that an upload a
@@ -1323,6 +1335,10 @@ guard_tests 854
 # cluster_tests 4537 -> 4540 for #1791 in test_iceberg_data_files.py: the DELETED-entry case leaves the
 # refusal table for a test of its own (skipped, not refused), and three copy-on-write tests join it,
 # by collection over the cluster files.
+# cluster_tests 4641 at the merge of origin/main (9fc12386) into fix/1781-reconcile-cleanup,
+# by collection: `4641 tests collected`.
+# cluster_tests 4633 at the merge of origin/main (9fc12386) into fix/1792-flba-bytea,
+# by collection: `4633 tests collected`.
 # cluster_tests 4623 at the merge of origin/main (9fc12386) into fix/1788-iceberg-nested-scalar,
 # by collection: `4623 tests collected`.
 # cluster_tests 4611 at the merge of origin/main (9fc12386) into fix/1823-iceberg-content-enum,
@@ -1349,12 +1365,24 @@ guard_tests 854
 # by collection: `4611 tests collected`.
 # cluster_tests 4623 at the merge of fix/1823-iceberg-content-enum into fix/1788-iceberg-nested-scalar,
 # by collection: `4623 tests collected`.
-# cluster_tests 4540 -> 4551 for #1793's test_iceberg_rest_scan.py: eleven checks for nested namespaces,
+# cluster_tests 4633 at the merge of fix/1788-iceberg-nested-scalar into fix/1792-flba-bytea,
+# by collection: `4633 tests collected`.
+# cluster_tests 4641 at the merge of fix/1792-flba-bytea into fix/1781-reconcile-cleanup,
+# by collection: `4641 tests collected`.
+# cluster_tests 4641 -> 4645 for #1781's review: test_objstore_sink_write.py gains the twins of
+# objstore_sink_write.sh's refused-listing-after-a-larger-run arm (4 tests), by collection: `4645 tests collected`.
+# cluster_tests 4645 -> 4653 for #1784's test_objstore_listing.py, the twin of objstore_listing.sh:
+# 8 checks in one test of 8 parameters, by collection over the cluster files.
+# cluster_tests 4653 -> 4655 for #1784's two upper-case scheme checks in test_objstore_listing.py
+# (an S3:// prefix and an S3:// pattern), 2 parameters of the same test, by collection over the cluster files.
+# cluster_tests 4655 -> 4656 for #1784's S3://.../glb/[A_]*.parquet check in test_objstore_listing.py (only the
+# scheme ignores case), 1 parameter of the same test, by collection over the cluster files (`4527 tests collected` after the merge of main).
+# cluster_tests 4573 -> 4584 for #1793's test_iceberg_rest_scan.py: eleven checks for nested namespaces,
 # a multi-segment prefix, a prefix in defaults and a warehouse server, by collection: `5405 tests collected`
 # after the merge of main, minus guard_tests 854.
-# cluster_tests 4551 -> 4562 for #1793's PR #1859 review in test_iceberg_rest_scan.py: eleven checks for a
+# cluster_tests 4584 -> 4595 for #1793's PR #1859 review in test_iceberg_rest_scan.py: eleven checks for a
 # top level that lists nested namespaces, ?parent= ignored or refused, config precedence, invalid separator
 # and prefix, the 64-level bound and page-token cycles, by collection: `5416 tests collected`, minus 854.
-# cluster_tests 4623 -> 4645 at the merge of origin/main (b9c0884c) into fix/1793-rest-namespaces: main's 4623
+# cluster_tests 4656 -> 4678 at the merge of origin/main (b9c0884c) into fix/1793-rest-namespaces: main's 4623
 # plus this branch's 22 checks in test_iceberg_rest_scan.py, by collection: `5499 tests collected`, minus 854.
-cluster_tests 4645
+cluster_tests 4678
