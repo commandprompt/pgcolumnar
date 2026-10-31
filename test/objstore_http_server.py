@@ -46,6 +46,17 @@
 #   __list_uploads_delay__ a number of seconds: ListMultipartUploads (GET
 #                         ?uploads) is answered only after that long, a silent
 #                         store for the client's bounded wait.
+#   __complete_delay__    a number of seconds (#1813): CompleteMultipartUpload
+#                         (POST ?uploadId=) writes the object at once and
+#                         answers only after that long, so a suite can end the
+#                         client after the store committed the object.
+#   __put_delay__         a number of seconds (#1813): a single-request PUT
+#                         (no partNumber) writes the object at once and answers
+#                         only after that long, for the same window.
+#   __complete_drop__     a number of seconds (#1846): CompleteMultipartUpload
+#                         writes the object at once, waits that long, and then
+#                         closes the connection with no answer, as a store
+#                         that applied the request and lost the connection.
 #   __put_status__        "STATUS KEY": a plain PUT (no multipart) of exactly
 #                         "bucket/KEY" is answered with STATUS and not stored,
 #                         so a suite can refuse one object, such as a parallel
@@ -527,6 +538,7 @@ class Handler(BaseHTTPRequestHandler):
         os.makedirs(os.path.dirname(local), exist_ok=True)
         with open(local, "wb") as f:
             f.write(self._body)
+        _hook_sleep(self.server.rootdir, "__put_delay__")
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -585,6 +597,11 @@ class Handler(BaseHTTPRequestHandler):
             with open(local, "wb") as f:
                 for n, _ in listed:
                     f.write(up["parts"][n])
+            if os.path.exists(os.path.join(self.server.rootdir, "__complete_drop__")):
+                _hook_sleep(self.server.rootdir, "__complete_drop__")
+                self.close_connection = True
+                return
+            _hook_sleep(self.server.rootdir, "__complete_delay__")
             body = b"<?xml version=\"1.0\"?><CompleteMultipartUploadResult/>"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))

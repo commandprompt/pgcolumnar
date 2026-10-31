@@ -499,6 +499,48 @@ true until the next version shipped.
   no prefix, with SQLSTATE 22023 before any worker starts (#1782). Before,
   `s3://bucket` wrote the parts at the bucket root and then failed, leaving them
   there, and `s3://bucket/` wrote them at the bucket root and succeeded.
+- A serial `export_parquet` or `export_arrow` to `s3://` that is cancelled or
+  terminated while it waits for the store to start its multipart upload no
+  longer leaves that upload open (#1810). The export had no upload id, so it
+  sent no abort. It now lists the open uploads for its own key and aborts them,
+  within 10 seconds. Uploads at other keys stay open. A `gs://` export still
+  leaves the upload open (#1854).
+- An `export_parquet` or `export_arrow` to `s3://` that is cancelled while the
+  store holds the answer to its last request now says what it wrote (#1813).
+  That request commits the object: the single PUT, or the completion of the
+  multipart upload. The statement used to end with the cancel error only, while
+  the new object had already replaced the old one at the key. The export now
+  waits for that answer and issues a warning that it wrote the object. The wait
+  ends when the answer arrives or after 60 seconds in which the store sends
+  nothing. The store cannot take a committed object back, so the object stays.
+  If the connection closes during the wait, the export does not resend the
+  request. It fails with an error that says the store may have written the
+  object (#1846).
+- `pgcolumnar.import_arrow` now reads the Arrow IPC file format, including
+  Feather v2 (#1806). Before, a file that starts with `ARROW1` failed with
+  `invalid memory alloc request size 1330795073`, because the reader took
+  `ARRO` as a message length. The reader now skips the 8-byte header, reads the
+  stream inside the file, and ignores the footer. A file that starts with
+  `ARROW1` but does not end with it is refused with `XX001`, and so is one whose
+  footer length is negative or larger than the file. A file without the
+  optional end-of-stream marker before its footer is read too. A message or
+  body length larger than the rest of the file is now refused with `XX001`
+  before anything is allocated. `export_arrow` still writes the IPC stream
+  format.
+  `docs/how-to.md` said both functions use the IPC file format; it now names
+  each format and says to read an export with `pyarrow.ipc.open_stream`.
+  `test/arrow_import.sh` and `test_arrow_import.py`. Reported by @OffgridwithJD.
+- `pgcolumnar.parquet_schema` now advises `timestamp with time zone` for a
+  millisecond or microsecond timestamp column that holds instants (#1807). It
+  advised `timestamp without time zone` for every such column, and reading an
+  instant into `timestamp` converts it to a wall time in the session
+  `TimeZone`. This changes the advice for `timestamptz` columns that
+  `export_parquet` writes, for Iceberg `timestamptz` columns, and for files
+  that carry only the older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS` type,
+  which the Parquet format defines as UTC-adjusted. Wall-time columns
+  (`isAdjustedToUTC=false`) are still advised as `timestamp`.
+  `test/parquet_timestamp_zone.sh` and `test_parquet_timestamp_zone.py`.
+  Reported by @OffgridwithJD.
 - The REST catalog functions now follow the catalog's `GET /v1/config` (#1793).
   They use the advertised `namespace-separator`, so a nested namespace such as
   `db.x` works on the Apache Iceberg 1.12 REST catalog, which answered HTTP 400
