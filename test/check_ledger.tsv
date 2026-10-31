@@ -996,10 +996,10 @@ decode_interrupts	decode_interrupts	the stride is a power of two	15;16;17;18;19	
 decode_interrupts	decode_interrupts	the stride is defined	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT_STRIDE spelled (1 << 16)
 decode_interrupts	decode_interrupts	the stride is not so large that a check never lands	15;16;17;18;19	2026-10-22	columnar_encoding.c: COLUMNAR_DECODE_INTERRUPT_STRIDE 16777216
 decode_skip_interrupts	decode_skip_interrupts	PgColumnarThriftSkip checks for interrupts	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's interrupt check moved into the struct arm (per field, not per value)
-decode_skip_interrupts	decode_skip_interrupts	Thrift skip-bomb footer is cancellable, not an uninterruptible hang	15;16;17;18;19	2026-10-22	columnar_thrift.c: the list arm refuses a count over 1e9 with 57014 under its own message
+decode_skip_interrupts	decode_skip_interrupts	Thrift skip-bomb footer is refused as corrupt, not an uninterruptible hang	15;16;17;18;19	2026-10-31	reverted the #1822 bool-list element skip, so the skip-bomb spins until the timeout (#1822)
 decode_skip_interrupts	decode_skip_interrupts	av_skip checks for interrupts per element (before the switch, not just per block)	15;16;17;18;19	2026-10-22	columnar_avro.c: av_skip's per-element interrupt check commented out
 decode_skip_interrupts	decode_skip_interrupts	backend survived the Thrift skip-bomb footer	15;16;17;18;19	2026-10-22	columnar_thrift.c: abort() in PgColumnarThriftSkip's list arm on a count over 1e9
-decode_skip_interrupts	decode_skip_interrupts	the cancel lands within 3 s of the statement's start under a 1 s timeout	15;16;17;18;19	2026-10-22	columnar_thrift.c: abort() in PgColumnarThriftSkip's list arm on a count over 1e9
+decode_skip_interrupts	decode_skip_interrupts	the skip-bomb answer lands within 3 s of the statement's start under a 1 s timeout	15;16;17;18;19	never	-
 dependency_estimate	dependency_estimate	a case core already estimates well is unchanged (within 20%)	15;16;17;18;19	2026-10-19	core's estimate overridden where it is right (rel->rows = depRows * 3 unconditionally)
 dependency_estimate	dependency_estimate	a table with no dependency statistic is left to core's estimate (not raised)	15;16;17;18;19	2026-10-19	the #438 correction fires with no dependency statistic (degree forced to 1)
 dependency_estimate	dependency_estimate	and it is not an over-correction (bounded by the most selective marginal)	15;16;17;18;19	2026-10-19	core's estimate overridden where it is right (rel->rows = depRows * 3 unconditionally);the #438 raise overshoots tenfold (rel->rows = depRows * 10)
@@ -3119,13 +3119,18 @@ iceberg_malformed	iceberg_malformed	a NULL data-file path is refused in iceberg_
 iceberg_malformed	iceberg_malformed	a NULL data-file path is refused in iceberg_scan (XX001, not a crash)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a manifest entry with a NULL file_path is not refused
 iceberg_malformed	iceberg_malformed	a NULL manifest_path is refused, not a crash (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_open_path does not refuse a NULL recorded path
 iceberg_malformed	iceberg_malformed	a dangling current-schema-id is refused (XX001), not silently stale-read	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a dangling current-schema-id resolves to the legacy top-level schema
+iceberg_malformed	iceberg_malformed	a field id above INT32 is named even when its alias is also queried	15;16;17;18;19	2026-10-31	reverted the #1824 metadata.json integer, field id, format-version and current-snapshot-id checks (#1824)
+iceberg_malformed	iceberg_malformed	a field id above INT32 is refused (XX001), not aliased to another field	15;16;17;18;19	2026-10-31	reverted the #1824 metadata.json integer, field id, format-version and current-snapshot-id checks (#1824)
+iceberg_malformed	iceberg_malformed	a fractional field id is refused (XX001), not rounded	15;16;17;18;19	2026-10-31	reverted the #1824 metadata.json integer, field id, format-version and current-snapshot-id checks (#1824)
 iceberg_malformed	iceberg_malformed	a manifest-list that is a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_malformed	iceberg_malformed	a null manifest-list min_sequence_number decodes as NULL, not 0 (#686)	15;16;17;18;19	2026-10-21	columnar_avro.c: read_manifest_list decodes a null min_sequence_number as 0
 iceberg_malformed	iceberg_malformed	a null manifest-list sequence_number decodes as NULL, not 0	15;16;17;18;19	2026-10-21	columnar_avro.c: read_manifest_list decodes a null sequence_number as 0
+iceberg_malformed	iceberg_malformed	a string current-snapshot-id is refused (XX001), not read as an empty table	15;16;17;18;19	2026-10-31	reverted the #1824 metadata.json integer, field id, format-version and current-snapshot-id checks (#1824)
 iceberg_malformed	iceberg_malformed	an array-valued schema fields element is refused, not crashed (XX001)	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the FIFO refusals	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the dangling-schema refusal	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the lister refusal	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	backend still up after the malformed-number refusals	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the malformed-schema refusal	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the manifest-list FIFO refusal	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the null-manifest_path refusal	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_open_path does not refuse a NULL recorded path
@@ -3138,7 +3143,10 @@ iceberg_malformed	iceberg_malformed	control: a present manifest-list sequence_nu
 iceberg_malformed	iceberg_malformed	control: a present min_sequence_number decodes to its value (#686)	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	control: a resolvable current-schema-id reads the correct amount column	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	control: a well-formed field object still decodes (0 entries)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: current-snapshot-id -1 still reads as a table with no snapshot (0 rows)	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	control: the legacy table binds amount correctly (10..50)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: the unedited events metadata reads amount 10..50	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	format-version 99 is refused (0A000), not read as v2	15;16;17;18;19	2026-10-31	reverted the #1824 metadata.json integer, field id, format-version and current-snapshot-id checks (#1824)
 iceberg_malformed	iceberg_malformed	iceberg_current_snapshot on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_malformed	iceberg_malformed	iceberg_data_files on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_malformed	iceberg_malformed	iceberg_scan on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
@@ -4569,9 +4577,21 @@ native_parquet_flba	native_parquet_flba	pyarrow uuid reads as uuid	15;16;17;18;1
 native_parquet_flba	native_parquet_flba	uuid round-trips through export/read	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_flba	native_parquet_flba	whole-row round-trip == source	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: a FIXED_LEN_BYTE_ARRAY uuid's bytes are reversed on read
 native_parquet_hardening	native_parquet_hardening	backend survived short chunk list	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the chunk-count refusal becomes abort()
+native_parquet_hardening	native_parquet_hardening	backend survived the malformed footers	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	date in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range date decodes one day late
 native_parquet_hardening	native_parquet_hardening	date invalid -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the date validity check removed (the offset-overflow branch kept)
 native_parquet_hardening	native_parquet_hardening	date offset overflow -> 22008	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the whole date guard removed, so the epoch offset wraps
+native_parquet_hardening	native_parquet_hardening	footer: a file num_rows that differs from its row groups is refused	15;16;17;18;19	2026-10-31	reverted the #1822 Thrift type check, map and bool-list skip, and required footer counts (#1822)
+native_parquet_hardening	native_parquet_hardening	footer: a row group with no num_rows is refused	15;16;17;18;19	2026-10-31	reverted the #1822 Thrift type check, map and bool-list skip, and required footer counts (#1822)
+native_parquet_hardening	native_parquet_hardening	footer: an invalid type nibble on a num_rows is refused	15;16;17;18;19	2026-10-31	reverted the #1822 Thrift type check, map and bool-list skip, and required footer counts (#1822)
+native_parquet_hardening	native_parquet_hardening	footer: an invalid type nibble on row_groups is refused	15;16;17;18;19	2026-10-31	reverted the #1822 Thrift type check, map and bool-list skip, and required footer counts (#1822)
+native_parquet_hardening	native_parquet_hardening	footer: an unknown list of bools is skipped whole	15;16;17;18;19	2026-10-31	reverted the #1822 Thrift type check, map and bool-list skip, and required footer counts (#1822)
+native_parquet_hardening	native_parquet_hardening	footer: an unknown map field is skipped whole	15;16;17;18;19	2026-10-31	reverted the #1822 Thrift type check, map and bool-list skip, and required footer counts (#1822)
+native_parquet_hardening	native_parquet_hardening	footer: every invalid type nibble on a field header is refused	15;16;17;18;19	2026-10-31	reverted the #1822 Thrift type check, map and bool-list skip, and required footer counts (#1822)
+native_parquet_hardening	native_parquet_hardening	footer: no file num_rows is refused	15;16;17;18;19	2026-10-31	reverted the #1822 Thrift type check, map and bool-list skip, and required footer counts (#1822)
+native_parquet_hardening	native_parquet_hardening	footer: no row_groups field is refused	15;16;17;18;19	2026-10-31	reverted the #1822 Thrift type check, map and bool-list skip, and required footer counts (#1822)
+native_parquet_hardening	native_parquet_hardening	footer: the good file still reads	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	footer: the re-encoded good file still reads	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	import_parquet also raises 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
 native_parquet_hardening	native_parquet_hardening	import_parquet left no wrapped rows	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
 native_parquet_hardening	native_parquet_hardening	int2 in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 guard over-applied, refusing the in-range 30000

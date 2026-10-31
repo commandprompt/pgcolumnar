@@ -158,4 +158,51 @@ check "parquet_schema still describes a bad chunk list" \
 check "valid two-column file still reads" \
 	"$(qw "SELECT string_agg(a || '|' || b, ' ' ORDER BY a) FROM pgcolumnar.read_parquet('$W/two.parquet') AS t(a int4, b int4);")" "1|4 2|5 3|6"
 
+
+# ---- malformed footer Thrift (#1822) ----------------------------------------
+# The crafter decoded a good 3000-row file's footer and wrote variants of it. A
+# field header with an invalid type nibble was skipped as zero bytes, so the parser
+# lost its place and could lose row_groups or a num_rows: 0 or 2000 rows came back
+# with no error. Each refusal is read as "SQLSTATE: message / detail" with the file
+# path masked, so the reading names the guard that fired. Each read is
+# "count/sum(id)", so a silent wrong answer shows its numbers.
+psql_run "CREATE FUNCTION pgc_err(q text) RETURNS text LANGUAGE plpgsql AS \$\$
+          DECLARE r text; d text;
+          BEGIN EXECUTE q INTO r; RETURN 'NO ERROR: ' || coalesce(r, '<null>');
+          EXCEPTION WHEN OTHERS THEN
+            GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL;
+            RETURN SQLSTATE || ': ' || regexp_replace(SQLERRM, '\"[^\"]*\"', '\"<file>\"')
+                   || coalesce(' / ' || nullif(d, ''), ''); END \$\$;"
+# footer_read FILE -> "count/sum(id)" of the file, or the refusal
+footer_read() {
+	qw "SELECT pgc_err(\$q\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id bigint, name text)\$q\$);"
+}
+FOOTER_BEFORE="$(crashes)"
+UNPARSED='0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
+check "footer: the good file still reads"            "$(footer_read footer_good)"      "NO ERROR: 3000/4498500"
+check "footer: the re-encoded good file still reads" "$(footer_read footer_reencoded)" "NO ERROR: 3000/4498500"
+check "footer: an invalid type nibble on row_groups is refused" "$(footer_read nibble_row_groups)" "$UNPARSED"
+check "footer: an invalid type nibble on a num_rows is refused" "$(footer_read nibble_num_rows)"   "$UNPARSED"
+# Every field header in the footer, each set to type 15 in its own copy. The
+# reading names each copy that read without an error, with its answer.
+NSWEEP="$(cat "$W/nibble_sweep.count" 2>/dev/null)"
+check "footer: every invalid type nibble on a field header is refused" \
+	"$(qw "SELECT count(*) || ' of $NSWEEP read without an error' || coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '')
+	       FROM (SELECT i, pgc_err(format(\$f\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet(%L) AS t(id bigint, name text)\$f\$,
+	                                     '$W/nibble_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v
+	             FROM generate_series(0, ${NSWEEP:-0} - 1) AS i) s
+	      WHERE v LIKE 'NO ERROR%';")" \
+	"0 of $NSWEEP read without an error"
+check "footer: no row_groups field is refused" "$(footer_read no_row_groups)" \
+	'XX001: Parquet file "<file>" has a malformed footer / The footer has no row_groups field.'
+check "footer: a row group with no num_rows is refused" "$(footer_read no_rg_num_rows)" \
+	'XX001: Parquet file "<file>" has a malformed row group / Row group 2 has no num_rows field.'
+check "footer: no file num_rows is refused" "$(footer_read no_file_num_rows)" \
+	'XX001: Parquet file "<file>" has a malformed footer / The footer has no num_rows field.'
+check "footer: a file num_rows that differs from its row groups is refused" "$(footer_read file_num_rows_2999)" \
+	'XX001: Parquet file "<file>" has a malformed footer / The footer declares num_rows 2999, but its row groups hold 3000 rows.'
+check "footer: an unknown map field is skipped whole"     "$(footer_read unknown_map_field)"       "NO ERROR: 3000/4498500"
+check "footer: an unknown list of bools is skipped whole" "$(footer_read unknown_bool_list_field)" "NO ERROR: 3000/4498500"
+check "backend survived the malformed footers" "$(survived "$FOOTER_BEFORE")" "1"
+
 pgc_summary

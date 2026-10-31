@@ -1258,4 +1258,6 @@ guard_tests 854
 # native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
 # cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
 # 16 checks in 16 tests, by collection over the cluster files.
-cluster_tests 4510
+# cluster_tests 4510 -> 4530 for #1822's footer tests in test_native_parquet_hardening.py (12) and #1824's
+# malformed-number tests in test_iceberg_malformed.py (8), by collection over the cluster files.
+cluster_tests 4530

@@ -119,6 +119,13 @@ def _survived(dsn, cluster, before):
     return f"no ([{up if up == '1' else ''}], {now - before} backend crashes)"
 
 
+FOOTER_FILES = ("footer_good", "footer_reencoded", "nibble_row_groups", "nibble_num_rows", "no_row_groups",
+                "no_rg_num_rows", "no_file_num_rows", "file_num_rows_2999", "unknown_map_field",
+                "unknown_bool_list_field")
+UNPARSED = '0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
+GOOD_READ = "NO ERROR: 3000/4498500"
+
+
 def _int(v):
     """-> v as an int when it is one, else v unchanged, so num() names a failed reading."""
     return int(v) if isinstance(v, str) and v.lstrip("-").isdigit() else v
@@ -152,6 +159,13 @@ def pqh(pgc_cluster, server_dir):
             "EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE; END $$",
             "CREATE TABLE imp_bad (c int2)",
             f"CREATE FOREIGN TABLE f_short (a int4, b int4) SERVER pq OPTIONS (path '{w}/short_chunks.parquet')",
+            # #1822: a refusal as "SQLSTATE: message / detail" with the path masked
+            "CREATE FUNCTION pgc_err(q text) RETURNS text LANGUAGE plpgsql AS $$ "
+            "DECLARE r text; d text; "
+            "BEGIN EXECUTE q INTO r; RETURN 'NO ERROR: ' || coalesce(r, '<null>'); "
+            "EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL; "
+            "RETURN SQLSTATE || ': ' || regexp_replace(SQLERRM, '\"[^\"]*\"', '\"<file>\"') "
+            "|| coalesce(' / ' || nullif(d, ''), ''); END $$",
         ]
         for stmt in setup:
             # a failed setup step surfaces in the readings that depend on it, by name
@@ -177,6 +191,24 @@ def pqh(pgc_cluster, server_dir):
         r["schema"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.parquet_schema('{w}/short_chunks.parquet')")
         r["two"] = _value(dsn, f"SELECT string_agg(a || '|' || b, ' ' ORDER BY a) FROM "
                                f"pgcolumnar.read_parquet('{w}/two.parquet') AS t(a int4, b int4)")
+        # ---- malformed footer Thrift (#1822) ----
+        footer_before = _crashes(pgc_cluster)
+        for name in FOOTER_FILES:
+            r[name] = _value(dsn, f"SELECT pgc_err($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+                                  f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
+        try:
+            nsweep = (w / "nibble_sweep.count").read_text().strip()
+        except OSError:
+            nsweep = ""
+        r["nsweep"] = nsweep
+        r["sweep"] = _value(dsn, (
+            f"SELECT count(*) || ' of {nsweep} read without an error' "
+            "|| coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '') "
+            "FROM (SELECT i, pgc_err(format($f$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+            "pgcolumnar.read_parquet(%L) AS t(id bigint, name text)$f$, "
+            f"'{w}/nibble_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v "
+            f"FROM generate_series(0, {nsweep or 0} - 1) AS i) s WHERE v LIKE 'NO ERROR%'"))
+        r["footer survived"] = _survived(dsn, pgc_cluster, footer_before)
         yield r
     finally:
         _wait_up(pgc_cluster.dsn())
@@ -308,3 +340,113 @@ def test_parquet_hardening_a_valid_two_column_file_still_reads(request, expect):
         return
     r = request.getfixturevalue("pqh")
     expect.text(r["two"], "1|4 2|5 3|6", "valid two-column file still reads")
+
+
+# ---- malformed footer Thrift (#1822) -----------------------------------------
+# The crafter decoded a good 3000-row file's footer and wrote variants of it. A field
+# header with an invalid type nibble was skipped as zero bytes, so the parser lost its
+# place and could lose row_groups or a num_rows. Each reading is "count/sum(id)" or the
+# refusal as "SQLSTATE: message / detail", so a silent wrong answer shows its numbers.
+
+def _footer(request, expect):
+    """-> the fixture's readings, or None when pyarrow is missing (declined by name)."""
+    if expect.require_module("pyarrow.parquet", name=SKIP) is None:
+        return None
+    return request.getfixturevalue("pqh")
+
+
+def test_parquet_hardening_footer_good_file_still_reads(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["footer_good"], GOOD_READ, "footer: the good file still reads")
+
+
+def test_parquet_hardening_footer_reencoded_good_file_still_reads(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["footer_reencoded"], GOOD_READ, "footer: the re-encoded good file still reads")
+
+
+def test_parquet_hardening_footer_invalid_type_nibble_on_row_groups_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["nibble_row_groups"], UNPARSED,
+                "footer: an invalid type nibble on row_groups is refused")
+
+
+def test_parquet_hardening_footer_invalid_type_nibble_on_num_rows_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["nibble_num_rows"], UNPARSED,
+                "footer: an invalid type nibble on a num_rows is refused")
+
+
+def test_parquet_hardening_footer_every_invalid_type_nibble_is_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name=SKIP) is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["sweep"], f"0 of {r['nsweep']} read without an error",
+                "footer: every invalid type nibble on a field header is refused")
+
+
+def test_parquet_hardening_footer_without_row_groups_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["no_row_groups"],
+                'XX001: Parquet file "<file>" has a malformed footer / The footer has no row_groups field.',
+                "footer: no row_groups field is refused")
+
+
+def test_parquet_hardening_footer_row_group_without_num_rows_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["no_rg_num_rows"],
+                'XX001: Parquet file "<file>" has a malformed row group / Row group 2 has no num_rows field.',
+                "footer: a row group with no num_rows is refused")
+
+
+def test_parquet_hardening_footer_without_file_num_rows_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["no_file_num_rows"],
+                'XX001: Parquet file "<file>" has a malformed footer / The footer has no num_rows field.',
+                "footer: no file num_rows is refused")
+
+
+def test_parquet_hardening_footer_num_rows_differing_from_row_groups_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["file_num_rows_2999"],
+                'XX001: Parquet file "<file>" has a malformed footer / '
+                'The footer declares num_rows 2999, but its row groups hold 3000 rows.',
+                "footer: a file num_rows that differs from its row groups is refused")
+
+
+def test_parquet_hardening_footer_unknown_map_field_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_map_field"], GOOD_READ, "footer: an unknown map field is skipped whole")
+
+
+def test_parquet_hardening_footer_unknown_bool_list_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_bool_list_field"], GOOD_READ,
+                "footer: an unknown list of bools is skipped whole")
+
+
+def test_parquet_hardening_backend_survived_the_malformed_footers(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["footer survived"], "1", "backend survived the malformed footers")

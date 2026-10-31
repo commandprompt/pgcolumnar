@@ -6,6 +6,7 @@ the 4-byte footer length in the trailer. Everything changed lives in the footer,
 which sits AFTER every data page, so the page offsets stay valid.
 
 Thrift field ids (parquet.thrift):
+  FileMetaData:    3 num_rows(i64) 4 row_groups(list)
   RowGroup:        1 columns(list) 2 total_byte_size(i64) 3 num_rows(i64)
   ColumnChunk:     3 meta_data(ColumnMetaData)
   ColumnMetaData:  1 type 2 encodings 3 path_in_schema 4 codec 5 num_values(i64)
@@ -96,6 +97,8 @@ def _find_i64(raw, path):
 def find(raw, what):
     if what == "num_rows":
         return _find_i64(raw, [(4, "list-struct"), (3, "i64")])
+    if what == "file_num_rows":                  # FileMetaData 3 num_rows(i64)
+        return _find_i64(raw, [(3, "i64")])
     if what == "num_values":
         return _find_i64(raw, [(4, "list-struct"), (1, "list-struct"),
                                (3, "struct"), (5, "i64")])
@@ -142,6 +145,9 @@ if __name__ == "__main__":
     pq.write_table(pa.table({"a": pa.array([[1, 2, 3, 4, 5, 6, 7, 8]], pa.list_(pa.int32()))}),
                    f"{W}/list_honest.parquet", compression="none")
     craft(f"{W}/list_honest.parquet", f"{W}/list_bad.parquet", "num_rows", 8)
+    # The footer's own total must agree with the row groups (#1822), or that check
+    # refuses the file first and the per-record guard is never reached.
+    craft(f"{W}/list_bad.parquet", f"{W}/list_bad.parquet", "file_num_rows", 8)
     pq.write_table(pa.table({"a": pa.array([[1, 2], [3], [4, 5, 6, 7, 8]], pa.list_(pa.int32()))}),
                    f"{W}/list_valid3.parquet", compression="none")
     print("self-check OK; crafted scalar bignv/bignr/hugenr and list_honest/list_bad/list_valid3")

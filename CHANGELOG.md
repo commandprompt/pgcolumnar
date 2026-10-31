@@ -466,6 +466,26 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Parquet reader now refuses a footer it cannot parse exactly (#1822). A
+  Thrift field header with type 13, 14 or 15 was skipped as zero bytes, so the
+  parser lost its place and read the value bytes as more headers. One bad
+  footer byte could then return 0, 2000 or 2016 rows of a 3000-row file with
+  no error. The reader now refuses an invalid field type. It also skips a map
+  field and a list of bools by their real size, which it could not do before.
+  It refuses a footer that lacks `row_groups`, its own `num_rows`, or a row
+  group's `num_rows`, and one whose `num_rows` differs from the sum of its row
+  groups. `read_parquet`, the Parquet foreign table and `iceberg_scan` share
+  this reader. `test/native_parquet_hardening.sh` sets the type nibble of each
+  of the 209 field headers in a test footer, and every copy is now refused.
+- `iceberg_scan` now refuses malformed numbers in `metadata.json` (#1824). A
+  schema field id above INT32 truncated to another field's id, and a fraction
+  such as `1.4` rounded to 1, so a column returned another column's values.
+  The reader now refuses any fractional number where the spec wants an integer,
+  and a field id outside 0 to 2147483647. It refuses a `format-version` other
+  than 1, 2 or 3, which it used to read as version 2. It refuses a
+  `current-snapshot-id` that is present but not an integer, which it used to
+  read as an empty table. Absent, `null` and `-1` still mean no snapshot.
+
 - A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
   default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
   table's own pgColumnar options for the rows they rewrite (#1309). They write
