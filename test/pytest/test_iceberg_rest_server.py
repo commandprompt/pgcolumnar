@@ -12,8 +12,11 @@ wrong token, a missing one, and a wrong OAuth2 secret are each refused by their 
 message; a half OAuth2 credential is refused before any request; secrets are rejected
 on a SERVER and catalog_uri on a USER MAPPING; an oauth_token_uri off the endpoint
 allow-list (link-local or any other host) is refused by the allow-list itself; the URI
-form works with the environment token; and a non-superuser never borrows the
-environment token unless a superuser marked its mapping credentials_required 'false'.
+form works with the environment token; a non-superuser never borrows the
+environment token unless a superuser marked its mapping credentials_required 'false';
+and a role without USAGE on the server is refused 42501 before any request, through a
+PUBLIC mapping and through its own mapping after a REVOKE, while a foreign table on a
+catalog server reads nothing (#1819).
 
 A STATEMENT THAT RAN IS NOT A SERVER THAT DIDN'T ANSWER: an "accepted" arm reads "ok"
 only when the statement ran, and a failed connection fails it.
@@ -339,6 +342,45 @@ def irs(pgc_cluster):
         _run(dsn, "ALTER USER MAPPING FOR ice_r SERVER cat OPTIONS (ADD credentials_required 'false')")
         r["ice_r control"] = _value(ice, LOCATE.format("cat"))
 
+        # ---- #1819: the server form needs USAGE on the server, as core's FDW model does.
+        # ice_n holds every other grant the call needs, so USAGE is all that refuses it,
+        # and the refusal comes before any request reaches the catalog.
+        for g in ("CREATE ROLE ice_n LOGIN NOSUPERUSER", "GRANT pg_read_server_files TO ice_n",
+                  "GRANT USAGE ON SCHEMA pgcolumnar TO ice_n", "CREATE SCHEMA n1819 AUTHORIZATION ice_n",
+                  f"CREATE SERVER pcat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog OPTIONS (catalog_uri '{cat}')",
+                  f"CREATE USER MAPPING FOR PUBLIC SERVER pcat OPTIONS (token '{TOKEN}')"):
+            _run(dsn, g)
+        ice_n = _dsn_as(dsn, "ice_n")
+        r["n usage"] = _value(ice_n, "SELECT CASE WHEN has_server_privilege('pcat','USAGE') THEN 't' ELSE 'f' END")
+
+        def before_any_request(*calls):
+            n0 = _nlines(rest_log)
+            got = [_refusal(ice_n, sql, phrase) for sql, phrase in calls]
+            n1 = _nlines(rest_log)
+            if not isinstance(n0, int) or not isinstance(n1, int):
+                return query_error(f"fixture log unreadable: {n0} / {n1}")
+            return "|".join(got + [str(n1 - n0)])
+
+        denied = "permission denied for foreign server"
+        r["n public"] = before_any_request((LOCATE.format("pcat"), f"{denied} pcat"))
+        r["n others"] = before_any_request(
+            ("SELECT * FROM pgcolumnar.iceberg_rest_namespaces('pcat')", f"{denied} pcat"),
+            ("SELECT * FROM pgcolumnar.iceberg_rest_tables('pcat','db')", f"{denied} pcat"),
+            ("SELECT * FROM pgcolumnar.iceberg_rest_scan('pcat','db','events') AS t(a int)", f"{denied} pcat"))
+        for g in (f"CREATE SERVER bcat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog OPTIONS (catalog_uri '{cat}')",
+                  "GRANT USAGE ON FOREIGN SERVER bcat TO ice_n",
+                  f"CREATE USER MAPPING FOR ice_n SERVER bcat OPTIONS (token '{TOKEN}')",
+                  "REVOKE USAGE ON FOREIGN SERVER bcat FROM ice_n"):
+            _run(dsn, g)
+        r["n revoked"] = before_any_request((LOCATE.format("bcat"), f"{denied} bcat"))
+        # the FDW path: the catalog wrapper has no handler, and core gates a foreign table on USAGE
+        r["n create ft"] = _refusal(ice_n, "CREATE FOREIGN TABLE n1819.ft1819 (a int) SERVER pcat", f"{denied} pcat")
+        _run(dsn, "CREATE FOREIGN TABLE n1819.ft1819 (a int) SERVER pcat")
+        _run(dsn, "GRANT SELECT ON n1819.ft1819 TO ice_n")
+        r["n ft read"] = before_any_request(("SELECT * FROM n1819.ft1819", "has no handler"))
+        _run(dsn, "GRANT USAGE ON FOREIGN SERVER pcat TO ice_n")
+        r["n granted"] = _value(ice_n, LOCATE.format("pcat"))
+
         r["survived"] = _survived(dsn, log, before)
         yield r
     finally:
@@ -530,6 +572,54 @@ def test_a_superuser_waiver_lets_the_role_read_by_the_env_token(irs, expect):
         return
     expect.text(irs["ice_r control"], MDLOC,
                 "control: with credentials_required false set by a superuser, the same role reads by the environment token")
+
+
+def test_the_role_without_usage_holds_no_usage_on_the_server(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n usage"], "f", "premise: ice_n holds no USAGE on server pcat")
+
+
+def test_a_role_without_usage_is_refused_through_a_public_mapping(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n public"], "42501|0",
+                "a role without USAGE on the server is refused through a PUBLIC mapping (42501), before any request")
+
+
+def test_the_other_rest_functions_refuse_a_role_without_usage(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n others"], "42501|42501|42501|0",
+                "the namespace, table-list and scan functions refuse it too (42501), before any request")
+
+
+def test_a_revoked_role_is_refused_through_its_own_mapping(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n revoked"], "42501|0",
+                "after REVOKE USAGE the role's own mapping is refused (42501), before any request")
+
+
+def test_core_refuses_a_foreign_table_on_the_catalog_server(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n create ft"], "42501",
+                "control: core refuses that role a foreign table on the catalog server (42501)")
+
+
+def test_a_foreign_table_on_a_catalog_server_reads_nothing(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n ft read"], "55000|0",
+                "a foreign table on a catalog server reads nothing (55000, no handler), before any request")
+
+
+def test_a_granted_role_reads_through_the_public_mapping(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["n granted"], MDLOC,
+                "control: once granted USAGE the same role reads through the PUBLIC mapping")
 
 
 def test_the_backend_survives_the_rest_server_arms(irs, expect):

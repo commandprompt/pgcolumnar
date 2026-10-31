@@ -602,6 +602,36 @@ av_read_long(AvReader *r, AvSchema *s, bool *have)
 	return av_long(r);
 }
 
+/*
+ * read an int field kept as int32 (an enum: content, status). av_read_long
+ * returns the whole varint, and a plain cast wrapped 4294967296 to 0, a valid
+ * value that then passed the reader's range check (#1823). A value outside
+ * int32 is refused here as corrupt metadata (XX001), naming the value and,
+ * when it is already decoded, the path. `what` is "manifest entry" or
+ * "manifest", as in the reader's own range-check messages.
+ */
+static int32
+av_read_int32_field(AvReader *r, AvSchema *s, const char *what,
+					const char *path, const char *field)
+{
+	bool		have;
+	int64		v = av_read_long(r, s, &have);
+
+	if (v < PG_INT32_MIN || v > PG_INT32_MAX)
+	{
+		if (path != NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: %s \"%s\" has invalid %s %lld",
+							what, path, field, (long long) v)));
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: %s has invalid %s %lld",
+						what, field, (long long) v)));
+	}
+	return (int32) v;
+}
+
 /* a data_file's equality_ids names a handful of columns; anything larger than
  * this is a hostile manifest, not a real table */
 #define AV_MAX_EQUALITY_IDS 10000
@@ -845,7 +875,8 @@ av_decode_data_file(AvReader *r, AvSchema *s, PgColumnarAvroManifestEntry *e)
 		else if (strcmp(nm, "file_format") == 0)
 			e->file_format = av_read_string(r, ft);
 		else if (strcmp(nm, "content") == 0)
-			e->content = (int32) av_read_long(r, ft, &have);
+			e->content = av_read_int32_field(r, ft, "manifest entry",
+											 e->file_path, "content");
 		else if (strcmp(nm, "record_count") == 0)
 			e->record_count = av_read_long(r, ft, &have);
 		else if (strcmp(nm, "file_size_in_bytes") == 0)
@@ -893,7 +924,8 @@ av_decode_entry(AvReader *r, AvSchema *s, PgColumnarAvroManifestEntry *e)
 		bool		have;
 
 		if (strcmp(nm, "status") == 0)
-			e->status = (int32) av_read_long(r, ft, &have);
+			e->status = av_read_int32_field(r, ft, "manifest entry",
+											e->file_path, "status");
 		/* the data sequence number; "sequence_number" in v2 manifests as
 		 * pyiceberg writes them, "data_sequence_number" in the newer spec name.
 		 * Nullable: null means inherit the manifest's sequence number. */
@@ -944,7 +976,8 @@ av_decode_manifest_file(AvReader *r, AvSchema *s, PgColumnarAvroManifestFile *e)
 			e->has_partition_spec_id = have;
 		}
 		else if (strcmp(nm, "content") == 0)
-			e->content = (int32) av_read_long(r, ft, &have);
+			e->content = av_read_int32_field(r, ft, "manifest",
+											 e->manifest_path, "content");
 		else if (strcmp(nm, "sequence_number") == 0)
 		{
 			e->sequence_number = av_read_long(r, ft, &have);
