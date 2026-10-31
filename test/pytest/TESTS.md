@@ -12446,7 +12446,7 @@ Every test makes one check under the shell's name, on a private database. The wo
 
 ## 326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received
 
-The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, and a key with a space, '+' and '=' under both addressings. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
+The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, a key with a space, '+' and '=' under both addressings, and prefix and pattern reads, whose LIST must go to the bucket root under virtual-host (#1783), as must the upload cleanup listing of a parallel export whose worker fails, and that cleanup must abort an upload a terminated worker left open. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
 
 ### Every test
 
@@ -12466,6 +12466,16 @@ Every test makes one check under the shell's name. Each addressing check reads t
 | `test_virtual_host_puts_the_key_alone_in_the_path` | virtual-host put the KEY ALONE in the path (no bucket segment) |
 | `test_a_key_needing_encoding_reads_back_virtual_host` | a key with a space, '+' and '=' reads back (virtual-host) |
 | `test_the_virtual_host_request_path_is_the_key_alone_encoded_once` | and its virtual-host request path is the key alone, URI-encoded once |
+| `test_an_s3_prefix_read_path_style` | s3:// prefix read, path-style |
+| `test_the_path_style_list_puts_the_bucket_in_the_path` | and its path-style LIST put the bucket in the request path |
+| `test_an_s3_prefix_read_virtual_host` | s3:// prefix read, virtual-host |
+| `test_the_virtual_host_list_goes_to_the_bucket_root` | and its virtual-host LIST went to the bucket root |
+| `test_an_s3_pattern_read_virtual_host` | s3:// pattern read, virtual-host |
+| `test_the_pattern_read_virtual_host_list_goes_to_the_bucket_root` | and the pattern read's virtual-host LIST went to the bucket root |
+| `test_the_virtual_host_export_fails_in_a_worker` | premise: the virtual-host export fails in a worker |
+| `test_the_virtual_host_upload_cleanup_lists_at_the_bucket_root` | and its virtual-host upload cleanup listed the uploads at the bucket root |
+| `test_a_terminated_workers_upload_is_open_and_unanswered` | premise: a worker's upload is open and its id unanswered when the worker is terminated |
+| `test_the_virtual_host_upload_cleanup_aborts_the_open_upload` | and the virtual-host upload cleanup aborted the upload the worker left open |
 | `test_addressing_path_puts_the_bucket_back_in_the_path` | removal proof: with addressing=path the bucket is back in the path |
 | `test_the_request_path_carries_the_bucket_again` | and the request path carried the bucket again |
 | `test_s3_with_no_endpoint_demands_one` | s3:// with no endpoint demands one (names AWS_ENDPOINT_URL) |
@@ -12592,7 +12602,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a smaller re-run drops the stale tail, the workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780), and a cancelled run leaves no object, no marker and no upload open. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
 
 ### Every test
 
@@ -12630,6 +12640,12 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_smaller_rerun_leaves_exactly_its_own_parts` | shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped) |
 | `test_the_larger_runs_stale_parts_are_gone` | shrink: parts 0002/0003 from the larger run are gone |
 | `test_the_marker_certifies_the_reconciled_prefix` | shrink: _SUCCESS certifies the reconciled prefix |
+| `test_a_session_set_to_empty_refuses_the_parallel_export` | premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check |
+| `test_the_dispatcher_raises_the_refusal_not_a_worker` | session allow-list: the dispatcher raises the refusal, not a worker -- with the settings handed to the workers but no check in the dispatcher, worker 0 refused |
+| `test_nothing_reached_the_prefix_the_session_refused` | session allow-list: nothing reached the refused prefix (no PUT, no POST) -- #1780: the workers uploaded part-0000 before the error |
+| `test_the_system_list_is_empty_before_the_widen_arm` | session allow-list: a new session sees an empty system list before the widen arm |
+| `test_a_session_set_widens_an_empty_system_list_for_the_workers` | session allow-list: a session SET widens an empty system list for the workers |
+| `test_a_session_part_size_reaches_the_workers` | parallel: a session SET of objstore_part_size reaches the workers (multipart) |
 | `test_a_worker_was_uploading_before_the_cancel` | premise: a worker was uploading before the cancel |
 | `test_all_four_uploads_were_open_before_the_cancel` | all four workers' uploads were open before the cancel -- an upload whose POST ?uploads is in flight is #1743's window |
 | `test_the_export_was_cancelled_not_completed` | premise: the export was cancelled, not completed |

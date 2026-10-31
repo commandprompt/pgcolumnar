@@ -466,6 +466,28 @@ true until the next version shipped.
 
 ### Fixed
 
+- `parallel_export_parquet` to a remote prefix now obeys the calling session's
+  `pgcolumnar.objstore_allowed_endpoints`, `objstore_s3_addressing` and
+  `objstore_part_size` (#1780). Its background workers started from
+  `postgresql.conf` and ignored a `SET`. A session that set the allow-list to
+  `''` still had its workers upload their parts (two objects with two
+  workers); the call then failed and left them behind. The dispatcher now checks the endpoint against the
+  session's list before any worker starts, and passes the three settings to
+  the workers. The check sends no request: the object-store module gains the
+  entry `check_endpoint` (module ABI 7), so the module and the extension must
+  come from the same build. `test/objstore_sink_write.sh` and
+  `test_objstore_sink_write.py`.
+
+- Prefix and pattern reads of `s3://` paths now work under
+  `pgcolumnar.objstore_s3_addressing = 'virtual'` (#1783). The listing request put
+  the bucket in the path although the bucket was already in the host name, so S3
+  read it as a fetch of an object named after the bucket and answered HTTP 404:
+  `LIST to "s3://bucket/_" returned HTTP 404`. Exact-key reads were not affected.
+  The cleanup listing a failed `parallel_export_parquet` runs to abort its
+  unfinished multipart uploads had the same fault. That cleanup discards its
+  errors, so the uploads it should have aborted could stay open. Under virtual-host addressing both listings now
+  go to the bucket root, `/`. Path-style addressing is unchanged.
+  `test/objstore_addressing.sh` and `test_objstore_addressing.py`.
 - `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
   read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
   or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that
