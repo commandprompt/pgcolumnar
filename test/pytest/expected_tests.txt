@@ -1284,4 +1284,6 @@ guard_tests 854
 # cluster_tests 4540 -> 4559 merging main into #1843 (main's #1783, #1780, #1787, #1794, #1791 with
 # #1811's and #1812's 19), by collection on the merged tree, not by adding the deltas:
 # `5413 tests collected`, guard 854 + cluster 4559.
-cluster_tests 4559
+# cluster_tests 4559 -> 4561 for #1811's kept-text tests on #1843, one each in test_parquet_export.py
+# and test_arrow_export.py, by collection: `5415 tests collected`, guard 854 + cluster 4561.
+cluster_tests 4561

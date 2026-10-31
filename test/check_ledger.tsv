@@ -304,6 +304,7 @@ arrow_export	arrow_export	arrow schema	15;16;17;18;19	never	-
 arrow_export	arrow_export	arrow values match heap oracle	15;16;17;18;19	2026-10-20	export: a bool written inverted;export: an int8 truncated through int32;export: every full record batch written twice
 arrow_export	arrow_export	empty arrow readable	15;16;17;18;19	never	-
 arrow_export	arrow_export	empty export rows written	15;16;17;18;19	never	-
+arrow_export	arrow_export	every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them	15;16;17;18;19	2026-10-31	kept numeric and jsonb texts popped last-first, without the value check (#1811)
 arrow_export	arrow_export	export_arrow rows written	15;16;17;18;19	never	-
 arrow_export	arrow_export	extended arrow schema	15;16;17;18;19	never	-
 arrow_export	arrow_export	extended export rows written	15;16;17;18;19	never	-
@@ -5865,6 +5866,7 @@ parquet_export	parquet_export	duckdb reads decimal	15;16;17;18;19	2026-10-22	src
 parquet_export	parquet_export	duckdb row count	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: row-group num_rows written one high
 parquet_export	parquet_export	empty export rows written	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: export_parquet returns its row count one high
 parquet_export	parquet_export	empty parquet readable	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: leaf names written without their first character
+parquet_export	parquet_export	every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the file as PostgreSQL prints them	15;16;17;18;19	2026-10-31	kept numeric and jsonb texts popped last-first, without the value check (#1811)
 parquet_export	parquet_export	export_group_bytes refuses a value above its 256 MiB maximum	15;16;17;18;19	2026-10-31	row groups cut by row count only, before export_group_bytes existed (#1811)
 parquet_export	parquet_export	export_parquet rows written	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: export_parquet returns its row count one high
 parquet_export	parquet_export	extended export rows written	15;16;17;18;19	2026-10-22	src/columnar_parquet.c: export_parquet returns its row count one high
