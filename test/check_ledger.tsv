@@ -3192,11 +3192,13 @@ iceberg_objstore	iceberg_objstore	position deletes read over s3 (surviving == fi
 iceberg_objstore	iceberg_objstore	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 iceberg_objstore	iceberg_objstore	the position-deleted ids are gone over s3	15;16;17;18;19	2026-10-21	columnar_objstore_module.c: os_check_endpoint_allowed refuses every endpoint, the listed one included
 iceberg_rest	iceberg_rest	a catalog endpoint off the allow-list is refused (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: every address reads as link-local and the allow-list is gone
+iceberg_rest	iceberg_rest	a close-delimited loadTable reply resolves the metadata-location	15;16;17;18;19	2026-10-30	objstore/columnar_objstore_module.c: os_slurp_body refuses a body with neither length nor chunking (main d0747e07, the #1787 defect)
 iceberg_rest	iceberg_rest	a link-local catalog host is refused even if allow-listed (42501)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: the allow-list refuses every endpoint and the link-local refusal is gone
 iceberg_rest	iceberg_rest	a non-object catalog config is refused, not walked (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a non-object /v1/config body is not refused
 iceberg_rest	iceberg_rest	a wrong bearer token is refused (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 401/403 is not mapped to 28000
 iceberg_rest	iceberg_rest	an anonymous request to a token-protected catalog is refused (28000)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 401/403 is not mapped to 28000
 iceberg_rest	iceberg_rest	an over-cap catalog response is refused (54000)	15;16;17;18;19	2026-10-21	objstore/columnar_objstore_module.c: os_slurp_body does not refuse an advertised length over the cap
+iceberg_rest	iceberg_rest	an over-cap close-delimited catalog response is refused (54000)	15;16;17;18;19	2026-10-30	objstore/columnar_objstore_module.c: os_slurp_body refuses a body with neither length nor chunking (main d0747e07, the #1787 defect)
 iceberg_rest	iceberg_rest	an unknown table surfaces a clean not-found (42P01)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: a catalog 404 is not mapped to 42P01
 iceberg_rest	iceberg_rest	backend still up after the REST refusals	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the backend aborts on a catalog 404 (abort() before the 42P01 refusal)
 iceberg_rest	iceberg_rest	loadTable resolves the current metadata-location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent

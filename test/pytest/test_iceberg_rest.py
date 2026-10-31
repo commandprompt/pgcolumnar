@@ -8,7 +8,8 @@ token lives in the POSTMASTER ENVIRONMENT (PGCOLUMNAR_ICEBERG_REST_TOKEN), never
 SQL, so it never reaches the server log or the catalog's request log. A wrong token
 and no token are refused 28000 by the catalog; an endpoint off the allow-list and a
 link-local host are refused 42501, each by its own guard (the message is read, since
-both raise 42501); an over-cap response is refused 54000, an unknown table 42P01 and
+both raise 42501); an over-cap response is refused 54000, a reply ended by connection close is read to
+the end and refused 54000 once it passes the cap (#1787), an unknown table 42P01 and
 a non-object config XX001, each by its own message.
 
 A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED: survival also reads the
@@ -223,6 +224,9 @@ def ir(pgc_cluster):
                                    "SET pgcolumnar.objstore_allowed_endpoints='169.254.169.254'")
         r["over cap"] = _refusal(dsn, LOC.format(cat, "toobig"), "exceeded", " by the cap",
                                  "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1'")
+        r["close delimited"] = _value(dsn, LOC.format(cat, "closedelim"))
+        r["close over cap"] = _refusal(dsn, LOC.format(cat, "closebig"), "exceeded", " by the cap",
+                                       "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1'")
         r["unknown"] = _refusal(dsn, LOC.format(cat, "nosuch"), "the REST catalog has no such table",
                                 " by the catalog's 404", "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1'")
         bad, _ = _rest_server(work, "badcfg", bad_port, "--bad-config")
@@ -323,6 +327,23 @@ def test_an_over_cap_catalog_response_is_refused(ir, expect):
     if _declined(ir, expect):
         return
     expect.text(ir["over cap"], "54000 by the cap", "an over-cap catalog response is refused (54000)")
+
+
+def test_a_close_delimited_loadtable_reply_resolves(ir, expect):
+    """#1787: a reply with Connection: close and neither Content-Length nor chunked
+    framing ends at the close. The Apache Iceberg REST catalog sends loadTable replies
+    over about 32 KB this way; the client refused them with "listing has no length"."""
+    if _declined(ir, expect):
+        return
+    expect.text(ir["close delimited"], MDLOC,
+                "a close-delimited loadTable reply resolves the metadata-location")
+
+
+def test_an_over_cap_close_delimited_catalog_response_is_refused(ir, expect):
+    if _declined(ir, expect):
+        return
+    expect.text(ir["close over cap"], "54000 by the cap",
+                "an over-cap close-delimited catalog response is refused (54000)")
 
 
 def test_an_unknown_rest_table_surfaces_a_clean_not_found(ir, expect):
