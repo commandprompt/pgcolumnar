@@ -8217,7 +8217,7 @@ The pytest twin of `test/native_parquet_pushdown.sh` (ported for #1341), every c
 | --- | --- |
 | `test_skipping_never_changes_the_answer_and_really_skips` | eight predicates agree with the heap, each confining range skips the groups it should, float `>=` is not pushed, and `read_parquet` reads the same rows |
 | `test_a_nan_row_is_never_skipped` | seven float predicates over a file with one NaN agree with the heap |
-| `test_inverted_statistics_never_drive_a_skip` | a UINT_32 column whose statistics decode inverted agrees with the heap under six predicates and skips nothing |
+| `test_inverted_statistics_never_drive_a_skip` | an INT32 column whose footer's min and max are swapped agrees with the heap under six predicates and skips nothing (a UINT_32 column before #1814, which now decodes unsigned and no longer inverts) |
 | `test_an_int64_backed_decimal_is_skippable` | a range inside one of four DECIMAL groups skips the other three without dropping rows |
 
 ## 170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays
@@ -12243,7 +12243,7 @@ Every test makes one check under the shell's name, on a private database. Each t
 
 ## 318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, and a row group with too few chunks
 
-The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range) and a two-column file whose row group carries one column chunk. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, the short chunk list must be refused by the chunk-count guard itself, and the backend must survive.
+The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range), the unsigned files (pyarrow's uint8 to uint64, and a UINT_32 file re-encoded with only its LogicalType or only its ConvertedType mark), and a two-column file whose row group carries one column chunk. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, an unsigned column must read as the stored value into bigint or numeric (which `parquet_schema` advises) and refuse a narrower type with 22003 rather than come back negative (#1814), the short chunk list must be refused by the chunk-count guard itself, and the backend must survive.
 
 ### Every test
 
@@ -12265,6 +12265,21 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_read_parquet_in_range_still_reads` | read_parquet in range still reads |
 | `test_parquet_hardening_import_parquet_also_raises_22003` | import_parquet also raises 22003 |
 | `test_parquet_hardening_import_parquet_left_no_wrapped_rows` | import_parquet left no wrapped rows |
+| `test_parquet_hardening_unsigned_premise_pyarrow_reads_unsigned` | premise: pyarrow reads the unsigned file's values unsigned |
+| `test_parquet_hardening_parquet_schema_advises_types_that_hold_unsigned_values` | parquet_schema advises a type that holds every unsigned value |
+| `test_parquet_hardening_uint32_reads_into_bigint_as_unsigned` | UINT_32 reads into bigint as unsigned |
+| `test_parquet_hardening_uint64_reads_into_numeric_as_unsigned` | UINT_64 reads into numeric as unsigned |
+| `test_parquet_hardening_uint32_into_bigint_where_counts_every_row` | UINT_32 into bigint: WHERE c > 0 counts every row |
+| `test_parquet_hardening_uint32_above_2_31_into_integer_raises_22003` | UINT_32 at or above 2^31 into integer -> 22003 |
+| `test_parquet_hardening_uint64_above_2_63_into_bigint_raises_22003` | UINT_64 at or above 2^63 into bigint -> 22003 |
+| `test_parquet_hardening_uint32_max_into_smallint_raises_22003` | UINT_32 2^32-1 into smallint -> 22003, not -1 |
+| `test_parquet_hardening_uint64_refusal_names_the_stored_value` | the UINT_64 refusal names the stored value |
+| `test_parquet_hardening_read_parquet_reads_every_unsigned_width` | read_parquet reads every unsigned width at its advised type |
+| `test_parquet_hardening_read_parquet_uint64_into_bigint_raises_22003` | read_parquet UINT_64 into bigint -> 22003 |
+| `test_parquet_hardening_uint32_logical_type_alone_marks_it_unsigned` | UINT_32 marked only by its LogicalType reads into bigint as unsigned |
+| `test_parquet_hardening_uint32_converted_type_alone_marks_it_unsigned` | UINT_32 marked only by its ConvertedType reads into bigint as unsigned |
+| `test_parquet_hardening_import_parquet_reads_unsigned_into_wider_types` | import_parquet reads UINT_32 into bigint and UINT_64 into numeric |
+| `test_parquet_hardening_import_parquet_uint32_into_integer_raises_22003` | import_parquet UINT_32 into integer -> 22003 |
 | `test_parquet_hardening_short_chunk_list_is_a_clean_reject` | short chunk list rejected with a specific error |
 | `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
 | `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |

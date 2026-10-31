@@ -965,7 +965,8 @@ SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet', ARRAY[12, 7])
 Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
 without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
-file.
+file. The type it reports holds every value the column can store. So an unsigned
+`UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
 
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when

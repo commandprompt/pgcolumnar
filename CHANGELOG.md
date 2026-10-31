@@ -466,6 +466,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- `read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table now
+  read an unsigned Parquet integer as the value it stores (#1814). pyarrow writes
+  `uint32` and `uint64` columns as INT32 and INT64 marked `UINT_32` and `UINT_64`.
+  The reader ignored the mark, so a value of 2^31 or more (`UINT_32`) or 2^63 or
+  more (`UINT_64`) came back negative with no error, through the very types
+  `parquet_schema` advised: `integer` and `bigint`. `bigint` for a `UINT_32`
+  column and `numeric` for a `UINT_64` column were refused. Now those two types
+  read every value, `parquet_schema` advises them (`numeric(20,0)` for
+  `UINT_64`), and a narrower type raises `value out of range` (22003) for a value
+  it cannot hold. The pushdown suite's inverted-statistics file, which relied on
+  the signed decode, now swaps the footer's min and max instead.
+  `test/native_parquet_hardening.sh` and `test_native_parquet_hardening.py`.
 - The `pgcolumnar_iceberg` foreign-data wrapper no longer prunes `bucket[N]`
   files for an equality compared under a nondeterministic collation (#1818).
   Iceberg buckets a string by its UTF-8 bytes, and the wrapper hashed the
