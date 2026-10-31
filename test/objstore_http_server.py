@@ -46,6 +46,13 @@
 #   __list_uploads_delay__ a number of seconds: ListMultipartUploads (GET
 #                         ?uploads) is answered only after that long, a silent
 #                         store for the client's bounded wait.
+#   __complete_delay__    a number of seconds (#1813): CompleteMultipartUpload
+#                         (POST ?uploadId=) writes the object at once and
+#                         answers only after that long, so a suite can end the
+#                         client after the store committed the object.
+#   __put_delay__         a number of seconds (#1813): a single-request PUT
+#                         (no partNumber) writes the object at once and answers
+#                         only after that long, for the same window.
 # --seed-upload KEY (repeatable) opens an upload at KEY ("bucket/key") before
 # the first request: an upload some other writer left, which a client must not
 # abort as its own.
@@ -489,6 +496,7 @@ class Handler(BaseHTTPRequestHandler):
         os.makedirs(os.path.dirname(local), exist_ok=True)
         with open(local, "wb") as f:
             f.write(self._body)
+        _hook_sleep(self.server.rootdir, "__put_delay__")
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -547,6 +555,7 @@ class Handler(BaseHTTPRequestHandler):
             with open(local, "wb") as f:
                 for n, _ in listed:
                     f.write(up["parts"][n])
+            _hook_sleep(self.server.rootdir, "__complete_delay__")
             body = b"<?xml version=\"1.0\"?><CompleteMultipartUploadResult/>"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
