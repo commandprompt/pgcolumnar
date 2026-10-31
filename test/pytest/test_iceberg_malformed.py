@@ -47,6 +47,8 @@ EVENTS_MD = "00001-6808fe8c-acd3-4fbf-9fbe-1ac447a16b3c.metadata.json"
 FIDRANGE = (r'schema field "amount" has a field id out of range: 4294967297', "field id out of range")
 NONINT = (r"holds the non-integer number 1.4 where an integer is required", "non-integer number")
 FV99 = (r"has an unsupported format-version 99", "unsupported format-version")
+FV4 = (r"has an unsupported format-version 4", "unsupported format-version")
+FV0 = (r"has an unsupported format-version 0", "unsupported format-version")
 CSIDX = (r"has a current-snapshot-id that is not an integer", "non-integer current-snapshot-id")
 
 
@@ -248,6 +250,9 @@ def imf(pgc_cluster, server_dir):
         variant("fv99", lambda m: m.__setitem__("format-version", 99))
         variant("csidx", lambda m: m.__setitem__("current-snapshot-id", "x"))
         variant("csidneg", lambda m: m.__setitem__("current-snapshot-id", -1))
+        variant("fv4", lambda m: m.__setitem__("format-version", 4))
+        variant("fv0", lambda m: m.__setitem__("format-version", 0))
+        variant("csidnull", lambda m: m.__setitem__("current-snapshot-id", None))
         r["lax control"] = _value(dsn, "SELECT string_agg(amount::text, ',' ORDER BY id) "
                                        f"FROM pgcolumnar.iceberg_scan('{src}') AS t(id bigint, amount int)")
         b = crashes()
@@ -259,11 +264,17 @@ def imf(pgc_cluster, server_dir):
                                         "AS t(amount bigint)", NONINT)
         r["lax fv99"] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{laxmd}/fv99.metadata.json') "
                                       "AS t(id bigint)", FV99)
+        r["lax fv4"] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{laxmd}/fv4.metadata.json') "
+                                     "AS t(id bigint)", FV4)
+        r["lax fv0"] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{laxmd}/fv0.metadata.json') "
+                                     "AS t(id bigint)", FV0)
         r["lax csidx"] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{laxmd}/csidx.metadata.json') "
                                        "AS t(id bigint)", CSIDX)
         r["lax up"] = alive(b)
         r["lax csidneg"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{laxmd}/csidneg.metadata.json') "
                                        "AS t(id bigint)")
+        r["lax csidnull"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{laxmd}/csidnull.metadata.json') "
+                                        "AS t(id bigint)")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -552,3 +563,24 @@ def test_current_snapshot_id_minus_one_still_reads_as_no_snapshot(imf, expect):
         return
     expect.text(imf["lax csidneg"], "0",
                 "control: current-snapshot-id -1 still reads as a table with no snapshot (0 rows)")
+
+
+def test_format_version_4_is_refused(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["lax fv4"], "0A000 (unsupported format-version)",
+                "format-version 4 is refused (0A000), one above the newest known")
+
+
+def test_format_version_0_is_refused(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["lax fv0"], "0A000 (unsupported format-version)",
+                "format-version 0 is refused (0A000), one below the oldest known")
+
+
+def test_a_null_current_snapshot_id_still_reads_as_no_snapshot(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["lax csidnull"], "0",
+                "control: a null current-snapshot-id still reads as a table with no snapshot (0 rows)")

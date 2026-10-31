@@ -65,6 +65,19 @@ def _value(dsn, sql):
     return "" if row is None or row[0] is None else str(row[0])
 
 
+def _value_capped(dsn, sql):
+    """-> _value's reading of sql under a 5 s statement_timeout, as the shell's
+    footer_capped reads it."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("SET statement_timeout = '5s'")
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    return "" if row is None or row[0] is None else str(row[0])
+
+
 def _exec(dsn, sql):
     """Run one setup statement; -> None, or the failure as a query_error()."""
     _wait_up(dsn)
@@ -121,8 +134,10 @@ def _survived(dsn, cluster, before):
 
 FOOTER_FILES = ("footer_good", "footer_reencoded", "nibble_row_groups", "nibble_num_rows", "no_row_groups",
                 "no_rg_num_rows", "no_file_num_rows", "file_num_rows_2999", "unknown_map_field",
-                "unknown_bool_list_field", "unknown_uuid_field", "unknown_uuid_list_field", "list_of_type_14")
+                "unknown_bool_list_field", "unknown_uuid_field", "unknown_uuid_list_field", "list_of_type_14",
+                "rg3_999", "file_num_rows_3001", "nibble0_row_groups")
 TIMED_FILES = ("byte_list_off_end", "double_list_off_end")
+CAPPED_FILES = ("list_elem15_huge",)    # read under a 5 s statement_timeout
 UNPARSED = '0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
 GOOD_READ = "NO ERROR: 3000/4498500"
 
@@ -164,7 +179,7 @@ def pqh(pgc_cluster, server_dir):
             "CREATE FUNCTION pgc_err(q text) RETURNS text LANGUAGE plpgsql AS $$ "
             "DECLARE r text; d text; "
             "BEGIN EXECUTE q INTO r; RETURN 'NO ERROR: ' || coalesce(r, '<null>'); "
-            "EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL; "
+            "EXCEPTION WHEN OTHERS OR query_canceled THEN GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL; "
             "RETURN SQLSTATE || ': ' || regexp_replace(SQLERRM, '\"[^\"]*\"', '\"<file>\"') "
             "|| coalesce(' / ' || nullif(d, ''), ''); END $$",
             # pgc_err's reading, then "within 3 s" or "after N ms"
@@ -206,6 +221,9 @@ def pqh(pgc_cluster, server_dir):
         for name in TIMED_FILES:
             r[name] = _value(dsn, f"SELECT pgc_timed($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
                                   f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
+        for name in CAPPED_FILES:
+            r[name] = _value_capped(dsn, f"SELECT pgc_timed($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+                                         f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
         try:
             nsweep = (w / "nibble_sweep.count").read_text().strip()
         except OSError:
@@ -456,6 +474,34 @@ def test_parquet_hardening_footer_num_rows_differing_from_row_groups_is_refused(
                 "footer: a file num_rows that differs from its row groups is refused")
 
 
+def test_parquet_hardening_footer_row_group_num_rows_below_total_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["rg3_999"],
+                'XX001: Parquet file "<file>" has a malformed footer / '
+                'The footer declares num_rows 3000, but its row groups hold 2999 rows.',
+                "footer: a row group num_rows below the footer's total is refused")
+
+
+def test_parquet_hardening_footer_num_rows_above_row_groups_total_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["file_num_rows_3001"],
+                'XX001: Parquet file "<file>" has a malformed footer / '
+                'The footer declares num_rows 3001, but its row groups hold 3000 rows.',
+                "footer: a file num_rows above its row groups' total is refused")
+
+
+def test_parquet_hardening_footer_type_0_nibble_with_delta_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["nibble0_row_groups"], UNPARSED,
+                "footer: a type-0 nibble with a field-id delta is refused as corrupt")
+
+
 def test_parquet_hardening_footer_unknown_map_field_is_skipped_whole(request, expect):
     r = _footer(request, expect)
     if r is None:
@@ -491,6 +537,14 @@ def test_parquet_hardening_footer_list_of_non_compact_type_is_refused(request, e
         return
     expect.text(r["list_of_type_14"], UNPARSED,
                 "footer: a list whose element type is not a compact type is refused")
+
+
+def test_parquet_hardening_footer_huge_list_of_non_compact_type_is_refused_at_once(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["list_elem15_huge"], UNPARSED + " within 3 s",
+                "footer: a huge list whose element type is not a compact type is refused at once")
 
 
 def test_parquet_hardening_footer_byte_list_off_the_end_is_refused_at_once(request, expect):

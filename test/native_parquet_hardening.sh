@@ -169,7 +169,7 @@ check "valid two-column file still reads" \
 psql_run "CREATE FUNCTION pgc_err(q text) RETURNS text LANGUAGE plpgsql AS \$\$
           DECLARE r text; d text;
           BEGIN EXECUTE q INTO r; RETURN 'NO ERROR: ' || coalesce(r, '<null>');
-          EXCEPTION WHEN OTHERS THEN
+          EXCEPTION WHEN OTHERS OR query_canceled THEN
             GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL;
             RETURN SQLSTATE || ': ' || regexp_replace(SQLERRM, '\"[^\"]*\"', '\"<file>\"')
                    || coalesce(' / ' || nullif(d, ''), ''); END \$\$;"
@@ -186,6 +186,11 @@ psql_run "CREATE FUNCTION pgc_timed(q text) RETURNS text LANGUAGE plpgsql AS \$\
 # footer_timed FILE -> footer_read's reading with the time it took
 footer_timed() {
 	qw "SELECT pgc_timed(\$q\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id bigint, name text)\$q\$);"
+}
+# footer_capped FILE -> footer_timed's reading under a 5 s statement_timeout, so a
+# skip that loops billions of times reads as 57014 after about 5000 ms
+footer_capped() {
+	PGOPTIONS='-c statement_timeout=5s' footer_timed "$1"
 }
 FOOTER_BEFORE="$(crashes)"
 UNPARSED='0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
@@ -221,6 +226,16 @@ check "footer: no file num_rows is refused" "$(footer_read no_file_num_rows)" \
 	'XX001: Parquet file "<file>" has a malformed footer / The footer has no num_rows field.'
 check "footer: a file num_rows that differs from its row groups is refused" "$(footer_read file_num_rows_2999)" \
 	'XX001: Parquet file "<file>" has a malformed footer / The footer declares num_rows 2999, but its row groups hold 3000 rows.'
+# The other direction loses rows: row group 3 says 999, the footer says 3000. A
+# num_rows below a column's value count is legal (a repeated column), so the total
+# check is the only guard. Checking only "total > num_rows" read 2999 rows.
+check "footer: a row group num_rows below the footer's total is refused" "$(footer_read rg3_999)" \
+	'XX001: Parquet file "<file>" has a malformed footer / The footer declares num_rows 3000, but its row groups hold 2999 rows.'
+check "footer: a file num_rows above its row groups' total is refused" "$(footer_read file_num_rows_3001)" \
+	'XX001: Parquet file "<file>" has a malformed footer / The footer declares num_rows 3001, but its row groups hold 3000 rows.'
+# A type-0 nibble with a field-id delta is not STOP (only the byte 0x00 is). Read as
+# STOP, the footer ended before row_groups and a later check refused it instead.
+check "footer: a type-0 nibble with a field-id delta is refused as corrupt" "$(footer_read nibble0_row_groups)" "$UNPARSED"
 check "footer: an unknown map field is skipped whole"     "$(footer_read unknown_map_field)"       "NO ERROR: 3000/4498500"
 check "footer: an unknown list of bools is skipped whole" "$(footer_read unknown_bool_list_field)" "NO ERROR: 3000/4498500"
 # Type 13 is UUID: a 16-byte value. parquet.thrift has none, but the skip must
@@ -230,6 +245,10 @@ check "footer: an unknown list of UUIDs is skipped whole"   "$(footer_read unkno
 # A list element of a type that is not a compact type has no known size. The
 # skip refuses it; skipped as zero bytes, the list vanished and the file read.
 check "footer: a list whose element type is not a compact type is refused" "$(footer_read list_of_type_14)" "$UNPARSED"
+# The same refusal on a list of 4294967295 elements of type 15. Skipped as zero
+# bytes, each element passed and the loop ran until the 5 s timeout.
+check "footer: a huge list whose element type is not a compact type is refused at once" \
+	"$(footer_capped list_elem15_huge)" "$UNPARSED within 3 s"
 # A list of 4294967295 bytes or doubles that runs off the footer's end. The skip
 # refuses the first element that does not fit. Stepping past the end without an
 # error ran every element first: seconds of work from a few bytes of footer.

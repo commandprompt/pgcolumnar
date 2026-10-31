@@ -1265,4 +1265,8 @@ guard_tests 854
 # cluster_tests 4536 -> 4542 for #1834's review: six tests in test_native_parquet_hardening.py (a UUID field
 # and list skipped whole, a type-13 sweep, a list of element type 14, and byte and double lists that run off
 # the footer), by collection over the cluster files: `4542 tests collected`.
-cluster_tests 4542
+# cluster_tests 4542 -> 4549 for #1834's second review: four tests in test_native_parquet_hardening.py (a row
+# group num_rows below the footer total, a footer num_rows above it, a type-0 nibble with a delta, a huge list
+# of element type 15) and three in test_iceberg_malformed.py (format-version 4 and 0, a null
+# current-snapshot-id), by collection over the cluster files: `4549 tests collected`.
+cluster_tests 4549

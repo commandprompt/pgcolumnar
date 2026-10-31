@@ -476,7 +476,8 @@ true until the next version shipped.
   map field and a list of bools by their real size, which it could not do
   before. A skipped byte or double that would run past the footer's end now
   stops the parse at once: a list of 4294967295 of them took 10 to 12 seconds
-  to fail before.
+  to fail before. A header whose type nibble is 0 but whose field-id delta is
+  not is now refused too; it used to end the struct early, like STOP.
   It refuses a footer that lacks `row_groups`, its own `num_rows`, or a row
   group's `num_rows`, and one whose `num_rows` differs from the sum of its row
   groups. `read_parquet`, the Parquet foreign table and `iceberg_scan` share

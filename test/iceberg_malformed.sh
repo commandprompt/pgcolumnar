@@ -304,6 +304,9 @@ variant("fracid", amount_id(1.4))          # rounds to 1
 variant("fv99", lambda m: m.__setitem__("format-version", 99))
 variant("csidx", lambda m: m.__setitem__("current-snapshot-id", "x"))
 variant("csidneg", lambda m: m.__setitem__("current-snapshot-id", -1))
+variant("fv4", lambda m: m.__setitem__("format-version", 4))   # the bounds of 1..3
+variant("fv0", lambda m: m.__setitem__("format-version", 0))
+variant("csidnull", lambda m: m.__setitem__("current-snapshot-id", None))
 PYEOF
 FIDRANGE='schema field "amount" has a field id out of range: 4294967297'
 NONINT='holds the non-integer number 1.4 where an integer is required'
@@ -323,6 +326,12 @@ check "a fractional field id is refused (XX001), not rounded" \
 check "format-version 99 is refused (0A000), not read as v2" \
 	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv99.metadata.json') AS t(id bigint)" \
 		'has an unsupported format-version 99' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "format-version 4 is refused (0A000), one above the newest known" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv4.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 4' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "format-version 0 is refused (0A000), one below the oldest known" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv0.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 0' "unsupported format-version")" "0A000 (unsupported format-version)"
 check "a string current-snapshot-id is refused (XX001), not read as an empty table" \
 	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidx.metadata.json') AS t(id bigint)" \
 		'has a current-snapshot-id that is not an integer' "non-integer current-snapshot-id")" \
@@ -330,5 +339,7 @@ check "a string current-snapshot-id is refused (XX001), not read as an empty tab
 check "backend still up after the malformed-number refusals" "$(survived "$B")" "1"
 check "control: current-snapshot-id -1 still reads as a table with no snapshot (0 rows)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidneg.metadata.json') AS t(id bigint)")" "0"
+check "control: a null current-snapshot-id still reads as a table with no snapshot (0 rows)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidnull.metadata.json') AS t(id bigint)")" "0"
 
 pgc_summary

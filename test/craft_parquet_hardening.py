@@ -342,6 +342,11 @@ variant("no_row_groups", lambda m: m.remove(fld(m, 4)))
 variant("no_rg_num_rows", lambda m: fld(m, 4)[2][1][2].remove(fld(fld(m, 4)[2][1][2], 3)))
 variant("no_file_num_rows", lambda m: m.remove(fld(m, 3)))
 variant("file_num_rows_2999", lambda m: fld(m, 3).__setitem__(2, 2999))
+# The direction that loses rows: row group 3 says 999 rows, the footer still 3000.
+# num_rows below a column's value count is legal (a repeated column), so only the
+# total check refuses it. pyarrow reads it as 3000 rows.
+variant("rg3_999", lambda m: fld(fld(m, 4)[2][1][2], 3).__setitem__(2, 999))
+variant("file_num_rows_3001", lambda m: fld(m, 3).__setitem__(2, 3001))
 # an unknown field of each skipped-wrong shape, placed before row_groups so a
 # skip that consumes too few bytes loses row_groups
 variant("unknown_map_field", lambda m: m.insert(m.index(fld(m, 4)),
@@ -372,4 +377,17 @@ def off_end(name, etype, tail):
 
 off_end("byte_list_off_end", 3, b"")
 off_end("double_list_off_end", 7, b"\x00\x00\x00")
+
+# A list of 4294967295 elements of type 15 as the footer's last field. Type 15 is
+# not a compact type, so the skip must refuse the first element. Skipped as zero
+# bytes, each element passes and the loop runs 4294967295 times.
+m = strip(fmd)
+write_footer("list_elem15_huge", enc_struct(m)[:-1] + bytes([0x09]) + enc_zz(106)
+             + bytes([0xFF]) + enc_varint(0xFFFFFFFF) + b"\x00")
+
+# The row_groups header with its type nibble set to 0 but its field-id delta kept.
+# Only the byte 0x00 is STOP; a type-0 nibble with a delta is corrupt. Read as STOP,
+# it ended the footer early, and only the required-field checks caught it.
+assert good[fld(fmd, 4)[3]] >> 4 != 0, hex(good[fld(fmd, 4)[3]])
+write_mutant("nibble0_row_groups", fld(fmd, 4)[3], 0x00)
 print(f"  footer {gflen} bytes, {len(offs)} field headers swept", file=sys.stderr)

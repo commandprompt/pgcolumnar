@@ -113,8 +113,10 @@ PgColumnarThriftField(TCReader *r, int *ftype, int *fid, int *lastId)
 	 * no skip can know how many bytes its value takes, so the parser would lose
 	 * its place in the struct (#1822). Type 13 is UUID: parquet.thrift has no
 	 * UUID field, but the skip steps over its 16 bytes like any unknown field.
+	 * Only the byte 0x00 is STOP. A type-0 nibble with a field-id delta is
+	 * corrupt too: read as STOP, it ended the struct early with no error.
 	 */
-	if (*ftype > TC_UUID)
+	if (*ftype > TC_UUID || *ftype == TC_STOP)
 	{
 		r->error = true;
 		*ftype = TC_STOP;
