@@ -695,8 +695,13 @@ SELECT pgcolumnar.tier_partition('metrics_2026_01', 'cold',
 The function writes the file with the settings of the server that you name:
 its endpoint and region, and your user mapping on it. These are the settings
 the foreign partition reads with. If the object store rejects your mapping, the
-move fails and the rows stay where they were. Give every role that queries the
-parent a mapping on the server that can read the file.
+move fails and the rows stay where they were. Before it commits, the function
+also reads the rows back through the foreign partition, as you. If that read
+fails, the move rolls back.
+
+You need both `pg_write_server_files` and `pg_read_server_files`, or superuser.
+Every role that queries the parent after the move needs `pg_read_server_files`
+and a mapping on the server that can read the file.
 
 The function returns the number of rows that it moved. It runs as one
 transaction: if it fails at any step, the rows stay in the columnar partition,

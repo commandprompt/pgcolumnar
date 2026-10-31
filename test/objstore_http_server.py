@@ -30,6 +30,11 @@
 #                    answered only after that long. The double-cancel suite uses it
 #                    to hold the dispatcher's cleanup DELETE in flight while a
 #                    second cancel lands (#1741).
+#   __deny_reads__   when it exists, every HEAD and every GetObject is refused
+#                    with 403 AccessDenied after the signature check; PUT, POST,
+#                    DELETE and the listings go on. This is a key that can write
+#                    but not read, an IAM policy with s3:PutObject and no
+#                    s3:GetObject (#1795).
 #
 # Multipart introspection and hooks (#1743), read per request from --dir:
 #   __open_uploads__      written by the server, never read: the key of every
@@ -193,6 +198,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _reads_denied(self):
+        """True, with a 403 sent, when the __deny_reads__ hook exists."""
+        if os.path.exists(os.path.join(self.server.rootdir, "__deny_reads__")):
+            self._deny(403, "AccessDenied")
+            return True
+        return False
+
     def _sigv4_check(self):
         """True when the request may proceed. Answers 403 itself otherwise."""
         srv = self.server
@@ -258,6 +270,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self._log_line()
         if not self._sigv4_check():
+            return
+        if self._reads_denied():
             return
         mode, local = self._resolve()
         if mode == "hangup":
@@ -410,6 +424,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if "uploads" in self._qdict() and not is_get_object:
             self._do_list_uploads()
+            return
+        if self._reads_denied():
             return
         mode, local = self._resolve()
         if mode == "hangup":

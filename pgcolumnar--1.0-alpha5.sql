@@ -3101,6 +3101,18 @@ BEGIN
 			USING ERRCODE = 'wrong_object_type';
 	END IF;
 
+	-- The move writes the file and then reads it back through the foreign
+	-- partition, as the caller, before it commits (#1795). The export needs
+	-- pg_write_server_files and a foreign table reads a file only for a member of
+	-- pg_read_server_files, so a caller without both is refused here, before
+	-- anything is written, rather than after the export.
+	IF NOT (pg_has_role(current_user, 'pg_write_server_files', 'USAGE')
+			AND pg_has_role(current_user, 'pg_read_server_files', 'USAGE')) THEN
+		RAISE EXCEPTION 'must be superuser or a member of both the pg_write_server_files and the pg_read_server_files roles to tier a partition'
+			USING ERRCODE = 'insufficient_privilege',
+				  DETAIL = 'tier_partition writes the file and reads it back through the foreign partition before it commits.';
+	END IF;
+
 	SELECT i.inhparent INTO parent FROM pg_inherits i WHERE i.inhrelid = partition;
 	-- ATTACH of a foreign table is not allowed under a UNIQUE index; refused here,
 	-- before the export, rather than at step 5 with an orphan file behind it.
@@ -3178,7 +3190,8 @@ BEGIN
 	IF fault = 'export' THEN RAISE EXCEPTION 'injected fault after export'; END IF;
 	IF fault = 'pause' THEN PERFORM pg_sleep(2); END IF;
 
-	-- From here the parent is held ACCESS EXCLUSIVE until commit: catalog work only.
+	-- From here the parent is held ACCESS EXCLUSIVE until commit: catalog work,
+	-- then one count through the new foreign partition.
 	EXECUTE format('ALTER TABLE %s DETACH PARTITION %s', parent, partition);
 	IF fault = 'detach' THEN RAISE EXCEPTION 'injected fault after detach'; END IF;
 	EXECUTE format('DROP TABLE %s', partition);
@@ -3205,6 +3218,16 @@ BEGIN
 	EXECUTE format('ALTER TABLE %s ATTACH PARTITION %s.%I %s',
 				   parent, rel.relnamespace::regnamespace, rel.relname, bound);
 	IF fault = 'attach' THEN RAISE EXCEPTION 'injected fault after attach'; END IF;
+	-- Read the file back through the foreign partition, as the caller, before
+	-- commit (#1795). The write proved the key can write; this proves the caller
+	-- can read what the parent now points at. A key that can write but not read
+	-- (s3:PutObject without s3:GetObject) fails here, and the move rolls back.
+	EXECUTE format('SELECT count(*) FROM %s.%I', rel.relnamespace::regnamespace, rel.relname)
+		INTO seen;
+	IF seen <> moved THEN
+		RAISE EXCEPTION 'wrote % rows to "%" but the foreign partition reads %', moved, path, seen
+			USING ERRCODE = 'internal_error';
+	END IF;
 	-- No ANALYZE: pgcolumnar_parquet has no AnalyzeForeignTable, so there is no
 	-- sample to take (checked on #1295).
 	-- The caller's lock_timeout again, or it would last to the end of their

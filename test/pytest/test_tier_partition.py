@@ -545,7 +545,9 @@ def test_tier_partition_runs_on_the_callers_own_privileges(pgc_own_db, pgc_clust
         for r in ("tier_own_py", "tier_peer_py"):
             cur.execute(f"DO $$ BEGIN CREATE ROLE {r} LOGIN NOSUPERUSER; "
                         "EXCEPTION WHEN duplicate_object THEN NULL; END $$")
-            cur.execute(f"GRANT pg_write_server_files TO {r}")
+            # Both server-file roles: the export writes, and the read-back of
+            # #1795 reads the file through the foreign partition.
+            cur.execute(f"GRANT pg_write_server_files, pg_read_server_files TO {r}")
             cur.execute(f"GRANT USAGE ON FOREIGN SERVER tq TO {r}")
             cur.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {r}")
             cur.execute(f"GRANT USAGE ON SCHEMA pgcolumnar TO {r}")
@@ -716,6 +718,105 @@ def test_tier_partition_writes_through_the_named_server(pgc_cluster, expect):
                     "a move through a server writes with its endpoint and the caller's mapping")
         expect.text(f"{mdigest('sb')}|{_mar_shape(conn, 'sb')}", f"{before}|f:-:{BOUND}",
                     "and the parent reads every row back through the foreign partition")
+
+        def state_as(role, sql):
+            try:
+                with psycopg.connect(f"host=127.0.0.1 port={cluster.port} user={role} dbname=postgres",
+                                     autocommit=True) as c:
+                    c.execute(sql)
+                return "ok"
+            except psycopg.Error as e:
+                return e.sqlstate or "?"
+
+        def count_as(role, t):
+            try:
+                with psycopg.connect(f"host=127.0.0.1 port={cluster.port} user={role} dbname=postgres",
+                                     autocommit=True) as c:
+                    return str(_one(c, f"SELECT count(*) FROM {t}"))
+            except psycopg.Error as e:
+                return str(e).splitlines()[0]
+
+        def with_object(listing, name):
+            return " ".join(sorted(listing.split() + [name]))
+
+        # export_parquet(rel, path, server) refuses before it writes: neither fixture
+        # may hold an object after any of these.
+        conn.execute("CREATE FOREIGN DATA WRAPPER tier_dummy")
+        conn.execute("CREATE SERVER tier_other FOREIGN DATA WRAPPER tier_dummy")
+        conn.execute("CREATE ROLE tier_s3nouse LOGIN NOSUPERUSER")
+        conn.execute("GRANT pg_write_server_files TO tier_s3nouse")
+        conn.execute("GRANT SELECT ON sp_mar TO tier_s3nouse")
+        conn.execute("GRANT USAGE ON SCHEMA pgcolumnar TO tier_s3nouse")
+        g_a, g_b = objects("s3a"), objects("s3b")
+        expect.text(_sqlstate(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_other.parquet', 'tier_other')"),
+                    "42809", "export_parquet through a server of another wrapper is refused (42809)")
+        expect.text(_sqlstate(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_none.parquet', 'tier_nosuch')"),
+                    "42704", "export_parquet through a server that does not exist is refused (42704)")
+        expect.text(_sqlstate(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_null.parquet', NULL)"),
+                    "22004", "export_parquet through a null server is refused (22004)")
+        expect.text(state_as("tier_s3nouse", "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_usage.parquet', 'tier_s3b')"),
+                    "42501", "export_parquet by a role without USAGE on the server is refused (42501)")
+        expect.text(f"A: {objects('s3a')}|B: {objects('s3b')}", f"A: {g_a}|B: {g_b}",
+                    "and no refused export wrote an object to A or B")
+
+        # A non-superuser gets no environment keys: the write takes the read's rule.
+        for r in ("tier_s3own", "tier_s3wo"):
+            conn.execute(f"CREATE ROLE {r} LOGIN NOSUPERUSER")
+            conn.execute(f"GRANT pg_write_server_files TO {r}")
+            conn.execute(f"GRANT USAGE ON FOREIGN SERVER tier_s3b TO {r}")
+            conn.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {r}")
+            conn.execute(f"GRANT USAGE ON SCHEMA pgcolumnar TO {r}")
+        # tier_s3own can read server files too; tier_s3wo can only write them.
+        conn.execute("GRANT pg_read_server_files TO tier_s3own")
+        for t, owner in (("so", "tier_s3own"), ("swo", "tier_s3wo")):
+            mini(t)
+            conn.execute(f"ALTER TABLE {t} OWNER TO {owner}")
+            conn.execute(f"ALTER TABLE {t}_mar OWNER TO {owner}")
+        supers = _one(conn, "SELECT count(*) FROM pg_roles WHERE rolname IN ('tier_s3own', 'tier_s3wo') AND rolsuper")
+        maps = _one(conn, "SELECT count(*) FROM pg_user_mappings WHERE srvname = 'tier_s3b'"
+                          " AND usename IN ('tier_s3own', 'tier_s3wo', 'public')")
+        expect.text(f"{supers}|{maps}", "0|0",
+                    "premise: neither owner is a superuser, and neither has a mapping on the server")
+        g_b = objects("s3b")
+        expect.text(state_as("tier_s3own", "SELECT pgcolumnar.export_parquet('so_mar', 's3://tierb/so_env.parquet', 'tier_s3b')")
+                    + f"|A: {objects('s3a')}", f"28000|A: {g_a}",
+                    "a non-superuser with no mapping is refused the export (28000), not given the environment's keys")
+        before = mdigest("so")
+        expect.text(state_as("tier_s3own", "SELECT pgcolumnar.tier_partition('so_mar', 'tier_s3b', 's3://tierb/so_mar.parquet')"),
+                    "28000", "a non-superuser owner with no mapping is refused the move (28000)")
+        expect.text(f"{mdigest('so')}|{_mar_shape(conn, 'so')}|A: {objects('s3a')}|B: {objects('s3b')}",
+                    f"{before}|r:pgcolumnar:{BOUND}|A: {g_a}|B: {g_b}",
+                    "and its refused move leaves the rows local and attached, every row once, with no object written")
+        conn.execute(f"CREATE USER MAPPING FOR tier_s3own SERVER tier_s3b"
+                     f" OPTIONS (access_key_id '{key}', secret_access_key '{secret_b}')")
+        expect.text(state_as("tier_s3own", "SELECT pgcolumnar.tier_partition('so_mar', 'tier_s3b', 's3://tierb/so_mar.parquet')")
+                    + f"|{_mar_shape(conn, 'so')}|B: {objects('s3b')}",
+                    f"ok|f:-:{BOUND}|B: {with_object(g_b, 'so_mar.parquet')}",
+                    "a non-superuser owner moves its partition through its own mapping")
+        expect.text(f"{count_as('tier_s3own', 'so')}|{mdigest('so')}", f"121|{before}",
+                    "and the owner reads every row back through the foreign partition")
+
+        # The move reads its file back before it commits (#1795, Fix point 2).
+        conn.execute(f"CREATE USER MAPPING FOR tier_s3wo SERVER tier_s3b"
+                     f" OPTIONS (access_key_id '{key}', secret_access_key '{secret_b}')")
+        before = mdigest("swo")
+        refused = state_as("tier_s3wo", "SELECT pgcolumnar.tier_partition('swo_mar', 'tier_s3b', 's3://tierb/swo_mar.parquet')")
+        written = sum(1 for n in objects("s3b").split() if n.startswith("swo_mar"))
+        expect.text(f"{refused}|B: {written}", "42501|B: 0",
+                    "an owner without pg_read_server_files is refused the move before anything is written (42501)")
+        expect.text(f"{mdigest('swo')}|{_mar_shape(conn, 'swo')}", f"{before}|r:pgcolumnar:{BOUND}",
+                    "and the move refused for want of pg_read_server_files leaves the rows local and attached")
+        mini("sr")
+        before = mdigest("sr")
+        deny = work / "s3b" / "__deny_reads__"
+        deny.write_text("")
+        try:
+            refused = _sqlstate(conn, "SELECT pgcolumnar.tier_partition('sr_mar', 'tier_s3b', 's3://tierb/sr_mar.parquet')")
+        finally:
+            deny.unlink()
+        expect.text(refused, "28000", "a key that can write but not read refuses the move (28000)")
+        expect.text(f"{mdigest('sr')}|{_mar_shape(conn, 'sr')}", f"{before}|r:pgcolumnar:{BOUND}",
+                    "and the move refused at the read-back leaves the rows local and attached, every row once")
         conn.close()
     finally:
         if cluster is not None:

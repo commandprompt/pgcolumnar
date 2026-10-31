@@ -409,12 +409,13 @@ fi
 # the table.
 # Made SECURITY DEFINER, it would run as the extension's owner and let any caller
 # detach, drop and replace a partition it does not own. Two roles, each holding
-# every other privilege the call needs (the server-file role for the export, USAGE
-# on the server and CREATE on the schema for the foreign table, and SELECT on the
-# partition), so ownership is the only thing between them.
+# every other privilege the call needs (both server-file roles, for the export and
+# for the read-back of #1795, USAGE on the server and CREATE on the schema for the
+# foreign table, and SELECT on the partition), so ownership is the only thing
+# between them.
 for r in tier_own tier_peer; do
 	psql_run "DROP ROLE IF EXISTS $r; CREATE ROLE $r LOGIN NOSUPERUSER;
-	          GRANT pg_write_server_files TO $r; GRANT USAGE ON FOREIGN SERVER tier_pq TO $r;
+	          GRANT pg_write_server_files, pg_read_server_files TO $r; GRANT USAGE ON FOREIGN SERVER tier_pq TO $r;
 	          GRANT USAGE, CREATE ON SCHEMA public TO $r; GRANT USAGE ON SCHEMA pgcolumnar TO $r;"
 done
 sqlstate_as() {	# sqlstate_as ROLE SQL -> the SQLSTATE SQL fails with as ROLE, or ok
@@ -549,5 +550,91 @@ check "a move through a server writes with its endpoint and the caller's mapping
 	"ok|A: premise.parquet|B: sb_jan.parquet"
 check "and the parent reads every row back through the foreign partition" \
 	"$(mdigest sb)|$(jan_shape sb)" "$sbb|f:-:$JAN_BOUND"
+
+# ---- export_parquet(rel, path, server) refuses before it writes (#1795) --------
+#
+# The three-argument form is public. Each refusal below must come before the
+# file is opened, so neither fixture may hold an object afterwards.
+psql_run "CREATE FOREIGN DATA WRAPPER tier_dummy; CREATE SERVER tier_other FOREIGN DATA WRAPPER tier_dummy;
+          DROP ROLE IF EXISTS tier_s3nouse; CREATE ROLE tier_s3nouse LOGIN NOSUPERUSER;
+          GRANT pg_write_server_files TO tier_s3nouse; GRANT SELECT ON sp_jan TO tier_s3nouse;
+          GRANT USAGE ON SCHEMA pgcolumnar TO tier_s3nouse;"
+gA="$(objects s3a)"; gB="$(objects s3b)"
+check "export_parquet through a server of another wrapper is refused (42809)" \
+	"$(sqlstate "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/g_other.parquet', 'tier_other')")" "42809"
+check "export_parquet through a server that does not exist is refused (42704)" \
+	"$(sqlstate "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/g_none.parquet', 'tier_nosuch')")" "42704"
+check "export_parquet through a null server is refused (22004)" \
+	"$(sqlstate "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/g_null.parquet', NULL)")" "22004"
+check "export_parquet by a role without USAGE on the server is refused (42501)" \
+	"$(sqlstate_as tier_s3nouse "SELECT pgcolumnar.export_parquet('sp_jan', 's3://tierb/g_usage.parquet', 'tier_s3b')")" "42501"
+check "and no refused export wrote an object to A or B" "A: $(objects s3a)|B: $(objects s3b)" "A: $gA|B: $gB"
+
+# ---- a non-superuser gets no environment keys (#1795) -------------------------
+#
+# The write takes the read's rule: the environment is a privilege of a superuser
+# (or of a mapping a superuser marked credentials_required 'false'). Before #1795
+# a member of pg_write_server_files with no mapping wrote with the environment's
+# keys. Now it needs a mapping of its own, as it does to read.
+count_as() {	# count_as ROLE TABLE -> count(*) of TABLE as ROLE, or the error that stopped it
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" -d "$PGC_DB" -X -At \
+		-v ON_ERROR_STOP=1 -c "SELECT count(*) FROM $2;" 2>&1)
+	echo "$out" | sed -n 's/^ERROR: *//p;/^[0-9][0-9]*$/p' | head -1
+}
+for r in tier_s3own tier_s3wo; do
+	psql_run "DROP ROLE IF EXISTS $r; CREATE ROLE $r LOGIN NOSUPERUSER;
+	          GRANT pg_write_server_files TO $r; GRANT USAGE ON FOREIGN SERVER tier_s3b TO $r;
+	          GRANT USAGE, CREATE ON SCHEMA public TO $r; GRANT USAGE ON SCHEMA pgcolumnar TO $r;"
+done
+# tier_s3own can read server files too; tier_s3wo can only write them.
+psql_run "GRANT pg_read_server_files TO tier_s3own;"
+for t in so swo; do
+	mini $t
+done
+psql_run "ALTER TABLE so OWNER TO tier_s3own; ALTER TABLE so_jan OWNER TO tier_s3own;
+          ALTER TABLE swo OWNER TO tier_s3wo; ALTER TABLE swo_jan OWNER TO tier_s3wo;"
+check "premise: neither owner is a superuser, and neither has a mapping on the server" \
+	"$(q "SELECT count(*) FROM pg_roles WHERE rolname IN ('tier_s3own', 'tier_s3wo') AND rolsuper;")|$(q "SELECT count(*) FROM pg_user_mappings WHERE srvname = 'tier_s3b' AND usename IN ('tier_s3own', 'tier_s3wo', 'public');")" \
+	"0|0"
+gB="$(objects s3b)"
+check "a non-superuser with no mapping is refused the export (28000), not given the environment's keys" \
+	"$(sqlstate_as tier_s3own "SELECT pgcolumnar.export_parquet('so_jan', 's3://tierb/so_env.parquet', 'tier_s3b')")|A: $(objects s3a)" \
+	"28000|A: $gA"
+sob="$(mdigest so)"
+check "a non-superuser owner with no mapping is refused the move (28000)" \
+	"$(sqlstate_as tier_s3own "SELECT pgcolumnar.tier_partition('so_jan', 'tier_s3b', 's3://tierb/so_jan.parquet')")" "28000"
+check "and its refused move leaves the rows local and attached, every row once, with no object written" \
+	"$(mdigest so)|$(jan_shape so)|A: $(objects s3a)|B: $(objects s3b)" "$sob|r:pgcolumnar:$JAN_BOUND|A: $gA|B: $gB"
+psql_run "CREATE USER MAPPING FOR tier_s3own SERVER tier_s3b
+          OPTIONS (access_key_id '$S3_KEY', secret_access_key '$S3B_SECRET');"
+check "a non-superuser owner moves its partition through its own mapping" \
+	"$(sqlstate_as tier_s3own "SELECT pgcolumnar.tier_partition('so_jan', 'tier_s3b', 's3://tierb/so_jan.parquet')")|$(jan_shape so)|B: $(objects s3b)" \
+	"ok|f:-:$JAN_BOUND|B: $(echo $gB so_jan.parquet | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+check "and the owner reads every row back through the foreign partition" \
+	"$(count_as tier_s3own so)|$(mdigest so)" "100|$sob"
+
+# ---- the move reads its file back before it commits (#1795, Fix point 2) ------
+#
+# The write proves the key can write. A key that can write but not read (an IAM
+# policy with s3:PutObject and no s3:GetObject) would commit a partition its
+# caller cannot read. The move must count the rows through the new foreign
+# partition before it returns.
+psql_run "CREATE USER MAPPING FOR tier_s3wo SERVER tier_s3b
+          OPTIONS (access_key_id '$S3_KEY', secret_access_key '$S3B_SECRET');"
+swb="$(mdigest swo)"
+check "an owner without pg_read_server_files is refused the move before anything is written (42501)" \
+	"$(sqlstate_as tier_s3wo "SELECT pgcolumnar.tier_partition('swo_jan', 'tier_s3b', 's3://tierb/swo_jan.parquet')")|B: $(objects s3b | tr ' ' '\n' | grep -c '^swo_jan')" \
+	"42501|B: 0"
+check "and the move refused for want of pg_read_server_files leaves the rows local and attached" \
+	"$(mdigest swo)|$(jan_shape swo)" "$swb|r:pgcolumnar:$JAN_BOUND"
+mini sr
+srb="$(mdigest sr)"
+: >"$PGC_WORKDIR/s3b/__deny_reads__"
+check "a key that can write but not read refuses the move (28000)" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('sr_jan', 'tier_s3b', 's3://tierb/sr_jan.parquet')")" "28000"
+rm -f "$PGC_WORKDIR/s3b/__deny_reads__"
+check "and the move refused at the read-back leaves the rows local and attached, every row once" \
+	"$(mdigest sr)|$(jan_shape sr)" "$srb|r:pgcolumnar:$JAN_BOUND"
 
 pgc_summary

@@ -636,15 +636,26 @@ rows written. `path` can be a local file or an `s3://` URL. See
 ### pgcolumnar.export_parquet(rel regclass, path text, server name) returns bigint
 
 Writes the file as the two-argument form does, but a remote `path` is written
-with the settings of `server`. The endpoint and region come from the server. The
-credentials come from your user mapping on the server, or from its `PUBLIC`
-mapping. These are the settings that a foreign table of `server` reads with, so
-a foreign table on `path` can read the file back. The environment is used only
-where a read may use it: see [Endpoints and credentials](#endpoints-and-credentials).
+with the settings of `server`. These are the settings that a foreign table of
+`server` reads with, so a foreign table on `path` can read the file back.
 
-`server` must use the `pgcolumnar_parquet` wrapper (`42809`), and you need
-`USAGE` on it (`42501`). The function checks both before it writes anything. A
-local `path` ignores the server's settings.
+- The endpoint and region come from the server's `endpoint` and `region`
+  options. If the server has no such option, the value comes from
+  `AWS_ENDPOINT_URL` or `AWS_REGION` in the environment, whoever the caller is.
+  A read does the same.
+- The credentials come from your user mapping on the server, or from its
+  `PUBLIC` mapping. The environment's keys are used only where a read may use
+  them: see [Endpoints and credentials](#endpoints-and-credentials). A role that
+  is not a superuser and has no mapping is refused (`28000`).
+
+The function refuses these before it writes anything:
+
+- a null `server` (`22004`);
+- a `server` that does not exist (`42704`);
+- a `server` that does not use the `pgcolumnar_parquet` wrapper (`42809`);
+- a caller without `USAGE` on `server` (`42501`).
+
+A local `path` ignores the server's settings.
 
 ### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
 
@@ -728,8 +739,18 @@ The function writes the file with the settings of `server`, as
 `export_parquet(partition, path, server)` does: the server's endpoint and
 region, and your user mapping on the server. A mapping that the object store
 rejects stops the move before anything is detached, and the rows stay in the
-columnar partition. Every role that queries the parent after the move needs a
-mapping on `server` that can read the file.
+columnar partition.
+
+After the attach, the function counts the rows through the new foreign
+partition, as you, before it commits. If that read fails or counts a different
+number, the move rolls back and the rows stay in the columnar partition. This
+catches a key that can write but not read. The file that the export wrote stays
+in place; a retry with the same `path` overwrites it.
+
+You need both `pg_write_server_files` and `pg_read_server_files`, or superuser:
+the function writes the file and then reads it. Every role that queries the
+parent after the move needs `pg_read_server_files` and a mapping on `server` that
+can read the file.
 
 The function runs as one transaction, at READ COMMITTED only (`25000`
 otherwise). It holds `ACCESS EXCLUSIVE` on the parent from the detach until
@@ -742,6 +763,8 @@ The function refuses these:
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
 - a relation that is not a columnar partition (`42809`).
+- a caller that is not a member of both `pg_write_server_files` and
+  `pg_read_server_files` (`42501`), before anything is written.
 
 See
 [Move cold partitions to Parquet](how-to.md#move-cold-partitions-to-parquet).
@@ -1405,9 +1428,7 @@ The endpoint and the credentials come from the server process environment, from
 the catalog, or from both.
 
 The function API (`read_parquet`, `export_parquet`, `export_arrow`,
-`import_parquet`, `parquet_schema`) has no server object. The exceptions are
-`export_parquet(rel, path, server)` and `tier_partition`: they write with a
-server and a user mapping, as the foreign-data wrapper reads. Its endpoint and
+`import_parquet`, `parquet_schema`) has no server object. Its endpoint and
 credentials come from the environment of the server process:
 
 | Variable | Meaning |
@@ -1416,6 +1437,10 @@ credentials come from the environment of the server process:
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | The access key pair. |
 | `AWS_SESSION_TOKEN` | A session token, when the credentials are temporary. Optional. |
 | `AWS_REGION` or `AWS_DEFAULT_REGION` | The signing region. |
+
+Two calls take a server instead: `export_parquet(rel, path, server)`, and
+`tier_partition`, which writes through it. They resolve the endpoint and the
+credentials as the foreign-data wrapper does, as described next.
 
 For the foreign-data wrapper the endpoint and credentials come from the catalog,
 which keeps them out of a world-readable place. The non-secret settings go on the
@@ -1437,6 +1462,10 @@ The wrapper accepts `endpoint` and `region` only on the server, and
 only on a user mapping. Any other placement is an error at `CREATE` or `ALTER`
 time. `pg_user_mapping` is not world-readable, so a secret placed there is not
 exposed the way a server option is.
+
+A server with no `endpoint` or `region` option takes that value from
+`AWS_ENDPOINT_URL` or `AWS_REGION` (or `AWS_DEFAULT_REGION`) in the environment.
+This applies to every caller, because an endpoint and a region are not secrets.
 
 A read resolves the scanning user's mapping first, then a `PUBLIC` mapping. When a
 mapping supplies no credentials, the server process environment is used only in

@@ -474,7 +474,13 @@ true until the next version shipped.
   object store rejects stops the move, and the rows stay in the columnar
   partition. The write goes through a new form,
   `export_parquet(rel, path, server)`, which you can also call directly.
-  `test/tier_partition.sh` and `test_tier_partition.py`.
+  Before it commits, the move now counts the rows through the new foreign
+  partition, so a key that can write but not read rolls the move back.
+  Two changes can refuse a call that used to succeed. A role that is not a
+  superuser and has no mapping on the server is now refused (`28000`); before,
+  it wrote with the environment's keys. And `tier_partition` now needs both
+  `pg_write_server_files` and `pg_read_server_files` (`42501`), because it
+  reads the file back. `test/tier_partition.sh` and `test_tier_partition.py`.
 - `pgcolumnar.iceberg_data_files` lists an Iceberg table after a copy-on-write
   delete or a filtered overwrite, instead of refusing it with "has delete files"
   (#1791). Such a commit records the data file it replaced as a removed entry
