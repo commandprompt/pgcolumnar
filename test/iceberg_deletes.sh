@@ -243,6 +243,51 @@ check_text "multiple equality-delete files apply their union" \
 await_up
 check_text "position and equality deletes combine" \
 	"$(eq_ids_of eqmixed)" "$(eq_oracle eqmixed)"
+# many delete rows (#1817): 4005 data rows against 2000 id keys and 1001
+# (id, region) pairs. 20 rows match, including two NULL-region pairs. The
+# survivor list is long, so both sides are compared as an md5.
+await_up
+check_text "many equality-delete rows drop exactly the matching rows (survivors == oracle)" \
+	"$(q "SELECT md5(string_agg(id::text, ',' ORDER BY id))
+	      FROM pgcolumnar.iceberg_scan('$MDIR/eqmany.metadata.json')
+	        AS t(id bigint, region text, amount int)")" \
+	"$(eq_oracle eqmany | tr -d '\n' | md5sum | cut -d' ' -f1)"
+# the probe's DEBUG1 line, once per data file, reports how many hash-chain
+# rows it walked (visited), the longest single walk, and how many walks it made
+# (data_rows x delete_files). A hash probe walks about one chain row per walk;
+# the old linear walk, or a table stuck at one bucket, walks every delete row
+# for every data row: about 4005 x 3001 rows, and a longest walk of 2000.
+await_up
+eqmany_probe="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -qtA -c "SET client_min_messages = debug1" \
+	-c "SELECT count(*) FROM pgcolumnar.iceberg_scan('$MDIR/eqmany.metadata.json')
+	      AS t(id bigint, region text, amount int)" 2>&1 |
+	awk -F'[ =]' '/equality-delete probe:/ {
+		for (i = 1; i <= NF; i++) {
+			if ($i == "data_rows") r1 = $(i + 1)
+			if ($i == "delete_files") f1 = $(i + 1)
+			if ($i == "delete_rows") d += $(i + 1)
+			if ($i == "visited") v += $(i + 1)
+			if ($i == "longest_walk" && $(i + 1) > l) l = $(i + 1)
+			if ($i == "comparisons") c += $(i + 1)
+		}
+		r += r1; w += r1 * f1
+		n++
+	}
+	END { if (n) printf "%d %d %d %d %d %d", r, w, d, v, l, c }')"
+read -r eqmany_rows eqmany_walks eqmany_dels eqmany_visited eqmany_longest eqmany_cmp <<<"$eqmany_probe"
+echo "-- eqmany probe (data_rows walks delete_rows visited longest_walk comparisons): $eqmany_probe"
+check "the equality-delete probe walks a short hash chain per data row, not every delete row (#1817)" \
+	"$(if [ -n "$eqmany_cmp" ] && [ "$eqmany_rows" -eq 4005 ] && [ "$eqmany_dels" -gt 0 ] &&
+	      [ "$eqmany_visited" -le $((2 * eqmany_walks)) ] && [ "$eqmany_longest" -le 16 ] &&
+	      [ "$eqmany_cmp" -le "$eqmany_rows" ]; then echo bounded
+	   else echo "unbounded (data_rows=${eqmany_rows:-none} walks=${eqmany_walks:-none} delete_rows=${eqmany_dels:-none} visited=${eqmany_visited:-none} longest_walk=${eqmany_longest:-none} comparisons=${eqmany_cmp:-none}; want visited <= 2 x walks, longest_walk <= 16, comparisons <= data_rows)"; fi)" \
+	"bounded"
+# a zero-row equality-delete file has no bucket array. The probe must skip it,
+# not read the missing array, and the id=5 file after it must still apply.
+await_up
+check_text "a zero-row equality-delete file deletes nothing and the next file still applies" \
+	"$(eq_ids_of eqempty)" "$(eq_oracle eqempty)"
 # the delete columns come from the table schema, not the output list: a scan
 # projecting only amount must still drop the id-matched rows
 await_up

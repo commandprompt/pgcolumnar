@@ -1245,6 +1245,9 @@ table at its current snapshot. It has these limits:
   refused with SQLSTATE 0A000, because no module reads Azure Blob Storage yet.
   Other schemes, such as `abfs://` or `hdfs://`, are opened as local paths and fail
   with "could not open file".
+- A scan holds every applicable equality-delete row in memory until it ends.
+  The memory is not bounded by `work_mem`, so a table with very many
+  equality-delete rows needs memory in proportion to them.
 - Only top-level primitive columns can be read. A column that names a struct,
   list or map field is an error, whatever type it is declared with (#1788).
 - A promoted column (`int` to `long`, `float` to `double`, or a wider `decimal`)

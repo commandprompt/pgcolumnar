@@ -1470,4 +1470,8 @@ guard_tests 854
 # over the cluster files: `4633 tests collected`.
 # cluster_tests 4849 at the merge of origin/fix/1808-linklocal-ipv6-imds (16149a48) into
 # fix/1815-iceberg-metadata-formats, by collection over the cluster files: `4849 tests collected`.
-cluster_tests 4849
+# cluster_tests 4849 -> 4851 for #1817's two tests in test_iceberg_deletes.py: many equality-delete
+# rows drop the matching rows, and the probe's comparison count stays bounded, by collection.
+# cluster_tests 4851 -> 4852 for #1817's zero-row equality-delete test in test_iceberg_deletes.py
+# (review of #1860), by collection.
+cluster_tests 4852

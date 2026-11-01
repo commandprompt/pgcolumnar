@@ -32,6 +32,7 @@ ON A PRIVATE DATABASE, with the warehouse copied into `server_dir`, because the 
 reads it. Where the fixture is missing the first test fails under the shell's pgc_skip
 message, and the rest decline.
 """
+import hashlib
 import json
 import pathlib
 import shutil
@@ -49,7 +50,8 @@ FX = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "iceberg"
 WHD = FX / "warehouse_del"
 COLS = "AS t(id bigint, region text, amount int)"
 PCOLS = "AS t(id bigint, region text, grp int)"
-EQ_APPLIED = ("eqapply", "eqboundary", "eqmulti", "eqextra", "eqnull", "eqtwo", "eqmixed")
+EQ_APPLIED = ("eqapply", "eqboundary", "eqmulti", "eqextra", "eqnull", "eqtwo", "eqmixed",
+              "eqempty")
 # each refusal's own guard, by the phrase its message carries
 PHRASE = {
     "nullpos": "has a null pos",
@@ -123,6 +125,43 @@ def _names(dsn, sql, phrase):
             return query_error(_message(exc))
         return "1" if phrase in (exc.diag.message_primary or "") else "0"
     return "0"
+
+
+def _probe(dsn, sql):
+    """-> (data_rows, walks, delete_rows, visited, longest_walk, comparisons) over
+    the equality-delete probe's DEBUG1 lines while sql runs, as the shell's awk:
+    walks sums data_rows x delete_files per line, longest_walk is the largest
+    seen, the rest are sums. None when no line came back; query_error() when the
+    server could not be asked."""
+    _await_up(dsn)
+    lines = []
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.add_notice_handler(lambda d: lines.append(d.message_primary or ""))
+            conn.execute("SET client_min_messages = debug1")
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    rows = walks = dels = visited = longest = cmp = 0
+    seen = 0
+    for line in lines:
+        if "equality-delete probe:" not in line:
+            continue
+        seen += 1
+        f = {}
+        for word in line.split():
+            key, _, val = word.partition("=")
+            if val.isdigit():
+                f[key] = int(val)
+        rows += f.get("data_rows", 0)
+        walks += f.get("data_rows", 0) * f.get("delete_files", 0)
+        dels += f.get("delete_rows", 0)
+        visited += f.get("visited", 0)
+        longest = max(longest, f.get("longest_walk", 0))
+        cmp += f.get("comparisons", 0)
+    if not seen:
+        return None
+    return rows, walks, dels, visited, longest, cmp
 
 
 def _hwm(pid):
@@ -241,6 +280,10 @@ def dl(pgc_cluster, server_dir):
             r[name] = _read(dsn, ids(name))
             if name == "eqnull":
                 r["eqnull nulls"] = _read(dsn, count("eqnull", "WHERE region IS NULL"))
+        r["eqmany md5"] = _read(dsn, f"SELECT md5(string_agg(id::text, ',' ORDER BY id)) "
+                                     f"FROM pgcolumnar.iceberg_scan('{md('eqmany')}') {COLS}")
+        r["eqmany oracle md5"] = hashlib.md5(r["eq oracle"]["eqmany"].encode()).hexdigest()
+        r["eqmany probe"] = _probe(dsn, count("eqmany"))
         r["eq unprojected"] = _read(dsn, f"SELECT string_agg(amount::text, ',' ORDER BY amount) "
                                          f"FROM pgcolumnar.iceberg_scan('{md('eqapply')}') AS t(amount int)")
         r["up after eq applications"] = _survived(dsn, pgc_cluster, before)
@@ -451,6 +494,36 @@ def test_position_and_equality_deletes_combine(dl, expect):
     if _declined(dl, expect):
         return
     expect.text(str(dl["eqmixed"]), dl["eq oracle"]["eqmixed"], "position and equality deletes combine")
+
+
+def test_many_equality_delete_rows_drop_exactly_the_matching_rows(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["eqmany md5"]), dl["eqmany oracle md5"],
+                "many equality-delete rows drop exactly the matching rows (survivors == oracle)")
+
+
+def test_the_equality_delete_probe_walks_a_short_hash_chain_per_data_row(dl, expect):
+    if _declined(dl, expect):
+        return
+    p = dl["eqmany probe"]
+    if isinstance(p, tuple) and p[0] == 4005 and p[2] > 0 and p[3] <= 2 * p[1] and p[4] <= 16 \
+            and p[5] <= p[0]:
+        got = "bounded"
+    elif isinstance(p, tuple):
+        got = (f"unbounded (data_rows={p[0]} walks={p[1]} delete_rows={p[2]} visited={p[3]} "
+               f"longest_walk={p[4]} comparisons={p[5]}; want visited <= 2 x walks, longest_walk <= 16, comparisons <= data_rows)")
+    else:
+        got = f"unbounded (no probe line: {p})"
+    expect.text(got, "bounded",
+                "the equality-delete probe walks a short hash chain per data row, not every delete row (#1817)")
+
+
+def test_a_zero_row_equality_delete_file_deletes_nothing(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["eqempty"]), dl["eq oracle"]["eqempty"],
+                "a zero-row equality-delete file deletes nothing and the next file still applies")
 
 
 def test_equality_deletes_apply_to_an_unprojected_column(dl, expect):

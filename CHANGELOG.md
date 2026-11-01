@@ -471,6 +471,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- `iceberg_scan` applies equality deletes through a hash table (#1817). It used
+  to compare every data row with every delete row, so the cost grew with their
+  product: 50,000 rows against 32,000 delete keys took 6 s, and a table with
+  many upserts could take minutes. Each delete file is now hashed once, on its
+  `equality_ids` columns, and each data row is compared only with delete rows
+  that share its hash. On the test fixture, 4,005 data rows against two delete
+  files with 3,001 delete rows, the probe now walks 7,824 hash-chain rows in
+  8,010 walks, at most 5 in one walk, and makes 20 comparisons, one per deleted
+  row. The old walk made 12,008,895 comparisons. A NULL still matches only a
+  NULL, and a zero-row delete file deletes nothing. A new DEBUG1 line reports
+  the probe's data rows, delete files, delete rows, chain rows visited, longest
+  walk, comparisons and matches. `test/iceberg_deletes.sh` and
+  `test_iceberg_deletes.py`.
 - The Iceberg reader now reads gzip-compressed table metadata (#1815). A writer
   makes it when `write.metadata.compression-codec` is `gzip`, and names it
   `*.gz.metadata.json` or `*.metadata.json.gz`. Before, every Iceberg function
