@@ -335,7 +335,11 @@
 # guard_tests 847 -> 849 for #1431's test_the_budget_holds_no_history and
 # test_each_ledger_commit_carries_its_census in test_mutation_ledger.py, by collection over NO_CLUSTER.
 # guard_tests 849 -> 854 for #1767's five conditional-row tests in test_layer.py, merged from main.
-guard_tests 854
+# guard_tests 854 -> 857 for #1892's three xdist arms in test_layer.py: the expected-unrunnable
+# list judged on the controller only, by collection over NO_CLUSTER.
+# guard_tests 857 -> 858 for #1892's test_the_unrunnable_collector_registers_without_xdist in
+# test_layer.py (review of PR #1905), by collection over NO_CLUSTER.
+guard_tests 858
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1599,7 +1603,46 @@ guard_tests 854
 # cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
 # premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
 # collection: 5776 tests collected, less guard_tests 854.
-# cluster_tests 5110 -> 5120 for #1887's ten tests: one in test_iceberg_objstore.py (iceberg_current_snapshot
+# cluster_tests 4962 -> 4976 for #1902: nine tests in test_objstore_error_advice.py (the https
+# fixture premise and eight Expect: 100-continue arms) and five in test_objstore_listing.py (a
+# premise and four refusals that name the mismatched object), by collection: `4976 tests collected`.
+# cluster_tests 4976 -> 4979 for #1903's review: three tests in test_objstore_error_advice.py
+# (a multipart premise, Expect on one part only against a store that ignores it, and a 200
+# before the body still sends the body), by collection: `4979 tests collected`.
+# cluster_tests 5110 -> 5127 at the merge of origin/main (75a57668) into fix/1902-tls-early-403-file-name:
+# main's 5110 plus #1902's and #1903 review's 17 (twelve in test_objstore_error_advice.py: the https fixture
+# premise, eight Expect: 100-continue arms, a multipart premise, Expect on one part only against a store that
+# ignores it, a 200 before the body still sends the body; five in test_objstore_listing.py: a premise and four
+# refusals that name the mismatched object), by collection: `5127 tests collected`.
+# cluster_tests 5127 -> 5128 for the #1903 merge's check in test_objstore_error_advice.py (a single PUT
+# answered 200 with no framing before its body is not taken as written), by collection: `5128 tests collected`.
+# cluster_tests 5110 -> 5120 for #1886: one test in test_arrow_import.py (a remote URL refused up front) and
+# nine in test_parallel_copy.py (file_split_offsets and parallel_copy refuse s3://, http:// and the other
+# remote schemes, the heap target, and the two local controls), by collection: 5120 tests collected.
+# cluster_tests 5128 -> 5138 at the merge of origin/main (48d4f63f) into fix/1886-local-only-remote-refusal:
+# main's 5128 plus #1886's 10 (one test in test_arrow_import.py, a remote URL refused up front, and nine in
+# test_parallel_copy.py: file_split_offsets and parallel_copy refuse s3://, http:// and the other remote
+# schemes, the heap target, and the two local controls), by collection: `5138 tests collected`.
+# cluster_tests 5138 -> 5139 for #1886's check order: one test in test_import_export_privilege.py
+# (import_arrow and parallel_copy check INSERT before they refuse a remote URL), by collection:
+# `5139 tests collected`.
+# cluster_tests 5139 -> 5153 for #1891's fourteen tests in test_iceberg_rest_scan.py (an empty namespace level:
+# a catalog 404 hints at it in the text form 'db..x', 'db.', '' and '.db' and the text[] form, a 404 with no
+# empty level has no hint, and the namespace db, '' is reached in every form, by the server form and by a
+# listed row passed back), by collection: 5978 tests collected, less guard_tests 854.
+# cluster_tests 5153 -> 5154 for #1906's review: one test in test_iceberg_rest_scan.py (a missing table in the
+# namespace db, '' gets the empty-level hint on its 42P01 404), by collection: 5979 tests collected, less
+# guard_tests 854.
+# cluster_tests 5154 -> 5157 for #1893's three tests: two in test_native_parquet_schema.py (nested columns
+# by their top-level names, a map column reported as not supported) and one in test_native_parquet_fieldid.py
+# (a nested column's own field id), by collection: `5967 tests collected`, less guard_tests 854.
+# cluster_tests 5157 -> 5167 for #1893's review: test_native_parquet_schema.py drops the map-as-not-supported
+# test and adds eleven (nine nested shapes listed one row per leaf, the reported rows read as a column list,
+# a REQUIRED list or struct not nullable), by collection: `5977 tests collected`, less guard_tests 854.
+# cluster_tests 5167 -> 5169 for #1893's second review: test_native_parquet_schema.py adds two (a leaf
+# row's nullable rule, a struct field name that needs quotes), by collection: `5979 tests collected`, less
+# guard_tests 854.
+# cluster_tests 5169 -> 5179 for #1887's ten tests: one in test_iceberg_objstore.py (iceberg_current_snapshot
 # over s3) and nine in test_parquet_skip_cross_type.py (four cross-type pairs, skips and rows, and the file's
 # premise), by collection: `5974 tests collected`, less guard_tests 854.
-cluster_tests 5120
+cluster_tests 5179

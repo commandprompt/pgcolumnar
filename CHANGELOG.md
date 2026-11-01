@@ -534,6 +534,80 @@ true until the next version shipped.
 
 ### Fixed
 
+- `parquet_schema` now reports a nested column under its top-level name (#1893).
+  It used to report the column's leaves instead: a list as `element`, a struct as
+  its field names. Those names do not match the file's columns. A list of a
+  scalar now reports an array type such as `bigint[]`. A struct of scalar fields
+  reports its field list, such as `composite (a bigint, b text)`. Other nesting,
+  such as a map or a list of structs, `read_parquet` reads leaf by leaf, so it
+  still gets one row per leaf. Each leaf row is now named by its path, such as
+  `m.key_value.key`, and reports an array type where the leaf repeats. A leaf
+  under two repeated levels reports `data_type` NULL, because `read_parquet`
+  flattens it (#1917). So the rows are always the column list `read_parquet`
+  needs. A list or struct row is nullable only when the column itself is
+  OPTIONAL: a REQUIRED list of REQUIRED elements used to report nullable. Its
+  `field_id` is the column's own id, so the ids of a struct's fields no longer
+  appear. docs/sql-reference.md.
+  `test/native_parquet_schema.sh` and `test_native_parquet_schema.py`, with the
+  files from `test/craft_parquet_nested.py`.
+  `test/native_parquet_fieldid.sh` and its twin now read the leaf ids of their
+  nested file with pyarrow, and check the nested columns' own ids.
+
+- The REST functions now say when a namespace level is empty (#1891). The
+  text form `'db..x'`, `'db.'`, `'.db'` or `''`, and a `text[]` element `''`,
+  name a namespace with an empty level. The catalog accepts such a namespace,
+  so pgcolumnar still sends it as given and can reach it. When the catalog
+  answers 404 for such a namespace, its "no such namespace" or "no such table"
+  error now carries a hint, such as `Level 2 of 3 of the namespace is empty`.
+  docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
+- A pytest run with `-n` no longer exits 67 when every test passed (#1892). Each
+  xdist worker checked `expected_unrunnable.txt` against tests it never ran, and
+  the controller checked it against an empty collection. So one file run with
+  `-n 4` called the list both stale and incomplete. Now only the controller
+  checks the list, against the tests every worker collected. On PostgreSQL 18,
+  `pytest -n 4 test_objstore_sink_write.py` exited 67 before and exits 0 now.
+  Three new arms in `test/pytest/test_layer.py` hold this. A fourth checks that
+  the new xdist hook is optional, so it adds no error to a run without xdist.
+  Reported by @OffgridwithJD.
+
+- `import_arrow`, `file_split_offsets` and `parallel_copy` now refuse an
+  object-storage URL with SQLSTATE 0A000 (#1886). They read local files only,
+  and before this an `s3://` or `http://` URL failed with
+  `could not open file "s3://...": No such file or directory`, which says the
+  object does not exist. Every scheme the readers treat as remote is refused:
+  `s3://`, `gs://`, `az://`, `http://` and `https://`, in any case. The message
+  names the function and the URL, for example
+  `columnar: import_arrow does not read "s3://bucket/m.arrow"`, and the hint says
+  the function reads local files only. `import_arrow` and `parallel_copy` check
+  INSERT on the target first, so a caller without INSERT gets 42501 for a URL as
+  for a local path. They refuse the URL before they check the target's kind, so
+  a heap target gets 0A000, not 42809. docs/sql-reference.md.
+  `test/arrow_import.sh`, `test/parallel_copy.sh`,
+  `test/import_export_privilege.sh` and their pytest twins.
+- A single-PUT export to an `https://` store that refuses it before reading the
+  body now reports the 403 and its hint (#1902). It used to report `PUT to "..."
+  failed before a response`: after a failed send a TLS session cannot be read,
+  so the answer that had arrived was lost. A write whose body is over 1 MiB now
+  sends `Expect: 100-continue` and waits up to one second for the store to answer
+  its headers, so a refusal arrives before any of the body is sent. `100
+  Continue`, or no answer within the second (a store that ignores `Expect`),
+  sends the body; a `417` sends the request again without `Expect`. This applies
+  to `http://` stores too, and to multipart parts. A store that ignores `Expect`
+  costs the second once per object, not once per part: after a wait runs out,
+  the object's later parts go without it. Only an answer of 300 or more ends the request before the body; a
+  `2xx` to the headers alone still gets the body, and stands as the answer once
+  the body is sent (HTTP gives a request one final answer), so the write is not
+  taken as done with its body unsent. A `2xx` before the body that closes the
+  connection, or whose own body runs until the close, is not taken as done.
+  `test/objstore_error_advice.sh` and its twin.
+- A read over a prefix or glob names the file it refused (#1902). When one file
+  did not match the declared columns, the error gave the column and the types
+  but not the file, so the file could not be found among thousands of objects.
+  Each binding error now has `DETAIL: The mismatched file is "<path>".` The
+  same holds for `read_parquet` by position or by field id, for the Parquet
+  foreign table, and for a single file. `test/objstore_listing.sh` and its
+  twin.
 - The docs no longer contradict the code on object storage, credentials and
   row-group skipping (#1797). `import_arrow`, `file_split_offsets` and
   `parallel_copy` read local files only; the docs had said every Arrow and
@@ -751,7 +825,7 @@ true until the next version shipped.
   A single-PUT export to an `http://` endpoint that the store refuses before
   reading the body now reports the 403 or other status. When the body was larger
   than the socket buffers, it used to report `failed before a response`. An
-  `https://` store still reports `failed before a response` there (#1902).
+  `https://` store kept reporting `failed before a response` there until #1902.
   The object-store module ABI is now 8, so the module and the extension must
   come from the same build.
   `test/objstore_error_advice.sh` and `test_objstore_error_advice.py`.

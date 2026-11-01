@@ -786,6 +786,10 @@ Inserts the rows of an Arrow IPC file at `path` into the existing table
 `rel`. The column types of the table define the types that the function accepts. Returns the number of
 rows inserted.
 
+`path` is a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). The function checks INSERT on `rel` first, so
+a caller without INSERT gets `42501` for a URL too.
+
 The file can be in the IPC stream format, which `export_arrow` writes, or in the
 IPC file format, which starts and ends with `ARROW1`. Feather v2 is the IPC file
 format. The function reads the stream inside an IPC file and ignores its footer.
@@ -833,6 +837,9 @@ as one atomic operation. Returns the number of rows loaded. The caller needs
 membership in the `pg_read_server_files` role, which superusers hold, and INSERT
 on the target. The file uses COPY text format. Each worker runs core `COPY` over
 a byte range of the file, so parse and write behavior match `COPY FROM` exactly.
+`filename` is a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). The function checks INSERT on `target` first,
+so a caller without INSERT gets `42501` for a URL too.
 
 The target may be one of two kinds:
 
@@ -1020,11 +1027,14 @@ compatibility as the import functions.
 The list must contain each leaf column in the file. A list with fewer columns is
 an error and not a projection. The read stops and gives a message. The message
 contains the number of leaf columns in the file and the number that the target
-expands to. The same rule applies to a foreign
+expands to. Its DETAIL names the file, so a read of a directory, a prefix or a
+glob says which of its files does not match. Every other error about a file that
+does not match the list has the same DETAIL. The same rule applies to a foreign
 table's column definitions. Projection pushdown selects the declared columns
 that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
-`parquet_schema` to generate the full list.
+`parquet_schema` to generate the full list: declare one column for each row it
+reports. A composite column covers all the leaves of its struct.
 
 A string cell read into a `text` or `varchar` column must be valid in the
 server encoding (#1821). A cell with an invalid byte sequence or an embedded
@@ -1059,7 +1069,9 @@ column as `double precision`. The positional form above does not widen. An
 absent id is an error. So is an id that matches more than one column, or an
 array or composite output column. An id that belongs to a struct, list or map is
 refused as nested, whatever the output column's type (#1788). None is a silent
-wrong column. Read the ids a file carries with `parquet_schema`.
+wrong column. Read the ids a file carries with `parquet_schema`. It does not
+list the ids of a struct's fields; the `parquet_schema` section below says how
+to find them.
 
 ```sql
 -- the file has columns alpha (id 7), beta (id 3), gamma (id 12);
@@ -1070,8 +1082,8 @@ SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet', ARRAY[12, 7])
 
 ### pgcolumnar.parquet_schema(path text) returns table(column_name text, data_type text, nullable bool, field_id int)
 
-Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
-without reading the data. Useful for writing the column definition list for
+Reports the top-level columns of a Parquet file and the PostgreSQL type each maps
+to, without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
 file. The type it reports holds every value the column can store. So an unsigned
 `UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
@@ -1092,6 +1104,41 @@ also reads into `timestamp`, which gets the wall time in the session time zone.
 A value whose nanoseconds fall outside the day, or whose Julian day is outside the
 timestamp range, is refused with SQLSTATE 22008. The DETAIL names both the Julian
 day and the nanoseconds the file stores.
+
+The rows are the column definition list that `read_parquet` needs: declare one
+column per row, with the reported type. A nested column that `read_parquet` reads
+as one column gets one row under its own name:
+
+- A list of a scalar reports that type's array type, for example `bigint[]`.
+- A struct of scalar fields reports its field list, for example
+  `composite (a bigint, b text)`. Create a composite type with those fields,
+  `CREATE TYPE s_t AS (a bigint, b text)`, and declare the column as `s_t`.
+  A field name that needs quotes comes quoted, so the list works as written.
+
+`read_parquet` reads any other nesting leaf by leaf, so `parquet_schema` reports
+one row for each leaf. A map, a list of structs, a struct of a struct and a struct
+that holds a list are examples. Each row is named by the leaf's path in the file,
+joined with dots, for example `m.key_value.key`. Its type is an array type when
+the leaf repeats. So a map with string keys and bigint values reports
+`m.key_value.key` as `text[]` and `m.key_value.value` as `bigint[]`. A dotted name
+must be quoted in a column definition list, or you can use any other name: the
+reader matches columns by position.
+Two rows can share a name, for example when the file also has a top-level column
+named `s.t.list.element`. Give one of them another name in your list.
+
+`data_type` is NULL for a leaf that no column type reads correctly. A leaf under
+two repeated levels, such as the elements of a list of lists, is one example.
+`read_parquet` reads such a leaf declared as an array by flattening it (#1917).
+
+`nullable` for a nested column says whether the column itself can be NULL. A
+NULL list element or struct field does not make it true. On a leaf row it is true
+when an OPTIONAL element sits on the leaf's path above its first repeated element.
+
+`field_id` for a list or struct row is the column's own id. A leaf row carries
+the leaf's own id. The ids of a struct's fields do not appear when the struct has
+its own row. `read_parquet(path, ids)` still reads a struct field by its id, as a
+scalar column. Read those ids with another Parquet tool, for example pyarrow's
+`ParquetFile(path).schema`.
 
 When a reader refuses a declared column type, the message names the function or
 foreign-data wrapper you used, for example
@@ -1398,6 +1445,21 @@ A bare string literal, such as `'analytics'`, selects the `text` form. The
 element. Otherwise the call fails with SQLSTATE 22023 (22004 for a `NULL`
 level).
 
+A level may be empty. The Iceberg REST catalog accepts a namespace with an
+empty level, so pgcolumnar sends it as given. A `text[]` element `''` is an
+empty level. In the `text` form, a leading, trailing or doubled dot makes one,
+as in `'.db'`, `'db.'` or `'db..x'`, and so does `''`. A stray dot often makes
+one by mistake. So when the catalog answers 404 (not found), the error carries
+a hint that names the empty level, such as
+`Level 2 of 3 of the namespace is empty` (#1891). Both 404 errors carry it: "no
+such namespace" (SQLSTATE 3F000) and "no such table" (SQLSTATE 42P01).
+
+A namespace whose only level is empty, `{""}` or `''`, makes a request path
+with an empty segment, such as `/v1/namespaces//tables`. A server or proxy that
+collapses `//` to `/` routes that request elsewhere, so such a namespace may be
+unreachable through it. This case is untested against the Apache Iceberg REST
+catalog.
+
 A catalog cannot be asked about a level that contains its own namespace
 separator, because the catalog would split that level in two. The function
 then fails with SQLSTATE 22023 before it sends any request that names the
@@ -1526,7 +1588,8 @@ The dot-joined form is ambiguous: the single level `a.b` and the two levels
 Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
 its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
 levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
-argument of the other REST functions, with one exception, described next.
+argument of the other REST functions, with one exception, described next. A
+row with an empty level, such as `{db,""}`, passes back too (#1891).
 
 A level may contain the catalog's separator. No request can name such a
 namespace, so the function returns it but does not ask for its children.
@@ -1679,7 +1742,11 @@ accept an object-storage URL wherever they accept a local path. So do the
 `pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data wrappers. The third
 wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
 `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
-`read_manifest_list` read local files only. These URL schemes are recognized:
+`read_manifest_list` read local files only. `import_arrow`, `file_split_offsets`
+and `parallel_copy` refuse a URL in any of the schemes below with SQLSTATE 0A000
+before they read anything, for example
+`columnar: import_arrow does not read "s3://bucket/m.arrow"`. These URL schemes
+are recognized:
 
 | Scheme | Meaning |
 | --- | --- |
@@ -1870,6 +1937,16 @@ upload. It becomes visible at its final name only when the upload completes, so 
 reader never sees a partial object. An export that fails before its last request
 removes what it wrote, including an incomplete multipart upload. The last request
 is different, as the next paragraphs explain.
+
+A request whose body is over 1 MiB, a single request or a part, sends its headers
+first with `Expect: 100-continue`. It waits up to one second for the store to
+answer them before it sends the body. A store can refuse the request from its
+headers alone, with a 403 for example. The export then reports that status and its
+hint, over `https://` as well as `http://`. A store that ignores `Expect` costs
+that second once per object written. After a wait runs out, the later parts of
+that object go without `Expect`. A store that answers `417` gets the request again without
+`Expect`. A `2xx` answer to the headers alone still gets the body, and stands as
+the answer once the body is sent.
 
 This cleanup holds when you cancel or terminate the export while it waits for the
 store to start the upload. The export then has no id for that upload. It lists

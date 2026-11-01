@@ -7,11 +7,20 @@ catalog vended; it must name the source of the refused key. C: the allow-list hi
 suggested the host without its port, as the whole list; it must suggest the host:port
 the message names, appended to the current list, with any quote in it doubled. D: a
 single-PUT export bigger than the socket buffers, which the store refused before
-reading the body, lost the HTTP status; the 403 and its hint must survive. That holds
-for an http:// endpoint, which the fixture serves; an https:// store still reports
-"failed before a response" (#1902).
+reading the body, lost the HTTP status; the 403 and its hint must survive on an http://
+endpoint. D over TLS (#1902): the same refusal from an https:// store still lost its
+status, since a failed send leaves a TLS session unreadable. A write whose body is over
+1 MiB now sends Expect: 100-continue and waits up to a second for the store to answer
+its headers, so the refusal arrives before the body is sent; 100 Continue, or no answer
+in time, sends the body, a late 100 is passed over, and 417 sends the request again
+without Expect. A wait that runs out stops Expect for the handle's later writes, so a
+multipart export to a store that ignores it sends it on one part only, and a 200 to the
+headers alone still gets the body (#1903 review). Each kind of store is a hook file of
+the shell's fixture.
 
-One SigV4 fixture with a refused bucket (--tamper-bucket refuses every request there
+One SigV4 fixture with a refused bucket, the same fixture again over https with a
+certificate the postmaster trusts through SSL_CERT_FILE (made by the openssl CLI, as the
+shell makes it), (--tamper-bucket refuses every request there
 403 before any body is read, and closes with the body unread), three REST catalogs over
 the committed iceberg warehouse (one vends a wrong secret in its flat config, one in a
 storage-credentials entry, one vends nothing), and a
@@ -128,6 +137,9 @@ def ea(pgc_cluster):
     if not _module_installed(pgc_cluster.pg_config):
         yield "objstore"
         return
+    if shutil.which("openssl") is None:
+        yield "openssl"
+        return
     if not (FX / "warehouse_del" / "db" / "t" / "metadata" / "apply.metadata.json").is_file():
         yield "fixture"
         return
@@ -173,11 +185,33 @@ def ea(pgc_cluster):
                          "--vend-endpoint", s3ep)
     cat_none = start_rest(44, "--token", RESTTOK)
 
+    # the same fixture over https (#1902)
+    pki = work / "pki"
+    pki.mkdir()
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                    "-keyout", str(pki / "srv.key"), "-subj", "/CN=127.0.0.1",
+                    "-addext", "subjectAltName=IP:127.0.0.1", "-days", "2",
+                    "-out", str(pki / "srv.pem")], capture_output=True)
+    for f in pki.iterdir():
+        f.chmod(0o644)
+    pki.chmod(0o755)
+    tls_port = pick_port(47)
+    tlsout = work / "tls.out"
+    procs.append(subprocess.Popen(
+        [sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
+         "--port", str(tls_port), "--log", str(work / "tls.log"),
+         "--sigv4-key", AKID, "--sigv4-secret", SECRET, "--sigv4-region", REGION,
+         "--tamper-bucket", DENIED, "--tls-cert", str(pki / "srv.pem"),
+         "--tls-key", str(pki / "srv.key")],
+        stdout=open(tlsout, "w"), stderr=subprocess.STDOUT))
+    _ready(tlsout)
+
     datadir = work / "data"
     datadir.mkdir()
     log = str(work / "server.log")
     cluster = Cluster(pgc_cluster.pg_config, "advice", datadir, pick_port(45))
-    r = {"up": sum(o.read_text(errors="replace").count("READY") for o in outs if o.is_file())}
+    r = {"up": sum(o.read_text(errors="replace").count("READY") for o in outs if o.is_file()),
+         "tls up": tlsout.read_text(errors="replace").count("READY") if tlsout.is_file() else 0}
     try:
         cluster.initdb()
         with open(datadir / "postgresql.conf", "a") as fh:
@@ -185,7 +219,7 @@ def ea(pgc_cluster):
                      "pgcolumnar.objstore_part_size=67108864\n")
         aws = {"AWS_ENDPOINT_URL": s3ep, "AWS_ACCESS_KEY_ID": AKID,
                "AWS_SECRET_ACCESS_KEY": SECRET, "AWS_REGION": REGION,
-               "PGCOLUMNAR_ICEBERG_REST_TOKEN": RESTTOK}
+               "PGCOLUMNAR_ICEBERG_REST_TOKEN": RESTTOK, "SSL_CERT_FILE": str(pki / "srv.pem")}
         started = _pg_ctl(cluster, ["-D", str(datadir), "-l", log, "-w", "start"], aws)
         if started.returncode != 0:
             raise RuntimeError(f"the private cluster did not start: {started.stderr}")
@@ -251,7 +285,10 @@ def ea(pgc_cluster):
         lines = s3log.read_text(errors="replace").splitlines()
         puts = sum(1 for ln in lines if ln.startswith(f"PUT /{BUCKET}/mid.parquet "))
         posts = sum(1 for ln in lines if ln.startswith(f"POST /{BUCKET}/mid.parquet "))
-        mid = bucket / "mid.parquet"
+        # the size comes from the same export to a local file, so the premise does not
+        # depend on the remote write it sizes (a write that never sends its body, #1902)
+        mid = work / "mid_local.parquet"
+        _value(dsn, f"SELECT pgcolumnar.export_parquet('ea_mid', '{mid}')")
         size = mid.stat().st_size if mid.is_file() else 0
         r["mid one put"] = "yes" if puts == 1 and posts == 0 and size > 4194304 \
             else f"no ({puts} PUT, {posts} POST, {size} bytes)"
@@ -259,6 +296,110 @@ def ea(pgc_cluster):
                                           f"'s3://{DENIED}/s.parquet')")
         r["mid denied"] = _refusal(dsn, "SELECT pgcolumnar.export_parquet('ea_mid', "
                                         f"'s3://{DENIED}/m.parquet')")
+
+        # D over TLS (#1902): the store answers the headers before the body is sent
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE SERVER ea_tls FOREIGN DATA WRAPPER pgcolumnar_parquet "
+                      f"OPTIONS (endpoint 'https://127.0.0.1:{tls_port}', region '{REGION}')")
+            c.execute("CREATE USER MAPPING FOR postgres SERVER ea_tls "
+                      f"OPTIONS (access_key_id '{AKID}', secret_access_key '{SECRET}')")
+        expect_log = work / "__expect_log__"
+        expect_log.write_text("")
+        expect_log.chmod(0o666)
+
+        def tls_export(rel, key, cols, args=", 'ea_tls'", setup=()):
+            try:
+                with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+                    for st in setup:
+                        conn.execute(st)
+                    n = conn.execute(f"SELECT pgcolumnar.export_parquet('{rel}', "
+                                     f"'s3://{BUCKET}/{key}'{args})").fetchone()[0]
+            except psycopg.Error as exc:
+                if not exc.sqlstate:
+                    return query_error(_message(exc))
+                hint = exc.diag.message_hint
+                return f"{exc.sqlstate}: {exc.diag.message_primary} | " + \
+                    (f"HINT: {hint}" if hint else "no hint")
+            back = _value(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                               f"'s3://{BUCKET}/{key}') AS t({cols})")
+            return f"{n} exported, {back} read back"
+
+        def expect_lines(pred):
+            try:
+                return sum(1 for ln in expect_log.read_text(errors="replace").splitlines() if pred(ln))
+            except OSError as exc:
+                return query_error(f"the Expect log is unreadable: {exc}")
+
+        mid_cols = "id int8, t text"
+        r["tls mid"] = tls_export("ea_mid", "tls_mid.parquet", mid_cols)
+        r["tls mid expect"] = str(expect_lines(
+            lambda ln: ln == f"PUT /{BUCKET}/tls_mid.parquet 100-continue"))
+        small = tls_export("ea_small", "tls_small.parquet", "id int8")
+        small_expect = expect_lines(lambda ln: f" /{BUCKET}/tls_small.parquet " in ln)
+        r["tls small"] = "yes" if small == "1000 exported, 1000 read back" and small_expect == 0 \
+            else f"no ({small}; {small_expect} requests with Expect)"
+        r["tls denied"] = _refusal(dsn, "SELECT pgcolumnar.export_parquet('ea_mid', "
+                                        f"'s3://{DENIED}/tm.parquet', 'ea_tls')")
+        hook = work / "__expect_ignore__"
+        hook.write_text("")
+        r["tls ignored"] = tls_export("ea_mid", "tls_ignored.parquet", mid_cols)
+        hook.unlink()
+        hook = work / "__expect_delay__"
+        hook.write_text("2\n")
+        r["tls late"] = tls_export("ea_mid", "tls_late.parquet", mid_cols)
+        hook.unlink()
+        hook = work / "__expect_417__"
+        hook.write_text("")
+        r["tls 417"] = tls_export("ea_mid", "tls_417.parquet", mid_cols)
+        hook.unlink()
+        # a store that ignores Expect costs the wait once per connection (#1903 review):
+        # 2 MiB parts make the mid-size export several parts over 1 MiB
+        hook = work / "__expect_ignore__"
+        hook.write_text("")
+        s3log.write_text("")
+        mp = tls_export("ea_mid", "mp_ignored.parquet", mid_cols, "",
+                        ("SET pgcolumnar.objstore_part_size = 2097152",))
+        hook.unlink()
+        parts = sum(1 for ln in s3log.read_text(errors="replace").splitlines()
+                    if ln.startswith(f"PUT /{BUCKET}/mp_ignored.parquet partNumber="))
+        r["mp parts"] = "yes" if mp == "300000 exported, 300000 read back" and parts >= 3 \
+            else f"no ({mp}; {parts} parts)"
+        r["mp expect"] = str(expect_lines(
+            lambda ln: ln == f"PUT /{BUCKET}/mp_ignored.parquet 100-continue"))
+        # a 2xx to the headers alone: the body is sent anyway, and the object settles
+        # after the fixture has read it (#1903 review)
+        hook = work / "__expect_early_200__"
+        hook.write_text("")
+        e200 = _value(dsn, "SELECT pgcolumnar.export_parquet('ea_mid', "
+                           f"'s3://{BUCKET}/early200.parquet')")
+        hook.unlink()
+        obj, prev = work / BUCKET / "early200.parquet", -1
+        for _ in range(25):
+            size = obj.stat().st_size if obj.is_file() else -1
+            if size > 0 and size == prev:
+                break
+            prev = size
+            time.sleep(0.2)
+        r["early 200"] = f"{e200} | " + _value(
+            dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet('s3://{BUCKET}/early200.parquet') "
+                 f"AS t({mid_cols})")
+        # a 200 to the headers alone framed by connection close (#1880): the store is
+        # closing, so the write is not taken as done (#1903 merge)
+        hook = work / "__expect_early_200_close__"
+        hook.write_text("")
+        e200c = _refusal(dsn, "SELECT pgcolumnar.export_parquet('ea_mid', "
+                              f"'s3://{BUCKET}/early200close.parquet')")
+        hook.unlink()
+        e200c_obj = "an object" if (work / BUCKET / "early200close.parquet").exists() \
+            else "no object"
+        r["early 200 close"] = f"{e200c} | {e200c_obj}"
+        # a store that answers neither 100 nor the refusal within the wait: #1895's
+        # case again, and over http the early answer is still read after the failed send
+        hook = work / "__deny_delay__"
+        hook.write_text("2\n")
+        r["late denied"] = _refusal(dsn, "SELECT pgcolumnar.export_parquet('ea_mid', "
+                                         f"'s3://{DENIED}/late.parquet')")
+        hook.unlink()
         r["survived"] = _survived(dsn, log, crashes0)
         r["port"] = s3_port
         yield r
@@ -275,6 +416,8 @@ def _declined(ea, expect):
         return False
     if ea == "fixture":
         expect.cannot_run("ABSENT_FIXTURE", "the committed iceberg fixtures are missing")
+    elif ea == "openssl":
+        expect.cannot_run("MISSING_DEPENDENCY", "the openssl CLI is not installed")
     else:
         expect.cannot_run("MISSING_DEPENDENCY", "pgcolumnar_objstore.so is not in the pkglibdir")
     return True
@@ -286,11 +429,21 @@ def test_the_advice_suite_can_run_here(ea, expect):
         expect.cannot_run("MISSING_DEPENDENCY", "pgcolumnar_objstore.so is not in the pkglibdir",
                           name="the object-store module is not installed")
         return
+    if ea == "openssl":
+        expect.cannot_run("MISSING_DEPENDENCY", "the openssl CLI is not installed",
+                          name="the openssl CLI is required to make the https fixture's certificate")
+        return
     if ea == "fixture":
         expect.cannot_run("ABSENT_FIXTURE", "the committed iceberg fixtures are not in this tree",
                           name="iceberg fixtures are missing")
         return
     expect.text(str(ea["up"]), "3", "premise: the SigV4 S3 fixture and both REST catalogs are up")
+
+
+def test_the_https_fixture_is_up(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(str(ea["tls up"]), "1", "premise: the https SigV4 fixture is up")
 
 
 def test_the_environment_key_writes_and_reads(ea, expect):
@@ -424,6 +577,96 @@ def test_a_mid_size_export_refused_early_keeps_the_403(ea, expect):
                 f'28000: columnar: access to "s3://{DENIED}/m.parquet" was denied '
                 f"(HTTP 403: SignatureDoesNotMatch) | HINT: {ENV_HINT}",
                 "mid-size export refused before its body was read: the 403 and its hint survive")
+
+
+def test_a_mid_size_export_over_https_answered_100_continue_writes_the_object(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["tls mid"], "300000 exported, 300000 read back",
+                "a mid-size export over https whose store answers 100 Continue writes the object")
+
+
+def test_the_mid_size_put_over_https_carries_expect(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["tls mid expect"], "1", "the mid-size PUT over https carried Expect: 100-continue")
+
+
+def test_a_small_export_over_https_sends_no_expect(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["tls small"], "yes", "a small export over https sends no Expect header")
+
+
+def test_a_mid_size_export_over_https_refused_early_keeps_the_403(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["tls denied"],
+                f'28000: columnar: access to "s3://{DENIED}/tm.parquet" was denied '
+                f"(HTTP 403: SignatureDoesNotMatch) | HINT: {MAPPING_HINT}",
+                "mid-size export over https refused before its body was sent: the 403 and its hint survive")
+
+
+def test_a_store_that_ignores_expect_gets_the_body_after_the_wait(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["tls ignored"], "300000 exported, 300000 read back",
+                "a mid-size export over https to a store that ignores Expect is sent after the wait")
+
+
+def test_a_late_100_continue_is_passed_over_for_the_final_answer(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["tls late"], "300000 exported, 300000 read back",
+                "a 100 Continue that comes after the wait is passed over for the final answer")
+
+
+def test_a_417_sends_the_export_again_without_expect(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["tls 417"], "300000 exported, 300000 read back",
+                "a store that answers 417 to Expect gets the export again without it")
+
+
+def test_the_multipart_export_to_an_expect_ignoring_store_is_several_parts(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["mp parts"], "yes",
+                "premise: the multipart export to a store that ignores Expect is 3 or more parts, "
+                "all read back")
+
+
+def test_a_store_that_ignores_expect_gets_it_on_one_part_only(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["mp expect"], "1",
+                "a multipart export to a store that ignores Expect sends it on one part only")
+
+
+def test_a_200_before_the_body_still_sends_the_body(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["early 200"], "300000 | 300000",
+                "a single PUT answered 200 before its body still sends the body, and the object "
+                "holds the rows")
+
+
+def test_a_200_with_no_framing_before_the_body_is_not_taken_as_written(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["early 200 close"],
+                f'08006: columnar: PUT to "s3://{BUCKET}/early200close.parquet" failed before a '
+                "response | no hint | no object",
+                "a single PUT answered 200 with no framing before its body is not taken as written")
+
+
+def test_a_refusal_after_the_expect_wait_keeps_the_403_over_http(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["late denied"],
+                f'28000: columnar: access to "s3://{DENIED}/late.parquet" was denied '
+                f"(HTTP 403: SignatureDoesNotMatch) | HINT: {ENV_HINT}",
+                "mid-size export refused after the Expect wait ran out (http): the 403 and its hint survive")
 
 
 def test_the_server_survived_the_refusals(ea, expect):

@@ -542,3 +542,60 @@ def test_a_fifo_is_refused_not_a_hang(pgc_conn, pgc_cluster, server_dir, expect)
         got["state"] = "HANG"
     expect.text(got.get("state", "no result"), "XX001", "import_arrow on a FIFO is refused, not a hang (XX001)")
     expect.num(_one(conn, "SELECT 1"), 1, "backend still up after the import_arrow FIFO refusal")
+
+
+REMOTE_S3 = "s3://pgc-test/f1886/m.arrow"
+REMOTE_HTTP = "http://127.0.0.1:9/f1886/m.arrow"
+REMOTE_OTHER = ("https://127.0.0.1:9/f1886/m.arrow", "gs://pgc-test/f1886/m.arrow",
+                "az://pgc-test/f1886/m.arrow", "S3://pgc-test/f1886/m.arrow")
+
+
+def _remote_refusal(conn, sql):
+    """-> 'SQLSTATE message | hint' of the error `sql` raised, or 'no error (...)'."""
+    import psycopg
+    try:
+        return f"no error ({_one(conn, sql)})"
+    except psycopg.Error as e:
+        return f"{e.sqlstate} {e.diag.message_primary} | {e.diag.message_hint or 'no hint'}"
+
+
+def _want_refusal(url):
+    return (f'0A000 columnar: import_arrow does not read "{url}" | '
+            "import_arrow reads local files only. Use a local filesystem path.")
+
+
+def test_a_remote_url_is_refused_up_front(pgc_conn, server_dir, expect):
+    """#1886: import_arrow reads local files only. An s3:// or http:// URL went to
+    open(2) and failed with ENOENT, which says the object does not exist. Every scheme
+    PgColumnarPathIsRemote recognises is now refused 0A000, naming the function and the
+    URL, after the INSERT check and before the target's kind is checked (so a heap
+    target gets 0A000, not 42809); a LOCAL path holding "s3://" past its start
+    is still read."""
+    conn = pgc_conn
+    _run(conn, "CREATE TABLE ia_rem (a int) USING pgcolumnar",
+         "CREATE TABLE ia_rem_heap (a int) USING heap")
+    expect.text(_remote_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_rem', '{REMOTE_S3}')"),
+                _want_refusal(REMOTE_S3),
+                "import_arrow refuses an s3:// URL with 0A000, naming itself and the URL (#1886)")
+    expect.text(_remote_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_rem', '{REMOTE_HTTP}')"),
+                _want_refusal(REMOTE_HTTP),
+                "import_arrow refuses an http:// URL with 0A000, naming itself and the URL (#1886)")
+    expect.text(" ; ".join(_remote_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_rem', '{u}')")
+                           for u in REMOTE_OTHER),
+                " ; ".join(_want_refusal(u) for u in REMOTE_OTHER),
+                "import_arrow refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1886)")
+    expect.text(_remote_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_rem_heap', '{REMOTE_S3}')"),
+                _want_refusal(REMOTE_S3),
+                "import_arrow refuses a remote URL before it looks at the target: a heap target gets 0A000 (#1886)")
+
+    # server_dir/"s3:" is a directory, so server_dir/"s3://ctl.arrows" is a local file
+    # whose path holds "s3://" past its start.
+    sub = server_dir / "s3:"
+    sub.mkdir()
+    os.chmod(sub, 0o777)
+    local = f"{server_dir}/s3://ctl.arrows"
+    _run(conn, "CREATE TABLE ia_ctl_src (a int) USING pgcolumnar",
+         "INSERT INTO ia_ctl_src SELECT g FROM generate_series(1, 300) g",
+         f"SELECT pgcolumnar.export_arrow('ia_ctl_src', '{local}')")
+    expect.num(_one(conn, f"SELECT pgcolumnar.import_arrow('ia_rem', '{local}')"), 300,
+               "control: import_arrow still reads a local path that holds s3:// past its start (#1886)")
