@@ -466,6 +466,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- `test/vm_clear_on_renumber.sh` and `test_vm_clear_on_renumber.py` no longer
+  fail their VACUUM premises on a busy cluster (#1875). A VACUUM marks a row group
+  all-visible only once the group's catalog row precedes the database's horizon.
+  A private database keeps other databases' sessions out of that horizon, but not
+  a session connected to it, such as an autovacuum worker. That worker's snapshot
+  starts below any xid open elsewhere. Holding an xid open in `postgres` and a
+  snapshot in the suite's database turned seven checks red on both PG 17 and 18,
+  the seven CI reported. Each VACUUM now repeats, up to 100 times, until the
+  blocks the arms read are set. Three new premises report a budget that runs out,
+  with the sessions holding an xmin. Test-only.
 - `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
   URL now write the object instead of crashing the backend (#1779). Every write
   request was signed, and a plain-HTTP target has no region or credentials, so the

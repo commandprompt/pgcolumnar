@@ -8526,6 +8526,9 @@ vm_clear_on_renumber	vm_clear_on_renumber	control: a relation that was not reclu
 vm_clear_on_renumber	vm_clear_on_renumber	control: and its late block too	15;16;17;18;19	never	-
 vm_clear_on_renumber	vm_clear_on_renumber	premise: VACUUM set all-visible early in rc	15;16;17;18;19	never	-
 vm_clear_on_renumber	vm_clear_on_renumber	premise: VACUUM set all-visible on group 3's late block	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: a VACUUM of cw set its arms' blocks all-visible within the retry budget	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: a VACUUM of rc set its arms' blocks all-visible within the retry budget	15;16;17;18;19	never	-
+vm_clear_on_renumber	vm_clear_on_renumber	premise: a VACUUM of rcctl set its arms' blocks all-visible within the retry budget	15;16;17;18;19	never	-
 vm_clear_on_renumber	vm_clear_on_renumber	premise: and late in rc	15;16;17;18;19	never	-
 vm_clear_on_renumber	vm_clear_on_renumber	premise: and left the control block all-visible	15;16;17;18;19	never	-
 vm_clear_on_renumber	vm_clear_on_renumber	premise: and on the control relation	15;16;17;18;19	never	-
