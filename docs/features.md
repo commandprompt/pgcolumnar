@@ -352,8 +352,10 @@ and writes continue.
   `AWS_ENDPOINT_URL`. The foreign-data wrapper can read them from its server and
   user mapping instead.
 - `pgcolumnar.objstore_allowed_endpoints` gates every remote scheme. It is empty
-  by default, so no host is reachable until an administrator lists it. A
-  link-local or instance-metadata address is refused even when it is listed.
+  by default, so no host is reachable until an administrator lists it. The
+  module refuses the link-local ranges and the known instance-metadata
+  addresses even when they are listed. See
+  [the refused ranges](best-practices.md#run-object-storage-safely).
 
 ## Apache Iceberg
 

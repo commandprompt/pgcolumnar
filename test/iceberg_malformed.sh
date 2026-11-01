@@ -19,17 +19,23 @@ set -uo pipefail
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 # refusal SQL REGEX LABEL -> "<SQLSTATE> (LABEL)" when SQL raised an error whose message
-# matches REGEX, "<SQLSTATE>: <message>" for any other error, or "no error". Every
+# matches REGEX, "<SQLSTATE>: <message>" for any other error, or "no error, read: ROWS". Every
 # arm here refuses with XX001, and so do later parse steps: a FIFO read as an empty
 # file failed a parse with the same XX001, so the SQLSTATE alone passed with the
-# guard removed. The arm now names the refusal it wants.
+# guard removed. The arm now names the refusal it wants. When SQL raised no error,
+# the reading carries the rows it returned, so a failure shows the value read.
 refusal_of() {	# stdin: psql output -> the refusal reading
 	local re="$1" label="$2" line state msg
 	local out; out="$(cat)"
 	line="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): /\1|/p' <<<"$out" | head -1)"
 	if [ -z "$line" ]; then
-		grep -qE 'server closed the connection|connection to server' <<<"$out" \
-			&& echo "no refusal: the connection was lost" || echo "no error"
+		if grep -qE 'server closed the connection|connection to server' <<<"$out"; then
+			echo "no refusal: the connection was lost"; return
+		fi
+		# Only the rows go in the reading. psql's stderr is merged here, so drop the
+		# server's NOTICE, WARNING and their detail lines: the twin never sees them.
+		out="$(grep -vE '^(DEBUG|LOG|INFO|NOTICE|WARNING|DETAIL|HINT|CONTEXT|LOCATION|QUERY): ' <<<"$out")"
+		echo "no error${out:+, read: $(tr '\n' ' ' <<<"$out" | sed 's/ *$//')}"
 		return
 	fi
 	state="${line%%|*}"; msg="${line#*|}"
@@ -274,6 +280,75 @@ check "control: the legacy table binds amount correctly (10..50)" \
 	      FROM pgcolumnar.iceberg_scan('$LS') AS t(id bigint, region text, amount int)")" \
 	"10,20,30,40,50"
 
+
+# =========================================================================
+# #1824  malformed numbers in metadata.json were read, not refused. A field id
+#     above INT32 truncated to another field's id (4294967297 -> 1), a fraction
+#     rounded (1.4 -> 1), so "amount" returned the "id" column. format-version 99
+#     read as v2, and a string current-snapshot-id read as an empty table. The
+#     variants are edited copies of the db/events fixture (id 1, region 2,
+#     amount 3), written next to the original so they read its data files.
+# =========================================================================
+LAX="$PGC_WORKDIR/lax"
+rm -rf "$LAX"; mkdir -p "$LAX"
+cp -r "$FX/warehouse/db" "$LAX/"; chmod -R u+rwX "$LAX"
+LAXMD="$LAX/db/events/metadata"
+LAXSRC="$LAXMD/00001-6808fe8c-acd3-4fbf-9fbe-1ac447a16b3c.metadata.json"
+python3 - "$LAXSRC" <<'PYEOF'
+import json, os, sys
+src = sys.argv[1]; d = os.path.dirname(src)
+def variant(name, edit):
+    m = json.load(open(src)); edit(m)
+    json.dump(m, open(os.path.join(d, name + ".metadata.json"), "w"))
+def amount_id(v):
+    def edit(m):
+        for s in m["schemas"]:
+            for f in s["fields"]:
+                if f["name"] == "amount": f["id"] = v
+    return edit
+variant("bigid", amount_id(4294967297))   # 2^32 + 1 truncates to 1, the id field
+variant("fracid", amount_id(1.4))          # rounds to 1
+variant("fv99", lambda m: m.__setitem__("format-version", 99))
+variant("csidx", lambda m: m.__setitem__("current-snapshot-id", "x"))
+variant("csidneg", lambda m: m.__setitem__("current-snapshot-id", -1))
+variant("fv4", lambda m: m.__setitem__("format-version", 4))   # the bounds of 1..3
+variant("fv0", lambda m: m.__setitem__("format-version", 0))
+variant("csidnull", lambda m: m.__setitem__("current-snapshot-id", None))
+PYEOF
+FIDRANGE='schema field "amount" has a field id out of range: 4294967297'
+NONINT='holds the non-integer number 1.4 where an integer is required'
+check "control: the unedited events metadata reads amount 10..50" \
+	"$(q "SELECT string_agg(amount::text, ',' ORDER BY id) FROM pgcolumnar.iceberg_scan('$LAXSRC') AS t(id bigint, amount int)")" \
+	"10,20,30,40,50"
+B="$(crashes)"
+check "a field id above INT32 is refused (XX001), not aliased to another field" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$LAXMD/bigid.metadata.json') AS t(amount bigint)" \
+		"$FIDRANGE" "field id out of range")" "XX001 (field id out of range)"
+check "a field id above INT32 is named even when its alias is also queried" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$LAXMD/bigid.metadata.json') AS t(id bigint, amount bigint)" \
+		"$FIDRANGE" "field id out of range")" "XX001 (field id out of range)"
+check "a fractional field id is refused (XX001), not rounded" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$LAXMD/fracid.metadata.json') AS t(amount bigint)" \
+		"$NONINT" "non-integer number")" "XX001 (non-integer number)"
+check "format-version 99 is refused (0A000), not read as v2" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv99.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 99' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "format-version 4 is refused (0A000), one above the newest known" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv4.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 4' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "format-version 0 is refused (0A000), one below the oldest known" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv0.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 0' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "a string current-snapshot-id is refused (XX001), not read as an empty table" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidx.metadata.json') AS t(id bigint)" \
+		'has a current-snapshot-id that is not an integer' "non-integer current-snapshot-id")" \
+	"XX001 (non-integer current-snapshot-id)"
+check "backend still up after the malformed-number refusals" "$(survived "$B")" "1"
+check "control: current-snapshot-id -1 still reads as a table with no snapshot (0 rows)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidneg.metadata.json') AS t(id bigint)")" "0"
+check "control: a null current-snapshot-id still reads as a table with no snapshot (0 rows)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidnull.metadata.json') AS t(id bigint)")" "0"
+
 # =========================================================================
 # #1823  manifest enum fields outside the spec. data_file.content may be only
 #     0 (data), 1 (position deletes) or 2 (equality deletes); any other value was
@@ -339,6 +414,92 @@ check "manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not 
 	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of mfcontent4g)') $EN" \
 		'manifest ".*/dm\.avro" has invalid content 4294967296$' "invalid manifest content 4294967296")" \
 	"XX001 (invalid manifest content 4294967296)"
+# #1878: manifest_file.partition_spec_id had the same plain cast, so 2^32 read as
+# spec 0 and the manifest was pruned with spec 0's quals. Its path is decoded
+# first, so the refusal names the manifest as well as the value.
+SPEC4G='manifest ".*/dm\.avro" has invalid partition_spec_id 4294967296$'
+check "manifest_file.partition_spec_id 4294967296 is refused by iceberg_scan (XX001), not read as spec 0" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of specid4g)') $EN" \
+		"$SPEC4G" "invalid partition_spec_id 4294967296")" \
+	"XX001 (invalid partition_spec_id 4294967296)"
+check "read_manifest_list refuses partition_spec_id 4294967296 (XX001), not shown as 0" \
+	"$(refusal "SELECT * FROM pgcolumnar.read_manifest_list('$DEST/specid4g/db/t/metadata/ml.avro')" \
+		"$SPEC4G" "invalid partition_spec_id 4294967296")" \
+	"XX001 (invalid partition_spec_id 4294967296)"
 check "backend still up after the enum refusals" "$(survived "$B")" "1"
+
+# =========================================================================
+# #1853  metadata.json ids that must fit int32. A snapshot's schema-id and the
+#     table's default-spec-id were read as 64-bit numbers and cast to int32 with
+#     no range check, so 4294967296 became 0 and -2147483649 became 2147483647.
+#     iceberg_current_snapshot reported the wrong schema_id; the foreign table
+#     scan took the wrong current spec id. Each variant is enum_ctl's metadata
+#     with ONE id changed, and each refusal must name the value.
+# =========================================================================
+IDS="$DEST/enum_ctl/db/t/metadata"
+ids_md() {	# ids_md TAG KEY VALUE -> path of enum_ctl's metadata with KEY set to VALUE
+	# (VALUE "absent" deletes KEY)
+	python3 - "$IDS/t.metadata.json" "$IDS/ids_$1.metadata.json" "$2" "$3" <<'PY'
+import json, sys
+src, dst, key, val = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+m = json.load(open(src))
+m["partition-specs"] = [{"spec-id": 0, "fields": []}]
+m["default-spec-id"] = 0
+if val == "absent":
+    del m[key]
+elif key == "schema-id":
+    m["snapshots"][0]["schema-id"] = int(val)
+else:
+    m[key] = int(val)
+json.dump(m, open(dst, "w"))
+PY
+	echo "$IDS/ids_$1.metadata.json"
+}
+SID_MAX="$(ids_md sidmax schema-id 2147483647)"
+SID_4G="$(ids_md sid4g schema-id 4294967296)"
+SID_NEG="$(ids_md sidneg schema-id -2147483649)"
+SID_MIN="$(ids_md sidmin schema-id -2147483648)"
+DS_0="$(ids_md ds0 default-spec-id 0)"
+DS_4G="$(ids_md ds4g default-spec-id 4294967296)"
+DS_NEG="$(ids_md dsneg default-spec-id -2147483649)"
+DS_MAX="$(ids_md dsmax default-spec-id 2147483647)"
+DS_NONE="$(ids_md dsnone default-spec-id absent)"
+q "CREATE SERVER ice_ids FOREIGN DATA WRAPPER pgcolumnar_iceberg" >/dev/null
+for t in ds0 ds4g dsneg dsmax dsnone; do
+	q "CREATE FOREIGN TABLE ids_$t (id bigint, region text, amount int)
+	   SERVER ice_ids OPTIONS (metadata_path '$IDS/ids_$t.metadata.json')" >/dev/null
+done
+check "control: a snapshot schema-id of 2147483647 reads as 2147483647" \
+	"$(q "SELECT schema_id FROM pgcolumnar.iceberg_current_snapshot('$SID_MAX')")" \
+	"2147483647"
+B="$(crashes)"
+check "a snapshot schema-id of 4294967296 is refused by iceberg_current_snapshot (XX001), not truncated to 0" \
+	"$(refusal "SELECT schema_id FROM pgcolumnar.iceberg_current_snapshot('$SID_4G')" \
+		'snapshot 4242 in ".*" has a schema-id out of range: 4294967296$' "schema-id 4294967296")" \
+	"XX001 (schema-id 4294967296)"
+check "a snapshot schema-id of -2147483649 is refused by iceberg_current_snapshot (XX001), not truncated to 2147483647" \
+	"$(refusal "SELECT schema_id FROM pgcolumnar.iceberg_current_snapshot('$SID_NEG')" \
+		'snapshot 4242 in ".*" has a schema-id out of range: -2147483649$' "schema-id -2147483649")" \
+	"XX001 (schema-id -2147483649)"
+check "control: a foreign table with default-spec-id 0 scans ten rows" \
+	"$(q "SELECT count(*) FROM ids_ds0")" "10"
+check "a default-spec-id of 4294967296 is refused by the Iceberg foreign table scan (XX001), not truncated to 0" \
+	"$(refusal "SELECT count(*) FROM ids_ds4g" \
+		'".*" has a default-spec-id out of range: 4294967296$' "default-spec-id 4294967296")" \
+	"XX001 (default-spec-id 4294967296)"
+check "a default-spec-id of -2147483649 is refused by the Iceberg foreign table scan (XX001), not truncated to 2147483647" \
+	"$(refusal "SELECT count(*) FROM ids_dsneg" \
+		'".*" has a default-spec-id out of range: -2147483649$' "default-spec-id -2147483649")" \
+	"XX001 (default-spec-id -2147483649)"
+# The controls at the other edges: INT32_MIN and INT32_MAX are valid ids, and a
+# table with no default-spec-id (a v1 table from an older writer) reads as spec 0.
+check "control: a snapshot schema-id of -2147483648 reads as -2147483648" \
+	"$(q "SELECT schema_id FROM pgcolumnar.iceberg_current_snapshot('$SID_MIN')")" \
+	"-2147483648"
+check "control: a foreign table with default-spec-id 2147483647 scans ten rows" \
+	"$(q "SELECT count(*) FROM ids_dsmax")" "10"
+check "control: a foreign table with no default-spec-id scans ten rows" \
+	"$(q "SELECT count(*) FROM ids_dsnone")" "10"
+check "backend still up after the int32 id refusals" "$(survived "$B")" "1"
 
 pgc_summary

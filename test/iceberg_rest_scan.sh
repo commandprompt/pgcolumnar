@@ -186,14 +186,64 @@ check "iceberg_rest_scan of an unknown table is a clean not-found (42P01)" \
 # (sent "db" whatever it was given) passed every check above, because they all
 # ask for "db". Asking for a namespace the catalog does not have must reach the
 # catalog as that namespace and come back as its 404.
+# The catalog's 404 says NoSuchNamespaceException here, so the error names a
+# namespace (3F000), not a table (#1820).
 check "iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$CAT','nosuchns')" \
-	   "the REST catalog has no such table list" " by the catalog's 404")" \
-	"42P01 by the catalog's 404"
+	   "the REST catalog has no such namespace" " by the catalog's 404")" \
+	"3F000 by the catalog's 404"
 check "iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','nosuchns','events') AS t(id bigint)" \
-	   "the REST catalog has no such table" " by the catalog's 404")" \
-	"42P01 by the catalog's 404"
+	   "the REST catalog has no such namespace" " by the catalog's 404")" \
+	"3F000 by the catalog's 404"
+# The catalog's own ErrorModel message reaches the error detail (#1820).
+check "the catalog's 404 message reaches the error detail" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','nosuch') AS t(id bigint)" \
+	   "DETAIL:  The catalog said: no such table db.nosuch" " with the catalog's message")" \
+	"42P01 with the catalog's message"
+
+# detail_of SQL TEXT -> "<SQLSTATE> with the catalog's message" when SQL raised with
+# TEXT in its DETAIL line, else "<SQLSTATE> (detail: <the DETAIL line>)", so a
+# failure shows what the detail held. Every non-200 branch adds the detail (#1820).
+detail_of() {
+	local out state detail
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	detail="$(sed -n 's/^DETAIL:  //p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif [ "$detail" = "$2" ]; then echo "$state with the catalog's message"
+	else echo "$state (detail: $detail)"; fi
+}
+check "the catalog's namespace 404 message reaches the error detail" \
+	"$(detail_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$CAT','nosuchns')" \
+	   "The catalog said: no such namespace nosuchns")" \
+	"3F000 with the catalog's message"
+check "the catalog's 403 message reaches the error detail" \
+	"$(detail_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','forbidden') AS t(id bigint)" \
+	   "The catalog said: no read access to db.forbidden")" \
+	"28000 with the catalog's message"
+check "the catalog's 500 message reaches the error detail" \
+	"$(detail_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','failing') AS t(id bigint)" \
+	   "The catalog said: catalog backend unavailable")" \
+	"08P01 with the catalog's message"
+# An error body nested too deep to parse runs the parser out of stack. That is
+# not a malformed body, and the client must not drop it as one (#1820 review).
+check "a catalog error body too deep to parse raises its stack error (54001)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','deepjson') AS t(id bigint)" \
+	   "stack depth limit exceeded" " by the parser")" \
+	"54001 by the parser"
+# A body that starts with "{" and is cut off passes the client's pre-check, so
+# only the JSON parse rejects it. That parse error (22P02) is about the body:
+# the client drops it and reports the catalog's status (#1820 review).
+check "a malformed catalog error body still reports the status (08P01)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','badjson') AS t(id bigint)" \
+	   "the REST catalog returned HTTP 500 for the table" " with the status")" \
+	"08P01 with the status"
 
 # ---- #1793: nested namespaces, prefixes, the warehouse, paging -------------
 # Each scenario gets its own fixture, so a failure names one catalog behaviour.

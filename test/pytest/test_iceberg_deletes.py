@@ -12,8 +12,11 @@ recorded root differs from where it lies.
 Asserted: position deletes, sequence ordering and inheritance, per-file scoping, the
 ordinal-0 control; equality deletes (the strict boundary, multi-column AND, extra
 columns, null matching, unions, mixed with position deletes, unprojected columns);
-partition-scoped equality deletes; thirteen corrupt or unsupported snapshots refused,
-each by its own guard; and no backend dies on the way.
+partition-scoped equality deletes; fifteen corrupt or unsupported snapshots refused,
+each by its own guard; and no backend dies on the way. A second warehouse
+(warehouse_posmany, #1868) has 32 data files and 106 position-delete rows: its arms
+check the survivors against the oracle and read the scan's DEBUG1 lines, which must
+show one index build and, per data file, only the rows naming that file.
 
 HOW A REFUSAL IS READ. Several guards share a SQLSTATE (XX001, 22023), so a refusal
 counts only when its message is that guard's own. A refusal reads as its SQLSTATE,
@@ -32,9 +35,12 @@ ON A PRIVATE DATABASE, with the warehouse copied into `server_dir`, because the 
 reads it. Where the fixture is missing the first test fails under the shell's pgc_skip
 message, and the rest decline.
 """
+import hashlib
 import json
 import pathlib
 import shutil
+import subprocess
+import sys
 import time
 
 import psycopg
@@ -45,13 +51,16 @@ from pgc_vacuity import query_error
 DB = "pgc_iceberg_deletes"
 FX = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "iceberg"
 WHD = FX / "warehouse_del"
+PMW = FX / "warehouse_posmany"
 COLS = "AS t(id bigint, region text, amount int)"
 PCOLS = "AS t(id bigint, region text, grp int)"
-EQ_APPLIED = ("eqapply", "eqboundary", "eqmulti", "eqextra", "eqnull", "eqtwo", "eqmixed")
+EQ_APPLIED = ("eqapply", "eqboundary", "eqmulti", "eqextra", "eqnull", "eqtwo", "eqmixed",
+              "eqempty")
 # each refusal's own guard, by the phrase its message carries
 PHRASE = {
     "nullpos": "has a null pos",
     "negpos": "has a negative pos",
+    "posorc": "has format ORC; only PARQUET position deletes are supported",
     "eqnoids": "has no equality_ids",
     "eqpart_datanospec": "carries no partition_spec_id, which a partition-scoped",
     "eqpart_incomparable": "has a partition tuple this reader cannot compare",
@@ -59,6 +68,7 @@ PHRASE = {
     "eqmissing": "no Parquet column has field id",
     "eqescape": "is not under the table location",
     "eqdotdot": "escapes the table location",
+    "eqavro": "has format AVRO; only PARQUET equality deletes are supported",
     "eqbigid": "corrupt Avro manifest entry",
     "eqnospec": "the manifest list carries no partition_spec_id",
     "eqnofields": "has no fields array",
@@ -123,6 +133,80 @@ def _names(dsn, sql, phrase):
     return "0"
 
 
+def _probe(dsn, sql):
+    """-> (data_rows, walks, delete_rows, visited, longest_walk, comparisons) over
+    the equality-delete probe's DEBUG1 lines while sql runs, as the shell's awk:
+    walks sums data_rows x delete_files per line, longest_walk is the largest
+    seen, the rest are sums. None when no line came back; query_error() when the
+    server could not be asked."""
+    _await_up(dsn)
+    lines = []
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.add_notice_handler(lambda d: lines.append(d.message_primary or ""))
+            conn.execute("SET client_min_messages = debug1")
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    rows = walks = dels = visited = longest = cmp = 0
+    seen = 0
+    for line in lines:
+        if "equality-delete probe:" not in line:
+            continue
+        seen += 1
+        f = {}
+        for word in line.split():
+            key, _, val = word.partition("=")
+            if val.isdigit():
+                f[key] = int(val)
+        rows += f.get("data_rows", 0)
+        walks += f.get("data_rows", 0) * f.get("delete_files", 0)
+        dels += f.get("delete_rows", 0)
+        visited += f.get("visited", 0)
+        longest = max(longest, f.get("longest_walk", 0))
+        cmp += f.get("comparisons", 0)
+    if not seen:
+        return None
+    return rows, walks, dels, visited, longest, cmp
+
+
+def _hwm(pid):
+    try:
+        for line in pathlib.Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1])
+    except OSError:
+        pass
+    return None
+
+
+def _peak(dsn, sql):
+    """-> (kB the backend's peak rose by over sql, its value), as the shell's peak():
+    VmHWM before and after, in a connection of its own. The rise is None when it
+    cannot be read; the value is the query's error when it failed."""
+    _await_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+            base = _hwm(pid)
+            val = conn.execute(sql).fetchone()[0]
+            pk = _hwm(pid)
+    except psycopg.Error as exc:
+        return None, query_error(_message(exc))
+    return (pk - base if base is not None and pk is not None else None), str(val)
+
+
+def _dvariants(dest):
+    """-> {name: path} from gen_iceberg_variants.py --deletes, or {} with the failure
+    under "error"."""
+    run = subprocess.run([sys.executable, str(FX / "gen_iceberg_variants.py"), "--deletes", str(dest)],
+                         capture_output=True, text=True)
+    out = dict(line.split("=", 1) for line in run.stdout.splitlines() if "=" in line)
+    if run.returncode != 0:
+        out["error"] = (run.stdout + run.stderr).strip()
+    return out
+
+
 def _crashes(cluster):
     try:
         return (cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
@@ -138,9 +222,47 @@ def _survived(dsn, cluster, before):
     return "1" if up == 1 and now == before else f"no ([{up}], {now - before} backend crashes)"
 
 
+def _pm_probe(dsn, sql):
+    """-> (index, per data file) over the DEBUG1 lines of one run of sql, as the shell's
+    pm_probe: "builds=B rows=R paths=P" summed over the position-delete index lines,
+    and "files=F compared=C visited=V longest=L applied=A" over the per-data-file lines
+    (compared, visited and applied summed, longest the largest visited). query_error() for both when the
+    server could not be asked."""
+    _await_up(dsn)
+    lines = []
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.add_notice_handler(lambda d: lines.append(d.message_primary or ""))
+            conn.execute("SET client_min_messages = debug1")
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        err = query_error(_message(exc))
+        return err, err
+    builds = rows = paths = files = compared = visited = longest = applied = 0
+    for line in lines:
+        f = {}
+        for word in line.split():
+            key, _, val = word.partition("=")
+            if val.isdigit():
+                f[key] = int(val)
+        if "position-delete index:" in line:
+            builds += 1
+            rows += f.get("rows", 0)
+            paths += f.get("paths", 0)
+        elif "iceberg_scan position deletes:" in line:
+            files += 1
+            compared += f.get("compared", 0)
+            visited += f.get("visited", 0)
+            longest = max(longest, f.get("visited", 0))
+            applied += f.get("applied", 0)
+    return (f"builds={builds} rows={rows} paths={paths}",
+            f"files={files} compared={compared} visited={visited} longest={longest} applied={applied}")
+
+
 @pytest.fixture(scope="module")
 def dl(pgc_cluster, server_dir):
-    if not (WHD / "db" / "t" / "metadata" / "apply.metadata.json").is_file():
+    if not ((WHD / "db" / "t" / "metadata" / "apply.metadata.json").is_file()
+            and (PMW / "expected_posmany.json").is_file()):
         yield None
         return
     dest = server_dir / "del"
@@ -198,10 +320,17 @@ def dl(pgc_cluster, server_dir):
         r["up after negpos"] = _survived(dsn, pgc_cluster, before)
         r["zeropos"] = _read(dsn, ids("zeropos"))
         before = _crashes(pgc_cluster)
+        r["posorc"] = _refusal(dsn, scan("posorc"), PHRASE["posorc"])
+        r["up after posorc"] = _survived(dsn, pgc_cluster, before)
+        before = _crashes(pgc_cluster)
         for name in EQ_APPLIED:
             r[name] = _read(dsn, ids(name))
             if name == "eqnull":
                 r["eqnull nulls"] = _read(dsn, count("eqnull", "WHERE region IS NULL"))
+        r["eqmany md5"] = _read(dsn, f"SELECT md5(string_agg(id::text, ',' ORDER BY id)) "
+                                     f"FROM pgcolumnar.iceberg_scan('{md('eqmany')}') {COLS}")
+        r["eqmany oracle md5"] = hashlib.md5(r["eq oracle"]["eqmany"].encode()).hexdigest()
+        r["eqmany probe"] = _probe(dsn, count("eqmany"))
         r["eq unprojected"] = _read(dsn, f"SELECT string_agg(amount::text, ',' ORDER BY amount) "
                                          f"FROM pgcolumnar.iceberg_scan('{md('eqapply')}') AS t(amount int)")
         r["up after eq applications"] = _survived(dsn, pgc_cluster, before)
@@ -220,6 +349,7 @@ def dl(pgc_cluster, server_dir):
         r["eqescape"] = _refusal(dsn, scan("eqescape"), PHRASE["eqescape"])
         r["eqescape names"] = _names(dsn, scan("eqescape"), "table location")
         r["eqdotdot"] = _refusal(dsn, scan("eqdotdot"), PHRASE["eqdotdot"])
+        r["eqavro"] = _refusal(dsn, scan("eqavro"), PHRASE["eqavro"])
         r["up after eq refusals"] = _survived(dsn, pgc_cluster, before)
         before = _crashes(pgc_cluster)
         r["eqbigid"] = _refusal(dsn, scan("eqbigid"), PHRASE["eqbigid"])
@@ -231,6 +361,67 @@ def dl(pgc_cluster, server_dir):
         before = _crashes(pgc_cluster)
         r["badseq"] = _refusal(dsn, scan("badseq"), PHRASE["badseq"])
         r["up after badseq"] = _survived(dsn, pgc_cluster, before)
+        # a deleted row's values are not coerced (#1790): ids 2 and 4 hold 'toolong'
+        tdest = server_dir / "del_typmod"
+        shutil.copytree(WHD / "db", tdest / "db")
+        shutil.copyfile(FX / "warehouse_typmod" / "del_data_toolong.parquet",
+                        tdest / "db" / "t" / "data" / "data.parquet")
+        for p in [tdest, *tdest.rglob("*")]:
+            p.chmod(0o777 if p.is_dir() else 0o666)
+        tmdir = tdest / "db" / "t" / "metadata"
+        vc2 = "AS t(id bigint, region varchar(2))"
+
+        def regions(name):
+            return _read(dsn, f"SELECT string_agg(id || ':' || region, ',' ORDER BY id) "
+                              f"FROM pgcolumnar.iceberg_scan('{tmdir / (name + '.metadata.json')}') {vc2}")
+        r["typmod noapply"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_scan("
+                                            f"'{tmdir / 'noapply.metadata.json'}') {vc2}", "value too long")
+        for name in ("apply", "eqapply", "dvapply"):
+            r["typmod " + name] = regions(name)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE SERVER ice_tm FOREIGN DATA WRAPPER pgcolumnar_iceberg")
+            c.execute(f"CREATE FOREIGN TABLE del_tm (id bigint, region varchar(2)) SERVER ice_tm "
+                      f"OPTIONS (metadata_path '{tmdir / 'apply.metadata.json'}')")
+        r["typmod fdw"] = _read(dsn, "SELECT string_agg(id || ':' || region, ',' ORDER BY id) FROM del_tm")
+        var = _dvariants(dest)
+        for p in [dest, *dest.rglob("*")]:
+            p.chmod(0o777 if p.is_dir() else 0o666)
+
+        def vpath(name):
+            return var.get(name, f"no variant {name}: {var.get('error', var)}")
+        r["plower apply"] = _read(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, E'\\n' ORDER BY id) "
+                                       f"FROM pgcolumnar.iceberg_scan('{vpath('plower')}/apply.metadata.json') {COLS}")
+        r["plower eqapply"] = _read(dsn, f"SELECT string_agg(id::text, ',' ORDER BY id) "
+                                         f"FROM pgcolumnar.iceberg_scan('{vpath('plower')}/eqapply.metadata.json') {COLS}")
+        r["mix_s3a"] = _read(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, E'\\n' ORDER BY id) "
+                                  f"FROM pgcolumnar.iceberg_scan('{vpath('mix_s3a')}') {COLS}")
+        r["mix_files3"] = _read(dsn, f"SELECT string_agg(id::text, ',' ORDER BY id) "
+                                     f"FROM pgcolumnar.iceberg_scan('{vpath('mix_files3')}') {COLS}")
+        for name in ("bloat_s3", "bloat_s3a"):
+            r[name] = _peak(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{vpath(name)}') {COLS}")
+        # #1868: many data files, many position-delete rows, in their own warehouse
+        pmdest = server_dir / "posmany"
+        shutil.copytree(PMW / "db", pmdest / "db")
+        for p in [pmdest, *pmdest.rglob("*")]:
+            p.chmod(0o777 if p.is_dir() else 0o666)
+        pm = json.loads((PMW / "expected_posmany.json").read_text())
+        pmmd = pmdest / "db" / "t" / "metadata" / "posmany.metadata.json"
+        r["pm oracle md5"] = pm["surviving_md5"]
+        r["pm oracle index"] = "builds={builds} rows={rows} paths={paths}".format(**pm["index"])
+        r["pm oracle probe"] = "files={files} compared={compared} visited={visited} longest={longest} applied={applied}".format(
+            **pm["probe"])
+        r["pm data rows"] = _read(dsn, f"SELECT count(*) || ' rows in ' || count(DISTINCT i) || ' files' "
+                                       f"FROM generate_series(0, 31) AS i, LATERAL pgcolumnar.read_parquet("
+                                       f"format('%s/d%s.parquet', '{pmdest / 'db' / 't' / 'data'}', "
+                                       f"lpad(i::text, 2, '0'))) {COLS}")
+        r["pm md5"] = _read(dsn, f"SELECT md5(string_agg(id::text, ',' ORDER BY id)) "
+                                 f"FROM pgcolumnar.iceberg_scan('{pmmd}') {COLS}")
+        r["pm ordinal 0"] = _read(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{pmmd}') {COLS} "
+                                       f"WHERE id % 100 = 0")
+        r["pm s3 row"] = _read(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{pmmd}') {COLS} "
+                                    f"WHERE id = 507")
+        r["pm index"], r["pm probe"] = _pm_probe(
+            dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{pmmd}') {COLS}")
         yield r
     finally:
         with psycopg.connect(admin, autocommit=True) as a:
@@ -349,6 +540,20 @@ def test_a_position_delete_of_ordinal_zero_deletes_the_first_row(dl, expect):
                 "a position delete of ordinal 0 deletes the first row (id 1 gone, 4 remain)")
 
 
+def test_a_non_parquet_position_delete_file_is_refused(dl, expect):
+    """#1873: the delete is the real posdel.parquet recorded as ORC; without the refusal
+    it is parsed as Parquet and the scan silently returns 3 rows."""
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["posorc"]), "0A000", "a non-Parquet position-delete file is refused (0A000, only PARQUET)")
+
+
+def test_the_backend_survives_the_non_parquet_position_delete_refusal(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["up after posorc"]), "1", "backend still up after the non-Parquet position-delete refusal")
+
+
 # ---- equality deletes --------------------------------------------------------------
 
 def test_an_equality_delete_drops_matching_rows(dl, expect):
@@ -398,6 +603,36 @@ def test_position_and_equality_deletes_combine(dl, expect):
     if _declined(dl, expect):
         return
     expect.text(str(dl["eqmixed"]), dl["eq oracle"]["eqmixed"], "position and equality deletes combine")
+
+
+def test_many_equality_delete_rows_drop_exactly_the_matching_rows(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["eqmany md5"]), dl["eqmany oracle md5"],
+                "many equality-delete rows drop exactly the matching rows (survivors == oracle)")
+
+
+def test_the_equality_delete_probe_walks_a_short_hash_chain_per_data_row(dl, expect):
+    if _declined(dl, expect):
+        return
+    p = dl["eqmany probe"]
+    if isinstance(p, tuple) and p[0] == 4005 and p[2] > 0 and p[3] <= 2 * p[1] and p[4] <= 16 \
+            and p[5] <= p[0]:
+        got = "bounded"
+    elif isinstance(p, tuple):
+        got = (f"unbounded (data_rows={p[0]} walks={p[1]} delete_rows={p[2]} visited={p[3]} "
+               f"longest_walk={p[4]} comparisons={p[5]}; want visited <= 2 x walks, longest_walk <= 16, comparisons <= data_rows)")
+    else:
+        got = f"unbounded (no probe line: {p})"
+    expect.text(got, "bounded",
+                "the equality-delete probe walks a short hash chain per data row, not every delete row (#1817)")
+
+
+def test_a_zero_row_equality_delete_file_deletes_nothing(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["eqempty"]), dl["eq oracle"]["eqempty"],
+                "a zero-row equality-delete file deletes nothing and the next file still applies")
 
 
 def test_equality_deletes_apply_to_an_unprojected_column(dl, expect):
@@ -503,6 +738,14 @@ def test_a_dotdot_escaping_delete_path_is_refused(dl, expect):
     expect.text(str(dl["eqdotdot"]), "22023", "a dotdot-escaping delete path is refused (22023)")
 
 
+def test_a_non_parquet_equality_delete_file_is_refused(dl, expect):
+    """#1873: the delete is the real eqdel-id.parquet recorded as AVRO; without the
+    refusal it is parsed as Parquet and ids 2 and 4 vanish with no error."""
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["eqavro"]), "0A000", "a non-Parquet equality-delete file is refused (0A000, only PARQUET)")
+
+
 def test_the_backend_survives_the_equality_refusals(dl, expect):
     if _declined(dl, expect):
         return
@@ -559,3 +802,147 @@ def test_the_backend_survives_the_bad_sequence_refusal(dl, expect):
     if _declined(dl, expect):
         return
     expect.text(str(dl["up after badseq"]), "1", "backend still up after the bad-sequence refusal")
+
+
+# ---- a deleted row's values are not coerced to the declared typmod (#1790) ---------
+#
+# varchar(2) refuses 'toolong', so a deleted row coerced before it is dropped would
+# fail the scan. The rewritten data file holds 'toolong' only in ids 2 and 4, the rows
+# every delete arm below removes.
+
+def test_without_deletes_the_rewritten_file_breaks_varchar_2(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["typmod noapply"]), "22001",
+                "typmod: with no delete applied, 'toolong' breaks varchar(2) (22001)")
+
+
+def test_position_deletes_do_not_coerce_a_deleted_row(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["typmod apply"]), "1:eu,3:us,5:us",
+                "typmod: position deletes do not coerce a deleted row's value")
+
+
+def test_equality_deletes_do_not_coerce_a_deleted_row(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["typmod eqapply"]), "1:eu,3:us,5:us",
+                "typmod: equality deletes do not coerce a deleted row's value")
+
+
+def test_a_deletion_vector_does_not_coerce_a_deleted_row(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["typmod dvapply"]), "1:eu,3:us,5:us",
+                "typmod: a deletion vector does not coerce a deleted row's value")
+
+
+def test_the_fdw_does_not_coerce_a_position_deleted_row(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["typmod fdw"]), "1:eu,3:us,5:us",
+                "typmod: the Iceberg FDW does not coerce a position-deleted row's value")
+
+
+# ---- delete files other writers describe (#1815, #1825) ---------------------------
+
+def test_a_lowercase_parquet_position_delete_file_is_applied(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["plower apply"]), dl["oracle"],
+                "a position-delete file whose file_format is lowercase parquet is applied")
+
+
+def test_a_lowercase_parquet_equality_delete_file_is_applied(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["plower eqapply"]), dl["eq oracle"]["eqapply"],
+                "an equality-delete file whose file_format is lowercase parquet is applied")
+
+
+def test_a_position_delete_naming_s3_data_as_s3a_is_applied(dl, expect):
+    # the data file is recorded as s3://bb/..., the delete names s3a://bb/...
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["mix_s3a"]), dl["oracle"],
+                "a position delete naming its s3:// data file as s3a:// is applied")
+
+
+def test_a_position_delete_naming_s3_data_as_file_s3_does_not_apply(dl, expect):
+    # mix_s3a's table; the second delete row names file://s3://bb/..., a local path
+    # that merely begins with s3://, so only the first (s3a://, id 2) applies (#1868)
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["mix_files3"]), "1,3,4,5",
+                "a position delete naming its s3:// data file as file://s3:// does not apply, beside one that does (#1868)")
+
+
+def test_a_million_s3_position_delete_rows_apply(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(dl["bloat_s3"][1], "3", "a million s3:// position-delete rows apply (3 rows left)")
+
+
+def test_a_million_s3a_position_delete_rows_apply(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(dl["bloat_s3a"][1], "3", "a million s3a:// position-delete rows apply (3 rows left)")
+
+
+def test_s3a_position_deletes_cost_no_more_memory_than_s3(dl, expect):
+    """The two tables differ only in their paths' scheme. 16 MiB is far above the
+    noise between two runs and far below one allocation per delete row (about
+    140 MB here, measured before the fix)."""
+    if _declined(dl, expect):
+        return
+    (s3kb, s3v), (s3akb, s3av) = dl["bloat_s3"], dl["bloat_s3a"]
+    ok = (s3kb is not None and s3akb is not None and s3v == "3" and s3av == "3"
+          and s3akb - s3kb <= 16384)
+    expect.text("1" if ok else f"0 (peak rise: s3:// [{s3kb}] kB, s3a:// [{s3akb}] kB; "
+                               f"readings [{s3v}] [{s3av}])", "1",
+                "s3a:// position deletes cost no more memory than s3:// ones (within 16 MiB)")
+
+
+# ---- #1868: many data files, many position-delete rows ------------------------------
+
+def test_the_many_file_position_delete_table_has_its_rows(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm data rows"]), "256 rows in 32 files",
+                "premise: the many-file position-delete table holds 256 rows in 32 data files before deletes")
+
+
+def test_position_deletes_over_many_files_match_the_oracle(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm md5"]), dl["pm oracle md5"],
+                "position deletes over 32 data files drop exactly the oracle's rows (survivors == oracle, #1868)")
+
+
+def test_ordinal_zero_in_the_other_spelling_is_dropped_from_every_file(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm ordinal 0"]), "0",
+                "ordinal 0, named in the other path spelling (file:// vs bare), is dropped from all 32 data files (#1868)")
+
+
+def test_an_s3_spelled_delete_row_does_not_apply_to_a_local_file(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm s3 row"]), "1",
+                "a delete row naming a data file under s3:// does not apply to the local file (#1868)")
+
+
+def test_each_data_file_visits_only_its_own_position_deletes(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm probe"]), dl["pm oracle probe"],
+                "each data file visits only the position-delete rows naming it, not every row (#1868)")
+
+
+def test_the_position_delete_index_is_built_once_per_scan(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm index"]), dl["pm oracle index"],
+                "the position-delete index is built once per scan, one group per normalized path (#1868)")
