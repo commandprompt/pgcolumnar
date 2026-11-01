@@ -545,7 +545,9 @@ def test_tier_partition_runs_on_the_callers_own_privileges(pgc_own_db, pgc_clust
         for r in ("tier_own_py", "tier_peer_py"):
             cur.execute(f"DO $$ BEGIN CREATE ROLE {r} LOGIN NOSUPERUSER; "
                         "EXCEPTION WHEN duplicate_object THEN NULL; END $$")
-            cur.execute(f"GRANT pg_write_server_files TO {r}")
+            # Both server-file roles: the export writes, and the read-back of
+            # #1795 reads the file through the foreign partition.
+            cur.execute(f"GRANT pg_write_server_files, pg_read_server_files TO {r}")
             cur.execute(f"GRANT USAGE ON FOREIGN SERVER tq TO {r}")
             cur.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {r}")
             cur.execute(f"GRANT USAGE ON SCHEMA pgcolumnar TO {r}")
@@ -590,3 +592,259 @@ def test_tier_partition_runs_on_the_callers_own_privileges(pgc_own_db, pgc_clust
     expect.text(as_role("tier_own_py", f"SELECT pgcolumnar.tier_partition('pw_mar', 'tq', '{server_dir / 'pw_own.parquet'}')")
                 + f"|{_mar_shape(conn, 'pw')}", f"ok|f:-:{BOUND}",
                 "a non-superuser owner tiers its own partition")
+
+
+def _pg_ctl(cluster, args, extra_env):
+    """pg_ctl with an explicit environment: every AWS_* of this process removed, then
+    `extra_env` added. Dropped to postgres when running as root, as the harness does."""
+    import os
+    import subprocess
+    unset = [a for k in os.environ if k.startswith("AWS_") for a in ("-u", k)]
+    cmd = ["env"] + unset + [f"{k}={v}" for k, v in extra_env.items()] + \
+          [os.path.join(cluster.bindir, "pg_ctl")] + args
+    if os.geteuid() == 0:
+        cmd = ["runuser", "-u", "postgres", "--"] + cmd
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def test_tier_partition_writes_through_the_named_server(pgc_cluster, expect):
+    """The write uses the named server and the caller's mapping (#1795).
+
+    The foreign partition reads with the server's endpoint and region and the caller's
+    user mapping; before #1795 the write used the postmaster environment, and the move
+    committed a partition that could not read its own file. Two SigV4-verifying fixture
+    servers (test/objstore_http_server.py), each with its own directory and secret: A is
+    the one the postmaster environment names, B is reachable only through a server and a
+    mapping. Where an object lands shows which identity wrote it.
+
+    A PRIVATE CLUSTER, because the postmaster restarts with AWS_* in its environment."""
+    import os
+    import pathlib
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+    from pgc_cluster import Cluster, pick_port
+
+    key, region = "PGCTESTKEYID", "pgc-test-1"
+    secret_a, secret_b = "pgctest-env-secret", "pgctest-mapping-secret"
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-tier-s3-"))
+    os.chmod(work, 0o777)
+    servers, ports = [], {}
+    cluster = None
+    datadir = work / "data"
+    try:
+        for name, secret, slot in (("s3a", secret_a, 40), ("s3b", secret_b, 41)):
+            (work / name / "tierb").mkdir(parents=True)
+            for d in (work / name, work / name / "tierb"):
+                os.chmod(d, 0o777)
+            ports[name] = pick_port(slot)
+            out = work / f"{name}.out"
+            servers.append(subprocess.Popen(
+                [sys.executable, str(pathlib.Path(__file__).resolve().parents[1] / "objstore_http_server.py"),
+                 "--dir", str(work / name), "--port", str(ports[name]), "--log", str(work / f"{name}.log"),
+                 "--sigv4-key", key, "--sigv4-secret", secret, "--sigv4-region", region],
+                stdout=open(out, "w"), stderr=subprocess.STDOUT))
+        for _ in range(50):
+            if all((work / f"{n}.out").is_file() and "READY" in (work / f"{n}.out").read_text(errors="replace")
+                   for n in ports):
+                break
+            time.sleep(0.1)
+        ready = sum((work / f"{n}.out").read_text(errors="replace").count("READY") for n in ports)
+        expect.num(ready, 2, "premise: both SigV4 fixture servers are up")
+
+        datadir.mkdir()
+        log = str(work / "server.log")
+        cluster = Cluster(pgc_cluster.pg_config, "tiers3", datadir, pick_port(42))
+        cluster.initdb()
+        with open(datadir / "postgresql.conf", "a") as fh:
+            fh.write("\npgcolumnar.objstore_allowed_endpoints='127.0.0.1'\ntimezone='UTC'\n")
+        started = _pg_ctl(cluster, ["-D", str(datadir), "-l", log, "-w", "start"],
+                          {"AWS_ENDPOINT_URL": f"http://127.0.0.1:{ports['s3a']}", "AWS_ACCESS_KEY_ID": key,
+                           "AWS_SECRET_ACCESS_KEY": secret_a, "AWS_REGION": region})
+        if started.returncode != 0:
+            raise RuntimeError(f"the private cluster did not start: {started.stderr}")
+        conn = psycopg.connect(cluster.dsn(), autocommit=True)
+
+        def objects(name):
+            return " ".join(sorted(p.name for p in (work / name / "tierb").iterdir()))
+
+        def mini(t):
+            with conn.cursor() as cur:
+                cur.execute(f"CREATE TABLE {t} (at timestamptz NOT NULL, n int) PARTITION BY RANGE (at)")
+                cur.execute(f"CREATE TABLE {t}_mar PARTITION OF {t} FOR VALUES FROM ('2026-03-01')"
+                            " TO ('2026-04-01') USING pgcolumnar")
+                cur.execute(f"INSERT INTO {t} SELECT '2026-03-01'::timestamptz + g * interval '5 h', g * 3"
+                            " FROM generate_series(0, 120) g")
+
+        def mdigest(t):
+            try:
+                return _one(conn, f"SELECT count(*) || '|' || md5(string_agg(at::text || n, ',' ORDER BY at)) FROM {t}")
+            except psycopg.Error as e:
+                return str(e).splitlines()[0]
+
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        mini("sp")
+        try:
+            premise = _one(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/premise.parquet')")
+        except psycopg.Error as e:
+            premise = str(e).splitlines()[0]
+        expect.text(f"{premise}|{objects('s3a')}", "121|premise.parquet",
+                    "premise: the postmaster environment writes to fixture A")
+
+        # The repro from #1795: the server names fixture A, the environment holds A's
+        # valid keys, and the caller's mapping holds a wrong secret.
+        conn.execute(f"CREATE SERVER tier_s3a FOREIGN DATA WRAPPER pgcolumnar_parquet"
+                     f" OPTIONS (endpoint 'http://127.0.0.1:{ports['s3a']}', region '{region}')")
+        conn.execute(f"CREATE USER MAPPING FOR postgres SERVER tier_s3a"
+                     f" OPTIONS (access_key_id '{key}', secret_access_key 'pgctest-bogus')")
+        mini("sa")
+        before = mdigest("sa")
+        expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('sa_mar', 'tier_s3a', 's3://tierb/sa_mar.parquet')"),
+                    "28000", "a mapping the object store rejects refuses the move (28000), not the environment's keys")
+        expect.text(f"{mdigest('sa')}|{_mar_shape(conn, 'sa')}", f"{before}|r:pgcolumnar:{BOUND}",
+                    "and the refused move leaves the rows local and attached, every row once")
+        expect.text(objects("s3a"), "premise.parquet", "and the environment's keys wrote no object")
+
+        # The server names fixture B, which only the mapping's secret opens.
+        conn.execute(f"CREATE SERVER tier_s3b FOREIGN DATA WRAPPER pgcolumnar_parquet"
+                     f" OPTIONS (endpoint 'http://127.0.0.1:{ports['s3b']}', region '{region}')")
+        conn.execute(f"CREATE USER MAPPING FOR postgres SERVER tier_s3b"
+                     f" OPTIONS (access_key_id '{key}', secret_access_key '{secret_b}')")
+        mini("sb")
+        before = mdigest("sb")
+        moved = _errtext(conn, "SELECT pgcolumnar.tier_partition('sb_mar', 'tier_s3b', 's3://tierb/sb_mar.parquet')")
+        expect.text(f"{moved}|A: {objects('s3a')}|B: {objects('s3b')}", "ok|A: premise.parquet|B: sb_mar.parquet",
+                    "a move through a server writes with its endpoint and the caller's mapping")
+        expect.text(f"{mdigest('sb')}|{_mar_shape(conn, 'sb')}", f"{before}|f:-:{BOUND}",
+                    "and the parent reads every row back through the foreign partition")
+
+        def state_as(role, sql):
+            try:
+                with psycopg.connect(f"host=127.0.0.1 port={cluster.port} user={role} dbname=postgres",
+                                     autocommit=True) as c:
+                    c.execute(sql)
+                return "ok"
+            except psycopg.Error as e:
+                return e.sqlstate or "?"
+
+        def count_as(role, t):
+            try:
+                with psycopg.connect(f"host=127.0.0.1 port={cluster.port} user={role} dbname=postgres",
+                                     autocommit=True) as c:
+                    return str(_one(c, f"SELECT count(*) FROM {t}"))
+            except psycopg.Error as e:
+                return str(e).splitlines()[0]
+
+        def with_object(listing, name):
+            return " ".join(sorted(listing.split() + [name]))
+
+        # export_parquet(rel, path, server) refuses before it writes: neither fixture
+        # may hold an object after any of these.
+        # tier_s3pub names fixture B and has a PUBLIC mapping with B's valid secret: a
+        # role without USAGE would write to B with it if the USAGE gate were gone.
+        # tier_s3half has a mapping for postgres with an access key and no secret.
+        conn.execute("CREATE FOREIGN DATA WRAPPER tier_dummy")
+        conn.execute("CREATE SERVER tier_other FOREIGN DATA WRAPPER tier_dummy")
+        for srv in ("tier_s3pub", "tier_s3half"):
+            conn.execute(f"CREATE SERVER {srv} FOREIGN DATA WRAPPER pgcolumnar_parquet"
+                         f" OPTIONS (endpoint 'http://127.0.0.1:{ports['s3b']}', region '{region}')")
+        conn.execute(f"CREATE USER MAPPING FOR PUBLIC SERVER tier_s3pub"
+                     f" OPTIONS (access_key_id '{key}', secret_access_key '{secret_b}')")
+        conn.execute(f"CREATE USER MAPPING FOR postgres SERVER tier_s3half OPTIONS (access_key_id '{key}')")
+        conn.execute("CREATE ROLE tier_s3nouse LOGIN NOSUPERUSER")
+        conn.execute("GRANT pg_write_server_files TO tier_s3nouse")
+        conn.execute("GRANT SELECT ON sp_mar TO tier_s3nouse")
+        conn.execute("GRANT USAGE ON SCHEMA pgcolumnar TO tier_s3nouse")
+        pub = _errtext(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/pub_premise.parquet', 'tier_s3pub')")
+        pub_n = sum(1 for n in objects("s3b").split() if n.startswith("pub_premise"))
+        expect.text(f"{pub}|{pub_n}", "ok|1", "premise: the PUBLIC mapping on tier_s3pub writes to fixture B")
+
+        def crashes():
+            # Backends killed by a signal, from the server log.
+            return pathlib.Path(log).read_text(errors="replace").count("terminated by signal")
+
+        g_a, g_b, g_crash = objects("s3a"), objects("s3b"), crashes()
+        expect.text(_sqlstate(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_other.parquet', 'tier_other')"),
+                    "42809", "export_parquet through a server of another wrapper is refused (42809)")
+        expect.text(_sqlstate(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_none.parquet', 'tier_nosuch')"),
+                    "42704", "export_parquet through a server that does not exist is refused (42704)")
+        expect.text(state_as("tier_s3nouse", "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_usage.parquet', 'tier_s3pub')"),
+                    "42501", "export_parquet by a role without USAGE on the server is refused (42501)")
+        half = work / "g_half.parquet"
+        expect.text(_sqlstate(conn, f"SELECT pgcolumnar.export_parquet('sp_mar', '{half}', 'tier_s3half')")
+                    + ("|file" if half.exists() else "|nofile"), "28000|nofile",
+                    "export_parquet to a local path through a server whose mapping holds half a credential is refused (28000)")
+        # The null arm runs last, so that a backend it crashes cannot fail the arms above.
+        expect.text(_sqlstate(conn, "SELECT pgcolumnar.export_parquet('sp_mar', 's3://tierb/g_null.parquet', NULL)"),
+                    "22004", "export_parquet through a null server is refused (22004)")
+        expect.num(crashes(), g_crash, "and no refused export crashed a backend")
+        expect.text(f"A: {objects('s3a')}|B: {objects('s3b')}", f"A: {g_a}|B: {g_b}",
+                    "and no refused export wrote an object to A or B")
+
+        # A non-superuser gets no environment keys: the write takes the read's rule.
+        for r in ("tier_s3own", "tier_s3wo"):
+            conn.execute(f"CREATE ROLE {r} LOGIN NOSUPERUSER")
+            conn.execute(f"GRANT pg_write_server_files TO {r}")
+            conn.execute(f"GRANT USAGE ON FOREIGN SERVER tier_s3b TO {r}")
+            conn.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {r}")
+            conn.execute(f"GRANT USAGE ON SCHEMA pgcolumnar TO {r}")
+        # tier_s3own can read server files too; tier_s3wo can only write them.
+        conn.execute("GRANT pg_read_server_files TO tier_s3own")
+        for t, owner in (("so", "tier_s3own"), ("swo", "tier_s3wo")):
+            mini(t)
+            conn.execute(f"ALTER TABLE {t} OWNER TO {owner}")
+            conn.execute(f"ALTER TABLE {t}_mar OWNER TO {owner}")
+        supers = _one(conn, "SELECT count(*) FROM pg_roles WHERE rolname IN ('tier_s3own', 'tier_s3wo') AND rolsuper")
+        maps = _one(conn, "SELECT count(*) FROM pg_user_mappings WHERE srvname = 'tier_s3b'"
+                          " AND usename IN ('tier_s3own', 'tier_s3wo', 'public')")
+        expect.text(f"{supers}|{maps}", "0|0",
+                    "premise: neither owner is a superuser, and neither has a mapping on the server")
+        g_b = objects("s3b")
+        expect.text(state_as("tier_s3own", "SELECT pgcolumnar.export_parquet('so_mar', 's3://tierb/so_env.parquet', 'tier_s3b')")
+                    + f"|A: {objects('s3a')}", f"28000|A: {g_a}",
+                    "a non-superuser with no mapping is refused the export (28000), not given the environment's keys")
+        before = mdigest("so")
+        expect.text(state_as("tier_s3own", "SELECT pgcolumnar.tier_partition('so_mar', 'tier_s3b', 's3://tierb/so_mar.parquet')"),
+                    "28000", "a non-superuser owner with no mapping is refused the move (28000)")
+        expect.text(f"{mdigest('so')}|{_mar_shape(conn, 'so')}|A: {objects('s3a')}|B: {objects('s3b')}",
+                    f"{before}|r:pgcolumnar:{BOUND}|A: {g_a}|B: {g_b}",
+                    "and its refused move leaves the rows local and attached, every row once, with no object written")
+        conn.execute(f"CREATE USER MAPPING FOR tier_s3own SERVER tier_s3b"
+                     f" OPTIONS (access_key_id '{key}', secret_access_key '{secret_b}')")
+        expect.text(state_as("tier_s3own", "SELECT pgcolumnar.tier_partition('so_mar', 'tier_s3b', 's3://tierb/so_mar.parquet')")
+                    + f"|{_mar_shape(conn, 'so')}|B: {objects('s3b')}",
+                    f"ok|f:-:{BOUND}|B: {with_object(g_b, 'so_mar.parquet')}",
+                    "a non-superuser owner moves its partition through its own mapping")
+        expect.text(f"{count_as('tier_s3own', 'so')}|{mdigest('so')}", f"121|{before}",
+                    "and the owner reads every row back through the foreign partition")
+
+        # The move reads its file back before it commits (#1795, Fix point 2).
+        conn.execute(f"CREATE USER MAPPING FOR tier_s3wo SERVER tier_s3b"
+                     f" OPTIONS (access_key_id '{key}', secret_access_key '{secret_b}')")
+        before = mdigest("swo")
+        refused = state_as("tier_s3wo", "SELECT pgcolumnar.tier_partition('swo_mar', 'tier_s3b', 's3://tierb/swo_mar.parquet')")
+        written = sum(1 for n in objects("s3b").split() if n.startswith("swo_mar"))
+        expect.text(f"{refused}|B: {written}", "42501|B: 0",
+                    "an owner without pg_read_server_files is refused the move before anything is written (42501)")
+        expect.text(f"{mdigest('swo')}|{_mar_shape(conn, 'swo')}", f"{before}|r:pgcolumnar:{BOUND}",
+                    "and the move refused for want of pg_read_server_files leaves the rows local and attached")
+        mini("sr")
+        before = mdigest("sr")
+        deny = work / "s3b" / "__deny_reads__"
+        deny.write_text("")
+        try:
+            refused = _sqlstate(conn, "SELECT pgcolumnar.tier_partition('sr_mar', 'tier_s3b', 's3://tierb/sr_mar.parquet')")
+        finally:
+            deny.unlink()
+        expect.text(refused, "28000", "a key that can write but not read refuses the move (28000)")
+        expect.text(f"{mdigest('sr')}|{_mar_shape(conn, 'sr')}", f"{before}|r:pgcolumnar:{BOUND}",
+                    "and the move refused at the read-back leaves the rows local and attached, every row once")
+        conn.close()
+    finally:
+        if cluster is not None:
+            _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
+        for s in servers:
+            s.kill()
+            s.wait()
+        shutil.rmtree(work, ignore_errors=True)

@@ -243,7 +243,10 @@ PYDEC
 		# ONE SKIP PER ARM, UNDER THE ARM'S OWN NAME (#994).
 		for _pd_n in "INT64-backed DECIMAL: predicate skips 3 of 4 groups" \
 				"INT64-backed DECIMAL: skipping did not drop rows" \
-				"INT64-backed DECIMAL: unfiltered scan skips nothing"; do
+				"INT64-backed DECIMAL: unfiltered scan skips nothing" \
+				"typmod: a numeric(18,1) column returns every row that rounds to 100.0" \
+				"typmod: a numeric(18,1) column skips no group for d = 100.0" \
+				"typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups"; do
 			check_skip "$_pd_n" \
 				"SKIP  $_pd_n (could not build the integer-DECIMAL pushdown file)" \
 				"could not build the fixture file"
@@ -259,6 +262,21 @@ PYDEC
 			"$(q 'SELECT count(*) FROM ftdec WHERE d BETWEEN 120.00 AND 130.00;')" "1001"
 		check "INT64-backed DECIMAL: unfiltered scan skips nothing" \
 			"$(skipped_for_t ftdec 'd >= 0')" "0"
+		# A declared typmod that rounds (#1790): numeric(18,1) reads 99.95 .. 99.99
+		# as 100.0, but they sit in the first group, whose stored max is 99.99. A
+		# skip decided on the stored statistics would drop them, so a column whose
+		# typmod can change a value is never skipped. The file's own typmod,
+		# numeric(18,2), changes nothing, so it keeps skipping.
+		psql_run "CREATE FOREIGN TABLE ftdec1 (d numeric(18,1)) SERVER pq
+		          OPTIONS (path '$PGC_WORKDIR/dec_push.parquet');"
+		psql_run "CREATE FOREIGN TABLE ftdec2 (d numeric(18,2)) SERVER pq
+		          OPTIONS (path '$PGC_WORKDIR/dec_push.parquet');"
+		check "typmod: a numeric(18,1) column returns every row that rounds to 100.0" \
+			"$(q 'SELECT count(*) FROM ftdec1 WHERE d = 100.0;')" "10"
+		check "typmod: a numeric(18,1) column skips no group for d = 100.0" \
+			"$(skipped_for_t ftdec1 'd = 100.0')" "0"
+		check "typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups" \
+			"$(skipped_for_t ftdec2 "d BETWEEN 120.00 AND 130.00")" "3"
 	fi
 else
 	# ONE SKIP PER ARM, UNDER THE ARM'S OWN NAME (#994). The OUTER gate: without
@@ -266,10 +284,66 @@ else
 	# left all three with no record.
 	for _pd_o in "INT64-backed DECIMAL: predicate skips 3 of 4 groups" \
 			"INT64-backed DECIMAL: skipping did not drop rows" \
-			"INT64-backed DECIMAL: unfiltered scan skips nothing"; do
+			"INT64-backed DECIMAL: unfiltered scan skips nothing" \
+			"typmod: a numeric(18,1) column returns every row that rounds to 100.0" \
+			"typmod: a numeric(18,1) column skips no group for d = 100.0" \
+			"typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups"; do
 		check_skip "$_pd_o" \
 			"SKIP  $_pd_o (pyarrow not available)" \
 			"pyarrow not available"
+	done
+fi
+
+
+# ---- a time type at full precision keeps skipping (#1790) --------------------
+# A declared typmod that can change a value turns row-group skipping off for the
+# column. timestamp(6) is microsecond precision, the precision the file stores,
+# so it changes nothing and must keep skipping. timestamp(3) rounds: each group's
+# last value, hh:59:59.9996, reads as the next hour, beyond the group's stored
+# max, so that column must skip nothing and return the rounded row.
+if python3 -c 'import pyarrow.parquet' 2>/dev/null; then
+	python3 - "$PGC_WORKDIR" <<'PYTS'
+import datetime, os, sys
+import pyarrow as pa, pyarrow.parquet as pq
+W = sys.argv[1]
+# four row groups, one per hour of 2021-01-01: 999 whole seconds, then hh:59:59.9996
+base = datetime.datetime(2021, 1, 1)
+vals = []
+for g in range(4):
+    h = base + datetime.timedelta(hours=g)
+    vals += [h + datetime.timedelta(seconds=k) for k in range(999)]
+    vals.append(h + datetime.timedelta(minutes=59, seconds=59, microseconds=999600))
+pq.write_table(pa.table({"t": pa.array(vals, pa.timestamp("us"))}),
+               os.path.join(W, "ts_push.parquet"), compression="none",
+               row_group_size=1000)
+if pq.ParquetFile(os.path.join(W, "ts_push.parquet")).metadata.num_row_groups != 4:
+    sys.exit("expected 4 row groups")
+PYTS
+	if [ $? -ne 0 ]; then
+		# ONE SKIP PER ARM, UNDER THE ARM'S OWN NAME (#994).
+		for _pt in "typmod: a timestamp(6) column still skips 3 of 4 groups" \
+				"typmod: a timestamp(3) column skips no group for t >= 03:00" \
+				"typmod: a timestamp(3) column returns the row that rounds up to 03:00"; do
+			check_skip "$_pt" "SKIP  $_pt (could not build the timestamp pushdown file)" \
+				"could not build the fixture file"
+		done
+	else
+		psql_run "CREATE FOREIGN TABLE ftts6 (t timestamp(6)) SERVER pq
+		          OPTIONS (path '$PGC_WORKDIR/ts_push.parquet');"
+		psql_run "CREATE FOREIGN TABLE ftts3 (t timestamp(3)) SERVER pq
+		          OPTIONS (path '$PGC_WORKDIR/ts_push.parquet');"
+		check "typmod: a timestamp(6) column still skips 3 of 4 groups" \
+			"$(skipped_for_t ftts6 "t >= TIMESTAMP '2021-01-01 03:00:00'")" "3"
+		check "typmod: a timestamp(3) column skips no group for t >= 03:00" \
+			"$(skipped_for_t ftts3 "t >= TIMESTAMP '2021-01-01 03:00:00'")" "0"
+		check "typmod: a timestamp(3) column returns the row that rounds up to 03:00" \
+			"$(q "SELECT count(*) FROM ftts3 WHERE t >= TIMESTAMP '2021-01-01 03:00:00'")" "1001"
+	fi
+else
+	for _pt in "typmod: a timestamp(6) column still skips 3 of 4 groups" \
+			"typmod: a timestamp(3) column skips no group for t >= 03:00" \
+			"typmod: a timestamp(3) column returns the row that rounds up to 03:00"; do
+		check_skip "$_pt" "SKIP  $_pt (pyarrow not available)" "pyarrow not available"
 	done
 fi
 

@@ -471,6 +471,36 @@ check "reject a non-columnar target" \
 	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('t_heap2'::regclass, '$PGC_WORKDIR/heaptgt', 2)" \
 		'is not a columnar table or a partitioned table with columnar partitions')" refused
 
+# ---- the workers use the caller's export_group_bytes (#1843 review) ----------
+# The workers are background workers, which start with the server's settings, so a
+# session's SET of the byte cap did not reach them. 4000 rows of 3000 bytes, 1000 rows
+# a stripe, two workers of 2000 rows each. Each row buffers 3010 bytes (id: 4 + 1 level
+# byte; s: 4 + 3000 + 1), so under a 65536-byte cap a group holds at most 21 rows.
+# The reading is "rows returned|rows read back|the most rows in any row group, over all
+# part files".
+psql_run "DROP TABLE IF EXISTS t_cap; CREATE TABLE t_cap (id int, s text) USING pgcolumnar;
+          SELECT pgcolumnar.set_options('t_cap'::regclass, stripe_row_limit => 1000);
+          INSERT INTO t_cap SELECT g, repeat('x', 3000) FROM generate_series(1, 4000) g;" >/dev/null
+cap_n="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+	-c "SET pgcolumnar.export_group_bytes = 65536" \
+	-c "SELECT pgcolumnar.parallel_export_parquet('t_cap'::regclass, '$PGC_WORKDIR/capdir', 2)" 2>&1 | tail -1)"
+cap_groups="$(python3 - "$PGC_WORKDIR/capdir" <<'PY'
+import glob, sys
+try:
+    import pyarrow.parquet as pq
+    rows, most = 0, 0
+    for f in sorted(glob.glob(sys.argv[1] + "/part-*.parquet")):
+        md = pq.ParquetFile(f).metadata
+        rows += md.num_rows
+        most = max([most] + [md.row_group(i).num_rows for i in range(md.num_row_groups)])
+    print("%d|%d" % (rows, most))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "the workers cut row groups at the caller's export_group_bytes: 4000 rows of 3000 bytes under a 65536-byte cap, at most 21 rows a group" \
+	"$cap_n|$cap_groups" "4000|4000|21"
+
 check "server still up after the exports" "$(survived "$CRASHES_AT_START")" 1
 
 pgc_summary

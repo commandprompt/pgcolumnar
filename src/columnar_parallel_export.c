@@ -121,7 +121,8 @@ typedef struct PexportSpawn
 PGDLLEXPORT void pgcolumnar_parallel_export_worker(Datum main_arg);
 
 /*
- * The settings the object-store module reads by name (#1780). A background
+ * The caller's settings a worker needs: the ones the object-store module
+ * reads by name (#1780), and the Parquet writer's byte cap (#1811). A background
  * worker gets postgresql.conf, ALTER SYSTEM, and the ALTER ROLE and ALTER
  * DATABASE settings applied when it connects, but never the caller's SET, so
  * without these a worker ignored the caller's SET: it uploaded to an endpoint the session
@@ -133,6 +134,7 @@ static const char *const pexport_session_gucs[] = {
 	"pgcolumnar.objstore_allowed_endpoints",
 	"pgcolumnar.objstore_s3_addressing",
 	"pgcolumnar.objstore_part_size",
+	"pgcolumnar.export_group_bytes",	/* the Parquet writer's byte cap (#1811) */
 };
 #define PEXPORT_NGUCS lengthof(pexport_session_gucs)
 
@@ -533,7 +535,9 @@ pexport_wait_workers_stopped(BackgroundWorkerHandle **handles, int nhandles)
  *
  *		Best effort, and never raises: anything the listing or an abort raises
  *		ends the cleanup and is discarded. The caller must have an empty error
- *		stack, so discarding it discards nothing else.
+ *		stack, so discarding it discards nothing else. What was discarded is
+ *		LOGged first (#1869): the uploads it leaves open are billed until
+ *		someone aborts them, and the log is the only place that says why.
  */
 static void
 pexport_abort_own_uploads(const char *dir, int nkeys,
@@ -605,6 +609,8 @@ pexport_abort_own_uploads(const char *dir, int nkeys,
 	}
 	PG_CATCH();
 	{
+		ErrorData  *edata;
+
 		/*
 		 * errfinish zeroed the holdoff counts before the longjmp; put back what
 		 * this function held, so the RESUME below balances the HOLD above.
@@ -612,7 +618,13 @@ pexport_abort_own_uploads(const char *dir, int nkeys,
 		InterruptHoldoffCount = held;
 		QueryCancelHoldoffCount = cancelHeld;
 		MemoryContextSwitchTo(cxt);
+		edata = CopyErrorData();
 		FlushErrorState();		/* the caller's stack was empty: only ours */
+		ereport(LOG,
+				(errmsg("columnar: parallel_export_parquet could not clean up "
+						"the open uploads under \"%s\": %s",
+						dir, edata->message)));
+		FreeErrorData(edata);
 	}
 	PG_END_TRY();
 
