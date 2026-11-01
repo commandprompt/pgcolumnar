@@ -234,6 +234,8 @@ static const char *const map[][2] = {
 	{"alinat64", "64:ff9b::6464:64c8"},
 	{"alilocal", "64:ff9b:1::6464:64c8"},
 	{"alilocal48", "64:ff9b:1:6464:64:c800::"},
+	{"ali56", "64:ff9b:1:64:64:64c8::"},
+	{"ali64", "64:ff9b:1:0:64:6464:c800::"},
 	{"alinext", "64:ff9b::6464:64c9"},
 };
 
@@ -339,7 +341,8 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
                       "n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid, "
                       "l48only.pgc-shim.invalid, gce253.pgc-shim.invalid, n64sec.pgc-shim.invalid, "
                       "alimapped.pgc-shim.invalid, alicompat.pgc-shim.invalid, alinat64.pgc-shim.invalid, "
-                      "alilocal.pgc-shim.invalid, alilocal48.pgc-shim.invalid, alinext.pgc-shim.invalid'")
+                      "alilocal.pgc-shim.invalid, alilocal48.pgc-shim.invalid, ali56.pgc-shim.invalid, "
+                      "ali64.pgc-shim.invalid, alinext.pgc-shim.invalid'")
             c.execute("SELECT pg_reload_conf()")
         time.sleep(0.5)
 
@@ -423,8 +426,9 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
         # 100.100.100.200 inside the same IPv6 forms (#1848). On an IPv6-only network
         # with DNS64, a name whose A record is 100.100.100.200 resolves only to
         # 64:ff9b::6464:64c8, so each form needs its own refusal. The /48 local-use
-        # layout puts the address at bytes 6, 7, 9 and 10. 100.100.100.201 under the
-        # well-known prefix is the control: a connect is tried.
+        # layout puts the address at bytes 6, 7, 9 and 10, /56 at 7, 9, 10 and 11, and
+        # /64 at 9 to 12. 100.100.100.201 under the well-known prefix is the control: a
+        # connect is tried.
         expect.text(shim_read("alimapped")[0], "42501",
                     "IPv4-mapped ::ffff:100.100.100.200: refused 42501 despite being listed")
         expect.text(shim_read("alicompat")[0], "42501",
@@ -435,6 +439,12 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
                     "NAT64 local-use 64:ff9b:1::6464:64c8 (100.100.100.200): refused 42501 despite being listed")
         expect.text(shim_read("alilocal48")[0], "42501",
                     "NAT64 local-use /48 64:ff9b:1:6464:64:c800:: (100.100.100.200): refused 42501 "
+                    "despite being listed")
+        expect.text(shim_read("ali56")[0], "42501",
+                    "NAT64 local-use /56 64:ff9b:1:64:64:64c8:: (100.100.100.200): refused 42501 "
+                    "despite being listed")
+        expect.text(shim_read("ali64")[0], "42501",
+                    "NAT64 local-use /64 64:ff9b:1:0:64:6464:c800:: (100.100.100.200): refused 42501 "
                     "despite being listed")
         expect.text(connect_tried("alinext"), "connect tried",
                     "NAT64 64:ff9b::6464:64c9 (100.100.100.201): not refused, a connect is tried")

@@ -195,6 +195,8 @@ static const char *const map[][2] = {
 	{"alinat64", "64:ff9b::6464:64c8"},
 	{"alilocal", "64:ff9b:1::6464:64c8"},
 	{"alilocal48", "64:ff9b:1:6464:64:c800::"},
+	{"ali56", "64:ff9b:1:64:64:64c8::"},
+	{"ali64", "64:ff9b:1:0:64:6464:c800::"},
 	{"alinext", "64:ff9b::6464:64c9"},
 };
 
@@ -263,7 +265,7 @@ check "premise: the server restarts with the resolver shim" \
 shim_read() {  # shim_read <name> -> the SQLSTATE of a read from that name, port 1
 	sqlstate_of "SET statement_timeout = '3s'; SELECT count(*) FROM pgcolumnar.read_parquet('http://$1.pgc-shim.invalid:1/x.parquet') AS (a int8)"
 }
-set_list "ok.pgc-shim.invalid, imds6.pgc-shim.invalid, nat64.pgc-shim.invalid, nat64local.pgc-shim.invalid, mapped.pgc-shim.invalid, compat.pgc-shim.invalid, gcp6.pgc-shim.invalid, local48.pgc-shim.invalid, local56.pgc-shim.invalid, local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid, loop6.pgc-shim.invalid, ula.pgc-shim.invalid, n64ok.pgc-shim.invalid, n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid, l48only.pgc-shim.invalid, gce253.pgc-shim.invalid, n64sec.pgc-shim.invalid, alimapped.pgc-shim.invalid, alicompat.pgc-shim.invalid, alinat64.pgc-shim.invalid, alilocal.pgc-shim.invalid, alilocal48.pgc-shim.invalid, alinext.pgc-shim.invalid"
+set_list "ok.pgc-shim.invalid, imds6.pgc-shim.invalid, nat64.pgc-shim.invalid, nat64local.pgc-shim.invalid, mapped.pgc-shim.invalid, compat.pgc-shim.invalid, gcp6.pgc-shim.invalid, local48.pgc-shim.invalid, local56.pgc-shim.invalid, local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid, loop6.pgc-shim.invalid, ula.pgc-shim.invalid, n64ok.pgc-shim.invalid, n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid, l48only.pgc-shim.invalid, gce253.pgc-shim.invalid, n64sec.pgc-shim.invalid, alimapped.pgc-shim.invalid, alicompat.pgc-shim.invalid, alinat64.pgc-shim.invalid, alilocal.pgc-shim.invalid, alilocal48.pgc-shim.invalid, ali56.pgc-shim.invalid, ali64.pgc-shim.invalid, alinext.pgc-shim.invalid"
 check_num "premise: a shim name that maps to 127.0.0.1 reads the fixture" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('http://ok.pgc-shim.invalid:$HTTP_PORT/fixture.parquet') AS (a int8)")" "1000"
 check "IPv6 IMDS fd00:ec2::254: refused 42501 despite being listed" "$(shim_read imds6)" "42501"
@@ -314,13 +316,15 @@ check "NAT64 64:ff9b::aafe:a9fe (170.254.169.254): not refused, a connect is tri
 # 100.100.100.200 inside the same IPv6 forms (#1848). On an IPv6-only network with
 # DNS64, a name whose A record is 100.100.100.200 resolves only to
 # 64:ff9b::6464:64c8, so each form needs its own refusal. The /48 local-use layout
-# puts the address at bytes 6, 7, 9 and 10. 100.100.100.201 under the well-known
-# prefix is the control: a connect is tried.
+# puts the address at bytes 6, 7, 9 and 10, /56 at 7, 9, 10 and 11, and /64 at 9 to
+# 12. 100.100.100.201 under the well-known prefix is the control: a connect is tried.
 check "IPv4-mapped ::ffff:100.100.100.200: refused 42501 despite being listed" "$(shim_read alimapped)" "42501"
 check "IPv4-compatible ::100.100.100.200: refused 42501 despite being listed" "$(shim_read alicompat)" "42501"
 check "NAT64 64:ff9b::6464:64c8 (100.100.100.200): refused 42501 despite being listed" "$(shim_read alinat64)" "42501"
 check "NAT64 local-use 64:ff9b:1::6464:64c8 (100.100.100.200): refused 42501 despite being listed" "$(shim_read alilocal)" "42501"
 check "NAT64 local-use /48 64:ff9b:1:6464:64:c800:: (100.100.100.200): refused 42501 despite being listed" "$(shim_read alilocal48)" "42501"
+check "NAT64 local-use /56 64:ff9b:1:64:64:64c8:: (100.100.100.200): refused 42501 despite being listed" "$(shim_read ali56)" "42501"
+check "NAT64 local-use /64 64:ff9b:1:0:64:6464:c800:: (100.100.100.200): refused 42501 despite being listed" "$(shim_read ali64)" "42501"
 check "NAT64 64:ff9b::6464:64c9 (100.100.100.201): not refused, a connect is tried" "$(connect_tried alinext)" "connect tried"
 IMDS6_OUT="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
 	-c "SET statement_timeout = '3s'" \
