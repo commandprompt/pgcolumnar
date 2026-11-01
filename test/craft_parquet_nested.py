@@ -10,7 +10,7 @@ Each file holds one nested column and an int32 column n, two rows:
   shl.parquet    s struct<x list<int64>>           (one leaf, at depth 4)
   sos.parquet    s struct<t struct<a int64, b string>>
   smap.parquet   s struct<m map<string, int64>>
-  lmap.parquet   l list<map<string, int64>>
+  lmap.parquet   l list<map<string, int64>>        (row 1 holds two maps)
   lol.parquet    l list<list<int64>>               (max_rep 2)
   twolevel.parquet  l as a top-level `repeated int64`, the legacy two-level
                  list. pyarrow cannot write that shape, so it is a REQUIRED
@@ -51,7 +51,8 @@ write("shl", "s", pa.struct([("x", pa.list_(I64))]), [{"x": [1, 2]}, {"x": [3]}]
 write("sos", "s", pa.struct([("t", pa.struct([("a", I64), ("b", STR)]))]),
       [{"t": {"a": 1, "b": "x"}}, {"t": {"a": 2, "b": "y"}}])
 write("smap", "s", pa.struct([("m", MAP)]), [{"m": [("k", 1)]}, {"m": [("z", 3)]}])
-write("lmap", "l", pa.list_(MAP), [[[("k", 1)]], [[("z", 3)]]])
+# two maps in row 1, so a flattening read shows the lost map boundary (#1917)
+write("lmap", "l", pa.list_(MAP), [[[("k", 1), ("j", 2)], [("y", 4)]], [[("z", 3)]]])
 write("lol", "l", pa.list_(pa.list_(I64)), [[[1], [2, 3]], [[4]]])
 write("qname", "s", pa.struct([("Weird Name", pa.int16())]), [{"Weird Name": 1}, {"Weird Name": 2}])
 

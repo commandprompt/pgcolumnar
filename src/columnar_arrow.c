@@ -1156,6 +1156,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 	relid = PG_GETARG_OID(0);
 	pathText = PG_GETARG_TEXT_PP(1);
 	path = text_to_cstring(pathText);
+	PgColumnarRefuseS3AliasWrite("export_arrow", path);
 
 	/*
 	 * SELECT on the source, before the file is opened (#559). The server-file

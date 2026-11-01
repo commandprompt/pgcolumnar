@@ -6,6 +6,7 @@
 # ABI, and Hive partition columns work over a remote prefix. An exact key that
 # holds `*`, `?` or `[` reads that object alone (#1785). When one object under a
 # prefix or glob does not match the declared columns, the error names it (#1902).
+# s3a:// and s3n:// read as s3://, in any case, and an export refuses them (#1930).
 #
 # The fixture (test/objstore_http_server.py) answers ListObjectsV2 over the
 # objects on disk, paged by --list-page-size, so the client's continuation-token
@@ -284,6 +285,84 @@ check "a partition predicate prunes a remote file (Files Pruned = 1)" \
 	"$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
 	      SELECT count(*) FROM fhive WHERE dt = DATE '2026-01-01';" \
 		| grep 'Files Pruned' | grep -oE '[0-9]+' | head -1)" "1"
+
+# ---- #1930: s3a:// and s3n:// read as s3://, in any case --------------------
+# The Hadoop names for S3. The Iceberg reader reads them as s3:// (#1825), and so
+# do the Parquet readers, which rewrite the path before routing, listing or
+# signing it, so the module sees s3:// only. Each reading below has an s3://
+# reading of the same object above it. An error after the rewrite names the
+# s3:// URL. Only the start of the path is a scheme: s3ax:// and xs3a:// stay
+# local paths. The exports write s3:// only and refuse an alias by name, with a
+# hint naming the s3:// URL.
+rpqs() { qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('$1$BUCKET/$2') AS t(id int8);" | tr '|' ' '; }
+check "an s3a:// exact key reads the object s3:// reads" "$(rpqs s3a:// lst/part-0000.parquet)" "3 3"
+check "an s3n:// exact key reads the object s3:// reads" "$(rpqs s3n:// lst/part-0000.parquet)" "3 3"
+check "an s3a:// prefix lists and reads every object under it, as s3:// does" "$(rpqs s3a:// lst/)" "12 192"
+check "an s3n:// prefix lists and reads every object under it, as s3:// does" "$(rpqs s3n:// lst/)" "12 192"
+check "an s3a:// glob lst/*.parquet matches the 3 top-level parts, as s3:// does" \
+	"$(rpqs s3a:// 'lst/*.parquet')" "9 99"
+check "an upper-case S3A:// prefix reads as s3:// does" "$(rpqs S3A:// lst/)" "12 192"
+check "a mixed-case S3n:// exact key reads as s3:// does" "$(rpqs S3n:// lst/part-0000.parquet)" "3 3"
+check "parquet_schema through s3a:// == through s3://" \
+	"$(qe "SELECT * FROM pgcolumnar.parquet_schema('s3a://$BUCKET/lst/part-0000.parquet')")|$(qe "SELECT * FROM pgcolumnar.parquet_schema('s3://$BUCKET/lst/part-0000.parquet')")" \
+	"id|bigint|t||id|bigint|t|"
+psql_run "CREATE TABLE alias_dst (id int8) USING pgcolumnar;"
+check "import_parquet through s3n:// loads the object's rows" \
+	"$(qe "SELECT pgcolumnar.import_parquet('alias_dst', 's3n://$BUCKET/lst/part-0001.parquet')")|$(qe "SELECT sum(id) FROM alias_dst")" \
+	"3|33"
+psql_run "CREATE FOREIGN TABLE falias (id int8) SERVER s3srv OPTIONS (path 's3a://$BUCKET/lst/');"
+check "the FDW over an s3a:// prefix == read_parquet over the s3:// prefix" \
+	"$(pgc_set_hash "SELECT * FROM falias")" \
+	"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)")"
+psql_run "CREATE FOREIGN TABLE fhive_alias (id int8, dt date) SERVER s3srv
+          OPTIONS (path 'S3A://$BUCKET/hive/', partition_columns 'dt');"
+check "Hive over an S3A:// prefix stamps the partition column" \
+	"$(q "SELECT dt, count(*) FROM fhive_alias GROUP BY dt ORDER BY dt;" | tr '\n|' ' ')" \
+	"2026-01-01 3 2026-01-02 3 "
+# The root's own dt= component is above the partition root, as with s3://, so the
+# file carries no dt= component: refused, not stamped with the root's value.
+psql_run "CREATE FOREIGN TABLE fhive_root (id int8, dt date) SERVER s3srv
+          OPTIONS (path 's3a://$BUCKET/hive/dt=2026-01-01/', partition_columns 'dt');"
+check "an s3a:// FDW root's own dt= component is not a partition value, as with s3://" \
+	"$(refusal_of "SELECT count(*) FROM fhive_root" \
+		"file \"s3://$BUCKET/hive/dt=2026-01-01/part.parquet\" has no \"dt=\" directory component" \
+		" naming the s3:// file")" "HV004 naming the s3:// file"
+check "a missing object through s3a:// is reported under its s3:// URL" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('s3a://$BUCKET/lst/nope.parquet') AS t(id int8)" \
+		"\"s3://$BUCKET/lst/nope.parquet\" does not exist" " by its s3:// URL")" "58P01 by its s3:// URL"
+check "control: an s3ax:// URL is a local path, not S3" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('s3ax://$BUCKET/lst/part-0000.parquet') AS t(id int8)" \
+		"could not open file \"s3ax://$BUCKET/lst/part-0000.parquet\"" " as a local file")" "58P01 as a local file"
+check "control: an xs3a:// URL is a local path, not S3" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('xs3a://$BUCKET/lst/part-0000.parquet') AS t(id int8)" \
+		"could not open file \"xs3a://$BUCKET/lst/part-0000.parquet\"" " as a local file")" "58P01 as a local file"
+# alias_refusal SQL FUNC URL S3URL -> "0A000 named" when SQL raised 0A000 with the
+# export's own message for URL and a hint naming S3URL, else what it raised
+alias_refusal() {
+	local out st
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	st="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	if [ -z "$st" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif grep -qF "ERROR:  0A000: columnar: $2 does not write \"$3\"" <<<"$out" &&
+		grep -qF "HINT:  Write to \"$4\" instead." <<<"$out"; then echo "$st named"
+	else echo "$st ($(grep -m1 '^ERROR:' <<<"$out"))"; fi
+}
+psql_run "CREATE TABLE alias_src (id int8) USING pgcolumnar; INSERT INTO alias_src VALUES (7), (8);"
+check "export_parquet refuses s3a:// with 0A000 and a hint naming the s3:// URL" \
+	"$(alias_refusal "SELECT pgcolumnar.export_parquet('alias_src', 's3a://$BUCKET/out/e.parquet')" \
+		export_parquet "s3a://$BUCKET/out/e.parquet" "s3://$BUCKET/out/e.parquet")" "0A000 named"
+check "export_arrow refuses s3n:// with 0A000 and a hint naming the s3:// URL" \
+	"$(alias_refusal "SELECT pgcolumnar.export_arrow('alias_src', 's3n://$BUCKET/out/e.arrow')" \
+		export_arrow "s3n://$BUCKET/out/e.arrow" "s3://$BUCKET/out/e.arrow")" "0A000 named"
+check "parallel_export_parquet refuses S3A:// with 0A000 and a hint naming the s3:// URL" \
+	"$(alias_refusal "SELECT pgcolumnar.parallel_export_parquet('alias_src', 'S3A://$BUCKET/out/pe/')" \
+		parallel_export_parquet "S3A://$BUCKET/out/pe/" "s3://$BUCKET/out/pe/")" "0A000 named"
 
 # ---- a non-advancing continuation token is refused, not looped forever ------
 # A broken or hostile endpoint that replays one truncated page with the same

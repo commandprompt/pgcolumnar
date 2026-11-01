@@ -1343,6 +1343,11 @@ class _UnrunnableCollector:
         # nothing itself, so `session.items` is empty there, and the stale-row
         # direction below had no collection to intersect with.
         self.xdist_collected = set()
+        # WHAT PASSED (#1914). The stale-row direction asks "listed, and ran to a
+        # pass". A listed test that failed, or was lost to a crashed worker, did
+        # not decline either, but the list is right about it and the run already
+        # fails for it.
+        self.passed = set()
 
     # Optional, so a run without xdist does not fail on an unknown hook.
     @pytest.hookimpl(optionalhook=True)
@@ -1356,6 +1361,8 @@ class _UnrunnableCollector:
         # exit status is discarded by xdist; the controller's is the run's.
         if report.when != "call":
             return
+        if report.passed:
+            self.passed.add(report.nodeid)
         for key, value in getattr(report, "user_properties", ()):
             if key == "pgc_unrunnable":
                 reason, _, detail = value.partition("\n")
@@ -1750,6 +1757,13 @@ def pytest_sessionfinish(session, exitstatus):
     allowed &= ({item.nodeid for item in session.items}
                 | collector.xdist_collected)
     unexpected, ran_anyway = unrunnable_offences(actual, allowed)
+    # ONLY A PASS MAKES A ROW STALE (#1914). "Did not decline" is not "ran": a
+    # listed test that failed, or that a crashed xdist worker lost, reached the
+    # message below, which tells the reader to delete a correct row. Measured in
+    # the review of PR #1905: `os._exit(3)` under `-n 2 --max-worker-restart=0`
+    # exited 1 and still named the row stale. The failure or the loss is already
+    # reported, and already fails the run.
+    ran_anyway = [nodeid for nodeid in ran_anyway if nodeid in collector.passed]
     if not unexpected and not ran_anyway:
         return
     if unexpected:

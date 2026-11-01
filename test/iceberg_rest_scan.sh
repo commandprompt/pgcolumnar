@@ -512,7 +512,9 @@ check "text[] form: a two-dimensional namespace array is refused" \
 # ---- #1891: an empty namespace level ---------------------------------------
 # The Iceberg REST catalog accepts a namespace with an empty level, so the
 # client sends one as given. When the catalog has no such namespace, its 404
-# carries a hint that names the empty level.
+# carries a hint that names the empty level. A namespace whose only level is
+# empty ('' or ARRAY['']) is refused before any request, with the same hint
+# (#1922): its request path would hold an empty segment.
 check "empty level: a missing 'db..x' gets a hint naming level 2" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT','db..x')" \
 	   "Level 2 of 3 of the namespace is empty" " hint level 2")" \
@@ -524,7 +526,7 @@ check "empty level: a missing 'db.' gets a hint naming level 2" \
 check "empty level: a missing '' gets a hint naming level 1" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT','')" \
 	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
-	"3F000 hint level 1"
+	"22023 hint level 1"
 check "empty level: a missing ARRAY['db',''] gets a hint naming level 2" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY['db',''])" \
 	   "Level 2 of 2 of the namespace is empty" " hint level 2")" \
@@ -532,7 +534,7 @@ check "empty level: a missing ARRAY['db',''] gets a hint naming level 2" \
 check "empty level: iceberg_rest_scan of a missing ARRAY[''] gets a hint naming level 1" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$DOTCAT', ARRAY[''], 'events') AS t(id bigint)" \
 	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
-	"3F000 hint level 1"
+	"22023 hint level 1"
 check "empty level: iceberg_rest_table_location of a missing '.db' gets a hint naming level 1" \
 	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$DOTCAT', '.db', 'events')" \
 	   "Level 1 of 2 of the namespace is empty" " hint level 1")" \
@@ -582,6 +584,89 @@ check "empty level: iceberg_rest_table_location of a missing table in ARRAY['db'
 	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$ECAT', ARRAY['db',''], 'nosuch')" \
 	   "Level 2 of 2 of the namespace is empty" " hint level 2")" \
 	"42P01 hint level 2"
+# ---- #1922: a namespace whose only level is empty -------------------------
+# The namespace [""] makes the request path /v1/namespaces//tables. The Apache
+# Iceberg REST catalog answers that path with HTTP 400, and a proxy may
+# collapse "//" to "/". The REST spec has no other way to write it. So the
+# client refuses it (22023) before any request names it. This fixture serves
+# [""] and answers "//" as written, so only the client's refusal stops a call.
+start_fx emptyonly --namespace-levels '[""]' --table events
+OCAT="http://127.0.0.1:$FX_PORT"
+OLOG="$PGC_WORKDIR/emptyonly.log"
+# An empty ?parent= is a query value, not a path segment, so the walk still
+# asks for the children of ARRAY['']. This fixture reads an empty parent as no
+# parent, so the walk finds nothing below it.
+check "empty only level: iceberg_rest_namespace_levels lists ARRAY[''] and asks for its children with an empty parent" \
+	"$(rows_of "SELECT string_agg(array_to_json(ns)::text, ' ') FROM pgcolumnar.iceberg_rest_namespace_levels('$OCAT') AS ns") empty parent requests=$(grep -c '?parent= ' "$OLOG")" \
+	'[""] empty parent requests=1'
+check "empty only level: iceberg_rest_tables of ARRAY[''] is refused naming level 1" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$OCAT', ARRAY[''])" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"22023 hint level 1"
+check "empty only level: iceberg_rest_table_location of '' is refused naming level 1" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$OCAT', '', 'events')" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"22023 hint level 1"
+check "empty only level: iceberg_rest_scan of '' is refused naming level 1" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$OCAT', '', 'events') AS t(id bigint)" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"22023 hint level 1"
+# docs/sql-reference.md: adding ns <> ARRAY[''] to the documented filter keeps
+# the LATERAL example running on a catalog that lists {""}.
+check "empty only level: the documented filter keeps the LATERAL example running" \
+	"$(rows_of "SELECT coalesce(string_agg(array_to_json(ns)::text || '=' || t, ' '), 'no rows')
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$OCAT') AS ns,
+	                 LATERAL pgcolumnar.iceberg_rest_tables('$OCAT', ns) AS t
+	            WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE strpos(level, chr(31)) > 0)
+	              AND ns <> ARRAY['']")" \
+	"no rows"
+# The Apache Iceberg REST catalog reads an empty ?parent= as the namespace
+# ARRAY[''] (it answers 200, and 404 for an unknown parent). This fixture does
+# too, and serves ARRAY['','x'], so the walk must list that child.
+start_fx emptykids --namespace-levels '["","x"]' --table events --honour-empty-parent
+KCAT="http://127.0.0.1:$FX_PORT"
+KLOG="$PGC_WORKDIR/emptykids.log"
+check "empty only level: iceberg_rest_namespace_levels lists the child of ARRAY[''] when the catalog reads an empty parent as ARRAY['']" \
+	"$(rows_of "SELECT string_agg(array_to_json(ns)::text, ' ' ORDER BY ns) FROM pgcolumnar.iceberg_rest_namespace_levels('$KCAT') AS ns")" \
+	'[""] ["","x"]'
+check "empty only level: iceberg_rest_namespaces lists '' and its child '.x'" \
+	"$(rows_of "SELECT string_agg(quote_literal(ns), ' ' ORDER BY ns COLLATE \"C\") FROM pgcolumnar.iceberg_rest_namespaces('$KCAT') AS ns")" \
+	"'' '.x'"
+check "empty only level: the documented filter lets the LATERAL example reach the child of ARRAY['']" \
+	"$(rows_of "SELECT coalesce(string_agg(array_to_json(ns)::text || '=' || t, ' '), 'no rows')
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$KCAT') AS ns,
+	                 LATERAL pgcolumnar.iceberg_rest_tables('$KCAT', ns) AS t
+	            WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE strpos(level, chr(31)) > 0)
+	              AND ns <> ARRAY['']")" \
+	'["","x"]=events'
+# The refusal needs no catalog, so it comes before any request: a catalog that
+# cannot be reached still gives 22023, not a connection error.
+check "empty only level: iceberg_rest_table_location of '' is refused when the catalog cannot be reached" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:1', '', 'events')" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"22023 hint level 1"
+check "empty only level: iceberg_rest_tables of ARRAY[''] is refused when the catalog cannot be reached" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:1', ARRAY[''])" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"22023 hint level 1"
+# The server form with an OAuth client credential fetches a token before it
+# reads the namespace, and that POST carries the client secret. The refusal
+# must come first, so a catalog that cannot be reached still gives 22023.
+q "CREATE SERVER irs_down FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
+   OPTIONS (catalog_uri 'http://127.0.0.1:1')" >/dev/null
+q "CREATE USER MAPPING FOR CURRENT_USER SERVER irs_down
+   OPTIONS (oauth_client_id 'a', oauth_client_secret 'b')" >/dev/null
+check "empty only level: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', '', 'events')" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"22023 hint level 1"
+check "empty only level: the OAuth server form of iceberg_rest_scan of '' is refused before the token request" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', '', 'events') AS t(id bigint)" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"22023 hint level 1"
+check "empty only level: no request reaches the catalog with an empty path segment" \
+	"$(cat "$OLOG" "$KLOG" | grep -c '^GET [^ ?]*//')" \
+	"0"
 # The text[] overloads are STRICT: a NULL namespace array gives no rows. It runs last,
 # so a crash here reddens only it and the survival check below.
 check "text[] form: iceberg_rest_tables of a NULL namespace array returns no rows" \

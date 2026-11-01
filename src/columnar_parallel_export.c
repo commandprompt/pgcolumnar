@@ -886,6 +886,7 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 				 errmsg("target and path must not be null")));
 	relid = PG_GETARG_OID(0);
 	dir = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	PgColumnarRefuseS3AliasWrite("parallel_export_parquet", dir);
 
 	/*
 	 * Every key below is built as "<dir>/...", and every listing of the prefix

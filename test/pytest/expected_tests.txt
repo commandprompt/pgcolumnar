@@ -339,7 +339,9 @@
 # list judged on the controller only, by collection over NO_CLUSTER.
 # guard_tests 857 -> 858 for #1892's test_the_unrunnable_collector_registers_without_xdist in
 # test_layer.py (review of PR #1905), by collection over NO_CLUSTER.
-guard_tests 858
+# guard_tests 858 -> 860 for #1914's two tests in test_layer.py: a listed test that fails, and one lost to
+# a crashed xdist worker, is not a stale row, by collection over NO_CLUSTER.
+guard_tests 860
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1599,10 +1601,12 @@ guard_tests 858
 # documented filter on a default-separator catalog), by collection: `5787 tests collected`, minus 854.
 # cluster_tests 5092 -> 5104 for #1866's and #1867's twelve tests: eight in test_objstore_http_read.py (the
 # pin turned off, the versioned read, the Content-Range length check) and four in test_objstore_s3_read.py
-# (the signed versioned read), by collection: `4916 tests collected`.
+# (the signed versioned read). Counted on the #1866 branch at e95dfa9f, before merge 2f16839d renumbered
+# this line: the cluster files collected 4916 there (4904 -> 4916, the same twelve). #1919 corrects this.
 # cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
-# premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
-# collection: 5776 tests collected, less guard_tests 854.
+# premise, no version with the pin off, the null and over-long version ids, the 403 fallback). Counted on
+# the #1866 branch at 37b4dcbe, before merge 2f16839d renumbered this line: 5776 tests collected, less
+# guard_tests 854, is 4922 (4916 -> 4922, the same six). #1919 corrects this.
 # cluster_tests 4962 -> 4976 for #1902: nine tests in test_objstore_error_advice.py (the https
 # fixture premise and eight Expect: 100-continue arms) and five in test_objstore_listing.py (a
 # premise and four refusals that name the mismatched object), by collection: `4976 tests collected`.
@@ -1664,15 +1668,48 @@ guard_tests 858
 # statement after a DO block in one string; the refusal's DETAIL; a versioned overwrite by a longer
 # object; a weak-ETag overwrite that changes the length), by collection: 5981 tests collected, less
 # guard_tests 854.
-# cluster_tests 5200 -> 5206 for #1915's six tests in test_harness_isolation.py, the twin of the new
+# cluster_tests 5200 -> 5210 for #1913: ten tests in test_avro_manifest.py (read_avro_manifest and
+# read_manifest_list each refuse s3://, http:// and the other remote schemes, check pg_read_server_files
+# first, and still read a local path holding s3:// past its start), by collection: `6068 tests collected`,
+# less guard_tests 858.
+# cluster_tests 5225 -> 5243 for #1930: eighteen tests in test_objstore_listing.py (s3a:// and s3n://
+# read as s3://, in any case, through read_parquet, parquet_schema, import_parquet and the FDW, a Hive
+# prefix and root included; a missing object named by its s3:// URL; the s3ax:// and xs3a:// controls;
+# and the three exports' refusals), by collection: `5243 tests collected`.
+# cluster_tests 5243 -> 5246 for #1917's three tests in test_native_parquet_schema.py (read_parquet refuses a
+# list of lists and a list of maps declared as one-dimensional arrays; import_parquet refuses a list of lists),
+# by collection: 5203 tests collected in the cluster half, guard half 858.
+# cluster_tests 5246 -> 5247 for #1917's foreign-table test in test_native_parquet_schema.py (the
+# pgcolumnar_parquet foreign table refuses a list of lists, even in a query that leaves it out), by
+# collection: 6062 tests collected, less guard_tests 858.
+# cluster_tests 5247 -> 5261 for #1910's, #1920's and #1921's fourteen tests: in
+# test_native_parquet_hardening.py eight for #1910 (two unpatched SNAPPY files read, three SNAPPY pages
+# whose size is not their header's are refused, an uncompressed v1 page whose header size differs still
+# reads, an UNCOMPRESSED v2 page marked compressed reads, and so does one whose header size is below its
+# level bytes) and four for #1921 (the unpatched struct file's schema, a num_children of -1, of 2^32 + 1
+# and of -(2^32) + 1 each refused by parquet_schema); in test_fuzz_parquet.py two for #1920 (every
+# composite type built from a seed's field list is created, the pristine struct seed reads under its own
+# column list), by collection: 6072 tests collected, less guard_tests 858.
+# cluster_tests 5261 -> 5267 for #1922's six tests in test_iceberg_rest_scan.py (a namespace whose only
+# level is empty: listed and not walked, refused by iceberg_rest_tables, iceberg_rest_table_location and
+# iceberg_rest_scan, the documented LATERAL filter, no request with an empty path segment), by collection:
+# test_iceberg_rest_scan.py collects 83 tests, 77 on main.
+# cluster_tests 5267 -> 5272 for #1922's five review tests in test_iceberg_rest_scan.py (the walk
+# asks for the children of ARRAY[''] with an empty parent and lists ARRAY['','x'] in both forms, the
+# LATERAL filter reaches that child, '' and ARRAY[''] are refused with the catalog down; one test is
+# renamed, from "asks for no children"), by collection: test_iceberg_rest_scan.py collects 88 tests.
+# cluster_tests 5272 -> 5274 for #1922's two second-review tests in test_iceberg_rest_scan.py (the
+# OAuth server form of iceberg_rest_table_location and iceberg_rest_scan refuses '' before the token
+# request, with the catalog down), by collection: test_iceberg_rest_scan.py collects 90 tests.
+# cluster_tests 5274 -> 5280 for #1915's six tests in test_harness_isolation.py, the twin of the new
 # harness_isolation.sh (a cluster started under a held lock does not hold it, with its control and
 # premise; a lock the harness took itself stays held; the session records its library digest; a
 # replaced library is reported; a run whose library changed fails), by collection: 5206 tests collected
 # for the cluster half, guard_tests 858 unchanged.
-# cluster_tests 5206 -> 5207 for #1915's review fix in test_harness_isolation.py (a set -e suite
+# cluster_tests 5280 -> 5281 for #1915's review fix in test_harness_isolation.py (a set -e suite
 # under flock still loads lib.sh), by collection: 5207 tests collected for the cluster half, guard_tests
 # 858 unchanged.
-# cluster_tests 5207 unchanged for #1915's second review fix in test_harness_isolation.py: the set -e
+# cluster_tests 5281 unchanged for #1915's second review fix in test_harness_isolation.py: the set -e
 # test that sourced lib.sh is gone (shell-only, declared in test_compare_to_bash.py) and a flock -F
 # own-lock test takes its place; by collection: 6065 tests collected, less guard_tests 858.
-cluster_tests 5207
+cluster_tests 5281
