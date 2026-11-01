@@ -337,7 +337,9 @@
 # guard_tests 849 -> 854 for #1767's five conditional-row tests in test_layer.py, merged from main.
 # guard_tests 854 -> 857 for #1892's three xdist arms in test_layer.py: the expected-unrunnable
 # list judged on the controller only, by collection over NO_CLUSTER.
-guard_tests 857
+# guard_tests 857 -> 858 for #1892's test_the_unrunnable_collector_registers_without_xdist in
+# test_layer.py (review of PR #1905), by collection over NO_CLUSTER.
+guard_tests 858
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

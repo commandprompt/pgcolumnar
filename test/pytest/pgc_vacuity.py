@@ -1344,6 +1344,8 @@ class _UnrunnableCollector:
         # direction below had no collection to intersect with.
         self.xdist_collected = set()
 
+    # Optional, so a run without xdist does not fail on an unknown hook.
+    @pytest.hookimpl(optionalhook=True)
     def pytest_xdist_node_collection_finished(self, node, ids):
         self.xdist_collected.update(ids)
 
@@ -1696,9 +1698,11 @@ def pytest_sessionfinish(session, exitstatus):
     # ONLY THE CONTROLLER JUDGES THE LIST (#1892). A worker collects every test but
     # runs only its share, so it read each test another worker ran as "listed and
     # RAN", and named a decline it did run a second time beside the controller.
-    # Measured: `pytest -n 4` on one file printed the stale line three times, and
-    # the run exited 67 with every test passed. The controller receives every
-    # worker's reports, so it alone holds the whole picture.
+    # Measured on main 75a57668: `pytest -n 4` on one file printed the stale line
+    # once per worker that did not run every listed test, three times in one run
+    # and four in another, and each run exited 67 with every test passed. The
+    # controller receives every worker's reports, so it alone holds the whole
+    # picture.
     if hasattr(session.config, "workerinput"):
         return
 

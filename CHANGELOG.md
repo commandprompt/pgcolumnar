@@ -531,7 +531,8 @@ true until the next version shipped.
   `-n 4` called the list both stale and incomplete. Now only the controller
   checks the list, against the tests every worker collected. On PostgreSQL 18,
   `pytest -n 4 test_objstore_sink_write.py` exited 67 before and exits 0 now.
-  Three new arms in `test/pytest/test_layer.py` hold this.
+  Three new arms in `test/pytest/test_layer.py` hold this. A fourth checks that
+  the new xdist hook is optional, so it adds no error to a run without xdist.
   Reported by @OffgridwithJD.
 
 - The docs no longer contradict the code on object storage, credentials and

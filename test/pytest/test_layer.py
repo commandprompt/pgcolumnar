@@ -550,6 +550,29 @@ def test_an_unlisted_decliner_under_xdist_is_still_refused(pytester, monkeypatch
     expect.num(int(result.ret), 67, "and the -n 2 run with an unlisted decline exits 67")
 
 
+def test_the_unrunnable_collector_registers_without_xdist(expect):
+    """#1892 review. The collector's xdist hook must be optional.
+
+    Without xdist, pluggy has no spec for `pytest_xdist_node_collection_finished`,
+    so a plain hookimpl fails validation with "unknown hook". A fresh plugin
+    manager stands in for a run with `-p no:xdist`: it knows pytest's own hooks
+    and nothing else. The test prints the error it caught, so a failure names it.
+    """
+    import pgc_vacuity
+    from _pytest.config import PytestPluginManager
+    from pluggy import PluginValidationError
+    pm = PytestPluginManager()
+    pm.register(pgc_vacuity._UnrunnableCollector(), "collector_under_test")
+    try:
+        pm.check_pending()
+        error = ""
+    except PluginValidationError as exc:
+        error = str(exc)
+    expect.num(error.count("unknown hook"), 0,
+               "unknown-hook errors registering the collector with no xdist specs"
+               f" (caught: {error or 'none'})")
+
+
 def test_the_list_is_read_for_the_running_major_only(pytester, expect):
     """A row for another major must not excuse this one.
 
