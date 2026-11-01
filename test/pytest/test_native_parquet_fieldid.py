@@ -34,7 +34,7 @@ DB = "pgc_native_parquet_fieldid"
 # the same writer the shell runs
 WRITER = r'''
 import re, sys, pyarrow as pa, pyarrow.parquet as pq
-fid, noid, dup, nest, groups = sys.argv[1:6]
+fid, noid, dup, nest, groups, leaves = sys.argv[1:7]
 schema = pa.schema([
     pa.field("alpha", pa.int32(),  metadata={b"PARQUET:field_id": b"7"}),
     pa.field("beta",  pa.string(), metadata={b"PARQUET:field_id": b"3"}),
@@ -66,6 +66,9 @@ pq.write_table(pa.Table.from_pylist(
     schema=nschema), nest)
 found = re.findall(r"group field_id=(\d+) (\w+)", str(pq.ParquetFile(nest).schema))
 open(groups, "w").write(" ".join(f"{n}={i}" for i, n in found) + "\n")
+leaf_ids = re.findall(r"^\s*(?:optional|required|repeated) (?!group\b)\w+ field_id=(-?\d+) ",
+                      str(pq.ParquetFile(nest).schema), re.M)
+open(leaves, "w").write(",".join(str(i) for i in sorted(int(x) for x in leaf_ids)) + "\n")
 '''
 
 # the refusal each arm wants, matched against the primary message as the shell does
@@ -164,9 +167,9 @@ def pfid(pgc_cluster, server_dir):
         w.mkdir(exist_ok=True)
         w.chmod(0o777)
         fid, noid, dup = w / "fieldid.parquet", w / "noid.parquet", w / "dup.parquet"
-        nest, groups = w / "nested.parquet", w / "nested_groups.txt"
+        nest, groups, leaves = w / "nested.parquet", w / "nested_groups.txt", w / "nested_leaves.txt"
         subprocess.run([sys.executable, "-c", WRITER, str(fid), str(noid), str(dup),
-                        str(nest), str(groups)],
+                        str(nest), str(groups), str(leaves)],
                                  capture_output=True, text=True)
         for f in (fid, noid, dup, nest):
             if f.exists():
@@ -188,12 +191,19 @@ def pfid(pgc_cluster, server_dir):
         dupreq = f"SELECT * FROM pgcolumnar.read_parquet('{fid}', ARRAY[7,7]) AS t(a1 int, a2 int)"
         r["dup req"] = _refusal(dsn, dupreq, DUPREQ)
         r["names id"] = _names_the_id(dsn, dupreq)
-        r["nest leaves"] = _rows(dsn, f"SELECT string_agg(field_id::text, ',' ORDER BY field_id) "
-                                      f"FROM pgcolumnar.parquet_schema('{nest}')")
+        # pyarrow reads the leaf ids back: parquet_schema reports a nested column's own
+        # (group) id since #1893, not its leaves' ids
+        try:
+            r["nest leaves"] = leaves.read_text().strip()
+        except OSError as exc:
+            r["nest leaves"] = query_error(f"the leaf-id record is unreadable: {exc}")
         try:
             r["nest groups"] = groups.read_text().strip()
         except OSError as exc:
             r["nest groups"] = query_error(f"the group-id record is unreadable: {exc}")
+        r["nest top ids"] = _rows(dsn, "SELECT string_agg(column_name || '=' || coalesce(field_id::text, 'NULL'), ' ' "
+                                       "ORDER BY ord) FROM (SELECT column_name, field_id, row_number() OVER () AS ord "
+                                       f"FROM pgcolumnar.parquet_schema('{nest}')) s")
         r["nest scalar"] = _rows(dsn, f"SELECT id FROM pgcolumnar.read_parquet('{nest}', ARRAY[1]) AS t(id int8)")
         r["nest struct"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{nest}', ARRAY[1,2]) "
                                          f"AS t(id int8, st text)", NSTRUCT)
@@ -291,6 +301,17 @@ def test_the_nested_files_groups_carry_the_nested_ids(request, expect):
         return
     r = request.getfixturevalue("pfid")
     expect.text(r["nest groups"], "st=2 li=3 mp=4", "premise: the nested file's groups carry ids st=2 li=3 mp=4")
+
+
+def test_parquet_schema_reports_a_lists_and_a_structs_own_field_id_and_a_maps_leaf_ids(request, expect):
+    # a list of a scalar and a struct of scalars are one row under the column's
+    # name, with the group's id (#1893); a map reads leaf by leaf, one row per
+    # leaf, with each leaf's own id
+    if expect.require_module("pyarrow.parquet", name="pyarrow is needed to write the field-id fixture") is None:
+        return
+    r = request.getfixturevalue("pfid")
+    expect.text(r["nest top ids"], "id=1 st=2 li=3 mp.key_value.key=8 mp.key_value.value=9",
+                "parquet_schema reports a list's and a struct's own field id, and a map's leaf ids (#1893)")
 
 
 def test_a_scalar_beside_nested_columns_still_reads_by_field_id_premise(request, expect):

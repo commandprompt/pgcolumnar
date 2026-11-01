@@ -137,6 +137,38 @@
 #                         "bucket/KEY" is answered with STATUS and not stored,
 #                         so a suite can refuse one object, such as a parallel
 #                         export's _SUCCESS marker, and let every other through.
+#   __expect_log__        when it exists, every request that carries
+#                         Expect: 100-continue appends "METHOD <path> <value>"
+#                         to it (#1902). A request with Expect is answered 100
+#                         Continue only when its body is about to be read, as
+#                         a real store does: one refused from its headers gets
+#                         the refusal instead of 100.
+#   __expect_ignore__     when it exists, Expect is ignored: no 100 Continue is
+#                         sent and the body is read when it comes, so a client
+#                         must send it after its own wait (#1902).
+#   __expect_delay__      a number of seconds: the 100 Continue is sent that
+#                         late, after a client's own wait, so it arrives ahead
+#                         of the final answer to a body already sent (#1902).
+#   __deny_delay__        a number of seconds: a refusal that leaves the body
+#                         unread waits that long first, so a client past its
+#                         Expect wait is sending the body when it comes (#1902).
+#   __expect_417__        when it exists, a request carrying Expect is answered
+#                         417 Expectation Failed from its headers and the
+#                         connection closed (#1902).
+#   __expect_early_200__  when it exists, a single PUT (no partNumber) carrying
+#                         Expect is answered 200 from its headers, before its
+#                         body is read; the body is then read and stored, and
+#                         the answer the handler gives after it is discarded,
+#                         since a request has one final answer (#1903 review).
+#                         A client that takes the 200 for the write and never
+#                         sends the body leaves no object.
+#   __expect_early_200_close__  when it exists, a single PUT (no partNumber)
+#                         carrying Expect is answered 200 from its headers with
+#                         no Content-Length and no chunked framing, a reply that
+#                         ends at connection close. The body, if it comes, is
+#                         read, then the connection is closed and nothing is
+#                         stored. A client that takes that 200 for the write
+#                         reports an object that does not exist (#1903 merge).
 # --seed-upload KEY (repeatable) opens an upload at KEY ("bucket/key") before
 # the first request: an upload some other writer left, which a client must not
 # abort as its own.
@@ -160,6 +192,7 @@
 import argparse
 import hashlib
 import hmac
+import io
 import os
 import re
 import socket
@@ -238,7 +271,67 @@ class Handler(BaseHTTPRequestHandler):
         # The handler serves every request of a connection: forget the last
         # request's body, so _deny can tell whether this one's was read.
         self._body = None
+        self._expect = False
+        self._drop = False
+        real = getattr(self, "_real_wfile", None)
+        if real is not None:
+            self.wfile = real
+            self._real_wfile = None
         return super().parse_request()
+
+    def handle_expect_100(self):
+        # Expect: 100-continue (#1902). The stdlib answers 100 at once, before
+        # the handler has looked at the request. A real store first checks
+        # the headers and refuses from them alone, so 100 is sent only when
+        # the body is about to be read (_read_body), and a refusal before
+        # that is the answer the client sees instead of 100.
+        root = self.server.rootdir
+        if os.path.exists(os.path.join(root, "__expect_log__")):
+            with open(os.path.join(root, "__expect_log__"), "a") as f:
+                f.write("%s %s %s\n" % (self.command, self.path.partition("?")[0],
+                                        self.headers.get("Expect", "-")))
+        if os.path.exists(os.path.join(root, "__expect_417__")):
+            self._log_line()
+            self.send_response(417)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            return False
+        self._expect = True
+        return True
+
+    def _read_body(self, clen):
+        """The request body, after a 100 Continue when the client asked for one
+        (unless the __expect_ignore__ hook plays a store that ignores Expect)."""
+        if self._expect:
+            self._expect = False
+            if (self.command == "PUT" and "partNumber=" not in self.path and
+                    os.path.exists(os.path.join(self.server.rootdir,
+                                                "__expect_early_200_close__"))):
+                # 200 to the headers alone, framed by connection close; the
+                # body is read and dropped, and do_PUT closes (#1903 merge).
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.flush()
+                self._drop = True
+                self.close_connection = True
+            elif (self.command == "PUT" and "partNumber=" not in self.path and
+                    os.path.exists(os.path.join(self.server.rootdir,
+                                                "__expect_early_200__"))):
+                # 200 to the headers alone; whatever the handler answers after
+                # the body goes nowhere, as a request has one final answer.
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                self._real_wfile = self.wfile
+                self.wfile = io.BytesIO()
+            elif not os.path.exists(os.path.join(self.server.rootdir,
+                                                 "__expect_ignore__")):
+                _hook_sleep(self.server.rootdir, "__expect_delay__")
+                self.send_response_only(100)
+                self.end_headers()
+        return self.rfile.read(clen) if clen else b""
 
     def _log_line(self):
         rng = self.headers.get("Range", "-").replace(" ", "")
@@ -301,6 +394,10 @@ class Handler(BaseHTTPRequestHandler):
         # the answer has arrived.
         clen = int(self.headers.get("Content-Length", "0") or "0")
         if clen > 0 and getattr(self, "_body", None) is None:
+            # __deny_delay__ holds the refusal of an unread body for that many
+            # seconds: past a client's Expect wait, so the client is sending
+            # the body when the refusal comes (#1902).
+            _hook_sleep(self.server.rootdir, "__deny_delay__")
             self.send_header("Connection", "close")
             self.close_connection = True
         self.end_headers()
@@ -323,7 +420,7 @@ class Handler(BaseHTTPRequestHandler):
             # so an unsigned write killed the handler before any answer.
             if self.command in ("PUT", "POST"):
                 clen = int(self.headers.get("Content-Length", "0") or "0")
-                self._body = self.rfile.read(clen) if clen else b""
+                self._body = self._read_body(clen)
             return True
         auth = self.headers.get("Authorization", "")
         m = AUTH_RE.match(auth)
@@ -368,7 +465,7 @@ class Handler(BaseHTTPRequestHandler):
         # arms are cross-implementation checks of the payload hash too.
         clen = int(self.headers.get("Content-Length", "0") or "0")
         if self.command in ("PUT", "POST") :
-            self._body = self.rfile.read(clen) if clen else b""
+            self._body = self._read_body(clen)
             if payload_hash != "UNSIGNED-PAYLOAD" and                hashlib.sha256(self._body).hexdigest() != payload_hash:
                 self._deny(403, "XAmzContentSHA256Mismatch")
                 return False
@@ -701,6 +798,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         self._log_line()
         if not self._sigv4_check():
+            return
+        if self._drop:
+            # __expect_early_200_close__: answered already; store nothing
+            self.close_connection = True
             return
         q = self._qdict()
         _, local = self._resolve()

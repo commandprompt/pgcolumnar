@@ -97,7 +97,8 @@ check "premise: fixture written" "$([ -s "$PGC_WORKDIR/fixture.parquet" ] && ech
 # that mixes them shows both signs. /swap/ moves .next over the first mid-read.
 # swap79.parquet is a second, identical pair for /swap79/, which swaps it once too.
 # Each server mode swaps its file once, so every read that needs a swap gets its
-# own pair: swapoff.parquet for the unpinned read and vswap.parquet for /vswap/.
+# own pair: swapoff.parquet for the unpinned read, vswap.parquet for /vswap/,
+# and vswapq.parquet for the versioned read through a query string (#1904).
 # hswap.parquet and vhswap.parquet are the pairs for /hswap/ and /vhswap/, which
 # swap between two reads of one statement instead of mid-read (#1894).
 # hswaptx.parquet and hswapmsg.parquet are more pairs for /hswap/, read by two
@@ -117,7 +118,8 @@ python3 - "$PGC_WORKDIR/swap.parquet" "$PGC_WORKDIR/swap79.parquet" \
 	"$PGC_WORKDIR/xpair.parquet" "$PGC_WORKDIR/rw.parquet" \
 	"$PGC_WORKDIR/hswapmsg.parquet" "$PGC_WORKDIR/vhswapmsg.parquet" \
 	"$PGC_WORKDIR/hswapdet.parquet" "$PGC_WORKDIR/hswapfn.parquet" \
-	"$PGC_WORKDIR/hswapdo.parquet" "$PGC_WORKDIR/hswapdo2.parquet" <<PYEOF
+	"$PGC_WORKDIR/hswapdo.parquet" "$PGC_WORKDIR/hswapdo2.parquet" \
+	"$PGC_WORKDIR/vswapq.parquet" <<PYEOF
 import os, sys
 import pyarrow as pa, pyarrow.parquet as pq
 G, RPG = $G, $ROWS_PER_GROUP
@@ -706,6 +708,20 @@ check "E: an http URL with a query string (?raw=true) reads the object, not a li
 E_HEADQ="$(awk '$1 == "HEAD" && $2 == "/fixture.parquet" && $3 == "raw=true"' "$HTTP_LOG" | wc -l | tr -d ' ')"
 check "E: and its HEAD carried the query string to the server" \
 	"$([ "${E_HEADQ:-0}" -ge 1 ] 2>/dev/null && echo carried || echo "not carried ($E_HEADQ HEADs of /fixture.parquet?raw=true in $(reqs) requests)")" "carried"
+# The version pin (#1867) joins a query the URL already has with '&' (#1904).
+# A second '?' hides the versionId inside raw's value, so the server reads the
+# current object, and the overwrite mid-read is refused by If-Match.
+await_server >/dev/null
+: > "$HTTP_LOG"
+R="$(refusal_of "SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM pgcolumnar.read_parquet('$BASE/vswap/vswapq.parquet?raw=true') AS t(c0 int8)" \
+	"changed while it was being read")"
+EQ_GETS="$(awk '$1 == "GET" && $2 == "/vswap/vswapq.parquet"' "$HTTP_LOG" | wc -l | tr -d ' ')"
+EQ_NOT="$(awk '$1 == "GET" && $2 == "/vswap/vswapq.parquet" && $3 !~ /^raw=true&versionId=3HL4%2Bkq%2F/ { print $3 }' "$HTTP_LOG")"
+EQ_BAD="$(printf '%s' "$EQ_NOT" | grep -c .)"
+[ "$EQ_BAD" -gt 0 ] && EQ_BAD="$EQ_BAD (first: $(head -1 <<<"$EQ_NOT"))"
+check "E: a versioned read of an http URL with a query string adds the version with '&' and reads the version it opened" \
+	"$R; GETs without raw=true&versionId=: $EQ_BAD of $EQ_GETS" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=0; GETs without raw=true&versionId=: 0 of $EQ_GETS"
 check "E: an IPv6 literal http host is refused as IPv6, not as a listing" \
 	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('http://[::1]:$HTTP_PORT/fixture.parquet') AS t($COLDEFS)" \
 		"IPv6 literal hosts are not supported")" "0A000: IPv6 literal hosts are not supported"

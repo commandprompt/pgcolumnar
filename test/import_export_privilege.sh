@@ -118,6 +118,27 @@ check "parallel_copy refuses INSERT into a table the caller cannot write" \
 check "parallel_export_parquet refuses SELECT of a table the caller cannot read" \
 	"$(denied_as t_files "SELECT pgcolumnar.parallel_export_parquet('victim'::regclass, '$pex_out', 2);")" "denied"
 
+# ---- #1886: the INSERT check runs before the remote-URL refusal ---------------
+# Both loaders refuse a URL (0A000), but only after the table ACL. A caller with
+# no INSERT on the table gets the same 42501 for a URL as for a local path, so the
+# error order is the same in import_arrow and parallel_copy. outcome_as shows the
+# SQLSTATE and message the server gave, or the value when the statement succeeded.
+outcome_as() {	# role sql -> "SQLSTATE message" or the value
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" \
+		-d "$PGC_DB" -X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$2" 2>&1)"
+	case "$out" in
+		*ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p' <<<"$out" | head -1;;
+		*) printf '%s\n' "$out";;
+	esac
+}
+check "import_arrow checks INSERT before it refuses a remote URL (#1886)" \
+	"$(outcome_as t_files "SELECT pgcolumnar.import_arrow('victim'::regclass, 's3://pgc-bucket/m.arrow');")" \
+	"42501 permission denied for table victim"
+check "parallel_copy checks INSERT before it refuses a remote URL (#1886)" \
+	"$(outcome_as t_files "SELECT pgcolumnar.parallel_copy('victim'::regclass, 's3://pgc-bucket/data.txt', 2);")" \
+	"42501 permission denied for table victim"
+
 # ---- the consequence: no rows leaked in or out -------------------------------
 check_num "victim still holds exactly its own rows (no import landed)" \
 	"$(q "SELECT count(*) FROM victim;")" 200

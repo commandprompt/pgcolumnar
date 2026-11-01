@@ -3048,6 +3048,8 @@ pq_take_value(ImpLeaf *l, bool coerce)
  * Build the target tree from the tuple descriptor and bind each leaf to a
  * Parquet leaf column (validating physical type and Dremel level bounds).
  * Returns the tops array; sets the leaves array and top count via out-params.
+ * Every binding error names `path` in its DETAIL, so a read over a prefix or a
+ * glob says which of its files does not match (#1902).
  *
  * Relation-free: on a binding error it just ereports, and any relation the caller
  * holds is released by transaction abort. This lets a caller with no relation (the
@@ -3059,7 +3061,7 @@ pq_take_value(ImpLeaf *l, bool coerce)
  * reader to the wrong place (#1871).
  */
 static ImpTop *
-build_imp_targets(TupleDesc tupdesc, PqFile *pf,
+build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
 				  ImpLeaf **pleaves, int *ntops, const bool *skipAtt,
 				  const char *caller)
 {
@@ -3071,7 +3073,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 	int			i;
 
 #define IMP_FAIL(...) \
-	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__)))
+	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__), \
+					errdetail("The mismatched file is \"%s\".", path)))
 
 	for (i = 0; i < natts; i++)
 	{
@@ -3248,10 +3251,10 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
  * spec's "map field id to columns without field id". This lets a data file
  * written without field ids (an imported dataset) bind by name. A leaf that
  * does carry an id ignores the table. nm_count 0 disables it, preserving the
- * no-ids refusal.
+ * no-ids refusal. Its binding errors name `path` as build_imp_targets' do.
  */
 static ImpTop *
-build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
+build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf, const char *path,
 							  const int *field_ids, int nfield,
 							  const char *const *nm_names, const int *nm_ids,
 							  int nm_count, bool missing_as_null,
@@ -3268,7 +3271,8 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 	int			i;
 
 #define IMP_FAIL(...) \
-	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__)))
+	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__), \
+					errdetail("The mismatched file is \"%s\".", path)))
 
 	/* the effective id of each leaf: its own field id, or -- for an id-less
 	 * TOP-LEVEL leaf and a supplied name mapping -- the id the mapping gives its
@@ -4307,11 +4311,12 @@ pq_read_file_into(const char *path, TupleDesc tupdesc, TupleTableSlot *slot,
 	pq_source_open_cfg(path, &src, &pf, cfg);
 	pq_check_row_groups(&pf, path);
 	if (field_ids != NULL)
-		tops = build_imp_targets_by_field_id(tupdesc, &pf, field_ids, nfield,
+		tops = build_imp_targets_by_field_id(tupdesc, &pf, path, field_ids, nfield,
 											 nm_names, nm_ids, nm_count,
 											 missing_as_null, &leaves, &ntops, caller);
 	else
-		tops = build_imp_targets(tupdesc, &pf, &leaves, &ntops, NULL, caller);
+		tops = build_imp_targets(tupdesc, &pf, path, &leaves, &ntops, NULL,
+								 caller);
 	n = pq_read_rows(&pf, &src, tops, ntops, leaves,
 					 slot, sink, sinkarg, NULL, needTop, NULL, NULL, NULL,
 					 0, pf.nrowgroups, skipPos, nSkipPos);
@@ -4593,16 +4598,202 @@ pgcolumnar_read_parquet(PG_FUNCTION_ARGS)
 }
 
 /*
- * pgcolumnar.parquet_schema(path text)
- *     -> table(column_name text, data_type text, nullable bool)
+ * Advance *cursor past the schema subtree that starts there (pre-order) and
+ * return how many leaves it holds. walk_schema has already walked this tree at
+ * open, so it is well formed; the stack check guards the recursion all the same.
+ */
+static int
+pq_skip_subtree(const PqFile *pf, int *cursor)
+{
+	int			nchild;
+	int			nleaf = 0;
+	int			c;
+
+	check_stack_depth();
+	if (*cursor >= pf->nelems)
+		return 0;
+	nchild = pf->elems[(*cursor)++].num_children;
+	if (nchild == 0)
+		return 1;
+	for (c = 0; c < nchild; c++)
+		nleaf += pq_skip_subtree(pf, cursor);
+	return nleaf;
+}
+
+/*
+ * The type a leaf reads as when read_parquet takes it as one declared column:
+ * its scalar type, or that type's array type when the leaf repeats once. NULL
+ * when the leaf has no mapping, and for a leaf under two or more repeated levels
+ * (a list of lists), which no declared type reads faithfully.
+ */
+static char *
+pq_leaf_read_type(const PqLeafInfo *leaf)
+{
+	Oid			typid;
+	int32		typmod;
+
+	if (!pq_leaf_to_pgtype(leaf->sc, &typid, &typmod))
+		return NULL;
+	if (leaf->max_rep == 0)
+		return format_type_extended(typid, typmod, FORMAT_TYPE_TYPEMOD_GIVEN);
+	if (leaf->max_rep == 1 && OidIsValid(get_array_type(typid)))
+		return format_type_extended(get_array_type(typid), typmod,
+									FORMAT_TYPE_TYPEMOD_GIVEN);
+	return NULL;
+}
+
+/*
+ * Does read_parquet read the top-level column `top` as ONE declared column
+ * (#1893)? Its leaves are pf->leaves[first .. first + nleaf - 1]. If so, set
+ * *type to the type to declare and return true:
  *
- * Read a server-side Parquet file's footer and report its leaf columns with the
+ *   - a scalar leaf: its PostgreSQL type (NULL when it has no mapping), or its
+ *     array type for a top-level repeated primitive, the legacy two-level list;
+ *   - a list of one scalar leaf: that type's array type, e.g. bigint[];
+ *   - a struct of scalar fields: "composite (a bigint, b text)", the field list
+ *     of the composite type to create.
+ *
+ * Return false for any other nesting: a map, a list of structs, a struct of a
+ * struct, a struct holding a list. read_parquet binds leaves by position, so it
+ * reads such a column as one declared column per leaf, and parquet_schema lists
+ * it that way (pq_schema_leaf_rows).
+ */
+static bool
+pq_describe_top(const PqFile *pf, const PqSchemaCol *top, int first, int nleaf,
+				char **type)
+{
+	Oid			typid;
+	int32		typmod;
+	int			i;
+	StringInfoData buf;
+
+	*type = NULL;
+	if (top->num_children == 0)
+	{
+		*type = pq_leaf_read_type(&pf->leaves[first]);
+		return true;
+	}
+
+	if (top->repetition == 2 ||
+		top->converted_type == PQ_CT_MAP || top->converted_type == PQ_CT_MAP_KEY_VALUE)
+		return false;
+
+	/*
+	 * A list of one scalar leaf: the leaf sits in the repeated group right
+	 * under the column (depth 3), or is that group itself (depth 2). A deeper
+	 * single leaf is a list of a one-field struct or a struct holding a list;
+	 * those read the same way, but as a leaf, so they list by the leaf's path.
+	 */
+	if (nleaf == 1 && pf->leaves[first].max_rep == 1 && pf->leaves[first].depth <= 3)
+	{
+		*type = pq_leaf_read_type(&pf->leaves[first]);
+		return *type != NULL;
+	}
+
+	/* a struct whose children are all non-repeated scalar leaves with a type */
+	if (nleaf != top->num_children)
+		return false;
+	for (i = first; i < first + nleaf; i++)
+		if (pf->leaves[i].max_rep != 0 || pf->leaves[i].depth != 2 ||
+			!pq_leaf_to_pgtype(pf->leaves[i].sc, &typid, &typmod))
+			return false;
+
+	initStringInfo(&buf);
+	appendStringInfoString(&buf, "composite (");
+	for (i = first; i < first + nleaf; i++)
+	{
+		const PqSchemaCol *f = pf->leaves[i].sc;
+
+		(void) pq_leaf_to_pgtype(f, &typid, &typmod);
+		appendStringInfo(&buf, "%s%s %s", i > first ? ", " : "",
+						 quote_identifier(f->name != NULL ? f->name : ""),
+						 format_type_extended(typid, typmod, FORMAT_TYPE_TYPEMOD_GIVEN));
+	}
+	appendStringInfoChar(&buf, ')');
+	*type = buf.data;
+	return true;
+}
+
+/* one parquet_schema row */
+static void
+pq_schema_row(Tuplestorestate *tupstore, TupleDesc retdesc, const char *name,
+			  const char *type, bool nullable, int field_id)
+{
+	Datum		values[4];
+	bool		nulls[4] = {false, false, false, false};
+
+	values[0] = CStringGetTextDatum(name);
+	if (type != NULL)
+		values[1] = CStringGetTextDatum(type);
+	else
+		nulls[1] = true;
+	values[2] = BoolGetDatum(nullable);
+	/* field_id (#388): NULL when the writer emitted none; 0 is a real id */
+	if (field_id >= 0)
+		values[3] = Int32GetDatum(field_id);
+	else
+		nulls[3] = true;
+	tuplestore_putvalues(tupstore, retdesc, values, nulls);
+}
+
+/*
+ * List the schema subtree at *cursor one row per leaf (#1893 review), for a
+ * column read_parquet reads as one declared column per leaf. Each row is named
+ * by the leaf's path from the top-level column, joined with dots, as Parquet's
+ * path_in_schema names the column chunk ("m.key_value.key"). Its type is the
+ * leaf's read type, its field_id the leaf's own. It is nullable when an OPTIONAL
+ * element sits on the path above the first repeated one: below that, a null
+ * makes an array element null, not the declared column.
+ */
+static void
+pq_schema_leaf_rows(const PqFile *pf, int *cursor, int *lf, const char *prefix,
+					bool nullable, bool repeated,
+					Tuplestorestate *tupstore, TupleDesc retdesc)
+{
+	const PqSchemaCol *e;
+	const char *ename;
+	char	   *name;
+	int			c;
+
+	check_stack_depth();
+	if (*cursor >= pf->nelems || *lf >= pf->ncols)
+		return;					/* walk_schema accepted the tree, so unreachable */
+	e = &pf->elems[(*cursor)++];
+	ename = e->name != NULL ? e->name : "";
+	name = prefix != NULL ? psprintf("%s.%s", prefix, ename) : pstrdup(ename);
+	if (!repeated && e->repetition == 1)
+		nullable = true;
+	if (e->repetition == 2)
+		repeated = true;
+
+	if (e->num_children == 0)
+	{
+		pq_schema_row(tupstore, retdesc, name, pq_leaf_read_type(&pf->leaves[*lf]),
+					  nullable, e->field_id);
+		(*lf)++;
+		return;
+	}
+	for (c = 0; c < e->num_children; c++)
+		pq_schema_leaf_rows(pf, cursor, lf, name, nullable, repeated,
+							tupstore, retdesc);
+}
+
+/*
+ * pgcolumnar.parquet_schema(path text)
+ *     -> table(column_name text, data_type text, nullable bool, field_id int)
+ *
+ * Read a server-side Parquet file's footer and report its columns with the
  * PostgreSQL type each maps to (see pq_leaf_to_pgtype). This is the schema half
  * of the external-Parquet scan core: it shares the file open/parse and type
  * inference the data path will use, and lets a caller inspect a file (and the
  * round-trip test confirm exported types) without importing it. A leaf whose
- * physical type has no supported mapping is reported with data_type NULL. Nested
- * files are reported as their flattened leaf columns.
+ * physical type has no supported mapping is reported with data_type NULL.
+ *
+ * The rows are the column definition list read_parquet needs, one declared
+ * column per row (#1893). A top-level column read_parquet reads as one column
+ * (a scalar, a list of a scalar, a struct of scalars) is one row under its own
+ * name; see pq_describe_top. Other nesting reads leaf by leaf, so it is one row
+ * per leaf, named by the leaf's path; see pq_schema_leaf_rows.
  */
 Datum
 pgcolumnar_parquet_schema(PG_FUNCTION_ARGS)
@@ -4615,6 +4806,8 @@ pgcolumnar_parquet_schema(PG_FUNCTION_ARGS)
 	Tuplestorestate *tupstore;
 	MemoryContext oldContext;
 	int			i;
+	int			cursor;
+	int			lf;
 
 	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
 		ereport(ERROR,
@@ -4647,29 +4840,45 @@ pgcolumnar_parquet_schema(PG_FUNCTION_ARGS)
 	rsinfo->setDesc = retdesc;
 	MemoryContextSwitchTo(oldContext);
 
-	for (i = 0; i < pf.ncols; i++)
+	/*
+	 * One row per top-level column, the root's children in pre-order (#1893);
+	 * a column read_parquet reads leaf by leaf gets one row per leaf.
+	 */
+	cursor = 1;
+	lf = 0;
+	for (i = 0; i < pf.ntop && cursor < pf.nelems; i++)
 	{
-		PqSchemaCol *sc = pf.leaves[i].sc;
-		Oid			typid;
-		int32		typmod;
-		Datum		values[4];
-		bool		nulls[4] = {false, false, false, false};
+		PqSchemaCol *sc = &pf.elems[cursor];
+		int			start = cursor;
+		int			first = lf;
+		int			nleaf = pq_skip_subtree(&pf, &cursor);
+		char	   *type;
 
-		values[0] = CStringGetTextDatum(sc->name != NULL ? sc->name : "");
-		if (pq_leaf_to_pgtype(sc, &typid, &typmod))
-			values[1] = CStringGetTextDatum(
-				format_type_extended(typid, typmod, FORMAT_TYPE_TYPEMOD_GIVEN));
-		else
-			nulls[1] = true;
-		/* a column is nullable iff it is OPTIONAL somewhere above the leaf */
-		values[2] = BoolGetDatum(pf.leaves[i].max_def > 0);
-		/* field_id (#388): NULL when the writer emitted none; 0 is a real id */
-		if (sc->field_id >= 0)
-			values[3] = Int32GetDatum(sc->field_id);
-		else
-			nulls[3] = true;
+		lf += nleaf;
+		if (nleaf == 0 || lf > pf.ncols)
+			break;				/* walk_schema accepted the tree, so unreachable */
 
-		tuplestore_putvalues(tupstore, retdesc, values, nulls);
+		if (!pq_describe_top(&pf, sc, first, nleaf, &type))
+		{
+			int			leaf = first;
+
+			cursor = start;
+			pq_schema_leaf_rows(&pf, &cursor, &leaf, NULL, false, false,
+								tupstore, retdesc);
+			cursor = start;
+			(void) pq_skip_subtree(&pf, &cursor);
+			continue;
+		}
+
+		/*
+		 * A scalar is nullable iff it is OPTIONAL somewhere above the leaf. A
+		 * nested column is nullable iff the column itself is OPTIONAL: a null
+		 * list element or struct field does not make the column value null.
+		 */
+		pq_schema_row(tupstore, retdesc, sc->name != NULL ? sc->name : "", type,
+					  sc->num_children == 0 ? pf.leaves[first].max_def > 0
+					  : sc->repetition == 1,
+					  sc->field_id);
 	}
 
 	PG_RETURN_NULL();
@@ -5682,7 +5891,7 @@ pqfdw_open_next_file(PqFdwScanState *st)
 		st->filesRead++;
 		pq_source_open_cfg(file, &st->src, &st->pf, &st->oscfg);
 		pq_check_row_groups(&st->pf, file);
-		st->tops = build_imp_targets(st->tupdesc, &st->pf, &st->leaves,
+		st->tops = build_imp_targets(st->tupdesc, &st->pf, file, &st->leaves,
 									 &st->ntops, st->partMask,
 									 "the pgcolumnar_parquet foreign-data wrapper");
 

@@ -260,6 +260,13 @@ extern void PgColumnarObjStoreStatementEnd(void);
 extern bool PgColumnarPathIsRemote(const char *path);
 
 /*
+ * Raise 0A000 when `path` is a remote URL, for a function that reads local files
+ * only (#1886): "columnar: <funcname> does not read "<path>"", with a hint that
+ * it reads local files only. Returns normally for a local path.
+ */
+extern void PgColumnarRefuseRemotePath(const char *funcname, const char *path);
+
+/*
  * The config to use for the object at `url`: `cfg` itself unless it carries
  * per-object credentials (cfg->byprefix), else the longest-prefix match, else
  * the fallback, else a 28000 refusal that names `url`.

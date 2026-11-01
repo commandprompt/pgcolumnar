@@ -322,8 +322,9 @@ One shared row-producing core (`pq_read_rows`, decode one row group into slots)
 feeds three surfaces over the same file parse and type inference:
 
 - `import_parquet` inserts into a target table via `table_tuple_insert`.
-- `read_parquet` returns rows as a set-returning function, and `parquet_schema`
-  reports the leaf columns and their inferred PostgreSQL types.
+- `read_parquet` returns rows as a set-returning function. `parquet_schema`
+  reports the columns to declare and their inferred PostgreSQL types: one per
+  list, struct or scalar, and one per leaf for other nesting.
 - The `pgcolumnar_parquet` foreign-data wrapper streams the file one row group
   at a time. Each scan step decodes the next row group into a bounded buffer that
   the executor drains. The scan holds one row group rather than the whole file. A
