@@ -1129,8 +1129,10 @@ applies to a strictly lower one. The caller needs the `pg_read_server_files`
 role, which superusers hold. This is the first step of Iceberg support (#388).
 It is a standalone Avro object-container reader, decoded against the schema
 embedded in the file, so a v3 manifest reads structurally. It reads a local
-file. It does not resolve a table's snapshot or apply delete files. To read a
-whole table, use `iceberg_scan`.
+file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). A caller without `pg_read_server_files` gets
+`42501` for a URL too. It does not resolve a table's snapshot or apply delete
+files. To read a whole table, use `iceberg_scan`.
 
 ```sql
 SELECT file_path, record_count, partition
@@ -1147,7 +1149,9 @@ writer recorded. The caller needs the `pg_read_server_files` role, which
 superusers hold. This is step two of Iceberg support (#388). It reads the same
 Avro object-container format as `read_avro_manifest`, decoded against the schema
 embedded in the file. A v3 manifest list therefore reads structurally. It reads
-a local file. It does not resolve a table's current snapshot or open the
+a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). A caller without `pg_read_server_files` gets
+`42501` for a URL too. It does not resolve a table's current snapshot or open the
 manifests it names. To read a whole table, use `iceberg_scan`.
 
 ```sql
@@ -1688,9 +1692,8 @@ accept an object-storage URL wherever they accept a local path. So do the
 `pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data wrappers. The third
 wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
 `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
-`read_manifest_list` read local files only. `import_arrow`, `file_split_offsets`
-and `parallel_copy` refuse a URL in any of the schemes below with SQLSTATE 0A000
-before they read anything, for example
+`read_manifest_list` read local files only. Each of them refuses a URL in any of
+the schemes below with SQLSTATE 0A000 before it reads anything, for example
 `columnar: import_arrow does not read "s3://bucket/m.arrow"`. These URL schemes
 are recognized:
 

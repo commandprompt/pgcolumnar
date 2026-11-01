@@ -525,6 +525,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `read_avro_manifest` and `read_manifest_list` now refuse an object-storage URL
+  with SQLSTATE 0A000 (#1913), as `import_arrow` does since #1886. They read
+  local files only, and before this an `s3://` or `http://` URL failed with
+  `58P01 could not open file "s3://..." for reading`, which says the object does
+  not exist. Every scheme the readers treat as remote is refused: `s3://`,
+  `gs://`, `az://`, `http://` and `https://`, in any case, with #1886's message
+  and hint, for example
+  `columnar: read_avro_manifest does not read "s3://bucket/m.avro"`. Both check
+  `pg_read_server_files` first, so a caller without it gets 42501 for a URL as
+  for a local path. docs/sql-reference.md. `test/avro_manifest.sh` and its
+  pytest twin.
 - `import_arrow`, `file_split_offsets` and `parallel_copy` now refuse an
   object-storage URL with SQLSTATE 0A000 (#1886). They read local files only,
   and before this an `s3://` or `http://` URL failed with

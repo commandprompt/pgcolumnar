@@ -71,7 +71,8 @@ PgColumnarPathIsRemote(const char *path)
  * for a scheme they cannot read, and it names the function. import_arrow and
  * parallel_copy call it after their INSERT and RLS checks on the target, so a
  * caller who may not write the target gets 42501 first, and before they check
- * the target's kind, so a heap target gets the refusal.
+ * the target's kind, so a heap target gets the refusal. read_avro_manifest and
+ * read_manifest_list call it too (#1913), after their pg_read_server_files gate.
  */
 void
 PgColumnarRefuseRemotePath(const char *funcname, const char *path)

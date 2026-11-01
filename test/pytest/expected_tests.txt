@@ -1622,4 +1622,7 @@ guard_tests 854
 # cluster_tests 5138 -> 5139 for #1886's check order: one test in test_import_export_privilege.py
 # (import_arrow and parallel_copy check INSERT before they refuse a remote URL), by collection:
 # `5139 tests collected`.
-cluster_tests 5139
+# cluster_tests 5139 -> 5149 for #1913: ten tests in test_avro_manifest.py (read_avro_manifest and
+# read_manifest_list each refuse s3://, http:// and the other remote schemes, check pg_read_server_files
+# first, and still read a local path holding s3:// past its start), by collection: `5149 tests collected`.
+cluster_tests 5149
