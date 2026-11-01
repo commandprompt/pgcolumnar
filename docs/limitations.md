@@ -1254,6 +1254,11 @@ table at its current snapshot. It has these limits:
   3, and a `current-snapshot-id` that is present but not an integer (#1824).
   It also rejects a manifest `content` or `status` value outside the Iceberg
   spec. A file of unknown kind is never skipped as a delete.
+- Two metadata ids must fit a 32-bit integer, and only the surface that reads
+  an id checks it. The `pgcolumnar_iceberg` foreign-data wrapper refuses a scan
+  when `default-spec-id` is out of range. `iceberg_current_snapshot` refuses a
+  current snapshot whose `schema-id` is out of range. `iceberg_scan` and
+  `iceberg_data_files` read neither id, so they still read such a table.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet. The reader accepts the file format in
   any case, so `parquet` and `PARQUET` both read.

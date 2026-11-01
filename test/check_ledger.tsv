@@ -3277,17 +3277,22 @@ iceberg_malformed	iceberg_malformed	a NULL data-file path is refused in iceberg_
 iceberg_malformed	iceberg_malformed	a NULL data-file path is refused in iceberg_scan (XX001, not a crash)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a manifest entry with a NULL file_path is not refused
 iceberg_malformed	iceberg_malformed	a NULL manifest_path is refused, not a crash (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_open_path does not refuse a NULL recorded path
 iceberg_malformed	iceberg_malformed	a dangling current-schema-id is refused (XX001), not silently stale-read	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a dangling current-schema-id resolves to the legacy top-level schema
+iceberg_malformed	iceberg_malformed	a default-spec-id of -2147483649 is refused by the Iceberg foreign table scan (XX001), not truncated to 2147483647	15;16;17;18;19	2026-11-01	reverted the int32 range checks on default-spec-id and snapshot schema-id (#1853)
+iceberg_malformed	iceberg_malformed	a default-spec-id of 4294967296 is refused by the Iceberg foreign table scan (XX001), not truncated to 0	15;16;17;18;19	2026-11-01	reverted the int32 range checks on default-spec-id and snapshot schema-id (#1853)
 iceberg_malformed	iceberg_malformed	a field id above INT32 is named even when its alias is also queried	15;16;17;18;19	2026-10-31	reverted the #1824 metadata.json integer, field id, format-version and current-snapshot-id checks (#1824)
 iceberg_malformed	iceberg_malformed	a field id above INT32 is refused (XX001), not aliased to another field	15;16;17;18;19	2026-10-31	reverted the #1824 metadata.json integer, field id, format-version and current-snapshot-id checks (#1824)
 iceberg_malformed	iceberg_malformed	a fractional field id is refused (XX001), not rounded	15;16;17;18;19	2026-10-31	reverted the #1824 metadata.json integer, field id, format-version and current-snapshot-id checks (#1824)
 iceberg_malformed	iceberg_malformed	a manifest-list that is a FIFO is refused, not a hang (XX001)	15;16;17;18;19	2026-10-21	columnar_objstore.c: PgColumnarOpenLocalRegularFile drops its S_ISREG guard, so a FIFO opens O_NONBLOCK and reads as an empty file
 iceberg_malformed	iceberg_malformed	a null manifest-list min_sequence_number decodes as NULL, not 0 (#686)	15;16;17;18;19	2026-10-21	columnar_avro.c: read_manifest_list decodes a null min_sequence_number as 0
 iceberg_malformed	iceberg_malformed	a null manifest-list sequence_number decodes as NULL, not 0	15;16;17;18;19	2026-10-21	columnar_avro.c: read_manifest_list decodes a null sequence_number as 0
+iceberg_malformed	iceberg_malformed	a snapshot schema-id of -2147483649 is refused by iceberg_current_snapshot (XX001), not truncated to 2147483647	15;16;17;18;19	2026-11-01	reverted the int32 range checks on default-spec-id and snapshot schema-id (#1853)
+iceberg_malformed	iceberg_malformed	a snapshot schema-id of 4294967296 is refused by iceberg_current_snapshot (XX001), not truncated to 0	15;16;17;18;19	2026-11-01	reverted the int32 range checks on default-spec-id and snapshot schema-id (#1853)
 iceberg_malformed	iceberg_malformed	a string current-snapshot-id is refused (XX001), not read as an empty table	15;16;17;18;19	2026-10-31	reverted the #1824 metadata.json integer, field id, format-version and current-snapshot-id checks (#1824)
 iceberg_malformed	iceberg_malformed	an array-valued schema fields element is refused, not crashed (XX001)	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the FIFO refusals	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the dangling-schema refusal	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the enum refusals	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	backend still up after the int32 id refusals	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the lister refusal	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the malformed-number refusals	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the malformed-schema refusal	15;16;17;18;19	never	-
@@ -3296,12 +3301,17 @@ iceberg_malformed	iceberg_malformed	backend still up after the null-manifest_pat
 iceberg_malformed	iceberg_malformed	backend still up after the null-sequence refusal	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	backend still up after the scan refusal	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a manifest entry with a NULL file_path is not refused
 iceberg_malformed	iceberg_malformed	control: a concrete manifest seq scans all 5 rows (seq-3 delete is older than seq-5 data)	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: a foreign table with default-spec-id 0 scans ten rows	15;16;17;18;19	2026-10-31	columnar_iceberg.c: ice_default_spec_id over-applies defspec < 1, refusing spec 0
+iceberg_malformed	iceberg_malformed	control: a foreign table with default-spec-id 2147483647 scans ten rows	15;16;17;18;19	2026-10-31	columnar_iceberg.c: ice_default_spec_id over-applies defspec >= PG_INT32_MAX, refusing 2147483647
+iceberg_malformed	iceberg_malformed	control: a foreign table with no default-spec-id scans ten rows	15;16;17;18;19	2026-10-31	columnar_iceberg.c: ice_default_spec_id refuses an absent default-spec-id (!ice_num_int64 || out of range)
 iceberg_malformed	iceberg_malformed	control: a legacy-only-schema table still reads (5 rows)	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	control: a null current-snapshot-id still reads as a table with no snapshot (0 rows)	15;16;17;18;19	2026-10-31	columnar_iceberg.c: a JSON-null current-snapshot-id is refused as not an integer (#1834 review I6n)
 iceberg_malformed	iceberg_malformed	control: a present file_path lists one data file	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	control: a present manifest-list sequence_number decodes to its value	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	control: a present min_sequence_number decodes to its value (#686)	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	control: a resolvable current-schema-id reads the correct amount column	15;16;17;18;19	never	-
+iceberg_malformed	iceberg_malformed	control: a snapshot schema-id of -2147483648 reads as -2147483648	15;16;17;18;19	2026-10-31	columnar_iceberg.c: the schema-id range check over-applies num <= PG_INT32_MIN, refusing -2147483648
+iceberg_malformed	iceberg_malformed	control: a snapshot schema-id of 2147483647 reads as 2147483647	15;16;17;18;19	2026-10-31	columnar_iceberg.c: the schema-id range check over-applies num >= PG_INT32_MAX, refusing 2147483647
 iceberg_malformed	iceberg_malformed	control: a well-formed field object still decodes (0 entries)	15;16;17;18;19	never	-
 iceberg_malformed	iceberg_malformed	control: current-snapshot-id -1 still reads as a table with no snapshot (0 rows)	15;16;17;18;19	2026-10-31	columnar_iceberg.c: a negative current-snapshot-id raises an error instead of meaning no snapshot (#1834 review I6o)
 iceberg_malformed	iceberg_malformed	control: the legacy table binds amount correctly (10..50)	15;16;17;18;19	never	-

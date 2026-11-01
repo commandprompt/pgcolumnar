@@ -369,6 +369,25 @@ ice_num_int64(JsonbValue *v, int64 *out)
 }
 
 /*
+ * The table's "default-spec-id", or 0 when it is absent. A spec id is an int in
+ * the Iceberg spec. A larger one used to be cast to int32, so 4294967296 became
+ * spec 0 (#1853). Refuse it instead.
+ */
+static int64
+ice_default_spec_id(JsonbContainer *root, const char *path)
+{
+	int64		defspec = 0;
+
+	if (ice_num_int64(ice_field(root, "default-spec-id"), &defspec) &&
+		(defspec < PG_INT32_MIN || defspec > PG_INT32_MAX))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" has a default-spec-id out of range: " INT64_FORMAT,
+						path, defspec)));
+	return defspec;
+}
+
+/*
  * A schema field's "id" as an int, or -1 when it has none. A field id is an
  * int in the Iceberg spec. A larger one used to truncate, so 2^32 + 1 read as
  * field 1 and the column returned another field's values (#1824).
@@ -909,7 +928,15 @@ pgcolumnar_iceberg_current_snapshot(PG_FUNCTION_ARGS)
 
 	v = ice_field(sc, "schema-id");							/* optional */
 	if (ice_num_int64(v, &num))
+	{
+		/* a schema id is an int; a cast used to truncate a larger one (#1853) */
+		if (num < PG_INT32_MIN || num > PG_INT32_MAX)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: snapshot " INT64_FORMAT " in \"%s\" has a schema-id out of range: " INT64_FORMAT,
+							cur, path, num)));
 		values[6] = Int32GetDatum((int32) num);
+	}
 	else
 		nulls[6] = true;
 
@@ -1471,7 +1498,6 @@ PgColumnarIcebergIdentityPartMap(const char *path,
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1483,9 +1509,7 @@ PgColumnarIcebergIdentityPartMap(const char *path,
 	*out_npos = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1574,7 +1598,6 @@ PgColumnarIcebergBucketMap(const char *path, const PgColumnarObjStoreConfig *cfg
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1591,9 +1614,7 @@ PgColumnarIcebergBucketMap(const char *path, const PgColumnarObjStoreConfig *cfg
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1696,7 +1717,6 @@ PgColumnarIcebergTruncateMap(const char *path, const PgColumnarObjStoreConfig *c
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1713,9 +1733,7 @@ PgColumnarIcebergTruncateMap(const char *path, const PgColumnarObjStoreConfig *c
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1816,7 +1834,6 @@ PgColumnarIcebergDayMap(const char *path, const PgColumnarObjStoreConfig *cfg,
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1831,9 +1848,7 @@ PgColumnarIcebergDayMap(const char *path, const PgColumnarObjStoreConfig *cfg,
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1932,7 +1947,6 @@ PgColumnarIcebergTemporalMap(const char *path, const PgColumnarObjStoreConfig *c
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
 	int			trlen = (int) strlen(transform);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1947,9 +1961,7 @@ PgColumnarIcebergTemporalMap(const char *path, const PgColumnarObjStoreConfig *c
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");

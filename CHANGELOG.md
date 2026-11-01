@@ -516,6 +516,12 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Iceberg reader refuses a `default-spec-id` or a snapshot `schema-id` outside
+  the 32-bit integer range (#1853). It used to cut such a value to 32 bits, so
+  4294967296 read as 0. `iceberg_current_snapshot` then reported the wrong
+  `schema_id`, and the foreign-data wrapper took the wrong current spec id. Both
+  now fail with SQLSTATE XX001 and name the value. `test/iceberg_malformed.sh`
+  and `test_iceberg_malformed.py`.
 - The object-storage module now refuses a host that resolves to Alibaba Cloud's
   instance-metadata address `100.100.100.200`, even when the host is listed in
   `pgcolumnar.objstore_allowed_endpoints` (#1848). Before, it tried to connect.
