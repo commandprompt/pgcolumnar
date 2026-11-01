@@ -534,6 +534,20 @@ true until the next version shipped.
 
 ### Fixed
 
+- `read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table
+  now refuse a list of lists read into an array column (#1917). Before, they
+  flattened it without an error: the cell `[[1], [2, 3]]` read as `{1,2,3}`. A
+  list of maps flattened the same way. A Parquet leaf under two or more
+  repeated levels now fails with SQLSTATE 42804, and the message gives its
+  depth. PostgreSQL does not tell `int[]` from `int[][]` in a declared type,
+  and the reader builds only one-dimensional arrays, so no column list reads
+  such a leaf. These three entry points therefore cannot read such a file at
+  all, even for a query that does not use that column: they bind every column
+  by position, and a scalar declaration fails as unexpectedly repeated. Before,
+  such a query returned the other columns correctly. docs/limitations.md and
+  docs/sql-reference.md. `test/native_parquet_schema.sh` and
+  `test_native_parquet_schema.py`.
+
 - The pytest layer no longer calls `expected_unrunnable.txt` stale for a listed
   test that failed or was lost to a crashed xdist worker (#1914). The check read
   "did not decline" as "ran", and its message told the reader to delete a

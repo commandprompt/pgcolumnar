@@ -1128,7 +1128,12 @@ named `s.t.list.element`. Give one of them another name in your list.
 
 `data_type` is NULL for a leaf that no column type reads correctly. A leaf under
 two repeated levels, such as the elements of a list of lists, is one example.
-`read_parquet` reads such a leaf declared as an array by flattening it (#1917).
+`read_parquet` cannot read a file that holds such a leaf. Declared as an array,
+the leaf fails with SQLSTATE 42804, because a one-dimensional array would lose
+the inner lists. Declared as a scalar, it fails as unexpectedly repeated.
+`read_parquet` binds every column by position, so you cannot leave it out
+either. `import_parquet` and the `pgcolumnar_parquet` foreign table refuse the
+file the same way, even for a query that does not use that column (#1917).
 
 `nullable` for a nested column says whether the column itself can be NULL. A
 NULL list element or struct field does not make it true. On a leaf row it is true

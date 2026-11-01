@@ -5194,6 +5194,7 @@ native_parquet_schema	native_parquet_schema	an exported timestamptz column is UT
 native_parquet_schema	native_parquet_schema	bad magic is rejected by the magic check	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: the reader skips the PAR1 magic check
 native_parquet_schema	native_parquet_schema	export_parquet rows written	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	field ids report as written, in schema order	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports the position as the field id
+native_parquet_schema	native_parquet_schema	import_parquet refuses a list of lists for a one-dimensional array column (#1917)	15;16;17;18;19	2026-11-01	the max_rep > 1 refusal in build_imp_targets reverted (#1917)
 native_parquet_schema	native_parquet_schema	nullable of c_bool	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	nullable of c_bytea	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	nullable of c_date	15;16;17;18;19	never	-
@@ -5228,7 +5229,10 @@ native_parquet_schema	native_parquet_schema	pyarrow reads an exported timestamp 
 native_parquet_schema	native_parquet_schema	pyarrow reads an exported timestamptz back as its instant	15;16;17;18;19	2026-10-22	columnar_parquet.c: timestamptz exported with isAdjustedToUTC=false and no converted type
 native_parquet_schema	native_parquet_schema	read_parquet reads a nested file with the reported names and types (#1893)	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	read_parquet reads each nested file with the column list parquet_schema reports (#1893)	15;16;17;18;19	2026-11-01	first-commit parquet_schema restored: other nesting reported as "(not supported)" (#1893);leaf read type ignores repetition, as main reported leaf types (#1893)
+native_parquet_schema	native_parquet_schema	read_parquet refuses a list of lists declared as a one-dimensional array (#1917)	15;16;17;18;19	2026-11-01	the max_rep > 1 refusal in build_imp_targets reverted (#1917)
+native_parquet_schema	native_parquet_schema	read_parquet refuses a list of maps declared as one-dimensional arrays (#1917)	15;16;17;18;19	2026-11-01	the max_rep > 1 refusal in build_imp_targets reverted (#1917)
 native_parquet_schema	native_parquet_schema	read_parquet returns the exported timestamp and timestamptz unchanged	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	the pgcolumnar_parquet foreign table refuses a list of lists, even in a query that leaves it out (#1917)	15;16;17;18;19	2026-11-01	the max_rep > 1 refusal in build_imp_targets reverted (#1917)
 native_parquet_schema	native_parquet_schema	type of c_bool	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_bytea	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_date	15;16;17;18;19	never	-
