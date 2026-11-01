@@ -29,9 +29,13 @@ refusal_of() {	# stdin: psql output -> the refusal reading
 	local out; out="$(cat)"
 	line="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): /\1|/p' <<<"$out" | head -1)"
 	if [ -z "$line" ]; then
-		grep -qE 'server closed the connection|connection to server' <<<"$out" \
-			&& echo "no refusal: the connection was lost" \
-			|| echo "no error${out:+, read: $(tr '\n' ' ' <<<"$out" | sed 's/ *$//')}"
+		if grep -qE 'server closed the connection|connection to server' <<<"$out"; then
+			echo "no refusal: the connection was lost"; return
+		fi
+		# Only the rows go in the reading. psql's stderr is merged here, so drop the
+		# server's NOTICE, WARNING and their detail lines: the twin never sees them.
+		out="$(grep -vE '^(DEBUG|LOG|INFO|NOTICE|WARNING|DETAIL|HINT|CONTEXT|LOCATION|QUERY): ' <<<"$out")"
+		echo "no error${out:+, read: $(tr '\n' ' ' <<<"$out" | sed 's/ *$//')}"
 		return
 	fi
 	state="${line%%|*}"; msg="${line#*|}"

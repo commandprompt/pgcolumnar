@@ -1192,8 +1192,12 @@ table at its current snapshot. It has these limits:
   path. It also rejects a null manifest sequence number, a null or negative
   position-delete position, and a `current-schema-id` that names no schema. It
   also rejects a manifest `content` or `status` value outside the Iceberg spec.
-  It rejects a `default-spec-id` or a snapshot `schema-id` that does not fit a
-  32-bit integer. A file of unknown kind is never skipped as a delete.
+  A file of unknown kind is never skipped as a delete.
+- Two metadata ids must fit a 32-bit integer, and only the surface that reads
+  an id checks it. The `pgcolumnar_iceberg` foreign-data wrapper refuses a scan
+  when `default-spec-id` is out of range. `iceberg_current_snapshot` refuses a
+  current snapshot whose `schema-id` is out of range. `iceberg_scan` and
+  `iceberg_data_files` read neither id, so they still read such a table.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet.
 - Only top-level primitive columns can be read. A column that names a struct,
