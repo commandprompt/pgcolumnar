@@ -14,7 +14,7 @@
           "value": "b'\\xff\\xfe'"
         }
       ],
-      "metadata_basename": "00001-928ee5d2-3d0a-483d-97ce-61f5af7edebb.metadata.json",
+      "metadata_basename": "00001-875bb01f-b8c9-4154-bcab-90a39a48fadf.metadata.json",
       "planned_values": [
         "b'\\xff\\xfe'",
         "b'a\\x00b'"
@@ -39,7 +39,7 @@
           "value": "1.5"
         }
       ],
-      "metadata_basename": "00001-baffad6d-7342-4afd-ab3c-2ba3180c008a.metadata.json",
+      "metadata_basename": "00001-fea5ec8a-89db-4942-a998-ed3867ca3baa.metadata.json",
       "planned_values": [
         "-2.25",
         "0.10000000149011612",
@@ -60,6 +60,11 @@
           "value": "Decimal('-0.50')"
         },
         {
+          "partition": "v=-2.56",
+          "partition_non_utf8_db": "v=-2.56",
+          "value": "Decimal('-2.56')"
+        },
+        {
           "partition": "v=0.05",
           "partition_non_utf8_db": "v=0.05",
           "value": "Decimal('0.05')"
@@ -70,14 +75,41 @@
           "value": "Decimal('12.25')"
         }
       ],
-      "metadata_basename": "00001-90f448fa-57b9-49e9-95fc-6b30efe7d00b.metadata.json",
+      "metadata_basename": "00001-8db4359c-e7c6-4989-9ebf-4823cbcb7f1e.metadata.json",
       "planned_values": [
         "Decimal('-0.05')",
         "Decimal('-0.50')",
+        "Decimal('-2.56')",
         "Decimal('0.05')",
         "Decimal('12.25')"
       ],
       "type": "decimal(10, 2)"
+    },
+    "dec0": {
+      "files": [
+        {
+          "partition": "v=-7",
+          "partition_non_utf8_db": "v=-7",
+          "value": "Decimal('-7')"
+        },
+        {
+          "partition": "v=0",
+          "partition_non_utf8_db": "v=0",
+          "value": "Decimal('0')"
+        },
+        {
+          "partition": "v=12",
+          "partition_non_utf8_db": "v=12",
+          "value": "Decimal('12')"
+        }
+      ],
+      "metadata_basename": "00001-e47b81e1-e72e-46d5-b366-67a81e445f4a.metadata.json",
+      "planned_values": [
+        "Decimal('-7')",
+        "Decimal('0')",
+        "Decimal('12')"
+      ],
+      "type": "decimal(9, 0)"
     },
     "dec38": {
       "files": [
@@ -92,7 +124,7 @@
           "value": "Decimal('0E-10')"
         }
       ],
-      "metadata_basename": "00001-770d357f-59a5-45b4-8164-c5379e02c2c4.metadata.json",
+      "metadata_basename": "00001-a6d5ad63-d9db-4e5b-b492-0c3cfe98a810.metadata.json",
       "planned_values": [
         "Decimal('-1234567890123456789012345678.0123456789')",
         "Decimal('0E-10')"
@@ -117,7 +149,7 @@
           "value": "1.5"
         }
       ],
-      "metadata_basename": "00001-23e21cfb-1c98-4975-8c5f-1d5efbcc676d.metadata.json",
+      "metadata_basename": "00001-554d0d95-cf01-412b-887d-cf8cfea66d42.metadata.json",
       "planned_values": [
         "-2.25",
         "0.10000000149011612",
@@ -158,7 +190,7 @@
           "value": "'plain'"
         }
       ],
-      "metadata_basename": "00001-fe0b0fb6-5915-41e7-bc0b-06b2236486df.metadata.json",
+      "metadata_basename": "00001-598687b5-2c74-4065-b0fc-e646b369bb55.metadata.json",
       "planned_values": [
         "''",
         "'50%'",

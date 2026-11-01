@@ -4,6 +4,7 @@
 #
 #   db.dec     decimal(10,2)   rendered '?' before #1816
 #   db.dec38   decimal(38,10)  a 16-byte fixed, the widest Iceberg decimal
+#   db.dec0    decimal(9,0)    scale 0: no decimal point
 #   db.flt     float           rendered '?'
 #   db.dbl     double          rendered '?'
 #   db.bin     binary          raw bytes copied into text (invalid UTF-8, a NUL
@@ -50,9 +51,12 @@ ROOT = sys.argv[2] if len(sys.argv) > 2 else "/tmp/pgc_ice_partvals"
 
 TABLES = [
     ("dec", DecimalType(10, 2),
-     [Decimal("-0.50"), Decimal("12.25"), Decimal("0.05"), Decimal("-0.05")]),
+     # -2.56 is unscaled -256, low byte 0x00: the negation must carry
+     [Decimal("-0.50"), Decimal("12.25"), Decimal("0.05"), Decimal("-0.05"),
+      Decimal("-2.56")]),
     ("dec38", DecimalType(38, 10),
      [Decimal("-1234567890123456789012345678.0123456789"), Decimal("0E-10")]),
+    ("dec0", DecimalType(9, 0), [Decimal("12"), Decimal("-7"), Decimal("0")]),
     ("flt", FloatType(), [1.5, -2.25, 0.1]),
     ("dbl", DoubleType(), [1.5, -2.25, 0.1]),
     ("bin", BinaryType(), [b"\xff\xfe", b"a\x00b"]),

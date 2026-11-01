@@ -278,6 +278,10 @@ check "a position-delete entry in a data manifest is refused (0A000)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl pos 1 1)')")" "0A000"
 check "an equality-delete entry in a data manifest is refused (0A000)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl eq 1 2)')")" "0A000"
+# a delete file a later commit carried forward is EXISTING (status 0), and as live
+# as an ADDED one: listing it as a data file would read rows it deletes
+check "an EXISTING (status 0) position-delete entry in a data manifest is refused (0A000)" \
+	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(entry_tbl kept_pos 0 1)')")" "0A000"
 check "a DELETED (status 2) data entry is skipped, not listed and not refused" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$(entry_tbl gone 2 0)')")" "0"
 check "backend still up after the entry refusals" "$(q 'SELECT 1')" "1"
@@ -509,6 +513,8 @@ check "a delete manifest without file counts, holding only removed entries, is s
 	"$(dm_list "$(delmf_tbl gone_nc 2 nocounts)")" "5|f.parquet"
 check "a delete manifest without file counts, holding a live delete entry, is refused (0A000)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(delmf_tbl live_nc 1 nocounts)')")" "0A000"
+check "a delete manifest without file counts, holding an EXISTING (status 0) delete entry, is refused (0A000)" \
+	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(delmf_tbl live0_nc 0 nocounts)')")" "0A000"
 # a delete manifest holds delete files only: a live DATA entry in one is corrupt
 # metadata, refused rather than listed as if the list had called it a data manifest
 check "a live data entry inside a delete manifest is refused as corrupt (XX001)" \
@@ -551,6 +557,8 @@ check "a decimal(10,2) partition renders as the exact decimal (#1816)" \
 	"$(pv_got dec)" "$(pv_expect dec)"
 check "a decimal(38,10) partition renders as the exact decimal (#1816)" \
 	"$(pv_got dec38)" "$(pv_expect dec38)"
+check "a decimal(9,0) partition renders with no decimal point (#1816)" \
+	"$(pv_got dec0)" "$(pv_expect dec0)"
 check "a float partition renders as the shortest exact text (#1816)" \
 	"$(pv_got flt)" "$(pv_expect flt)"
 check "a double partition renders as the shortest exact text (#1816)" \
@@ -568,6 +576,65 @@ PV_BIN_M="$(ls "$(dirname "$(pv_md bin)")"/*-m0.avro | head -1)"
 check "read_avro_manifest renders the binary partitions as hex too (#1816)" \
 	"$(qe "SELECT string_agg(partition, ' ; ' ORDER BY partition COLLATE \"C\")
 	      FROM pgcolumnar.read_avro_manifest('$PV_BIN_M')")" "$(pv_expect bin)"
+
+# ---- the documented format for what no writer here produces (#1816) ---------
+# One crafted manifest entry whose partition record has five fields, in order:
+#   a,b=c%  string 'x'               a field name is escaped as a string is
+#   ctl     string 'a<TAB>b<DEL>c'   control bytes and DEL are percent-encoded
+#   bad     string bytes Q FF FE Q   not UTF-8, so its high bytes are encoded too
+#   fx      fixed(3) 00 ab ff        a plain fixed is hex
+#   u       fixed(16) logicalType uuid, bytes 00..0f   a uuid is hex
+# Field text never holds a bare ',', so split_part(partition, ',', N) is field N.
+PF="$PGC_WORKDIR/partfmt/pf.avro"
+mkdir -p "$(dirname "$PF")"
+python3 - "$PF" <<'PY'
+import json, sys
+def zz(n):
+    u = (n << 1) ^ (n >> 63) if n < 0 else (n << 1)
+    out = bytearray()
+    while True:
+        b = u & 0x7f; u >>= 7
+        out.append(b | 0x80 if u else b)
+        if not u: break
+    return bytes(out)
+def s(bs): return zz(len(bs)) + bs
+part = {"type": "record", "name": "r102", "fields": [
+    {"name": "a,b=c%", "type": ["null", "string"]},
+    {"name": "ctl", "type": ["null", "string"]},
+    {"name": "bad", "type": ["null", "string"]},
+    {"name": "fx", "type": ["null", {"type": "fixed", "name": "f3", "size": 3}]},
+    {"name": "u", "type": ["null", {"type": "fixed", "name": "u16", "size": 16,
+                                    "logicalType": "uuid"}]}]}
+entry = {"type": "record", "name": "manifest_entry", "fields": [
+    {"name": "status", "type": "int"},
+    {"name": "data_file", "type": {"type": "record", "name": "df", "fields": [
+        {"name": "content", "type": "int"},
+        {"name": "file_path", "type": "string"},
+        {"name": "file_format", "type": "string"},
+        {"name": "partition", "type": part},
+        {"name": "record_count", "type": "long"},
+        {"name": "file_size_in_bytes", "type": "long"}]}}]}
+pv = (zz(1) + s(b"x") + zz(1) + s(b"a\tb\x7fc") + zz(1) + s(b"Q\xff\xfeQ")
+      + zz(1) + b"\x00\xab\xff" + zz(1) + bytes(range(16)))
+rec = zz(1) + zz(0) + s(b"file:///tmp/pgc_ice_wh/db/t/data/f.parquet") + s(b"PARQUET") \
+      + pv + zz(5) + zz(1000)
+sync = b"\x00" * 16
+meta = zz(2) + s(b"avro.schema") + s(json.dumps(entry).encode()) + s(b"avro.codec") + s(b"null") + zz(0)
+open(sys.argv[1], "wb").write(b"Obj\x01" + meta + sync + zz(1) + zz(len(rec)) + rec + sync)
+PY
+chmod -R a+rX "$PGC_WORKDIR/partfmt"
+pf_field() {  # $1 field numbers, e.g. "1" or "4,5" -> those fields, ','-joined
+	qe "SELECT string_agg(split_part(partition, ',', n), ',' ORDER BY n)
+	   FROM pgcolumnar.read_avro_manifest('$PF'), unnest('{$1}'::int[]) n"
+}
+check "a partition field name is percent-encoded as a string value is (#1816)" \
+	"$(pf_field 1)" "a%2Cb%3Dc%25=x"
+check "control bytes and DEL in a string partition are percent-encoded (#1816)" \
+	"$(pf_field 2)" "ctl=a%09b%7Fc"
+check "a string partition that is not UTF-8 is percent-encoded, never passed raw (#1816)" \
+	"$(pf_field 3)" "bad=Q%FF%FEQ"
+check "a plain fixed and a uuid partition render as hex (#1816)" \
+	"$(pf_field 4,5)" 'fx=\x00abff,u=\x000102030405060708090a0b0c0d0e0f'
 
 # ---- no current snapshot: zero rows ----------------------------------------
 NOSNAP="$PGC_WORKDIR/no_current.metadata.json"
