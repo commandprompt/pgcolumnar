@@ -649,6 +649,21 @@ check "empty only level: iceberg_rest_tables of ARRAY[''] is refused when the ca
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:1', ARRAY[''])" \
 	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
 	"22023 hint level 1"
+# The server form with an OAuth client credential fetches a token before it
+# reads the namespace, and that POST carries the client secret. The refusal
+# must come first, so a catalog that cannot be reached still gives 22023.
+q "CREATE SERVER irs_down FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
+   OPTIONS (catalog_uri 'http://127.0.0.1:1')" >/dev/null
+q "CREATE USER MAPPING FOR CURRENT_USER SERVER irs_down
+   OPTIONS (oauth_client_id 'a', oauth_client_secret 'b')" >/dev/null
+check "empty only level: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', '', 'events')" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"22023 hint level 1"
+check "empty only level: the OAuth server form of iceberg_rest_scan of '' is refused before the token request" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', '', 'events') AS t(id bigint)" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"22023 hint level 1"
 check "empty only level: no request reaches the catalog with an empty path segment" \
 	"$(cat "$OLOG" "$KLOG" | grep -c '^GET [^ ?]*//')" \
 	"0"

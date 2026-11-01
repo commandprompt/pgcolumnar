@@ -1162,6 +1162,8 @@ rest_table_location(FunctionCallInfo fcinfo, bool ns_is_array)
 	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
 	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	/* before rest_resolve: a server's OAuth token POST is a request too */
+	rest_refuse_only_empty_level(levels);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	(void) rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
 	PG_RETURN_TEXT_P(cstring_to_text(loc));
@@ -1225,6 +1227,8 @@ rest_scan(FunctionCallInfo fcinfo, bool ns_is_array)
 	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
 	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	/* before rest_resolve: a server's OAuth token POST is a request too */
+	rest_refuse_only_empty_level(levels);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	/* one loadTable: the metadata-location AND the vended storage creds (if any) */
 	lt = rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);

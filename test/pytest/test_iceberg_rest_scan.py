@@ -493,6 +493,17 @@ def irs(pgc_cluster):
                                            "Level 1 of 1 of the namespace is empty", " hint level 1")
         r["only down tables"] = _refusal(dsn, "SELECT * FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:1', ARRAY[''])",
                                          "Level 1 of 1 of the namespace is empty", " hint level 1")
+        # The OAuth server form fetches a token (a POST carrying the client
+        # secret) before it reads the namespace; the refusal must come first.
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("CREATE SERVER irs_down FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog "
+                         "OPTIONS (catalog_uri 'http://127.0.0.1:1')")
+            conn.execute("CREATE USER MAPPING FOR CURRENT_USER SERVER irs_down "
+                         "OPTIONS (oauth_client_id 'a', oauth_client_secret 'b')")
+        r["only down oauth location"] = _refusal(dsn, "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', '', 'events')",
+                                                 "Level 1 of 1 of the namespace is empty", " hint level 1")
+        r["only down oauth scan"] = _refusal(dsn, "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', '', 'events') AS t(id bigint)",
+                                             "Level 1 of 1 of the namespace is empty", " hint level 1")
         r["only empty segment"] = str(sum(1 for ln in (olog.read_text() + klog.read_text()).splitlines()
                                           if re.match(r"GET [^ ?]*//", ln)))
         r["array strict"] = _rows(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_rest_tables('{dcat2}', NULL::text[])")
@@ -1139,6 +1150,20 @@ def test_empty_only_level_tables_is_refused_when_the_catalog_cannot_be_reached(i
         return
     expect.text(irs["only down tables"], "22023 hint level 1",
                 "empty only level: iceberg_rest_tables of ARRAY[''] is refused when the catalog cannot be reached")
+
+
+def test_empty_only_level_oauth_server_location_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["only down oauth location"], "22023 hint level 1",
+                "empty only level: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request")
+
+
+def test_empty_only_level_oauth_server_scan_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["only down oauth scan"], "22023 hint level 1",
+                "empty only level: the OAuth server form of iceberg_rest_scan of '' is refused before the token request")
 
 
 def test_empty_only_level_no_request_has_an_empty_path_segment(irs, expect):

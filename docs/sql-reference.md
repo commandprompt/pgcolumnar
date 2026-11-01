@@ -1455,8 +1455,9 @@ a hint that names the empty level, such as
 such namespace" (SQLSTATE 3F000) and "no such table" (SQLSTATE 42P01).
 
 A namespace whose only level is empty, `ARRAY['']` or `''`, is refused with
-SQLSTATE 22023 (#1922). The refusal comes before any request, so it does not
-depend on whether the catalog can be reached. Its request path would hold
+SQLSTATE 22023 (#1922). The refusal comes before any request, including a
+server's OAuth token request, so it does not depend on whether the catalog can
+be reached. Its request path would hold
 an empty segment, such as `/v1/namespaces//tables`. The Apache Iceberg REST
 catalog answers that path with HTTP 400, and a proxy may collapse `//` to `/`.
 The REST spec has no other way to write it. The error's hint reads

@@ -11156,6 +11156,8 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_empty_only_level_the_documented_filter_reaches_the_child` | empty only level: the documented filter lets the LATERAL example reach the child of ARRAY[''] |
 | `test_empty_only_level_location_is_refused_when_the_catalog_cannot_be_reached` | empty only level: iceberg_rest_table_location of '' is refused when the catalog cannot be reached |
 | `test_empty_only_level_tables_is_refused_when_the_catalog_cannot_be_reached` | empty only level: iceberg_rest_tables of ARRAY[''] is refused when the catalog cannot be reached |
+| `test_empty_only_level_oauth_server_location_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request |
+| `test_empty_only_level_oauth_server_scan_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_scan of '' is refused before the token request |
 | `test_empty_only_level_no_request_has_an_empty_path_segment` | empty only level: no request reaches the catalog with an empty path segment |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
