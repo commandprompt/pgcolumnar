@@ -1546,4 +1546,9 @@ guard_tests 854
 # cluster_tests 4969 -> 4972 for #1853's review: three edge controls in test_iceberg_malformed.py (schema-id
 # -2147483648, default-spec-id 2147483647, no default-spec-id), 3 checks in 3 tests, by collection over the
 # cluster files: `4773 tests collected`.
-cluster_tests 4972
+# cluster_tests 4972 -> 4985 for #1816's and #1829's test_iceberg_data_files.py: 13 checks in 13 tests
+# (24 -> 37 collected in the file), by collection over the cluster files: `4776 tests collected`.
+# cluster_tests 4985 -> 4992 for the #1879 review of test_iceberg_data_files.py: 7 checks in 7 tests (an
+# EXISTING position-delete entry, an EXISTING delete entry without counts, decimal(9,0), and four crafted
+# partition-format checks; 37 -> 44 collected in the file), by collection over the cluster files: `4783 tests collected`.
+cluster_tests 4992

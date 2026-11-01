@@ -516,6 +516,28 @@ true until the next version shipped.
 
 ### Fixed
 
+- `iceberg_data_files` and `read_avro_manifest` now show every partition value
+  exactly, as valid text (#1816, #1791). A decimal, float or double value used to
+  show as `?`. A binary value was copied raw into the text: invalid UTF-8 that
+  `pg_dump` output could not restore, cut short at a NUL byte. Now a decimal shows
+  its exact value (`-0.50`), a float or double the shortest text that reads back
+  the same (`0.1`), and binary, fixed and uuid values `\x` and hex (`\xfffe`). A
+  NULL value shows as the field name alone, so it no longer looks like an empty
+  string, and `%`, `,` and `=` in a string or field name are percent-encoded. The
+  format is in docs/sql-reference.md, under "How a partition value is shown".
+  `iceberg_scan` was not affected. `test/iceberg_data_files.sh` and its twin, with
+  a new pyiceberg fixture (`test/fixtures/iceberg/gen_iceberg_partvals.py`).
+  Reported by @OffgridwithJD.
+
+- `iceberg_data_files` no longer refuses a table whose delete manifest holds only
+  removed entries (#1829). A rewrite or compaction that removes every old delete
+  file leaves such a manifest, with status 2 (DELETED) on every entry. The lister
+  refused it as "has delete files" without opening it. It now refuses a delete
+  manifest unopened only when the manifest list counts a live (added or existing)
+  file in it; otherwise it opens the manifest, skips removed entries and refuses a
+  live delete file. A live data-file entry in a delete manifest is refused as
+  corrupt (XX001). `test/iceberg_data_files.sh` and its twin.
+  Reported by @OffgridwithJD.
 - The Iceberg reader refuses a `default-spec-id` or a snapshot `schema-id` outside
   the 32-bit integer range (#1853). It used to cut such a value to 32 bits, so
   4294967296 read as 0. `iceberg_current_snapshot` then reported the wrong
