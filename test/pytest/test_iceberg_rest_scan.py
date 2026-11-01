@@ -409,22 +409,47 @@ def irs(pgc_cluster):
                                    "a namespace level must not be NULL", " as NULL")
         r["array 2d"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}', ARRAY[['db'],['x']])",
                                  "a namespace array must have one dimension", " as 2-D")
-        # #1891: an empty namespace level is refused before any request.
+        # #1891: an empty namespace level is sent as given. A catalog 404 for a
+        # namespace with an empty level carries a hint that names the level.
         for key, sql, phrase, label in (
             ("empty text doubled", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}','db..x')",
-             "namespace level 2 of 3 is empty", " level 2"),
+             "Level 2 of 3 of the namespace is empty", " hint level 2"),
             ("empty text trailing", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}','db.')",
-             "namespace level 2 of 2 is empty", " level 2"),
+             "Level 2 of 2 of the namespace is empty", " hint level 2"),
             ("empty text whole", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}','')",
-             "namespace level 1 of 1 is empty", " level 1"),
+             "Level 1 of 1 of the namespace is empty", " hint level 1"),
             ("empty array level", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}', ARRAY['db',''])",
-             "namespace level 2 of 2 is empty", " level 2"),
+             "Level 2 of 2 of the namespace is empty", " hint level 2"),
             ("empty array scan", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{dcat2}', ARRAY[''], 'events') AS t(id bigint)",
-             "namespace level 1 of 1 is empty", " level 1"),
+             "Level 1 of 1 of the namespace is empty", " hint level 1"),
             ("empty text location", f"SELECT pgcolumnar.iceberg_rest_table_location('{dcat2}', '.db', 'events')",
-             "namespace level 1 of 2 is empty", " level 1"),
+             "Level 1 of 2 of the namespace is empty", " hint level 1"),
+            ("empty no hint", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}','db.y')",
+             "of the namespace is empty", " with the hint"),
         ):
             r[key] = _refusal(dsn, sql, phrase, label)
+        # This catalog keeps its table in the namespace db, '' (an empty level).
+        ecat = start_fx("emptylevel", "--namespace-levels", '["db",""]', "--table", "events")
+        r["empty listed"] = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text, ' ' "
+                                       "ORDER BY array_to_json(ns)::text COLLATE \"C\") "
+                                       f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ecat}') AS ns")
+        r["empty tables"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
+                                       f"FROM pgcolumnar.iceberg_rest_tables('{ecat}', ARRAY['db','']) AS t")
+        r["empty text tables"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
+                                            f"FROM pgcolumnar.iceberg_rest_tables('{ecat}', 'db.') AS t")
+        r["empty location"] = _rows(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{ecat}', ARRAY['db',''], 'events')")
+        r["empty scan"] = _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM "
+                                     f"pgcolumnar.iceberg_rest_scan('{ecat}', ARRAY['db',''], 'events') {cols} ORDER BY id")
+        r["empty roundtrip"] = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text || '=' || t, ' ' ORDER BY t) "
+                                          f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ecat}') AS ns, "
+                                          f"LATERAL pgcolumnar.iceberg_rest_tables('{ecat}', ns) AS t "
+                                          "WHERE ns = ARRAY['db','']")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("CREATE SERVER irs_empty FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog "
+                         f"OPTIONS (catalog_uri '{ecat}')")
+            conn.execute(f"CREATE USER MAPPING FOR postgres SERVER irs_empty OPTIONS (token '{TOKEN}')")
+        r["empty server"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
+                                       "FROM pgcolumnar.iceberg_rest_tables('irs_empty', ARRAY['db','']) AS t")
         r["array strict"] = _rows(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_rest_tables('{dcat2}', NULL::text[])")
 
         r["survived"] = _survived(dsn, log, before)
@@ -895,43 +920,100 @@ def test_text_array_form_a_two_dimensional_namespace_array_is_refused(irs, expec
     expect.text(irs["array 2d"], "22023 as 2-D", "text[] form: a two-dimensional namespace array is refused")
 
 
-def test_empty_level_the_text_form_with_a_doubled_dot_is_refused(irs, expect):
+
+def test_empty_level_a_missing_doubled_dot_gets_a_hint_naming_level_2(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty text doubled"], "22023 level 2",
-                "empty level: the text form 'db..x' is refused naming level 2")
+    expect.text(irs["empty text doubled"], "3F000 hint level 2",
+                "empty level: a missing 'db..x' gets a hint naming level 2")
 
 
-def test_empty_level_the_text_form_with_a_trailing_dot_is_refused(irs, expect):
+def test_empty_level_a_missing_trailing_dot_gets_a_hint_naming_level_2(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty text trailing"], "22023 level 2",
-                "empty level: the text form 'db.' is refused naming level 2")
+    expect.text(irs["empty text trailing"], "3F000 hint level 2",
+                "empty level: a missing 'db.' gets a hint naming level 2")
 
 
-def test_empty_level_the_empty_text_form_is_refused(irs, expect):
+def test_empty_level_a_missing_empty_text_gets_a_hint_naming_level_1(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty text whole"], "22023 level 1",
-                "empty level: the text form '' is refused naming level 1")
+    expect.text(irs["empty text whole"], "3F000 hint level 1",
+                "empty level: a missing '' gets a hint naming level 1")
 
 
-def test_empty_level_an_empty_text_array_element_is_refused(irs, expect):
+def test_empty_level_a_missing_empty_array_element_gets_a_hint_naming_level_2(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty array level"], "22023 level 2",
-                "empty level: the text[] form ARRAY['db',''] is refused naming level 2")
+    expect.text(irs["empty array level"], "3F000 hint level 2",
+                "empty level: a missing ARRAY['db',''] gets a hint naming level 2")
 
 
-def test_empty_level_iceberg_rest_scan_of_an_empty_element_is_refused(irs, expect):
+def test_empty_level_iceberg_rest_scan_of_a_missing_empty_element_gets_a_hint(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty array scan"], "22023 level 1",
-                "empty level: iceberg_rest_scan of ARRAY[''] is refused naming level 1")
+    expect.text(irs["empty array scan"], "3F000 hint level 1",
+                "empty level: iceberg_rest_scan of a missing ARRAY[''] gets a hint naming level 1")
 
 
-def test_empty_level_iceberg_rest_table_location_with_a_leading_dot_is_refused(irs, expect):
+def test_empty_level_iceberg_rest_table_location_of_a_missing_leading_dot_gets_a_hint(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty text location"], "22023 level 1",
-                "empty level: iceberg_rest_table_location of '.db' is refused naming level 1")
+    expect.text(irs["empty text location"], "3F000 hint level 1",
+                "empty level: iceberg_rest_table_location of a missing '.db' gets a hint naming level 1")
+
+
+def test_empty_level_a_missing_namespace_with_no_empty_level_gets_no_hint(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty no hint"], "3F000",
+                "empty level: a missing namespace with no empty level gets no empty-level hint")
+
+
+def test_empty_level_iceberg_rest_namespace_levels_lists_the_empty_level(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty listed"], '["db",""] ["db"]',
+                "empty level: iceberg_rest_namespace_levels lists the namespace db, ''")
+
+
+def test_empty_level_iceberg_rest_tables_of_the_array_form_lists_its_tables(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty tables"], "events",
+                "empty level: iceberg_rest_tables of ARRAY['db',''] lists its tables")
+
+
+def test_empty_level_iceberg_rest_tables_of_the_text_form_lists_its_tables(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty text tables"], "events",
+                "empty level: iceberg_rest_tables of the text form 'db.' lists its tables")
+
+
+def test_empty_level_iceberg_rest_table_location_resolves_the_table(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty location"], irs["mdloc"],
+                "empty level: iceberg_rest_table_location of ARRAY['db',''] resolves the table")
+
+
+def test_empty_level_iceberg_rest_scan_returns_the_five_rows(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty scan"], ROWS5,
+                "empty level: iceberg_rest_scan of ARRAY['db',''] returns the five rows")
+
+
+def test_empty_level_a_listed_level_array_with_an_empty_level_passes_back(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty roundtrip"], '["db",""]=events',
+                "empty level: a listed level array with an empty level passes back to iceberg_rest_tables")
+
+
+def test_empty_level_the_server_form_reaches_the_empty_level(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty server"], "events",
+                "empty level: the server form of iceberg_rest_tables reaches ARRAY['db','']")

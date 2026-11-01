@@ -415,12 +415,13 @@ rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc)
 }
 
 /*
- * Refuse an empty namespace level before any request names it (#1891). The
- * catalog would otherwise be asked about the empty level and answer 404, so
- * the caller saw "no such namespace" instead of the wrong argument.
+ * A hint for the catalog's 404 when a namespace level is empty (#1891), or
+ * NULL when none is. The catalog accepts such a namespace, so the client sends
+ * it as given; but a stray dot in the text form makes one by mistake, and the
+ * plain "no such namespace" did not say so.
  */
-static void
-rest_check_no_empty_level(List *levels)
+static char *
+rest_empty_level_hint(List *levels)
 {
 	ListCell   *lc;
 	int			i = 0;
@@ -429,13 +430,11 @@ rest_check_no_empty_level(List *levels)
 	{
 		i++;
 		if (((const char *) lfirst(lc))[0] == '\0')
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("iceberg: namespace level %d of %d is empty",
-							i, list_length(levels)),
-					 errdetail("Every namespace level needs at least one character. "
-							   "In the text form, a leading, trailing or doubled dot makes an empty level.")));
+			return psprintf("Level %d of %d of the namespace is empty. "
+							"In the text form, a leading, trailing or doubled dot makes an empty level.",
+							i, list_length(levels));
 	}
+	return NULL;
 }
 
 /* Split a dot-separated namespace, as a caller gives it, into its levels. */
@@ -456,14 +455,13 @@ rest_split_namespace(const char *ns)
 			start = p + 1;
 		}
 	}
-	rest_check_no_empty_level(levels);
 	return levels;
 }
 
 /*
  * The levels of a namespace given as a text[] (#1865): each element is one
  * level, as given, so a level may hold a dot. The array must have one
- * dimension, at least one element, no NULL element and no empty element.
+ * dimension, at least one element, and no NULL element.
  */
 static List *
 rest_array_levels(ArrayType *arr)
@@ -493,7 +491,6 @@ rest_array_levels(ArrayType *arr)
 					 errdetail("Element %d of the namespace array is NULL.", i + 1)));
 		levels = lappend(levels, TextDatumGetCString(elems[i]));
 	}
-	rest_check_no_empty_level(levels);
 	return levels;
 }
 
@@ -709,10 +706,11 @@ rest_error_model(const PgColumnarHttpResult *r, char **msg, char **type)
  * GET catalog_uri + resource_path, sending the bearer token when set. Maps the
  * transport-level statuses the catalog can return to clean SQLSTATEs; returns
  * the parsed JSON body of a 200 as a Jsonb, or raises. `what` labels errors.
+ * `hint404`, when not NULL, is the hint of a 404.
  */
 static Jsonb *
 rest_get_json(const char *catalog_uri, const char *resource_path,
-			  const char *what, const char *token)
+			  const char *what, const char *token, const char *hint404)
 {
 	const PgColumnarObjStoreApi *api = rest_objstore();
 	StringInfoData url;
@@ -759,12 +757,14 @@ rest_get_json(const char *catalog_uri, const char *resource_path,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_SCHEMA_NAME),
 				 errmsg("iceberg: the REST catalog has no such namespace (HTTP 404)"),
-				 emsg ? errdetail("The catalog said: %s", emsg) : 0));
+				 emsg ? errdetail("The catalog said: %s", emsg) : 0,
+				 hint404 ? errhint("%s", hint404) : 0));
 	if (r.status == 404)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_TABLE),
 				 errmsg("iceberg: the REST catalog has no such %s (HTTP 404)", what),
-				 emsg ? errdetail("The catalog said: %s", emsg) : 0));
+				 emsg ? errdetail("The catalog said: %s", emsg) : 0,
+				 hint404 ? errhint("%s", hint404) : 0));
 	if (r.status != 200)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -927,7 +927,7 @@ rest_catalog_config(const char *catalog_uri, const char *token,
 		appendStringInfoString(&cfgpath, "?warehouse=");
 		rest_pct_encode(&cfgpath, warehouse);
 	}
-	cfg = rest_get_json(catalog_uri, cfgpath.data, "config", token);
+	cfg = rest_get_json(catalog_uri, cfgpath.data, "config", token, NULL);
 	/*
 	 * The config body is untrusted (a compromised or hostile allow-listed
 	 * catalog). getKeyJsonValueFromContainer Asserts object-ness before its
@@ -972,7 +972,8 @@ rest_load_table_doc(const char *catalog_uri, List *levels, const char *table,
 	appendStringInfoString(&rp, "/tables/");
 	rest_pct_encode(&rp, table);
 
-	lt = rest_get_json(catalog_uri, rp.data, "table", token);
+	lt = rest_get_json(catalog_uri, rp.data, "table", token,
+					   rest_empty_level_hint(levels));
 	if (out_location != NULL)
 		*out_location = rest_json_string(&lt->root, "metadata-location",
 										 "loadTable response");
@@ -1297,7 +1298,7 @@ rest_strset_lookup(HTAB **set, const char *s, bool add)
  */
 static List *
 rest_get_list(const char *catalog_uri, const char *path, const char *key,
-			  const char *what, const char *token)
+			  const char *what, const char *token, const char *hint404)
 {
 	List	   *items = NIL;
 	char	   *pagetoken = NULL;
@@ -1325,7 +1326,7 @@ rest_get_list(const char *catalog_uri, const char *path, const char *key,
 			appendStringInfoString(&rp, strchr(path, '?') ? "&pageToken=" : "?pageToken=");
 			rest_pct_encode(&rp, pagetoken);
 		}
-		doc = rest_get_json(catalog_uri, rp.data, what, token);
+		doc = rest_get_json(catalog_uri, rp.data, what, token, hint404);
 		if (!JsonContainerIsObject(&doc->root))
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
@@ -1453,7 +1454,8 @@ rest_walk_namespaces(const char *catalog_uri, const char *token,
 		appendStringInfoString(&rp, "?parent=");
 		rest_append_levels(&rp, parent, cc);
 	}
-	items = rest_get_list(catalog_uri, rp.data, "namespaces", "namespaces", token);
+	items = rest_get_list(catalog_uri, rp.data, "namespaces", "namespaces", token,
+							  NULL);
 
 	if (parent == NIL)
 	{
@@ -1579,6 +1581,7 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespace_levels);
  * same namespaces, each as a text[] of its levels (#1865). A row passes back
  * unchanged as the namespace argument of the other REST functions, except a
  * row with a level that holds the catalog's separator: they refuse it (22023).
+ * A row with an empty level passes back too (#1891).
  */
 Datum
 pgcolumnar_iceberg_rest_namespace_levels(PG_FUNCTION_ARGS)
@@ -1618,7 +1621,8 @@ rest_tables(FunctionCallInfo fcinfo, bool ns_is_array)
 	appendStringInfoString(&rp, "namespaces/");
 	rest_append_levels(&rp, levels, &cc);
 	appendStringInfoString(&rp, "/tables");
-	items = rest_get_list(catalog_uri, rp.data, "identifiers", "table list", token);
+	items = rest_get_list(catalog_uri, rp.data, "identifiers", "table list", token,
+						  rest_empty_level_hint(levels));
 
 	foreach(lc, items)
 	{

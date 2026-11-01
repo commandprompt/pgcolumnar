@@ -525,13 +525,13 @@ true until the next version shipped.
 
 ### Fixed
 
-- The REST functions now refuse an empty namespace level before they send any
-  request (#1891). The text form `'db..x'`, `'db.'`, `'.db'` or `''`, and a
-  `text[]` element `''`, used to reach the catalog, which answered 404 ("no such
-  namespace"). The call now fails with SQLSTATE 22023, and the message names
-  the level by number, such as `namespace level 2 of 3 is empty`.
-  docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
-  `test_iceberg_rest_scan.py`.
+- The REST functions now say when a namespace level is empty (#1891). The
+  text form `'db..x'`, `'db.'`, `'.db'` or `''`, and a `text[]` element `''`,
+  name a namespace with an empty level. The catalog accepts such a namespace,
+  so pgcolumnar still sends it as given and can reach it. When the catalog has
+  no such namespace, its "no such namespace" error now carries a hint, such as
+  `Level 2 of 3 of the namespace is empty`. docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
 - The docs no longer contradict the code on object storage, credentials and
   row-group skipping (#1797). `import_arrow`, `file_split_offsets` and
   `parallel_copy` read local files only; the docs had said every Arrow and

@@ -11108,12 +11108,20 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_text_array_form_a_null_level_is_refused` | text[] form: a NULL level is refused |
 | `test_text_array_form_a_two_dimensional_namespace_array_is_refused` | text[] form: a two-dimensional namespace array is refused |
 | `test_text_array_form_a_null_namespace_array_returns_no_rows` | text[] form: iceberg_rest_tables of a NULL namespace array returns no rows |
-| `test_empty_level_the_text_form_with_a_doubled_dot_is_refused` | empty level: the text form 'db..x' is refused naming level 2 |
-| `test_empty_level_the_text_form_with_a_trailing_dot_is_refused` | empty level: the text form 'db.' is refused naming level 2 |
-| `test_empty_level_the_empty_text_form_is_refused` | empty level: the text form '' is refused naming level 1 |
-| `test_empty_level_an_empty_text_array_element_is_refused` | empty level: the text[] form ARRAY['db',''] is refused naming level 2 |
-| `test_empty_level_iceberg_rest_scan_of_an_empty_element_is_refused` | empty level: iceberg_rest_scan of ARRAY[''] is refused naming level 1 |
-| `test_empty_level_iceberg_rest_table_location_with_a_leading_dot_is_refused` | empty level: iceberg_rest_table_location of '.db' is refused naming level 1 |
+| `test_empty_level_a_missing_doubled_dot_gets_a_hint_naming_level_2` | empty level: a missing 'db..x' gets a hint naming level 2 |
+| `test_empty_level_a_missing_trailing_dot_gets_a_hint_naming_level_2` | empty level: a missing 'db.' gets a hint naming level 2 |
+| `test_empty_level_a_missing_empty_text_gets_a_hint_naming_level_1` | empty level: a missing '' gets a hint naming level 1 |
+| `test_empty_level_a_missing_empty_array_element_gets_a_hint_naming_level_2` | empty level: a missing ARRAY['db',''] gets a hint naming level 2 |
+| `test_empty_level_iceberg_rest_scan_of_a_missing_empty_element_gets_a_hint` | empty level: iceberg_rest_scan of a missing ARRAY[''] gets a hint naming level 1 |
+| `test_empty_level_iceberg_rest_table_location_of_a_missing_leading_dot_gets_a_hint` | empty level: iceberg_rest_table_location of a missing '.db' gets a hint naming level 1 |
+| `test_empty_level_a_missing_namespace_with_no_empty_level_gets_no_hint` | empty level: a missing namespace with no empty level gets no empty-level hint |
+| `test_empty_level_iceberg_rest_namespace_levels_lists_the_empty_level` | empty level: iceberg_rest_namespace_levels lists the namespace db, '' |
+| `test_empty_level_iceberg_rest_tables_of_the_array_form_lists_its_tables` | empty level: iceberg_rest_tables of ARRAY['db',''] lists its tables |
+| `test_empty_level_iceberg_rest_tables_of_the_text_form_lists_its_tables` | empty level: iceberg_rest_tables of the text form 'db.' lists its tables |
+| `test_empty_level_iceberg_rest_table_location_resolves_the_table` | empty level: iceberg_rest_table_location of ARRAY['db',''] resolves the table |
+| `test_empty_level_iceberg_rest_scan_returns_the_five_rows` | empty level: iceberg_rest_scan of ARRAY['db',''] returns the five rows |
+| `test_empty_level_a_listed_level_array_with_an_empty_level_passes_back` | empty level: a listed level array with an empty level passes back to iceberg_rest_tables |
+| `test_empty_level_the_server_form_reaches_the_empty_level` | empty level: the server form of iceberg_rest_tables reaches ARRAY['db',''] |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
