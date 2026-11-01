@@ -22,6 +22,7 @@
 #                 manifest_file.content outside the spec (#1823)
 #   content4g_old / status4g_old / mfcontent4g
 #                 the same three fields at 2^32 or 2^32+1, outside int32 (#1823)
+#   specid4g      enum_ctl with manifest_file.partition_spec_id 2^32 (#1878)
 import sys, os, json, shutil
 import pyarrow as pa, pyarrow.parquet as pq
 
@@ -116,8 +117,8 @@ MFILE_V2 = json.dumps({"type": "record", "name": "manifest_file", "fields": [
     {"name": "added_snapshot_id", "type": "long"}]}).encode()
 
 
-def mfile_v2(path, content, seq, snap):
-    return s(path.encode()) + zz(1000) + zz(0) + zz(content) + \
+def mfile_v2(path, content, seq, snap, spec=0):
+    return s(path.encode()) + zz(1000) + zz(spec) + zz(content) + \
         (zz(1) + zz(seq)) + zz(seq) + zz(snap)
 
 
@@ -335,7 +336,8 @@ open(os.path.join(nmp, "t.metadata.json"), "w").write(
 # file's five rows vanished with no error; on the newest it failed with a
 # misleading "has no equality_ids". Each variant below changes ONE value of the
 # control; the reader must refuse it as corrupt metadata, naming the value.
-def build_enum(name, old_content=0, new_content=0, old_status=1, mf_content=0):
+def build_enum(name, old_content=0, new_content=0, old_status=1, mf_content=0,
+               mf_spec=0):
     root = os.path.join(OUT, name)
     md = os.path.join(root, "db", "t", "metadata")
     dd = os.path.join(root, "db", "t", "data")
@@ -351,7 +353,8 @@ def build_enum(name, old_content=0, new_content=0, old_status=1, mf_content=0):
                     s(b"PARQUET") + zz(5) + zz(1000))
     open(os.path.join(md, "dm.avro"), "wb").write(ocf(ENTRY_NULLPATH, ents))
     open(os.path.join(md, "ml.avro"), "wb").write(
-        ocf(MFILE_V2, [mfile_v2(f"{loc}/metadata/dm.avro", mf_content, 5, SNAP)]))
+        ocf(MFILE_V2, [mfile_v2(f"{loc}/metadata/dm.avro", mf_content, 5, SNAP,
+                                mf_spec)]))
     open(os.path.join(md, "t.metadata.json"), "w").write(
         metadata_json(loc, "ml.avro", 2, 5))
 
@@ -367,6 +370,9 @@ build_enum("mfcontent5", mf_content=5)          # was: read as a data manifest
 build_enum("content4g_old", old_content=2**32)  # was: 10 rows, read as data
 build_enum("status4g_old", old_status=2**32 + 1)  # was: 10 rows, read as added
 build_enum("mfcontent4g", mf_content=2**32)     # was: read as a data manifest
+# manifest_file.partition_spec_id is an int too: 2^32 wrapped to 0, so the
+# manifest matched spec 0 and was pruned with the current spec's quals (#1878).
+build_enum("specid4g", mf_spec=2**32)           # was: 10 rows, read as spec 0
 
 
 print("malformed fixtures written under", OUT)

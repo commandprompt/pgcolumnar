@@ -154,6 +154,35 @@ def test_the_endpoint_allow_list(pgc_cluster, pgc_conn, server_dir, expect):
         expect.text(state, "42501", "link-local: refused 42501 despite being listed")
         expect.num(1 if "link-local" in msg else 0, 1, "link-local: the refusal names the range, not the list")
         expect.num(_state(pgc_cluster, q)[2], 1000, "link-local: the listed ordinary host still works beside it")
+
+        # ---- Alibaba Cloud instance metadata, outside 169.254/16 (#1848) -----
+        # 100.100.100.200 sits in 100.64.0.0/10, which carrier-grade NAT uses, so
+        # the guard refuses the one address, not the /10. statement_timeout 3s
+        # bounds the read: without the guard a connect() is tried, and 08006 or
+        # 57014 then shows that it was.
+        set_list("100.100.100.200, 100.100.100.201, 127.0.0.1")
+        ali = "SELECT count(*) FROM pgcolumnar.read_parquet('http://100.100.100.200:1/x.parquet') AS (a int8)"
+        expect.text(_state(pgc_cluster, ali, pre="SET statement_timeout = '3s'")[0], "42501",
+                    "Alibaba metadata 100.100.100.200: refused 42501 despite being listed")
+        import psycopg
+        try:
+            with psycopg.connect(f"host=127.0.0.1 port={pgc_cluster.port} user=postgres dbname=postgres",
+                                 autocommit=True) as c:
+                c.execute("SET statement_timeout = '3s'")
+                c.execute(ali)
+            detail = "no error"
+        except psycopg.Error as e:
+            # The address when the DETAIL names it, else the whole error as the measurement.
+            detail = e.diag.message_detail or ""
+            detail = "100.100.100.200" if "100.100.100.200" in detail else f"{e.sqlstate}: {e}"
+        expect.text(detail, "100.100.100.200", "Alibaba metadata: the refusal detail names 100.100.100.200")
+        nxt = _state(pgc_cluster,
+                     "SELECT count(*) FROM pgcolumnar.read_parquet('http://100.100.100.201:1/x.parquet') AS (a int8)",
+                     pre="SET statement_timeout = '3s'")[0]
+        nxt = "connect tried" if nxt in ("08006", "57014") else (nxt or "no error")
+        expect.text(nxt, "connect tried",
+                    "100.100.100.201 (next to Alibaba metadata): not refused, a connect is tried")
+        expect.num(_state(pgc_cluster, q)[2], 1000, "Alibaba metadata: the listed ordinary host still works beside it")
     finally:
         with pgc_conn.cursor() as cur:
             cur.execute("ALTER SYSTEM RESET pgcolumnar.objstore_allowed_endpoints")
@@ -200,6 +229,14 @@ static const char *const map[][2] = {
 	{"l48only", "64:ff9b:1:a9fe:0:100::"},
 	{"gce253", "fd20:ce::253"},
 	{"n64sec", "64:ff9b::aafe:a9fe"},
+	{"alimapped", "::ffff:100.100.100.200"},
+	{"alicompat", "::100.100.100.200"},
+	{"alinat64", "64:ff9b::6464:64c8"},
+	{"alilocal", "64:ff9b:1::6464:64c8"},
+	{"alilocal48", "64:ff9b:1:6464:64:c800::"},
+	{"ali56", "64:ff9b:1:64:64:64c8::"},
+	{"ali64", "64:ff9b:1:0:64:6464:c800::"},
+	{"alinext", "64:ff9b::6464:64c9"},
 };
 
 int
@@ -302,7 +339,10 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
                       "local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid, "
                       "loop6.pgc-shim.invalid, ula.pgc-shim.invalid, n64ok.pgc-shim.invalid, "
                       "n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid, "
-                      "l48only.pgc-shim.invalid, gce253.pgc-shim.invalid, n64sec.pgc-shim.invalid'")
+                      "l48only.pgc-shim.invalid, gce253.pgc-shim.invalid, n64sec.pgc-shim.invalid, "
+                      "alimapped.pgc-shim.invalid, alicompat.pgc-shim.invalid, alinat64.pgc-shim.invalid, "
+                      "alilocal.pgc-shim.invalid, alilocal48.pgc-shim.invalid, ali56.pgc-shim.invalid, "
+                      "ali64.pgc-shim.invalid, alinext.pgc-shim.invalid'")
             c.execute("SELECT pg_reload_conf()")
         time.sleep(0.5)
 
@@ -383,6 +423,31 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
                     "fd20:ce::253 (next to fd20:ce::254): not refused, a connect is tried")
         expect.text(connect_tried("n64sec"), "connect tried",
                     "NAT64 64:ff9b::aafe:a9fe (170.254.169.254): not refused, a connect is tried")
+        # 100.100.100.200 inside the same IPv6 forms (#1848). On an IPv6-only network
+        # with DNS64, a name whose A record is 100.100.100.200 resolves only to
+        # 64:ff9b::6464:64c8, so each form needs its own refusal. The /48 local-use
+        # layout puts the address at bytes 6, 7, 9 and 10, /56 at 7, 9, 10 and 11, and
+        # /64 at 9 to 12. 100.100.100.201 under the well-known prefix is the control: a
+        # connect is tried.
+        expect.text(shim_read("alimapped")[0], "42501",
+                    "IPv4-mapped ::ffff:100.100.100.200: refused 42501 despite being listed")
+        expect.text(shim_read("alicompat")[0], "42501",
+                    "IPv4-compatible ::100.100.100.200: refused 42501 despite being listed")
+        expect.text(shim_read("alinat64")[0], "42501",
+                    "NAT64 64:ff9b::6464:64c8 (100.100.100.200): refused 42501 despite being listed")
+        expect.text(shim_read("alilocal")[0], "42501",
+                    "NAT64 local-use 64:ff9b:1::6464:64c8 (100.100.100.200): refused 42501 despite being listed")
+        expect.text(shim_read("alilocal48")[0], "42501",
+                    "NAT64 local-use /48 64:ff9b:1:6464:64:c800:: (100.100.100.200): refused 42501 "
+                    "despite being listed")
+        expect.text(shim_read("ali56")[0], "42501",
+                    "NAT64 local-use /56 64:ff9b:1:64:64:64c8:: (100.100.100.200): refused 42501 "
+                    "despite being listed")
+        expect.text(shim_read("ali64")[0], "42501",
+                    "NAT64 local-use /64 64:ff9b:1:0:64:6464:c800:: (100.100.100.200): refused 42501 "
+                    "despite being listed")
+        expect.text(connect_tried("alinext"), "connect tried",
+                    "NAT64 64:ff9b::6464:64c9 (100.100.100.201): not refused, a connect is tried")
         # The range when the DETAIL names it, else the whole error as the measurement.
         try:
             with psycopg.connect(cluster.dsn(), autocommit=True) as c:

@@ -36,7 +36,8 @@
 # The serial arms (#1810) do the same for export_parquet and export_arrow,
 # which write one key through one multipart upload. They are cancelled, or
 # terminated, while their own POST ?uploads is held. The sink must then list
-# the uploads for its exact key and abort them. Two foreign uploads stay open:
+# the uploads for its exact key and abort them. The gs cancel arm (#1854) does
+# the same for a gs:// key. Two foreign uploads stay open:
 # notes.parquet under the same prefix, and one at the key plus ".old", which a
 # listing by the key as prefix also returns.
 #
@@ -62,6 +63,10 @@
 # POST ?uploads: the store refuses its single PUT (__put_status__). Another
 # writer's upload is open at the same key. The export sent no create, so it
 # must not list the uploads, and the other writer's upload must stay open.
+# The last two arms hold that messages name what the caller gave, never the
+# dummy key "s3://bucket/_" a bucket-level request is resolved from (#1869): a
+# refused upload listing in the cleanup, which the dispatcher LOGs, and the
+# region refusal of the export's endpoint check and of read_parquet's listing.
 #
 # Usage:  test/objstore_export_open_uploads.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -177,6 +182,7 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
 	--seed-upload "$BUCKET/sa/notes.parquet" --seed-upload "$BUCKET/sa/out.arrow.old" \
 	--seed-upload "$BUCKET/st/notes.parquet" --seed-upload "$BUCKET/st/out.parquet.old" \
 	--seed-upload "$BUCKET/sd/notes.parquet" --seed-upload "$BUCKET/sd/out.parquet.old" \
+	--seed-upload "$BUCKET/sg/notes.parquet" --seed-upload "$BUCKET/sg/out.parquet.old" \
 	--seed-upload "$BUCKET/sf/out.parquet" \
 	> "$PGC_WORKDIR/ou_server.out" 2>&1 &
 SRV_PID=$!
@@ -348,12 +354,12 @@ signal_serial() {	# signal_serial pg_cancel_backend|pg_terminate_backend
 	   WHERE application_name = 'pgc_serial' AND pid <> pg_backend_pid()" >/dev/null
 }
 
-# serial_create_arm ARM FUNC PREFIX KEY SIGNAL WANT
+# serial_create_arm ARM FUNC PREFIX KEY SIGNAL WANT [SCHEME]
 serial_create_arm() {
-	local arm="$1" fn="$2" pfx="$3" key="$4" sig="$5" want="$6"
+	local arm="$1" fn="$2" pfx="$3" key="$4" sig="$5" want="$6" scheme="${7:-s3}"
 	: > "$S3_LOG"
 	echo 20 > "$PGC_WORKDIR/__uploads_delay__"
-	start_serial "$fn" ou_big "s3://$BUCKET/$pfx/$key" "$PGC_WORKDIR/$pfx.out"
+	start_serial "$fn" ou_big "$scheme://$BUCKET/$pfx/$key" "$PGC_WORKDIR/$pfx.out"
 	check "premise: $arm: the $fn CreateMultipartUpload was unanswered when the signal landed" \
 		"$(wait_key_unanswered "$pfx" "$key")" "1 open, 0 parts"
 	signal_serial "$sig"
@@ -372,6 +378,9 @@ serial_create_arm "arrow cancel" export_arrow sa out.arrow pg_cancel_backend \
 	"ERROR:  57014: canceling statement due to user request"
 serial_create_arm "serial terminate" export_parquet st out.parquet pg_terminate_backend \
 	"FATAL:  57P01: terminating connection due to administrator command"
+# #1854: the same for gs://. AWS_ENDPOINT_URL points gs:// at the fixture too.
+serial_create_arm "gs cancel" export_parquet sg out.parquet pg_cancel_backend \
+	"ERROR:  57014: canceling statement due to user request" gs
 
 # ---- serial double cancel (#1846): a second cancel lands in the listing ----
 # The first cancel ends the wait for the create's answer. The cleanup then
@@ -511,5 +520,57 @@ check_num "put refused: the export asked the store for no open uploads" \
 check_num "put refused: the other writer's upload at the key is left open" \
 	"$(key_open sf out.parquet)" "1"
 check "put refused: the server survived" "$(survived "$crashes0")" "1"
+
+# ---- refused upload listing: messages name the prefix, not a dummy key (#1869) ----
+# The module resolves a bucket-level request from a dummy key, "s3://bucket/_".
+# A refused ListMultipartUploads named that key, a key nobody gave. The cleanup
+# discards what the listing raised, so the dispatcher LOGs it, and the server
+# log is where the name is read. Worker 0's plain part PUT is refused, so the
+# run fails with every worker stopped and the cleanup lists the prefix's uploads,
+# which the store refuses (__list_uploads_status__).
+psql_run "CREATE TABLE ou_or (id int8) USING pgcolumnar;
+          INSERT INTO ou_or SELECT g FROM generate_series(1,1000) g;" >/dev/null
+: > "$S3_LOG"
+echo 403 > "$PGC_WORKDIR/__list_uploads_status__"
+echo "403 $BUCKET/or/part-0000.parquet" > "$PGC_WORKDIR/__put_status__"
+srvlog0="$(pgc_pg "wc -l < '$PGC_LOGFILE'" 2>/dev/null | tr -d ' ')"
+OR_OUT="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-v VERBOSITY=verbose \
+	-c "SELECT pgcolumnar.parallel_export_parquet('ou_or'::regclass, 's3://$BUCKET/or', 2)" 2>&1)"
+rm -f "$PGC_WORKDIR/__list_uploads_status__" "$PGC_WORKDIR/__put_status__"
+echo "OR error: $(grep -m1 '^ERROR:' <<<"$OR_OUT")"
+check "premise: refused upload listing: the export fails on worker 0's refused part" \
+	"$(grep -m1 '^ERROR:' <<<"$OR_OUT" || echo "no error ($(head -1 <<<"$OR_OUT"))")" \
+	"ERROR:  28000: pgcolumnar.parallel_export_parquet worker 0 failed: columnar: access to \"s3://$BUCKET/or/part-0000.parquet\" was denied (HTTP 403: AccessDenied)"
+check "premise: refused upload listing: the cleanup asked the store for its open uploads once" \
+	"$(grep -cE "^GET /$BUCKET .*uploads=" "$S3_LOG" | tr -d ' ')" "1"
+case "$srvlog0" in '' | *[!0-9]*) OR_LOG="" ;;
+	*) OR_LOG="$(pgc_pg "tail -n +$((srvlog0 + 1)) '$PGC_LOGFILE'" 2>/dev/null)" ;; esac
+OR_LINE="$(grep -m1 'could not clean up the open uploads under' <<<"$OR_LOG")"
+echo "OR log: ${OR_LINE:-(none)}"
+OR_URL="$(sed -n 's/.*could not clean up the open uploads under "[^"]*": columnar: access to "\([^"]*\)" was denied.*/\1/p' <<<"$OR_LINE")"
+check "refused upload listing: the server log names the prefix that was listed, not a dummy key" \
+	"${OR_URL:-no cleanup LOG line naming an access denial (${OR_LINE:-server log offset $srvlog0, nothing})}" \
+	"s3://$BUCKET/or/"
+
+# ---- no region: the refusal names the prefix the caller gave (#1869) ----
+# The same dummy key reached the region refusal through the export's endpoint
+# check and through read_parquet's directory listing, each resolved from
+# "s3://bucket/_". Both must name what the caller wrote.
+pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.1:$S3_PORT'" \
+	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'"
+region_named() {	# region_named SQL -> the URL the region refusal names, or what happened
+	local out url
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-c "$1" 2>&1)"
+	url="$(sed -n 's/^ERROR:  columnar: reading "\([^"]*\)" requires a region option.*/\1/p' <<<"$out" | head -1)"
+	echo "${url:-no region refusal ($(head -1 <<<"$out"))}"
+}
+check "no region: parallel_export_parquet's refusal names the prefix it was given, not a dummy key" \
+	"$(region_named "SELECT pgcolumnar.parallel_export_parquet('ou_or'::regclass, 's3://$BUCKET/nr', 2)")" \
+	"s3://$BUCKET/nr"
+check "no region: read_parquet's directory listing refusal names the prefix it was given, not a dummy key" \
+	"$(region_named "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/nr/') AS t(id int8)")" \
+	"s3://$BUCKET/nr/"
 
 pgc_summary

@@ -264,6 +264,41 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` now check that a delete
+  file in a format other than Parquet is refused with SQLSTATE 0A000 (#1873). One
+  snapshot records its position-delete file as ORC and another records its
+  equality-delete file as AVRO. Both files are really Parquet, so a reader
+  without the refusal would read them and drop rows with no error. Before, the
+  two refusals could be removed with every check still green.
+  `gen_delete_fixture.py` writes the two snapshots.
+- `iceberg_scan` finds each data file's position deletes through an index
+  built once per scan (#1868). It used to walk every position-delete row for
+  each data file, so the work grew with data files times delete rows. The rows
+  are now grouped by data file, and each data file reads only its own group.
+  Two paths share a group exactly when the walk's comparison called them the
+  same file: `file://` is dropped, `s3://`, `s3a://` and `s3n://` are one
+  prefix, and `file://s3://b/k` is not `s3://b/k`. On a table of 32 data files
+  and 106 delete rows the scan visits 104 rows, where the walk visited 3392.
+  Two DEBUG1 lines report the index and each lookup. `test/iceberg_deletes.sh`
+  and `test_iceberg_deletes.py` check the counts and the survivors, against a
+  new fixture, `warehouse_posmany`, and a delete file that names its `s3://`
+  data file as `s3a://` and as `file://s3://`.
+- `test/objstore_listing.sh` and `test_objstore_listing.py` now run their listing
+  arms against a real S3 implementation when `PGC_S3_INTEGRATION_ENDPOINT` is set
+  (#1798). The real-S3 block used to be empty, so prefix, glob, paged and
+  hidden-name listing had only met the repo's fixture server. The arms upload a
+  layout under a per-run prefix and compare each remote prefix and glob read with
+  the same layout read from local disk. One prefix holds 1100 objects, which a real
+  server cannot list in one 1000-key page, so its 1100 rows prove the client
+  followed a real continuation token. With `PGC_S3_INTEGRATION_VHOST_ENDPOINT` also
+  set, a virtual-host prefix read must match the path-style one. The arms are
+  opt-in, as the sibling suites' are, and CI does not run them.
+- With `PGC_S3_INTEGRATION_*` set, `test/objstore_sink_write.sh` no longer ends at
+  its restart into the real endpoint when an earlier arm crashed a backend
+  (#1850). A fast stop sent while the server replayed WAL after the crash did not
+  finish in 60 s, and the suite exited before its summary. The restart now waits
+  for recovery first, and a restart that still fails is a named red, so the other
+  arms' reds reach the summary. The listing suite and both twins do the same.
 - The Iceberg REST functions report a missing namespace as SQLSTATE `3F000`, not
   `42P01` (#1820). They do this when the catalog's 404 reply has the type
   `NoSuchNamespaceException`. The message now says "no such namespace". A client
@@ -538,6 +573,152 @@ true until the next version shipped.
   `pgcolumnar.read_parquet`, `pgcolumnar.import_parquet`,
   `pgcolumnar.iceberg_scan`, `pgcolumnar.iceberg_rest_scan`, or the
   `pgcolumnar_parquet` or `pgcolumnar_iceberg` foreign-data wrapper.
+- A `parallel_export_parquet` to a `gs://`, `http://` or `https://` prefix is now
+  refused before any worker starts, with SQLSTATE 0A000 (#1832). Before, the
+  workers uploaded every part, and the export then failed at the stale-part
+  listing, which works for `s3://` only. The documentation of the function names
+  `s3://` as its only remote scheme. The refusal's hint no longer says that
+  pgColumnar cannot list a remote prefix (#1831). It says that the export lists
+  its prefix and that only an `s3://` prefix can be listed.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+- A cancelled or failed `parallel_export_parquet` to `s3://` no longer leaves a
+  part that a worker was committing (#1864). The dispatcher deleted the part keys
+  as soon as it had terminated the workers. A terminated worker that had sent its
+  commit request waits for the answer, and the store could apply that commit
+  after the DELETE, so the part appeared afterwards and stayed. The dispatcher now
+  waits up to 5 seconds for the workers to exit before it deletes the parts. It
+  now also waits before it cleans a local directory. A local worker stops only at
+  its next interrupt check, so it could rename its finished part between the
+  dispatcher's directory listing and its unlink, and that part stayed. The
+  dispatcher now waits once per cleanup. Before, it waited a second time before
+  it aborted the open uploads, so a cancel against a store that never answered
+  took about 10 seconds, not 5. `test/objstore_sink_write.sh`,
+  `test/parallel_export_parquet.sh` and their pytest twins.
+- The upload cleanup of `parallel_export_parquet` builds its listing prefix with
+  `psprintf`, as the stale-part reconcile does (#1849). The fixed buffer could not
+  truncate in practice: the export refuses a prefix too long for its generated
+  names before any worker starts.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+- A remote export reads a write reply whose body ends when the store closes the
+  connection (#1830). HTTP/1.1 allows that framing. The write path read a reply
+  body only when it had a `Content-Length` or chunked framing, so it dropped the
+  UploadId of such a reply and the export failed with "could not start a
+  multipart upload (HTTP 200)". It now reads write replies with the same reader
+  as the listing, and closes the connection after a body that ends at close. An
+  HTTP/1.0 reply without `keep-alive` now also closes the connection: the export
+  used to send its next request into it. A 204 reply, which Garage sends to a
+  DELETE with no `Content-Length` on a connection it keeps open, is read as
+  having no body, so an abort returns at once rather than after about 60 s.
+  Two behaviours change for a store that breaks the HTTP framing rules. A write
+  reply other than 1xx, 204 or 304 with neither a length nor chunked framing
+  ends only when the store closes the connection (RFC 9112 section 6.3). If the
+  store keeps the connection open, the export used to go on and now waits 60 s,
+  then fails with "timeout reading". A chunked or close-delimited write reply
+  over 1 MiB now fails with "response exceeded" instead of being skipped. That
+  holds for a 200 to CompleteMultipartUpload too: the store has then written the
+  object, but the export reports an error. `test/objstore_sink_write.sh` and its
+  pytest twin.
+- A remote export checks the S3 multipart limits before the store refuses it
+  (#1857). An upload that would need part 10001 fails with SQLSTATE 54000 before
+  sending that part, names the part size, and aborts the upload. To AWS S3,
+  Google Cloud Storage or Cloudflare R2, an export whose part size is under 5 MiB fails with
+  SQLSTATE 22023 when it starts a multipart upload, before the store holds
+  anything. Those stores used to refuse it only at the last step, after every part
+  had gone up. Other endpoints still accept any part size. An object of exactly
+  one part under 5 MiB is refused too, although those stores would accept it.
+  `test/objstore_sink_write.sh` and its pytest twin.
+- A serial `export_parquet` or `export_arrow` to `gs://`, cancelled or terminated
+  while it waits for the store to start its multipart upload, now aborts that
+  upload (#1854). The upload listing that #1846 added for `s3://` now also works
+  for `gs://`, through the GCS XML API. `test/objstore_export_open_uploads.sh` and
+  its pytest twin.
+- `iceberg_data_files` and `read_avro_manifest` now show every partition value
+  exactly, as valid text (#1816, #1791). A decimal, float or double value used to
+  show as `?`. A binary value was copied raw into the text: invalid UTF-8 that
+  `pg_dump` output could not restore, cut short at a NUL byte. Now a decimal shows
+  its exact value (`-0.50`), a float or double the shortest text that reads back
+  the same (`0.1`), and binary, fixed and uuid values `\x` and hex (`\xfffe`). A
+  NULL value shows as the field name alone, so it no longer looks like an empty
+  string, and `%`, `,` and `=` in a string or field name are percent-encoded. The
+  format is in docs/sql-reference.md, under "How a partition value is shown".
+  `iceberg_scan` was not affected. `test/iceberg_data_files.sh` and its twin, with
+  a new pyiceberg fixture (`test/fixtures/iceberg/gen_iceberg_partvals.py`).
+  Reported by @OffgridwithJD.
+
+- `iceberg_data_files` no longer refuses a table whose delete manifest holds only
+  removed entries (#1829). A rewrite or compaction that removes every old delete
+  file leaves such a manifest, with status 2 (DELETED) on every entry. The lister
+  refused it as "has delete files" without opening it. It now refuses a delete
+  manifest unopened only when the manifest list counts a live (added or existing)
+  file in it; otherwise it opens the manifest, skips removed entries and refuses a
+  live delete file. A live data-file entry in a delete manifest is refused as
+  corrupt (XX001). `test/iceberg_data_files.sh` and its twin.
+  Reported by @OffgridwithJD.
+- The Iceberg reader refuses a `default-spec-id` or a snapshot `schema-id` outside
+  the 32-bit integer range (#1853). It used to cut such a value to 32 bits, so
+  4294967296 read as 0. `iceberg_current_snapshot` then reported the wrong
+  `schema_id`, and the foreign-data wrapper took the wrong current spec id. Both
+  now fail with SQLSTATE XX001 and name the value. `test/iceberg_malformed.sh`
+  and `test_iceberg_malformed.py`.
+- The object-storage module now refuses a host that resolves to Alibaba Cloud's
+  instance-metadata address `100.100.100.200`, even when the host is listed in
+  `pgcolumnar.objstore_allowed_endpoints` (#1848). Before, it tried to connect.
+  It also refuses it inside an IPv6 address: IPv4-mapped, IPv4-compatible, and
+  behind the NAT64 prefixes `64:ff9b::/96` and `64:ff9b:1::/48`. On an IPv6-only
+  network with DNS64, that is the only address such a name resolves to. It refuses
+  only `100.100.100.200`. The rest of `100.64.0.0/10` is carrier-grade NAT and
+  stays reachable. The module cannot recognise a NAT64 prefix that your network
+  chose, so a metadata address behind such a prefix is still not refused.
+  [Limitations](docs/limitations.md#object-storage-address-refusal) says so.
+  `test/objstore_allowlist.sh` and `test_objstore_allowlist.py`.
+- A remote read tests only the key of an `s3://` URL for `*`, `?` and `[`
+  (#1785). The whole URL used to be tested, with three effects. An exact key that
+  holds one of those characters read other objects or none: `b/q?mark.parquet`
+  also returned `b/qXmark.parquet`, and `a/brack[1].parquet` was "no objects
+  match". An `http(s)://` URL with a query string, and any host written as an
+  IPv6 literal such as `http://[::1]:3900/`, failed with "listing a prefix is
+  only supported for s3:// URLs". Now an `s3://` pattern that names an existing
+  object exactly reads that object alone, and expands only when no object has
+  that name; a backslash still escapes a character in the pattern. An
+  `http(s)://` URL is always one object, its query string sent to the server. A
+  bracketed IPv6 host is refused with its own SQLSTATE 0A000 message.
+  `test/objstore_listing.sh`, `test/objstore_http_read.sh` and their twins.
+- `test/vm_clear_on_renumber.sh` and `test_vm_clear_on_renumber.py` no longer
+  fail their VACUUM premises on a busy cluster (#1875). A VACUUM marks a row group
+  all-visible only once the group's catalog row precedes the database's horizon.
+  A private database keeps other databases' sessions out of that horizon, but not
+  a session connected to it, such as an autovacuum worker. That worker's snapshot
+  starts below any xid open elsewhere. Holding an xid open in `postgres` and a
+  snapshot in the suite's database turned seven checks red on both PG 17 and 18,
+  the seven CI reported. Each VACUUM now repeats, up to 100 times, until the
+  blocks the arms read are set. Three new premises report a budget that runs out,
+  with the sessions holding an xmin. Test-only.
+- Three object-store refusals now give advice that fits them (#1796). A 403's
+  hint names where the refused key was configured: the user mapping, the
+  credentials a REST catalog vended (in its flat config or in a
+  `storage-credentials` entry), or the server's `AWS_*` environment. It used to
+  name the environment for every key.
+  The allow-list refusal's hint suggests the `host:port` the message names,
+  added to the current list. It used to suggest the bare host as the whole list,
+  which opened every port on that host and dropped every other entry.
+  A single-PUT export to an `http://` endpoint that the store refuses before
+  reading the body now reports the 403 or other status. When the body was larger
+  than the socket buffers, it used to report `failed before a response`. An
+  `https://` store still reports `failed before a response` there (#1902).
+  The object-store module ABI is now 8, so the module and the extension must
+  come from the same build.
+  `test/objstore_error_advice.sh` and `test_objstore_error_advice.py`.
+- An object-store error no longer names `s3://<bucket>/_`, a key nobody gave
+  (#1869). Three bucket-level requests are resolved from that dummy key: the
+  upload listing an export's cleanup makes, the object listing behind
+  `read_parquet` on a prefix, and the endpoint check `parallel_export_parquet`
+  makes before it starts workers. A refusal in any of them named the dummy
+  key. A refused ListMultipartUploads, or a
+  region or credential refusal in any of the three, now names the URL the caller
+  gave. The export's upload cleanup still never raises, but it now LOGs what it
+  discarded, so the server log says why an export's uploads were left open.
+  `test/objstore_export_open_uploads.sh` and
+  `test_objstore_export_open_uploads.py`.
 - `iceberg_rest_scan` now chooses a vended storage credential for each file it
   reads (#1820). Before, it matched each `storage-credentials` prefix against the
   metadata location only, and that one credential signed every file. So a
@@ -643,8 +824,8 @@ true until the next version shipped.
   `64:ff9b:1::/48` the module cannot tell the prefix length, so it checks every
   RFC 6052 position. This also refuses some ordinary addresses, such as
   `10.169.254.5` behind a /48 prefix; `docs/best-practices.md` explains. Other
-  metadata addresses, such as Alibaba Cloud's `100.100.100.200`, are still not
-  refused. `test/objstore_allowlist.sh` and `test_objstore_allowlist.py` resolve
+  metadata addresses were not refused by this change; #1848 adds Alibaba Cloud's
+  `100.100.100.200`. `test/objstore_allowlist.sh` and `test_objstore_allowlist.py` resolve
   test names to each address through a `getaddrinfo()` shim.
 - `export_parquet` and `export_arrow` now export a table with more than 1 GiB of
   one column in a group (#1811). They cut Parquet row groups every 65536 rows and
@@ -696,32 +877,6 @@ true until the next version shipped.
   `current-snapshot-id` that is present but not an integer, which it used to
   read as an empty table. Absent, `null` and `-1` still mean no snapshot.
 
-- A `parallel_export_parquet` to a `gs://`, `http://` or `https://` prefix is now
-  refused before any worker starts, with SQLSTATE 0A000 (#1832). Before, the
-  workers uploaded every part, and the export then failed at the stale-part
-  listing, which works for `s3://` only. The documentation of the function names
-  `s3://` as its only remote scheme. The refusal's hint no longer says that
-  pgColumnar cannot list a remote prefix (#1831). It says that the export lists
-  its prefix and that only an `s3://` prefix can be listed.
-  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
-- A cancelled or failed `parallel_export_parquet` to `s3://` no longer leaves a
-  part that a worker was committing (#1864). The dispatcher deleted the part keys
-  as soon as it had terminated the workers. A terminated worker that had sent its
-  commit request waits for the answer, and the store could apply that commit
-  after the DELETE, so the part appeared afterwards and stayed. The dispatcher now
-  waits up to 5 seconds for the workers to exit before it deletes the parts. It
-  now also waits before it cleans a local directory. A local worker stops only at
-  its next interrupt check, so it could rename its finished part between the
-  dispatcher's directory listing and its unlink, and that part stayed. The
-  dispatcher now waits once per cleanup. Before, it waited a second time before
-  it aborted the open uploads, so a cancel against a store that never answered
-  took about 10 seconds, not 5. `test/objstore_sink_write.sh`,
-  `test/parallel_export_parquet.sh` and their pytest twins.
-- The upload cleanup of `parallel_export_parquet` builds its listing prefix with
-  `psprintf`, as the stale-part reconcile does (#1849). The fixed buffer could not
-  truncate in practice: the export refuses a prefix too long for its generated
-  names before any worker starts.
-  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
 - `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
   URL now write the object instead of crashing the backend (#1779). Every write
   request was signed, and a plain-HTTP target has no region or credentials, so the
@@ -882,6 +1037,11 @@ true until the next version shipped.
   4294967296, is refused the same way. It used to wrap to a valid value, 0 or
   1, and read as data. `test/iceberg_malformed.sh` and
   `test_iceberg_malformed.py`.
+- A manifest list whose `partition_spec_id` is outside the 32-bit range is now
+  refused with `XX001`, and the message names the manifest and the value
+  (#1878). A value such as 4294967296 used to wrap to spec 0. The manifest's
+  files were then pruned with spec 0's partition filters, which belong to
+  another spec. `test/iceberg_malformed.sh` and `test_iceberg_malformed.py`.
 - The `iceberg_rest_*` functions now check `USAGE` on the
   `pgcolumnar_iceberg_catalog` server they are given, as dblink does before it
   uses a named server's user mapping (#1819). Before, any role with `pg_read_server_files` could

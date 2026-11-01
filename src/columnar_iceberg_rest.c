@@ -976,6 +976,7 @@ rest_cred_cfg(JsonbContainer *c)
 		cfg->region = rest_json_string_opt(c, "client.region");
 	cfg->endpoint = rest_json_string_opt(c, "s3.endpoint");
 	cfg->allow_ambient = false;
+	cfg->vended = true;			/* a refused key's hint names the catalog (#1796) */
 	return cfg;
 }
 

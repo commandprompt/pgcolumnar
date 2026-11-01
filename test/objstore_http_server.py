@@ -85,6 +85,29 @@
 #                         writes the object at once, waits that long, and then
 #                         closes the connection with no answer, as a store
 #                         that applied the request and lost the connection.
+#   __uploads_unframed__  "close" or "http10" (#1830): CreateMultipartUpload
+#                         answers with no framing the client can count on.
+#                         "close": an HTTP/1.1 reply with no Content-Length, no
+#                         Transfer-Encoding and no Connection header; the body
+#                         ends when the server shuts down its sending side. The
+#                         server then waits as for "http10" and logs REUSED for
+#                         a request that comes on that connection.
+#                         "http10": an HTTP/1.0 reply with a Content-Length and
+#                         no Connection header, so the connection does not
+#                         persist. The server then waits up to 5 s for another
+#                         request on that connection and, if one comes, logs
+#                         "REUSED <its request line>" and closes unanswered.
+#   __delete_unframed__   a number of seconds (#1830 review): every DELETE
+#                         that succeeds is answered as Garage answers it, an
+#                         HTTP/1.1 204 with a Date header only: no
+#                         Content-Length and no Connection header. The server
+#                         keeps the connection open for that many seconds of
+#                         quiet and then closes it, as Garage closes an idle
+#                         connection. A client that reads that reply until the
+#                         connection closes waits the whole time.
+#   __list_uploads_status__ an HTTP status: ListMultipartUploads (GET ?uploads)
+#                         is answered with it and an AccessDenied body, so a
+#                         suite can refuse the upload listing alone (#1869).
 #   __put_status__        "STATUS KEY": a plain PUT (no multipart) of exactly
 #                         "bucket/KEY" is answered with STATUS and not stored,
 #                         so a suite can refuse one object, such as a parallel
@@ -102,7 +125,10 @@
 # x-amz-security-token header, with the right value, inside the signed set.
 # --tamper-bucket names a top-level path component whose requests are verified
 # against a deliberately different secret, so a correctly signing client is
-# always refused there: the suite's 403-surface arm.
+# always refused there: the suite's 403-surface arm. The refusal comes before
+# the body is read, and closes the connection with the body unread, as a real
+# store does: a body larger than the socket buffers then fails to send after
+# the 403 has arrived (#1796 D).
 #
 # Written fresh for pgColumnar.
 
@@ -111,6 +137,7 @@ import hashlib
 import hmac
 import os
 import re
+import socket
 import ssl
 import sys
 import threading
@@ -181,6 +208,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):   # silence stderr chatter
         pass
 
+    def parse_request(self):
+        # The handler serves every request of a connection: forget the last
+        # request's body, so _deny can tell whether this one's was read.
+        self._body = None
+        return super().parse_request()
+
     def _log_line(self):
         rng = self.headers.get("Range", "-").replace(" ", "")
         rawpath, _, query = self.path.partition("?")
@@ -233,6 +266,15 @@ class Handler(BaseHTTPRequestHandler):
                 % code).encode()
         self.send_response(status)
         self.send_header("Content-Length", str(len(body)))
+        # A refusal that leaves a request body unread closes the connection, as
+        # a real store does (#1796 D): the unread bytes are not a next request.
+        # Closing with them unread resets the connection, so a client still
+        # sending a body larger than the socket buffers fails its send after
+        # the answer has arrived.
+        clen = int(self.headers.get("Content-Length", "0") or "0")
+        if clen > 0 and getattr(self, "_body", None) is None:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -426,6 +468,11 @@ class Handler(BaseHTTPRequestHandler):
         # with `prefix`, sorted by key then upload id, paged by --list-page-size
         # with key-marker/upload-id-marker as S3 does it.
         _hook_sleep(self.server.rootdir, "__list_uploads_delay__")
+        lust = os.path.join(self.server.rootdir, "__list_uploads_status__")
+        if os.path.exists(lust):
+            with open(lust) as f:
+                self._deny(int(f.read().strip()), "AccessDenied")
+            return
         q = self._qdict()
         bucket = self._list_bucket()
         prefix = q.get("prefix", "")
@@ -587,6 +634,11 @@ class Handler(BaseHTTPRequestHandler):
                 if int(q["partNumber"]) >= first:
                     self._deny(code, "InternalError")
                     return
+            # S3 numbers parts 1 to 10000 and refuses any other number with
+            # 400 InvalidArgument (#1857).
+            if not 1 <= int(q["partNumber"]) <= 10000:
+                self._deny(400, "InvalidArgument")
+                return
             up["parts"][int(q["partNumber"])] = self._body
             _hook_sleep(self.server.rootdir, "__part_delay__")
             etag = hashlib.md5(self._body).hexdigest()
@@ -632,6 +684,29 @@ class Handler(BaseHTTPRequestHandler):
             body = ("<?xml version=\"1.0\"?><InitiateMultipartUploadResult>"
                     "<UploadId>%s</UploadId>"
                     "</InitiateMultipartUploadResult>" % uid).encode()
+            unframed = _hook_text(self.server.rootdir, "__uploads_unframed__")
+            if unframed in ("close", "http10"):
+                if unframed == "close":
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\n"
+                                     b"Content-Type: application/xml\r\n\r\n" + body)
+                    self.wfile.flush()
+                    # end the body for the client, but keep reading, so a
+                    # request sent on this connection shows as REUSED
+                    self.connection.shutdown(socket.SHUT_WR)
+                else:
+                    self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: %d\r\n\r\n"
+                                     % len(body) + body)
+                    self.wfile.flush()
+                self.close_connection = True
+                self.connection.settimeout(5)
+                try:
+                    line = self.rfile.readline(65537)
+                except OSError:
+                    line = b""
+                if line:
+                    with open(self.server.reqlog, "a") as f:
+                        f.write("REUSED %s\n" % line.decode("latin-1").strip())
+                return
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -699,6 +774,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
         elif os.path.isfile(local):
             os.unlink(local)
+        idle = _hook_text(self.server.rootdir, "__delete_unframed__")
+        if idle is not None:
+            self.wfile.write(b"HTTP/1.1 204 No Content\r\nDate: %s\r\n\r\n"
+                             % self.date_time_string().encode())
+            self.wfile.flush()
+            # the next read on this connection times out after `idle` seconds,
+            # and the base handler then closes the connection
+            self.connection.settimeout(float(idle) if idle else 8.0)
+            return
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -709,6 +793,15 @@ def _write_open_uploads(srv):
     with open(os.path.join(srv.rootdir, "__open_uploads__"), "w") as f:
         for up in srv.uploads.values():
             f.write(os.path.relpath(up["local"], srv.rootdir) + "\n")
+
+
+def _hook_text(rootdir, name):
+    # The stripped text of <rootdir>/<name>, or None when it does not exist.
+    try:
+        with open(os.path.join(rootdir, name)) as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
 
 
 def _hook_sleep(rootdir, name):
