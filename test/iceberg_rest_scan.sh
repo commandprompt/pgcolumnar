@@ -509,6 +509,79 @@ check "text[] form: a two-dimensional namespace array is refused" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY[['db'],['x']])" \
 	   "a namespace array must have one dimension" " as 2-D")" \
 	"22023 as 2-D"
+# ---- #1891: an empty namespace level ---------------------------------------
+# The Iceberg REST catalog accepts a namespace with an empty level, so the
+# client sends one as given. When the catalog has no such namespace, its 404
+# carries a hint that names the empty level.
+check "empty level: a missing 'db..x' gets a hint naming level 2" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT','db..x')" \
+	   "Level 2 of 3 of the namespace is empty" " hint level 2")" \
+	"3F000 hint level 2"
+check "empty level: a missing 'db.' gets a hint naming level 2" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT','db.')" \
+	   "Level 2 of 2 of the namespace is empty" " hint level 2")" \
+	"3F000 hint level 2"
+check "empty level: a missing '' gets a hint naming level 1" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT','')" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"3F000 hint level 1"
+check "empty level: a missing ARRAY['db',''] gets a hint naming level 2" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY['db',''])" \
+	   "Level 2 of 2 of the namespace is empty" " hint level 2")" \
+	"3F000 hint level 2"
+check "empty level: iceberg_rest_scan of a missing ARRAY[''] gets a hint naming level 1" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$DOTCAT', ARRAY[''], 'events') AS t(id bigint)" \
+	   "Level 1 of 1 of the namespace is empty" " hint level 1")" \
+	"3F000 hint level 1"
+check "empty level: iceberg_rest_table_location of a missing '.db' gets a hint naming level 1" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$DOTCAT', '.db', 'events')" \
+	   "Level 1 of 2 of the namespace is empty" " hint level 1")" \
+	"3F000 hint level 1"
+check "empty level: a missing namespace with no empty level gets no empty-level hint" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT','db.y')" \
+	   "of the namespace is empty" " with the hint")" \
+	"3F000"
+# This catalog (separator %1F) keeps its table in the namespace db, '' (an
+# empty second level), as the Apache Iceberg REST catalog allows. The client
+# must reach it in every form, and a listed row must pass back unchanged.
+start_fx emptylevel --namespace-levels '["db",""]' --table events
+ECAT="http://127.0.0.1:$FX_PORT"
+check "empty level: iceberg_rest_namespace_levels lists the namespace db, ''" \
+	"$(rows_of "SELECT string_agg(array_to_json(ns)::text, ' ' ORDER BY array_to_json(ns)::text COLLATE \"C\")
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$ECAT') AS ns")" \
+	'["db",""] ["db"]'
+check "empty level: iceberg_rest_tables of ARRAY['db',''] lists its tables" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('$ECAT', ARRAY['db','']) AS t")" \
+	"events"
+check "empty level: iceberg_rest_tables of the text form 'db.' lists its tables" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('$ECAT', 'db.') AS t")" \
+	"events"
+check "empty level: iceberg_rest_table_location of ARRAY['db',''] resolves the table" \
+	"$(rows_of "SELECT pgcolumnar.iceberg_rest_table_location('$ECAT', ARRAY['db',''], 'events')")" \
+	"$MDLOC"
+check "empty level: iceberg_rest_scan of ARRAY['db',''] returns the five rows" \
+	"$(rows_of "SELECT id || '|' || region || '|' || amount
+	            FROM pgcolumnar.iceberg_rest_scan('$ECAT', ARRAY['db',''], 'events') AS t(id bigint, region text, amount int)
+	            ORDER BY id")" \
+	"$ROWS5"
+check "empty level: a listed level array with an empty level passes back to iceberg_rest_tables" \
+	"$(rows_of "SELECT string_agg(array_to_json(ns)::text || '=' || t, ' ' ORDER BY t)
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$ECAT') AS ns,
+	                 LATERAL pgcolumnar.iceberg_rest_tables('$ECAT', ns) AS t
+	            WHERE ns = ARRAY['db','']")" \
+	'["db",""]=events'
+q "CREATE SERVER irs_empty FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
+   OPTIONS (catalog_uri '$ECAT')" >/dev/null
+q "CREATE USER MAPPING FOR postgres SERVER irs_empty OPTIONS (token '$TOKEN')" >/dev/null
+check "empty level: the server form of iceberg_rest_tables reaches ARRAY['db','']" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('irs_empty', ARRAY['db','']) AS t")" \
+	"events"
+# A missing table in a namespace with an empty level is the other 404
+# (42P01, no such table). It carries the same hint.
+check "empty level: iceberg_rest_table_location of a missing table in ARRAY['db',''] gets a hint naming level 2" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$ECAT', ARRAY['db',''], 'nosuch')" \
+	   "Level 2 of 2 of the namespace is empty" " hint level 2")" \
+	"42P01 hint level 2"
 # The text[] overloads are STRICT: a NULL namespace array gives no rows. It runs last,
 # so a crash here reddens only it and the survival check below.
 check "text[] form: iceberg_rest_tables of a NULL namespace array returns no rows" \

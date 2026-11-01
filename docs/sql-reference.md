@@ -1407,6 +1407,21 @@ A bare string literal, such as `'analytics'`, selects the `text` form. The
 element. Otherwise the call fails with SQLSTATE 22023 (22004 for a `NULL`
 level).
 
+A level may be empty. The Iceberg REST catalog accepts a namespace with an
+empty level, so pgcolumnar sends it as given. A `text[]` element `''` is an
+empty level. In the `text` form, a leading, trailing or doubled dot makes one,
+as in `'.db'`, `'db.'` or `'db..x'`, and so does `''`. A stray dot often makes
+one by mistake. So when the catalog answers 404 (not found), the error carries
+a hint that names the empty level, such as
+`Level 2 of 3 of the namespace is empty` (#1891). Both 404 errors carry it: "no
+such namespace" (SQLSTATE 3F000) and "no such table" (SQLSTATE 42P01).
+
+A namespace whose only level is empty, `{""}` or `''`, makes a request path
+with an empty segment, such as `/v1/namespaces//tables`. A server or proxy that
+collapses `//` to `/` routes that request elsewhere, so such a namespace may be
+unreachable through it. This case is untested against the Apache Iceberg REST
+catalog.
+
 A catalog cannot be asked about a level that contains its own namespace
 separator, because the catalog would split that level in two. The function
 then fails with SQLSTATE 22023 before it sends any request that names the
@@ -1535,7 +1550,8 @@ The dot-joined form is ambiguous: the single level `a.b` and the two levels
 Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
 its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
 levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
-argument of the other REST functions, with one exception, described next.
+argument of the other REST functions, with one exception, described next. A
+row with an empty level, such as `{db,""}`, passes back too (#1891).
 
 A level may contain the catalog's separator. No request can name such a
 namespace, so the function returns it but does not ask for its children.

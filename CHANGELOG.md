@@ -525,6 +525,14 @@ true until the next version shipped.
 
 ### Fixed
 
+- The REST functions now say when a namespace level is empty (#1891). The
+  text form `'db..x'`, `'db.'`, `'.db'` or `''`, and a `text[]` element `''`,
+  name a namespace with an empty level. The catalog accepts such a namespace,
+  so pgcolumnar still sends it as given and can reach it. When the catalog
+  answers 404 for such a namespace, its "no such namespace" or "no such table"
+  error now carries a hint, such as `Level 2 of 3 of the namespace is empty`.
+  docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
 - A pytest run with `-n` no longer exits 67 when every test passed (#1892). Each
   xdist worker checked `expected_unrunnable.txt` against tests it never ran, and
   the controller checked it against an empty collection. So one file run with
