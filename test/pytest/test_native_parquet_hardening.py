@@ -21,6 +21,11 @@ private database created as UTF8, since the check is against the server encoding
 SQL_ASCII cluster accepts any byte but NUL. The Iceberg FDW must read, not prune, a
 file whose manifest partition value is not valid text.
 
+A FOOTER THAT DOES NOT MATCH ITS PAGES (#1855, #1852). A column the footer marks
+REQUIRED while its pages carry definition levels, a repetition_type that is no valid
+value, and a footer num_rows the row groups do not add up to are each refused with a
+DETAIL that names the measurement.
+
 ON A PRIVATE DATABASE. The shell skips whole without pyarrow, so every test declines
 under the shell's skip name before it asks for the fixture. The files are written by
 `test/craft_parquet_hardening.py`, the shell's own crafter, run as a subprocess so this
@@ -120,6 +125,28 @@ def _short_verdict(dsn, sql):
             return "CLEAN REJECT"
         return query_error(f"{exc.sqlstate}: {msg}")
     return "NO ERROR"
+
+
+REP_HIST = ('Row group 0 column 0 ("id") has a definition level histogram of 2 entries, '
+            'but the schema gives it a maximum definition level of 0.')
+REP_ROWS = "The row groups hold 3000 rows, but the file declares num_rows 2000."
+REP_ENUM = ('Schema element "id" has repetition_type 7; a valid one is 0 (REQUIRED), '
+            '1 (OPTIONAL) or 2 (REPEATED).')
+
+
+def _rep_verdict(dsn, sql, want):
+    """-> CLEAN REJECT when SQL raised with the DETAIL `want`, else the message and
+    DETAIL it raised, or NO ERROR and the rows it returned (#1855)."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            rows = conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        detail = exc.diag.message_detail or ""
+        if want in detail:
+            return "CLEAN REJECT"
+        return query_error(f"{exc.sqlstate}: {exc.diag.message_primary} / {detail}")
+    return "NO ERROR: " + " ".join(str(r[0]) for r in rows)
 
 
 def _detail_verdict(dsn, sql, want):
@@ -244,6 +271,19 @@ def pqh(pgc_cluster, server_dir):
         r["schema"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.parquet_schema('{w}/short_chunks.parquet')")
         r["two"] = _value(dsn, f"SELECT string_agg(a || '|' || b, ' ' ORDER BY a) FROM "
                                f"pgcolumnar.read_parquet('{w}/two.parquet') AS t(a int4, b int4)")
+
+        # ---- a repetition_type that does not match the pages (#1855) ----
+        rep_sum = "SELECT count(*) || '/' || sum(id) FROM pgcolumnar.read_parquet"
+        r["rep base"] = _value(dsn, f"{rep_sum}('{w}/rep_base.parquet') AS t(id bigint, name text)")
+        r["rep required"] = _rep_verdict(dsn, f"{rep_sum}('{w}/rep_required.parquet') AS t(id bigint, name text)",
+                                         REP_HIST)
+        r["rep invalid"] = _rep_verdict(dsn, f"{rep_sum}('{w}/rep_invalid.parquet') AS t(id bigint, name text)",
+                                        REP_ENUM)
+        _exec(dsn, "CREATE TABLE imp_rep (id bigint, name text)")
+        r["rep imp"] = _rep_verdict(dsn, f"SELECT pgcolumnar.import_parquet('imp_rep'::regclass, "
+                                         f"'{w}/rep_required.parquet')", REP_HIST)
+        r["rows short"] = _rep_verdict(dsn, f"{rep_sum}('{w}/rows_short.parquet') AS t(id bigint, name text)",
+                                       REP_ROWS)
 
         # ---- string cells, in the UTF8 database (#1821) ----
         d8 = pgc_cluster.dsn(dbname=DB8)
@@ -529,6 +569,41 @@ def test_parquet_hardening_a_valid_two_column_file_still_reads(request, expect):
         return
     r = request.getfixturevalue("pqh")
     expect.text(r["two"], "1|4 2|5 3|6", "valid two-column file still reads")
+
+
+def test_parquet_hardening_unchanged_repetition_file_reads(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["rep base"], "3000/4498500", "premise: the unchanged repetition file reads 3000/4498500")
+
+
+def test_parquet_hardening_repetition_required_over_optional_pages_is_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["rep required"], "CLEAN REJECT", "repetition_type REQUIRED over optional pages is refused")
+
+
+def test_parquet_hardening_invalid_repetition_type_is_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["rep invalid"], "CLEAN REJECT", "repetition_type that is not 0, 1 or 2 is refused")
+
+
+def test_parquet_hardening_import_parquet_refuses_repetition_required_over_optional_pages(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["rep imp"], "CLEAN REJECT", "import_parquet refuses repetition_type REQUIRED over optional pages")
+
+
+def test_parquet_hardening_footer_num_rows_mismatch_is_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["rows short"], "CLEAN REJECT", "a footer num_rows the row groups do not add up to is refused")
 
 
 def test_parquet_hardening_strings_run_in_a_utf8_database(request, expect):

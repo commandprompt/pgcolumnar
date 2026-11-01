@@ -1594,7 +1594,8 @@ icefdwIterateForeignScan(ForeignScanState *node)
 		st->filesPruned = PgColumnarIcebergScanCore(st->metadata_path, st->tupdesc,
 													NULL, st->tupstore,
 													prune ? ice_fdw_file_excludes : NULL,
-													st, st->needTop);
+													st, st->needTop,
+													"the pgcolumnar_iceberg foreign-data wrapper");
 		st->started = true;
 	}
 

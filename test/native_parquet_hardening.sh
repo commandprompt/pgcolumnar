@@ -37,6 +37,11 @@
 # but NUL. Each refusal wants 22021 and the reader's message, which names the
 # column and the first bad bytes, as core's own message does.
 #
+# A FOOTER THAT DOES NOT MATCH ITS PAGES (#1855, #1852). A column whose footer
+# says REQUIRED, while its pages carry definition levels, used to read the levels
+# as values. So did a repetition_type that is no valid value. Both are refused now,
+# and so is a footer whose row groups do not add up to its num_rows.
+#
 # Usage:  test/native_parquet_hardening.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -226,6 +231,46 @@ check "parquet_schema still describes a bad chunk list" \
 	"$(qw "SELECT count(*) FROM pgcolumnar.parquet_schema('$W/short_chunks.parquet');")" "2"
 check "valid two-column file still reads" \
 	"$(qw "SELECT string_agg(a || '|' || b, ' ' ORDER BY a) FROM pgcolumnar.read_parquet('$W/two.parquet') AS t(a int4, b int4);")" "1|4 2|5 3|6"
+
+# ---- a repetition_type that does not match the pages (#1855) ---------------
+# The crafter changed the `id` column's repetition_type in the footer: REQUIRED in
+# rep_required.parquet, and 7, which is no repetition_type, in rep_invalid.parquet.
+# The pages still carry definition levels. The reader used to decode those levels
+# as values and return 3000/3019995 instead of 3000/4498500, with no error. The
+# REQUIRED file is refused by its level histogram, which no longer fits the schema;
+# the invalid value is refused when the footer is read.
+# rep_verdict SQL DETAIL -> "CLEAN REJECT" when SQL raised with DETAIL, else the
+# ERROR and DETAIL lines it raised, or NO ERROR and the rows it returned.
+rep_verdict() {
+	local out
+	out="$(errfull "$1")"
+	case "$out" in
+		*"$2"*) echo "CLEAN REJECT" ;;
+		*ERROR*) printf '%s' "$out" | grep -E '^(ERROR|DETAIL):' | tr '\n' ' ' ;;
+		*) echo "NO ERROR: $out" ;;
+	esac
+}
+REP_SUM="SELECT count(*) || '/' || sum(id) FROM pgcolumnar.read_parquet"
+REP_HIST='Row group 0 column 0 ("id") has a definition level histogram of 2 entries, but the schema gives it a maximum definition level of 0.'
+REP_ENUM='Schema element "id" has repetition_type 7; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).'
+check "premise: the unchanged repetition file reads 3000/4498500" \
+	"$(qw "$REP_SUM('$W/rep_base.parquet') AS t(id bigint, name text);")" "3000/4498500"
+check "repetition_type REQUIRED over optional pages is refused" \
+	"$(rep_verdict "$REP_SUM('$W/rep_required.parquet') AS t(id bigint, name text);" "$REP_HIST")" \
+	"CLEAN REJECT"
+check "repetition_type that is not 0, 1 or 2 is refused" \
+	"$(rep_verdict "$REP_SUM('$W/rep_invalid.parquet') AS t(id bigint, name text);" "$REP_ENUM")" \
+	"CLEAN REJECT"
+psql_run "CREATE TABLE imp_rep (id bigint, name text);"
+check "import_parquet refuses repetition_type REQUIRED over optional pages" \
+	"$(rep_verdict "SELECT pgcolumnar.import_parquet('imp_rep'::regclass, '$W/rep_required.parquet');" "$REP_HIST")" \
+	"CLEAN REJECT"
+
+# The row groups of rows_short.parquet hold 3000 rows, but its footer says 2000.
+REP_ROWS='The row groups hold 3000 rows, but the file declares num_rows 2000.'
+check "a footer num_rows the row groups do not add up to is refused" \
+	"$(rep_verdict "$REP_SUM('$W/rows_short.parquet') AS t(id bigint, name text);" "$REP_ROWS")" \
+	"CLEAN REJECT"
 
 # ---- string cells that are not valid in the server encoding (#1821) --------
 # A database created as UTF8 whatever the cluster's encoding (see the header).

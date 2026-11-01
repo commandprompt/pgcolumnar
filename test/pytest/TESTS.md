@@ -9731,6 +9731,7 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed an
 | `test_iceberg_scan_reads_the_current_snapshots_rows` | iceberg_scan reads the current snapshot's rows |
 | `test_iceberg_scan_projects_and_reorders_by_field_id` | iceberg_scan projects and reorders by field id (amount, id) |
 | `test_iceberg_scan_reads_a_subset` | iceberg_scan reads a subset (region only) |
+| `test_iceberg_scan_type_refusal_names_iceberg_scan` | iceberg_scan's type refusal names iceberg_scan |
 | `test_a_renamed_column_still_reads_by_field_id` | a column renamed in the schema still reads by field id (amt2 = amount) |
 | `test_an_output_column_not_in_the_schema_is_refused` | an output column not in the schema is refused (42703) |
 | `test_an_unprivileged_role_is_refused_the_scan` | an unprivileged role is refused (42501) |
@@ -11371,6 +11372,10 @@ Every test makes one check under the shell's name, over counts the module fixtur
 | `test_no_parquet_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
 | `test_every_parquet_mutant_was_generated_and_ran_its_statements` | every mutant was generated and ran its three statements |
 | `test_the_parquet_corpus_reached_the_decoder` | the corpus reached the decoder at all |
+| `test_the_oracles_rewrite_of_every_pristine_seed_reads_the_seeds_answer` | the oracle's rewrite of every pristine seed reads the seed's answer |
+| `test_no_parquet_mutant_that_reads_returned_a_wrong_answer` | no mutant that reads returned a wrong answer |
+| `test_every_schema_sweep_copy_ran_its_read` | every schema-sweep copy ran its read |
+| `test_the_result_oracle_compared_some_answers` | the result oracle compared some answers |
 
 ## 286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead
 
@@ -12281,6 +12286,11 @@ Every test makes one check under the shell's name, on a private database, and de
 | `test_millis_scaled_stats_skip_the_non_matching_group` | millis-scaled stats skip the non-matching group |
 | `test_the_millis_file_reads_back_exactly_as_written` | the millis file reads back exactly as written |
 | `test_millis_pushdown_result_equals_the_oracle` | millis pushdown result == oracle |
+| `test_int96_premise_pyarrow_wrote_int96` | premise: pyarrow wrote the INT96 file as INT96 |
+| `test_parquet_schema_advises_timestamptz_for_int96` | parquet_schema advises timestamptz for INT96 |
+| `test_int96_reads_into_timestamptz_as_the_stored_instant` | INT96 reads into timestamptz as the stored instant |
+| `test_int96_reads_into_timestamp_as_the_session_wall_time` | INT96 reads into timestamp as the wall time in the session zone |
+| `test_import_parquet_reads_int96_into_timestamptz` | import_parquet reads INT96 into timestamptz |
 
 ## 317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows
 
@@ -12353,6 +12363,11 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
 | `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
 | `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
+| `test_parquet_hardening_unchanged_repetition_file_reads` | premise: the unchanged repetition file reads 3000/4498500 |
+| `test_parquet_hardening_repetition_required_over_optional_pages_is_refused` | repetition_type REQUIRED over optional pages is refused |
+| `test_parquet_hardening_invalid_repetition_type_is_refused` | repetition_type that is not 0, 1 or 2 is refused |
+| `test_parquet_hardening_import_parquet_refuses_repetition_required_over_optional_pages` | import_parquet refuses repetition_type REQUIRED over optional pages |
+| `test_parquet_hardening_footer_num_rows_mismatch_is_refused` | a footer num_rows the row groups do not add up to is refused |
 | `test_parquet_hardening_strings_run_in_a_utf8_database` | premise: the string arms run in a UTF8 database |
 | `test_parquet_hardening_read_parquet_plain_string_not_utf8_raises_22021` | read_parquet PLAIN string not UTF-8 -> 22021 naming the column |
 | `test_parquet_hardening_read_parquet_dictionary_string_not_utf8_raises_22021` | read_parquet dictionary string not UTF-8 -> 22021 naming the column |
@@ -12516,6 +12531,9 @@ Every test makes one check under the shell's name, on a private database. Every 
 | `test_a_missing_column_definition_list_is_refused` | premise: reject missing column definition list |
 | `test_fewer_declared_columns_than_the_file_is_refused` | reject fewer columns than file |
 | `test_an_incompatible_declared_type_is_refused` | reject incompatible declared type |
+| `test_read_parquet_type_refusal_names_read_parquet` | read_parquet's type refusal names read_parquet |
+| `test_import_parquet_type_refusal_names_import_parquet` | import_parquet's type refusal names import_parquet |
+| `test_parquet_foreign_table_type_refusal_names_the_wrapper` | a Parquet foreign table's type refusal names the foreign-data wrapper |
 | `test_a_file_that_is_not_parquet_is_refused` | reject non-parquet file |
 | `test_read_parquet_keeps_its_own_file_gate` | a role without pg_read_server_files is refused by read_parquet's own gate |
 | `test_a_pg_read_server_files_member_reads_every_row` | and a member of pg_read_server_files reads every row |

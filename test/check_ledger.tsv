@@ -1538,11 +1538,15 @@ fuzz_listing	fuzz_listing	no mutant tripped a sanitizer	15;16;17;18;19	never	-
 fuzz_listing	fuzz_listing	premise: fixture up	15;16;17;18;19	never	-
 fuzz_listing	fuzz_listing	the corpus reached the parser at all (some mutant errored or accepted)	15;16;17;18;19	never	-
 fuzz_parquet	fuzz_parquet	every mutant was generated and ran its three statements	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	every schema-sweep copy ran its read	15;16;17;18;19	never	-
 fuzz_parquet	fuzz_parquet	no mutant crashed the backend	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: unparseable Parquet metadata crashes the backend instead of raising
 fuzz_parquet	fuzz_parquet	no mutant hung the decode	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	no mutant that reads returned a wrong answer	15;16;17;18;19	2026-11-01	the footer checks (repetition_type, level histograms, required FileMetaData fields) reverted to main 2fef6617 (#1852, #1855)
 fuzz_parquet	fuzz_parquet	no mutant tripped a sanitizer	15;16;17;18;19	never	-
 fuzz_parquet	fuzz_parquet	the corpus reached the decoder at all	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	the oracle's rewrite of every pristine seed reads the seed's answer	15;16;17;18;19	never	-
 fuzz_parquet	fuzz_parquet	the reader renders some pristine seed's schema	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	the result oracle compared some answers	15;16;17;18;19	never	-
 fuzz_parquet	fuzz_parquet	the seed corpus generator produced files	15;16;17;18;19	never	-
 generated_columns	generated_columns	stored generated: aggregate matches	15;16;17;18;19	2026-10-21	the flush skips STORED generated columns too, which are materialized
 generated_columns	generated_columns	stored generated: chunk present for attr 2	15;16;17;18;19	2026-10-21	the flush skips STORED generated columns too, which are materialized
@@ -3444,6 +3448,7 @@ iceberg_scan	iceberg_scan	iceberg_scan refuses a list column declared int4 (0A00
 iceberg_scan	iceberg_scan	iceberg_scan refuses a map column declared int8 (0A000)	15;16;17;18;19	2026-10-30	columnar_iceberg.c: every schema field is refused as nested, primitive fields too;columnar_iceberg.c: ice_field_ids_for_columns no longer refuses a struct, list or map schema field, so the column reads as null;columnar_iceberg.c: the nested refusal names no kind, only nested
 iceberg_scan	iceberg_scan	iceberg_scan refuses a struct column declared text (0A000)	15;16;17;18;19	2026-10-30	columnar_iceberg.c: every schema field is refused as nested, primitive fields too;columnar_iceberg.c: ice_field_ids_for_columns no longer refuses a struct, list or map schema field, so the column reads as null;columnar_iceberg.c: the nested refusal names no kind, only nested
 iceberg_scan	iceberg_scan	iceberg_scan still reads the scalar columns beside nested fields	15;16;17;18;19	2026-10-30	columnar_iceberg.c: every schema field is refused as nested, primitive fields too
+iceberg_scan	iceberg_scan	iceberg_scan's type refusal names iceberg_scan	15;16;17;18;19	2026-11-01	the caller name threaded through the Parquet and Iceberg binders reverted to main 2fef6617, which names columnar.import_parquet or columnar.read_parquet (#1871)
 iceberg_scan	iceberg_scan	old and new files both bind to the promoted types in one snapshot	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a FLOAT read into double precision is returned as a float4 Datum (mutation, #1789);columnar_parquet_reader.c: pq_want_phys_for no longer binds a DECIMAL by the file's own physical type (mutation, #1789);columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
 iceberg_scan	iceberg_scan	positional read_parquet still refuses bigint over an INT32 column (42804)	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: pq_want_phys_for binds bigint to an INT32 column for every binder, the positional ones included (mutation, #1789)
 iceberg_scan	iceberg_scan	premise: the data file carries field ids (id=1,region=2,amount=3)	15;16;17;18;19	never	-
@@ -4786,6 +4791,7 @@ native_parquet_hardening	native_parquet_hardening	UINT_32 marked only by its Log
 native_parquet_hardening	native_parquet_hardening	UINT_32 reads into bigint as unsigned	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT32 read into bigint is sign-extended (mutation, #1814);columnar_parquet_reader.c: bigint does not bind to an unsigned INT32 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	UINT_64 at or above 2^63 into bigint -> 22003	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT64 of 2^63 or more read into bigint is not range-checked (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	UINT_64 reads into numeric as unsigned	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT64 read into numeric is printed signed (mutation, #1814);columnar_parquet_reader.c: numeric does not bind to an unsigned INT64 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	a footer num_rows the row groups do not add up to is refused	15;16;17;18;19	2026-11-01	the row-group num_rows sum check disabled in pq_check_row_groups (#1852)
 native_parquet_hardening	native_parquet_hardening	backend survived short chunk list	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the chunk-count refusal becomes abort()
 native_parquet_hardening	native_parquet_hardening	backend survived the string arms	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	date in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range date decodes one day late
@@ -4797,6 +4803,7 @@ native_parquet_hardening	native_parquet_hardening	import_parquet UINT_32 into in
 native_parquet_hardening	native_parquet_hardening	import_parquet also raises 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
 native_parquet_hardening	native_parquet_hardening	import_parquet left no wrapped rows	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
 native_parquet_hardening	native_parquet_hardening	import_parquet reads UINT_32 into bigint and UINT_64 into numeric	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT32 read into bigint is sign-extended (mutation, #1814);columnar_parquet_reader.c: an unsigned INT64 read into numeric is printed signed (mutation, #1814);columnar_parquet_reader.c: bigint does not bind to an unsigned INT32 column (mutation, #1814);columnar_parquet_reader.c: numeric does not bind to an unsigned INT64 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
+native_parquet_hardening	native_parquet_hardening	import_parquet refuses repetition_type REQUIRED over optional pages	15;16;17;18;19	2026-11-01	the repetition_type check and the level-histogram check reverted to main 2fef6617 (#1855)
 native_parquet_hardening	native_parquet_hardening	import_parquet stored no row of the invalid file	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821)
 native_parquet_hardening	native_parquet_hardening	import_parquet string not UTF-8 -> 22021	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821)
 native_parquet_hardening	native_parquet_hardening	int2 in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 guard over-applied, refusing the in-range 30000
@@ -4808,6 +4815,7 @@ native_parquet_hardening	native_parquet_hardening	parquet_schema still describes
 native_parquet_hardening	native_parquet_hardening	premise: pyarrow reads the unsigned file's values unsigned	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	premise: the patched-manifest table reads all five rows	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	premise: the string arms run in a UTF8 database	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	premise: the unchanged repetition file reads 3000/4498500	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	read_parquet PLAIN string not UTF-8 -> 22021 naming the column	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821)
 native_parquet_hardening	native_parquet_hardening	read_parquet UINT_64 into bigint -> 22003	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT64 of 2^63 or more read into bigint is not range-checked (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	read_parquet also raises 22003	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 range guard removed, so 40000 wraps to -25536
@@ -4815,6 +4823,8 @@ native_parquet_hardening	native_parquet_hardening	read_parquet dictionary string
 native_parquet_hardening	native_parquet_hardening	read_parquet in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the int2 guard over-applied, refusing the in-range 30000
 native_parquet_hardening	native_parquet_hardening	read_parquet reads every unsigned width at its advised type	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT32 read into bigint is sign-extended (mutation, #1814);columnar_parquet_reader.c: an unsigned INT64 read into numeric is printed signed (mutation, #1814);columnar_parquet_reader.c: bigint does not bind to an unsigned INT32 column (mutation, #1814);columnar_parquet_reader.c: numeric does not bind to an unsigned INT64 column (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	read_parquet string with an embedded NUL -> 22021	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the ASCII fast path lets an embedded NUL through (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821)
+native_parquet_hardening	native_parquet_hardening	repetition_type REQUIRED over optional pages is refused	15;16;17;18;19	2026-11-01	the repetition_type check and the level-histogram check reverted to main 2fef6617 (#1855)
+native_parquet_hardening	native_parquet_hardening	repetition_type that is not 0, 1 or 2 is refused	15;16;17;18;19	2026-11-01	the repetition_type check and the level-histogram check reverted to main 2fef6617 (#1855)
 native_parquet_hardening	native_parquet_hardening	short chunk list rejected with a specific error	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the row-group chunk-count guard removed
 native_parquet_hardening	native_parquet_hardening	the UINT_64 refusal names the stored value	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: an unsigned INT64 of 2^63 or more read into bigint is not range-checked (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814);columnar_parquet_reader.c: the unsigned INT64 refusal's detail prints the value signed (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	time in range still reads	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: an in-range INT64 time decodes one microsecond late
@@ -5019,7 +5029,10 @@ native_parquet_streaming	native_parquet_streaming	unparseable page header is rej
 native_parquet_streaming	native_parquet_streaming	v2 level lengths past the page are rejected	15;16;17;18;19	never	-
 native_parquet_streaming	native_parquet_streaming	value read of the sparse file fails cleanly	15;16;17;18;19	never	-
 native_parquet_streaming	native_parquet_streaming	zero-filled page area is rejected, not walked byte by byte	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the progress guard for a data page with no values removed
+native_parquet_units	native_parquet_units	INT96 reads into timestamp as the wall time in the session zone	15;16;17;18;19	2026-11-01	INT96 advice, bind and decode reverted to main 2fef6617 (#1870)
+native_parquet_units	native_parquet_units	INT96 reads into timestamptz as the stored instant	15;16;17;18;19	2026-11-01	INT96 advice, bind and decode reverted to main 2fef6617 (#1870)
 native_parquet_units	native_parquet_units	import_parquet honours the unit	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
+native_parquet_units	native_parquet_units	import_parquet reads INT96 into timestamptz	15;16;17;18;19	2026-11-01	INT96 advice, bind and decode reverted to main 2fef6617 (#1870)
 native_parquet_units	native_parquet_units	millis == micros	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
 native_parquet_units	native_parquet_units	millis pushdown result == oracle	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
 native_parquet_units	native_parquet_units	millis-scaled stats skip the non-matching group	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
@@ -5032,6 +5045,8 @@ native_parquet_units	native_parquet_units	parquet_schema advises bigint for nano
 native_parquet_units	native_parquet_units	parquet_schema advises time for TIME_MILLIS	15;16;17;18;19	never	-
 native_parquet_units	native_parquet_units	parquet_schema advises timestamp for micros	15;16;17;18;19	never	-
 native_parquet_units	native_parquet_units	parquet_schema advises timestamp for millis	15;16;17;18;19	never	-
+native_parquet_units	native_parquet_units	parquet_schema advises timestamptz for INT96	15;16;17;18;19	2026-11-01	INT96 advice, bind and decode reverted to main 2fef6617 (#1870)
+native_parquet_units	native_parquet_units	premise: pyarrow wrote the INT96 file as INT96	15;16;17;18;19	never	-
 native_parquet_units	native_parquet_units	read_parquet honours the unit	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
 native_parquet_units	native_parquet_units	the millis file reads back exactly as written	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
 native_parquet_units	native_parquet_units	time micros decodes to the right time	15;16;17;18;19	never	-
@@ -5039,15 +5054,18 @@ native_parquet_units	native_parquet_units	time millis decodes to the right time	
 native_parquet_units	native_parquet_units	ts_ms decodes to the right instant	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads MILLIS as micros (no x1000)
 native_parquet_units	native_parquet_units	ts_ns decodes to the right instant	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_scale_to_usecs reads NANOS as micros (no /1000)
 native_parquet_units	native_parquet_units	ts_us decodes to the right instant	15;16;17;18;19	never	-
+native_read_parquet	native_read_parquet	a Parquet foreign table's type refusal names the foreign-data wrapper	15;16;17;18;19	2026-11-01	the caller name threaded through the Parquet and Iceberg binders reverted to main 2fef6617, which names columnar.import_parquet or columnar.read_parquet (#1871)
 native_read_parquet	native_read_parquet	a role without pg_read_server_files is refused by read_parquet's own gate	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: read_parquet's own pg_read_server_files gate removed
 native_read_parquet	native_read_parquet	and a member of pg_read_server_files reads every row	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
 native_read_parquet	native_read_parquet	backend still up after the refusals	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
 native_read_parquet	native_read_parquet	import parity rows	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
+native_read_parquet	native_read_parquet	import_parquet's type refusal names import_parquet	15;16;17;18;19	2026-11-01	the caller name threaded through the Parquet and Iceberg binders reverted to main 2fef6617, which names columnar.import_parquet or columnar.read_parquet (#1871)
 native_read_parquet	native_read_parquet	nested export rows	15;16;17;18;19	never	-
 native_read_parquet	native_read_parquet	nested round-trip: read_parquet == the generated rows	15;16;17;18;19	2026-10-22	columnar_reader.c: the columnar reader returns int4 777 as 778 (store_att_byval), so the source table and the file agree on the wrong value
 native_read_parquet	native_read_parquet	premise: reject missing column definition list	15;16;17;18;19	never	-
 native_read_parquet	native_read_parquet	projected column round-trips	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
 native_read_parquet	native_read_parquet	read_parquet == import_parquet	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
+native_read_parquet	native_read_parquet	read_parquet's type refusal names read_parquet	15;16;17;18;19	2026-11-01	the caller name threaded through the Parquet and Iceberg binders reverted to main 2fef6617, which names columnar.import_parquet or columnar.read_parquet (#1871)
 native_read_parquet	native_read_parquet	reject fewer columns than file	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the leaf-count guard removed
 native_read_parquet	native_read_parquet	reject incompatible declared type	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scalar physical-type guard removed
 native_read_parquet	native_read_parquet	reject non-parquet file	15;16;17;18;19	never	-

@@ -72,6 +72,15 @@ check "iceberg_scan reads the current snapshot's rows" \
 	      ORDER BY id")" \
 	"$(printf '1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50')"
 
+# ---- a type refusal names the function that was called (#1871) -------------
+# The bind code is shared with read_parquet, and its refusal used to name
+# columnar.read_parquet. money is a type no reader binds.
+check "iceberg_scan's type refusal names iceberg_scan" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
+		-c "SELECT * FROM pgcolumnar.iceberg_scan('$MD') AS t(id bigint, region text, amount money)" 2>&1 \
+		| sed -n 's/^ERROR:  //p' | head -1)" \
+	'output column "amount" has type money, which pgcolumnar.iceberg_scan does not support'
+
 # ---- projection + reorder by field id --------------------------------------
 check "iceberg_scan projects and reorders by field id (amount, id)" \
 	"$(q "SELECT amount || '|' || id

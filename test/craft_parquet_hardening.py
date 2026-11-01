@@ -449,3 +449,144 @@ if len(sys.argv) > 2:
         for f in files:
             os.chmod(os.path.join(d, f), 0o644)
     print(f"  ice_part: {swapped} eu cell(s) -> 0xff 0xfe", file=sys.stderr)
+
+
+# ---- a schema repetition_type that does not match the pages (#1855) -------------
+# pyarrow writes `id` OPTIONAL (repetition_type 1, stored as the zigzag byte 0x02),
+# so every data page carries definition levels. rep_required.parquet says REQUIRED
+# instead, and rep_invalid.parquet says 7, which is no repetition_type at all. The
+# reader used to decode the definition levels as values and return a wrong sum with
+# no error. Three row groups of 1000 rows, as in the issue.
+def repetition_byte(buf, name):
+    """-> the offset of the one-byte repetition_type value of schema element `name`."""
+    flen = int.from_bytes(buf[-8:-4], "little")
+    st = {"pos": len(buf) - 8 - flen}
+
+    def byte():
+        b = buf[st["pos"]]
+        st["pos"] += 1
+        return b
+
+    def uvar():
+        shift = out = 0
+        while True:
+            b = byte()
+            out |= (b & 0x7F) << shift
+            if not b & 0x80:
+                return out
+            shift += 7
+
+    def lhdr():
+        b = byte()
+        n = (b >> 4) & 0x0F
+        if n == 0x0F:
+            n = uvar()
+        return n, b & 0x0F
+
+    def fhdr(last):
+        b = byte()
+        if b == 0:
+            return 0, 0
+        t, d = b & 0x0F, b >> 4
+        if d:
+            return t, last + d
+        u = uvar()
+        return t, (u >> 1) ^ -(u & 1)
+
+    def skip(t):
+        if t in (1, 2):
+            return
+        if t == 3:
+            st["pos"] += 1
+        elif t in (4, 5, 6):
+            uvar()
+        elif t == 7:
+            st["pos"] += 8
+        elif t == 8:
+            n = uvar()
+            st["pos"] += n
+        elif t in (9, 10):
+            n, et = lhdr()
+            for _ in range(n):
+                skip(et)
+        elif t == 12:
+            last = 0
+            while True:
+                ft, f = fhdr(last)
+                if ft == 0:
+                    break
+                last = f
+                skip(ft)
+
+    last = 0
+    while True:
+        ft, fid = fhdr(last)
+        assert ft != 0, "no schema list"
+        last = fid
+        if fid == 2 and ft == 9:
+            n, et = lhdr()
+            assert et == 12, et
+            for _ in range(n):
+                rep_at, el_name, flast = None, None, 0
+                while True:
+                    t, f = fhdr(flast)
+                    if t == 0:
+                        break
+                    flast = f
+                    if f == 3:
+                        rep_at = st["pos"]
+                    if f == 4:
+                        ln = uvar()
+                        el_name = bytes(buf[st["pos"]:st["pos"] + ln]).decode()
+                        st["pos"] += ln
+                        continue
+                    skip(t)
+                if el_name == name:
+                    assert rep_at is not None, name
+                    return rep_at
+            raise AssertionError(f"no schema element {name}")
+        skip(ft)
+
+
+pq.write_table(pa.table({"id": pa.array(range(3000), pa.int64()),
+                         "name": pa.array([f"n{i}" for i in range(3000)])}),
+               f"{W}/rep_base.parquet", row_group_size=1000)
+_rep = bytearray(open(f"{W}/rep_base.parquet", "rb").read())
+_at = repetition_byte(_rep, "id")
+assert _rep[_at] == 0x02, hex(_rep[_at])         # zigzag 1: OPTIONAL
+for _name, _byte in (("rep_required", 0x00),      # zigzag 0: REQUIRED
+                     ("rep_invalid", 0x0E)):      # zigzag 7: not a repetition_type
+    _out = bytearray(_rep)
+    _out[_at] = _byte
+    open(f"{W}/{_name}.parquet", "wb").write(bytes(_out))
+print(f"  id repetition_type at footer byte "
+      f"{_at - (len(_rep) - 8 - int.from_bytes(_rep[-8:-4], 'little'))}", file=sys.stderr)
+
+
+# ---- a footer num_rows that the row groups do not add up to (#1852) -------------
+# rep_base.parquet's row groups hold 3000 rows. rows_short.parquet keeps them and
+# changes only FileMetaData.num_rows (field 3) to 2000. The varint for 3000
+# (zigzag 6000) and for 2000 (zigzag 4000) are both two bytes, so the footer stays
+# well-formed Thrift. The result oracle in test/fuzz_parquet.sh found footers that
+# read as zero rows with no error; the reader now checks this sum.
+def varint_bytes(u):
+    out = bytearray()
+    while True:
+        if u < 0x80:
+            out.append(u)
+            return bytes(out)
+        out.append((u & 0x7F) | 0x80)
+        u >>= 7
+
+
+_rows = bytearray(_rep)
+_flen = int.from_bytes(_rows[-8:-4], "little")
+_at = len(_rows) - 8 - _flen
+# Field 3 follows the schema list (field 2), so its header is 0x16: delta 1, type
+# i64. The header and the two value bytes together occur once in the footer.
+_old, _new = varint_bytes(6000), varint_bytes(4000)
+assert len(_old) == len(_new) == 2
+_hit = [i for i in range(_at, len(_rows) - 8) if bytes(_rows[i:i + 3]) == b"\x16" + _old]
+assert len(_hit) == 1, _hit
+_rows[_hit[0] + 1:_hit[0] + 3] = _new
+open(f"{W}/rows_short.parquet", "wb").write(bytes(_rows))

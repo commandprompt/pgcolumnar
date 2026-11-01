@@ -11,6 +11,9 @@
 # pyarrow writes ConvertedType for millis and micros but only LogicalType for
 # nanos, so this suite exercises both metadata paths.
 #
+# INT96 (#1870) is the legacy 12-byte timestamp: nanoseconds in the day, then the
+# Julian day. parquet_schema advises timestamptz for it, and it reads as an instant.
+#
 # Usage:  test/native_parquet_units.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -69,6 +72,15 @@ g1 = [g1base + i * HOUR for i in range(1000)]   # Jul-Aug 2025, hourly
 pq.write_table(pa.table({"t": pa.array(g0 + g1, pa.int64()).cast(pa.timestamp('ms'))}),
                f"{W}/ms_groups.parquet", row_group_size=1000)
 assert pq.ParquetFile(f"{W}/ms_groups.parquet").num_row_groups == 2
+
+# INT96 (#1870): the legacy timestamp Spark, Hive and Impala write, 8 bytes of
+# nanoseconds in the day then 4 bytes of Julian day. pyarrow writes it from a
+# timestamp with use_deprecated_int96_timestamps. One whole second, one with
+# sub-microsecond digits, one before 1970, and a NULL.
+pq.write_table(pa.table({"t": pa.array([1784851200_000_000_000, 1784851200_123_456_789,
+                                        -1784851200_123_456_789, None],
+                                       pa.timestamp("ns", tz="UTC"))}),
+               f"{W}/int96.parquet", use_deprecated_int96_timestamps=True)
 PY
 
 for u in ms us ns; do
@@ -156,6 +168,42 @@ check_text "nanos sub-us truncates toward zero [frac]" \
 check_text "nanos sub-us truncates toward zero [neg]" \
 	"$(q "SELECT t::text FROM pgcolumnar.read_parquet('$W/tsns_neg.parquet') AS t(t timestamp);")" \
 	"1913-06-10 23:59:59.876544"
+
+# ---- INT96 timestamps (#1870) -------------------------------------------------
+# parquet_schema used to give no type for an INT96 column, and every declared type
+# was refused as incompatible. INT96 holds an instant (Spark's meaning), so the
+# advice is timestamptz. A read keeps whole microseconds and drops the nanosecond
+# digits by rounding down, within the day the value names: the pre-1970 value
+# .123456789 s before a whole second therefore reads as .876543 past the second
+# before it. A timestamp column gets the instant's wall time in the session zone,
+# as for any UTC-adjusted timestamp.
+I96="$W/int96.parquet"
+# qe SQL -> the result, or the ERROR line when SQL fails, so a refusal is its own reading
+qe() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1 | grep -v '^SET$' | head -3
+}
+I96_UTC="1913-06-10 23:59:59.876543,2026-07-24 00:00:00,2026-07-24 00:00:00.123456,null"
+check "premise: pyarrow wrote the INT96 file as INT96" \
+	"$(python3 -c "import sys, pyarrow.parquet as pq; print(pq.ParquetFile(sys.argv[1]).schema.column(0).physical_type)" "$I96" 2>&1)" \
+	"INT96"
+check "parquet_schema advises timestamptz for INT96" \
+	"$(qe "SELECT coalesce(data_type, '<null>') FROM pgcolumnar.parquet_schema('$I96');")" \
+	"timestamp with time zone"
+check "INT96 reads into timestamptz as the stored instant" \
+	"$(qe "SELECT string_agg(coalesce((t AT TIME ZONE 'UTC')::text, 'null'), ',' ORDER BY t NULLS LAST)
+	      FROM pgcolumnar.read_parquet('$I96') AS t(t timestamptz);")" \
+	"$I96_UTC"
+check "INT96 reads into timestamp as the wall time in the session zone" \
+	"$(qe "SET timezone = 'Asia/Tokyo';
+	      SELECT string_agg(coalesce(t::text, 'null'), ',' ORDER BY t NULLS LAST)
+	      FROM pgcolumnar.read_parquet('$I96') AS t(t timestamp);")" \
+	"1913-06-11 08:59:59.876543,2026-07-24 09:00:00,2026-07-24 09:00:00.123456,null"
+psql_run "CREATE TABLE imp_i96 (t timestamptz);"
+i96_imp="$(qe "SELECT pgcolumnar.import_parquet('imp_i96'::regclass, '$I96');")"
+check "import_parquet reads INT96 into timestamptz" \
+	"$i96_imp:$(qe "SELECT string_agg(coalesce((t AT TIME ZONE 'UTC')::text, 'null'), ',' ORDER BY t NULLS LAST) FROM imp_i96;")" \
+	"4:$I96_UTC"
 
 # ---- pushdown over a unit-scaled column ------------------------------------
 # The predicate falls entirely in the second group's range, so the first group's

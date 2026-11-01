@@ -15,6 +15,9 @@ through read_parquet agreed with a decode that shifted rows to the next dictiona
 entry). Every reading returns a failure as a value, so a failed query fails its own
 check by name.
 
+INT96 (#1870), the legacy 12-byte timestamp, is advised as timestamptz and reads as an
+instant, into timestamptz and into timestamp, through read_parquet and import_parquet.
+
 ON A PRIVATE DATABASE. The shell skips whole without pyarrow, so every test declines
 under the shell's skip name before it asks for the fixture: the writer needs pyarrow,
 and it runs as a subprocess so this module imports none. The files live in
@@ -54,7 +57,17 @@ g1 = [1751328000000 + i * HOUR for i in range(1000)]
 pq.write_table(pa.table({"t": pa.array(g0 + g1, pa.int64()).cast(pa.timestamp('ms'))}),
                f"{W}/ms_groups.parquet", row_group_size=1000)
 assert pq.ParquetFile(f"{W}/ms_groups.parquet").num_row_groups == 2
+pq.write_table(pa.table({"t": pa.array([1784851200_000_000_000, 1784851200_123_456_789,
+                                        -1784851200_123_456_789, None],
+                                       pa.timestamp("ns", tz="UTC"))}),
+               f"{W}/int96.parquet", use_deprecated_int96_timestamps=True)
 '''
+
+# the premise reader: pyarrow's physical type for the INT96 file (#1870)
+INT96_READER = ("import sys, pyarrow.parquet as pq; "
+                "print(pq.ParquetFile(sys.argv[1]).schema.column(0).physical_type)")
+I96_UTC = "1913-06-10 23:59:59.876543,2026-07-24 00:00:00,2026-07-24 00:00:00.123456,null"
+I96_TOKYO = "1913-06-11 08:59:59.876543,2026-07-24 09:00:00,2026-07-24 09:00:00.123456,null"
 
 # the hourly series the fixture wrote, built in SQL: the oracle for the two-group file
 GENERATOR = ("SELECT timestamp '2024-01-01' + g * interval '1 hour' AS t FROM generate_series(0, 999) g "
@@ -75,10 +88,13 @@ def _run(dsn, sql):
     return None
 
 
-def _value(dsn, sql):
-    """-> the first column of the first row as text, or the failure as a query_error()."""
+def _value(dsn, sql, settings=()):
+    """-> the first column of the first row as text, or the failure as a query_error().
+    `settings` run first on the same connection, as a SET before the query."""
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
+            for st in settings:
+                conn.execute(st)
             row = conn.execute(sql).fetchone()
     except psycopg.Error as exc:
         return query_error(_message(exc))
@@ -157,6 +173,21 @@ def pqu(pgc_cluster, server_dir):
         for tag in ("frac", "neg"):
             r[f"trunc {tag}"] = _value(dsn, f"SELECT t::text FROM pgcolumnar.read_parquet('{w}/tsns_{tag}.parquet') "
                                             "AS t(t timestamp)")
+        # ---- INT96 timestamps (#1870) ----
+        i96 = f"{w}/int96.parquet"
+        pre = subprocess.run([sys.executable, "-c", INT96_READER, i96], capture_output=True, text=True)
+        r["i96 premise"] = (pre.stdout.strip() if pre.returncode == 0
+                            else query_error((pre.stderr.strip().splitlines() or ["no output"])[-1]))
+        r["i96 advice"] = _value(dsn, f"SELECT coalesce(data_type, '<null>') FROM pgcolumnar.parquet_schema('{i96}')")
+        utc = "string_agg(coalesce((t AT TIME ZONE 'UTC')::text, 'null'), ',' ORDER BY t NULLS LAST)"
+        r["i96 tz"] = _value(dsn, f"SELECT {utc} FROM pgcolumnar.read_parquet('{i96}') AS t(t timestamptz)")
+        r["i96 ts"] = _value(dsn, "SELECT string_agg(coalesce(t::text, 'null'), ',' ORDER BY t NULLS LAST) "
+                                  f"FROM pgcolumnar.read_parquet('{i96}') AS t(t timestamp)",
+                             settings=("SET timezone = 'Asia/Tokyo'",))
+        _run(dsn, "CREATE TABLE imp_i96 (t timestamptz)")
+        imp = _value(dsn, f"SELECT pgcolumnar.import_parquet('imp_i96'::regclass, '{i96}')")
+        r["i96 import"] = (imp if not isinstance(imp, str) or imp.startswith("QUERY_ERROR")
+                           else imp + ":" + str(_value(dsn, f"SELECT {utc} FROM imp_i96")))
         _run(dsn, f"CREATE FOREIGN TABLE fmsg (t timestamp) SERVER pq OPTIONS (path '{w}/ms_groups.parquet')")
         r["skipped"] = _skipped(dsn, "t >= timestamp '2025-06-01'")
         r["file"] = _set_hash(dsn, "SELECT t FROM fmsg")
@@ -307,3 +338,38 @@ def test_millis_pushdown_result_equals_the_oracle(request, expect):
         return
     r = request.getfixturevalue("pqu")
     expect.text(r["pushdown"], r["pushdown oracle"], "millis pushdown result == oracle")
+
+
+def test_int96_premise_pyarrow_wrote_int96(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet unit suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqu")
+    expect.text(r["i96 premise"], "INT96", "premise: pyarrow wrote the INT96 file as INT96")
+
+
+def test_parquet_schema_advises_timestamptz_for_int96(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet unit suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqu")
+    expect.text(r["i96 advice"], "timestamp with time zone", "parquet_schema advises timestamptz for INT96")
+
+
+def test_int96_reads_into_timestamptz_as_the_stored_instant(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet unit suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqu")
+    expect.text(r["i96 tz"], I96_UTC, "INT96 reads into timestamptz as the stored instant")
+
+
+def test_int96_reads_into_timestamp_as_the_session_wall_time(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet unit suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqu")
+    expect.text(r["i96 ts"], I96_TOKYO, "INT96 reads into timestamp as the wall time in the session zone")
+
+
+def test_import_parquet_reads_int96_into_timestamptz(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet unit suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqu")
+    expect.text(r["i96 import"], "4:" + I96_UTC, "import_parquet reads INT96 into timestamptz")

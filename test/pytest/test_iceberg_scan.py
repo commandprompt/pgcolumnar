@@ -90,6 +90,18 @@ def _refusal(dsn, sql, regex, label):
     return "no error: " + " ".join("|".join("" if v is None else str(v) for v in r) for r in rows)
 
 
+def _error(dsn, sql):
+    """-> the primary message of the error `sql` raised, or "no error: <rows>" (#1871)."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            rows = conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        return exc.diag.message_primary or ""
+    return f"no error: {rows}"
+
+
 def _lines(v):
     return v if isinstance(v, str) else "\n".join(str(x) for x in v)
 
@@ -173,6 +185,7 @@ def isc(pgc_cluster, server_dir):
                                  r'output column "mp" is a map field', "map"),
             "fdw struct": _refusal(dsn, "SELECT * FROM icescan_fnest",
                                    r'output column "st" is a struct field', "struct"),
+            "money": _error(dsn, f"SELECT * FROM {scan.format(md)} AS t(id bigint, region text, amount money)"),
             "unpriv": _sqlstate(dsn, f"SELECT * FROM {scan.format(md)} AS t(id bigint)", UNPRIV, pgc_cluster.port),
             "reader": _rows(dsn, f"SELECT count(*) FROM {scan.format(md)} AS t(id bigint)", READER, pgc_cluster.port),
         }
@@ -270,6 +283,13 @@ def test_an_output_column_not_in_the_schema_is_refused(isc, expect):
     if _declined(isc, expect):
         return
     expect.text(str(isc["nosuch"]), "42703", "an output column not in the schema is refused (42703)")
+
+
+def test_iceberg_scan_type_refusal_names_iceberg_scan(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(isc["money"], 'output column "amount" has type money, which pgcolumnar.iceberg_scan does not support',
+                "iceberg_scan's type refusal names iceberg_scan")
 
 
 def test_an_unprivileged_role_is_refused_the_scan(isc, expect):

@@ -1006,6 +1006,15 @@ type) is reported as `timestamp with time zone`. A column of wall times
 advised type reads the value unchanged. See
 [Timestamps and time zones](user-guide.md#read-parquet-files-in-place).
 
+A legacy `INT96` timestamp column, which Spark, Hive and Impala write, is reported
+as `timestamp with time zone`. An `INT96` value is an instant in UTC. A read keeps
+whole microseconds and drops the nanosecond digits by rounding down. The column
+also reads into `timestamp`, which gets the wall time in the session time zone.
+
+When a reader refuses a declared column type, the message names the function or
+foreign-data wrapper you used, for example
+`column "c" has type money, which pgcolumnar.read_parquet does not support`.
+
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when
 the writer emitted no field id. A field id of 0 is a real value, so a NULL and a 0

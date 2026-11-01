@@ -141,6 +141,33 @@ check "reject incompatible declared type" \
 	   "physical type is not compatible with target column \"c_i4\"" " by the physical-type guard")" \
 	"42804 by the physical-type guard"
 
+# ---- a type refusal names the function that was called (#1871) -------------
+# The bind code is shared by every reader, and its refusal used to name
+# columnar.import_parquet whatever was called. money is a type no reader binds.
+# rp_error SQL -> the message of the ERROR SQL raised, or what happened instead
+rp_error() {
+	local out
+	rp_wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA -c "$1" 2>&1)"
+	if grep -q '^ERROR:' <<<"$out"; then sed -n 's/^ERROR:  //p' <<<"$out" | head -1
+	else echo "no error ($(head -1 <<<"$out"))"; fi
+}
+money_cols="c_i2 money, c_i4 int4, c_i8 int8, c_f4 float4, c_f8 float8, c_bool bool,
+             c_text text, c_bytea bytea, c_date date, c_time time, c_ts timestamp"
+check "read_parquet's type refusal names read_parquet" \
+	"$(rp_error "SELECT * FROM pgcolumnar.read_parquet('$SCALAR') AS t($money_cols)")" \
+	'column "c_i2" has type money, which pgcolumnar.read_parquet does not support'
+psql_run "CREATE TABLE imp_money ($money_cols) USING pgcolumnar;"
+check "import_parquet's type refusal names import_parquet" \
+	"$(rp_error "SELECT pgcolumnar.import_parquet('imp_money', '$SCALAR')")" \
+	'column "c_i2" has type money, which pgcolumnar.import_parquet does not support'
+psql_run "CREATE SERVER rp_pq FOREIGN DATA WRAPPER pgcolumnar_parquet;"
+psql_run "CREATE FOREIGN TABLE f_money ($money_cols) SERVER rp_pq OPTIONS (path '$SCALAR');"
+check "a Parquet foreign table's type refusal names the foreign-data wrapper" \
+	"$(rp_error "SELECT * FROM f_money")" \
+	'column "c_i2" has type money, which the pgcolumnar_parquet foreign-data wrapper does not support'
+
 # not a Parquet file
 printf 'not parquet' > "$PGC_WORKDIR/bad.dat"
 chmod 644 "$PGC_WORKDIR/bad.dat"

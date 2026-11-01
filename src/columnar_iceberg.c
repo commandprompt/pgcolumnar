@@ -2183,6 +2183,8 @@ typedef struct IceScanCtx
 	char	   *mdpath;
 	const PgColumnarObjStoreConfig *cfg;	/* vended storage creds, or NULL */
 	const bool *needTop;		/* projection: which output columns to decode, or NULL for all */
+	const char *caller;			/* the entry point the user called, for a type
+								 * refusal (#1871) */
 	List	   *data;			/* IceEntry* content 0 */
 	List	   *posdel;			/* IceEntry* content 1 */
 	List	   *eqdel;			/* IceEntry* content 2 */
@@ -2303,7 +2305,7 @@ ice_read_pos_deletes(IceScanCtx *c)
 							 pd->file_path, "position-delete", c->mdpath);
 		ts = tuplestore_begin_heap(false, false, work_mem);
 		(void) PgColumnarReadParquetByFieldId(safe, dtd, fids, 2, ts, wslot, NULL, 0,
-											  c->cfg);
+											  c->cfg, c->caller);
 		while (tuplestore_gettupleslot(ts, true, false, rslot))
 		{
 			bool		n1,
@@ -2736,7 +2738,8 @@ ice_read_eq_deletes(IceScanCtx *c, JsonbContainer *root, const char *path,
 							 ed->file_path, "equality-delete", c->mdpath);
 		ts = tuplestore_begin_heap(false, false, work_mem);
 		(void) PgColumnarReadParquetByFieldId(safe, dtd, (const int *) E->ids,
-											  E->nids, ts, wslot, NULL, 0, c->cfg);
+											  E->nids, ts, wslot, NULL, 0, c->cfg,
+											  c->caller);
 		while (tuplestore_gettupleslot(ts, true, false, rslot))
 		{
 			IceEqRow   *row;
@@ -2914,7 +2917,7 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 						 "data-file", c->mdpath);
 	ts = tuplestore_begin_heap(false, false, work_mem);
 	(void) PgColumnarReadParquetByFieldId(safe, ptd, uids, nuni, ts, wslot,
-										  NULL, 0, c->cfg);
+										  NULL, 0, c->cfg, c->caller);
 	dv = (Datum *) palloc(nuni * sizeof(Datum));
 	dn = (bool *) palloc(nuni * sizeof(bool));
 	while (tuplestore_gettupleslot(ts, true, false, rslot))
@@ -2969,7 +2972,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 						  const PgColumnarObjStoreConfig *cfg,
 						  Tuplestorestate *tupstore,
 						  PgColumnarIceFileFilter filter, void *filterarg,
-						  const bool *needTop)
+						  const bool *needTop, const char *caller)
 {
 	IceScanCtx	ctx;
 	char	   *json;
@@ -2984,6 +2987,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 
 	ctx.cfg = cfg;				/* vended storage creds for every file, or NULL */
 	ctx.needTop = needTop;
+	ctx.caller = caller;
 
 	/* map output column names -> field ids via the table's current schema */
 	json = ice_slurp_text(path, cfg);
@@ -3201,7 +3205,8 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 													(const char *const *) ctx.nm_names,
 													ctx.nm_ids, ctx.nm_count,
 													ctx.tupstore, ctx.slot,
-													skip, nskip, ctx.needTop, ctx.cfg);
+													skip, nskip, ctx.needTop, ctx.cfg,
+													ctx.caller);
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(ctx.filectx);
 
@@ -3239,7 +3244,8 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 void
 PgColumnarIcebergScanInto(const char *path, TupleDesc tupdesc,
 						  ReturnSetInfo *rsinfo,
-						  const PgColumnarObjStoreConfig *cfg)
+						  const PgColumnarObjStoreConfig *cfg,
+						  const char *caller)
 {
 	MemoryContext oldcxt;
 	TupleDesc	outdesc;
@@ -3253,7 +3259,8 @@ PgColumnarIcebergScanInto(const char *path, TupleDesc tupdesc,
 	rsinfo->setDesc = outdesc;
 	MemoryContextSwitchTo(oldcxt);
 
-	(void) PgColumnarIcebergScanCore(path, outdesc, cfg, tupstore, NULL, NULL, NULL);
+	(void) PgColumnarIcebergScanCore(path, outdesc, cfg, tupstore, NULL, NULL, NULL,
+									 caller);
 }
 
 PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_scan);
@@ -3313,6 +3320,6 @@ pgcolumnar_iceberg_scan(PG_FUNCTION_ARGS)
 				 errmsg("pgcolumnar.iceberg_scan requires a column definition list"),
 				 errhint("Call it as SELECT * FROM pgcolumnar.iceberg_scan(path) AS t(col1 type1, ...).")));
 
-	PgColumnarIcebergScanInto(path, tupdesc, rsinfo, NULL);
+	PgColumnarIcebergScanInto(path, tupdesc, rsinfo, NULL, "pgcolumnar.iceberg_scan");
 	return (Datum) 0;
 }

@@ -49,7 +49,8 @@ typedef bool (*PgColumnarIceFileFilter) (void *arg,
  */
 extern void PgColumnarIcebergScanInto(const char *path, TupleDesc tupdesc,
 									  ReturnSetInfo *rsinfo,
-									  const PgColumnarObjStoreConfig *cfg);
+									  const PgColumnarObjStoreConfig *cfg,
+									  const char *caller);
 
 /*
  * As PgColumnarIcebergScanInto, but reads into the caller-owned `tupstore` and
@@ -64,7 +65,8 @@ extern int64 PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 									   Tuplestorestate *tupstore,
 									   PgColumnarIceFileFilter filter,
 									   void *filterarg,
-									   const bool *needTop);
+									   const bool *needTop,
+									   const char *caller);
 
 /*
  * Map the current partition spec's IDENTITY fields to `tupdesc` columns for FDW

@@ -178,6 +178,14 @@ typedef struct PqChunk
 	const uint8 *stat_max;
 	uint32		stat_min_len;
 	uint32		stat_max_len;
+	/*
+	 * SizeStatistics (ColumnMetaData field 16): the entry counts of the
+	 * repetition and definition level histograms, or -1 when the file has none.
+	 * A histogram has one entry per level, so its length must be max level + 1
+	 * (#1855).
+	 */
+	int64		rep_hist_len;
+	int64		def_hist_len;
 } PqChunk;
 
 typedef struct PqRowGroup
@@ -197,6 +205,7 @@ typedef struct PqFile
 	int			ntop;			/* top-level columns (root's children) */
 	int			nrowgroups;
 	PqRowGroup *rgs;
+	int64		num_rows;		/* FileMetaData field 3: the rows in every row group */
 } PqFile;
 
 /*
@@ -280,6 +289,46 @@ parse_statistics(TCReader *r, PqChunk *ch)
 	}
 }
 
+/*
+ * Parse a SizeStatistics struct, recording only how many entries each level
+ * histogram holds: 2 repetition_level_histogram, 3 definition_level_histogram,
+ * both list<i64>. An empty list counts as absent, as a writer may omit a
+ * histogram whose maximum level is 0.
+ */
+static void
+parse_size_statistics(TCReader *r, PqChunk *ch)
+{
+	int			lastId = 0;
+
+	for (;;)
+	{
+		int			ft,
+					fid;
+
+		PgColumnarThriftField(r, &ft, &fid, &lastId);
+		if (ft == TC_STOP || r->error)
+			break;
+		if ((fid == 2 || fid == 3) && ft == TC_LIST)
+		{
+			int			etype;
+			uint32		n = PgColumnarThriftListHeader(r, &etype);
+			uint32		i;
+
+			for (i = 0; i < n && !r->error; i++)
+				PgColumnarThriftSkip(r, etype);
+			if (n > 0)
+			{
+				if (fid == 2)
+					ch->rep_hist_len = (int64) n;
+				else
+					ch->def_hist_len = (int64) n;
+			}
+		}
+		else
+			PgColumnarThriftSkip(r, ft);
+	}
+}
+
 /* parse a ColumnMetaData struct into *ch */
 static void
 parse_column_meta(TCReader *r, PqChunk *ch)
@@ -297,6 +346,8 @@ parse_column_meta(TCReader *r, PqChunk *ch)
 	ch->stat_max = NULL;
 	ch->stat_min_len = 0;
 	ch->stat_max_len = 0;
+	ch->rep_hist_len = -1;
+	ch->def_hist_len = -1;
 
 	for (;;)
 	{
@@ -326,6 +377,12 @@ parse_column_meta(TCReader *r, PqChunk *ch)
 			case 12:			/* statistics */
 				if (ft == TC_STRUCT)
 					parse_statistics(r, ch);
+				else
+					PgColumnarThriftSkip(r, ft);
+				break;
+			case 16:			/* size_statistics (#1855) */
+				if (ft == TC_STRUCT)
+					parse_size_statistics(r, ch);
 				else
 					PgColumnarThriftSkip(r, ft);
 				break;
@@ -613,6 +670,10 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 {
 	TCReader	r = {buf, len, 0, false};
 	int			lastId = 0;
+	bool		haveSchema = false;
+	bool		haveNumRows = false;
+	bool		haveRowGroups = false;
+	int			e;
 
 	pf->ncols = 0;
 	pf->nelems = 0;
@@ -621,6 +682,7 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 	pf->ntop = 0;
 	pf->nrowgroups = 0;
 	pf->rgs = NULL;
+	pf->num_rows = 0;
 
 	for (;;)
 	{
@@ -642,6 +704,12 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 				parse_schema_element(&r, &tmp[i]);
 			pf->nelems = (int) n;
 			pf->elems = tmp;
+			haveSchema = true;
+		}
+		else if (fid == 3)		/* num_rows */
+		{
+			pf->num_rows = PgColumnarThriftZigzag(&r);
+			haveNumRows = true;
 		}
 		else if (fid == 4 && ft == TC_LIST)		/* row_groups */
 		{
@@ -651,6 +719,7 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 
 			pf->nrowgroups = n;
 			pf->rgs = palloc0(sizeof(PqRowGroup) * Max(n, 1));
+			haveRowGroups = true;
 			for (i = 0; i < n && !r.error; i++)
 			{
 				PqRowGroup *rg = &pf->rgs[i];
@@ -691,6 +760,19 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 	if (r.error || pf->nelems < 1)
 		return false;
 
+	/*
+	 * schema, num_rows and row_groups are required fields of FileMetaData, and
+	 * name is a required field of SchemaElement. A footer that lacks one did not
+	 * parse as the writer wrote it: a single changed byte can end a struct early
+	 * and leave the rest of the footer read as something else. Such a footer
+	 * used to read as a file of zero rows, with no error (#1852).
+	 */
+	if (!haveSchema || !haveNumRows || !haveRowGroups)
+		return false;
+	for (e = 0; e < pf->nelems; e++)
+		if (pf->elems[e].name == NULL)
+			return false;
+
 	/* derive leaf columns + their level bounds from the schema tree */
 	{
 		int			cursor = 1;	/* skip the root element */
@@ -712,6 +794,29 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 }
 
 /*
+ * Reject a schema element whose repetition_type is not one of the three the
+ * format defines: 0 REQUIRED, 1 OPTIONAL, 2 REPEATED (#1855). walk_schema counts
+ * only 1 and 2 as levels, so any other value read as REQUIRED: a column whose
+ * pages carry definition levels then had those levels decoded as values, and
+ * read_parquet returned wrong numbers with no error. The root element is skipped
+ * because walk_schema never reads its repetition.
+ *
+ * This runs on every open, parquet_schema included: it cannot report whether a
+ * column is nullable without a valid repetition_type. It returns the first bad
+ * element, or NULL, so the caller can close the source before it raises.
+ */
+static const PqSchemaCol *
+pq_bad_repetition(const PqFile *pf)
+{
+	int			e;
+
+	for (e = 1; e < pf->nelems; e++)
+		if (pf->elems[e].repetition < 0 || pf->elems[e].repetition > 2)
+			return &pf->elems[e];
+	return NULL;
+}
+
+/*
  * Reject a file whose row groups do not carry one column chunk per schema leaf.
  *
  * Every value consumer indexes rgs[].chunks[] by the schema's leaf count, not by
@@ -729,6 +834,7 @@ static void
 pq_check_row_groups(const PqFile *pf, const char *path)
 {
 	int			rg;
+	int64		total = 0;
 
 	for (rg = 0; rg < pf->nrowgroups; rg++)
 	{
@@ -788,8 +894,48 @@ pq_check_row_groups(const PqFile *pf, const char *path)
 						 errmsg("Parquet file \"%s\" has a malformed row group", path),
 						 errdetail("Row group %d declares num_rows %ld, but column %d holds only %ld values.",
 								   rg, (long) g->num_rows, ci, (long) nv)));
+
+			/*
+			 * A level histogram has one entry per level, 0 to the maximum the
+			 * schema gives the column (#1855). One of another length means the
+			 * schema and the pages disagree about the levels: a column marked
+			 * REQUIRED whose pages carry definition levels has a histogram of 2,
+			 * and its levels would otherwise be decoded as values. Only a file
+			 * that carries histograms can be checked this way.
+			 */
+			{
+				const PqChunk *ch = &g->chunks[ci];
+				const PqLeafInfo *lf = &pf->leaves[ci];
+				const char *nm = lf->sc->name;
+
+				if (ch->def_hist_len > 0 && ch->def_hist_len != lf->max_def + 1)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("Parquet file \"%s\" has a malformed row group", path),
+							 errdetail("Row group %d column %d (\"%s\") has a definition level histogram of %ld entries, but the schema gives it a maximum definition level of %d.",
+									   rg, ci, nm, (long) ch->def_hist_len, lf->max_def)));
+				if (ch->rep_hist_len > 0 && ch->rep_hist_len != lf->max_rep + 1)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("Parquet file \"%s\" has a malformed row group", path),
+							 errdetail("Row group %d column %d (\"%s\") has a repetition level histogram of %ld entries, but the schema gives it a maximum repetition level of %d.",
+									   rg, ci, nm, (long) ch->rep_hist_len, lf->max_rep)));
+			}
 		}
+		total += g->num_rows;
 	}
+
+	/*
+	 * The row groups hold every row of the file, so their num_rows must add up
+	 * to the footer's own num_rows. Each is at most MaxAllocSize / sizeof(Datum)
+	 * by the checks above (num_rows <= num_values), so the sum cannot overflow.
+	 */
+	if (total != pf->num_rows)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed row group", path),
+				 errdetail("The row groups hold %ld rows, but the file declares num_rows %ld.",
+						   (long) total, (long) pf->num_rows)));
 }
 
 /* -------------------------------------------------------------------------
@@ -1353,6 +1499,43 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 					return TimeADTGetDatum((TimeADT) us);
 				}
 				return Int64GetDatum(v);
+			}
+		case PQ_INT96:
+			{
+				/*
+				 * The legacy INT96 timestamp (#1870): 8 bytes of nanoseconds into
+				 * the day, then 4 bytes of Julian day number, both little-endian.
+				 * Spark, Hive and Impala write it for an instant in UTC. The
+				 * nanoseconds are rounded down to whole microseconds; both parts
+				 * are non-negative in a valid value, so that is the floor of the
+				 * instant, before 1970 as after it.
+				 */
+				int64		nanos;
+				int32		jday;
+				int64		us;
+				int64		t;
+				const char *tn = (plan->typid == TIMESTAMPOID)
+					? "timestamp" : "timestamp with time zone";
+
+				if (cur + 12 > end)
+				{
+					*ok = false;
+					return (Datum) 0;
+				}
+				memcpy(&nanos, cur, 8);
+				memcpy(&jday, cur + 8, 4);
+				*p = cur + 12;
+				if (nanos < 0 || nanos >= USECS_PER_DAY * INT64CONST(1000) ||
+					pg_mul_s64_overflow((int64) jday - POSTGRES_EPOCH_JDATE,
+										USECS_PER_DAY, &t) ||
+					pg_add_s64_overflow(t, nanos / 1000, &us) ||
+					!IS_VALID_TIMESTAMP((Timestamp) us) ||
+					(plan->ts_shift != PQ_TS_NONE &&
+					 !pq_ts_shift(plan->ts_shift, (Timestamp) us, (Timestamp *) &us)))
+					return pq_value_out_of_range(strict, ok,
+												 ERRCODE_DATETIME_FIELD_OVERFLOW,
+												 tn, (int64) jday);
+				return TimestampGetDatum((Timestamp) us);
 			}
 		case PQ_FLOAT:
 			{
@@ -1934,6 +2117,19 @@ pq_source_open_cfg(const char *path, PqSource *src, PqFile *pf,
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						errmsg("could not parse \"%s\" (unsupported or corrupt Parquet metadata)", path)));
 	}
+	{
+		const PqSchemaCol *bad = pq_bad_repetition(pf);
+
+		if (bad != NULL)
+		{
+			pq_source_close(src);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("Parquet file \"%s\" has a malformed schema", path),
+					 errdetail("Schema element \"%s\" has repetition_type %d; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).",
+							   bad->name, bad->repetition)));
+		}
+	}
 }
 
 static void
@@ -2450,6 +2646,9 @@ pq_plan_bind_schema(PqColPlan *plan, const PqSchemaCol *sc)
 		plan->ts_shift = PQ_TS_WALL_TO_INSTANT;
 	else if (sc->is_timestamp && sc->adjusted_utc && plan->typid == TIMESTAMPOID)
 		plan->ts_shift = PQ_TS_INSTANT_TO_WALL;
+	/* an INT96 timestamp is an instant in UTC (#1870), whatever it is annotated */
+	else if (sc->phys_type == PQ_INT96 && plan->typid == TIMESTAMPOID)
+		plan->ts_shift = PQ_TS_INSTANT_TO_WALL;
 }
 
 /*
@@ -2514,6 +2713,10 @@ pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
 		if (typid == TIMEOID &&
 			sc->time_unit == PQ_TU_MILLIS && !sc->is_timestamp)
 			return PQ_INT32;
+		/* the legacy INT96 timestamp reads into either timestamp type (#1870) */
+		if ((typid == TIMESTAMPTZOID || typid == TIMESTAMPOID) &&
+			sc->phys_type == PQ_INT96)
+			return PQ_INT96;
 		if (sc->is_unsigned && typid == INT8OID && sc->phys_type == PQ_INT32)
 			return PQ_INT32;
 		if (sc->is_unsigned && typid == NUMERICOID && sc->phys_type == PQ_INT64)
@@ -2649,6 +2852,10 @@ pq_leaf_to_pgtype(const PqSchemaCol *sc, Oid *typid, int32 *typmod)
 			else
 				*typid = INT8OID;	/* INT_64, nanos, or unannotated */
 			return true;
+		case PQ_INT96:
+			/* the legacy timestamp: an instant in UTC, as Spark writes it (#1870) */
+			*typid = TIMESTAMPTZOID;
+			return true;
 		case PQ_FLOAT:
 			*typid = FLOAT4OID;
 			return true;
@@ -2737,10 +2944,15 @@ typedef struct ImpTop
  * holds is released by transaction abort. This lets a caller with no relation (the
  * read_parquet function, the FDW) bind a descriptor against a file exactly as
  * import binds a target table's descriptor.
+ *
+ * caller names the entry point the user called, for the message that refuses a
+ * type: the bind is shared, and a message naming another function sends the
+ * reader to the wrong place (#1871).
  */
 static ImpTop *
 build_imp_targets(TupleDesc tupdesc, PqFile *pf,
-				  ImpLeaf **pleaves, int *ntops, const bool *skipAtt)
+				  ImpLeaf **pleaves, int *ntops, const bool *skipAtt,
+				  const char *caller)
 {
 	int			natts = tupdesc->natts;
 	ImpTop	   *tops = palloc0(sizeof(ImpTop) * Max(natts, 1));
@@ -2782,8 +2994,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 			ImpLeaf    *l = &leaves[lf];
 
 			if (want < 0)
-				IMP_FAIL("array column \"%s\" has element type %s, which columnar.import_parquet does not support",
-						 NameStr(att->attname), format_type_be(elemtype));
+				IMP_FAIL("array column \"%s\" has element type %s, which %s does not support",
+						 NameStr(att->attname), format_type_be(elemtype), caller);
 			if (lf >= pf->ncols)
 				IMP_FAIL("Parquet file has fewer columns than the target table");
 			if (pf->leaves[lf].max_rep < 1)
@@ -2828,9 +3040,9 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 				if (want < 0)
 				{
 					ReleaseTupleDesc(td);
-					IMP_FAIL("composite column \"%s\" field \"%s\" has type %s, which columnar.import_parquet does not support",
+					IMP_FAIL("composite column \"%s\" field \"%s\" has type %s, which %s does not support",
 							 NameStr(att->attname), NameStr(fa->attname),
-							 format_type_be(fa->atttypid));
+							 format_type_be(fa->atttypid), caller);
 				}
 				if (lf >= pf->ncols)
 				{
@@ -2869,8 +3081,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 			ImpLeaf    *l = &leaves[lf];
 
 			if (want < 0)
-				IMP_FAIL("column \"%s\" has type %s, which columnar.import_parquet does not support",
-						 NameStr(att->attname), format_type_be(typid));
+				IMP_FAIL("column \"%s\" has type %s, which %s does not support",
+						 NameStr(att->attname), format_type_be(typid), caller);
 			if (lf >= pf->ncols)
 				IMP_FAIL("Parquet file has fewer columns than the target table");
 			if (pf->leaves[lf].max_rep != 0)
@@ -2930,7 +3142,7 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 							  const int *field_ids, int nfield,
 							  const char *const *nm_names, const int *nm_ids,
 							  int nm_count, bool missing_as_null,
-							  ImpLeaf **pleaves, int *ntops)
+							  ImpLeaf **pleaves, int *ntops, const char *caller)
 {
 	int			natts = tupdesc->natts;
 	ImpTop	   *tops = palloc0(sizeof(ImpTop) * Max(natts, 1));
@@ -3106,8 +3318,8 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 					 req);
 		want = pq_want_phys_for(typid, pq_leaf_sc(pf, found));
 		if (want < 0)
-			IMP_FAIL("output column \"%s\" has type %s, which columnar.read_parquet does not support",
-					 NameStr(att->attname), format_type_be(typid));
+			IMP_FAIL("output column \"%s\" has type %s, which %s does not support",
+					 NameStr(att->attname), format_type_be(typid), caller);
 		if (pq_field_id_widens(pf->leaves[found].sc, typid))
 			want = pf->leaves[found].sc->phys_type;
 		if (pf->leaves[found].sc->phys_type != want)
@@ -3885,7 +4097,8 @@ pq_read_file_into(const char *path, TupleDesc tupdesc, TupleTableSlot *slot,
 				  bool missing_as_null,
 				  const uint64 *skipPos, int nSkipPos,
 				  const bool *needTop,
-				  const PgColumnarObjStoreConfig *cfg)
+				  const PgColumnarObjStoreConfig *cfg,
+				  const char *caller)
 {
 	PqSource	src;
 	PqFile		pf;
@@ -3899,9 +4112,9 @@ pq_read_file_into(const char *path, TupleDesc tupdesc, TupleTableSlot *slot,
 	if (field_ids != NULL)
 		tops = build_imp_targets_by_field_id(tupdesc, &pf, field_ids, nfield,
 											 nm_names, nm_ids, nm_count,
-											 missing_as_null, &leaves, &ntops);
+											 missing_as_null, &leaves, &ntops, caller);
 	else
-		tops = build_imp_targets(tupdesc, &pf, &leaves, &ntops, NULL);
+		tops = build_imp_targets(tupdesc, &pf, &leaves, &ntops, NULL, caller);
 	n = pq_read_rows(&pf, &src, tops, ntops, leaves,
 					 slot, sink, sinkarg, NULL, needTop, NULL, NULL, NULL,
 					 0, pf.nrowgroups, skipPos, nSkipPos);
@@ -3921,11 +4134,12 @@ PgColumnarReadParquetByFieldId(const char *path, TupleDesc tupdesc,
 							   const int *field_ids, int nfield,
 							   Tuplestorestate *tupstore, TupleTableSlot *slot,
 							   const uint64 *skipPos, int nSkipPos,
-							   const PgColumnarObjStoreConfig *cfg)
+							   const PgColumnarObjStoreConfig *cfg,
+							   const char *caller)
 {
 	return pq_read_file_into(path, tupdesc, slot, pq_tuplestore_sink, tupstore,
 							 field_ids, nfield, NULL, NULL, 0, false,
-							 skipPos, nSkipPos, NULL, cfg);
+							 skipPos, nSkipPos, NULL, cfg, caller);
 }
 
 /*
@@ -3946,11 +4160,12 @@ PgColumnarReadParquetByFieldIdNM(const char *path, TupleDesc tupdesc,
 								 Tuplestorestate *tupstore, TupleTableSlot *slot,
 								 const uint64 *skipPos, int nSkipPos,
 								 const bool *needTop,
-								 const PgColumnarObjStoreConfig *cfg)
+								 const PgColumnarObjStoreConfig *cfg,
+								 const char *caller)
 {
 	return pq_read_file_into(path, tupdesc, slot, pq_tuplestore_sink, tupstore,
 							 field_ids, nfield, nm_names, nm_ids, nm_count,
-							 true, skipPos, nSkipPos, needTop, cfg);
+							 true, skipPos, nSkipPos, needTop, cfg, caller);
 }
 
 /*
@@ -4048,7 +4263,8 @@ pgcolumnar_import_parquet(PG_FUNCTION_ARGS)
 
 		total += pq_read_file_into((char *) lfirst(lc), tupdesc, slot,
 								   pq_insert_sink, &sinkarg, NULL, 0,
-								   NULL, NULL, 0, false, NULL, 0, NULL, NULL);
+								   NULL, NULL, 0, false, NULL, 0, NULL, NULL,
+								   "pgcolumnar.import_parquet");
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(fileCtx);
 	}
@@ -4168,7 +4384,8 @@ pgcolumnar_read_parquet(PG_FUNCTION_ARGS)
 
 		(void) pq_read_file_into((char *) lfirst(lc), retdesc, slot,
 								 pq_tuplestore_sink, tupstore, field_ids, nfield,
-								 NULL, NULL, 0, false, NULL, 0, NULL, NULL);
+								 NULL, NULL, 0, false, NULL, 0, NULL, NULL,
+								 "pgcolumnar.read_parquet");
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(fileCtx);
 	}
@@ -5253,7 +5470,8 @@ pqfdw_open_next_file(PqFdwScanState *st)
 		pq_source_open_cfg(file, &st->src, &st->pf, &st->oscfg);
 		pq_check_row_groups(&st->pf, file);
 		st->tops = build_imp_targets(st->tupdesc, &st->pf, &st->leaves,
-									 &st->ntops, st->partMask);
+									 &st->ntops, st->partMask,
+									 "the pgcolumnar_parquet foreign-data wrapper");
 
 		/* projection: decode only referenced columns (same set each file) */
 		st->needTop = pqfdw_compute_needed(st->node, st->tops, st->ntops, &nNeeded);

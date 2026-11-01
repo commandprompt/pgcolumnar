@@ -466,6 +466,32 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Parquet reader refuses a footer whose schema does not match its pages, instead
+  of returning wrong values with no error (#1855). A `repetition_type` that is not
+  0, 1 or 2 is refused when the file is opened. A level histogram whose length does
+  not fit the schema is refused on read: a column marked REQUIRED whose pages carry
+  definition levels used to have those levels read as values. In a 3000-row file,
+  `sum(id)` came back as 3019995 instead of 4498500. A file without level
+  histograms is not checked this way; see Limitations.
+- The Parquet reader refuses a footer that lacks a required field (`schema`,
+  `num_rows`, `row_groups`, or a schema element's `name`), and one whose row groups
+  do not add up to its `num_rows`. A single changed byte could end a footer struct
+  early, and the file then read as zero rows with no error (#1852).
+- `test/fuzz_parquet.sh` now checks the answer of every mutant that reads without
+  an error (#1852). The answer must equal the seed's, or pgColumnar's answer for
+  pyarrow's rewrite of the mutant (`test/parquet_oracle.py`). After the random
+  mutants, the suite sweeps every byte of one seed's schema, which found #1855.
+  `test_fuzz_parquet.py` runs the same checks.
+- `parquet_schema` now advises `timestamp with time zone` for a legacy `INT96`
+  timestamp column, and the readers read one (#1870). It used to report no type,
+  and every declared type was refused. The value is read as an instant in UTC,
+  with the nanoseconds rounded down to microseconds. `test/native_parquet_units.sh`.
+- A reader's type refusal names the function the user called (#1871). It named
+  `columnar.import_parquet` for `read_parquet` and the Parquet foreign table, and
+  `columnar.read_parquet` for `iceberg_scan`. It now names
+  `pgcolumnar.read_parquet`, `pgcolumnar.import_parquet`,
+  `pgcolumnar.iceberg_scan`, `pgcolumnar.iceberg_rest_scan`, or the
+  `pgcolumnar_parquet` or `pgcolumnar_iceberg` foreign-data wrapper.
 - `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
   URL now write the object instead of crashing the backend (#1779). Every write
   request was signed, and a plain-HTTP target has no region or credentials, so the

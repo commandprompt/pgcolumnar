@@ -40,12 +40,14 @@ def _nested(n):
 
 
 def _walk_chain(n):
-    # a schema list of n elements, each a group with one child but the leaf: parses
-    # flat, then walk_schema descends the chain n-1 deep.
+    # a schema list of n elements, each a group named "g" with one child but the leaf
+    # "x": parses flat, then walk_schema descends the chain n-1 deep. Each element has
+    # its required name, and the footer its required num_rows and row_groups (#1852).
     m = bytearray(b"\x29\xfc")
     m += _uleb(n)
-    m += b"\x55\x02\x00" * (n - 1)
-    m += b"\x00"   # leaf element
+    m += b"\x48\x01g\x15\x02\x00" * (n - 1)
+    m += b"\x48\x01x\x00"   # leaf element
+    m += b"\x16\x00\x19\x0c"  # num_rows 0, no row groups
     m += b"\x00"   # FileMetaData STOP
     return _wrap(bytes(m))
 
