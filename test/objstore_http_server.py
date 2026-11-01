@@ -24,6 +24,24 @@
 #                    retried once on a fresh connection (the keep-alive race).
 #   /hangup/<file>   close every connection without answering at all: on a fresh
 #                    connection that is the server's answer, not a race to retry.
+#   /swap/<file>     serve normally, but after the 4th ranged GET of <file> move
+#                    <file>.next over <file>, once: another writer overwrote the
+#                    key mid-read (#1805). The 4th GET is the first data chunk
+#                    (open = 1 HEAD + 3 GETs), so the footer is the old object's.
+#   /weak/<file>     send a weak ETag (W/"..."): If-Match compares strongly, so a
+#                    weak ETag never matches and any If-Match is answered 412.
+#   /swap79/<file>   as /swap/, with a strong ETag of 79 characters: the longest
+#                    the client keeps, so the read is still pinned.
+#   /etag79/<file>   send a strong ETag of 79 characters and never swap: the
+#                    pinned read of an unchanged object must succeed whole, so a
+#                    pin cut shorter than the ETag shows up (#1805 review).
+#   /longetag/<file> send a strong ETag of 80 characters: one too long for the
+#                    client's buffer, which must keep none rather than a cut one.
+#   /fickle/<file>   send a different strong ETag on every request for the same
+#                    bytes, as nodes behind a load balancer can (#1805 review).
+#
+# Every HEAD and GET of an object sends ETag: "<md5 of the current bytes>", and a
+# GET whose If-Match names any other ETag is answered 412, as S3 does (#1805).
 #
 # Hook file, read per request from --dir:
 #   __delete_delay__ holds a number of seconds; every DELETE is logged at once and
@@ -190,7 +208,8 @@ class Handler(BaseHTTPRequestHandler):
         # query never names a file.
         path = urllib.parse.unquote(self.path.partition("?")[0])
         mode = "normal"
-        for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/"):
+        for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/",
+                       "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -288,6 +307,20 @@ class Handler(BaseHTTPRequestHandler):
             return -1
         return os.path.getsize(local)
 
+    def _etag(self, local, mode):
+        with open(local, "rb") as f:
+            md5 = hashlib.md5(f.read()).hexdigest()
+        if mode == "weak":
+            return 'W/"%s"' % md5
+        if mode in ("swap79", "etag79", "longetag"):
+            width = 80 if mode == "longetag" else 79
+            return '"%s"' % (md5 + "x" * (width - 2 - len(md5)))
+        if mode == "fickle":
+            with self.server.uploads_lock:
+                self.server.fickle_seq += 1
+                return '"%s-%d"' % (md5, self.server.fickle_seq)
+        return '"%s"' % md5
+
     def do_HEAD(self):
         self._log_line()
         if not self._sigv4_check():
@@ -306,6 +339,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("ETag", self._etag(local, mode))
         self.end_headers()
 
     def _do_list_v2(self, query):
@@ -457,6 +491,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if mode == "dropka":
             self.close_connection = True
+        etag = self._etag(local, mode)
+        want = self.headers.get("If-Match")
+        if want is not None and (mode == "weak" or want.strip() != etag):
+            self._deny(412, "PreconditionFailed")
+            return
 
         rng = self.headers.get("Range")
         m = RANGE_RE.match(rng.replace(" ", "")) if rng else None
@@ -491,6 +530,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(206)
         self.send_header("Content-Range", "bytes %d-%d/%d" % (lo, hi, size))
         self.send_header("Content-Length", str(n))
+        self.send_header("ETag", etag)
         self.end_headers()
         if mode == "trunc":
             self.wfile.write(body[: n // 2])
@@ -503,6 +543,12 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(300)                      # the suite cancels long before
             return
         self.wfile.write(body)
+        if mode in ("swap", "swap79"):
+            with self.server.uploads_lock:
+                seen = self.server.swap_gets.get(local, 0) + 1
+                self.server.swap_gets[local] = seen
+                if seen == 4 and os.path.exists(local + ".next"):
+                    os.replace(local + ".next", local)
 
 
     # ---- write side (#394): plain PUT, and a faithful multipart emulation --
@@ -705,6 +751,8 @@ def main():
     srv.list_page_size = args.list_page_size
     srv.uploads = {}
     srv.uploads_lock = threading.Lock()
+    srv.swap_gets = {}
+    srv.fickle_seq = 0
     srv.upload_seq = 0
     for key in args.seed_upload:
         srv.upload_seq += 1

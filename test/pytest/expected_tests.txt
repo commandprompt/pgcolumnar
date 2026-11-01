@@ -1489,4 +1489,12 @@ guard_tests 854
 # that branch's 4852 plus this branch's 30, by collection over the cluster files: `4882 tests collected`.
 # cluster_tests 4882 -> 4883 for #1795's test_tier_partition_writes_through_the_named_server in
 # test_tier_partition.py, by collection on the merged tree: `4646 tests collected`.
-cluster_tests 4883
+# cluster_tests 4883 -> 4886 for #1805's three tests in test_objstore_http_read.py (the overwrite
+# pair premise, the mid-read overwrite refusal, the weak ETag), by collection. (This line first gave `4543 tests collected`, a figure from an older base.)
+# cluster_tests 4886 -> 4889 for #1805's review: three tests in test_objstore_http_read.py (the 79-character
+# ETag pin, the 80-character ETag not sent cut short, the per-request ETag refusal), by collection.
+# cluster_tests 4889 -> 4890 for #1805's second review: test_objstore_http_read.py gains the
+# 79-character ETag read of an unchanged object (http == local), by collection: `4652 tests collected`.
+# cluster_tests 4890 at the merge of origin/fix/1795-tier-partition-credentials (648f15f3) into
+# fix/1805-pin-object-version: that branch's 4883 plus this branch's 7, by collection: `4890 tests collected`.
+cluster_tests 4890
