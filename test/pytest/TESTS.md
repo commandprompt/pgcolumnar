@@ -7311,6 +7311,7 @@ The pytest twin of `test/import_export_privilege.sh` (#559, #566), with the para
 | --- | --- |
 | `test_the_premises_isolate_the_table_acl` | the attacker logs in, holds both server-file roles, schema USAGE and EXECUTE, and nothing on `victim`; `victim` has its rows; the attacker's own source files exist |
 | `test_a_table_the_caller_holds_no_grant_on_is_refused` | the seven deny arms, serial and parallel, in the shell's order; then `victim` keeps exactly its rows and no file of it was written |
+| `test_a_remote_url_is_refused_only_after_the_insert_check` | (#1886) `import_arrow checks INSERT before it refuses a remote URL (#1886)` and `parallel_copy checks INSERT before it refuses a remote URL (#1886)`: a caller without INSERT on `victim` gets `42501 permission denied for table victim` for an `s3://` URL, read as SQLSTATE and message |
 | `test_the_owner_is_not_refused` | the owner's own exports, storage id and import are not refused |
 | `test_the_owner_runs_the_parallel_twins` | the owner's `parallel_copy` loads its 50 rows, and its `parallel_export_parquet` writes some |
 

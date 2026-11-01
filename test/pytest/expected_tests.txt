@@ -1603,4 +1603,7 @@ guard_tests 854
 # test_parallel_copy.py (a remote URL refused 0A000), one in test_iceberg_objstore.py (iceberg_current_snapshot
 # over s3) and nine in test_parquet_skip_cross_type.py (four cross-type pairs, skips and rows, and the file's
 # premise), by collection: `5979 tests collected`, less guard_tests 854.
-cluster_tests 5125
+# cluster_tests 5125 -> 5126 for #1886's review of PR #1911: one test in test_import_export_privilege.py
+# (import_arrow and parallel_copy check INSERT before they refuse a remote URL), by collection:
+# `5980 tests collected`, less guard_tests 854.
+cluster_tests 5126
