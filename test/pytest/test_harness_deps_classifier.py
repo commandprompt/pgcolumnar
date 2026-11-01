@@ -524,15 +524,30 @@ def test_the_run_reports_which_pg_config_it_used_and_why(tmp_path, expect):
     fake.write_text("#!/bin/sh\necho 'PostgreSQL 99.7 (fake for #1933)'\n")
     fake.chmod(0o755)
     here = pathlib.Path(__file__).resolve().parent
+    # A plugin for the child that hides /usr/local from os.access. pytest loads
+    # a -p plugin before conftest, so the child's resolver then finds no
+    # candidate on any box, this one included.
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    (plugins / "pgc_hide_usr_local.py").write_text(
+        "import os\n"
+        "_access = os.access\n"
+        "def _hidden(path, mode, *a, **k):\n"
+        "    if str(path).startswith('/usr/local/'):\n"
+        "        return False\n"
+        "    return _access(path, mode, *a, **k)\n"
+        "os.access = _hidden\n")
     target = ("test_harness_deps_classifier.py::"
               "test_prose_naming_the_driver_is_not_a_driver_dependency")
 
-    def run(flags, env_value=None):
+    def run(flags, env_value=None, path=None):
         env = dict(os.environ)
         env.pop("PGC_PG_CONFIG", None)
         if env_value:
             env["PGC_PG_CONFIG"] = env_value
-        env["PYTHONPATH"] = str(here)
+        if path is not None:
+            env["PATH"] = path
+        env["PYTHONPATH"] = f"{plugins}{os.pathsep}{here}"
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
              *flags, target],
@@ -542,6 +557,8 @@ def test_the_run_reports_which_pg_config_it_used_and_why(tmp_path, expect):
     cases = (
         ("PGC_PG_CONFIG, default verbosity", [], str(fake), "PGC_PG_CONFIG"),
         ("--pg-config, -q", ["-q", "--pg-config", str(fake)], None, "--pg-config"),
+        ("--pg-config, --no-header", ["--no-header", "--pg-config", str(fake)], None,
+         "--pg-config"),
         ("--pg-config over PGC_PG_CONFIG, -q -n 2",
          ["-q", "-n", "2", "--pg-config", str(fake)], "/nonexistent/pg_config",
          "--pg-config"),
@@ -556,9 +573,46 @@ def test_the_run_reports_which_pg_config_it_used_and_why(tmp_path, expect):
         expect.num(len(lines), 1,
                    f"{label}: exactly one pg_config line; it printed {lines}")
 
-    # The other three sources cannot be forced in a child on a box whose
-    # /usr/local has a candidate, so the resolver is asked directly, over files
-    # this test writes.
+    # A pg_config that runs but exits non-zero is named with the failure, not
+    # with whatever it printed: its stdout is not a version this run can trust.
+    broken = tmp_path / "broken" / "pg_config"
+    broken.parent.mkdir()
+    broken.write_text("#!/bin/sh\necho 'PostgreSQL 99.8 (exits 3)'\nexit 3\n")
+    broken.chmod(0o755)
+    rc, out = run(["--pg-config", str(broken)])
+    lines = [ln for ln in out.splitlines() if ln.startswith("pg_config: ")]
+    want = f"pg_config: {broken} (from --pg-config) -- pg_config --version failed: "
+    expect.num(rc, 0, f"--pg-config exits 3: the child run passes; tail {out[-300:]!r}")
+    expect.num(sum(ln.startswith(want) for ln in lines), 1,
+               f"--pg-config exits 3: the run prints {want!r}...; it printed {lines}")
+
+    # With neither the option nor PGC_PG_CONFIG, the child resolves the default
+    # itself. The first child inherits this run's PATH, so it must pick what
+    # this run's conftest picked, from the same source. The second hides
+    # /usr/local and keeps only this interpreter's directory on PATH, so it
+    # cannot take the 'candidate' branch on any box: it must report 'PATH' or
+    # 'first candidate, none found'. Between them, a default labelled with a
+    # fixed source reddens on every box.
+    venv_bin = os.path.dirname(sys.executable)
+    on_venv_path = shutil.which("pg_config", path=venv_bin)
+    hidden_want = ((on_venv_path, "PATH") if on_venv_path else
+                   (conftest.PG_CONFIG_CANDIDATES[0], "first candidate, none found"))
+    for label, flags, path, (want_path, want_source) in (
+        ("resolver default", [], None,
+         (conftest.DEFAULT_PG_CONFIG, conftest.DEFAULT_PG_CONFIG_SOURCE)),
+        ("resolver default, /usr/local hidden", ["-p", "pgc_hide_usr_local"],
+         venv_bin, hidden_want),
+    ):
+        rc, out = run(flags, path=path)
+        lines = [ln for ln in out.splitlines() if ln.startswith("pg_config: ")]
+        want = f"pg_config: {want_path} (from {want_source}) -- "
+        expect.num(rc, 0, f"{label}: the child run passes; tail {out[-300:]!r}")
+        expect.num(sum(ln.startswith(want) for ln in lines), 1,
+                   f"{label}: the run prints {want!r}...; it printed {lines}")
+
+    # The resolver's three labels, over files this test writes, so each label is
+    # checked on any box. The two child runs above reach only the branches this
+    # box takes.
     missing = str(tmp_path / "missing")
     on_path = str(fake)
     resolve = conftest.resolve_pg_config

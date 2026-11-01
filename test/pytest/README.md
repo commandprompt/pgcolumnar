@@ -40,7 +40,9 @@ Every run names the build it tested, in one line such as
 `pg_config: /usr/local/pgsql/bin/pg_config (from candidate) -- PostgreSQL 18.6`.
 The part in brackets says how the run chose it: `--pg-config`, `PGC_PG_CONFIG`,
 `candidate`, `PATH`, or `first candidate, none found`. The line is in the header,
-or at the end of the run when `-q` hides the header.
+or at the end of the run when `-q` or `--no-header` hides the header. When that
+`pg_config` does not run or exits non-zero, the line gives the error in place of the
+version.
 
 `--pgc-expect-tests` takes the number of **collected tests**, not files. `N` above
 is whatever the set you ran collects; the two numbers the gate uses are in
