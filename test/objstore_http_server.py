@@ -48,7 +48,15 @@
 #                    once, as /swap/ does.
 #   /lenswap/<file>  send no ETag, and after the 4th ranged GET move <file>.next
 #                    over <file> once: an overwrite with a new length that only
-#                    the Content-Range total can show (#1867).
+#                    the Content-Range total can show (#1867). A GET past the
+#                    new end gets 416 with Content-Range: bytes */<length>.
+#   /vnull/<file>    as /vswap/, but the version id is "null", as S3 gives an
+#                    object written while versioning was off (#1888 review).
+#   /vlong/<file>    as /vswap/, but the version id is 1100 bytes, longer than
+#                    the 1024 S3 allows (#1888 review).
+#   /vdeny/<file>    as /vswap/, but a GET that names a version gets 403
+#                    AccessDenied, as S3 answers a caller that has
+#                    s3:GetObject but not s3:GetObjectVersion (#1888 review).
 #
 # Every HEAD and GET of an object sends ETag: "<md5 of the current bytes>", and a
 # GET whose If-Match names any other ETag is answered 412, as S3 does (#1805).
@@ -146,6 +154,7 @@ class TLSServer(ThreadingHTTPServer):
         return self.tls_ctx.wrap_socket(sock, server_side=True), addr
 
 RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+VERSIONED = ("vswap", "vnull", "vlong", "vdeny")
 AUTH_RE = re.compile(
     r"^AWS4-HMAC-SHA256 Credential=([^/]+)/(\d{8})/([^/]+)/s3/aws4_request,\s*"
     r"SignedHeaders=([^,]+),\s*Signature=([0-9a-f]{64})$")
@@ -220,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
         mode = "normal"
         for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/",
                        "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/",
-                       "/vswap/", "/lenswap/"):
+                       "/vswap/", "/lenswap/", "/vnull/", "/vlong/", "/vdeny/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -334,7 +343,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _version_of(self, local, data):
         """/vswap/: the version id of these bytes, kept so a GET can ask for it."""
-        vid = "3HL4+kq/" + hashlib.md5(data).hexdigest()[:24]
+        if self._mode == "vnull":
+            vid = "null"
+        elif self._mode == "vlong":
+            vid = "3HL4+kq/" + "x" * 1092
+        else:
+            vid = "3HL4+kq/" + hashlib.md5(data).hexdigest()[:24]
         with self.server.uploads_lock:
             self.server.versions[(local, vid)] = data
         return vid
@@ -359,7 +373,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         if mode != "lenswap":
             self.send_header("ETag", self._etag(local, mode))
-        if mode == "vswap":
+        if mode in VERSIONED:
+            self._mode = mode
             with open(local, "rb") as f:
                 self.send_header("x-amz-version-id", self._version_of(local, f.read()))
         self.end_headers()
@@ -516,13 +531,17 @@ class Handler(BaseHTTPRequestHandler):
         etag = self._etag(local, mode)
         # /vswap/: a GET that names a version reads that version's bytes.
         data, vid = None, None
-        if mode == "vswap":
+        if mode in VERSIONED:
+            self._mode = mode
             # unquote_plus, as S3 reads a query: a '+' sent unencoded is a space.
             asked = None
             for part in self.path.partition("?")[2].split("&"):
                 k, _, v = part.partition("=")
                 if k == "versionId":
                     asked = urllib.parse.unquote_plus(v)
+            if asked is not None and mode == "vdeny":
+                self._deny(403, "AccessDenied")
+                return
             if asked is not None:
                 with self.server.uploads_lock:
                     data = self.server.versions.get((local, asked))
@@ -563,6 +582,7 @@ class Handler(BaseHTTPRequestHandler):
         hi = min(hi, size - 1)
         if lo > hi or lo >= size:
             self.send_response(416)
+            self.send_header("Content-Range", "bytes */%d" % size)
             self.send_header("Content-Length", "0")
             self.end_headers()
             return

@@ -497,8 +497,13 @@ true until the next version shipped.
   also checks the total in each 206 `Content-Range` against the HEAD's length.
   Before, an overwrite that changed the length, on a server with no strong ETag,
   returned rows from both versions without an error. Now the query fails with
-  `changed while it was being read` (SQLSTATE 55000). docs/sql-reference.md and
-  docs/limitations.md. `test/objstore_http_read.sh`, `test/objstore_s3_read.sh`
+  `changed while it was being read` (SQLSTATE 55000). So does a GET that gets
+  416 because the object shrank below its offset; before, that failed with
+  `unexpected HTTP status 416` (SQLSTATE 08P01). A GET that names a version needs
+  the `s3:GetObjectVersion` permission. When the store answers it with 403, the
+  reader asks again without the version and keeps `If-Match`, so a policy that
+  grants only `s3:GetObject` reads as before. docs/sql-reference.md,
+  docs/configuration.md and docs/limitations.md. `test/objstore_http_read.sh`, `test/objstore_s3_read.sh`
   and their pytest twins.
 
 - `iceberg_rest_scan` now chooses a vended storage credential for each file it

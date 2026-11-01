@@ -1143,7 +1143,8 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   a strong ETag; we tested it. Amazon S3
   documents a strong ETag, but we have not tested against it.
   The reader still checks the total length in each 206 `Content-Range`. When it
-  differs from the length the HEAD gave, the query fails. An overwrite that keeps
+  differs from the length the HEAD gave, the query fails. The query also fails
+  when a GET for bytes inside that length gets 416, because the object shrank. An overwrite that keeps
   the length is not caught.
 - The reader treats a changed ETag as a changed object. Some servers send a
   different ETag for the same bytes on different requests. Nodes behind a load
@@ -1155,8 +1156,11 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   can return rows from both versions without an error. The length check stays on.
 - The reader pins by version id only when the HEAD sends `x-amz-version-id`
   (#1867). It ignores the id `null`, which S3 gives an object written while
-  versioning was off. We tested the version pin against the suite's fixture
-  server only. Garage v2.1.0 sends no `x-amz-version-id`, so a read from Garage
+  versioning was off. A GET that names a version needs the
+  `s3:GetObjectVersion` permission, and `s3:GetObject` alone is not enough. When
+  the store answers such a GET with 403, the reader asks again without the
+  version and keeps `If-Match`. That read is then pinned by ETag alone. We tested
+  the version pin and the 403 fallback against the suite's fixture server only. Garage v2.1.0 sends no `x-amz-version-id`, so a read from Garage
   is pinned by ETag alone.
 
 ### Row-group skipping

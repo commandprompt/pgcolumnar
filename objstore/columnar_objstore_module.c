@@ -30,8 +30,11 @@
  *   footer from one object with chunks from another. When the HEAD names a
  *   version (x-amz-version-id), every ranged GET also asks for that version,
  *   so the read finishes on it (#1867). pgcolumnar.objstore_pin_reads = off
- *   sends neither (#1866). Whatever the pin, a 206 whose Content-Range total
- *   differs from the HEAD's length fails the read (#1867).
+ *   sends neither (#1866). A 403 to a GET that names a version (a caller
+ *   without s3:GetObjectVersion) drops the version for the rest of the read;
+ *   If-Match stays. Whatever the pin, a 206 whose Content-Range total differs
+ *   from the HEAD's length fails the read, and so does a 416 for bytes inside
+ *   that length (#1867).
  *
  * - Sockets are cleaned up on abort through a resource-release callback over
  *   the open-handle list. The invariant that makes close-all-on-abort correct:
@@ -993,7 +996,7 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 			}
 			else if (pg_strncasecmp(line, "Content-Range:", 14) == 0)
 			{
-				/* bytes FIRST-LAST/TOTAL; TOTAL may be "*" (unknown) */
+				/* bytes FIRST-LAST/TOTAL (a 416 puts "*" before the slash); TOTAL may be "*" */
 				const char *slash = memchr(line, '/', eol - line);
 
 				if (slash != NULL && slash[1] >= '0' && slash[1] <= '9')
@@ -1897,6 +1900,23 @@ objstore_read(PgColumnarObjHandle *h, int64 off, void *buf, size_t n)
 				 errdetail("The server answered 200 with the whole object "
 						   "instead of 206 with the requested bytes.")));
 	}
+	/*
+	 * A GET that names a version needs s3:GetObjectVersion, and a policy that
+	 * grants only s3:GetObject answers it 403. Drop the version for the rest
+	 * of this read and ask again: If-Match still pins it, as before #1867. A
+	 * 403 for any other reason comes back on the retry and is reported then.
+	 */
+	if (resp.status == 403 && h->pin_query != NULL)
+	{
+		os_disconnect(h);
+		pfree(h->pin_query);
+		h->pin_query = NULL;
+		ereport(DEBUG1,
+				(errmsg_internal("columnar: \"%s\" refused a GET that names a version (HTTP 403); "
+								 "reading without the version", h->url)));
+		objstore_read(h, off, buf, n);
+		return;
+	}
 	if (resp.status == 403)
 		os_reject_403(h, &resp, true);
 	if (resp.status == 404)
@@ -1913,6 +1933,30 @@ objstore_read(PgColumnarObjHandle *h, int64 off, void *buf, size_t n)
 				 errdetail("The object no longer has ETag %s, which it had when "
 						   "the read began, so the server refused the rest of "
 						   "the read (HTTP 412).", h->pin_etag),
+				 errhint("Run the statement again to read the new version.")));
+	}
+	/*
+	 * The read asks only for bytes inside the length the HEAD gave. A 416
+	 * says the object no longer has them: it shrank under the read.
+	 */
+	if (resp.status == 416 && off + (int64) n <= h->len)
+	{
+		os_disconnect(h);
+		if (resp.range_total >= 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("columnar: \"%s\" changed while it was being read", h->url),
+					 errdetail("The object is now %lld bytes long; it was %lld bytes "
+							   "when the read began (HTTP 416 Content-Range).",
+							   (long long) resp.range_total, (long long) h->len),
+					 errhint("Run the statement again to read the new version.")));
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("columnar: \"%s\" changed while it was being read", h->url),
+				 errdetail("The server has no bytes %lld-%lld, which were inside the "
+						   "%lld bytes the object had when the read began (HTTP 416).",
+						   (long long) off, (long long) (off + (int64) n - 1),
+						   (long long) h->len),
 				 errhint("Run the statement again to read the new version.")));
 	}
 	if (resp.status != 206)

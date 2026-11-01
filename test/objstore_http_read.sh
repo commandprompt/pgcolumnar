@@ -20,7 +20,10 @@
 #      (#1805). With pgcolumnar.objstore_pin_reads off, that server is read
 #      whole, and an overwrite is read unpinned (#1866). A versioned object is
 #      read from the version the read opened, and a length change shown by the
-#      Content-Range total is refused (#1867). Many guards share 08006 and 08P01, so each refusal must also
+#      Content-Range total, or by a 416 inside the old length, is refused
+#      (#1867). The pin off sends no version; a version id of null or one over
+#      1024 bytes is not sent; a versioned GET answered 403 is sent again
+#      without the version (#1888 review). Many guards share 08006 and 08P01, so each refusal must also
 #      carry its own guard's message.
 #   D  cancel: statement_timeout fires within bound while the server stalls
 #      mid-body. Removal proof: with the module's WaitLatchOrSocket wait arm
@@ -118,6 +121,22 @@ PYEOF
 check "premise: the length-change pair differs in length" \
 	"$(( $(stat -c %s "$PGC_WORKDIR/lenswap.parquet.next" 2>/dev/null || echo 0) \
 		- $(stat -c %s "$PGC_WORKDIR/lenswap.parquet" 2>/dev/null || echo 0) > 0 ))" "1"
+
+# The shrink pair (#1888 review): lenshrink.parquet.next holds one row, so it is
+# shorter than the offset of every chunk after the swap. The server then answers
+# 416 to those GETs, not a 206 with the new total.
+python3 - "$PGC_WORKDIR/lenshrink.parquet" <<PYEOF
+import sys
+import pyarrow as pa, pyarrow.parquet as pq
+G, RPG = $G, $ROWS_PER_GROUP
+first = sys.argv[1]
+for path, rows in ((first, list(range(G * RPG))), (first + ".next", [-1])):
+    pq.write_table(pa.table({"c0": pa.array(rows, pa.int64())}), path, row_group_size=RPG,
+                   compression="NONE", use_dictionary=False, write_statistics=False)
+PYEOF
+check "premise: the shrink pair's new file is shorter than its old one (bytes old-new)" \
+	"$(( $(stat -c %s "$PGC_WORKDIR/lenshrink.parquet" 2>/dev/null || echo 0) \
+		- $(stat -c %s "$PGC_WORKDIR/lenshrink.parquet.next" 2>/dev/null || echo 0) > 60000 ))" "1"
 
 # ---- fixture server --------------------------------------------------------
 python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
@@ -262,6 +281,11 @@ psql_run "CREATE FOREIGN TABLE fswapoff (c0 int8) SERVER osrv OPTIONS (path '$BA
 psql_run "CREATE FOREIGN TABLE fvswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/vswap/vswap.parquet');"
 psql_run "CREATE FOREIGN TABLE flenswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/lenswap/lenswap.parquet');"
 psql_run "CREATE FOREIGN TABLE flenswapoff (c0 int8) SERVER osrv OPTIONS (path '$BASE/lenswap/lenswapoff.parquet');"
+psql_run "CREATE FOREIGN TABLE flenshrink (c0 int8) SERVER osrv OPTIONS (path '$BASE/lenswap/lenshrink.parquet');"
+psql_run "CREATE FOREIGN TABLE fvswapoff ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/vswap/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fvnull ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/vnull/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fvlong ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/vlong/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fvdeny ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/vdeny/fixture.parquet');"
 
 check "C: unreachable endpoint SQLSTATE" \
 	"$(refusal_of "SELECT count(*) FROM fdead" "could not connect to")" "08006: could not connect to"
@@ -363,6 +387,58 @@ check "C: with pgcolumnar.objstore_pin_reads off, an object whose length changes
 	"$(refusal_of "$NOPIN; SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM flenswapoff" \
 		"changed while it was being read")" \
 	"55000: changed while it was being read"
+# An object that shrinks below the offset of a later GET gets 416, not 206
+# (#1888 review). The read asked only for bytes inside the length the HEAD
+# gave, so a 416 means the object changed.
+await_server >/dev/null
+check "C: an object that shrinks mid-read below a later GET's offset is refused (HTTP 416)" \
+	"$(refusal_of "SELECT 'sum=' || sum(c0) FROM flenshrink" "changed while it was being read")" \
+	"55000: changed while it was being read"
+
+# vgets_named FILE-PART -> how many logged GETs of FILE-PART named a version.
+vgets_named() {
+	awk -v m="$1" '$1 == "GET" && index($2, m) && $3 ~ /(^|&)versionId=/' "$HTTP_LOG" | wc -l | tr -d ' '
+}
+LOCAL_C3C7="$(pgc_set_hash "SELECT c3, c7 FROM flocal")"
+HASH_SQL="SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), 'EMPTY') FROM (SELECT _r::text AS t FROM (SELECT c3, c7 FROM %s) _r) _s"
+
+# Off, the read sends no versionId either (#1866): the docs say so. Each
+# reading below is the read's result, then how many of its GETs named a version.
+await_server >/dev/null
+: > "$HTTP_LOG"
+R="$(refusal_of "$NOPIN; $(printf "$HASH_SQL" fvswapoff)" "changed while it was being read")"
+check "C: with pgcolumnar.objstore_pin_reads off, no ranged GET of a versioned object names the version" \
+	"$R; GETs naming a version: $(vgets_named /vswap/fixture)" \
+	"no error: $LOCAL_C3C7; GETs naming a version: 0"
+
+# S3 gives the id "null" to an object written while versioning was off. That
+# version is overwritten in place, so the read does not ask for it.
+await_server >/dev/null
+: > "$HTTP_LOG"
+R="$(refusal_of "$(printf "$HASH_SQL" fvnull)" "changed while it was being read")"
+check "C: a version id of null is not sent as a pin" \
+	"$R; GETs naming a version: $(vgets_named /vnull/fixture)" \
+	"no error: $LOCAL_C3C7; GETs naming a version: 0"
+
+# An id longer than the 1024 bytes S3 allows is kept as none: a cut id would
+# name no version, so every GET would fail.
+await_server >/dev/null
+: > "$HTTP_LOG"
+R="$(refusal_of "$(printf "$HASH_SQL" fvlong)" "changed while it was being read")"
+check "C: a version id longer than 1024 bytes is not sent cut short" \
+	"$R; GETs naming a version: $(vgets_named /vlong/fixture)" \
+	"no error: $LOCAL_C3C7; GETs naming a version: 0"
+
+# A GET that names a version needs s3:GetObjectVersion; a policy that grants
+# only s3:GetObject answers it 403 (#1888 review). The read then drops the
+# version and keeps If-Match, so it reads as it did before #1867: one GET
+# names the version, and the rest do not.
+await_server >/dev/null
+: > "$HTTP_LOG"
+R="$(refusal_of "$(printf "$HASH_SQL" fvdeny)" "AccessDenied")"
+check "C: a versioned GET answered 403 is sent again without the version, and the read finishes" \
+	"$R; GETs naming a version: $(vgets_named /vdeny/fixture)" \
+	"no error: $LOCAL_C3C7; GETs naming a version: 1"
 
 # ---- arm D: cancel while the server stalls mid-body ------------------------
 psql_run "CREATE FOREIGN TABLE fstall ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/stall/fixture.parquet');"

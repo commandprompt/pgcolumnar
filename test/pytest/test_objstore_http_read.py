@@ -26,6 +26,7 @@ read opens the object afresh and the request counts are the shell's.
 The parquet fixture is written by a python3 child, as the shell's heredoc writes it.
 """
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -86,7 +87,20 @@ for first in sys.argv[1:]:
         pq.write_table(pa.table({"c0": c0}), path, row_group_size=RPG,
                        compression="NONE", use_dictionary=False, write_statistics=False)
 """ % (G, ROWS_PER_GROUP)
+# The shrink pair (#1888 review): the .next file holds one row, so it is shorter
+# than the offset of every chunk after the swap, and those GETs get 416.
+SHRINK_WRITER = """
+import sys
+import pyarrow as pa, pyarrow.parquet as pq
+G, RPG = %d, %d
+first = sys.argv[1]
+for path, rows in ((first, list(range(G * RPG))), (first + ".next", [-1])):
+    pq.write_table(pa.table({"c0": pa.array(rows, pa.int64())}), path, row_group_size=RPG,
+                   compression="NONE", use_dictionary=False, write_statistics=False)
+""" % (G, ROWS_PER_GROUP)
 NOPIN = "SET pgcolumnar.objstore_pin_reads = off"
+HASH_SQL = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), 'EMPTY') FROM "
+            "(SELECT _r::text AS t FROM (SELECT c3, c7 FROM %s) _r) _s")
 
 
 def _message(exc):
@@ -218,7 +232,12 @@ def ohr(pgc_cluster):
                    check=True, capture_output=True, text=True)
     lenswap_grew = (lenswap.with_name("lenswap.parquet.next").stat().st_size
                     - lenswap.stat().st_size > 0)
-    for f in (swap, swap79, swapoff, vswap, lenswap, lenswapoff):
+    lenshrink = work / "lenshrink.parquet"
+    subprocess.run([sys.executable, "-c", SHRINK_WRITER, str(lenshrink)],
+                   check=True, capture_output=True, text=True)
+    shrank = (lenshrink.stat().st_size
+              - lenshrink.with_name("lenshrink.parquet.next").stat().st_size > 60000)
+    for f in (swap, swap79, swapoff, vswap, lenswap, lenswapoff, lenshrink):
         f.chmod(0o644)
         f.with_name(f.name + ".next").chmod(0o644)
 
@@ -236,7 +255,8 @@ def ohr(pgc_cluster):
     base = f"http://127.0.0.1:{port}"
     r = {"absent": None, "fixture": "yes" if fixture.stat().st_size > 0 else "no",
          "server up": out.read_text(errors="replace").count("READY") if out.is_file() else 0,
-         "swap sizes": swap_sizes, "lenswap grew": "1" if lenswap_grew else "0"}
+         "swap sizes": swap_sizes, "lenswap grew": "1" if lenswap_grew else "0",
+         "shrank": "1" if shrank else "0"}
 
     def logged(sql):
         """Truncate the request log, run `sql`, -> how many requests it logged."""
@@ -263,7 +283,11 @@ def ohr(pgc_cluster):
                                ("fweak", f"{base}/weak/fixture.parquet"),
                                ("fetag79", f"{base}/etag79/fixture.parquet"),
                                ("flongetag", f"{base}/longetag/fixture.parquet"),
-                               ("ffickle", f"{base}/fickle/fixture.parquet")):
+                               ("ffickle", f"{base}/fickle/fixture.parquet"),
+                               ("fvswapoff", f"{base}/vswap/fixture.parquet"),
+                               ("fvnull", f"{base}/vnull/fixture.parquet"),
+                               ("fvlong", f"{base}/vlong/fixture.parquet"),
+                               ("fvdeny", f"{base}/vdeny/fixture.parquet")):
                 c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.{name} ({COLDEFS}) SERVER ohr_srv "
                           f"OPTIONS (path '{path}')")
             c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.fswap (c0 int8) SERVER ohr_srv "
@@ -272,7 +296,8 @@ def ohr(pgc_cluster):
                       f"OPTIONS (path '{base}/swap79/swap79.parquet')")
             for name, path in (("fswapoff", "swap/swapoff.parquet"), ("fvswap", "vswap/vswap.parquet"),
                                ("flenswap", "lenswap/lenswap.parquet"),
-                               ("flenswapoff", "lenswap/lenswapoff.parquet")):
+                               ("flenswapoff", "lenswap/lenswapoff.parquet"),
+                               ("flenshrink", "lenswap/lenshrink.parquet")):
                 c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.{name} (c0 int8) SERVER ohr_srv "
                           f"OPTIONS (path '{base}/{path}')")
         r["crashes0"] = _crashes(plog)
@@ -345,6 +370,27 @@ def ohr(pgc_cluster):
         r["C lenswap"] = _refusal(dsn, SWAP_SQL.replace("fswap", "flenswap"), changed)
         _await_server(dsn)
         r["C nopin lenswap"] = _nopin(dsn, SWAP_SQL.replace("fswap", "flenswapoff"), changed)
+        # #1888 review: a shrink below a later GET's offset gets 416
+        _await_server(dsn)
+        r["C lenshrink"] = _refusal(dsn, "SELECT 'sum=' || sum(c0) FROM flenshrink", changed)
+
+        def vnamed(part):
+            lines = _requests(hlog)
+            if not isinstance(lines, list):
+                return lines
+            return sum(1 for f in lines if len(f) > 2 and f[0] == "GET" and part in f[1]
+                       and re.search(r"(^|&)versionId=", f[2]))
+
+        local_c3c7 = _set_hash(dsn, "SELECT c3, c7 FROM flocal")
+        for key, table, part, reader, phrase in (
+                ("C nopin vswap", "fvswapoff", "/vswap/fixture", _nopin, changed),
+                ("C vnull", "fvnull", "/vnull/fixture", _refusal, changed),
+                ("C vlong", "fvlong", "/vlong/fixture", _refusal, changed),
+                ("C vdeny", "fvdeny", "/vdeny/fixture", _refusal, "AccessDenied")):
+            _await_server(dsn)
+            pathlib.Path(hlog).write_text("")
+            got = reader(dsn, HASH_SQL % table, phrase)
+            r[key] = (f"{got}; GETs naming a version: {vnamed(part)}", local_c3c7)
 
         _await_server(dsn)
         t0 = time.monotonic()
@@ -621,6 +667,54 @@ def test_with_the_pin_off_a_length_change_is_still_refused(ohr, expect):
     expect.text(ohr["C nopin lenswap"], "55000: changed while it was being read",
                 "C: with pgcolumnar.objstore_pin_reads off, an object whose length changes mid-read "
                 "is still refused")
+
+
+def test_the_shrink_pairs_new_file_is_shorter_than_its_old_one(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["shrank"], "1",
+                "premise: the shrink pair's new file is shorter than its old one (bytes old-new)")
+
+
+def test_an_object_that_shrinks_below_a_later_gets_offset_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C lenshrink"], "55000: changed while it was being read",
+                "C: an object that shrinks mid-read below a later GET's offset is refused (HTTP 416)")
+
+
+def _versioned(ohr, key, named):
+    got, local = ohr[key]
+    return got, f"no error: {local}; GETs naming a version: {named}"
+
+
+def test_with_the_pin_off_no_get_names_the_version(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(*_versioned(ohr, "C nopin vswap", 0),
+                "C: with pgcolumnar.objstore_pin_reads off, no ranged GET of a versioned object "
+                "names the version")
+
+
+def test_a_version_id_of_null_is_not_sent_as_a_pin(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(*_versioned(ohr, "C vnull", 0), "C: a version id of null is not sent as a pin")
+
+
+def test_a_version_id_longer_than_1024_bytes_is_not_sent_cut_short(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(*_versioned(ohr, "C vlong", 0),
+                "C: a version id longer than 1024 bytes is not sent cut short")
+
+
+def test_a_versioned_get_answered_403_is_sent_again_without_the_version(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(*_versioned(ohr, "C vdeny", 1),
+                "C: a versioned GET answered 403 is sent again without the version, and the read "
+                "finishes")
 
 
 def test_a_stalled_transfer_is_cancelled(ohr, expect):
