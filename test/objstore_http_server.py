@@ -48,6 +48,11 @@
 #                    answered only after that long. The double-cancel suite uses it
 #                    to hold the dispatcher's cleanup DELETE in flight while a
 #                    second cancel lands (#1741).
+#   __deny_reads__   when it exists, every HEAD and every GetObject is refused
+#                    with 403 AccessDenied after the signature check; PUT, POST,
+#                    DELETE and the listings go on. This is a key that can write
+#                    but not read, an IAM policy with s3:PutObject and no
+#                    s3:GetObject (#1795).
 #
 # Multipart introspection and hooks (#1743), read per request from --dir:
 #   __open_uploads__      written by the server, never read: the key of every
@@ -64,6 +69,17 @@
 #   __list_uploads_delay__ a number of seconds: ListMultipartUploads (GET
 #                         ?uploads) is answered only after that long, a silent
 #                         store for the client's bounded wait.
+#   __complete_delay__    a number of seconds (#1813): CompleteMultipartUpload
+#                         (POST ?uploadId=) writes the object at once and
+#                         answers only after that long, so a suite can end the
+#                         client after the store committed the object.
+#   __put_delay__         a number of seconds (#1813): a single-request PUT
+#                         (no partNumber) writes the object at once and answers
+#                         only after that long, for the same window.
+#   __complete_drop__     a number of seconds (#1846): CompleteMultipartUpload
+#                         writes the object at once, waits that long, and then
+#                         closes the connection with no answer, as a store
+#                         that applied the request and lost the connection.
 #   __put_status__        "STATUS KEY": a plain PUT (no multipart) of exactly
 #                         "bucket/KEY" is answered with STATUS and not stored,
 #                         so a suite can refuse one object, such as a parallel
@@ -216,10 +232,23 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _reads_denied(self):
+        """True, with a 403 sent, when the __deny_reads__ hook exists."""
+        if os.path.exists(os.path.join(self.server.rootdir, "__deny_reads__")):
+            self._deny(403, "AccessDenied")
+            return True
+        return False
+
     def _sigv4_check(self):
         """True when the request may proceed. Answers 403 itself otherwise."""
         srv = self.server
         if srv.sigv4_secret is None:
+            # Unsigned mode still reads a write's body (#1779): the PUT and
+            # POST handlers use self._body, which only the verifier below set,
+            # so an unsigned write killed the handler before any answer.
+            if self.command in ("PUT", "POST"):
+                clen = int(self.headers.get("Content-Length", "0") or "0")
+                self._body = self.rfile.read(clen) if clen else b""
             return True
         auth = self.headers.get("Authorization", "")
         m = AUTH_RE.match(auth)
@@ -295,6 +324,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self._log_line()
         if not self._sigv4_check():
+            return
+        if self._reads_denied():
             return
         mode, local = self._resolve()
         if mode == "hangup":
@@ -449,6 +480,8 @@ class Handler(BaseHTTPRequestHandler):
         if "uploads" in self._qdict() and not is_get_object:
             self._do_list_uploads()
             return
+        if self._reads_denied():
+            return
         mode, local = self._resolve()
         if mode == "hangup":
             self.close_connection = True
@@ -567,6 +600,7 @@ class Handler(BaseHTTPRequestHandler):
         os.makedirs(os.path.dirname(local), exist_ok=True)
         with open(local, "wb") as f:
             f.write(self._body)
+        _hook_sleep(self.server.rootdir, "__put_delay__")
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -625,6 +659,11 @@ class Handler(BaseHTTPRequestHandler):
             with open(local, "wb") as f:
                 for n, _ in listed:
                     f.write(up["parts"][n])
+            if os.path.exists(os.path.join(self.server.rootdir, "__complete_drop__")):
+                _hook_sleep(self.server.rootdir, "__complete_drop__")
+                self.close_connection = True
+                return
+            _hook_sleep(self.server.rootdir, "__complete_delay__")
             body = b"<?xml version=\"1.0\"?><CompleteMultipartUploadResult/>"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
