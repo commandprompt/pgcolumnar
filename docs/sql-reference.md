@@ -786,6 +786,10 @@ Inserts the rows of an Arrow IPC file at `path` into the existing table
 `rel`. The column types of the table define the types that the function accepts. Returns the number of
 rows inserted.
 
+`path` is a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). The function checks INSERT on `rel` first, so
+a caller without INSERT gets `42501` for a URL too.
+
 The file can be in the IPC stream format, which `export_arrow` writes, or in the
 IPC file format, which starts and ends with `ARROW1`. Feather v2 is the IPC file
 format. The function reads the stream inside an IPC file and ignores its footer.
@@ -833,6 +837,9 @@ as one atomic operation. Returns the number of rows loaded. The caller needs
 membership in the `pg_read_server_files` role, which superusers hold, and INSERT
 on the target. The file uses COPY text format. Each worker runs core `COPY` over
 a byte range of the file, so parse and write behavior match `COPY FROM` exactly.
+`filename` is a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). The function checks INSERT on `target` first,
+so a caller without INSERT gets `42501` for a URL too.
 
 The target may be one of two kinds:
 
@@ -1681,7 +1688,11 @@ accept an object-storage URL wherever they accept a local path. So do the
 `pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data wrappers. The third
 wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
 `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
-`read_manifest_list` read local files only. These URL schemes are recognized:
+`read_manifest_list` read local files only. `import_arrow`, `file_split_offsets`
+and `parallel_copy` refuse a URL in any of the schemes below with SQLSTATE 0A000
+before they read anything, for example
+`columnar: import_arrow does not read "s3://bucket/m.arrow"`. These URL schemes
+are recognized:
 
 | Scheme | Meaning |
 | --- | --- |

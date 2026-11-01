@@ -7305,12 +7305,15 @@ The pytest twin of `test/import_export_privilege.sh` (#559, #566), with the para
 
 `parallel_copy` and `parallel_export_parquet` always checked INSERT and SELECT, and nothing asked them. Their loaders and workers skip the executor's permission check, so that check is the only one.
 
+`import_arrow` and `parallel_copy` refuse an object-storage URL with 0A000 (#1886), but only after the INSERT check, so the attacker gets 42501 for an `s3://` URL as for a local path.
+
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_the_premises_isolate_the_table_acl` | the attacker logs in, holds both server-file roles, schema USAGE and EXECUTE, and nothing on `victim`; `victim` has its rows; the attacker's own source files exist |
 | `test_a_table_the_caller_holds_no_grant_on_is_refused` | the seven deny arms, serial and parallel, in the shell's order; then `victim` keeps exactly its rows and no file of it was written |
+| `test_a_remote_url_is_refused_only_after_the_insert_check` | (#1886) `import_arrow checks INSERT before it refuses a remote URL (#1886)` and `parallel_copy checks INSERT before it refuses a remote URL (#1886)`: the attacker gets "42501 permission denied for table victim" for an `s3://` URL, not 0A000 |
 | `test_the_owner_is_not_refused` | the owner's own exports, storage id and import are not refused |
 | `test_the_owner_runs_the_parallel_twins` | the owner's `parallel_copy` loads its 50 rows, and its `parallel_export_parquet` writes some |
 
@@ -7343,7 +7346,7 @@ The pytest twin of `test/fdw_plan_privilege.sh`. A planner estimate is visible t
 
 ## 108. test_arrow_import.py: import_arrow round trips, reads a foreign file, and refuses what it cannot decode
 
-The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the shell's name. A 16-column table survives export and import exactly (a set hash on both sides), non-finite dates and NaN numerics arrive as null, and a non-columnar target and a column-count mismatch are refused by SQLSTATE. A pyarrow-written file imports with its values, in the IPC stream format, the IPC file format (also without the optional end-of-stream marker before its footer) and Feather v2 (#1806); lengths larger than the file are refused before they are allocated, and a footer length that is negative or larger than the file is refused, not read as an empty file; nanosecond values are floored to the microsecond and the loss is reported once, counted in VALUES (two columns, so values and rows differ), never refused; a dictionary batch and a compressed body are refused by SQLSTATE and message; every Arrow date, time and timestamp carrier and unit decodes to the instant it holds or is refused 22008, a file whose declared type does not match its column is refused 42804, and nested units are honoured. An import maintains plain, unique (23505 on a second import) and partial indexes, and a FIFO is refused rather than hung. The four pyarrow tests decline by name without pyarrow, and fail where `PGC_REQUIRE` names it.
+The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the shell's name. A 16-column table survives export and import exactly (a set hash on both sides), non-finite dates and NaN numerics arrive as null, and a non-columnar target and a column-count mismatch are refused by SQLSTATE. A pyarrow-written file imports with its values, in the IPC stream format, the IPC file format (also without the optional end-of-stream marker before its footer) and Feather v2 (#1806); lengths larger than the file are refused before they are allocated, and a footer length that is negative or larger than the file is refused, not read as an empty file; nanosecond values are floored to the microsecond and the loss is reported once, counted in VALUES (two columns, so values and rows differ), never refused; a dictionary batch and a compressed body are refused by SQLSTATE and message; every Arrow date, time and timestamp carrier and unit decodes to the instant it holds or is refused 22008, a file whose declared type does not match its column is refused 42804, and nested units are honoured. An import maintains plain, unique (23505 on a second import) and partial indexes, and a FIFO is refused rather than hung. An object-storage URL is refused 0A000, naming the function and the URL, after the INSERT check and before the target's kind is checked (#1886). The four pyarrow tests decline by name without pyarrow, and fail where `PGC_REQUIRE` names it.
 
 ### Every test
 
@@ -7355,6 +7358,7 @@ The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the
 | `test_the_refusals_and_every_temporal_carrier` | the dictionary and compressed refusals, every carrier and unit, the 22008 guards, the 42804 type matches with their controls, an empty target after a refusal, and nested units |
 | `test_an_import_maintains_the_tables_indexes` | the plan really uses the index, index and sequential scans agree, the unique violation and its row count, and the partial index |
 | `test_a_fifo_is_refused_not_a_hang` | XX001 within the wall clock, and the backend still up |
+| `test_a_remote_url_is_refused_up_front` | (#1886) `import_arrow refuses an s3:// URL with 0A000, naming itself and the URL (#1886)`, the same for `http://`, then `https://`, `gs://`, `az://` and `S3://` in one check, each by SQLSTATE, message and hint; a heap target gets the refusal too, because it comes before the target's kind is checked; and the control: a local path that holds `s3://` past its start still imports its 300 rows |
 
 ## 109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar
 
@@ -11842,7 +11846,7 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 
 ## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
 
-The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
 
 ### Every test
 
@@ -11894,6 +11898,15 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
 | `test_parallel_copy_fifo_on_a_partitioned_target_is_refused_not_a_hang` | a FIFO given to a partitioned load is refused with 42809 within 5 seconds |
 | `test_parallel_copy_partitioned_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
+| `test_parallel_copy_split_refuses_an_s3_url` | `file_split_offsets` refuses an `s3://` URL with 0A000, naming itself and the URL, with the local-files-only hint (#1886) |
+| `test_parallel_copy_split_refuses_an_http_url` | the same for an `http://` URL |
+| `test_parallel_copy_split_refuses_the_other_remote_schemes` | the same for `https://`, `gs://`, `az://` and `S3://`, in one check |
+| `test_parallel_copy_refuses_an_s3_url` | `parallel_copy` into a single table refuses an `s3://` URL with 0A000, naming itself and the URL, with the hint (#1886) |
+| `test_parallel_copy_refuses_an_http_url` | the same for an `http://` URL |
+| `test_parallel_copy_refuses_the_other_remote_schemes_for_a_partitioned_target` | a partitioned target refuses `https://`, `gs://`, `az://` and `S3://` the same way, in one check |
+| `test_parallel_copy_refuses_a_remote_url_before_the_target` | a heap target gets the 0A000 refusal, not 42809: the URL is refused before the target's kind is checked |
+| `test_parallel_copy_split_still_reads_a_local_path_holding_a_scheme` | control: `file_split_offsets` still splits a local file whose path holds `s3://` past its start; its last offset is the file size |
+| `test_parallel_copy_still_loads_a_local_path_holding_a_scheme` | control: `parallel_copy` still loads that file's 5000 rows |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
 

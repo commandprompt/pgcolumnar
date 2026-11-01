@@ -1612,4 +1612,14 @@ guard_tests 854
 # refusals that name the mismatched object), by collection: `5127 tests collected`.
 # cluster_tests 5127 -> 5128 for the #1903 merge's check in test_objstore_error_advice.py (a single PUT
 # answered 200 with no framing before its body is not taken as written), by collection: `5128 tests collected`.
-cluster_tests 5128
+# cluster_tests 5110 -> 5120 for #1886: one test in test_arrow_import.py (a remote URL refused up front) and
+# nine in test_parallel_copy.py (file_split_offsets and parallel_copy refuse s3://, http:// and the other
+# remote schemes, the heap target, and the two local controls), by collection: 5120 tests collected.
+# cluster_tests 5128 -> 5138 at the merge of origin/main (48d4f63f) into fix/1886-local-only-remote-refusal:
+# main's 5128 plus #1886's 10 (one test in test_arrow_import.py, a remote URL refused up front, and nine in
+# test_parallel_copy.py: file_split_offsets and parallel_copy refuse s3://, http:// and the other remote
+# schemes, the heap target, and the two local controls), by collection: `5138 tests collected`.
+# cluster_tests 5138 -> 5139 for #1886's check order: one test in test_import_export_privilege.py
+# (import_arrow and parallel_copy check INSERT before they refuse a remote URL), by collection:
+# `5139 tests collected`.
+cluster_tests 5139
