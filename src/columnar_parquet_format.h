@@ -28,6 +28,7 @@
 #define PQ_BOOLEAN				0
 #define PQ_INT32				1
 #define PQ_INT64				2
+#define PQ_INT96				3	/* deprecated: a legacy timestamp, read only */
 #define PQ_FLOAT				4
 #define PQ_DOUBLE				5
 #define PQ_BYTE_ARRAY			6

@@ -1125,6 +1125,22 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
 - A `TIMESTAMP` column with nanosecond precision is advised as `bigint`, which is
   exact; declaring it `timestamp` reads it with the sub-microsecond digits
   truncated.
+- A legacy `INT96` timestamp reads into `timestamp with time zone` or `timestamp`
+  only. Its nanosecond digits are rounded down to whole microseconds. A row group
+  of an `INT96` column is never skipped by its statistics, because the format
+  defines no order for them.
+- The reader takes every `INT96` value as an instant in UTC, as Spark and Hive
+  write it. Impala writes `INT96` as wall time with no time zone by default, so
+  an Impala file reads shifted. Read into `timestamp`, its values move by the
+  session time zone's offset. Read into `timestamp with time zone`, they are taken
+  as UTC instants. With the session time zone set to `UTC`, `timestamp` gets the
+  wall time Impala wrote. No real Impala file has been tested.
+- The reader checks that each column's `repetition_type` is REQUIRED, OPTIONAL or
+  REPEATED, and that the row groups add up to the footer's row count. It also
+  checks each level histogram against the schema, when the file has one. A file
+  without level histograms whose schema marks a column REQUIRED, while its pages
+  carry definition levels, still reads wrong values without an error. pyarrow 23
+  and 26 write the histograms by default.
 - The reader reads a file in parts and does not load the whole file. It holds the
   footer for the length of the scan. It reads the pages one at a time. Peak memory for the
   raw file data is one page, not one file, so file size is not a limit. What does

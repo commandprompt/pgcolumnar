@@ -516,6 +516,42 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Parquet reader refuses a footer whose schema does not match its pages, instead
+  of returning wrong values with no error (#1855). A `repetition_type` that is not
+  0, 1 or 2 is refused when the file is opened. A level histogram whose length does
+  not fit the schema is refused on read: a column marked REQUIRED whose pages carry
+  definition levels used to have those levels read as values. In a 3000-row file,
+  `sum(id)` came back as 3019995 instead of 4498500. A file without level
+  histograms is not checked this way; see Limitations. The same check refuses a
+  list group marked OPTIONAL whose pages carry repetition levels.
+- The Parquet reader refuses a schema element that has no `name`, a required
+  field (#1852). A single changed byte can end the element early and leave the
+  rest of the footer read as something else. A missing `num_rows` or `row_groups`
+  and a row-count sum that does not match were already refused by #1822.
+- The Parquet reader keeps a `repetition_type` as the file stores it. It used to
+  cast the value to `int`, so 2^32 became 0 (REQUIRED) and got past the check
+  above. In a 3000-row file without level histograms, `sum(id)` came back as
+  3019995 instead of 4498500. `test/native_parquet_hardening.sh`.
+- `test/fuzz_parquet.sh` now checks the answer of every mutant that reads without
+  an error (#1852). The answer must equal the seed's, or pgColumnar's answer for
+  pyarrow's rewrite of the mutant (`test/parquet_oracle.py`). After the random
+  mutants, the suite sweeps every byte of one seed's schema, which found #1855.
+  A read the oracle cannot judge now fails the suite, and a wrong answer from a
+  random mutant names the first byte that differs from its seed.
+  `test_fuzz_parquet.py` runs the same checks.
+- `parquet_schema` now advises `timestamp with time zone` for a legacy `INT96`
+  timestamp column, and the readers read one (#1870). It used to report no type,
+  and every declared type was refused. The value is read as an instant in UTC,
+  as Spark and Hive write it, with the nanoseconds rounded down to microseconds.
+  Impala's wall-time `INT96` reads shifted; see Limitations. A value whose nanoseconds or
+  Julian day are out of range is refused with 22008, and the DETAIL names both.
+  `test/native_parquet_units.sh` and `test/native_parquet_hardening.sh`.
+- A reader's type refusal names the function the user called (#1871). It named
+  `columnar.import_parquet` for `read_parquet` and the Parquet foreign table, and
+  `columnar.read_parquet` for `iceberg_scan`. It now names
+  `pgcolumnar.read_parquet`, `pgcolumnar.import_parquet`,
+  `pgcolumnar.iceberg_scan`, `pgcolumnar.iceberg_rest_scan`, or the
+  `pgcolumnar_parquet` or `pgcolumnar_iceberg` foreign-data wrapper.
 - A `parallel_export_parquet` to a `gs://`, `http://` or `https://` prefix is now
   refused before any worker starts, with SQLSTATE 0A000 (#1832). Before, the
   workers uploaded every part, and the export then failed at the stale-part

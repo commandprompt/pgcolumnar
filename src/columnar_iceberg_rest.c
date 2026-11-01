@@ -1015,7 +1015,7 @@ pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
 	 */
 	if (pg_strncasecmp(loc, "file://", 7) == 0)
 		loc += 7;
-	PgColumnarIcebergScanInto(loc, tupdesc, rsinfo, cfg);
+	PgColumnarIcebergScanInto(loc, tupdesc, rsinfo, cfg, "pgcolumnar.iceberg_rest_scan");
 	return (Datum) 0;
 }
 
