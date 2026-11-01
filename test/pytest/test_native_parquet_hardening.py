@@ -23,8 +23,12 @@ file whose manifest partition value is not valid text.
 
 A FOOTER THAT DOES NOT MATCH ITS PAGES (#1855, #1852). A column the footer marks
 REQUIRED while its pages carry definition levels, a repetition_type that is no valid
-value, and a footer num_rows the row groups do not add up to are each refused with a
-DETAIL that names the measurement.
+value, a footer num_rows the row groups do not add up to, and a list group marked
+OPTIONAL whose pages carry repetition levels are each refused with XX001 and a DETAIL
+that names the measurement.
+
+INT96 VALUES THAT ARE NOT TIMESTAMPS (#1870). Nanoseconds outside the day, a Julian day
+before timestamp's range, and a page shorter than its num_values are each refused.
 
 ON A PRIVATE DATABASE. The shell skips whole without pyarrow, so every test declines
 under the shell's skip name before it asks for the fixture. The files are written by
@@ -134,19 +138,39 @@ REP_ENUM = ('Schema element "id" has repetition_type 7; a valid one is 0 (REQUIR
             '1 (OPTIONAL) or 2 (REPEATED).')
 
 
-def _rep_verdict(dsn, sql, want):
-    """-> CLEAN REJECT when SQL raised with the DETAIL `want`, else the message and
-    DETAIL it raised, or NO ERROR and the rows it returned (#1855)."""
+LST_HIST = ('Row group 0 column 0 ("element") has a repetition level histogram of 2 entries, '
+            'but the schema gives it a maximum repetition level of 0.')
+I96_DETAIL = ("The Parquet file stores an INT96 timestamp of Julian day {} and {} nanoseconds, "
+              "which cannot be represented as timestamp with time zone.")
+
+
+def _rep_verdict(dsn, sql, want, sqlstate):
+    """-> CLEAN REJECT when SQL raised `sqlstate` with the DETAIL `want`, else the
+    SQLSTATE, message and DETAIL it raised, or NO ERROR and the rows it returned (#1855)."""
     _wait_up(dsn)
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             rows = conn.execute(sql).fetchall()
     except psycopg.Error as exc:
         detail = exc.diag.message_detail or ""
-        if want in detail:
+        if exc.sqlstate == sqlstate and detail.startswith(want):
             return "CLEAN REJECT"
         return query_error(f"{exc.sqlstate}: {exc.diag.message_primary} / {detail}")
     return "NO ERROR: " + " ".join(str(r[0]) for r in rows)
+
+
+def _error_line(dsn, sql):
+    """-> "SQLSTATE: message" when SQL raised, else the first column of each row it
+    returned, as the shell's psql reading of the same statement prints them."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            rows = conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error("no refusal: the connection was lost")
+        return f"{exc.sqlstate}: {exc.diag.message_primary}"
+    return " ".join(str(r[0]) for r in rows)
 
 
 def _detail_verdict(dsn, sql, want):
@@ -276,14 +300,33 @@ def pqh(pgc_cluster, server_dir):
         rep_sum = "SELECT count(*) || '/' || sum(id) FROM pgcolumnar.read_parquet"
         r["rep base"] = _value(dsn, f"{rep_sum}('{w}/rep_base.parquet') AS t(id bigint, name text)")
         r["rep required"] = _rep_verdict(dsn, f"{rep_sum}('{w}/rep_required.parquet') AS t(id bigint, name text)",
-                                         REP_HIST)
+                                         REP_HIST, "XX001")
         r["rep invalid"] = _rep_verdict(dsn, f"{rep_sum}('{w}/rep_invalid.parquet') AS t(id bigint, name text)",
-                                        REP_ENUM)
+                                        REP_ENUM, "XX001")
         _exec(dsn, "CREATE TABLE imp_rep (id bigint, name text)")
         r["rep imp"] = _rep_verdict(dsn, f"SELECT pgcolumnar.import_parquet('imp_rep'::regclass, "
-                                         f"'{w}/rep_required.parquet')", REP_HIST)
+                                         f"'{w}/rep_required.parquet')", REP_HIST, "XX001")
         r["rows short"] = _rep_verdict(dsn, f"{rep_sum}('{w}/rows_short.parquet') AS t(id bigint, name text)",
-                                       REP_ROWS)
+                                       REP_ROWS, "XX001")
+
+        # ---- a repetition_type that does not match the repetition levels (#1855) ----
+        lst_agg = ("SELECT string_agg(coalesce(l::text, 'null'), ' ' ORDER BY l NULLS LAST) "
+                   "FROM pgcolumnar.read_parquet")
+        r["lst base"] = _value(dsn, f"{lst_agg}('{w}/lst_base.parquet') AS t(l bigint[])")
+        r["lst optional"] = _rep_verdict(dsn, f"{lst_agg}('{w}/lst_optional.parquet') AS t(l bigint[])",
+                                         LST_HIST, "XX001")
+        r["lst optional scalar"] = _rep_verdict(
+            dsn, f"SELECT count(*) || '/' || count(l) FROM pgcolumnar.read_parquet('{w}/lst_optional.parquet') "
+                 "AS t(l bigint)", LST_HIST, "XX001")
+
+        # ---- INT96 values that are not timestamps (#1870) ----
+        i96_cnt = "SELECT count(*) || '/' || count(t) FROM pgcolumnar.read_parquet"
+        r["i96 req"] = _value(dsn, f"{i96_cnt}('{w}/i96_req.parquet') AS t(t timestamptz)")
+        for tag, jday, nanos in (("nanos_day", 2461246, 86400000000000), ("nanos_neg", 2461246, -1),
+                                 ("jday_neg", -1, 123456789)):
+            r[f"i96 {tag}"] = _rep_verdict(dsn, f"{i96_cnt}('{w}/i96_{tag}.parquet') AS t(t timestamptz)",
+                                           I96_DETAIL.format(jday, nanos), "22008")
+        r["i96 short"] = _error_line(dsn, f"{i96_cnt}('{w}/i96_short.parquet') AS t(t timestamptz)")
 
         # ---- string cells, in the UTF8 database (#1821) ----
         d8 = pgc_cluster.dsn(dbname=DB8)
@@ -575,7 +618,7 @@ def test_parquet_hardening_unchanged_repetition_file_reads(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
         return
     r = request.getfixturevalue("pqh")
-    expect.text(r["rep base"], "3000/4498500", "premise: the unchanged repetition file reads 3000/4498500")
+    expect.text(r["rep base"], "3000/4498500", "the unchanged repetition file reads 3000/4498500")
 
 
 def test_parquet_hardening_repetition_required_over_optional_pages_is_refused(request, expect):
@@ -604,6 +647,64 @@ def test_parquet_hardening_footer_num_rows_mismatch_is_refused(request, expect):
         return
     r = request.getfixturevalue("pqh")
     expect.text(r["rows short"], "CLEAN REJECT", "a footer num_rows the row groups do not add up to is refused")
+
+
+def test_parquet_hardening_unchanged_list_file_reads(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["lst base"], "{} {1,2} {3} {4,5,6} null", "the unchanged list file reads {} {1,2} {3} {4,5,6} null")
+
+
+def test_parquet_hardening_list_group_marked_optional_over_repeated_pages_is_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["lst optional"], "CLEAN REJECT", "a list group marked OPTIONAL over repeated pages is refused")
+
+
+def test_parquet_hardening_list_group_marked_optional_is_refused_into_a_scalar_column(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["lst optional scalar"], "CLEAN REJECT",
+                "a list group marked OPTIONAL over repeated pages is refused into a scalar column")
+
+
+def test_parquet_hardening_unpatched_required_int96_file_reads(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["i96 req"], "3/3", "the unpatched REQUIRED INT96 file reads its 3 values")
+
+
+def test_parquet_hardening_int96_nanoseconds_of_a_whole_day_are_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["i96 nanos_day"], "CLEAN REJECT", "INT96 nanoseconds of a whole day are refused")
+
+
+def test_parquet_hardening_int96_negative_nanoseconds_are_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["i96 nanos_neg"], "CLEAN REJECT", "INT96 nanoseconds of -1 are refused")
+
+
+def test_parquet_hardening_int96_negative_julian_day_is_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["i96 jday_neg"], "CLEAN REJECT", "INT96 Julian day -1 is refused")
+
+
+def test_parquet_hardening_int96_short_page_is_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["i96 short"], "XX001: could not decode Parquet column 0 in row group 0",
+                "an INT96 page shorter than its num_values is refused")
 
 
 def test_parquet_hardening_strings_run_in_a_utf8_database(request, expect):
@@ -694,7 +795,7 @@ def test_parquet_hardening_patched_manifest_table_reads_all_five_rows(request, e
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
         return
     r = request.getfixturevalue("pqh")
-    expect.text(r["s part all"], "1eu,2eu,3us,4us,5us", "premise: the patched-manifest table reads all five rows")
+    expect.text(r["s part all"], "1eu,2eu,3us,4us,5us", "the patched-manifest table reads all five rows")
 
 
 def test_parquet_hardening_iceberg_fdw_reads_a_file_whose_partition_value_is_not_valid_text(request, expect):

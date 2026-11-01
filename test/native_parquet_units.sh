@@ -199,6 +199,29 @@ check "INT96 reads into timestamp as the wall time in the session zone" \
 	      SELECT string_agg(coalesce(t::text, 'null'), ',' ORDER BY t NULLS LAST)
 	      FROM pgcolumnar.read_parquet('$I96') AS t(t timestamp);")" \
 	"1913-06-11 08:59:59.876543,2026-07-24 09:00:00,2026-07-24 09:00:00.123456,null"
+check "INT96 reads into timestamptz as the stored instant in a non-UTC session zone" \
+	"$(qe "SET timezone = 'Asia/Tokyo';
+	      SELECT string_agg(coalesce((t AT TIME ZONE 'UTC')::text, 'null'), ',' ORDER BY t NULLS LAST)
+	      FROM pgcolumnar.read_parquet('$I96') AS t(t timestamptz);")" \
+	"$I96_UTC"
+# INT96 binds only to the two timestamp types. Into any other type the bind refuses
+# it with 42804, naming the column and the declared type, before a value is read.
+i96_other=""
+for ty in bigint text date; do
+	i96_other="$i96_other $ty=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c '\set VERBOSITY verbose' \
+		-c "SELECT count(*) FROM pgcolumnar.read_parquet('$I96') AS t(t $ty);" 2>&1 |
+		sed -n 's/^ERROR:  \([0-9A-Z]*\): .*target column "t" (\([a-z ]*\)).*/\1(\2)/p' | head -1)"
+done
+# A bind that let INT96 through would hand a timestamp to a text column, which can
+# end the backend. Wait for the server to accept connections again, so a crash here
+# reddens this check and not the checks after it.
+for _i in $(seq 1 60); do
+	[ "$(qe 'SELECT 1')" = 1 ] && break
+	sleep 0.5
+done
+check "INT96 into a non-timestamp type is refused" "$i96_other" \
+	" bigint=42804(bigint) text=42804(text) date=42804(date)"
 psql_run "CREATE TABLE imp_i96 (t timestamptz);"
 i96_imp="$(qe "SELECT pgcolumnar.import_parquet('imp_i96'::regclass, '$I96');")"
 check "import_parquet reads INT96 into timestamptz" \

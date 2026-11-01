@@ -1010,6 +1010,9 @@ A legacy `INT96` timestamp column, which Spark, Hive and Impala write, is report
 as `timestamp with time zone`. An `INT96` value is an instant in UTC. A read keeps
 whole microseconds and drops the nanosecond digits by rounding down. The column
 also reads into `timestamp`, which gets the wall time in the session time zone.
+A value whose nanoseconds fall outside the day, or whose Julian day is outside the
+timestamp range, is refused with SQLSTATE 22008. The DETAIL names both the Julian
+day and the nanoseconds the file stores.
 
 When a reader refuses a declared column type, the message names the function or
 foreign-data wrapper you used, for example

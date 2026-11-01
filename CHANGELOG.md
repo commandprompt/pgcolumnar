@@ -472,7 +472,8 @@ true until the next version shipped.
   not fit the schema is refused on read: a column marked REQUIRED whose pages carry
   definition levels used to have those levels read as values. In a 3000-row file,
   `sum(id)` came back as 3019995 instead of 4498500. A file without level
-  histograms is not checked this way; see Limitations.
+  histograms is not checked this way; see Limitations. The same check refuses a
+  list group marked OPTIONAL whose pages carry repetition levels.
 - The Parquet reader refuses a footer that lacks a required field (`schema`,
   `num_rows`, `row_groups`, or a schema element's `name`), and one whose row groups
   do not add up to its `num_rows`. A single changed byte could end a footer struct
@@ -485,7 +486,9 @@ true until the next version shipped.
 - `parquet_schema` now advises `timestamp with time zone` for a legacy `INT96`
   timestamp column, and the readers read one (#1870). It used to report no type,
   and every declared type was refused. The value is read as an instant in UTC,
-  with the nanoseconds rounded down to microseconds. `test/native_parquet_units.sh`.
+  with the nanoseconds rounded down to microseconds. A value whose nanoseconds or
+  Julian day are out of range is refused with 22008, and the DETAIL names both.
+  `test/native_parquet_units.sh` and `test/native_parquet_hardening.sh`.
 - A reader's type refusal names the function the user called (#1871). It named
   `columnar.import_parquet` for `read_parquet` and the Parquet foreign table, and
   `columnar.read_parquet` for `iceberg_scan`. It now names

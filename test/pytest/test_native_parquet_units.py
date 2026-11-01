@@ -26,6 +26,7 @@ and it runs as a subprocess so this module imports none. The files live in
 import re
 import subprocess
 import sys
+import time
 
 import psycopg
 import pytest
@@ -76,6 +77,19 @@ GENERATOR = ("SELECT timestamp '2024-01-01' + g * interval '1 hour' AS t FROM ge
 
 def _message(exc):
     return str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+
+
+def _refusal(dsn, path, ty):
+    """-> "SQLSTATE(type)" for read_parquet's refusal of PATH's column t declared as TY,
+    the type read back from the message's `target column "t" (...)`, as the shell's
+    sed prints it; "" when the read raised nothing or another message (#1870)."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(f"SELECT count(*) FROM pgcolumnar.read_parquet('{path}') AS t(t {ty})").fetchall()
+    except psycopg.Error as exc:
+        m = re.search(r'target column "t" \(([a-z ]*)\)', exc.diag.message_primary or "")
+        return f"{exc.sqlstate}({m.group(1)})" if m else ""
+    return ""
 
 
 def _run(dsn, sql):
@@ -184,6 +198,15 @@ def pqu(pgc_cluster, server_dir):
         r["i96 ts"] = _value(dsn, "SELECT string_agg(coalesce(t::text, 'null'), ',' ORDER BY t NULLS LAST) "
                                   f"FROM pgcolumnar.read_parquet('{i96}') AS t(t timestamp)",
                              settings=("SET timezone = 'Asia/Tokyo'",))
+        r["i96 tz tokyo"] = _value(dsn, f"SELECT {utc} FROM pgcolumnar.read_parquet('{i96}') AS t(t timestamptz)",
+                                   settings=("SET timezone = 'Asia/Tokyo'",))
+        r["i96 other"] = "".join(f" {ty}={_refusal(dsn, i96, ty)}" for ty in ("bigint", "text", "date"))
+        # a bind that let INT96 into text can end the backend: let the server come back,
+        # so a crash reddens that check and not the ones after it
+        for _ in range(60):
+            if _value(dsn, "SELECT 1") == "1":
+                break
+            time.sleep(0.5)
         _run(dsn, "CREATE TABLE imp_i96 (t timestamptz)")
         imp = _value(dsn, f"SELECT pgcolumnar.import_parquet('imp_i96'::regclass, '{i96}')")
         r["i96 import"] = (imp if not isinstance(imp, str) or imp.startswith("QUERY_ERROR")
@@ -366,6 +389,22 @@ def test_int96_reads_into_timestamp_as_the_session_wall_time(request, expect):
         return
     r = request.getfixturevalue("pqu")
     expect.text(r["i96 ts"], I96_TOKYO, "INT96 reads into timestamp as the wall time in the session zone")
+
+
+def test_int96_reads_into_timestamptz_as_the_stored_instant_in_a_non_utc_zone(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet unit suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqu")
+    expect.text(r["i96 tz tokyo"], I96_UTC,
+                "INT96 reads into timestamptz as the stored instant in a non-UTC session zone")
+
+
+def test_int96_into_a_non_timestamp_type_is_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet unit suite needs it") is None:
+        return
+    r = request.getfixturevalue("pqu")
+    expect.text(r["i96 other"], " bigint=42804(bigint) text=42804(text) date=42804(date)",
+                "INT96 into a non-timestamp type is refused")
 
 
 def test_import_parquet_reads_int96_into_timestamptz(request, expect):

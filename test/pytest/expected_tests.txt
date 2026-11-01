@@ -1422,4 +1422,8 @@ guard_tests 854
 # test_native_parquet_hardening.py 5 (repetition_type and footer num_rows), test_native_parquet_units.py 5
 # (INT96), test_native_read_parquet.py 3 and test_iceberg_scan.py 1 (the caller named in a type refusal):
 # `4781 tests collected`.
-cluster_tests 4781
+# cluster_tests 4781 -> 4791 for the review of #1882: test_native_parquet_hardening.py 8 (a list group marked
+# OPTIONAL over repeated pages, and INT96 values that are not timestamps) and test_native_parquet_units.py 2
+# (INT96 into timestamptz in a non-UTC zone, INT96 into a non-timestamp type), by collection over the cluster
+# files: `4791 tests collected`.
+cluster_tests 4791

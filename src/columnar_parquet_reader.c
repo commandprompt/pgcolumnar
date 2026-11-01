@@ -1532,9 +1532,20 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 					!IS_VALID_TIMESTAMP((Timestamp) us) ||
 					(plan->ts_shift != PQ_TS_NONE &&
 					 !pq_ts_shift(plan->ts_shift, (Timestamp) us, (Timestamp *) &us)))
-					return pq_value_out_of_range(strict, ok,
-												 ERRCODE_DATETIME_FIELD_OVERFLOW,
-												 tn, (int64) jday);
+				{
+					/*
+					 * Name both parts: either one can be the bad one, and the
+					 * reader should be sent to the right field.
+					 */
+					if (strict)
+						ereport(ERROR,
+								(errcode(ERRCODE_DATETIME_FIELD_OVERFLOW),
+								 errmsg("value out of range for type %s", tn),
+								 errdetail("The Parquet file stores an INT96 timestamp of Julian day %d and " INT64_FORMAT " nanoseconds, which cannot be represented as %s.",
+										   (int) jday, nanos, tn)));
+					*ok = false;
+					return (Datum) 0;
+				}
 				return TimestampGetDatum((Timestamp) us);
 			}
 		case PQ_FLOAT:

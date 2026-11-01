@@ -12290,6 +12290,8 @@ Every test makes one check under the shell's name, on a private database, and de
 | `test_parquet_schema_advises_timestamptz_for_int96` | parquet_schema advises timestamptz for INT96 |
 | `test_int96_reads_into_timestamptz_as_the_stored_instant` | INT96 reads into timestamptz as the stored instant |
 | `test_int96_reads_into_timestamp_as_the_session_wall_time` | INT96 reads into timestamp as the wall time in the session zone |
+| `test_int96_reads_into_timestamptz_as_the_stored_instant_in_a_non_utc_zone` | INT96 reads into timestamptz as the stored instant in a non-UTC session zone |
+| `test_int96_into_a_non_timestamp_type_is_refused` | INT96 into a non-timestamp type is refused |
 | `test_import_parquet_reads_int96_into_timestamptz` | import_parquet reads INT96 into timestamptz |
 
 ## 317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows
@@ -12363,11 +12365,19 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
 | `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
 | `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
-| `test_parquet_hardening_unchanged_repetition_file_reads` | premise: the unchanged repetition file reads 3000/4498500 |
+| `test_parquet_hardening_unchanged_repetition_file_reads` | the unchanged repetition file reads 3000/4498500 |
 | `test_parquet_hardening_repetition_required_over_optional_pages_is_refused` | repetition_type REQUIRED over optional pages is refused |
 | `test_parquet_hardening_invalid_repetition_type_is_refused` | repetition_type that is not 0, 1 or 2 is refused |
 | `test_parquet_hardening_import_parquet_refuses_repetition_required_over_optional_pages` | import_parquet refuses repetition_type REQUIRED over optional pages |
 | `test_parquet_hardening_footer_num_rows_mismatch_is_refused` | a footer num_rows the row groups do not add up to is refused |
+| `test_parquet_hardening_unchanged_list_file_reads` | the unchanged list file reads {} {1,2} {3} {4,5,6} null |
+| `test_parquet_hardening_list_group_marked_optional_over_repeated_pages_is_refused` | a list group marked OPTIONAL over repeated pages is refused |
+| `test_parquet_hardening_list_group_marked_optional_is_refused_into_a_scalar_column` | a list group marked OPTIONAL over repeated pages is refused into a scalar column |
+| `test_parquet_hardening_unpatched_required_int96_file_reads` | the unpatched REQUIRED INT96 file reads its 3 values |
+| `test_parquet_hardening_int96_nanoseconds_of_a_whole_day_are_refused` | INT96 nanoseconds of a whole day are refused |
+| `test_parquet_hardening_int96_negative_nanoseconds_are_refused` | INT96 nanoseconds of -1 are refused |
+| `test_parquet_hardening_int96_negative_julian_day_is_refused` | INT96 Julian day -1 is refused |
+| `test_parquet_hardening_int96_short_page_is_refused` | an INT96 page shorter than its num_values is refused |
 | `test_parquet_hardening_strings_run_in_a_utf8_database` | premise: the string arms run in a UTF8 database |
 | `test_parquet_hardening_read_parquet_plain_string_not_utf8_raises_22021` | read_parquet PLAIN string not UTF-8 -> 22021 naming the column |
 | `test_parquet_hardening_read_parquet_dictionary_string_not_utf8_raises_22021` | read_parquet dictionary string not UTF-8 -> 22021 naming the column |
@@ -12380,7 +12390,7 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_valid_multibyte_utf8_still_reads_plain` | valid multibyte UTF-8 still reads (PLAIN) |
 | `test_parquet_hardening_valid_multibyte_utf8_still_reads_dictionary` | valid multibyte UTF-8 still reads (dictionary) |
 | `test_parquet_hardening_iceberg_scan_data_file_string_not_utf8_raises_22021` | iceberg_scan data file string not UTF-8 -> 22021 naming the column |
-| `test_parquet_hardening_patched_manifest_table_reads_all_five_rows` | premise: the patched-manifest table reads all five rows |
+| `test_parquet_hardening_patched_manifest_table_reads_all_five_rows` | the patched-manifest table reads all five rows |
 | `test_parquet_hardening_iceberg_fdw_reads_a_file_whose_partition_value_is_not_valid_text` | iceberg FDW reads, not prunes, a file whose partition value is not valid text |
 | `test_parquet_hardening_backend_survives_the_string_arms` | backend survived the string arms |
 

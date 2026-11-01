@@ -5,7 +5,9 @@ group carries one column chunk, and string cells that are not valid UTF-8 (#1821
 Given the committed Iceberg warehouse (test/fixtures/iceberg/warehouse), it also
 writes two copies of its events table under DIR: one whose eu data file holds an
 invalid string, and one whose manifest records the eu partition value as invalid
-bytes. One writer for both twins, so neither can drift from the other. Needs pyarrow."""
+bytes. It also writes the footers that do not match their pages (#1855, #1852) and
+the INT96 values that are not timestamps (#1870). One writer for both twins, so
+neither can drift from the other. Needs pyarrow."""
 import os
 import shutil
 import sys
@@ -590,3 +592,50 @@ _hit = [i for i in range(_at, len(_rows) - 8) if bytes(_rows[i:i + 3]) == b"\x16
 assert len(_hit) == 1, _hit
 _rows[_hit[0] + 1:_hit[0] + 3] = _new
 open(f"{W}/rows_short.parquet", "wb").write(bytes(_rows))
+
+
+# ---- a repetition_type that does not match a repetition histogram (#1855) -------
+# pyarrow writes a list<int64> column as l (OPTIONAL group) > list (REPEATED group) >
+# element (OPTIONAL int64), so element's pages carry repetition levels 0 and 1, and
+# its chunk carries a repetition level histogram of 2 entries. lst_optional.parquet
+# says the `list` group is OPTIONAL (zigzag 1, 0x02) instead of REPEATED (zigzag 2,
+# 0x04), so the schema gives element a maximum repetition level of 0. The definition
+# levels still fit (3 either way), so only the repetition histogram can tell.
+pq.write_table(pa.table({"l": pa.array([[1, 2], [3], [], None, [4, 5, 6]], pa.list_(pa.int64()))}),
+               f"{W}/lst_base.parquet")
+_lst = bytearray(open(f"{W}/lst_base.parquet", "rb").read())
+_at = repetition_byte(_lst, "list")
+assert _lst[_at] == 0x04, hex(_lst[_at])         # zigzag 2: REPEATED
+_lst[_at] = 0x02                                  # zigzag 1: OPTIONAL
+open(f"{W}/lst_optional.parquet", "wb").write(bytes(_lst))
+
+
+# ---- INT96 values the decode must refuse (#1870) ---------------------------------
+# A REQUIRED INT96 column, PLAIN and uncompressed, so each value's 12 bytes (8 of
+# nanoseconds in the day, then 4 of Julian day, little-endian) sit in the file as
+# written and can be patched in place. The second value is the one patched:
+#   i96_nanos_day.parquet   nanoseconds 86400e9, one whole day: no valid value has it
+#   i96_nanos_neg.parquet   nanoseconds -1
+#   i96_jday_neg.parquet    Julian day -1, before timestamp's first day
+# i96_short.parquet keeps the values and the page's num_values of 3, but says the
+# page is 24 bytes long instead of 36. The third value's 12 bytes still follow in
+# the file, so a decode that read past the page's end would return a whole value.
+_I96_VALS = [1784851200_000_000_000, 1784851200_123_456_789, 1784851200_500_000_000]
+pq.write_table(pa.table([pa.array(_I96_VALS, pa.timestamp("ns", tz="UTC"))],
+                        schema=pa.schema([pa.field("t", pa.timestamp("ns", tz="UTC"), nullable=False)])),
+               f"{W}/i96_req.parquet", use_deprecated_int96_timestamps=True,
+               use_dictionary=False, compression="NONE", write_statistics=False)
+_i96 = bytes(open(f"{W}/i96_req.parquet", "rb").read())
+_day, _ns = divmod(_I96_VALS[1], 86400 * 10**9)
+_v1 = _ns.to_bytes(8, "little") + (2440588 + _day).to_bytes(4, "little")
+assert _i96.count(_v1) == 1, _i96.count(_v1)
+_v1_at = _i96.index(_v1)
+for _name, _new in (("i96_nanos_day", (86400 * 10**9).to_bytes(8, "little") + _v1[8:]),
+                    ("i96_nanos_neg", (-1).to_bytes(8, "little", signed=True) + _v1[8:]),
+                    ("i96_jday_neg", _v1[:8] + (-1).to_bytes(4, "little", signed=True))):
+    open(f"{W}/{_name}.parquet", "wb").write(_i96[:_v1_at] + _new + _i96[_v1_at + 12:])
+# The data page header begins at byte 4: type (field 1, i32: header 0x15) DATA_PAGE
+# 0x00, then uncompressed_page_size and compressed_page_size (fields 2 and 3, i32),
+# each the zigzag varint 0x48 for 36. 0x30 says 24. Both stay one byte long.
+assert _i96[4:10] == b"\x15\x00\x15\x48\x15\x48", _i96[4:10].hex()
+open(f"{W}/i96_short.parquet", "wb").write(_i96[:4] + b"\x15\x00\x15\x30\x15\x30" + _i96[10:])
