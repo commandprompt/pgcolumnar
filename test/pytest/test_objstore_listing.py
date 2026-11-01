@@ -6,6 +6,9 @@ the objects under it, through a paged ListObjectsV2 loop behind the object-store
 Hive partition columns work over a remote prefix; an exact key is one GET and no LIST.
 An exact key holding `*`, `?` or `[` reads that object alone, a pattern naming no object
 of its exact name still expands, and a bracketed authority is refused as IPv6 (#1785).
+When one object under a prefix or glob does not match the declared columns, the refusal
+names it in its DETAIL (#1902), for read_parquet by position and by field id, and for
+the FDW.
 The local SigV4 fixture server (test/objstore_http_server.py, the shell's own) answers
 the listing two keys a page, so the continuation-token loop runs.
 
@@ -76,6 +79,19 @@ one(os.path.join(B, "lit/brack[1].parquet"), [1])
 one(os.path.join(B, "lit/star*x.parquet"), [4])
 one(os.path.join(B, "lit/starZZZx.parquet"), [5])
 one(os.path.join(B, "lit/raw[1]"), [8])
+def typed(path, ids, typ, **extra):
+    f = [pa.field("id", typ, metadata={b"PARQUET:field_id": b"1"})]
+    cols = [pa.array(ids, typ)]
+    for k, v in extra.items():
+        f.append(pa.field(k, pa.string(), metadata={b"PARQUET:field_id": b"2"}))
+        cols.append(pa.array(v, pa.string()))
+    pq.write_table(pa.Table.from_arrays(cols, schema=pa.schema(f)), path)
+for i in (0, 1, 3):
+    typed(os.path.join(B, "mix/f%02d.parquet" % i), [i], pa.int64())
+typed(os.path.join(B, "mix/f02.parquet"), ["2"], pa.string())
+typed(os.path.join(B, "wide/f00.parquet"), [0], pa.int64())
+typed(os.path.join(B, "wide/f01.parquet"), [1], pa.int64(), x=["extra"])
+typed(os.path.join(B, "wide/f02.parquet"), [2], pa.int64())
 '''
 
 # (scheme, key after the bucket) of each #1785 literal-key reading
@@ -142,6 +158,22 @@ def _refusal(dsn, sql, phrase, label):
             return query_error(_message(exc))
         return exc.sqlstate + (label if phrase in str(exc) else "")
     return "no error"
+
+
+def _refusal_detail(dsn, sql):
+    """-> "SQLSTATE: message | DETAIL: detail" ("| no detail" without one) for the error
+    `sql` raises, or what happened instead."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        detail = exc.diag.message_detail
+        return f"{exc.sqlstate}: {exc.diag.message_primary} | " + \
+            (f"DETAIL: {detail}" if detail else "no detail")
+    return query_error("no error: the statement completed")
 
 
 def _list_requests(log):
@@ -336,7 +368,8 @@ def osl(pgc_cluster):
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-objlist-"))
     os.chmod(work, 0o777)
     bucket = work / BUCKET
-    for d in ("lst/sub", "hive/dt=2026-01-01", "hive/dt=2026-01-02", "_landing/_temporary", ".dir", "glb", "lit"):
+    for d in ("lst/sub", "hive/dt=2026-01-01", "hive/dt=2026-01-02", "_landing/_temporary", ".dir", "glb", "lit",
+              "mix", "wide"):
         (bucket / d).mkdir(parents=True)
     r = {}
     srv = None
@@ -448,6 +481,19 @@ def osl(pgc_cluster):
         status.write_text("500\n")
         r["http500"] = _refusal(dsn, stmt, "returned HTTP 500", " by the HTTP status check")
         status.unlink()
+
+        # #1902: the object that does not match the declared columns is named
+        r["mix good"] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                  f"'s3://{BUCKET}/mix/f0[013].parquet') AS t(id int8)")
+        r["mix prefix"] = _refusal_detail(dsn, "SELECT count(*) FROM pgcolumnar.read_parquet("
+                                               f"'s3://{BUCKET}/mix/') AS t(id int8)")
+        r["wide glob"] = _refusal_detail(dsn, "SELECT count(*) FROM pgcolumnar.read_parquet("
+                                              f"'s3://{BUCKET}/wide/*.parquet') AS t(id int8)")
+        r["mix field id"] = _refusal_detail(dsn, "SELECT count(*) FROM pgcolumnar.read_parquet("
+                                                 f"'s3://{BUCKET}/mix/', ARRAY[1]) AS t(id int8)")
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE FOREIGN TABLE fmix (id int8) SERVER s3srv OPTIONS (path 's3://{BUCKET}/mix/')")
+        r["mix fdw"] = _refusal_detail(dsn, "SELECT count(*) FROM fmix")
         r["survived"] = _survived(dsn, log, before)
         r["integration"] = _integration(cluster, datadir, log, bucket, work)
         yield r
@@ -604,6 +650,48 @@ def test_a_list_that_fails_is_refused_not_read_as_empty(request, expect):
     if r is not None:
         expect.text(r["http500"], "08006 by the HTTP status check",
                     "a LIST that returns HTTP 500 is refused, not read as an empty prefix")
+
+
+MIX_TYPE = '42804: Parquet column 0 physical type is not compatible with target column "id" (bigint)'
+MIX_DETAIL = f'DETAIL: The mismatched file is "s3://{BUCKET}/mix/f02.parquet".'
+
+
+def test_the_matching_objects_of_the_mixed_prefix_read(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["mix good"], "3 4", "premise: the matching objects of mix/ read")
+
+
+def test_a_prefix_read_names_the_object_whose_type_does_not_match(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["mix prefix"], f"{MIX_TYPE} | {MIX_DETAIL}",
+                    "read_parquet over a prefix names the object whose column type does not match")
+
+
+def test_a_glob_read_names_the_object_with_an_extra_column(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["wide glob"],
+                    "42804: Parquet file has 2 leaf columns, target table expands to 1 | "
+                    f'DETAIL: The mismatched file is "s3://{BUCKET}/wide/f01.parquet".',
+                    "read_parquet over a glob names the object with an extra column")
+
+
+def test_a_field_id_prefix_read_names_the_object_whose_type_does_not_match(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["mix field id"],
+                    "42804: Parquet column with field id 1 has a physical type incompatible with "
+                    f'output column "id" (bigint) | {MIX_DETAIL}',
+                    "read_parquet by field id over a prefix names the object whose column type does not match")
+
+
+def test_the_fdw_over_a_prefix_names_the_object_whose_type_does_not_match(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["mix fdw"], f"{MIX_TYPE} | {MIX_DETAIL}",
+                    "the FDW over a prefix names the object whose column type does not match")
 
 
 def test_the_backend_is_still_up_after_the_listing_refusals(request, expect):
