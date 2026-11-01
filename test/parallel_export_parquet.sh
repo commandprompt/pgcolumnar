@@ -256,6 +256,44 @@ check "retry into the cleaned directory succeeds" \
 check "the retry writes a fresh _SUCCESS marker" \
 	"$([ -f "$DCX/_SUCCESS" ] && echo yes || echo no)" yes
 
+# A local cancel must wait for the workers to exit before it deletes the parts,
+# as a remote one does (#1864 review). A terminated worker stops only at its next
+# interrupt check, and the sink renames part-N.parquet.tmp.PID to its final name
+# with no check between fsync and rename. The dispatcher's cleanup lists the
+# directory and then unlinks, so a rename between the two left a final part. That
+# window is too short to hit on demand, so this check holds one worker stopped
+# (SIGSTOP) across the cancel and resumes it 2 s later. The cancel must not return
+# while that worker is still running.
+DLW="$PGC_WORKDIR/cxw"
+LWLOG="$PGC_WORKDIR/cxw_bg.log"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "SELECT pgcolumnar.parallel_export_parquet('t_big'::regclass, '$DLW', 4)" >"$LWLOG" 2>&1 &
+lwpid=$!
+for i in $(seq 1 200); do
+	[ "$(anyfiles "$DLW")" -ge 1 ] && break
+	sleep 0.1
+done
+lw_worker="$(q "SELECT pid FROM pg_stat_activity
+                WHERE backend_type = 'pgcolumnar parallel_export worker' LIMIT 1")"
+lw_stopped=no
+if [[ "$lw_worker" =~ ^[0-9]+$ ]] && kill -STOP "$lw_worker" 2>/dev/null; then
+	lw_stopped=yes
+	( sleep 2; kill -CONT "$lw_worker" 2>/dev/null ) &
+	lw_cont=$!
+fi
+q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+   WHERE query LIKE '%parallel_export_parquet%' AND state = 'active'
+     AND pid <> pg_backend_pid()" >/dev/null
+wait "$lwpid" 2>/dev/null || true
+lw_alive=0
+[ "$lw_stopped" = yes ] && kill -0 "$lw_worker" 2>/dev/null && lw_alive=1
+[ -n "${lw_cont:-}" ] && wait "$lw_cont" 2>/dev/null
+check "premise: local stop: a worker was stopped before the cancel" \
+	"$([ "$lw_stopped" = yes ] && echo yes || echo "no (worker pid [$lw_worker])")" yes
+check "premise: local stop: the export was cancelled, not completed" \
+	"$(grep -qiE 'canceling statement|canceled on user request' "$LWLOG" && echo cancelled || echo "completed ($(head -1 "$LWLOG"))")" cancelled
+check_num "local stop: no worker is still running when the cancel returns" "$lw_alive" 0
+
 # ---- destination-length guard (#863) ----------------------------------------
 # A destination that fits by itself but not with a generated suffix used to be
 # silently truncated: the export returned success and stamped _SUCCESS beside a
