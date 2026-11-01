@@ -3433,11 +3433,18 @@ iceberg_rest_scan	iceberg_rest_scan	a catalog error body too deep to parse raise
 iceberg_rest_scan	iceberg_rest_scan	a malformed catalog error body still reports the status (08P01)	15;16;17;18;19	2026-10-31	rest_error_model: the class-22 filter replaced by if (true), so every jsonb_in error is re-thrown (#1820)
 iceberg_rest_scan	iceberg_rest_scan	an invalid namespace-separator %G1 is refused	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	an invalid prefix a/../b is refused	15;16;17;18;19	never	-
-iceberg_rest_scan	iceberg_rest_scan	backend still up after the REST read	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: the backend aborts on a catalog 404 (abort() before the 42P01 refusal)
+iceberg_rest_scan	iceberg_rest_scan	backend still up after the REST read	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the backend aborts on a catalog 404 (abort() before the 42P01 refusal);iceberg_rest_tables(text, text[]) declared without STRICT (#1865)
 iceberg_rest_scan	iceberg_rest_scan	catalog ignores ?parent=: iceberg_rest_namespaces lists each once	15;16;17;18;19	2026-10-31	the #1859 review fixes reverted: top-level dedupe, 64-level bound, page-token cycle check (#1793)
 iceberg_rest_scan	iceberg_rest_scan	catalog refuses ?parent=: iceberg_rest_namespaces fails with its HTTP 400	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	config precedence: a prefix in overrides wins over the top-level key and defaults	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	config precedence: a top-level prefix wins over defaults	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	dotted level: a listed level array passes back to iceberg_rest_tables	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
+iceberg_rest_scan	iceberg_rest_scan	dotted level: iceberg_rest_namespace_levels lists the level db.x apart from db, x	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
+iceberg_rest_scan	iceberg_rest_scan	dotted level: iceberg_rest_namespaces still dot-joins the levels	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	dotted level: iceberg_rest_scan of ARRAY['db.x'] returns the five rows	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
+iceberg_rest_scan	iceberg_rest_scan	dotted level: iceberg_rest_table_location of ARRAY['db.x'] resolves the table	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
+iceberg_rest_scan	iceberg_rest_scan	dotted level: iceberg_rest_tables of ARRAY['db.x'] lists its tables	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
+iceberg_rest_scan	iceberg_rest_scan	dotted level: the text form 'db.x' still names the two levels db, x	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_namespaces lists the catalog's namespaces	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: iceberg_rest_namespaces drops the catalog's last namespace
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan matches iceberg_scan of the same table (same oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: loadTable always asks for namespace db, whatever namespace it was given;rest_get_json reverted to main: the catalog's ErrorModel body is never read, every 404 says no such table (#1820)
@@ -3462,6 +3469,20 @@ iceberg_rest_scan	iceberg_rest_scan	prefix in config defaults: iceberg_rest_tabl
 iceberg_rest_scan	iceberg_rest_scan	prefix in config defaults: iceberg_rest_tables lists the tables	15;16;17;18;19	2026-10-31	columnar_iceberg_rest.c: the #1793 fix reverted to main a247bea0 (#1793)
 iceberg_rest_scan	iceberg_rest_scan	premise: rest fixture server is up	15;16;17;18;19	never	-
 iceberg_rest_scan	iceberg_rest_scan	premise: the promoted-table rest fixture server is up	15;16;17;18;19	never	-
+iceberg_rest_scan	iceberg_rest_scan	separator refusal: a control byte in the refused level is escaped in the message	15;16;17;18;19	2026-11-01	match the separator per byte with strstr and print the level raw in the refusal (#1865);rest_append_levels sends a level that holds the catalog's separator (#1865)
+iceberg_rest_scan	iceberg_rest_scan	separator refusal: a newline in the refused level is escaped in the message	15;16;17;18;19	2026-10-31	rest_append_levels sends a level that holds the catalog's separator (#1865);rest_level_for_message escapes only the byte 0x1F, not the other control bytes (#1865)
+iceberg_rest_scan	iceberg_rest_scan	separator refusal: a separator byte above 0x7F does not match inside a UTF-8 character	15;16;17;18;19	2026-11-01	match the separator per byte with strstr and print the level raw in the refusal (#1865)
+iceberg_rest_scan	iceberg_rest_scan	separator refusal: in a LATIN1 database the dot after the byte E9 is refused	15;16;17;18;19	2026-10-31	rest_append_levels sends a level that holds the catalog's separator (#1865);rest_level_holds_separator steps by UTF-8 lengths in a non-UTF-8 database (#1865)
+iceberg_rest_scan	iceberg_rest_scan	text[] form: ARRAY['db','x'] names the same namespace as 'db.x'	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
+iceberg_rest_scan	iceberg_rest_scan	text[] form: a NULL level is refused	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
+iceberg_rest_scan	iceberg_rest_scan	text[] form: a level that holds the catalog's separator is refused	15;16;17;18;19	2026-11-01	rest_append_levels sends a level that holds the catalog's separator (#1865);the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
+iceberg_rest_scan	iceberg_rest_scan	text[] form: a listed level that holds the separator is listed, not walked	15;16;17;18;19	2026-11-01	rest_walk_namespaces walks into a level that holds the catalog's separator (#1865)
+iceberg_rest_scan	iceberg_rest_scan	text[] form: a two-dimensional namespace array is refused	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
+iceberg_rest_scan	iceberg_rest_scan	text[] form: an empty namespace array is refused	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
+iceberg_rest_scan	iceberg_rest_scan	text[] form: iceberg_rest_tables of a NULL namespace array returns no rows	15;16;17;18;19	2026-10-31	iceberg_rest_tables(text, text[]) declared without STRICT (#1865)
+iceberg_rest_scan	iceberg_rest_scan	text[] form: the documented filter keeps the LATERAL example running on a default-separator catalog	15;16;17;18;19	2026-10-31	rest_walk_namespaces walks into a level that holds the catalog's separator (#1865)
+iceberg_rest_scan	iceberg_rest_scan	text[] form: the documented filter keeps the LATERAL example running on a dot-separator catalog	15;16;17;18;19	2026-10-31	rest_walk_namespaces walks into a level that holds the catalog's separator (#1865)
+iceberg_rest_scan	iceberg_rest_scan	text[] form: the unfiltered LATERAL example fails on a dot-separator catalog	15;16;17;18;19	2026-10-31	rest_append_levels sends a level that holds the catalog's separator (#1865)
 iceberg_rest_scan	iceberg_rest_scan	the catalog reports the relocated metadata location	15;16;17;18;19	2026-10-21	columnar_iceberg_rest.c: no Authorization header is ever sent
 iceberg_rest_scan	iceberg_rest_scan	the catalog's 403 message reaches the error detail	15;16;17;18;19	2026-10-31	rest_get_json: errdetail removed from the 401/403, the NoSuchNamespace 404 and the other non-200 branches (#1820)
 iceberg_rest_scan	iceberg_rest_scan	the catalog's 404 message reaches the error detail	15;16;17;18;19	2026-10-31	rest_get_json reverted to main: the catalog's ErrorModel body is never read, every 404 says no such table (#1820)
@@ -7988,10 +8009,14 @@ server_file_privilege	server_file_privilege	no role is refused by the pg_read_se
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_current_snapshot	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_data_files	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_fdw_scan	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_namespace_levels	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_namespaces	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_scan	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_scan_text_array	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_table_location	15;16;17;18;19	2026-10-20	iceberg_rest_table_location without its pg_read_server_files gate
+server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_table_location_text_array	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_tables	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_rest_tables_text_array	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: iceberg_scan	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: import_arrow	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_read_server_files gate: import_parquet	15;16;17;18;19	never	-
@@ -8025,10 +8050,14 @@ server_file_privilege	server_file_privilege	the pg_read_server_files role gets p
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_current_snapshot	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_data_files	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_fdw_scan	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_rest_namespace_levels	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_rest_namespaces	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_rest_scan	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_rest_scan_text_array	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_rest_table_location	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_rest_table_location_text_array	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_rest_tables	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_rest_tables_text_array	15;16;17;18;19	2026-11-01	the text[] namespace overloads and iceberg_rest_namespace_levels absent, main's src/columnar_iceberg_rest.c and install scripts (#1865)
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: iceberg_scan	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: import_arrow	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_read_server_files role gets past the gate: import_parquet	15;16;17;18;19	never	-

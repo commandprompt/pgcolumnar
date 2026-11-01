@@ -63,6 +63,7 @@ SQLFILE="$_epp_root/pgcolumnar--$_epp_ver.sql"
 #   iceberg_rest_table_location  reads an external REST catalog, server-file role (#388 phase 7)
 #   iceberg_rest_scan      reads a REST-cataloged table's FILES, server-file role (#388 phase 7)
 #   iceberg_rest_namespaces / iceberg_rest_tables  list a REST catalog, server-file role (#388 phase 7)
+#   iceberg_rest_namespace_levels  lists a REST catalog's namespaces as text[], server-file role (#1865)
 #   read_manifest_list     reads an Avro FILE, gated by the server-file role (#388)
 #   row_tid                maps a row number to a TID by arithmetic (#1294): it
 #                          takes no relation and reads nothing. A version that
@@ -81,7 +82,7 @@ SQLFILE="$_epp_root/pgcolumnar--$_epp_ver.sql"
 # line end is followed by a newline rather than a space, so it silently fails to
 # match and reads as an unbucketed function. That is not hypothetical: it is what
 # the first run of this suite reported for parquet_fdw_validator.
-EXEMPT="columnar_handler parquet_fdw_handler parquet_fdw_validator iceberg_fdw_handler iceberg_fdw_validator iceberg_catalog_fdw_validator parquet_schema read_parquet file_split_offsets iceberg_current_snapshot iceberg_data_files iceberg_scan iceberg_rest_table_location iceberg_rest_scan iceberg_rest_namespaces iceberg_rest_tables read_avro_manifest read_manifest_list row_tid rollup_record_dependencies approx_count_distinct approx_count_distinct_transfn approx_count_distinct_combinefn approx_count_distinct_serialfn approx_count_distinct_deserialfn approx_count_distinct_finalfn"
+EXEMPT="columnar_handler parquet_fdw_handler parquet_fdw_validator iceberg_fdw_handler iceberg_fdw_validator iceberg_catalog_fdw_validator parquet_schema read_parquet file_split_offsets iceberg_current_snapshot iceberg_data_files iceberg_scan iceberg_rest_table_location iceberg_rest_scan iceberg_rest_namespaces iceberg_rest_namespace_levels iceberg_rest_tables read_avro_manifest read_manifest_list row_tid rollup_record_dependencies approx_count_distinct approx_count_distinct_transfn approx_count_distinct_combinefn approx_count_distinct_serialfn approx_count_distinct_deserialfn approx_count_distinct_finalfn"
 EXEMPT="$(echo $EXEMPT)"
 
 # Relation-taking entry points with NO privilege check of any kind on main.

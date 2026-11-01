@@ -516,6 +516,27 @@ true until the next version shipped.
 
 ### Fixed
 
+- The REST functions can now name a namespace level that contains a dot (#1865).
+  Before, `iceberg_rest_table_location`, `iceberg_rest_scan` and
+  `iceberg_rest_tables` split their namespace argument on every dot, so the
+  single level `a.b` reached the catalog as the two levels `a` and `b`. Each now
+  also takes the namespace as a `text[]` of levels, such as `ARRAY['a.b']`. The
+  new `iceberg_rest_namespace_levels` lists namespaces in the `text[]` form, so
+  a row passes back unchanged, unless one of its levels holds the catalog's
+  separator. A level that contains the catalog's own namespace separator is
+  refused with SQLSTATE 22023 in both forms, because the catalog would split it;
+  the Apache Iceberg REST catalog's separator is `.`. This also changes the
+  dotted `text` form: a level that holds the separator, such as one with the
+  byte 0x1F on a default-separator catalog, was sent and named the wrong
+  namespace, and is now refused. `iceberg_rest_namespaces` no longer asks for
+  the children of such a level. The error message shows a control byte in the
+  level as `\xNN`. The separator matches whole characters of the database
+  encoding only. So in a UTF-8 database, a one-byte separator at or above 0x80
+  does not match inside a multibyte character. In a LATIN1 database, `é` is one
+  byte, and a dot after it is still refused. docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`; gate checks in
+  `test/server_file_privilege.sh`.
+  Found in review of PR #1859.
 - The Parquet reader refuses a footer whose schema does not match its pages, instead
   of returning wrong values with no error (#1855). A `repetition_type` that is not
   0, 1 or 2 is refused when the file is opened. A level histogram whose length does

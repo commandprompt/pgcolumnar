@@ -1583,4 +1583,14 @@ guard_tests 854
 # test_native_parquet_units.py 7, test_fuzz_parquet.py 5, test_native_read_parquet.py 3, test_iceberg_scan.py 1).
 # Both sides already held main 56a95f5f, so the two counts share it once; by collection on the merged tree:
 # `5063 tests collected`, the exact union of the two sides' collected test ids.
-cluster_tests 5063
+# cluster_tests 5063 -> 5084 for #1865's thirteen tests in test_iceberg_rest_scan.py (a namespace level
+# that holds a dot, named by a text[]; the level listing; the refusals) and eight in
+# test_server_file_privilege.py (the gate on the text[] forms and the level listing), by collection:
+# `5779 tests collected`, minus 854.
+# cluster_tests 5084 -> 5088 for #1865's review of PR #1884: four tests in test_iceberg_rest_scan.py (the
+# documented LATERAL example with and without its filter, the escaped control byte, a separator byte
+# above 0x7F inside a UTF-8 character), by collection: `5783 tests collected`, minus 854.
+# cluster_tests 5088 -> 5092 for #1865's second review of PR #1884: four tests in test_iceberg_rest_scan.py
+# (the dot after the byte E9 in a LATIN1 database, an escaped newline, a NULL namespace array, the
+# documented filter on a default-separator catalog), by collection: `5787 tests collected`, minus 854.
+cluster_tests 5092
