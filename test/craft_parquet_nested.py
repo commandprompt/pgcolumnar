@@ -18,8 +18,14 @@ Each file holds one nested column and an int32 column n, two rows:
                  groups go and the leaf becomes `repeated int64 l`. Both shapes
                  have max_def 1 and max_rep 1, so the pages stay valid.
 
+  qname.parquet  s struct<"Weird Name" int16>      (a field name that needs quotes)
+
 req.parquet has no n: l REQUIRED list<REQUIRED int64>, s REQUIRED
 struct<a REQUIRED int64>, o OPTIONAL list<REQUIRED int64>.
+
+leafnull.parquet has no n: m REQUIRED map<string, OPTIONAL int64>, l REQUIRED
+list<OPTIONAL struct<x OPTIONAL int64>>, o OPTIONAL map<string, OPTIONAL int64>.
+Only o has an OPTIONAL element above its first repeated level.
 """
 import os
 import sys
@@ -47,6 +53,7 @@ write("sos", "s", pa.struct([("t", pa.struct([("a", I64), ("b", STR)]))]),
 write("smap", "s", pa.struct([("m", MAP)]), [{"m": [("k", 1)]}, {"m": [("z", 3)]}])
 write("lmap", "l", pa.list_(MAP), [[[("k", 1)]], [[("z", 3)]]])
 write("lol", "l", pa.list_(pa.list_(I64)), [[[1], [2, 3]], [[4]]])
+write("qname", "s", pa.struct([("Weird Name", pa.int16())]), [{"Weird Name": 1}, {"Weird Name": 2}])
 
 req = pa.schema([
     pa.field("l", pa.list_(pa.field("element", I64, nullable=False)), nullable=False),
@@ -56,6 +63,16 @@ req = pa.schema([
 pq.write_table(pa.Table.from_pylist([{"l": [1], "s": {"a": 1}, "o": [5]},
                                      {"l": [2], "s": {"a": 2}, "o": None}], schema=req),
                f"{W}/req.parquet")
+
+
+leafnull = pa.schema([
+    pa.field("m", MAP, nullable=False),
+    pa.field("l", pa.list_(pa.field("element", pa.struct([("x", I64)]), nullable=True)), nullable=False),
+    pa.field("o", MAP, nullable=True),
+])
+pq.write_table(pa.Table.from_pylist([{"m": [("k", 1)], "l": [{"x": 1}], "o": [("j", 2)]},
+                                     {"m": [("z", None)], "l": [None], "o": None}], schema=leafnull),
+               f"{W}/leafnull.parquet")
 
 
 # ---- the legacy two-level list, by a footer rewrite ---------------------------

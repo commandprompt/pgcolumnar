@@ -1605,4 +1605,7 @@ guard_tests 854
 # cluster_tests 5113 -> 5123 for #1893's review: test_native_parquet_schema.py drops the map-as-not-supported
 # test and adds eleven (nine nested shapes listed one row per leaf, the reported rows read as a column list,
 # a REQUIRED list or struct not nullable), by collection: `5977 tests collected`, less guard_tests 854.
-cluster_tests 5123
+# cluster_tests 5123 -> 5125 for #1893's second review: test_native_parquet_schema.py adds two (a leaf
+# row's nullable rule, a struct field name that needs quotes), by collection: `5979 tests collected`, less
+# guard_tests 854.
+cluster_tests 5125

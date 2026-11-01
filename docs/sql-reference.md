@@ -1104,6 +1104,7 @@ as one column gets one row under its own name:
 - A struct of scalar fields reports its field list, for example
   `composite (a bigint, b text)`. Create a composite type with those fields,
   `CREATE TYPE s_t AS (a bigint, b text)`, and declare the column as `s_t`.
+  A field name that needs quotes comes quoted, so the list works as written.
 
 `read_parquet` reads any other nesting leaf by leaf, so `parquet_schema` reports
 one row for each leaf. A map, a list of structs, a struct of a struct and a struct
@@ -1113,6 +1114,8 @@ the leaf repeats. So a map with string keys and bigint values reports
 `m.key_value.key` as `text[]` and `m.key_value.value` as `bigint[]`. A dotted name
 must be quoted in a column definition list, or you can use any other name: the
 reader matches columns by position.
+Two rows can share a name, for example when the file also has a top-level column
+named `s.t.list.element`. Give one of them another name in your list.
 
 `data_type` is NULL for a leaf that no column type reads correctly. A leaf under
 two repeated levels, such as the elements of a list of lists, is one example.

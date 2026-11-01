@@ -335,3 +335,44 @@ def test_a_required_list_or_struct_is_not_nullable(pgc_conn, server_dir, expect)
                               "FROM pgcolumnar.parquet_schema(%s)) s", (str(w / "req.parquet"),)),
                     "l:false,s:false,o:true",
                     "parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893)")
+
+
+def test_a_leaf_row_is_nullable_only_above_its_first_repeated_level(pgc_conn, server_dir, expect):
+    # A null above the first repeated level leaves the row without a value; below it,
+    # a null is one missing array element. In leafnull only o's leaves pass that test.
+    w = _crafted(server_dir, expect, "parquet_schema reports a leaf row nullable only when an OPTIONAL element sits above its first repeated level (#1893)")
+    if w is None:
+        return
+    with pgc_conn.cursor() as cur:
+        expect.text(_one(cur, "SELECT string_agg(column_name || ':' || nullable::text, ',' ORDER BY ord) "
+                              "FROM (SELECT column_name, nullable, row_number() OVER () AS ord "
+                              "FROM pgcolumnar.parquet_schema(%s)) s", (str(w / "leafnull.parquet"),)),
+                    "m.key_value.key:false,m.key_value.value:false,l.list.element.x:false,"
+                    "o.key_value.key:true,o.key_value.value:true",
+                    "parquet_schema reports a leaf row nullable only when an OPTIONAL element sits above its first repeated level (#1893)")
+
+
+def test_a_struct_field_name_that_needs_quotes_comes_quoted(pgc_conn, server_dir, expect):
+    # The composite text is the field list for CREATE TYPE: measure the text, the
+    # CREATE TYPE built from it, and the read through that type.
+    w = _crafted(server_dir, expect, "parquet_schema quotes a struct field name that needs quotes, so CREATE TYPE takes the composite text (#1893)")
+    if w is None:
+        return
+    path = str(w / "qname.parquet")
+    with pgc_conn.cursor() as cur:
+        txt = _one(cur, "SELECT data_type FROM pgcolumnar.parquet_schema(%s) WHERE column_name = 's'", (path,))
+    parts = [str(txt)]
+    for sql in ("CREATE TYPE nest_q AS " + str(txt).removeprefix("composite "),
+                "SELECT string_agg((s).\"Weird Name\" || '/' || n, ';' ORDER BY n) "
+                "FROM pgcolumnar.read_parquet(%s) AS t(s nest_q, n integer)"):
+        try:
+            with pgc_conn.cursor() as cur:
+                if sql.startswith("CREATE"):
+                    cur.execute(sql)
+                    parts.append("created")
+                else:
+                    parts.append(str(_one(cur, sql, (path,))))
+        except psycopg.Error as exc:
+            parts.append(exc.diag.message_primary or str(exc))
+    expect.text("|".join(parts), 'composite ("Weird Name" smallint)|created|1/1;2/2',
+                "parquet_schema quotes a struct field name that needs quotes, so CREATE TYPE takes the composite text (#1893)")

@@ -296,6 +296,27 @@ if python3 -I "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_nested.py" "$PGC_WOR
 		      FROM (SELECT column_name, nullable, row_number() OVER () AS ord
 		            FROM pgcolumnar.parquet_schema('$PGC_WORKDIR/req.parquet')) s;")" \
 		"l:false,s:false,o:true"
+	# A leaf row's nullable asks whether an OPTIONAL element sits on the leaf's
+	# path above its first repeated level: a null there leaves the row without a
+	# value. Below that level a null is one missing array element, not a missing
+	# row. In leafnull only o's leaves pass that test; m's optional value and l's
+	# optional element and x all sit below the repeated group.
+	check_text "parquet_schema reports a leaf row nullable only when an OPTIONAL element sits above its first repeated level (#1893)" \
+		"$(q "SELECT string_agg(column_name || ':' || nullable::text, ',' ORDER BY ord)
+		      FROM (SELECT column_name, nullable, row_number() OVER () AS ord
+		            FROM pgcolumnar.parquet_schema('$PGC_WORKDIR/leafnull.parquet')) s;")" \
+		"m.key_value.key:false,m.key_value.value:false,l.list.element.x:false,o.key_value.key:true,o.key_value.value:true"
+	# The composite text is the field list for CREATE TYPE, so a field name that
+	# needs quotes must come quoted. Measure the text, the CREATE TYPE built from
+	# it, and the read through that type.
+	qtxt=$(q "SELECT data_type FROM pgcolumnar.parquet_schema('$PGC_WORKDIR/qname.parquet') WHERE column_name = 's';")
+	qmade=$(psql_run "CREATE TYPE nest_q AS ${qtxt#composite };" 2>&1 | head -1 | sed 's/^ERROR:  //')
+	qread=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		-c "SELECT string_agg((s).\"Weird Name\" || '/' || n, ';' ORDER BY n) FROM pgcolumnar.read_parquet('$PGC_WORKDIR/qname.parquet') AS t(s nest_q, n integer);" \
+		2>&1 | head -1 | sed 's/^ERROR:  //')
+	check_text "parquet_schema quotes a struct field name that needs quotes, so CREATE TYPE takes the composite text (#1893)" \
+		"$qtxt|${qmade:-created}|$qread" \
+		'composite ("Weird Name" smallint)|created|1/1;2/2'
 else
 	for c in "parquet_schema lists a map column one row per leaf, each an array (#1893)" \
 		"parquet_schema lists a list of a two-field struct one row per leaf (#1893)" \
@@ -307,7 +328,9 @@ else
 		"parquet_schema reports NULL for the leaf of a list of lists, repeated twice (#1893)" \
 		"parquet_schema reports a legacy two-level list by its name as an array (#1893)" \
 		"read_parquet reads each nested file with the column list parquet_schema reports (#1893)" \
-		"parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893)"; do
+		"parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893)" \
+		"parquet_schema reports a leaf row nullable only when an OPTIONAL element sits above its first repeated level (#1893)" \
+		"parquet_schema quotes a struct field name that needs quotes, so CREATE TYPE takes the composite text (#1893)"; do
 		check_skip "$c" "SKIP  $c (craft_parquet_nested.py failed: pyarrow missing?)" "no fixtures"
 	done
 fi
