@@ -534,6 +534,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- The pytest layer no longer calls `expected_unrunnable.txt` stale for a listed
+  test that failed or was lost to a crashed xdist worker (#1914). The check read
+  "did not decline" as "ran", and its message told the reader to delete a
+  correct row. Now only a listed test that passed makes its row stale. The run
+  still exits 1 for the failure or the lost test. `test_layer.py`.
+
+- Two provenance comments in `test/pytest/expected_tests.txt` now give counts
+  that add up (#1919). A merge renumbered their `cluster_tests` values but kept
+  the counts collected on the branch. The comments now say where each count
+  was taken. No count changes.
+
 - Two reads of one remote object in one statement now read the same version
   (#1894). Before, each read pinned the version its own HEAD saw. If another
   client overwrote the object between the two reads, a self-join or a
