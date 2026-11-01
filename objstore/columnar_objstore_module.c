@@ -385,7 +385,10 @@ os_check_endpoint_allowed(PgColumnarObjHandle *h)
 /*
  * Link-local refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
  * the cloud-metadata credential-theft surface (IMDS lives at
- * 169.254.169.254) and have no legitimate object-storage use. Checked after
+ * 169.254.169.254) and have no legitimate object-storage use. Alibaba
+ * Cloud's metadata address 100.100.100.200 is refused too (#1848). A NAT64
+ * prefix the operator chose cannot be recognised, so 169.254.169.254 behind
+ * one is not refused; docs/limitations.md says so. Checked after
  * resolution so a name pinned to a link-local address is caught, and the
  * whole connection is refused rather than the address skipped, so a resolver
  * returning a mixed set cannot steer the choice.
@@ -397,7 +400,12 @@ os_addr_is_linklocal(const struct addrinfo *ai)
 	{
 		uint32		a = ntohl(((const struct sockaddr_in *) ai->ai_addr)->sin_addr.s_addr);
 
-		return (a & 0xFFFF0000U) == 0xA9FE0000U;	/* 169.254/16 */
+		/*
+		 * 100.100.100.200 is Alibaba Cloud's instance-metadata address (#1848).
+		 * Only that address: the rest of 100.64.0.0/10 is carrier-grade NAT.
+		 */
+		return (a & 0xFFFF0000U) == 0xA9FE0000U ||	/* 169.254/16 */
+			a == 0x646464C8U;	/* 100.100.100.200 */
 	}
 	if (ai->ai_family == AF_INET6)
 	{
@@ -482,10 +490,12 @@ os_connect(PgColumnarObjHandle *h)
 			freeaddrinfo(addrs);
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("columnar: \"%s\" resolves into a link-local range, "
-							"which object storage never legitimately uses",
+					 errmsg("columnar: \"%s\" resolves into a link-local range "
+							"or an instance-metadata address, which object "
+							"storage never legitimately uses",
 							h->host),
 					 errdetail("Link-local addresses (169.254.0.0/16, fe80::/10) "
+							   "and Alibaba Cloud's 100.100.100.200 "
 							   "are refused unconditionally: they are the cloud "
 							   "instance-metadata surface.")));
 		}

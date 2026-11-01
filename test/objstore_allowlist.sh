@@ -120,4 +120,28 @@ check "link-local: the refusal names the range, not the list" \
 		| grep -c "link-local")" "1"
 check_num "link-local: the listed ordinary host still works beside it" "$(q "$Q")" "1000"
 
+# ---- Alibaba Cloud instance metadata, outside 169.254/16 (#1848) -------------
+# Alibaba Cloud serves instance metadata at 100.100.100.200, in 100.64.0.0/10
+# (shared address space). The guard refuses that one address, not the /10, which
+# carrier-grade NAT uses legitimately. The URL carries the IPv4 literal, so no
+# resolver is involved. statement_timeout 3s bounds the read: without the guard a
+# connect() to the address is tried, and 08006 or 57014 then shows that it was.
+ALI_Q="SELECT count(*) FROM pgcolumnar.read_parquet('http://100.100.100.200:1/x.parquet') AS (a int8)"
+set_list "100.100.100.200, 100.100.100.201, 127.0.0.1"
+check "Alibaba metadata 100.100.100.200: refused 42501 despite being listed" \
+	"$(sqlstate_of "SET statement_timeout = '3s'; $ALI_Q")" "42501"
+ALI_OUT="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
+	-c "SET statement_timeout = '3s'" -c "$ALI_Q" 2>&1)"
+# The address when the DETAIL names it, else the whole first ERROR line as the measurement.
+check "Alibaba metadata: the refusal detail names 100.100.100.200" \
+	"$(printf '%s\n' "$ALI_OUT" | grep -o '100\.100\.100\.200' | head -1 | grep . \
+		|| printf '%s\n' "$ALI_OUT" | grep -m1 'ERROR' | grep . || echo "no error")" "100.100.100.200"
+# Control: the next address in 100.64.0.0/10 is not refused, so the guard did not
+# take the whole range. A connect is tried (08006 unreachable, or 57014 at the 3s
+# timeout). Any other SQLSTATE, or none, prints as the measurement.
+ALI_NEXT="$(sqlstate_of "SET statement_timeout = '3s'; SELECT count(*) FROM pgcolumnar.read_parquet('http://100.100.100.201:1/x.parquet') AS (a int8)")"
+case "$ALI_NEXT" in 08006|57014) ALI_NEXT="connect tried" ;; "") ALI_NEXT="no error" ;; esac
+check "100.100.100.201 (next to Alibaba metadata): not refused, a connect is tried" "$ALI_NEXT" "connect tried"
+check_num "Alibaba metadata: the listed ordinary host still works beside it" "$(q "$Q")" "1000"
+
 pgc_summary

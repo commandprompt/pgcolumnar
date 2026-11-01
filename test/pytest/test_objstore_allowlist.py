@@ -154,6 +154,35 @@ def test_the_endpoint_allow_list(pgc_cluster, pgc_conn, server_dir, expect):
         expect.text(state, "42501", "link-local: refused 42501 despite being listed")
         expect.num(1 if "link-local" in msg else 0, 1, "link-local: the refusal names the range, not the list")
         expect.num(_state(pgc_cluster, q)[2], 1000, "link-local: the listed ordinary host still works beside it")
+
+        # ---- Alibaba Cloud instance metadata, outside 169.254/16 (#1848) -----
+        # 100.100.100.200 sits in 100.64.0.0/10, which carrier-grade NAT uses, so
+        # the guard refuses the one address, not the /10. statement_timeout 3s
+        # bounds the read: without the guard a connect() is tried, and 08006 or
+        # 57014 then shows that it was.
+        set_list("100.100.100.200, 100.100.100.201, 127.0.0.1")
+        ali = "SELECT count(*) FROM pgcolumnar.read_parquet('http://100.100.100.200:1/x.parquet') AS (a int8)"
+        expect.text(_state(pgc_cluster, ali, pre="SET statement_timeout = '3s'")[0], "42501",
+                    "Alibaba metadata 100.100.100.200: refused 42501 despite being listed")
+        import psycopg
+        try:
+            with psycopg.connect(f"host=127.0.0.1 port={pgc_cluster.port} user=postgres dbname=postgres",
+                                 autocommit=True) as c:
+                c.execute("SET statement_timeout = '3s'")
+                c.execute(ali)
+            detail = "no error"
+        except psycopg.Error as e:
+            # The address when the DETAIL names it, else the whole error as the measurement.
+            detail = e.diag.message_detail or ""
+            detail = "100.100.100.200" if "100.100.100.200" in detail else f"{e.sqlstate}: {e}"
+        expect.text(detail, "100.100.100.200", "Alibaba metadata: the refusal detail names 100.100.100.200")
+        nxt = _state(pgc_cluster,
+                     "SELECT count(*) FROM pgcolumnar.read_parquet('http://100.100.100.201:1/x.parquet') AS (a int8)",
+                     pre="SET statement_timeout = '3s'")[0]
+        nxt = "connect tried" if nxt in ("08006", "57014") else (nxt or "no error")
+        expect.text(nxt, "connect tried",
+                    "100.100.100.201 (next to Alibaba metadata): not refused, a connect is tried")
+        expect.num(_state(pgc_cluster, q)[2], 1000, "Alibaba metadata: the listed ordinary host still works beside it")
     finally:
         with pgc_conn.cursor() as cur:
             cur.execute("ALTER SYSTEM RESET pgcolumnar.objstore_allowed_endpoints")

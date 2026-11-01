@@ -181,8 +181,11 @@ it as narrow as the deployment allows.
 
 - **Link-local and instance-metadata addresses are refused unconditionally, even
   when listed.** The ranges `169.254.0.0/16` and `fe80::/10` are the
-  cloud-credential-theft surface. They have no legitimate object-storage use. You
-  cannot rely on the allow-list alone to block them, and you do not need to.
+  cloud-credential-theft surface. So is Alibaba Cloud's metadata address
+  `100.100.100.200`. They have no legitimate object-storage use. You cannot rely
+  on the allow-list alone to block them, and you do not need to. The module
+  cannot recognise every path to them: see
+  [Object storage address refusal](limitations.md#object-storage-address-refusal).
 - **Prefer per-role credentials over ambient environment keys.** The object-storage
   foreign-data wrapper takes `access_key_id`, `secret_access_key`, `session_token`,
   and `credentials_required` from a foreign server and user mapping. Each role then

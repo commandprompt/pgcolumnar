@@ -466,6 +466,14 @@ true until the next version shipped.
 
 ### Fixed
 
+- The object-storage module now refuses a host that resolves to Alibaba Cloud's
+  instance-metadata address `100.100.100.200`, even when the host is listed in
+  `pgcolumnar.objstore_allowed_endpoints` (#1848). Before, it tried to connect.
+  It refuses only that address. The rest of `100.64.0.0/10` is carrier-grade NAT
+  and stays reachable. The module cannot recognise a NAT64 prefix that your network
+  chose, so `169.254.169.254` behind such a prefix is still not refused.
+  [Limitations](docs/limitations.md#object-storage-address-refusal) now says so.
+  `test/objstore_allowlist.sh` and `test_objstore_allowlist.py`.
 - `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
   URL now write the object instead of crashing the backend (#1779). Every write
   request was signed, and a plain-HTTP target has no region or credentials, so the

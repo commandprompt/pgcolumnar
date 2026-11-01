@@ -399,8 +399,9 @@ Remote access is default-deny. `pgcolumnar.objstore_allowed_endpoints` lists the
 hosts the module may reach, as `host` or `host:port`, comma-separated. It is empty
 by default, so no remote host is reachable until an administrator lists it. It is a
 superuser-only setting, so a role cannot widen its own reach. A link-local or
-instance-metadata address, including `169.254.169.254`, is refused even when it is
-listed, so the setting cannot open a path to cloud credentials.
+instance-metadata address is refused even when it is listed, so the setting cannot
+open a path to cloud credentials. This covers `169.254.169.254` and Alibaba Cloud's
+`100.100.100.200`.
 
 ```ini
 # postgresql.conf

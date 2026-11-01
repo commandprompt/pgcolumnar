@@ -5534,6 +5534,10 @@ objstore_addressing	objstore_addressing	s3:// prefix read, virtual-host	15;16;17
 objstore_addressing	objstore_addressing	s3:// with no endpoint demands one (names AWS_ENDPOINT_URL)	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	virtual-host put the KEY ALONE in the path (no bucket segment)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
 objstore_addressing	objstore_addressing	virtual-host read == path-style read (same object, different addressing)	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	100.100.100.201 (next to Alibaba metadata): not refused, a connect is tried	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	Alibaba metadata 100.100.100.200: refused 42501 despite being listed	15;16;17;18;19	2026-11-01	reverted the 100.100.100.200 refusal in os_addr_is_linklocal (#1848)
+objstore_allowlist	objstore_allowlist	Alibaba metadata: the listed ordinary host still works beside it	15;16;17;18;19	never	-
+objstore_allowlist	objstore_allowlist	Alibaba metadata: the refusal detail names 100.100.100.200	15;16;17;18;19	2026-11-01	reverted the 100.100.100.200 refusal in os_addr_is_linklocal (#1848)
 objstore_allowlist	objstore_allowlist	a multi-entry list matches any entry	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	a non-superuser cannot widen the list (42501)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it
 objstore_allowlist	objstore_allowlist	a superuser session SET works (admin override)	15;16;17;18;19	2026-10-14	objstore_allowed_endpoints defined PGC_SIGHUP, so no session may SET it

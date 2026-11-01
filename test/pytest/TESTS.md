@@ -7547,7 +7547,7 @@ The pytest twin of `test/objstore_crlf.sh` (ported for #1341), every check by th
 
 ## 127. test_objstore_allowlist.py: the endpoint allow-list, empty by default
 
-The pytest twin of `test/objstore_allowlist.sh` (#393, ported for #1341), every check by the shell's name. An empty `pgcolumnar.objstore_allowed_endpoints` refuses all remote reads with 42501 and names the setting; a local read is untouched. A list admits exactly what it names, host or host:port, any entry of several. Only a superuser may change it (SUSET), and a superuser session SET is the admin override, asserted with the configured list empty so only the SET can admit the read. A link-local address is refused even when listed, before any connection, naming the range.
+The pytest twin of `test/objstore_allowlist.sh` (#393, ported for #1341), every check by the shell's name. An empty `pgcolumnar.objstore_allowed_endpoints` refuses all remote reads with 42501 and names the setting; a local read is untouched. A list admits exactly what it names, host or host:port, any entry of several. Only a superuser may change it (SUSET), and a superuser session SET is the admin override, asserted with the configured list empty so only the SET can admit the read. A link-local address is refused even when listed, before any connection, naming the range. Alibaba Cloud's metadata address 100.100.100.200 is refused the same way, and the detail names it (#1848). The next address, 100.100.100.201, is not refused: a connect is tried, so the guard did not take all of 100.64.0.0/10.
 
 The list is changed by ALTER SYSTEM and a reload, and reset in a `finally`. The fixture server is the file's own Range-capable `http.server`, serving one Parquet file from `server_dir`.
 
@@ -7555,7 +7555,7 @@ The list is changed by ALTER SYSTEM and a reload, and reset in a `finally`. The 
 
 | test | what it holds |
 | --- | --- |
-| `test_the_endpoint_allow_list` | the default deny, the list's matching, SUSET and the admin override, and the link-local refusal |
+| `test_the_endpoint_allow_list` | the default deny, the list's matching, SUSET and the admin override, the link-local refusal, and the 100.100.100.200 refusal with its 100.100.100.201 control |
 
 ## 128. test_objstore_userinfo.py: userinfo in a URL is refused on every entry point
 
