@@ -383,6 +383,16 @@ def ea(pgc_cluster):
         r["early 200"] = f"{e200} | " + _value(
             dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet('s3://{BUCKET}/early200.parquet') "
                  f"AS t({mid_cols})")
+        # a 200 to the headers alone framed by connection close (#1880): the store is
+        # closing, so the write is not taken as done (#1903 merge)
+        hook = work / "__expect_early_200_close__"
+        hook.write_text("")
+        e200c = _refusal(dsn, "SELECT pgcolumnar.export_parquet('ea_mid', "
+                              f"'s3://{BUCKET}/early200close.parquet')")
+        hook.unlink()
+        e200c_obj = "an object" if (work / BUCKET / "early200close.parquet").exists() \
+            else "no object"
+        r["early 200 close"] = f"{e200c} | {e200c_obj}"
         # a store that answers neither 100 nor the refusal within the wait: #1895's
         # case again, and over http the early answer is still read after the failed send
         hook = work / "__deny_delay__"
@@ -639,6 +649,15 @@ def test_a_200_before_the_body_still_sends_the_body(ea, expect):
     expect.text(ea["early 200"], "300000 | 300000",
                 "a single PUT answered 200 before its body still sends the body, and the object "
                 "holds the rows")
+
+
+def test_a_200_with_no_framing_before_the_body_is_not_taken_as_written(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["early 200 close"],
+                f'08006: columnar: PUT to "s3://{BUCKET}/early200close.parquet" failed before a '
+                "response | no hint | no object",
+                "a single PUT answered 200 with no framing before its body is not taken as written")
 
 
 def test_a_refusal_after_the_expect_wait_keeps_the_403_over_http(ea, expect):

@@ -26,6 +26,8 @@
 #      request again without Expect. A wait that runs out stops Expect for the
 #      handle's later writes, so a store that ignores it costs the wait once, not
 #      once per part; a 2xx before the body still gets the body (#1903 review).
+#      A 2xx before the body with no length and no chunked framing ends at
+#      connection close, so it is not taken as the write's answer (#1903 merge).
 #
 # Facet A (s3://<bucket>/_ in prefix and glob errors) is #1869's fix and its
 # arms are in test/objstore_export_open_uploads.sh.
@@ -319,6 +321,18 @@ done
 check "a single PUT answered 200 before its body still sends the body, and the object holds the rows" \
 	"$E200 | $(q "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/early200.parquet') AS t($MID_COLS)")" \
 	"300000 | 300000"
+
+# A 200 to the headers alone with neither a Content-Length nor chunked framing
+# is a reply whose body ends at connection close (#1880), so the store is
+# closing the connection, not reading the body. The write is not taken as done
+# (#1903 merge): the body is not sent, and the export fails before a response.
+: > "$PGC_WORKDIR/__expect_early_200_close__"
+E200C="$(refusal "SELECT pgcolumnar.export_parquet('ea_mid', 's3://$BUCKET/early200close.parquet')")"
+rm -f "$PGC_WORKDIR/__expect_early_200_close__"
+E200C_OBJ="$( [ -e "$PGC_WORKDIR/$BUCKET/early200close.parquet" ] && echo "an object" || echo "no object")"
+check "a single PUT answered 200 with no framing before its body is not taken as written" \
+	"$E200C | $E200C_OBJ" \
+	"08006: columnar: PUT to \"s3://$BUCKET/early200close.parquet\" failed before a response | no hint | no object"
 
 # A store that answers neither 100 nor the refusal within the wait: the body is
 # being sent when the refusal comes, which is #1895's case again, and over

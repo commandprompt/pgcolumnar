@@ -155,6 +155,13 @@
 #                         since a request has one final answer (#1903 review).
 #                         A client that takes the 200 for the write and never
 #                         sends the body leaves no object.
+#   __expect_early_200_close__  when it exists, a single PUT (no partNumber)
+#                         carrying Expect is answered 200 from its headers with
+#                         no Content-Length and no chunked framing, a reply that
+#                         ends at connection close. The body, if it comes, is
+#                         read, then the connection is closed and nothing is
+#                         stored. A client that takes that 200 for the write
+#                         reports an object that does not exist (#1903 merge).
 # --seed-upload KEY (repeatable) opens an upload at KEY ("bucket/key") before
 # the first request: an upload some other writer left, which a client must not
 # abort as its own.
@@ -258,6 +265,7 @@ class Handler(BaseHTTPRequestHandler):
         # request's body, so _deny can tell whether this one's was read.
         self._body = None
         self._expect = False
+        self._drop = False
         real = getattr(self, "_real_wfile", None)
         if real is not None:
             self.wfile = real
@@ -292,6 +300,16 @@ class Handler(BaseHTTPRequestHandler):
         if self._expect:
             self._expect = False
             if (self.command == "PUT" and "partNumber=" not in self.path and
+                    os.path.exists(os.path.join(self.server.rootdir,
+                                                "__expect_early_200_close__"))):
+                # 200 to the headers alone, framed by connection close; the
+                # body is read and dropped, and do_PUT closes (#1903 merge).
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.flush()
+                self._drop = True
+                self.close_connection = True
+            elif (self.command == "PUT" and "partNumber=" not in self.path and
                     os.path.exists(os.path.join(self.server.rootdir,
                                                 "__expect_early_200__"))):
                 # 200 to the headers alone; whatever the handler answers after
@@ -766,6 +784,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         self._log_line()
         if not self._sigv4_check():
+            return
+        if self._drop:
+            # __expect_early_200_close__: answered already; store nothing
+            self.close_connection = True
             return
         q = self._qdict()
         _, local = self._resolve()

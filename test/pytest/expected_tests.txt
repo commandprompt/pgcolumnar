@@ -1610,4 +1610,6 @@ guard_tests 854
 # premise, eight Expect: 100-continue arms, a multipart premise, Expect on one part only against a store that
 # ignores it, a 200 before the body still sends the body; five in test_objstore_listing.py: a premise and four
 # refusals that name the mismatched object), by collection: `5127 tests collected`.
-cluster_tests 5127
+# cluster_tests 5127 -> 5128 for the #1903 merge's check in test_objstore_error_advice.py (a single PUT
+# answered 200 with no framing before its body is not taken as written), by collection: `5128 tests collected`.
+cluster_tests 5128
