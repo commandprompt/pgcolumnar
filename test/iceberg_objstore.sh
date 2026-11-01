@@ -158,6 +158,19 @@ check "a scan whose delete does not apply reads all rows over s3" \
 check "name mapping reads an id-less file over s3 (5 rows)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$NMROOT/nmapply.metadata.json')
 	      AS t(id bigint, region text, amount int)")" "5"
+# s3a:// and s3n:// are the Hadoop names for the same S3 store; Spark and Hive write
+# them into table metadata. The reader treats both as s3:// (#1825). qe shows the
+# server's ERROR line in place of the count, so a refusal names its cause.
+qe() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1 | sed -n '/^ERROR:/{p;q};p'
+}
+check "an s3a:// metadata path reads over s3 as s3:// does (3 rows)" \
+	"$(qe "SELECT count(*) FROM pgcolumnar.iceberg_scan('s3a://$BUCKET/db/t/metadata/apply.metadata.json')
+	       AS t(id bigint, region text, amount int)")" "3"
+check "an s3n:// metadata path reads over s3 as s3:// does (3 rows)" \
+	"$(qe "SELECT count(*) FROM pgcolumnar.iceberg_scan('s3n://$BUCKET/db/t/metadata/apply.metadata.json')
+	       AS t(id bigint, region text, amount int)")" "3"
 check "backend still up after the s3 reads" "$(survived "$CRASHES_BEFORE")" "1"
 
 # ---- refusals over s3 -------------------------------------------------------
