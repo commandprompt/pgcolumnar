@@ -471,6 +471,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- `read_parquet`, `import_parquet`, `iceberg_scan` and both foreign-data wrappers
+  now apply the declared type modifier to every value they return (#1790). A
+  `numeric(5,2)` column read `12345.678` unchanged and `1.005` as `1.005`, and
+  `CREATE TABLE AS` stored those values in a `numeric(5,2)` column. Now
+  `numeric(p,s)` rounds to scale `s` and refuses an overflow with SQLSTATE 22003,
+  `varchar(n)` refuses a longer value with SQLSTATE 22001 unless the excess is
+  spaces, and `timestamp(p)` rounds, as PostgreSQL's input functions do. Array
+  elements and composite fields follow their own declared types. The Iceberg
+  foreign table no longer prunes files on a column whose type modifier can
+  change a value, and the Parquet foreign table no longer skips row groups on
+  one. `test/native_read_parquet.sh`, `native_parquet_fdw.sh`,
+  `native_parquet_pushdown.sh`, `iceberg_scan.sh`, `iceberg_fdw.sh`,
+  `iceberg_deletes.sh` and their pytest twins.
 - `iceberg_scan` applies equality deletes through a hash table (#1817). It used
   to compare every data row with every delete row, so the cost grew with their
   product: 50,000 rows against 32,000 delete keys took 6 s, and a table with

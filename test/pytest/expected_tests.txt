@@ -1474,4 +1474,17 @@ guard_tests 854
 # rows drop the matching rows, and the probe's comparison count stays bounded, by collection.
 # cluster_tests 4851 -> 4852 for #1817's zero-row equality-delete test in test_iceberg_deletes.py
 # (review of #1860), by collection.
-cluster_tests 4852
+# cluster_tests 4852 -> 4873 for #1790's declared-typmod checks: 11 in test_native_read_parquet.py,
+# 3 in test_native_parquet_fdw.py, 4 in test_iceberg_scan.py and 3 in test_iceberg_fdw.py (the 3 in
+# test_native_parquet_pushdown.py join an existing test), by collection.
+# cluster_tests 4873 -> 4881 for #1790's review checks: 5 in test_iceberg_deletes.py, 2 in
+# test_iceberg_fdw.py and 1 in test_native_parquet_pushdown.py. Restated at the 6987adea merge; the
+# collection before that merge, against an older main, read `4674 tests collected`.
+# cluster_tests 4881 -> 4882 for #1790's second review: test_native_read_parquet.py gains the twin of
+# numeric(5,3), the file's scale with a lower precision, refusing 12345.678. Restated at the 6987adea merge;
+# the collection before that merge, against an older main, read `4675 tests collected`.
+# cluster_tests 4708 at the merge of origin/main (6987adea) into fix/1790-apply-typmod,
+# by collection: `4708 tests collected`.
+# cluster_tests 4882 at the merge of origin/fix/1817-equality-delete-hash (4615aa23) into fix/1790-apply-typmod:
+# that branch's 4852 plus this branch's 30, by collection over the cluster files: `4882 tests collected`.
+cluster_tests 4882

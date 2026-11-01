@@ -313,6 +313,28 @@ def dl(pgc_cluster, server_dir):
         before = _crashes(pgc_cluster)
         r["badseq"] = _refusal(dsn, scan("badseq"), PHRASE["badseq"])
         r["up after badseq"] = _survived(dsn, pgc_cluster, before)
+        # a deleted row's values are not coerced (#1790): ids 2 and 4 hold 'toolong'
+        tdest = server_dir / "del_typmod"
+        shutil.copytree(WHD / "db", tdest / "db")
+        shutil.copyfile(FX / "warehouse_typmod" / "del_data_toolong.parquet",
+                        tdest / "db" / "t" / "data" / "data.parquet")
+        for p in [tdest, *tdest.rglob("*")]:
+            p.chmod(0o777 if p.is_dir() else 0o666)
+        tmdir = tdest / "db" / "t" / "metadata"
+        vc2 = "AS t(id bigint, region varchar(2))"
+
+        def regions(name):
+            return _read(dsn, f"SELECT string_agg(id || ':' || region, ',' ORDER BY id) "
+                              f"FROM pgcolumnar.iceberg_scan('{tmdir / (name + '.metadata.json')}') {vc2}")
+        r["typmod noapply"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_scan("
+                                            f"'{tmdir / 'noapply.metadata.json'}') {vc2}", "value too long")
+        for name in ("apply", "eqapply", "dvapply"):
+            r["typmod " + name] = regions(name)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE SERVER ice_tm FOREIGN DATA WRAPPER pgcolumnar_iceberg")
+            c.execute(f"CREATE FOREIGN TABLE del_tm (id bigint, region varchar(2)) SERVER ice_tm "
+                      f"OPTIONS (metadata_path '{tmdir / 'apply.metadata.json'}')")
+        r["typmod fdw"] = _read(dsn, "SELECT string_agg(id || ':' || region, ',' ORDER BY id) FROM del_tm")
         var = _dvariants(dest)
         for p in [dest, *dest.rglob("*")]:
             p.chmod(0o777 if p.is_dir() else 0o666)
@@ -685,6 +707,47 @@ def test_the_backend_survives_the_bad_sequence_refusal(dl, expect):
     if _declined(dl, expect):
         return
     expect.text(str(dl["up after badseq"]), "1", "backend still up after the bad-sequence refusal")
+
+
+# ---- a deleted row's values are not coerced to the declared typmod (#1790) ---------
+#
+# varchar(2) refuses 'toolong', so a deleted row coerced before it is dropped would
+# fail the scan. The rewritten data file holds 'toolong' only in ids 2 and 4, the rows
+# every delete arm below removes.
+
+def test_without_deletes_the_rewritten_file_breaks_varchar_2(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["typmod noapply"]), "22001",
+                "typmod: with no delete applied, 'toolong' breaks varchar(2) (22001)")
+
+
+def test_position_deletes_do_not_coerce_a_deleted_row(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["typmod apply"]), "1:eu,3:us,5:us",
+                "typmod: position deletes do not coerce a deleted row's value")
+
+
+def test_equality_deletes_do_not_coerce_a_deleted_row(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["typmod eqapply"]), "1:eu,3:us,5:us",
+                "typmod: equality deletes do not coerce a deleted row's value")
+
+
+def test_a_deletion_vector_does_not_coerce_a_deleted_row(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["typmod dvapply"]), "1:eu,3:us,5:us",
+                "typmod: a deletion vector does not coerce a deleted row's value")
+
+
+def test_the_fdw_does_not_coerce_a_position_deleted_row(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["typmod fdw"]), "1:eu,3:us,5:us",
+                "typmod: the Iceberg FDW does not coerce a position-deleted row's value")
 
 
 # ---- delete files other writers describe (#1815, #1825) ---------------------------

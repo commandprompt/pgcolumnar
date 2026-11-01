@@ -3129,6 +3129,11 @@ iceberg_deletes	iceberg_deletes	the equality-delete probe walks a short hash cha
 iceberg_deletes	iceberg_deletes	the null-region row is gone, the non-null rows remain	15;16;17;18;19	2026-10-31	columnar_iceberg.c: a null equality-delete value matches any data value (comparing the null Datum kills the backend);the probe hashes a NULL equality value differently from the delete side (#1817)
 iceberg_deletes	iceberg_deletes	the us-partition rows survive an eu-scoped delete	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition-scoped equality delete ignores the partition value
 iceberg_deletes	iceberg_deletes	the would-be-deleted ids survive when the delete is older than the data	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position delete applies whatever its sequence number
+iceberg_deletes	iceberg_deletes	typmod: a deletion vector does not coerce a deleted row's value	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: a deleted Iceberg row's values are coerced to the declared typmod (pq_take_value(l, !deleted) -> pq_take_value(l, true)) (#1790)
+iceberg_deletes	iceberg_deletes	typmod: equality deletes do not coerce a deleted row's value	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: a deleted Iceberg row's values are coerced to the declared typmod (pq_take_value(l, !deleted) -> pq_take_value(l, true)) (#1790)
+iceberg_deletes	iceberg_deletes	typmod: position deletes do not coerce a deleted row's value	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: a deleted Iceberg row's values are coerced to the declared typmod (pq_take_value(l, !deleted) -> pq_take_value(l, true)) (#1790)
+iceberg_deletes	iceberg_deletes	typmod: the Iceberg FDW does not coerce a position-deleted row's value	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: a deleted Iceberg row's values are coerced to the declared typmod (pq_take_value(l, !deleted) -> pq_take_value(l, true)) (#1790)
+iceberg_deletes	iceberg_deletes	typmod: with no delete applied, 'toolong' breaks varchar(2) (22001)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main 6987adea, which ignores a declared typmod in the Parquet reader (#1790)
 iceberg_dv	iceberg_dv	...and the refusal names the compressed footer	15;16;17;18;19	2026-10-21	columnar_puffin.c: a compressed Puffin footer (flags bit 0) is not refused
 iceberg_dv	iceberg_dv	...and the refusal names the format version	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a deletion vector in a format-version 2 table is not refused
 iceberg_dv	iceberg_dv	a DV blob declaring a compression codec is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_puffin.c: a deletion-vector blob may declare a compression codec
@@ -3235,6 +3240,11 @@ iceberg_fdw	iceberg_fdw	ts > 2021-01-01 year-prunes the 2020 file (Files Pruned:
 iceberg_fdw	iceberg_fdw	ts >= 2021-02-01 month-prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	ts >= 2021-03-01 01:00 hour-prunes the 00h file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	ts >= 2021-03-02 day-prunes the Mar-01 file (Files Pruned: 1)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_fdw	iceberg_fdw	typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3	15;16;17;18;19	2026-10-31	columnar_iceberg_fdw.c: the bucket typmod guard removed and a varchar column's cast to text let through to bucket pruning (#1790)
+iceberg_fdw	iceberg_fdw	typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  '	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_fdw	iceberg_fdw	typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_fdw	iceberg_fdw	typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)	15;16;17;18;19	2026-10-31	columnar_iceberg_fdw.c: ice_fdw_typmod_changes_values no longer exempts time types at precision 6 (#1790)
 iceberg_fdw	iceberg_fdw	year()-on-date equality prunes to one file (Files Pruned: 2)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	year()-on-date equality returns id 2	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	year()-on-date prunes the 2020 file (Files Pruned: 1)	15;16;17;18;19	never	-
@@ -3497,6 +3507,10 @@ iceberg_scan	iceberg_scan	positional read_parquet still refuses bigint over an I
 iceberg_scan	iceberg_scan	premise: the data file carries field ids (id=1,region=2,amount=3)	15;16;17;18;19	never	-
 iceberg_scan	iceberg_scan	premise: the old files store k, f, d as INT32, FLOAT and decimal(10,2), the new file as INT64, DOUBLE and decimal(20,2)	15;16;17;18;19	never	-
 iceberg_scan	iceberg_scan	read_parquet by field id reads an INT32 column as bigint	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: the field-id binder never widens, so INT32 and FLOAT files are refused for bigint and double precision (mutation, #1789)
+iceberg_scan	iceberg_scan	typmod: iceberg_scan drops the excess trailing spaces of 'eu  ' as varchar(2)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_scan	iceberg_scan	typmod: iceberg_scan reads region as varchar(2) unchanged	15;16;17;18;19	never	-
+iceberg_scan	iceberg_scan	typmod: iceberg_scan refuses 'eu' as varchar(1) (22001)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+iceberg_scan	iceberg_scan	typmod: iceberg_scan rounds 00:59:59.7 to 01:00:00 as timestamp(0)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
 import_deferred	import_deferred	SET CONSTRAINTS IMMEDIATE is honoured mid-transaction	15;16;17;18;19	2026-10-21	the deferred-constraint recheck is never queued
 import_deferred	import_deferred	a partial unique index accepts rows it does not cover	15;16;17;18;19	2026-10-21	both importers take the rewrite path, which enforces no constraint
 import_deferred	import_deferred	a rewrite of a uniquely-indexed table still succeeds	15;16;17;18;19	2026-10-21	the rewrites route through the enforcing index path
@@ -4782,6 +4796,9 @@ native_parquet_fdw	native_parquet_fdw	scan with incompatible declared type error
 native_parquet_fdw	native_parquet_fdw	scan without path option errors (HV00J)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the scan's missing-path refusal removed (the backend crashes)
 native_parquet_fdw	native_parquet_fdw	skip export rows	15;16;17;18;19	never	-
 native_parquet_fdw	native_parquet_fdw	the skip file has four row groups	15;16;17;18;19	2026-10-22	columnar_parquet.c: the exporter writes 131072-row groups instead of 65536
+native_parquet_fdw	native_parquet_fdw	typmod: a numeric(5,2) foreign column refuses 12345.678 (22003)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_parquet_fdw	native_parquet_fdw	typmod: a numeric(5,2) foreign column rounds 1.005 and 2.500 to scale 2	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_parquet_fdw	native_parquet_fdw	typmod: a varchar(3) foreign column refuses 'hello' (22001)	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
 native_parquet_fieldid	native_parquet_fieldid	a duplicate field id in the file is refused (42702)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	a duplicate requested field id is refused (22023)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	a field_ids/column-count mismatch is refused (22023)	15;16;17;18;19	never	-
@@ -5021,6 +5038,12 @@ native_parquet_pushdown	native_parquet_pushdown	row-group edge [id = 50000] == o
 native_parquet_pushdown	native_parquet_pushdown	row-group edge [id > 49998] == oracle	15;16;17;18;19	never	-
 native_parquet_pushdown	native_parquet_pushdown	row-group edge [id >= 49999] == oracle	15;16;17;18;19	2026-10-16	col >= const skipping a group whose max equals const (mutation, #1496 review)
 native_parquet_pushdown	native_parquet_pushdown	spanning predicate skips 0	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: col < const skips the row groups that do hold matches
+native_parquet_pushdown	native_parquet_pushdown	typmod: a numeric(18,1) column returns every row that rounds to 100.0	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_parquet_pushdown	native_parquet_pushdown	typmod: a numeric(18,1) column skips no group for d = 100.0	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c row-group skip guard and columnar_iceberg_fdw.c typmod prune guard reverted, coercion kept (#1790);the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_parquet_pushdown	native_parquet_pushdown	typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: pq_plan_set_typmod's decimal no-coerce shortcut removed (#1790)
+native_parquet_pushdown	native_parquet_pushdown	typmod: a timestamp(3) column returns the row that rounds up to 03:00	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: pq_plan_set_typmod exempts every timestamp typmod from coercion (#1790)
+native_parquet_pushdown	native_parquet_pushdown	typmod: a timestamp(3) column skips no group for t >= 03:00	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: pq_plan_set_typmod exempts every timestamp typmod from coercion (#1790)
+native_parquet_pushdown	native_parquet_pushdown	typmod: a timestamp(6) column still skips 3 of 4 groups	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: pq_plan_set_typmod no longer exempts time types at precision 6 (#1790)
 native_parquet_schema	native_parquet_schema	OPTIONAL column reports nullable=t	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	REQUIRED column reports nullable=f	15;16;17;18;19	2026-10-16	columnar_parquet_reader.c: parquet_schema reports every column nullable
 native_parquet_schema	native_parquet_schema	REQUIRED int32 maps to integer	15;16;17;18;19	never	-
@@ -5124,6 +5147,18 @@ native_read_parquet	native_read_parquet	reject non-parquet file	15;16;17;18;19	n
 native_read_parquet	native_read_parquet	scalar export rows	15;16;17;18;19	never	-
 native_read_parquet	native_read_parquet	scalar read_parquet row count	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a scalar's definition level ignored, every entry read as present
 native_read_parquet	native_read_parquet	scalar round-trip: read_parquet == the generated rows	15;16;17;18;19	2026-10-22	columnar_reader.c: the columnar reader returns int4 777 as 778 (store_att_byval), so the source table and the file agree on the wrong value
+native_read_parquet	native_read_parquet	typmod: CREATE TABLE AS of an overflowing value fails with numeric field overflow	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: INSERT ... SELECT into a numeric(5,2) heap table stores the rounded values	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: a composite field typmod applies, y varchar(3) refuses 'c1000'	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: a declared typmod that holds every value reads them unchanged	15;16;17;18;19	never	-
+native_read_parquet	native_read_parquet	typmod: an array element typmod applies, varchar(3)[] refuses 'a1000'	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: import_parquet into a numeric(5,2) table stores the rounded values	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: numeric(5,2) refuses 12345.678 with numeric field overflow	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: numeric(5,2) rounds 1.005 and 2.500 to the declared scale	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: numeric(5,3), the file's scale with a lower precision, refuses 12345.678 (22003)	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: pq_plan_set_typmod's decimal shortcut tests only the scale, not the precision (#1790)
+native_read_parquet	native_read_parquet	typmod: the failed CREATE TABLE AS left no table	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: varchar(3) drops the excess trailing spaces of 'abc  '	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
+native_read_parquet	native_read_parquet	typmod: varchar(3) refuses 'hello' with value too long	15;16;17;18;19	2026-10-31	the #1790 fix absent: main a247bea0, which ignores a declared typmod in the Parquet reader (#1790)
 native_reclaim	native_reclaim	and every live row is still there, once	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 0.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac <= 0.0
 native_reclaim	native_reclaim	compact_rewrite ACCEPTS the boundary threshold 1.0	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact_rewrite's guard refuses minFrac >= 1.0

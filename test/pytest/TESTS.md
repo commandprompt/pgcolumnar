@@ -4487,6 +4487,11 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_a_year_on_date_equality_prunes_to_one_file` | the same on a date column |
 | `test_an_hour_partition_over_a_naive_source_read_as_timestamptz_keeps_its_rows` | #1706: `byhour` (a naive source) declared `timestamptz` in New York returns `iceberg_scan`'s rows; its hour cells are wall times, so the FDW must not prune on them |
 | `test_an_hour_partition_over_a_timestamptz_source_read_as_timestamp_keeps_its_rows` | #1706: the reverse, `byhour_tz` declared `timestamp` |
+| `test_a_varchar_1_iceberg_foreign_column_refuses_a_longer_value` | typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001) |
+| `test_a_varchar_2_identity_partition_keeps_a_row_stored_with_trailing_spaces` | typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  ' |
+| `test_a_timestamp_0_hour_partition_keeps_a_row_that_rounds_into_range` | typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2 |
+| `test_a_varchar_2_bucket_partition_keeps_a_row_stored_with_trailing_spaces` | typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3 |
+| `test_a_timestamp_6_hour_partition_still_prunes` | typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1) |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 
@@ -8219,7 +8224,8 @@ The pytest twin of `test/native_parquet_pushdown.sh` (ported for #1341), every c
 | `test_skipping_never_changes_the_answer_and_really_skips` | eight predicates agree with the heap, each confining range skips the groups it should, float `>=` is not pushed, and `read_parquet` reads the same rows |
 | `test_a_nan_row_is_never_skipped` | seven float predicates over a file with one NaN agree with the heap |
 | `test_inverted_statistics_never_drive_a_skip` | an INT32 column whose footer's min and max are swapped agrees with the heap under six predicates and skips nothing (a UINT_32 column before #1814, which now decodes unsigned and no longer inverts) |
-| `test_an_int64_backed_decimal_is_skippable` | a range inside one of four DECIMAL groups skips the other three without dropping rows |
+| `test_an_int64_backed_decimal_is_skippable` | a range inside one of four DECIMAL groups skips the other three without dropping rows; #1790: declared `numeric(18,1)`, which rounds, returns all 10 rows that round to 100.0 and skips no group, and declared `numeric(18,2)`, the file's own typmod, still skips 3 of 4 groups |
+| `test_a_time_type_at_full_precision_keeps_skipping` | #1790: a timestamp(6) column still skips 3 of 4 groups; a timestamp(3) column skips no group for t >= 03:00 and returns the row that rounds up to 03:00 (1001 rows) |
 
 ## 170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays
 
@@ -9748,6 +9754,10 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed an
 | `test_an_output_column_not_in_the_schema_is_refused` | an output column not in the schema is refused (42703) |
 | `test_an_unprivileged_role_is_refused_the_scan` | an unprivileged role is refused (42501) |
 | `test_a_pg_read_server_files_member_may_scan` | a pg_read_server_files member who is not superuser may scan |
+| `test_iceberg_scan_refuses_eu_as_varchar_1` | typmod: iceberg_scan refuses 'eu' as varchar(1) (22001) |
+| `test_iceberg_scan_reads_region_as_varchar_2_unchanged` | typmod: iceberg_scan reads region as varchar(2) unchanged |
+| `test_iceberg_scan_drops_excess_trailing_spaces_as_varchar_2` | typmod: iceberg_scan drops the excess trailing spaces of 'eu  ' as varchar(2) |
+| `test_iceberg_scan_rounds_to_whole_seconds_as_timestamp_0` | typmod: iceberg_scan rounds 00:59:59.7 to 01:00:00 as timestamp(0) |
 | `test_iceberg_current_snapshot_reads_a_gz_metadata_json_file` | iceberg_current_snapshot reads a .gz.metadata.json file as it reads the plain file |
 | `test_iceberg_current_snapshot_reads_a_metadata_json_gz_file` | iceberg_current_snapshot reads a .metadata.json.gz file as it reads the plain file |
 | `test_iceberg_scan_reads_a_table_whose_metadata_is_gz_metadata_json` | iceberg_scan reads the rows of a table whose metadata is .gz.metadata.json |
@@ -10858,6 +10868,11 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_the_backend_survives_the_delete_audit_arms` | backend still up after the audit arms |
 | `test_an_existing_entry_with_a_null_sequence_number_is_refused` | an EXISTING entry with a null sequence number is refused (XX001) |
 | `test_the_backend_survives_the_bad_sequence_refusal` | backend still up after the bad-sequence refusal |
+| `test_without_deletes_the_rewritten_file_breaks_varchar_2` | typmod: with no delete applied, 'toolong' breaks varchar(2) (22001) |
+| `test_position_deletes_do_not_coerce_a_deleted_row` | typmod: position deletes do not coerce a deleted row's value |
+| `test_equality_deletes_do_not_coerce_a_deleted_row` | typmod: equality deletes do not coerce a deleted row's value |
+| `test_a_deletion_vector_does_not_coerce_a_deleted_row` | typmod: a deletion vector does not coerce a deleted row's value |
+| `test_the_fdw_does_not_coerce_a_position_deleted_row` | typmod: the Iceberg FDW does not coerce a position-deleted row's value |
 | `test_a_lowercase_parquet_position_delete_file_is_applied` | a position-delete file whose file_format is lowercase parquet is applied |
 | `test_a_lowercase_parquet_equality_delete_file_is_applied` | an equality-delete file whose file_format is lowercase parquet is applied |
 | `test_a_position_delete_naming_s3_data_as_s3a_is_applied` | a position delete naming its s3:// data file as s3a:// is applied |
@@ -12567,6 +12582,9 @@ Every test makes one check under the shell's name, on a private database with it
 | `test_a_scan_without_a_path_option_errors` | scan without path option errors (HV00J) |
 | `test_a_scan_of_a_non_parquet_file_errors` | scan of non-parquet file errors (XX001) |
 | `test_a_scan_with_an_incompatible_declared_type_errors` | scan with incompatible declared type errors (42804) |
+| `test_a_numeric_5_2_foreign_column_refuses_an_overflow` | typmod: a numeric(5,2) foreign column refuses 12345.678 (22003) |
+| `test_a_numeric_5_2_foreign_column_rounds_to_scale_2` | typmod: a numeric(5,2) foreign column rounds 1.005 and 2.500 to scale 2 |
+| `test_a_varchar_3_foreign_column_refuses_a_longer_value` | typmod: a varchar(3) foreign column refuses 'hello' (22001) |
 | `test_the_backend_is_still_up_after_the_fdw_refusals` | backend still up after the refusals |
 
 ## 323. test_native_read_parquet.py: read_parquet returns the rows that were written, refuses what it must, and keeps its file gate
@@ -12594,6 +12612,18 @@ Every test makes one check under the shell's name, on a private database. Every 
 | `test_the_backend_is_still_up_after_the_read_parquet_refusals` | backend still up after the refusals |
 | `test_import_parquet_loads_every_row` | import parity rows |
 | `test_read_parquet_agrees_with_import_parquet` | read_parquet == import_parquet |
+| `test_a_typmod_that_holds_every_value_reads_them_unchanged` | typmod: a declared typmod that holds every value reads them unchanged |
+| `test_numeric_5_2_refuses_an_overflow` | typmod: numeric(5,2) refuses 12345.678 with numeric field overflow |
+| `test_numeric_5_3_same_scale_lower_precision_refuses_an_overflow` | typmod: numeric(5,3), the file's scale with a lower precision, refuses 12345.678 (22003) |
+| `test_numeric_5_2_rounds_to_the_declared_scale` | typmod: numeric(5,2) rounds 1.005 and 2.500 to the declared scale |
+| `test_varchar_3_refuses_a_longer_value` | typmod: varchar(3) refuses 'hello' with value too long |
+| `test_varchar_3_drops_excess_trailing_spaces` | typmod: varchar(3) drops the excess trailing spaces of 'abc  ' |
+| `test_create_table_as_of_an_overflowing_value_fails` | typmod: CREATE TABLE AS of an overflowing value fails with numeric field overflow |
+| `test_the_failed_create_table_as_left_no_table` | typmod: the failed CREATE TABLE AS left no table |
+| `test_insert_select_into_a_heap_table_stores_the_rounded_values` | typmod: INSERT ... SELECT into a numeric(5,2) heap table stores the rounded values |
+| `test_import_parquet_into_a_typmod_table_stores_the_rounded_values` | typmod: import_parquet into a numeric(5,2) table stores the rounded values |
+| `test_an_array_element_typmod_applies` | typmod: an array element typmod applies, varchar(3)[] refuses 'a1000' |
+| `test_a_composite_field_typmod_applies` | typmod: a composite field typmod applies, y varchar(3) refuses 'c1000' |
 
 ## 324. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused
 

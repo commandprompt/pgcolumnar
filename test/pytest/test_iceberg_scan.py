@@ -36,6 +36,7 @@ from pgc_vacuity import query_error
 
 DB = "pgc_iceberg_scan"
 WH = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "iceberg" / "warehouse"
+TMWH = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "iceberg" / "warehouse_typmod"
 VARIANTS = WH.parent / "gen_iceberg_variants.py"
 ROWS5 = "1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50"
 SNAPCOLS = ("snapshot_id || '|' || coalesce(parent_snapshot_id::text, '-') || '|' || "
@@ -81,6 +82,14 @@ def _sqlstate(dsn, sql, user=None, port=None):
     return "no error"
 
 
+def _state_or_value(dsn, sql):
+    """-> the SQLSTATE `sql` raised, or "no error (<first value>)" when it raised none."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        return exc.sqlstate or query_error(_message(exc))
+    return f"no error ({row[0] if row else ''})"
 def _refusal_phrase(dsn, sql, phrase, label):
     """-> "<SQLSTATE><label>" when `sql` raised with `phrase` in its message, else
     "<SQLSTATE>: <message>", or "no error"."""
@@ -149,6 +158,12 @@ def isc(pgc_cluster, server_dir):
     ren = md.parent / "renamed.metadata.json"
     ren.write_text(json.dumps(m))
     ren.chmod(0o666)
+    tmdest = server_dir / "tmwh"
+    shutil.copytree(TMWH / "db", tmdest / "db")
+    for p in [tmdest, *tmdest.rglob("*")]:
+        p.chmod(0o777 if p.is_dir() else 0o666)
+    md_pad = sorted((tmdest / "db" / "byregion_pad" / "metadata").glob("*.metadata.json"))[-1]
+    md_frac = sorted((tmdest / "db" / "byhour_frac" / "metadata").glob("*.metadata.json"))[-1]
     # #1788: the current schema also gets a struct, a list and a map, added after
     # the data files were written, as the shell's nested.metadata.json does
     m = json.loads(md.read_text())
@@ -226,6 +241,15 @@ def isc(pgc_cluster, server_dir):
                                    r'output column "st" is a struct field', "struct"),
             "unpriv": _sqlstate(dsn, f"SELECT * FROM {scan.format(md)} AS t(id bigint)", UNPRIV, pgc_cluster.port),
             "reader": _rows(dsn, f"SELECT count(*) FROM {scan.format(md)} AS t(id bigint)", READER, pgc_cluster.port),
+            # a declared typmod applies to every value (#1790)
+            "tm v1": _state_or_value(dsn, f"SELECT string_agg(region, ',') FROM {scan.format(md)} "
+                                          "AS t(region varchar(1))"),
+            "tm v2": _rows(dsn, f"SELECT string_agg(region, ',' ORDER BY region) FROM {scan.format(md)} "
+                                "AS t(region varchar(2))"),
+            "tm pad": _rows(dsn, "SELECT string_agg(id || ':' || region || ':' || octet_length(region), ',' "
+                                 f"ORDER BY id) FROM {scan.format(md_pad)} AS t(id bigint, region varchar(2))"),
+            "tm frac": _rows(dsn, f"SELECT string_agg(id || '|' || ts, ',' ORDER BY id) FROM {scan.format(md_frac)} "
+                                  "AS t(id bigint, ts timestamp(0))"),
         }
         for name in ("gz_infix", "gz_suffix", "lower", "mixed"):
             r[name + " rows"] = _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM "
@@ -339,6 +363,32 @@ def test_a_pg_read_server_files_member_may_scan(isc, expect):
     expect.text(_lines(isc["reader"]), "5", "a pg_read_server_files member who is not superuser may scan")
 
 
+def test_iceberg_scan_refuses_eu_as_varchar_1(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["tm v1"]), "22001", "typmod: iceberg_scan refuses 'eu' as varchar(1) (22001)")
+
+
+def test_iceberg_scan_reads_region_as_varchar_2_unchanged(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["tm v2"]), "eu,eu,us,us,us", "typmod: iceberg_scan reads region as varchar(2) unchanged")
+
+
+def test_iceberg_scan_drops_excess_trailing_spaces_as_varchar_2(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["tm pad"]), "1:eu:2,2:us:2",
+                "typmod: iceberg_scan drops the excess trailing spaces of 'eu  ' as varchar(2)")
+
+
+def test_iceberg_scan_rounds_to_whole_seconds_as_timestamp_0(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["tm frac"]), "1|2021-03-01 01:00:00,2|2021-03-01 05:00:00",
+                "typmod: iceberg_scan rounds 00:59:59.7 to 01:00:00 as timestamp(0)")
+
+
 def _plain_snapshot(isc):
     return _lines(isc["plain snap"]) or "no snapshot from the plain file"
 
@@ -444,6 +494,8 @@ def test_iceberg_scan_reads_mixed_s3_and_s3a_paths(isc, expect):
         return
     expect.text(_lines(isc["mixed rows"]), ROWS5,
                        "iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a://")
+
+
 def test_iceberg_scan_reads_the_scalars_beside_nested_fields(isc, expect):
     if _declined(isc, expect):
         return
