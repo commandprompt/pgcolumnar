@@ -17,6 +17,10 @@ the classifier as a LIBRARY, which does not make it cluster-bound: the propagati
 rule reads string constants naming corpus files, not imports.
 """
 
+import glob
+import os
+import shutil
+
 from test_harness_deps import (
     _fake_corpus,
     cluster_fixtures,
@@ -418,3 +422,60 @@ def test_prose_naming_the_driver_is_not_a_driver_dependency(tmp_path, expect):
     })
     expect.num(len(driver_dependent(d)), 0,
                "prose naming the driver is not a dependency on it")
+
+
+# ---- the default pg_config (#1933) -------------------------------------------
+#
+# conftest's default for `--pg-config` was a fixed path, /usr/local/pg18a, which one
+# audit box has and the dev container does not. With PGC_PG_CONFIG unset, every
+# cluster fixture then failed at setup on the missing file, and the driver control in
+# test_harness_deps.py reported a missing shim name instead. These arms live here, in
+# the database-free half, because they read files and run nothing.
+
+
+def _executable_pg_configs():
+    """Every pg_config this box has, read without conftest: the documented /usr/local
+    prefixes and the one on PATH."""
+    found = sorted(glob.glob("/usr/local/*/bin/pg_config"))
+    on_path = shutil.which("pg_config")
+    if on_path:
+        found.append(on_path)
+    return [p for p in found if os.access(p, os.X_OK)]
+
+
+def test_the_default_pg_config_is_one_this_box_has(expect):
+    """With PGC_PG_CONFIG unset, the default must name a pg_config that exists,
+    whenever this box has one at all (#1933). On a box with none, the default
+    cannot exist either, and the arm says so rather than skipping."""
+    import conftest
+    default = conftest.DEFAULT_PG_CONFIG
+    present = _executable_pg_configs()
+    expect.text(repr(os.access(default, os.X_OK)), repr(bool(present)),
+                f"the default pg_config {default!r} is executable whenever this box "
+                f"has one; it has {len(present)}: {present}")
+
+
+def test_the_default_pg_config_takes_the_first_candidate_that_exists(tmp_path, expect):
+    """The resolver's order, over files this test writes, so it holds on any box
+    (#1933). The arm above only sees the branch this box takes."""
+    import conftest
+
+    def exe(name, mode=0o755):
+        p = tmp_path / name
+        p.write_text("#!/bin/sh\n")
+        p.chmod(mode)
+        return str(p)
+
+    missing = str(tmp_path / "missing")
+    first, second = exe("first"), exe("second")
+    plain = exe("plain", 0o644)
+    on_path = exe("on_path")
+    pick = conftest.default_pg_config
+    expect.text(pick((missing, first, second), lambda _: on_path), first,
+                "a missing candidate is passed over for the first one that exists")
+    expect.text(pick((plain, second), lambda _: on_path), second,
+                "a candidate that is not executable is passed over too")
+    expect.text(pick((missing,), lambda _: on_path), on_path,
+                "with no candidate present, the pg_config on PATH is the default")
+    expect.text(pick((missing, plain), lambda _: None), missing,
+                "with nothing at all, the first candidate stays named")

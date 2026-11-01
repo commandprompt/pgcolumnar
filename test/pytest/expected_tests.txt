@@ -339,7 +339,10 @@
 # list judged on the controller only, by collection over NO_CLUSTER.
 # guard_tests 857 -> 858 for #1892's test_the_unrunnable_collector_registers_without_xdist in
 # test_layer.py (review of PR #1905), by collection over NO_CLUSTER.
-guard_tests 858
+# guard_tests 858 -> 860 for #1933's test_the_default_pg_config_is_one_this_box_has and
+# test_the_default_pg_config_takes_the_first_candidate_that_exists in
+# test_harness_deps_classifier.py, by collection over NO_CLUSTER.
+guard_tests 860
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

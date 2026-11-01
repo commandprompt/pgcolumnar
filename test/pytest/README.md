@@ -32,6 +32,10 @@ PYTHONPATH=. /root/pyenv/bin/pytest --pgc-expect-tests N  # assert the run's sha
 PGC_PG_CONFIG=/usr/local/pg19a/bin/pg_config PYTHONPATH=. /root/pyenv/bin/pytest
 ```
 
+Without `--pg-config` or `PGC_PG_CONFIG`, the run uses the first `pg_config` it finds
+in `PG_CONFIG_CANDIDATES` in `conftest.py`, then the one on `PATH` (#1933). Set
+`PGC_PG_CONFIG` to choose the build yourself.
+
 `--pgc-expect-tests` takes the number of **collected tests**, not files. `N` above
 is whatever the set you ran collects; the two numbers the gate uses are in
 `expected_tests.txt`. A literal here would name the wrong quantity and go stale,

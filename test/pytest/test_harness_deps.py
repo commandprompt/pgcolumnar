@@ -699,8 +699,8 @@ def _run_without_psycopg(args, expect, pg_config=None):
     """Run pytest with `import psycopg` forced to fail, and return the result.
 
     THE SUBPROCESS GETS THE SAME pg_config THIS RUN WAS GIVEN (#1016). Without it the
-    child falls back to conftest's DEFAULT_PG_CONFIG, `/usr/local/pg18a/bin/pg_config`,
-    which exists on the audit container and on no GitHub runner. The cluster fixture then
+    child falls back to conftest's DEFAULT_PG_CONFIG, which is whatever pg_config the
+    child finds first (#1933) -- not necessarily the one this run was given. The cluster fixture then
     fails on the missing pg_config BEFORE anything imports psycopg, so the output never
     names the shim and the arm below reports the shim absent when the shim was fine.
     Measured: passes against a source-built prefix, fails against a packaged one.
@@ -761,8 +761,13 @@ def test_a_cluster_test_still_needs_the_driver(expect, pytestconfig):
     # The pg_config THIS run was given, not conftest's default: see
     # _run_without_psycopg. Without it the child dies on a missing prefix before it can
     # reach the import, and this arm then reports the shim absent.
-    proc = _run_without_psycopg(["test_connection.py"], expect,
-                                pg_config=pytestconfig.getoption("--pg-config"))
+    pg_config = pytestconfig.getoption("--pg-config")
+    # PREMISE (#1933): the child can only reach the import if the pg_config exists.
+    # A missing one fails every cluster fixture at setup, and the arm below would then
+    # report the shim absent instead of naming the real cause.
+    expect.text(repr(os.access(pg_config, os.X_OK)), "True",
+                f"premise: the pg_config handed to the child, {pg_config!r}, is executable")
+    proc = _run_without_psycopg(["test_connection.py"], expect, pg_config=pg_config)
     expect.at_least(proc.returncode, 1,
                     "a cluster test cannot pass without the driver")
     expect.contains(

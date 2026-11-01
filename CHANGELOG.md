@@ -534,6 +534,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- The pytest harness no longer needs `/usr/local/pg18a` when `PGC_PG_CONFIG` is
+  unset (#1933). That fixed default does not exist in the dev container, so
+  every cluster fixture failed at setup, and
+  `test_a_cluster_test_still_needs_the_driver` reported a missing shim name.
+  conftest now takes the first executable `pg_config` from a list of the
+  documented prefixes, PG18 first, then the one on `PATH`. The control now
+  checks that the `pg_config` it hands its child is executable, and names the
+  path if not. test/pytest/README.md. Two new tests in
+  `test_harness_deps_classifier.py`. Reported by @OffgridwithJD.
+
 - The five functions that read local files only now also refuse an `s3a://` or
   `s3n://` URL with SQLSTATE 0A000 (#1918): `import_arrow`,
   `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and

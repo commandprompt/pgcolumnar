@@ -37,7 +37,33 @@ from pgc_cluster import _pg_config, build_once, make_cluster
 
 pytest_plugins = ["pytester"]
 
-DEFAULT_PG_CONFIG = "/usr/local/pg18a/bin/pg_config"
+# Where `--pg-config` looks when neither the option nor PGC_PG_CONFIG names one (#1933).
+# PG18 first, because the corpus was written against it: pg18a is the audit box's
+# assert-enabled build and pgsql is PG18 in the dev container. Then the other
+# source-built majors, newest first, then the pg_config on PATH. A fixed path here
+# was right on one box only: the dev container has no pg18a, so every cluster fixture
+# failed at setup with PGC_PG_CONFIG unset.
+PG_CONFIG_CANDIDATES = (
+    "/usr/local/pg18a/bin/pg_config",
+    "/usr/local/pgsql/bin/pg_config",
+    "/usr/local/pg19/bin/pg_config",
+    "/usr/local/pg17/bin/pg_config",
+    "/usr/local/pg16/bin/pg_config",
+    "/usr/local/pg15/bin/pg_config",
+)
+
+
+def default_pg_config(candidates=PG_CONFIG_CANDIDATES, which=shutil.which):
+    """The first executable candidate, else the pg_config on PATH, else the first
+    candidate. The last case keeps a named path in the option, so the cluster
+    fixture fails on that path rather than on an empty string."""
+    for path in candidates:
+        if os.access(path, os.X_OK):
+            return path
+    return which("pg_config") or candidates[0]
+
+
+DEFAULT_PG_CONFIG = default_pg_config()
 
 
 def pytest_addoption(parser):
