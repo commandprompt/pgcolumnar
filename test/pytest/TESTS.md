@@ -10954,7 +10954,7 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
-The twin of `test/iceberg_rest_vended.sh`. A private cluster with no AWS_* in its environment reads a table through the shell's REST catalog, which vends the SigV4 S3 fixture's key; the vended secret never reaches either log, a wrong one is refused by S3's 403, the longest storage-credentials prefix wins over a wrong catch-all and a wrong flat config, an endpoint off the allow-list is refused by the allow-list, a catalog vending nothing falls back to ambient credentials, and no backend dies. Each file gets its own longest-prefix credential (#1820): with split metadata/ and data/ entries, the data/ key signs the data files; the flat config covers a file no prefix matches; the longest prefix wins when it is listed before a broader one; an entry with a key id and no secret vends nothing, so it is ignored and the backend survives it; and a file nothing vended covers is refused, even when the server holds ambient keys S3 accepts.
+The twin of `test/iceberg_rest_vended.sh`. A private cluster with no AWS_* in its environment reads a table through the shell's REST catalog, which vends the SigV4 S3 fixture's key; the vended secret never reaches either log, a wrong one is refused by S3's 403, the longest storage-credentials prefix wins over a wrong catch-all and a wrong flat config, an endpoint off the allow-list is refused by the allow-list, a catalog vending nothing falls back to ambient credentials, and no backend dies. Each file gets its own longest-prefix credential (#1820): with split metadata/ and data/ entries, the data/ key signs the data files; the flat config covers a file no prefix matches; the longest prefix wins when it is listed before a broader one; an entry with a key id and no secret vends nothing, so it is ignored and the backend survives it; an entry with a secret and no key id vends nothing either, so it is ignored too; and a file nothing vended covers is refused, even when the server holds ambient keys S3 accepts.
 
 ### Every test
 
@@ -10974,6 +10974,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_the_flat_config_signs_an_uncovered_file` | the flat config signs a file no storage-credentials prefix covers |
 | `test_the_longest_prefix_wins_when_listed_first` | the longest prefix wins when it is listed before a broader one |
 | `test_an_entry_with_a_key_id_and_no_secret_is_ignored` | an entry with a key id and no secret is ignored, not used |
+| `test_an_entry_with_a_secret_and_no_key_id_is_ignored` | an entry with a secret and no key id is ignored, not used |
 | `test_the_backend_survives_an_entry_with_no_secret` | backend still up after an entry with a key id and no secret |
 | `test_a_vended_endpoint_off_the_allow_list_is_refused` | vended creds for an off-allow-list endpoint are refused (42501) |
 | `test_a_catalog_vending_nothing_falls_back_to_ambient` | a table vending no creds still reads with ambient (cfg NULL path) |

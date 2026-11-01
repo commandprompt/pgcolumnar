@@ -246,6 +246,16 @@ check "an entry with a key id and no secret is ignored, not used" \
 	"3"
 check "backend still up after an entry with a key id and no secret" \
 	"$(survived "$AKIDONLY_CRASHES")" "1"
+# The other half of the both-keys rule: an entry with a secret and no key id
+# vends nothing either. It is the longest match and listed last. A reader that
+# kept it hands the module a config with no key id, which refuses the read
+# (28000) instead of letting the broader good entry sign it.
+start_rest "${VEND_GOOD[@]}" --storage-cred "s3://$BUCKET/=good" --storage-cred "$TL/=secretonly"
+SECRETONLY_PORT="$LAST_PORT"
+check "an entry with a secret and no key id is ignored, not used" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$SECRETONLY_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"
 
 # Started now, read after the restart below that gives the server ambient keys.
 start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/data/=bad"

@@ -17,7 +17,7 @@ credentials; and no backend died on the way. Each file gets its own longest-pref
 credential (#1820): with split metadata/ and data/ entries the data/ key signs the data
 files, the flat config covers a file no prefix matches, the longest prefix wins when it
 is listed before a broader one, an entry with a key id and no secret is ignored without
-killing the backend, and a file nothing vended covers is refused even when the server
+killing the backend, an entry with a secret and no key id is ignored, and a file nothing vended covers is refused even when the server
 holds ambient keys S3 accepts.
 
 A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED: survival also reads the private
@@ -266,6 +266,10 @@ def irv(pgc_cluster):
                               "--storage-cred", f"{tl}/=akidonly")
         r["akid only"] = _value(dsn, f"SELECT count(*) FROM {scan(akidonly)}")
         r["akid only survived"] = _survived(dsn, log, akid_before)
+        # a secret with no key id vends nothing either: ignored, the broader good entry signs
+        secretonly = start_rest(*good, "--storage-cred", f"s3://{BUCKET}/=good",
+                                "--storage-cred", f"{tl}/=secretonly")
+        r["secret only"] = _value(dsn, f"SELECT count(*) FROM {scan(secretonly)}")
         # read after the restart below gives the server ambient keys S3 accepts
         dataonly = start_rest(*good, "--storage-cred", f"{tl}/data/=bad")
 
@@ -384,6 +388,12 @@ def test_an_entry_with_a_key_id_and_no_secret_is_ignored(irv, expect):
     if _declined(irv, expect):
         return
     expect.text(irv["akid only"], "3", "an entry with a key id and no secret is ignored, not used")
+
+
+def test_an_entry_with_a_secret_and_no_key_id_is_ignored(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["secret only"], "3", "an entry with a secret and no key id is ignored, not used")
 
 
 def test_the_backend_survives_an_entry_with_no_secret(irv, expect):

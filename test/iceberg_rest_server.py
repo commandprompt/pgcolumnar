@@ -297,10 +297,11 @@ class Handler(BaseHTTPRequestHandler):
                     "s3.endpoint": ARGS.vend_endpoint}},
                 {"prefix": ARGS.storage_cred_prefix, "config": config},
             ]
-        # --storage-cred PREFIX=good|bad|akidonly, repeatable (#1820): an explicit
-        # storage-credentials array. "good" is the vended key, "bad" a key the
-        # SigV4 fixture refuses with 403, "akidonly" a key id with no secret,
-        # which vends no usable credential, so the client must ignore it. The flat config follows --flat-config:
+        # --storage-cred PREFIX=good|bad|akidonly|secretonly, repeatable (#1820):
+        # an explicit storage-credentials array. "good" is the vended key, "bad"
+        # a key the SigV4 fixture refuses with 403, "akidonly" a key id with no
+        # secret and "secretonly" a secret with no key id. Neither of the last
+        # two vends a usable credential, so the client must ignore them. The flat config follows --flat-config:
         # "none" (the default here) vends nothing flat, "good" the vended key.
         # A reader that matched one entry against the metadata-location only, or
         # fell back to ambient for a path no entry covers, reads where it must not.
@@ -313,6 +314,9 @@ class Handler(BaseHTTPRequestHandler):
                 if kind == "akidonly":
                     ecfg = {k: v for k, v in config.items()
                             if k != "s3.secret-access-key"}
+                elif kind == "secretonly":
+                    ecfg = {k: v for k, v in config.items()
+                            if k != "s3.access-key-id"}
                 else:
                     ecfg = config if kind == "good" else bad
                 entries.append({"prefix": prefix, "config": ecfg})
