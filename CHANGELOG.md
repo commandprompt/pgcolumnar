@@ -525,6 +525,29 @@ true until the next version shipped.
 
 ### Fixed
 
+- A single-PUT export to an `https://` store that refuses it before reading the
+  body now reports the 403 and its hint (#1902). It used to report `PUT to "..."
+  failed before a response`: after a failed send a TLS session cannot be read,
+  so the answer that had arrived was lost. A write whose body is over 1 MiB now
+  sends `Expect: 100-continue` and waits up to one second for the store to answer
+  its headers, so a refusal arrives before any of the body is sent. `100
+  Continue`, or no answer within the second (a store that ignores `Expect`),
+  sends the body; a `417` sends the request again without `Expect`. This applies
+  to `http://` stores too, and to multipart parts. A store that ignores `Expect`
+  costs the second once per object, not once per part: after a wait runs out,
+  the object's later parts go without it. Only an answer of 300 or more ends the request before the body; a
+  `2xx` to the headers alone still gets the body, and stands as the answer once
+  the body is sent (HTTP gives a request one final answer), so the write is not
+  taken as done with its body unsent. A `2xx` before the body that closes the
+  connection, or whose own body runs until the close, is not taken as done.
+  `test/objstore_error_advice.sh` and its twin.
+- A read over a prefix or glob names the file it refused (#1902). When one file
+  did not match the declared columns, the error gave the column and the types
+  but not the file, so the file could not be found among thousands of objects.
+  Each binding error now has `DETAIL: The mismatched file is "<path>".` The
+  same holds for `read_parquet` by position or by field id, for the Parquet
+  foreign table, and for a single file. `test/objstore_listing.sh` and its
+  twin.
 - The docs no longer contradict the code on object storage, credentials and
   row-group skipping (#1797). `import_arrow`, `file_split_offsets` and
   `parallel_copy` read local files only; the docs had said every Arrow and
@@ -742,7 +765,7 @@ true until the next version shipped.
   A single-PUT export to an `http://` endpoint that the store refuses before
   reading the body now reports the 403 or other status. When the body was larger
   than the socket buffers, it used to report `failed before a response`. An
-  `https://` store still reports `failed before a response` there (#1902).
+  `https://` store kept reporting `failed before a response` there until #1902.
   The object-store module ABI is now 8, so the module and the extension must
   come from the same build.
   `test/objstore_error_advice.sh` and `test_objstore_error_advice.py`.
