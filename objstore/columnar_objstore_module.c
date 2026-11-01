@@ -99,7 +99,9 @@ PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
  * answer them (#1902). A store that refuses from the headers (403, 404) then
  * says so before any body byte is sent, which works over TLS too, where a
  * failed send leaves an early answer unreadable. A store that ignores Expect
- * costs that wait once per request; the same threshold and wait as curl's.
+ * costs that wait once per handle: after a wait runs out with no answer, the
+ * handle's later writes (a multipart export's later parts) go without Expect
+ * (#1903 review). The same threshold and wait as curl's.
  */
 #define OS_EXPECT_MIN_BODY	(1024 * 1024)
 #define OS_EXPECT_WAIT_MS	1000
@@ -180,6 +182,15 @@ struct PgColumnarObjHandle
 	 * effect the store may apply even if its answer never arrives.
 	 */
 	bool		holdForAnswer;
+
+	/*
+	 * An Expect: 100-continue wait on this handle ran out with no answer, so
+	 * the store ignores Expect (#1903 review). Later writes on the handle,
+	 * over this connection or a later one, go without it: each would pay the
+	 * whole wait for nothing. It lives on the handle, not the connection, so
+	 * a reconnect does not reset it, and a sink's parts share it.
+	 */
+	bool		expectIgnored;
 
 	/* receive staging */
 	uint8	   *rb;
@@ -2157,14 +2168,14 @@ os_answered_early(PgColumnarObjHandle *h)
  * Wait up to `ms` for the store to start answering the headers of a request
  * sent with Expect: 100-continue (#1902), without sending its body. True when
  * response bytes are staged in h->rb for os_read_head; false when nothing came
- * in time, or the connection ended first, which ends the wait at once. Over
- * TLS the socket can turn readable with a record that holds no application
- * data (a TLS 1.3 session ticket), so readiness alone is not an answer: only
- * bytes that SSL_read returns are. Interrupts are serviced, since nothing has
+ * in time (*timedOut set), or the connection ended first, which ends the wait
+ * at once (*timedOut left false). Over TLS the socket can turn readable with
+ * a record that holds no application data (a TLS 1.3 session ticket), so
+ * readiness alone is not an answer: only bytes that SSL_read returns are. Interrupts are serviced, since nothing has
  * been committed yet.
  */
 static bool
-os_await_answer(PgColumnarObjHandle *h, int ms)
+os_await_answer(PgColumnarObjHandle *h, int ms, bool *timedOut)
 {
 	TimestampTz until = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), ms);
 
@@ -2213,7 +2224,10 @@ os_await_answer(PgColumnarObjHandle *h, int ms)
 
 		left = TimestampDifferenceMilliseconds(GetCurrentTimestamp(), until);
 		if (left <= 0)
+		{
+			*timedOut = true;
 			return false;
+		}
 		rc = WaitLatchOrSocket(MyLatch,
 							   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH |
 							   WL_SOCKET_READABLE,
@@ -2259,7 +2273,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 	char		payloadHex[PG_SHA256_DIGEST_LENGTH * 2 + 1];
 	int			attempt;
 	bool		held = false;
-	bool		expect = (bodylen > OS_EXPECT_MIN_BODY);
+	bool		expect = (bodylen > OS_EXPECT_MIN_BODY && !h->expectIgnored);
 
 	os_sha256(body, (size_t) bodylen, phash);
 	os_hex(phash, sizeof(phash), payloadHex);
@@ -2271,6 +2285,8 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 		bool		sent;
 		bool		early;
 		bool		answered = false;
+		bool		early2xx = false;
+		bool		timedOut = false;
 
 		if (h->fd < 0)
 			os_connect(h);
@@ -2301,32 +2317,55 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 		 * sent (#1902). 100 Continue, or no answer within the wait (a store
 		 * that ignores Expect), sends the body; so does a connection that
 		 * ended, whose body send then fails and takes the stale keep-alive
-		 * path as before. A final answer is the answer to this request, and
-		 * the body is never sent. The writes this large (a single PUT, a
-		 * part) fail on any answer but 200, which drops the connection the
-		 * store may still expect the body on. 417 refuses the expectation
-		 * itself, so the request goes again without it.
+		 * path as before. A wait that runs out marks the handle, so its later
+		 * writes go without Expect and the wait is paid once (#1903 review).
+		 * 417 refuses the expectation itself, so the request goes again
+		 * without it.
+		 *
+		 * An answer of 300 or more is the answer to this request, and the
+		 * body is never sent. The writes this large (a single PUT, a part)
+		 * fail on any answer but 200, which drops the connection the store
+		 * may still expect the body on.
+		 *
+		 * A 2xx before the body (#1903 review) is still the request's one
+		 * final answer: HTTP gives a request exactly one, so no second answer
+		 * follows the body, and waiting for one would hang. But it cannot
+		 * mean the object was written, since none of the body was sent, and
+		 * a store that stays on the connection is still reading the body the
+		 * Content-Length promised. So the body is sent, and the 2xx stands as
+		 * the answer once the whole body has gone. A 2xx that closes the
+		 * connection will read no body: the write is not taken as done, and
+		 * goes the failed-send way (one retry on a stale keep-alive, else
+		 * "failed before a response").
 		 */
-		if (sent && expect &&
-			os_await_answer(h, OS_EXPECT_WAIT_MS))
+		if (sent && expect)
 		{
-			/* bytes are staged, so this reads a head or raises */
-			(void) os_read_head(h, resp);
-			if (resp->status == 417)
+			if (os_await_answer(h, OS_EXPECT_WAIT_MS, &timedOut))
 			{
-				pfree(req.data);
-				os_disconnect(h);
-				expect = false;
-				attempt--;		/* a fresh request, not a stale retry */
-				continue;
+				/* bytes are staged, so this reads a head or raises */
+				(void) os_read_head(h, resp);
+				if (resp->status == 417)
+				{
+					pfree(req.data);
+					os_disconnect(h);
+					expect = false;
+					attempt--;	/* a fresh request, not a stale retry */
+					continue;
+				}
+				else if (resp->status >= 300)
+					answered = true;
+				else if (resp->status >= 200)
+					early2xx = true;
 			}
-			else if (resp->status >= 200)
-				answered = true;
+			else if (timedOut)
+				h->expectIgnored = true;
 		}
-		if (sent && !answered && bodylen > 0)
+		if (early2xx && resp->conn_close)
+			sent = false;
+		else if (sent && !answered && bodylen > 0)
 			sent = os_send_all(h, (const char *) body, bodylen);
-		early = !sent && os_answered_early(h);
-		if (answered)
+		early = !sent && !early2xx && os_answered_early(h);
+		if (answered || (early2xx && sent))
 		{
 			pfree(req.data);
 			break;

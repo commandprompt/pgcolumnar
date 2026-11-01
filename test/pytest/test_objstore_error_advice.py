@@ -13,7 +13,10 @@ status, since a failed send leaves a TLS session unreadable. A write whose body 
 1 MiB now sends Expect: 100-continue and waits up to a second for the store to answer
 its headers, so the refusal arrives before the body is sent; 100 Continue, or no answer
 in time, sends the body, a late 100 is passed over, and 417 sends the request again
-without Expect. Each kind of store is a hook file of the shell's fixture.
+without Expect. A wait that runs out stops Expect for the handle's later writes, so a
+multipart export to a store that ignores it sends it on one part only, and a 200 to the
+headers alone still gets the body (#1903 review). Each kind of store is a hook file of
+the shell's fixture.
 
 One SigV4 fixture with a refused bucket, the same fixture again over https with a
 certificate the postmaster trusts through SSL_CERT_FILE (made by the openssl CLI, as the
@@ -304,11 +307,13 @@ def ea(pgc_cluster):
         expect_log.write_text("")
         expect_log.chmod(0o666)
 
-        def tls_export(rel, key, cols):
+        def tls_export(rel, key, cols, args=", 'ea_tls'", setup=()):
             try:
                 with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+                    for st in setup:
+                        conn.execute(st)
                     n = conn.execute(f"SELECT pgcolumnar.export_parquet('{rel}', "
-                                     f"'s3://{BUCKET}/{key}', 'ea_tls')").fetchone()[0]
+                                     f"'s3://{BUCKET}/{key}'{args})").fetchone()[0]
             except psycopg.Error as exc:
                 if not exc.sqlstate:
                     return query_error(_message(exc))
@@ -347,6 +352,37 @@ def ea(pgc_cluster):
         hook.write_text("")
         r["tls 417"] = tls_export("ea_mid", "tls_417.parquet", mid_cols)
         hook.unlink()
+        # a store that ignores Expect costs the wait once per connection (#1903 review):
+        # 2 MiB parts make the mid-size export several parts over 1 MiB
+        hook = work / "__expect_ignore__"
+        hook.write_text("")
+        s3log.write_text("")
+        mp = tls_export("ea_mid", "mp_ignored.parquet", mid_cols, "",
+                        ("SET pgcolumnar.objstore_part_size = 2097152",))
+        hook.unlink()
+        parts = sum(1 for ln in s3log.read_text(errors="replace").splitlines()
+                    if ln.startswith(f"PUT /{BUCKET}/mp_ignored.parquet partNumber="))
+        r["mp parts"] = "yes" if mp == "300000 exported, 300000 read back" and parts >= 3 \
+            else f"no ({mp}; {parts} parts)"
+        r["mp expect"] = str(expect_lines(
+            lambda ln: ln == f"PUT /{BUCKET}/mp_ignored.parquet 100-continue"))
+        # a 2xx to the headers alone: the body is sent anyway, and the object settles
+        # after the fixture has read it (#1903 review)
+        hook = work / "__expect_early_200__"
+        hook.write_text("")
+        e200 = _value(dsn, "SELECT pgcolumnar.export_parquet('ea_mid', "
+                           f"'s3://{BUCKET}/early200.parquet')")
+        hook.unlink()
+        obj, prev = work / BUCKET / "early200.parquet", -1
+        for _ in range(25):
+            size = obj.stat().st_size if obj.is_file() else -1
+            if size > 0 and size == prev:
+                break
+            prev = size
+            time.sleep(0.2)
+        r["early 200"] = f"{e200} | " + _value(
+            dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet('s3://{BUCKET}/early200.parquet') "
+                 f"AS t({mid_cols})")
         # a store that answers neither 100 nor the refusal within the wait: #1895's
         # case again, and over http the early answer is still read after the failed send
         hook = work / "__deny_delay__"
@@ -580,6 +616,29 @@ def test_a_417_sends_the_export_again_without_expect(ea, expect):
         return
     expect.text(ea["tls 417"], "300000 exported, 300000 read back",
                 "a store that answers 417 to Expect gets the export again without it")
+
+
+def test_the_multipart_export_to_an_expect_ignoring_store_is_several_parts(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["mp parts"], "yes",
+                "premise: the multipart export to a store that ignores Expect is 3 or more parts, "
+                "all read back")
+
+
+def test_a_store_that_ignores_expect_gets_it_on_one_part_only(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["mp expect"], "1",
+                "a multipart export to a store that ignores Expect sends it on one part only")
+
+
+def test_a_200_before_the_body_still_sends_the_body(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["early 200"], "300000 | 300000",
+                "a single PUT answered 200 before its body still sends the body, and the object "
+                "holds the rows")
 
 
 def test_a_refusal_after_the_expect_wait_keeps_the_403_over_http(ea, expect):

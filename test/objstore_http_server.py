@@ -105,6 +105,13 @@
 #   __expect_417__        when it exists, a request carrying Expect is answered
 #                         417 Expectation Failed from its headers and the
 #                         connection closed (#1902).
+#   __expect_early_200__  when it exists, a single PUT (no partNumber) carrying
+#                         Expect is answered 200 from its headers, before its
+#                         body is read; the body is then read and stored, and
+#                         the answer the handler gives after it is discarded,
+#                         since a request has one final answer (#1903 review).
+#                         A client that takes the 200 for the write and never
+#                         sends the body leaves no object.
 # --seed-upload KEY (repeatable) opens an upload at KEY ("bucket/key") before
 # the first request: an upload some other writer left, which a client must not
 # abort as its own.
@@ -128,6 +135,7 @@
 import argparse
 import hashlib
 import hmac
+import io
 import os
 import re
 import ssl
@@ -205,6 +213,10 @@ class Handler(BaseHTTPRequestHandler):
         # request's body, so _deny can tell whether this one's was read.
         self._body = None
         self._expect = False
+        real = getattr(self, "_real_wfile", None)
+        if real is not None:
+            self.wfile = real
+            self._real_wfile = None
         return super().parse_request()
 
     def handle_expect_100(self):
@@ -234,8 +246,18 @@ class Handler(BaseHTTPRequestHandler):
         (unless the __expect_ignore__ hook plays a store that ignores Expect)."""
         if self._expect:
             self._expect = False
-            if not os.path.exists(os.path.join(self.server.rootdir,
-                                               "__expect_ignore__")):
+            if (self.command == "PUT" and "partNumber=" not in self.path and
+                    os.path.exists(os.path.join(self.server.rootdir,
+                                                "__expect_early_200__"))):
+                # 200 to the headers alone; whatever the handler answers after
+                # the body goes nowhere, as a request has one final answer.
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                self._real_wfile = self.wfile
+                self.wfile = io.BytesIO()
+            elif not os.path.exists(os.path.join(self.server.rootdir,
+                                                 "__expect_ignore__")):
                 _hook_sleep(self.server.rootdir, "__expect_delay__")
                 self.send_response_only(100)
                 self.end_headers()

@@ -23,7 +23,9 @@
 #      now sends its headers with Expect: 100-continue and waits up to a second
 #      for the store to answer them; a refusal then arrives before the body is
 #      sent. 100 Continue, or no answer in time, sends the body; 417 sends the
-#      request again without Expect.
+#      request again without Expect. A wait that runs out stops Expect for the
+#      handle's later writes, so a store that ignores it costs the wait once, not
+#      once per part; a 2xx before the body still gets the body (#1903 review).
 #
 # Facet A (s3://<bucket>/_ in prefix and glob errors) is #1869's fix and its
 # arms are in test/objstore_export_open_uploads.sh.
@@ -246,14 +248,17 @@ psql_run "CREATE SERVER ea_tls FOREIGN DATA WRAPPER pgcolumnar_parquet
             OPTIONS (access_key_id '$AKID', secret_access_key '$SECRET');" >/dev/null
 EXPECT_LOG="$PGC_WORKDIR/__expect_log__"
 : > "$EXPECT_LOG"
-# tls_export REL KEY COLS -> "N exported, M read back", or the export's error
-tls_export() {
+# export_back REL KEY COLS [EXPORT_ARGS [SETUP]] -> "N exported, M read back", or the
+# export's error. EXPORT_ARGS follow the URL in the export call; SETUP runs first.
+export_back() {
 	local r
-	r="$(refusal "SELECT pgcolumnar.export_parquet('$1', 's3://$BUCKET/$2', 'ea_tls')")"
+	r="$(refusal "${5:-}SELECT pgcolumnar.export_parquet('$1', 's3://$BUCKET/$2'${4:-})")"
 	case "$r" in "no error ("*")") ;; *) echo "$r"; return ;; esac
 	r="${r#no error (}"
 	echo "${r%)} exported, $(q "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/$2') AS t($3)") read back"
 }
+# tls_export REL KEY COLS -> the same through the https server ea_tls
+tls_export() { export_back "$1" "$2" "$3" ", 'ea_tls'"; }
 MID_COLS="id int8, t text"
 check "a mid-size export over https whose store answers 100 Continue writes the object" \
 	"$(tls_export ea_mid tls_mid.parquet "$MID_COLS")" "300000 exported, 300000 read back"
@@ -280,6 +285,40 @@ rm -f "$PGC_WORKDIR/__expect_delay__"
 check "a store that answers 417 to Expect gets the export again without it" \
 	"$(tls_export ea_mid tls_417.parquet "$MID_COLS")" "300000 exported, 300000 read back"
 rm -f "$PGC_WORKDIR/__expect_417__"
+
+# A store that ignores Expect costs the wait once per connection, not once per
+# request (#1903 review): after a wait runs out, the handle's later writes, a
+# multipart export's later parts, go without Expect. 2 MiB parts make the
+# mid-size export several parts over 1 MiB, each of which would wait a second.
+: > "$PGC_WORKDIR/__expect_ignore__"
+: > "$S3_LOG"
+MP_IGN="$(export_back ea_mid mp_ignored.parquet "$MID_COLS" "" "SET pgcolumnar.objstore_part_size = 2097152; ")"
+rm -f "$PGC_WORKDIR/__expect_ignore__"
+MP_PARTS="$(grep -c "^PUT /$BUCKET/mp_ignored.parquet partNumber=" "$S3_LOG")"
+check "premise: the multipart export to a store that ignores Expect is 3 or more parts, all read back" \
+	"$( [ "$MP_IGN" = "300000 exported, 300000 read back" ] && [ "$MP_PARTS" -ge 3 ] && echo yes \
+		|| echo "no ($MP_IGN; $MP_PARTS parts)")" "yes"
+check "a multipart export to a store that ignores Expect sends it on one part only" \
+	"$(grep -c "^PUT /$BUCKET/mp_ignored.parquet 100-continue\$" "$EXPECT_LOG")" "1"
+
+# A 2xx to the headers alone cannot mean the object was written, since none of
+# its body was sent (#1903 review). The body is sent, and the 2xx stands as the
+# request's one final answer. The fixture stores the body after the 200, so the
+# read-back waits for the object to settle first.
+: > "$PGC_WORKDIR/__expect_early_200__"
+E200="$(refusal "SELECT pgcolumnar.export_parquet('ea_mid', 's3://$BUCKET/early200.parquet')")"
+rm -f "$PGC_WORKDIR/__expect_early_200__"
+E200="${E200#no error (}"; E200="${E200%)}"
+E200_OBJ="$PGC_WORKDIR/$BUCKET/early200.parquet"
+_prev=-1
+for _ in $(seq 1 25); do
+	_sz="$(stat -c %s "$E200_OBJ" 2>/dev/null || echo -1)"
+	[ "$_sz" -gt 0 ] && [ "$_sz" = "$_prev" ] && break
+	_prev="$_sz"; sleep 0.2
+done
+check "a single PUT answered 200 before its body still sends the body, and the object holds the rows" \
+	"$E200 | $(q "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/early200.parquet') AS t($MID_COLS)")" \
+	"300000 | 300000"
 
 # A store that answers neither 100 nor the refusal within the wait: the body is
 # being sent when the refusal comes, which is #1895's case again, and over

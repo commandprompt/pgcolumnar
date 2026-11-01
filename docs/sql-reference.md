@@ -1718,8 +1718,10 @@ first with `Expect: 100-continue`. It waits up to one second for the store to
 answer them before it sends the body. A store can refuse the request from its
 headers alone, with a 403 for example. The export then reports that status and its
 hint, over `https://` as well as `http://`. A store that ignores `Expect` costs
-that second on each such request. A store that answers `417` gets the request
-again without `Expect`.
+that second once per object written. After a wait runs out, the later parts of
+that object go without `Expect`. A store that answers `417` gets the request again without
+`Expect`. A `2xx` answer to the headers alone still gets the body, and stands as
+the answer once the body is sent.
 
 This cleanup holds when you cancel or terminate the export while it waits for the
 store to start the upload. The export then has no id for that upload. It lists

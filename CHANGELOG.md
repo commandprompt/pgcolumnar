@@ -524,7 +524,12 @@ true until the next version shipped.
   its headers, so a refusal arrives before any of the body is sent. `100
   Continue`, or no answer within the second (a store that ignores `Expect`),
   sends the body; a `417` sends the request again without `Expect`. This applies
-  to `http://` stores too, and to multipart parts.
+  to `http://` stores too, and to multipart parts. A store that ignores `Expect`
+  costs the second once per object, not once per part: after a wait runs out,
+  the object's later parts go without it. Only an answer of 300 or more ends the request before the body; a
+  `2xx` to the headers alone still gets the body, and stands as the answer once
+  the body is sent (HTTP gives a request one final answer), so the write is not
+  taken as done with its body unsent.
   `test/objstore_error_advice.sh` and its twin.
 - A read over a prefix or glob names the file it refused (#1902). When one file
   did not match the declared columns, the error gave the column and the types

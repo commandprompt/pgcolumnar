@@ -1544,4 +1544,7 @@ guard_tests 854
 # cluster_tests 4962 -> 4976 for #1902: nine tests in test_objstore_error_advice.py (the https
 # fixture premise and eight Expect: 100-continue arms) and five in test_objstore_listing.py (a
 # premise and four refusals that name the mismatched object), by collection: `4976 tests collected`.
-cluster_tests 4976
+# cluster_tests 4976 -> 4979 for #1903's review: three tests in test_objstore_error_advice.py
+# (a multipart premise, Expect on one part only against a store that ignores it, and a 200
+# before the body still sends the body), by collection: `4979 tests collected`.
+cluster_tests 4979
