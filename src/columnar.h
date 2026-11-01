@@ -801,6 +801,20 @@ extern int64 PgColumnarWriteParquetFile(Relation rel, Snapshot snapshot,
 									  const char *filepath,
 									  const uint64 *restrictGroups,
 									  int nRestrictGroups);
+struct PgColumnarObjStoreConfig;
+/* The same, writing a remote path with cfg (#1795); NULL is the environment. */
+extern int64 PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot,
+											const char *filepath,
+											const uint64 *restrictGroups,
+											int nRestrictGroups,
+											const struct PgColumnarObjStoreConfig *cfg);
+/*
+ * The object-store configuration a pgcolumnar_parquet server gives the current
+ * user (#393 M4, #1795): endpoint and region from the server, the credential
+ * triple from the user's mapping or the PUBLIC one. Reads and writes share it.
+ */
+extern void PgColumnarObjStoreConfigForServer(Oid serverid,
+											  struct PgColumnarObjStoreConfig *cfg);
 extern void PgColumnarParquetCheckExportable(Relation rel);
 
 /*

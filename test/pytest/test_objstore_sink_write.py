@@ -327,6 +327,45 @@ def _silent_run(dsn, s3log, bucket, srv, r):
         r["hs exit"] = f"slow ({n_workers} workers, {left} left after {dt}s)"
 
 
+def _part_set(dsn, value):
+    """-> "accepted", or the message of the refusal, as the shell's part_set reads it."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(f"SET pgcolumnar.objstore_part_size = {value}")
+    except psycopg.Error as exc:
+        return exc.diag.message_primary or query_error(_message(exc))
+    return "accepted"
+
+
+def _staged_run(dsn, s3log, bucket, work):
+    """#1812's chunk arm: about 500 MB staged, then the Arrow batch of one row with two
+    400 MB values, at the 512 MiB part size. -> "rows|parts=N|identical" against a local
+    export of the table."""
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute("CREATE TABLE es_staged (id int, a text, b text) USING pgcolumnar")
+        c.execute("SELECT pgcolumnar.set_options('es_staged', stripe_row_limit => 1000)")
+        c.execute("INSERT INTO es_staged SELECT g, repeat('y', 250000), '' FROM generate_series(1, 2000) g")
+        c.execute("INSERT INTO es_staged VALUES (2001, repeat('z', 400000000), repeat('w', 400000000))")
+    open(s3log, "w").close()
+    remote, local = bucket / "staged.arrow", work / "staged-local.arrow"
+    try:
+        got = _row(dsn, f"SELECT pgcolumnar.export_arrow('es_staged', 's3://{BUCKET}/staged.arrow')",
+                   setup=["SET statement_timeout = '900s'", "SET pgcolumnar.objstore_part_size = 536870912"])
+        _row(dsn, f"SELECT pgcolumnar.export_arrow('es_staged', '{local}')")
+        parts = _logn(s3log, r"^PUT /pgc-bucket/staged.arrow partNumber=")
+        if remote.is_file() and local.is_file() and remote.read_bytes() == local.read_bytes():
+            same = "identical"
+        else:
+            size = {p: (p.stat().st_size if p.is_file() else "missing") for p in (remote, local)}
+            same = f"differs ({size[remote]} vs {size[local]} bytes)"
+        return f"{got}|parts={parts}|{same}"
+    finally:
+        remote.unlink(missing_ok=True)
+        local.unlink(missing_ok=True)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("DROP TABLE es_staged")
+
+
 def _plain_run(dsn, work, r, procs):
     """The shell's #1779 arm: exports to an allow-listed http:// target, served by a
     second fixture server WITHOUT the --sigv4-* options. An http:// handle has no region
@@ -474,6 +513,11 @@ def osw(pgc_cluster):
             c.execute(f"CREATE FOREIGN TABLE f_big (id int8, pad text) SERVER wsrv "
                       f"OPTIONS (path 's3://{BUCKET}/big.parquet')")
         r["big back"], r["big gen"] = _set_hash(dsn, "SELECT * FROM f_big"), _set_hash(dsn, GEN_BIG)
+
+        # #1812: the part size has a ceiling the sink can hold
+        r["part over"] = _part_set(dsn, 536870913)
+        r["part max"] = _part_set(dsn, 536870912)
+        r["staged"] = _staged_run(dsn, s3log, bucket, work) if os.environ.get("PGC_RUN_OVER_1GB", "0") == "1" else None
 
         # injection: abort mid-part leaves nothing
         open(s3log, "w").close()
@@ -792,6 +836,30 @@ def test_the_large_export_completed_its_upload_once(osw, expect):
 
 def test_the_large_object_reads_back_as_the_generator(osw, expect):
     expect.text(osw["big back"], osw["big gen"], "large round trip: s3 read-back == source")
+
+
+PART_OVER = '536870913 is outside the valid range for parameter "pgcolumnar.objstore_part_size" (0 .. 536870912)'
+STAGED_NAME = "an 800 MB chunk over 500 MB already staged uploads whole at the 512 MiB part size, in 3 parts"
+
+
+def test_the_part_size_refuses_more_than_512_mib(osw, expect):
+    expect.text(osw["part over"], PART_OVER, "objstore_part_size refuses a value above its 512 MiB maximum")
+
+
+def test_the_part_size_accepts_512_mib(osw, expect):
+    expect.text(osw["part max"], "accepted", "objstore_part_size accepts its 512 MiB maximum")
+
+
+def test_a_chunk_bigger_than_the_room_left_in_the_part_uploads_whole(osw, expect):
+    """#1812: the sink appended a whole chunk before it cut a part, so about 500 MB
+    staged plus an 800 MB chunk passed what one allocation holds. Opt-in, as the shell's
+    arm is: the export is about 1.3 GB."""
+    if osw["staged"] is None:
+        expect.cannot_run("UNMET_PRECONDITION",
+                          "PGC_RUN_OVER_1GB is not 1; the arm needs several GB of memory and disk",
+                          name=STAGED_NAME)
+        return
+    expect.text(osw["staged"], "2001|parts=3|identical", STAGED_NAME)
 
 
 def test_an_injected_mid_upload_failure_surfaces_as_disk_full(osw, expect):
