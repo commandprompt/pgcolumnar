@@ -185,6 +185,9 @@ def iob(pgc_cluster):
         r["dv"] = _value(dsn, f"SELECT string_agg(id::text, ',' ORDER BY id) FROM {scan.format(MDROOT, 'dvapply')}")
         r["noapply"] = _value(dsn, f"SELECT count(*) FROM {scan.format(MDROOT, 'noapply')}")
         r["nm"] = _value(dsn, f"SELECT count(*) FROM {scan.format(NMROOT, 'nmapply')}")
+        for scheme in ("s3a", "s3n"):    # Hadoop's names for s3:// (#1825)
+            alias = MDROOT.replace("s3://", f"{scheme}://", 1)
+            r[scheme] = _value(dsn, f"SELECT count(*) FROM {scan.format(alias, 'apply')}")
         r["after reads"] = _survived(dsn, log, before)
         for key, meta in (("escape", "eqescape"), ("dotdot", "eqdotdot"),
                           ("pctdot", "eqpctdot"), ("nulpct", "eqnulpct")):
@@ -260,6 +263,18 @@ def test_name_mapping_reads_an_id_less_file_over_s3(iob, expect):
     if _declined(iob, expect):
         return
     expect.text(iob["nm"], "5", "name mapping reads an id-less file over s3 (5 rows)")
+
+
+def test_an_s3a_metadata_path_reads_over_s3_as_s3_does(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["s3a"], "3", "an s3a:// metadata path reads over s3 as s3:// does (3 rows)")
+
+
+def test_an_s3n_metadata_path_reads_over_s3_as_s3_does(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["s3n"], "3", "an s3n:// metadata path reads over s3 as s3:// does (3 rows)")
 
 
 def test_the_backend_is_still_up_after_the_s3_reads(iob, expect):

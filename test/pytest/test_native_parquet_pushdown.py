@@ -10,6 +10,7 @@ inverted interval (a footer whose min and max are swapped) must never drive a sk
 and an INT64-backed DECIMAL is skippable. Every file is written by pyarrow, an
 independent writer, so the reader and the writer cannot share a misunderstanding.
 """
+import datetime
 import decimal
 import struct
 
@@ -181,3 +182,47 @@ def test_an_int64_backed_decimal_is_skippable(pgc_conn, server_dir, expect):
         expect.num(cur.fetchone()[0], 1001, "INT64-backed DECIMAL: skipping did not drop rows")
         expect.text(_counter(cur, "ftdec", "d >= 0", "Row Groups Skipped"), "0",
                     "INT64-backed DECIMAL: unfiltered scan skips nothing")
+        # a declared typmod that rounds (#1790): numeric(18,1) reads 99.95 .. 99.99, in
+        # the first group whose stored max is 99.99, as 100.0, so it must not skip;
+        # the file's own typmod changes nothing and keeps skipping
+        cur.execute(f"CREATE FOREIGN TABLE ftdec1 (d numeric(18,1)) SERVER pq_dec OPTIONS (path '{path}')")
+        cur.execute(f"CREATE FOREIGN TABLE ftdec2 (d numeric(18,2)) SERVER pq_dec OPTIONS (path '{path}')")
+        cur.execute("SELECT count(*) FROM ftdec1 WHERE d = 100.0")
+        expect.num(cur.fetchone()[0], 10,
+                   "typmod: a numeric(18,1) column returns every row that rounds to 100.0")
+        expect.text(_counter(cur, "ftdec1", "d = 100.0", "Row Groups Skipped"), "0",
+                    "typmod: a numeric(18,1) column skips no group for d = 100.0")
+        expect.text(_counter(cur, "ftdec2", "d BETWEEN 120.00 AND 130.00", "Row Groups Skipped"), "3",
+                    "typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups")
+
+
+def test_a_time_type_at_full_precision_keeps_skipping(pgc_conn, server_dir, expect):
+    pa = expect.require_module("pyarrow", name="pyarrow not available; predicate-pushdown suite needs it to write stats")
+    if pa is None:
+        return
+    pq = expect.require_module("pyarrow.parquet",
+                               name="pyarrow not available; predicate-pushdown suite needs it to write stats")
+    # four groups, one per hour of 2021-01-01: 999 whole seconds, then hh:59:59.9996,
+    # which timestamp(3) reads as the next hour, beyond the group's stored max (#1790)
+    path = server_dir / "ts_push.parquet"
+    base = datetime.datetime(2021, 1, 1)
+    vals = []
+    for g in range(4):
+        h = base + datetime.timedelta(hours=g)
+        vals += [h + datetime.timedelta(seconds=k) for k in range(999)]
+        vals.append(h + datetime.timedelta(minutes=59, seconds=59, microseconds=999600))
+    _write(path, pa.table({"t": pa.array(vals, pa.timestamp("us"))}), pq,
+           compression="none", row_group_size=1000)
+    assert pq.ParquetFile(str(path)).metadata.num_row_groups == 4
+    where = "t >= TIMESTAMP '2021-01-01 03:00:00'"
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE SERVER IF NOT EXISTS pq_ts FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        cur.execute(f"CREATE FOREIGN TABLE ftts6 (t timestamp(6)) SERVER pq_ts OPTIONS (path '{path}')")
+        cur.execute(f"CREATE FOREIGN TABLE ftts3 (t timestamp(3)) SERVER pq_ts OPTIONS (path '{path}')")
+        expect.text(_counter(cur, "ftts6", where, "Row Groups Skipped"), "3",
+                    "typmod: a timestamp(6) column still skips 3 of 4 groups")
+        expect.text(_counter(cur, "ftts3", where, "Row Groups Skipped"), "0",
+                    "typmod: a timestamp(3) column skips no group for t >= 03:00")
+        cur.execute(f"SELECT count(*) FROM ftts3 WHERE {where}")
+        expect.num(cur.fetchone()[0], 1001,
+                   "typmod: a timestamp(3) column returns the row that rounds up to 03:00")

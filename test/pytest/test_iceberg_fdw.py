@@ -62,6 +62,12 @@ WAREHOUSES = {
     # the same two hour() tables declared as the OTHER timestamp type (#1706)
     "hw":  ("warehouse_temporal",   "byhour",     "id bigint, ts timestamptz"),
     "hn":  ("warehouse_temporal_xt", "byhour_tz",  "id bigint, tt timestamp"),
+    # declared typmods the reader applies to every value (#1790)
+    "ev_v1": ("warehouse",          "events",       "id bigint, region varchar(1), amount int"),
+    "pad2":  ("warehouse_typmod",   "byregion_pad", "id bigint, region varchar(2)"),
+    "frac0": ("warehouse_typmod",   "byhour_frac",  "id bigint, ts timestamp(0)"),
+    "bkt2":  ("warehouse_typmod",   "byregion_bucket", "id bigint, region varchar(2)"),
+    "th6":   ("warehouse_temporal", "byhour",       "id bigint, ts timestamp(6)"),
 }
 
 
@@ -795,6 +801,63 @@ def test_an_hour_partition_over_a_timestamptz_source_read_as_timestamp_keeps_its
         _scan_ids(conn, meta["hn"], "id bigint, tt timestamp", where)))
     expect.text(got, want,
                 "hour() on a timestamptz source read as timestamp in New York matches iceberg_scan")
+
+
+# ------------------------------------------------- a declared typmod, and pruning (#1790)
+#
+# The foreign table returns each value as its declared type, typmod included. A typmod
+# can change a value: varchar(2) reads the stored 'eu  ' as 'eu', and timestamp(0)
+# reads 00:59:59.7 as 01:00:00. The manifest's partition value is the stored one, so
+# a file pruned on it could hold a row the query must return. warehouse_typmod
+# (fixtures/iceberg/gen_iceberg_typmod.py) holds those two values, each in its own
+# partition.
+
+def test_a_varchar_1_iceberg_foreign_column_refuses_a_longer_value(ice, expect):
+    import psycopg
+    conn, meta = ice
+    if not _need(expect, meta, "ev_v1"):
+        return
+    try:
+        got = "no error (" + _one(conn, "SELECT string_agg(region, ',' ORDER BY region) FROM ev_v1") + ")"
+    except psycopg.Error as e:
+        got = e.sqlstate
+    expect.text(got, "22001", "typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001)")
+
+
+def test_a_varchar_2_identity_partition_keeps_a_row_stored_with_trailing_spaces(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "pad2"):
+        return
+    expect.text(_ids(conn, "pad2", "region = 'eu'") or "none", "1",
+                "typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  '")
+
+
+def test_a_timestamp_0_hour_partition_keeps_a_row_that_rounds_into_range(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "frac0"):
+        return
+    expect.text(_ids(conn, "frac0", "ts >= TIMESTAMP '2021-03-01 01:00:00'") or "none", "1,2",
+                "typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2")
+
+
+def test_a_varchar_2_bucket_partition_keeps_a_row_stored_with_trailing_spaces(ice, expect):
+    """'eu  ' (id 1) and 'eu' (id 3) sit in different buckets but both read 'eu'. Today
+    the planner casts a varchar column to text for "=", so the qual never reaches
+    bucket pruning; the typmod guard in ice_fdw_bucket_quals keeps id 1 if that changes."""
+    conn, meta = ice
+    if not _need(expect, meta, "bkt2"):
+        return
+    expect.text(_ids(conn, "bkt2", "region = 'eu'") or "none", "1,3",
+                "typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3")
+
+
+def test_a_timestamp_6_hour_partition_still_prunes(ice, expect):
+    """Microsecond precision changes no value, so the column keeps hour pruning."""
+    conn, meta = ice
+    if not _need(expect, meta, "th6"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM th6 WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'"), 1,
+               "typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)")
 
 
 # ------------------------------------------------------------------- option validation

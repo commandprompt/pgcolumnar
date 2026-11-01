@@ -4676,13 +4676,33 @@ _PG_init(void)
 	 * module's built-in 8 MiB; a small value forces the multipart path on a
 	 * small fixture. Read by the objstore module via GetConfigOption; defined
 	 * here because the module loads after configuration parsing.
+	 *
+	 * The maximum is 512 MiB (#1812). The module stages one part in one
+	 * allocation, which PostgreSQL caps at 1 GiB, so a larger part could never
+	 * be staged and every export over 1 GiB failed. S3 allows parts up to
+	 * 5 GiB, but 512 MiB leaves the allocation room to grow.
 	 */
 	DefineCustomIntVariable("pgcolumnar.objstore_part_size",
 							"Multipart part size in bytes for remote export (0 = module default 8 MiB).",
 							NULL,
 							&pgcolumnar_objstore_part_size,
 							0,
-							0, INT_MAX,
+							0, 512 * 1024 * 1024,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+
+	/*
+	 * Byte cap for one Parquet row group or Arrow record batch on export
+	 * (#1811). See PGC_EXPORT_GROUP_BYTES_MAX in columnar_sink.h. Lowering it
+	 * bounds the memory an export holds, and lets a small table show the cut.
+	 */
+	DefineCustomIntVariable("pgcolumnar.export_group_bytes",
+							"Most bytes an export buffers for one Parquet row group or Arrow record batch.",
+							"The writer starts a new group before a row that would pass it.",
+							&pgcolumnar_export_group_bytes,
+							PGC_EXPORT_GROUP_BYTES_MAX,
+							1024, PGC_EXPORT_GROUP_BYTES_MAX,
 							PGC_USERSET,
 							0,
 							NULL, NULL, NULL);
