@@ -1658,9 +1658,10 @@ SELECT pg_reload_conf();
 
 Each entry is a host or a `host:port`. A request whose endpoint matches no entry
 is refused before any connection is made. The link-local ranges and the known
-cloud instance-metadata addresses, such as `169.254.169.254`, are refused
-unconditionally, whether or not they appear in the list. For every refused range,
-see [Run object storage safely](best-practices.md#run-object-storage-safely). The
+cloud instance-metadata addresses are refused unconditionally, whether or not
+they appear in the list. These include `169.254.169.254` and Alibaba Cloud's
+`100.100.100.200`. For every refused range, see
+[Run object storage safely](best-practices.md#run-object-storage-safely). The
 setting is superuser-only, so a role cannot widen its own reach.
 
 ### Exporting to object storage

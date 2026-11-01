@@ -229,6 +229,12 @@ static const char *const map[][2] = {
 	{"l48only", "64:ff9b:1:a9fe:0:100::"},
 	{"gce253", "fd20:ce::253"},
 	{"n64sec", "64:ff9b::aafe:a9fe"},
+	{"alimapped", "::ffff:100.100.100.200"},
+	{"alicompat", "::100.100.100.200"},
+	{"alinat64", "64:ff9b::6464:64c8"},
+	{"alilocal", "64:ff9b:1::6464:64c8"},
+	{"alilocal48", "64:ff9b:1:6464:64:c800::"},
+	{"alinext", "64:ff9b::6464:64c9"},
 };
 
 int
@@ -331,7 +337,9 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
                       "local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid, "
                       "loop6.pgc-shim.invalid, ula.pgc-shim.invalid, n64ok.pgc-shim.invalid, "
                       "n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid, "
-                      "l48only.pgc-shim.invalid, gce253.pgc-shim.invalid, n64sec.pgc-shim.invalid'")
+                      "l48only.pgc-shim.invalid, gce253.pgc-shim.invalid, n64sec.pgc-shim.invalid, "
+                      "alimapped.pgc-shim.invalid, alicompat.pgc-shim.invalid, alinat64.pgc-shim.invalid, "
+                      "alilocal.pgc-shim.invalid, alilocal48.pgc-shim.invalid, alinext.pgc-shim.invalid'")
             c.execute("SELECT pg_reload_conf()")
         time.sleep(0.5)
 
@@ -412,6 +420,24 @@ def test_metadata_addresses_behind_ipv6_forms(pgc_cluster, server_dir, expect, m
                     "fd20:ce::253 (next to fd20:ce::254): not refused, a connect is tried")
         expect.text(connect_tried("n64sec"), "connect tried",
                     "NAT64 64:ff9b::aafe:a9fe (170.254.169.254): not refused, a connect is tried")
+        # 100.100.100.200 inside the same IPv6 forms (#1848). On an IPv6-only network
+        # with DNS64, a name whose A record is 100.100.100.200 resolves only to
+        # 64:ff9b::6464:64c8, so each form needs its own refusal. The /48 local-use
+        # layout puts the address at bytes 6, 7, 9 and 10. 100.100.100.201 under the
+        # well-known prefix is the control: a connect is tried.
+        expect.text(shim_read("alimapped")[0], "42501",
+                    "IPv4-mapped ::ffff:100.100.100.200: refused 42501 despite being listed")
+        expect.text(shim_read("alicompat")[0], "42501",
+                    "IPv4-compatible ::100.100.100.200: refused 42501 despite being listed")
+        expect.text(shim_read("alinat64")[0], "42501",
+                    "NAT64 64:ff9b::6464:64c8 (100.100.100.200): refused 42501 despite being listed")
+        expect.text(shim_read("alilocal")[0], "42501",
+                    "NAT64 local-use 64:ff9b:1::6464:64c8 (100.100.100.200): refused 42501 despite being listed")
+        expect.text(shim_read("alilocal48")[0], "42501",
+                    "NAT64 local-use /48 64:ff9b:1:6464:64:c800:: (100.100.100.200): refused 42501 "
+                    "despite being listed")
+        expect.text(connect_tried("alinext"), "connect tried",
+                    "NAT64 64:ff9b::6464:64c9 (100.100.100.201): not refused, a connect is tried")
         # The range when the DETAIL names it, else the whole error as the measurement.
         try:
             with psycopg.connect(cluster.dsn(), autocommit=True) as c:
