@@ -409,6 +409,22 @@ def irs(pgc_cluster):
                                    "a namespace level must not be NULL", " as NULL")
         r["array 2d"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}', ARRAY[['db'],['x']])",
                                  "a namespace array must have one dimension", " as 2-D")
+        # #1891: an empty namespace level is refused before any request.
+        for key, sql, phrase, label in (
+            ("empty text doubled", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}','db..x')",
+             "namespace level 2 of 3 is empty", " level 2"),
+            ("empty text trailing", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}','db.')",
+             "namespace level 2 of 2 is empty", " level 2"),
+            ("empty text whole", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}','')",
+             "namespace level 1 of 1 is empty", " level 1"),
+            ("empty array level", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}', ARRAY['db',''])",
+             "namespace level 2 of 2 is empty", " level 2"),
+            ("empty array scan", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{dcat2}', ARRAY[''], 'events') AS t(id bigint)",
+             "namespace level 1 of 1 is empty", " level 1"),
+            ("empty text location", f"SELECT pgcolumnar.iceberg_rest_table_location('{dcat2}', '.db', 'events')",
+             "namespace level 1 of 2 is empty", " level 1"),
+        ):
+            r[key] = _refusal(dsn, sql, phrase, label)
         r["array strict"] = _rows(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_rest_tables('{dcat2}', NULL::text[])")
 
         r["survived"] = _survived(dsn, log, before)
@@ -877,3 +893,45 @@ def test_text_array_form_a_two_dimensional_namespace_array_is_refused(irs, expec
     if _declined(irs, expect):
         return
     expect.text(irs["array 2d"], "22023 as 2-D", "text[] form: a two-dimensional namespace array is refused")
+
+
+def test_empty_level_the_text_form_with_a_doubled_dot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty text doubled"], "22023 level 2",
+                "empty level: the text form 'db..x' is refused naming level 2")
+
+
+def test_empty_level_the_text_form_with_a_trailing_dot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty text trailing"], "22023 level 2",
+                "empty level: the text form 'db.' is refused naming level 2")
+
+
+def test_empty_level_the_empty_text_form_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty text whole"], "22023 level 1",
+                "empty level: the text form '' is refused naming level 1")
+
+
+def test_empty_level_an_empty_text_array_element_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty array level"], "22023 level 2",
+                "empty level: the text[] form ARRAY['db',''] is refused naming level 2")
+
+
+def test_empty_level_iceberg_rest_scan_of_an_empty_element_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty array scan"], "22023 level 1",
+                "empty level: iceberg_rest_scan of ARRAY[''] is refused naming level 1")
+
+
+def test_empty_level_iceberg_rest_table_location_with_a_leading_dot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty text location"], "22023 level 1",
+                "empty level: iceberg_rest_table_location of '.db' is refused naming level 1")

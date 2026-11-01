@@ -1398,6 +1398,12 @@ A bare string literal, such as `'analytics'`, selects the `text` form. The
 element. Otherwise the call fails with SQLSTATE 22023 (22004 for a `NULL`
 level).
 
+No level may be empty, in either form. A `text[]` element `''` is an empty
+level. In the `text` form, a leading, trailing or doubled dot makes one, as in
+`'.db'`, `'db.'` or `'db..x'`, and so does `''`. The function fails with
+SQLSTATE 22023 before it sends any request. The message names the level by
+number, such as `namespace level 2 of 3 is empty` (#1891).
+
 A catalog cannot be asked about a level that contains its own namespace
 separator, because the catalog would split that level in two. The function
 then fails with SQLSTATE 22023 before it sends any request that names the

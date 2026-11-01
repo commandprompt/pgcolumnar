@@ -1599,4 +1599,7 @@ guard_tests 854
 # cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
 # premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
 # collection: 5776 tests collected, less guard_tests 854.
-cluster_tests 5110
+# cluster_tests 5110 -> 5116 for #1891's six tests in test_iceberg_rest_scan.py (an empty namespace level
+# in the text form 'db..x', 'db.', '' and '.db', and in the text[] form ARRAY['db',''] and ARRAY['']), by
+# collection: 5970 tests collected, less guard_tests 854.
+cluster_tests 5116

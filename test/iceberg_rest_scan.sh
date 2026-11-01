@@ -509,6 +509,33 @@ check "text[] form: a two-dimensional namespace array is refused" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY[['db'],['x']])" \
 	   "a namespace array must have one dimension" " as 2-D")" \
 	"22023 as 2-D"
+# ---- #1891: an empty namespace level is refused before any request --------
+# Without the check the catalog was asked about the empty level and answered
+# 404 ("no such namespace"). The refusal is 22023 and names the level by number.
+check "empty level: the text form 'db..x' is refused naming level 2" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT','db..x')" \
+	   "namespace level 2 of 3 is empty" " level 2")" \
+	"22023 level 2"
+check "empty level: the text form 'db.' is refused naming level 2" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT','db.')" \
+	   "namespace level 2 of 2 is empty" " level 2")" \
+	"22023 level 2"
+check "empty level: the text form '' is refused naming level 1" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT','')" \
+	   "namespace level 1 of 1 is empty" " level 1")" \
+	"22023 level 1"
+check "empty level: the text[] form ARRAY['db',''] is refused naming level 2" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY['db',''])" \
+	   "namespace level 2 of 2 is empty" " level 2")" \
+	"22023 level 2"
+check "empty level: iceberg_rest_scan of ARRAY[''] is refused naming level 1" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$DOTCAT', ARRAY[''], 'events') AS t(id bigint)" \
+	   "namespace level 1 of 1 is empty" " level 1")" \
+	"22023 level 1"
+check "empty level: iceberg_rest_table_location of '.db' is refused naming level 1" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$DOTCAT', '.db', 'events')" \
+	   "namespace level 1 of 2 is empty" " level 1")" \
+	"22023 level 1"
 # The text[] overloads are STRICT: a NULL namespace array gives no rows. It runs last,
 # so a crash here reddens only it and the survival check below.
 check "text[] form: iceberg_rest_tables of a NULL namespace array returns no rows" \

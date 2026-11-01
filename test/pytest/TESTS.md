@@ -11108,6 +11108,12 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_text_array_form_a_null_level_is_refused` | text[] form: a NULL level is refused |
 | `test_text_array_form_a_two_dimensional_namespace_array_is_refused` | text[] form: a two-dimensional namespace array is refused |
 | `test_text_array_form_a_null_namespace_array_returns_no_rows` | text[] form: iceberg_rest_tables of a NULL namespace array returns no rows |
+| `test_empty_level_the_text_form_with_a_doubled_dot_is_refused` | empty level: the text form 'db..x' is refused naming level 2 |
+| `test_empty_level_the_text_form_with_a_trailing_dot_is_refused` | empty level: the text form 'db.' is refused naming level 2 |
+| `test_empty_level_the_empty_text_form_is_refused` | empty level: the text form '' is refused naming level 1 |
+| `test_empty_level_an_empty_text_array_element_is_refused` | empty level: the text[] form ARRAY['db',''] is refused naming level 2 |
+| `test_empty_level_iceberg_rest_scan_of_an_empty_element_is_refused` | empty level: iceberg_rest_scan of ARRAY[''] is refused naming level 1 |
+| `test_empty_level_iceberg_rest_table_location_with_a_leading_dot_is_refused` | empty level: iceberg_rest_table_location of '.db' is refused naming level 1 |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 

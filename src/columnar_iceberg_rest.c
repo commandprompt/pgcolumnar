@@ -414,6 +414,30 @@ rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc)
 	}
 }
 
+/*
+ * Refuse an empty namespace level before any request names it (#1891). The
+ * catalog would otherwise be asked about the empty level and answer 404, so
+ * the caller saw "no such namespace" instead of the wrong argument.
+ */
+static void
+rest_check_no_empty_level(List *levels)
+{
+	ListCell   *lc;
+	int			i = 0;
+
+	foreach(lc, levels)
+	{
+		i++;
+		if (((const char *) lfirst(lc))[0] == '\0')
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("iceberg: namespace level %d of %d is empty",
+							i, list_length(levels)),
+					 errdetail("Every namespace level needs at least one character. "
+							   "In the text form, a leading, trailing or doubled dot makes an empty level.")));
+	}
+}
+
 /* Split a dot-separated namespace, as a caller gives it, into its levels. */
 static List *
 rest_split_namespace(const char *ns)
@@ -432,13 +456,14 @@ rest_split_namespace(const char *ns)
 			start = p + 1;
 		}
 	}
+	rest_check_no_empty_level(levels);
 	return levels;
 }
 
 /*
  * The levels of a namespace given as a text[] (#1865): each element is one
  * level, as given, so a level may hold a dot. The array must have one
- * dimension, at least one element, and no NULL element.
+ * dimension, at least one element, no NULL element and no empty element.
  */
 static List *
 rest_array_levels(ArrayType *arr)
@@ -468,6 +493,7 @@ rest_array_levels(ArrayType *arr)
 					 errdetail("Element %d of the namespace array is NULL.", i + 1)));
 		levels = lappend(levels, TextDatumGetCString(elems[i]));
 	}
+	rest_check_no_empty_level(levels);
 	return levels;
 }
 
