@@ -1607,8 +1607,8 @@ harness_isolation	harness_isolation	a run whose library changed mid-run ends fai
 harness_isolation	harness_isolation	an unchanged library is not reported	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
 harness_isolation	harness_isolation	another run takes that lock while the postmaster runs	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
 harness_isolation	harness_isolation	control: a child of a plain shell under flock holds the lock	15;16;17;18;19	never	-
-harness_isolation	harness_isolation	premise: setup recorded the digest of the library it verified	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
 harness_isolation	harness_isolation	premise: the postmaster outlives the flock command that started it	15;16;17;18;19	never	-
+harness_isolation	harness_isolation	setup records the digest of the library it verified	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
 harness_selftest	030-assertions	nothing leaked into the squatter	15;16;17;18;19	never	-
 harness_selftest	030-assertions	pgc_port_free says the squatter's port is busy	15;16;17;18;19	never	-
 harness_selftest	030-assertions	squatter survived untouched	15;16;17;18;19	never	-

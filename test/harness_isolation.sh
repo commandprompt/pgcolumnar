@@ -88,7 +88,7 @@ check_num "a lock the harness's own process took stays held" \
 
 # ---- 2. a library replaced during the run fails the run --------------------
 
-check_text "premise: setup recorded the digest of the library it verified" \
+check_text "setup records the digest of the library it verified" \
 	"[${PGC_RUN_SO_DIGEST:-}]" "[$(pgc_installed_library_digest "$PGC_PG_CONFIG")]"
 
 # A copy of the installed library, and a pg_config whose pkglibdir is the copy.

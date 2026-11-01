@@ -13930,7 +13930,7 @@ The twin of `test/harness_isolation.sh` (#1915), every check by the shell's name
 | `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | a postmaster started under a held lock holds no descriptor on it |
 | `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | another run takes that lock while the postmaster runs |
 | `test_a_lock_the_harness_took_itself_stays_held` | a lock the harness's own process took stays held |
-| `test_the_session_records_the_library_it_runs` | premise: setup recorded the digest of the library it verified |
+| `test_the_session_records_the_library_it_runs` | setup records the digest of the library it verified |
 | `test_a_replaced_library_is_reported` | an unchanged library is not reported |
 | `test_a_replaced_library_is_reported` | a library replaced after setup is reported with both digests |
 | `test_a_run_whose_library_changed_fails` | a run whose library changed mid-run ends failed |

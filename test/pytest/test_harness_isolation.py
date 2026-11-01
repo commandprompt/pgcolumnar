@@ -115,7 +115,7 @@ def test_a_lock_the_harness_took_itself_stays_held(lock, expect):
 def test_the_session_records_the_library_it_runs(pgc_cluster, expect):
     expect.text(f"[{getattr(pgc_cluster, 'so_at_start', '')}]",
                 f"[{pc.installed_library(pgc_cluster.pg_config)}]",
-                "premise: setup recorded the digest of the library it verified")
+                "setup records the digest of the library it verified")
 
 
 @pytest.fixture
