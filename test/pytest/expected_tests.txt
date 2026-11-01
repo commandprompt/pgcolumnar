@@ -1664,10 +1664,12 @@ guard_tests 858
 # statement after a DO block in one string; the refusal's DETAIL; a versioned overwrite by a longer
 # object; a weak-ETag overwrite that changes the length), by collection: 5981 tests collected, less
 # guard_tests 854.
-# cluster_tests 5200 -> 5209 for #1910's, #1920's and #1921's nine tests: in test_native_parquet_hardening.py
-# six for #1910 (two unpatched SNAPPY files read, three SNAPPY pages whose size is not their header's are
-# refused, an uncompressed page whose header size differs still reads) and two for #1921 (the unpatched
-# struct file's schema, a negative num_children refused by parquet_schema); in test_fuzz_parquet.py one
-# for #1920 (the pristine struct seed reads under its own column list), by collection: 6067 tests
-# collected, less guard_tests 858.
-cluster_tests 5209
+# cluster_tests 5200 -> 5214 for #1910's, #1920's and #1921's fourteen tests: in
+# test_native_parquet_hardening.py eight for #1910 (two unpatched SNAPPY files read, three SNAPPY pages
+# whose size is not their header's are refused, an uncompressed v1 page whose header size differs still
+# reads, an UNCOMPRESSED v2 page marked compressed reads, and so does one whose header size is below its
+# level bytes) and four for #1921 (the unpatched struct file's schema, a num_children of -1, of 2^32 + 1
+# and of -(2^32) + 1 each refused by parquet_schema); in test_fuzz_parquet.py two for #1920 (every
+# composite type built from a seed's field list is created, the pristine struct seed reads under its own
+# column list), by collection: 6072 tests collected, less guard_tests 858.
+cluster_tests 5214

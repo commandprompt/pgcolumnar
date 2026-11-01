@@ -212,6 +212,7 @@ def fz(pgc_cluster, server_dir):
         lines = _seeds("parquet", corpus)
         r = {"seed files": len(lines)}
         seeds = []
+        ctypes_made, ctypes_tried, ctypes_failed = 0, 0, []
         for line in lines:
             path = line.rsplit(" ", 1)[-1]
             pathlib.Path(path).chmod(0o644)
@@ -227,7 +228,14 @@ def fz(pgc_cluster, server_dir):
             for ncol, (cname, ctype) in enumerate(rows):
                 if ctype.startswith("composite ("):
                     tname = f"fz_seed{len(seeds)}_c{ncol}"
-                    _run(dsn, f"DROP TYPE IF EXISTS {tname}; CREATE TYPE {tname} AS {ctype[len('composite '):]}")
+                    ctypes_tried += 1
+                    try:
+                        with psycopg.connect(dsn, autocommit=True) as conn:
+                            conn.execute(f"DROP TYPE IF EXISTS {tname}; "
+                                         f"CREATE TYPE {tname} AS {ctype[len('composite '):]}")
+                        ctypes_made += 1
+                    except psycopg.Error as e:
+                        ctypes_failed.append(f"{pathlib.Path(path).name}:{cname}: ERROR: {str(e).splitlines()[0]}")
                     ctype = tname
                 parts.append(f"{cname} {ctype}")
             cols = ", ".join(parts)
@@ -235,6 +243,7 @@ def fz(pgc_cluster, server_dir):
                 continue
             seeds.append((path, cols))
         r["rendered"] = len(seeds)
+        r["ctypes"] = (ctypes_made, ctypes_tried, ctypes_failed)
 
         rewrite = server_dir / "rewrite.parquet"
         seedans = []
@@ -364,6 +373,16 @@ def test_the_parquet_reader_renders_some_pristine_seeds_schema(request, expect):
         return
     fz = request.getfixturevalue("fz")  # after the decline: the seeds need pyarrow
     expect.text("yes" if fz["rendered"] > 0 else "no", "yes", "the reader renders some pristine seed's schema")
+
+
+def test_every_composite_type_built_from_a_seeds_field_list_is_created(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; the Parquet fuzzer needs it to build seeds") is None:
+        return
+    fz = request.getfixturevalue("fz")  # after the decline: the seeds need pyarrow
+    made, tried, failed = fz["ctypes"]
+    got = f"{made}/{tried}" + (f" (failed: {' '.join(failed)})" if failed else "")
+    expect.text(got, f"{tried}/{tried}" if tried > 0 else "some composite type",
+                "every composite type built from a seed's field list is created")
 
 
 def test_the_pristine_struct_seed_reads_under_its_own_column_list(request, expect):

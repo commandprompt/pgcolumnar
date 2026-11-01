@@ -914,6 +914,23 @@ for _name, _kw, _old, _new in (
     assert _pg[6:11] == _old, (_name, _pg[4:16].hex())
     open(f"{W}/page_{_name}.parquet", "wb").write(_pg[:6] + _new + _pg[11:])
 
+# An UNCOMPRESSED v2 page that says is_compressed=true. pyarrow writes it with
+# is_compressed=false (byte 27, field 7: 0x12); 0x11 makes it true, so the reader
+# sends the values through the codec. Two copies:
+#   page_none_v2_c.parquet        only is_compressed changed
+#   page_none_v2_c_short.parquet  also uncompressed_page_size 2, below its 3 level
+#                                 bytes (0x84 0x00 is 2 as a two-byte varint, so
+#                                 the width stays the same)
+# pyarrow 23 and 26 read both: 100 rows, sum 5050. An UNCOMPRESSED page copies no
+# bytes, so its header size changes nothing that is read.
+pq.write_table(_PAGE_T, f"{W}/page_none_v2.parquet", use_dictionary=False, write_statistics=False,
+               compression="NONE", data_page_version="2.0")
+_pg = open(f"{W}/page_none_v2.parquet", "rb").read()
+assert _pg[6:11] == b"\x15\xc6\x0c\x15\xc6" and _pg[27] == 0x12, _pg[4:32].hex()
+_pgc = _pg[:27] + b"\x11" + _pg[28:]
+open(f"{W}/page_none_v2_c.parquet", "wb").write(_pgc)
+open(f"{W}/page_none_v2_c_short.parquet", "wb").write(_pgc[:7] + b"\x84\x00" + _pgc[9:])
+
 
 # ---- a group whose num_children is negative (#1921) ------------------------------
 # a bigint, s struct<x bigint>, b bigint. grp_neg_children.parquet sets s's
@@ -931,7 +948,13 @@ _gstart = len(_grp) - 8 - _glen
 _gm = strip(Dec(_grp[_gstart:_gstart + _glen]).struct())
 _gs = fld(_gm, 2)[2][1][2]
 assert fld(_gs, 4)[2] == b"s" and fld(_gs, 5)[2] == 1, _gs
-fld(_gs, 5)[2] = -1
-_gfoot = enc_struct(_gm)
-open(f"{W}/grp_neg_children.parquet", "wb").write(
-    _grp[:_gstart] + _gfoot + len(_gfoot).to_bytes(4, "little") + b"PAR1")
+# grp_wide_children.parquet sets it to 2^32 + 1, and grp_neg_wide_children.parquet
+# to -(2^32) + 1. A plain cast to int reads both as 1, a valid count, so only a
+# check of the full 64-bit value refuses them. pyarrow 23 and 26 read
+# grp_wide_children as three columns: they keep the low 32 bits, as the cast does.
+for _gname, _gval in (("grp_neg_children", -1), ("grp_wide_children", 4294967297),
+                      ("grp_neg_wide_children", -4294967295)):
+    fld(_gs, 5)[2] = _gval
+    _gfoot = enc_struct(_gm)
+    open(f"{W}/{_gname}.parquet", "wb").write(
+        _grp[:_gstart] + _gfoot + len(_gfoot).to_bytes(4, "little") + b"PAR1")

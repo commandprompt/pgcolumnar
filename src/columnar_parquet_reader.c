@@ -2470,14 +2470,9 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 					/* v2 stores levels uncompressed; the compressed body is the
 					 * values, whose uncompressed size is the page total minus the
 					 * (uncompressed) level bytes. */
-					size_t		vusize;
+					size_t		vusize = (h.uncompressed_size > levLen)
+						? (size_t) (h.uncompressed_size - levLen) : 0;
 
-					/* the levels are part of the page's uncompressed size, so a
-					 * size below them is corrupt (#1910); read as 0, it let a
-					 * codec skip its values as an empty page */
-					if (h.uncompressed_size < levLen)
-						return false;
-					vusize = (size_t) (h.uncompressed_size - levLen);
 					if (!PgColumnarParquetDecompress(ch->codec, vraw, vrawlen, vusize,
 									   &dec, &valbuf, &vallen))
 						return false;

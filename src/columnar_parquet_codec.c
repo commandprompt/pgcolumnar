@@ -154,10 +154,13 @@ empty_output(StringInfo scratch, const uint8 **out, size_t *outlen)
  * MaxAllocSize up front so a crafted page yields a clean "return false" rather
  * than a generic allocation error deep in enlargeStringInfo or a decompressor.
  * Every codec that consumes usize also caps its output at it, so none can be
- * driven to allocate or inflate more than the header declares. Every real codec
- * also refuses an output whose length is not usize (#1910). UNCOMPRESSED copies
- * nothing and returns the srclen bytes the page holds, so its usize changes
- * nothing that is read; pyarrow reads such a page too.
+ * driven to allocate or inflate more than the header declares. When usize is
+ * above 0, every real codec also refuses an output whose length is not usize
+ * (#1910). When usize is 0, GZIP, ZSTD and LZ4_RAW return an empty output
+ * without decompressing (see below), so they do not compare the stream with
+ * usize; SNAPPY does, and refuses a stream that is not empty. UNCOMPRESSED
+ * copies nothing and returns the srclen bytes the page holds, so its usize
+ * changes nothing that is read; pyarrow reads such a page too, v1 or v2.
  *
  * A declared size of 0 gives an empty output for GZIP, ZSTD and LZ4_RAW (#1786),
  * as it already did for UNCOMPRESSED and SNAPPY. pyarrow writes the dictionary

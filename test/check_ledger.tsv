@@ -1554,6 +1554,7 @@ fuzz_listing	fuzz_listing	no mutant hung the parser	15;16;17;18;19	never	-
 fuzz_listing	fuzz_listing	no mutant tripped a sanitizer	15;16;17;18;19	never	-
 fuzz_listing	fuzz_listing	premise: fixture up	15;16;17;18;19	never	-
 fuzz_listing	fuzz_listing	the corpus reached the parser at all (some mutant errored or accepted)	15;16;17;18;19	never	-
+fuzz_parquet	fuzz_parquet	every composite type built from a seed's field list is created	15;16;17;18;19	2026-11-01	fuzz CREATE TYPE given the whole "composite (...)" text (#1920)
 fuzz_parquet	fuzz_parquet	every mutant was generated and ran its three statements	15;16;17;18;19	never	-
 fuzz_parquet	fuzz_parquet	every read that differed from the seed was judged	15;16;17;18;19	2026-11-01	test/parquet_oracle.py made to exit 3 before reading (#1882 review)
 fuzz_parquet	fuzz_parquet	every schema-sweep copy ran its read	15;16;17;18;19	never	-
@@ -1563,7 +1564,7 @@ fuzz_parquet	fuzz_parquet	no mutant that reads returned a wrong answer	15;16;17;
 fuzz_parquet	fuzz_parquet	no mutant tripped a sanitizer	15;16;17;18;19	never	-
 fuzz_parquet	fuzz_parquet	the corpus reached the decoder at all	15;16;17;18;19	never	-
 fuzz_parquet	fuzz_parquet	the oracle's rewrite of every pristine seed reads the seed's answer	15;16;17;18;19	2026-11-01	test/parquet_oracle.py made to exit 3 before reading (#1882 review)
-fuzz_parquet	fuzz_parquet	the pristine struct seed reads under its own column list	15;16;17;18;19	2026-11-01	the composite column list in fuzz_parquet reverted (#1920)
+fuzz_parquet	fuzz_parquet	the pristine struct seed reads under its own column list	15;16;17;18;19	2026-11-01	fuzz CREATE TYPE given the whole "composite (...)" text (#1920);the composite column list in fuzz_parquet reverted (#1920)
 fuzz_parquet	fuzz_parquet	the reader renders some pristine seed's schema	15;16;17;18;19	never	-
 fuzz_parquet	fuzz_parquet	the result oracle compared some answers	15;16;17;18;19	never	-
 fuzz_parquet	fuzz_parquet	the seed corpus generator produced files	15;16;17;18;19	never	-
@@ -4978,6 +4979,8 @@ native_parquet_hardening	native_parquet_hardening	footer: a list of bytes that r
 native_parquet_hardening	native_parquet_hardening	footer: a list of doubles that runs off the footer is refused at once	15;16;17;18;19	2026-10-31	removed the footer-end bounds checks on the TC_BYTE and TC_DOUBLE skips (#1822)
 native_parquet_hardening	native_parquet_hardening	footer: a list whose element type is not a compact type is refused	15;16;17;18;19	2026-10-31	columnar_thrift.c: the skip's default arm no longer sets r->error, so an element of a non-compact type is skipped as zero bytes (#1834 review T2);removed r->error = true from the default arm of PgColumnarThriftSkip (#1822)
 native_parquet_hardening	native_parquet_hardening	footer: a negative num_children is refused by parquet_schema	15;16;17;18;19	2026-11-01	the Snappy page size check and the negative num_children refusal reverted (#1910, #1921)
+native_parquet_hardening	native_parquet_hardening	footer: a num_children of -(2^32) + 1 is refused by parquet_schema	15;16;17;18;19	2026-11-01	num_children read with a plain (int) cast, no range check (#1921)
+native_parquet_hardening	native_parquet_hardening	footer: a num_children of 2^32 + 1 is refused by parquet_schema	15;16;17;18;19	2026-11-01	num_children read with a plain (int) cast, no range check (#1921)
 native_parquet_hardening	native_parquet_hardening	footer: a repetition_type of 2^32 is refused, not read as REQUIRED	15;16;17;18;19	2026-11-01	columnar_parquet_reader.c: repetition_type cast to int again, so 2^32 reads as REQUIRED (#1882 review);columnar_parquet_reader.c: the repetition_type range check disabled (#1855)
 native_parquet_hardening	native_parquet_hardening	footer: a row group num_rows below the footer's total is refused	15;16;17;18;19	2026-11-01	columnar_parquet_reader.c: the footer num_rows sum check disabled (#1882 review of #1822);columnar_parquet_reader.c: the footer total check refuses only a total above num_rows, not below (#1834 review R4u)
 native_parquet_hardening	native_parquet_hardening	footer: a row group with no num_rows is refused	15;16;17;18;19	2026-10-31	reverted the #1822 Thrift type check, map and bool-list skip, and required footer counts (#1822)
@@ -5012,6 +5015,8 @@ native_parquet_hardening	native_parquet_hardening	no wrapped -25536 appears	15;1
 native_parquet_hardening	native_parquet_hardening	page: a SNAPPY v1 page longer than its header's size is refused	15;16;17;18;19	2026-11-01	the Snappy page size check and the negative num_children refusal reverted (#1910, #1921)
 native_parquet_hardening	native_parquet_hardening	page: a SNAPPY v1 page shorter than its header's size is refused	15;16;17;18;19	2026-11-01	the Snappy page size check and the negative num_children refusal reverted (#1910, #1921)
 native_parquet_hardening	native_parquet_hardening	page: a SNAPPY v2 page whose values are shorter than its header's size is refused	15;16;17;18;19	2026-11-01	the Snappy page size check and the negative num_children refusal reverted (#1910, #1921)
+native_parquet_hardening	native_parquet_hardening	page: an UNCOMPRESSED v2 page marked compressed reads	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	page: an UNCOMPRESSED v2 page whose header size is below its level bytes reads, as in pyarrow	15;16;17;18;19	2026-11-01	kept the v2 refusal of a header size below the level bytes in decode_leaf_entries (#1910)
 native_parquet_hardening	native_parquet_hardening	page: an uncompressed page whose header size differs still reads, as in pyarrow	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	page: the unpatched SNAPPY v1 file reads	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	page: the unpatched SNAPPY v2 file reads	15;16;17;18;19	never	-

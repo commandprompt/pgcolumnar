@@ -443,6 +443,14 @@ check "footer: the unpatched struct file's schema has its three columns" \
 check "footer: a negative num_children is refused by parquet_schema" \
 	"$(schema_read grp_neg_children)" \
 	'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children -1; a valid one is 0 or more.'
+# A count wider than int (#1921). A plain cast to int keeps the low 32 bits, so
+# 2^32 + 1 and -(2^32) + 1 would both read as 1, a valid count.
+check "footer: a num_children of 2^32 + 1 is refused by parquet_schema" \
+	"$(schema_read grp_wide_children)" \
+	'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children 4294967297; a valid one is 0 or more.'
+check "footer: a num_children of -(2^32) + 1 is refused by parquet_schema" \
+	"$(schema_read grp_neg_wide_children)" \
+	'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children -4294967295; a valid one is 0 or more.'
 check "backend survived the malformed footers" "$(survived "$FOOTER_BEFORE")" "1"
 
 # ---- a page whose decompressed length is not its header's (#1910) -----------
@@ -468,6 +476,13 @@ check "page: a SNAPPY v2 page whose values are shorter than its header's size is
 # is read. pyarrow reads this file, and so does pgColumnar.
 check "page: an uncompressed page whose header size differs still reads, as in pyarrow" \
 	"$(page_read page_none_v1_long)" "NO ERROR: 100/5050"
+# An UNCOMPRESSED v2 page that says is_compressed=true, so its values go through
+# the codec. A header size below the page's level bytes changes nothing that is
+# read, and pyarrow reads both copies.
+check "page: an UNCOMPRESSED v2 page marked compressed reads" \
+	"$(page_read page_none_v2_c)" "NO ERROR: 100/5050"
+check "page: an UNCOMPRESSED v2 page whose header size is below its level bytes reads, as in pyarrow" \
+	"$(page_read page_none_v2_c_short)" "NO ERROR: 100/5050"
 
 # ---- string cells that are not valid in the server encoding (#1821) --------
 # A database created as UTF8 whatever the cluster's encoding (see the header).

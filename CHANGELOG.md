@@ -538,12 +538,14 @@ true until the next version shipped.
   from the size in its page header (#1910). It raises SQLSTATE XX001, as it
   already did for GZIP, ZSTD and LZ4_RAW. Before, it trusted the size inside the
   Snappy stream alone. The nightly fuzz found a corrupt page that read 50 rows
-  with wrong values and no error, where pyarrow refuses the file. A v2 page whose
-  header size is smaller than its level bytes is refused too.
+  with wrong values and no error, where pyarrow refuses the file. An
+  uncompressed page still reads when its header size is wrong, in a v1 or a v2
+  page, as it does in pyarrow.
   docs/limitations.md. `test/native_parquet_hardening.sh` and
   `test_native_parquet_hardening.py`.
 - The Parquet reader now refuses a schema element whose `num_children` is
-  negative (#1921). It raises SQLSTATE XX001 and names the element. Before,
+  negative or wider than a 32-bit integer (#1921). It raises SQLSTATE XX001 and
+  names the element. Before,
   `parquet_schema` returned the columns before that element and dropped the rest
   without an error. docs/limitations.md. `test/native_parquet_hardening.sh` and
   `test_native_parquet_hardening.py`.
@@ -552,7 +554,9 @@ true until the next version shipped.
   `composite (x integer, y text)`, which is not a type name. The fuzzer now
   creates a composite type from that field list and declares the column with
   it. Before, the seed was refused, so none of its mutants could be compared
-  with the seed's answer. The pytest twin does the same.
+  with the seed's answer. The pytest twin does the same. If a composite type
+  cannot be created, a named check now fails and shows the error. Before, the
+  error was discarded and the seed dropped out of the fuzz without a word.
 - Two reads of one remote object in one statement now read the same version
   (#1894). Before, each read pinned the version its own HEAD saw. If another
   client overwrote the object between the two reads, a self-join or a

@@ -232,7 +232,7 @@ CAPPED_FILES = ("list_elem15_huge",)    # read under a 5 s statement_timeout
 UNPARSED = '0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
 GOOD_READ = "NO ERROR: 3000/4498500"
 PAGE_FILES = ("page_snappy_v1", "page_snappy_v2", "page_snappy_v1_long", "page_snappy_v1_short",
-              "page_snappy_v2_long", "page_none_v1_long")
+              "page_snappy_v2_long", "page_none_v1_long", "page_none_v2_c", "page_none_v2_c_short")
 PAGE_REFUSED = "XX001: could not decode Parquet column 0 in row group 0"
 
 
@@ -370,7 +370,7 @@ def pqh(pgc_cluster, server_dir):
             f"FROM generate_series(0, {nsweep or 0} - 1) AS i) s "
             f"WHERE v LIKE 'NO ERROR%' AND v <> '{GOOD_READ}'"))
         # ---- a group whose num_children is negative (#1921) ----
-        for name in ("grp_base", "grp_neg_children"):
+        for name in ("grp_base", "grp_neg_children", "grp_wide_children", "grp_neg_wide_children"):
             r[name] = _value(dsn, f"SELECT pgc_err($q$SELECT count(*) || ' rows: ' || string_agg(column_name, ' ') "
                                   f"FROM pgcolumnar.parquet_schema('{w}/{name}.parquet')$q$)")
         r["footer survived"] = _survived(dsn, pgc_cluster, footer_before)
@@ -1006,6 +1006,26 @@ def test_parquet_hardening_footer_negative_num_children_is_refused_by_parquet_sc
                 "footer: a negative num_children is refused by parquet_schema")
 
 
+def test_parquet_hardening_footer_num_children_of_2_32_plus_1_is_refused_by_parquet_schema(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["grp_wide_children"],
+                'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children '
+                '4294967297; a valid one is 0 or more.',
+                "footer: a num_children of 2^32 + 1 is refused by parquet_schema")
+
+
+def test_parquet_hardening_footer_num_children_of_minus_2_32_plus_1_is_refused_by_parquet_schema(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["grp_neg_wide_children"],
+                'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children '
+                '-4294967295; a valid one is 0 or more.',
+                "footer: a num_children of -(2^32) + 1 is refused by parquet_schema")
+
+
 def test_parquet_hardening_backend_survived_the_malformed_footers(request, expect):
     r = _footer(request, expect)
     if r is None:
@@ -1168,3 +1188,19 @@ def test_parquet_hardening_page_uncompressed_header_size_differs_still_reads(req
         return
     expect.text(r["page_none_v1_long"], "NO ERROR: 100/5050",
                 "page: an uncompressed page whose header size differs still reads, as in pyarrow")
+
+
+def test_parquet_hardening_page_uncompressed_v2_marked_compressed_reads(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["page_none_v2_c"], "NO ERROR: 100/5050",
+                "page: an UNCOMPRESSED v2 page marked compressed reads")
+
+
+def test_parquet_hardening_page_uncompressed_v2_header_size_below_level_bytes_reads(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["page_none_v2_c_short"], "NO ERROR: 100/5050",
+                "page: an UNCOMPRESSED v2 page whose header size is below its level bytes reads, as in pyarrow")

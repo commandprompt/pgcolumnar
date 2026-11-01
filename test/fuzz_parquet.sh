@@ -95,6 +95,9 @@ echo "-- ${#SEEDLINES[@]} seed files"
 # column the suite creates the composite type from that field list and declares
 # the column with it (#1920).
 declare -a SEEDPATH SEEDCOLS
+ctypes_made=0
+ctypes_tried=0
+ctypes_failed=""
 for line in "${SEEDLINES[@]}"; do
 	p="${line##* }"
 	cols=""
@@ -103,8 +106,12 @@ for line in "${SEEDLINES[@]}"; do
 		case "$ctype" in
 			"composite ("*)
 				tname="fz_seed${#SEEDPATH[@]}_c$ncol"
-				psql_run "DROP TYPE IF EXISTS $tname; CREATE TYPE $tname AS ${ctype#composite };" \
-					>/dev/null 2>&1
+				ctypes_tried=$((ctypes_tried + 1))
+				if cterr="$(psql_run "DROP TYPE IF EXISTS $tname; CREATE TYPE $tname AS ${ctype#composite };" 2>&1)"; then
+					ctypes_made=$((ctypes_made + 1))
+				else
+					ctypes_failed+=" ${p##*/}:$cname: $(printf '%s' "$cterr" | grep -m1 ERROR)"
+				fi
 				ctype="$tname" ;;
 		esac
 		cols+="${cols:+, }$cname $ctype"
@@ -156,6 +163,13 @@ done
 check "the oracle's rewrite of every pristine seed reads the seed's answer" \
 	"$seeds_agree/$seeds_read${seeds_disagree:+ (differ:$seeds_disagree)}" \
 	"$([ "$seeds_read" -gt 0 ] && echo "$seeds_read/$seeds_read" || echo "some seed reads")"
+
+# Every composite type built from a seed's field list must be created. A type
+# that fails would leave its seed with a column list that cannot be read, and
+# the seed would drop out of the fuzz without a word.
+check "every composite type built from a seed's field list is created" \
+	"$ctypes_made/$ctypes_tried${ctypes_failed:+ (failed:$ctypes_failed)}" \
+	"$([ "$ctypes_tried" -gt 0 ] && echo "$ctypes_tried/$ctypes_tried" || echo "some composite type")"
 
 # The struct seed must read under the column list built from its own schema
 # (#1920). parquet_schema reports a struct of scalars as field-list text,
