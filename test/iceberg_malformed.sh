@@ -408,6 +408,18 @@ check "manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not 
 	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of mfcontent4g)') $EN" \
 		'manifest ".*/dm\.avro" has invalid content 4294967296$' "invalid manifest content 4294967296")" \
 	"XX001 (invalid manifest content 4294967296)"
+# #1878: manifest_file.partition_spec_id had the same plain cast, so 2^32 read as
+# spec 0 and the manifest was pruned with spec 0's quals. Its path is decoded
+# first, so the refusal names the manifest as well as the value.
+SPEC4G='manifest ".*/dm\.avro" has invalid partition_spec_id 4294967296$'
+check "manifest_file.partition_spec_id 4294967296 is refused by iceberg_scan (XX001), not read as spec 0" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of specid4g)') $EN" \
+		"$SPEC4G" "invalid partition_spec_id 4294967296")" \
+	"XX001 (invalid partition_spec_id 4294967296)"
+check "read_manifest_list refuses partition_spec_id 4294967296 (XX001), not shown as 0" \
+	"$(refusal "SELECT * FROM pgcolumnar.read_manifest_list('$DEST/specid4g/db/t/metadata/ml.avro')" \
+		"$SPEC4G" "invalid partition_spec_id 4294967296")" \
+	"XX001 (invalid partition_spec_id 4294967296)"
 check "backend still up after the enum refusals" "$(survived "$B")" "1"
 
 pgc_summary

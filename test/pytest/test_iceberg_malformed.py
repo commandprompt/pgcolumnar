@@ -11,7 +11,8 @@ empty file passed on its SQLSTATE alone with the regular-file guard removed. A F
 read that is still running after 5s is a HANG; its write end is then opened, so the
 backend is released. A manifest enum value outside the spec (data_file.content,
 manifest_entry.status, manifest_file.content) is refused in the scan and the lister,
-naming the value, against a two-file control that reads ten rows (#1823).
+naming the value, against a two-file control that reads ten rows (#1823). So is a
+manifest list's partition_spec_id outside int32, which read as spec 0 (#1878).
 
 A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED. A fresh connection answers
 again after crash recovery, so every survival check also reads the server log's count
@@ -61,6 +62,7 @@ MF5 = (r'manifest ".*/dm\.avro" has invalid content 5$', "invalid manifest conte
 OLD4G = (r'manifest entry has invalid content 4294967296$', "invalid content 4294967296")
 STATUS4G = (r'manifest entry has invalid status 4294967297$', "invalid status 4294967297")
 MF4G = (r'manifest ".*/dm\.avro" has invalid content 4294967296$', "invalid manifest content 4294967296")
+SPEC4G = (r'manifest ".*/dm\.avro" has invalid partition_spec_id 4294967296$', "invalid partition_spec_id 4294967296")
 
 
 def _message(exc):
@@ -306,6 +308,10 @@ def imf(pgc_cluster, server_dir):
         r["old4g scan"] = _refusal(dsn, scan("content4g_old"), OLD4G)
         r["status4g scan"] = _refusal(dsn, scan("status4g_old"), STATUS4G)
         r["mf4g scan"] = _refusal(dsn, scan("mfcontent4g"), MF4G)
+        # #1878: partition_spec_id had the same cast, so 2^32 read as spec 0
+        r["spec4g scan"] = _refusal(dsn, scan("specid4g"), SPEC4G)
+        r["spec4g list"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_manifest_list("
+                                         f"'{dest}/specid4g/db/t/metadata/ml.avro')", SPEC4G)
         r["enum up"] = alive(b)
         yield r
     finally:
@@ -702,6 +708,20 @@ def test_manifest_content_2_32_is_refused_not_wrapped(imf, expect):
     if _declined(imf, expect):
         return
     expect.text(imf["mf4g scan"], "XX001 (invalid manifest content 4294967296)", "manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not wrapped to 0")
+
+
+def test_partition_spec_id_2_32_is_refused_by_the_scan(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["spec4g scan"], "XX001 (invalid partition_spec_id 4294967296)",
+                "manifest_file.partition_spec_id 4294967296 is refused by iceberg_scan (XX001), not read as spec 0")
+
+
+def test_read_manifest_list_refuses_partition_spec_id_2_32(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["spec4g list"], "XX001 (invalid partition_spec_id 4294967296)",
+                "read_manifest_list refuses partition_spec_id 4294967296 (XX001), not shown as 0")
 
 
 def test_the_backend_survives_the_enum_refusals(imf, expect):

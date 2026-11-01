@@ -799,6 +799,11 @@ true until the next version shipped.
   4294967296, is refused the same way. It used to wrap to a valid value, 0 or
   1, and read as data. `test/iceberg_malformed.sh` and
   `test_iceberg_malformed.py`.
+- A manifest list whose `partition_spec_id` is outside the 32-bit range is now
+  refused with `XX001`, and the message names the manifest and the value
+  (#1878). A value such as 4294967296 used to wrap to spec 0. The manifest's
+  files were then pruned with spec 0's partition filters, which belong to
+  another spec. `test/iceberg_malformed.sh` and `test_iceberg_malformed.py`.
 - The `iceberg_rest_*` functions now check `USAGE` on the
   `pgcolumnar_iceberg_catalog` server they are given, as dblink does before it
   uses a named server's user mapping (#1819). Before, any role with `pg_read_server_files` could
