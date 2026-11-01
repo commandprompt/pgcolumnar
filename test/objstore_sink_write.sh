@@ -41,15 +41,22 @@ objstore_sink_teardown() {
 }
 trap objstore_sink_teardown EXIT INT TERM
 
-pg_restart_env() {
-	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
-	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
-	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done
-	echo "FATAL: cluster did not come back"; exit 1
-}
 # wait_up: wait up to 15 s for the server, so a backend that crashed in one reading
 # fails that reading, not every reading after it during recovery.
 wait_up() { for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done; }
+# pg_restart_env ENV... -> 0 once the cluster answers again with ENV in its
+# environment, 1 when it does not; it never exits the suite (#1850). It waits out
+# a crash recovery first: with the last arm's backend just killed, a fast stop
+# sent while the startup process replayed WAL did not finish in pg_ctl's 60 s,
+# the start found the old postmaster, and the suite used to exit here before its
+# summary. The caller records the failure by name.
+pg_restart_env() {
+	wait_up
+	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
+	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
+	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done
+	return 1
+}
 
 # refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
 # message, the bare SQLSTATE when the message lacks it, or what happened instead. The
@@ -93,7 +100,7 @@ check "premise: sigv4 fixture server is up" \
 
 pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.1:$S3_PORT'" \
 	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" \
-	"AWS_REGION='$REGION'"
+	"AWS_REGION='$REGION'" || { echo "FATAL: cluster did not come back"; exit 1; }
 
 # ---- fixtures: small (single PUT) and large (multipart) ---------------------
 psql_run "CREATE TABLE es_small (id int, t text) USING pgcolumnar;"
@@ -650,12 +657,16 @@ check "s3:// 403: a signed request that is refused still hints to check AWS_* cr
 
 # ---- optional: a real S3 implementation (Garage) ----------------------------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then
-	pg_restart_env "AWS_ENDPOINT_URL='$PGC_S3_INTEGRATION_ENDPOINT'" \
+	# A failed restart is a named red, and the arms below still run and fail by
+	# name, so the reds of the arms above reach the summary (#1850).
+	if pg_restart_env "AWS_ENDPOINT_URL='$PGC_S3_INTEGRATION_ENDPOINT'" \
 		"AWS_ACCESS_KEY_ID='$PGC_S3_INTEGRATION_KEY'" \
 		"AWS_SECRET_ACCESS_KEY='$PGC_S3_INTEGRATION_SECRET'" \
 		"AWS_REGION='${PGC_S3_INTEGRATION_REGION:-garage}'"
+	then int_up=yes; else int_up="no (the cluster did not answer SELECT 1 within 15 s of the restart)"; fi
+	check "integration: the cluster restarts with the real S3 credentials" "$int_up" "yes"
 	pgc_pg "echo \"pgcolumnar.objstore_allowed_endpoints='$(echo "${PGC_S3_INTEGRATION_ENDPOINT#http://}" | cut -d/ -f1 | cut -d: -f1)'\" >> '$PGC_PGDATA/postgresql.conf'"
-	psql_run "SELECT pg_reload_conf();"
+	q "SELECT pg_reload_conf()" >/dev/null
 	IB="${PGC_S3_INTEGRATION_BUCKET:-pgcolumnar-test}"
 	check_num "integration: multipart export to real S3 succeeds" \
 		"$(q "SELECT pgcolumnar.export_parquet('es_big', 's3://$IB/m2sink-$$.parquet')")" "$BIGROWS"

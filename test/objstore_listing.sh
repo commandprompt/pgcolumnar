@@ -34,20 +34,26 @@ listing_teardown() {
 }
 trap listing_teardown EXIT INT TERM
 
+# wait_up: wait up to 15 s for the server, so a backend that crashed in one reading
+# fails that reading and survival, not every reading after it during recovery.
+wait_up() { for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done; }
+
+# pg_restart_env ENV... -> 0 once the cluster answers again with ENV in its
+# environment, 1 when it does not; it never exits the suite (#1850). It waits out
+# a crash recovery first: a fast stop sent while the startup process replays WAL
+# did not finish in pg_ctl's 60 s, and the start then found the old postmaster.
+# The caller records the failure by name, so the arms before it still report.
 pg_restart_env() {
+	wait_up
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
 	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
 	for _ in $(seq 1 30); do
 		[ -n "$(q 'SELECT 1')" ] && return 0
 		sleep 0.5
 	done
-	echo "FATAL: cluster did not come back after env restart"; exit 1
+	return 1
 }
 listn() { grep -cE 'list-type=2' "$S3_LOG" | tr -d ' '; }
-
-# wait_up: wait up to 15 s for the server, so a backend that crashed in one reading
-# fails that reading and survival, not every reading after it during recovery.
-wait_up() { for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done; }
 
 # refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
 # message, the bare SQLSTATE when the message lacks it, or what happened instead. The
@@ -143,7 +149,8 @@ done
 check "premise: fixture up" "$(grep -c READY "$PGC_WORKDIR/s3_server.out" 2>/dev/null)" "1"
 
 pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.1:$S3_PORT'" \
-	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" "AWS_REGION='$REGION'"
+	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" "AWS_REGION='$REGION'" \
+	|| { echo "FATAL: cluster did not come back after env restart"; exit 1; }
 CRASHES_BEFORE="$(crashes)"
 
 psql_run "CREATE SERVER s3srv FOREIGN DATA WRAPPER pgcolumnar_parquet;"
@@ -264,9 +271,112 @@ rm -f "$PGC_WORKDIR/__listing_status__"
 
 check "backend still up after the listing refusals" "$(survived "$CRASHES_BEFORE")" "1"
 
-# ---- optional: a real S3 (Garage), same as the sibling suites ---------------
+# ---- optional: a real S3 implementation (Garage), as the sibling suites (#1798)
+# The fixture above answers ListObjectsV2 from one Python handler, two keys a page.
+# These arms put a layout on a real S3 implementation under a per-run prefix and
+# read every remote prefix and glob against the same layout read from local disk,
+# so the hidden-name rules, glob matching and paging meet a real ListObjectsV2.
+# page/ holds 1100 one-row objects: a real server caps a page at 1000 keys, and the
+# client has no max-keys setting, so 1100 rows back means it followed a real
+# continuation token. The virtual-host arm needs an endpoint whose bucket
+# subdomain resolves (Garage: a root_domain such as .s3.garage.localhost), named
+# by PGC_S3_INTEGRATION_VHOST_ENDPOINT; without one it records nothing.
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then
-	:
+	IB="${PGC_S3_INTEGRATION_BUCKET:-pgcolumnar-test}"
+	IRUN="lst-$$"
+	INT="$PGC_WORKDIR/int"
+	s3cli() {
+		env AWS_ACCESS_KEY_ID="$PGC_S3_INTEGRATION_KEY" \
+			AWS_SECRET_ACCESS_KEY="$PGC_S3_INTEGRATION_SECRET" \
+			AWS_DEFAULT_REGION="${PGC_S3_INTEGRATION_REGION:-garage}" \
+			aws --endpoint-url "$1" "${@:2}"
+	}
+	mkdir -p "$INT"
+	cp -a "$PGC_WORKDIR/$BUCKET/lst" "$PGC_WORKDIR/$BUCKET/_landing" \
+		"$PGC_WORKDIR/$BUCKET/.dir" "$PGC_WORKDIR/$BUCKET/glb" "$INT/"
+	python3 - "$INT" <<'PYEOF'
+import sys, os
+import pyarrow as pa, pyarrow.parquet as pq
+B = sys.argv[1]
+def one(path, ids):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    pq.write_table(pa.table({"id": pa.array(ids, pa.int64())}), path)
+# hidden names beside one part: a marker, a _temporary/ directory, a dot file
+one(os.path.join(B, "hid/part.parquet"), [1, 2, 3])
+open(os.path.join(B, "hid/_SUCCESS"), "w").close()
+one(os.path.join(B, "hid/_temporary/x.parquet"), [99])
+one(os.path.join(B, "hid/.hidden.parquet"), [100])
+# 1100 one-row objects, more than one real 1000-key page
+for i in range(1100):
+    one(os.path.join(B, "page/k-%04d.parquet" % i), [i])
+PYEOF
+	if pg_restart_env "AWS_ENDPOINT_URL='$PGC_S3_INTEGRATION_ENDPOINT'" \
+		"AWS_ACCESS_KEY_ID='$PGC_S3_INTEGRATION_KEY'" \
+		"AWS_SECRET_ACCESS_KEY='$PGC_S3_INTEGRATION_SECRET'" \
+		"AWS_REGION='${PGC_S3_INTEGRATION_REGION:-garage}'"
+	then int_up=yes; else int_up="no (the cluster did not answer SELECT 1 within 15 s of the restart)"; fi
+	check "integration: the cluster restarts with the real S3 credentials" "$int_up" "yes"
+	IHOST="$(echo "${PGC_S3_INTEGRATION_ENDPOINT#*://}" | cut -d/ -f1 | cut -d: -f1)"
+	pgc_pg "echo \"pgcolumnar.objstore_allowed_endpoints='127.0.0.1,$IHOST'\" >> '$PGC_PGDATA/postgresql.conf'"
+	q "SELECT pg_reload_conf()" >/dev/null
+	if s3cli "$PGC_S3_INTEGRATION_ENDPOINT" s3 cp --recursive --only-show-errors \
+		"$INT" "s3://$IB/$IRUN" >/dev/null 2>&1
+	then
+		# rd URL... -> each URL's "count sum", joined by "; ": the remote and local
+		# readings of one check are the same list over two roots
+		rd() {
+			local u out=""
+			for u in "$@"; do
+				out="$out${out:+; }$(qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('$u') AS t(id int8);" | tr '|' ' ')"
+			done
+			echo "$out"
+		}
+		R="s3://$IB/$IRUN"
+		check_text "integration: real S3 prefix read == local directory" \
+			"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$R/lst/') AS t(id int8)")" \
+			"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$INT/lst/') AS t(id int8)")"
+		check_text "integration: real S3 glob == local glob" \
+			"$(rd "$R/lst/*.parquet" "$R/glb/*.parquet" "$R/glb/_*.parquet" "$R/glb/.*.parquet")" \
+			"$(rd "$INT/lst/*.parquet" "$INT/glb/*.parquet" "$INT/glb/_*.parquet" "$INT/glb/.*.parquet")"
+		check_text "integration: real S3 skips hidden names like a local directory" \
+			"$(rd "$R/hid/" "$R/glb/")" "$(rd "$INT/hid/" "$INT/glb/")"
+		check_text "integration: real S3 prefix under a _ or . directory == local" \
+			"$(rd "$R/_landing/" "$R/.dir/" "$R/_landing/*.parquet" "$R/.dir/*.parquet")" \
+			"$(rd "$INT/_landing/" "$INT/.dir/" "$INT/_landing/*.parquet" "$INT/.dir/*.parquet")"
+		# the server's own first page, read by another client: the premise that
+		# 1100 keys cannot come back in one page
+		check "integration: the real S3 serves the 1100 keys in pages of at most 1000" \
+			"$(s3cli "$PGC_S3_INTEGRATION_ENDPOINT" s3api list-objects-v2 --bucket "$IB" \
+				--prefix "$IRUN/page/" --no-paginate --query '[KeyCount, IsTruncated]' \
+				--output text 2>&1 | tr '\t' ' ')" "1000 True"
+		check "integration: real S3 listing pages past 1000 keys" \
+			"$(rd "$R/page/")" "1100 604450"
+		VEP="${PGC_S3_INTEGRATION_VHOST_ENDPOINT:-}"
+		VHOST="$(echo "${VEP#*://}" | cut -d/ -f1 | cut -d: -f1)"
+		if [ -n "$VEP" ] && getent hosts "$IB.$VHOST" >/dev/null 2>&1; then
+			pgc_pg "echo \"pgcolumnar.objstore_allowed_endpoints='127.0.0.1,$IHOST,$VHOST'\" >> '$PGC_PGDATA/postgresql.conf'"
+			if pg_restart_env "AWS_ENDPOINT_URL='$VEP'" \
+				"AWS_ACCESS_KEY_ID='$PGC_S3_INTEGRATION_KEY'" \
+				"AWS_SECRET_ACCESS_KEY='$PGC_S3_INTEGRATION_SECRET'" \
+				"AWS_REGION='${PGC_S3_INTEGRATION_REGION:-garage}'"
+			then v_up=yes; else v_up="no (the cluster did not answer SELECT 1 within 15 s of the restart)"; fi
+			check "integration: the cluster restarts with the virtual-host endpoint" "$v_up" "yes"
+			VSQL="SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('$R/lst/') AS t(id int8);"
+			check_text "integration: real S3 virtual-host prefix read == path-style" \
+				"$(qe "SET pgcolumnar.objstore_s3_addressing = 'virtual'; $VSQL" | grep -v '^SET$' | tr '|' ' ')" \
+				"$(qe "SET pgcolumnar.objstore_s3_addressing = 'path'; $VSQL" | grep -v '^SET$' | tr '|' ' ')"
+		else
+			echo "note: PGC_S3_INTEGRATION_VHOST_ENDPOINT unset, or $IB.<its host> does not" \
+				"resolve; the virtual-host arm is not run"
+		fi
+		s3cli "$PGC_S3_INTEGRATION_ENDPOINT" s3 rm --recursive --only-show-errors \
+			"s3://$IB/$IRUN/" >/dev/null 2>&1 || echo "note: could not remove s3://$IB/$IRUN/"
+	else
+		echo "note: integration endpoint set but the upload helper failed;" \
+			"the fixture arms above carry the proof alone"
+	fi
+else
+	echo "note: PGC_S3_INTEGRATION_ENDPOINT unset; the fixture arms above carry the proof alone"
 fi
 
 pgc_summary

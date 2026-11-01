@@ -259,6 +259,22 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/objstore_listing.sh` and `test_objstore_listing.py` now run their listing
+  arms against a real S3 implementation when `PGC_S3_INTEGRATION_ENDPOINT` is set
+  (#1798). The real-S3 block used to be empty, so prefix, glob, paged and
+  hidden-name listing had only met the repo's fixture server. The arms upload a
+  layout under a per-run prefix and compare each remote prefix and glob read with
+  the same layout read from local disk. One prefix holds 1100 objects, which a real
+  server cannot list in one 1000-key page, so its 1100 rows prove the client
+  followed a real continuation token. With `PGC_S3_INTEGRATION_VHOST_ENDPOINT` also
+  set, a virtual-host prefix read must match the path-style one. The arms are
+  opt-in, as the sibling suites' are, and CI does not run them.
+- With `PGC_S3_INTEGRATION_*` set, `test/objstore_sink_write.sh` no longer ends at
+  its restart into the real endpoint when an earlier arm crashed a backend
+  (#1850). A fast stop sent while the server replayed WAL after the crash did not
+  finish in 60 s, and the suite exited before its summary. The restart now waits
+  for recovery first, and a restart that still fails is a named red, so the other
+  arms' reds reach the summary. The listing suite and both twins do the same.
 - The ledger budget, `test/check_ledger_budget.txt`, holds only its header and its
   two numbers (#1431). Every PR that changed the ledger used to append its
   derivation above the census line, so any two such PRs conflicted there. The
