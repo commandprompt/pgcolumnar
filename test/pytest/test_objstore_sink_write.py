@@ -550,6 +550,22 @@ def _plain_run(dsn, work, r, procs):
     r["plain inject started"] = ("yes" if n >= 1 else f"no (starts={n})") if isinstance(n, int) else n
     r["plain inject open"] = _open_uploads(pdir, r"^pb/fail\.parquet$")
 
+    # #1904 review: the abort of a failed export to a URL with a query string joins
+    # uploadId to it with '&' too, so the server ends the upload
+    open(plog, "w").close()
+    err = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', '{url}/failq.parquet?raw=true')",
+                   "export write failed (injected fault)", " by the injected fault",
+                   setup=[PART, "SET pgcolumnar.sink_fail_after = 900000"])
+    try:
+        dels = [f[2] for f in (l.split() for l in pathlib.Path(plog).read_text(errors="replace").splitlines())
+                if len(f) > 2 and f[0] == "DELETE" and f[1] == "/pb/failq.parquet"]
+        nots = [d for d in dels if not d.startswith("raw=true&uploadId=")]
+        bad = f"{len(nots)} (first: {nots[0]})" if nots else 0
+        r["plain inject query"] = (f"{err}; DELETEs not of the form raw=true&uploadId=: {bad} of {len(dels)}; "
+                                   f"open uploads: {_open_uploads(pdir, r'^pb/failq[.]parquet$')}", len(dels))
+    except OSError as exc:
+        r["plain inject query"] = (query_error(f"request log unreadable: {exc}"), 0)
+
     # #1832: an http:// prefix cannot be listed either, so it is refused before any
     # worker starts too
     open(plog, "w").close()
@@ -633,6 +649,31 @@ def osw(pgc_cluster):
             c.execute(f"CREATE FOREIGN TABLE f_big (id int8, pad text) SERVER wsrv "
                       f"OPTIONS (path 's3://{BUCKET}/big.parquet')")
         r["big back"], r["big gen"] = _set_hash(dsn, "SELECT * FROM f_big"), _set_hash(dsn, GEN_BIG)
+
+        # #1904 review: an s3:// key with a literal '?' keeps each request's query out of the
+        # path. The copy under vswap/ lets the versioned bucket's listing find the key.
+        open(s3log, "w").close()
+        rows = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/q?.parquet')", setup=[PART])
+        try:
+            (work / "vswap" / BUCKET).mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(bucket / "q?.parquet", work / "vswap" / BUCKET / "q?.parquet")
+        except OSError as exc:
+            print(f"-- q?.parquet copy: {exc}")
+        back = _set_hash(dsn, f"SELECT * FROM pgcolumnar.read_parquet('s3://vswap/{BUCKET}/q?.parquet') "
+                              "AS t(id int8, pad text)")
+        try:
+            reqs = [f for f in (l.split() for l in pathlib.Path(s3log).read_text(errors="replace").splitlines())
+                    if len(f) > 2 and re.match(r"(/vswap)?/pgc-bucket/q", f[1])]
+            bad = [" ".join(f[:3]) for f in reqs
+                   if f[1] not in ("/pgc-bucket/q%3F.parquet", "/vswap/pgc-bucket/q%3F.parquet")]
+            gets = [f for f in reqs if f[0] == "GET"]
+            unpinned = [f for f in gets if not f[2].startswith("versionId=")]
+            badn = f"{len(bad)} (first: {bad[0]})" if bad else 0
+            r["s3 qmark"] = (f"rows: {rows}; requests with more than the key in the path: {badn} of {len(reqs)}; "
+                             f"GETs without versionId: {len(unpinned)} of {len(gets)}; read-back: {back}",
+                             len(reqs), len(gets))
+        except OSError as exc:
+            r["s3 qmark"] = (query_error(f"request log unreadable: {exc}"), 0, 0)
 
         # #1812: the part size has a ceiling the sink can hold
         r["part over"] = _part_set(dsn, 536870913)
@@ -1079,6 +1120,13 @@ def test_the_large_object_reads_back_as_the_generator(osw, expect):
     expect.text(osw["big back"], osw["big gen"], "large round trip: s3 read-back == source")
 
 
+def test_an_s3_export_and_pinned_read_of_a_key_with_a_literal_question_mark_keep_queries_out_of_the_path(osw, expect):
+    got, n, gets = osw["s3 qmark"]
+    expect.text(got, f"rows: 400000; requests with more than the key in the path: 0 of {n}; "
+                     f"GETs without versionId: 0 of {gets if gets >= 1 else 'at least 1'}; read-back: {osw['big gen']}",
+                "s3:// export and pinned read of a key with a literal '?' keep each request's query out of the path")
+
+
 PART_OVER = '536870913 is outside the valid range for parameter "pgcolumnar.objstore_part_size" (0 .. 536870912)'
 STAGED_NAME = "an 800 MB chunk over 500 MB already staged uploads whole at the 512 MiB part size, in 3 parts"
 
@@ -1520,6 +1568,14 @@ def test_the_injected_http_fault_landed_mid_multipart(osw, expect):
 
 def test_the_injected_http_failure_leaves_no_open_upload(osw, expect):
     expect.text(osw["plain inject open"], "0", "http:// inject: the server holds no open upload for the key")
+
+
+def test_the_abort_of_a_failed_http_export_to_a_url_with_a_query_string_joins_with_an_ampersand(osw, expect):
+    got, n = osw["plain inject query"]
+    expect.text(got, f"53100 by the injected fault; DELETEs not of the form raw=true&uploadId=: 0 of "
+                     f"{n if n >= 1 else 'at least 1'}; open uploads: 0",
+                "http:// inject to a URL with a query string: the abort joins uploadId with '&' and no upload "
+                "stays open")
 
 
 def test_a_403_from_an_unsigned_http_target_hints_that_it_went_unsigned(osw, expect):
