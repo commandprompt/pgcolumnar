@@ -46,6 +46,11 @@
 # Julian day before timestamp's range, and a page shorter than its num_values
 # are each refused; a value refusal names both parts of the INT96 value.
 #
+# A PAGE WHOSE SIZE IS NOT ITS HEADER'S (#1910), AND A NEGATIVE num_children
+# (#1921). A Snappy page that decompresses to a size other than its header's is
+# refused, as GZIP, ZSTD and LZ4_RAW pages already were. A schema group whose
+# num_children is negative is refused, by parquet_schema as well.
+#
 # Usage:  test/native_parquet_hardening.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -425,7 +430,109 @@ check "footer: the file without level histograms still reads" "$(footer_read rep
 check "footer: a repetition_type of 2^32 is refused, not read as REQUIRED" \
 	"$(footer_read rep_wide_nohist)" \
 	'XX001: Parquet file "<file>" has a malformed schema / Schema element "id" has repetition_type 4294967296; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).'
+# A group whose num_children is -1 (#1921). The schema walk read it as a group
+# with no children, and parquet_schema stopped there: it returned the columns
+# before it and dropped the rest, with no error. The reading is the row count and
+# the column names, or the refusal.
+# schema_read FILE -> "N rows: names" of parquet_schema, or the refusal
+schema_read() {
+	qw "SELECT pgc_err(\$q\$SELECT count(*) || ' rows: ' || string_agg(column_name, ' ') FROM pgcolumnar.parquet_schema('$W/$1.parquet')\$q\$);"
+}
+check "footer: the unpatched struct file's schema has its three columns" \
+	"$(schema_read grp_base)" "NO ERROR: 3 rows: a s b"
+check "footer: a negative num_children is refused by parquet_schema" \
+	"$(schema_read grp_neg_children)" \
+	'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children -1; a valid one is 0 or more.'
+# A count wider than int (#1921). A plain cast to int keeps the low 32 bits, so
+# 2^32 + 1 and -(2^32) + 1 would both read as 1, a valid count.
+check "footer: a num_children of 2^32 + 1 is refused by parquet_schema" \
+	"$(schema_read grp_wide_children)" \
+	'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children 4294967297; a valid one is 0 or more.'
+check "footer: a num_children of -(2^32) + 1 is refused by parquet_schema" \
+	"$(schema_read grp_neg_wide_children)" \
+	'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children -4294967295; a valid one is 0 or more.'
 check "backend survived the malformed footers" "$(survived "$FOOTER_BEFORE")" "1"
+
+# ---- a page whose decompressed length is not its header's (#1910) -----------
+# Each copy changes only the page header's uncompressed_page_size. The SNAPPY
+# reader trusted the length inside the Snappy stream and never compared it with
+# the header, so a corrupt page read without an error: the nightly fuzz found a
+# wide64.parquet mutant that read 50 rows with a different answer, which pyarrow
+# refuses. The reading is "count/sum(id)", or the refusal.
+# page_read FILE -> "count/sum(id)" of the file, or the refusal
+page_read() {
+	qw "SELECT pgc_err(\$q\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id bigint)\$q\$);"
+}
+PAGE_REFUSED='XX001: could not decode Parquet column 0 in row group 0'
+check "page: the unpatched SNAPPY v1 file reads" "$(page_read page_snappy_v1)" "NO ERROR: 100/5050"
+check "page: the unpatched SNAPPY v2 file reads" "$(page_read page_snappy_v2)" "NO ERROR: 100/5050"
+check "page: a SNAPPY v1 page shorter than its header's size is refused" \
+	"$(page_read page_snappy_v1_long)" "$PAGE_REFUSED"
+check "page: a SNAPPY v1 page longer than its header's size is refused" \
+	"$(page_read page_snappy_v1_short)" "$PAGE_REFUSED"
+check "page: a SNAPPY v2 page whose values are shorter than its header's size is refused" \
+	"$(page_read page_snappy_v2_long)" "$PAGE_REFUSED"
+# An uncompressed page copies no bytes, so its header's size cannot change what
+# is read. pyarrow reads this file, and so does pgColumnar.
+check "page: an uncompressed page whose header size differs still reads, as in pyarrow" \
+	"$(page_read page_none_v1_long)" "NO ERROR: 100/5050"
+# An UNCOMPRESSED v2 page that says is_compressed=true, so its values go through
+# the codec. A header size below the page's level bytes changes nothing that is
+# read, and pyarrow reads both copies.
+check "page: an UNCOMPRESSED v2 page marked compressed reads" \
+	"$(page_read page_none_v2_c)" "NO ERROR: 100/5050"
+check "page: an UNCOMPRESSED v2 page whose header size is below its level bytes reads, as in pyarrow" \
+	"$(page_read page_none_v2_c_short)" "NO ERROR: 100/5050"
+
+# ---- a page header field of the wrong Thrift type (#1935) -------------------
+# The page reader read each page header field by its id and never looked at its
+# Thrift type, so a corrupt type nibble read without an error. The fuzzer found a
+# DataPageHeader encoding field (i32) retyped to BOOL_TRUE and to UUID; a change
+# to the page's values then read as a wrong answer, where pyarrow refuses the
+# header. pyarrow refuses every copy in the first three checks.
+check "page: a data page encoding field of Thrift type BOOL_TRUE is refused" \
+	"$(page_read page_enc_bool)" "$PAGE_REFUSED"
+check "page: a data page encoding field of Thrift type UUID is refused" \
+	"$(page_read page_enc_uuid)" "$PAGE_REFUSED"
+# page_sweep PREFIX COUNT FILTER -> "N of COUNT <what>", then each copy's answer
+page_sweep() {
+	qw "SELECT count(*) || ' of $2 $4' || coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '')
+	       FROM (SELECT i, pgc_err(format(\$f\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet(%L) AS t(id bigint)\$f\$,
+	                                     '$W/$1' || lpad(i::text, $5, '0') || '.parquet')) AS v
+	             FROM generate_series(0, ${2:-0} - 1) AS i) s
+	      WHERE $3;"
+}
+# Each sweep's expected text names its number of copies, so a missing or empty
+# .count file fails the check and does not pass with "0 of 0".
+PTSWEEP="$(cat "$W/page_type_sweep.count" 2>/dev/null)"
+check "page: every i32 or struct page header field the reader stores, of another Thrift type, is refused" \
+	"$(page_sweep page_type_sweep_ "$PTSWEEP" "v LIKE 'NO ERROR%'" "read without an error" 4)" \
+	"0 of 168 read without an error"
+# is_compressed is optional, so pyarrow skips it when its type is not bool and
+# keeps the default, true. A copy may read, but only with the right answer.
+PBSWEEP="$(cat "$W/page_bool_sweep.count" 2>/dev/null)"
+check "page: no v2 is_compressed field of another Thrift type reads a wrong answer" \
+	"$(page_sweep page_bool_sweep_ "$PBSWEEP" "v LIKE 'NO ERROR%' AND v <> 'NO ERROR: 100/5050'" "read a wrong answer" 2)" \
+	"0 of 11 read a wrong answer"
+# The required i32 fields the reader skips: a v1 page's definition_level_encoding
+# and repetition_level_encoding, and a v2 page's num_nulls and num_rows. The
+# reader skipped each by the type its header claimed, so a wrong type read
+# without an error, and a changed value byte then read a wrong answer. pyarrow
+# refuses every copy in these three checks.
+check "page: a v1 definition_level_encoding field of type BOOL_TRUE, with a changed value byte, is refused" \
+	"$(page_read page_sib_wrong)" "$PAGE_REFUSED"
+PSSWEEP="$(cat "$W/page_sib_sweep.count" 2>/dev/null)"
+check "page: every required i32 page header field the reader skips, of another Thrift type, is refused" \
+	"$(page_sweep page_sib_sweep_ "$PSSWEEP" "v LIKE 'NO ERROR%'" "read without an error" 2)" \
+	"0 of 48 read without an error"
+# A dictionary page header: its struct, num_values and encoding fields.
+check "page: the unpatched dictionary page file reads" "$(page_read dict_base)" "NO ERROR: 4/10"
+PDSWEEP="$(cat "$W/dict_type_sweep.count" 2>/dev/null)"
+check "page: every dictionary page header field of another Thrift type is refused" \
+	"$(page_sweep dict_type_sweep_ "$PDSWEEP" "v LIKE 'NO ERROR%'" "read without an error" 2)" \
+	"0 of 36 read without an error"
+check "page: a v2 is_compressed field of type LIST is skipped and reads, as in pyarrow" \
+	"$(page_read page_bool_sweep_06)" "NO ERROR: 100/5050"
 
 # ---- string cells that are not valid in the server encoding (#1821) --------
 # A database created as UTF8 whatever the cluster's encoding (see the header).

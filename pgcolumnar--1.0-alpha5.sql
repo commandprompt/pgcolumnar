@@ -3183,8 +3183,21 @@ BEGIN
 	-- export_parquet overwrites an existing file without a word. A file another
 	-- foreign table in this database reads is refused; one only a failed earlier
 	-- attempt left behind is overwritten, so a retry can use the same path.
-	IF EXISTS (SELECT 1 FROM pg_foreign_table t
-			   WHERE ('path=' || path) = ANY (t.ftoptions)) THEN
+	-- Both paths have their scheme normalised before they are compared (#1936):
+	-- a remote scheme matches in any case, and s3a:// or s3n:// match s3://
+	-- (#1930). The host, bucket and key keep their case, and a local path is
+	-- compared as written. Only one path is compared with another: a foreign
+	-- table on a directory or a glob that covers the path is not seen. A NULL
+	-- path compares as unknown, so it reaches the null refusal (#1937 review).
+	IF EXISTS (SELECT 1 FROM pg_foreign_table t, unnest(t.ftoptions) AS o(opt),
+				LATERAL (SELECT array_agg(
+							CASE WHEN p ~* '^s3[an]?://'
+								 THEN 's3://' || substr(p, strpos(p, '://') + 3)
+								 WHEN p ~* '^(gs|az|https?)://'
+								 THEN lower(split_part(p, '://', 1)) || substr(p, strpos(p, '://'))
+								 ELSE p END ORDER BY n)
+						   FROM unnest(ARRAY[path, substr(opt, 6)]) WITH ORDINALITY AS s(p, n)) AS v(np)
+			   WHERE opt LIKE 'path=%' AND v.np[1] = v.np[2]) THEN
 		RAISE EXCEPTION 'file "%" is read by a foreign table in this database', path
 			USING ERRCODE = 'duplicate_file';
 	END IF;

@@ -401,6 +401,12 @@ COMPLETE = ["advisory_lock_class",
 # about the PORT rather than a licence: the standing arm does not grade it, so the
 # reason is the only thing standing between a declared gap and a forgotten one.
 INCOMPLETE = {
+    # #1915, review of #1928. One shell check has no twin: "a set -e suite under
+    # flock still loads lib.sh". It measures lib.sh's descriptor-closing loop, and
+    # the pytest harness has no such loop; a twin could only source the real lib.sh,
+    # which CONTEXT.md's twin rule forbids. It belongs to the shell harness alone.
+    "harness_isolation": "the set -e check measures lib.sh's descriptor loop, which "
+                         "only the shell harness has; a twin would source lib.sh",
 }
 
 

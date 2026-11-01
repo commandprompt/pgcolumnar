@@ -34,7 +34,7 @@ import pytest
 
 import pgc_vacuity
 
-from pgc_cluster import _pg_config, build_once, make_cluster
+from pgc_cluster import _pg_config, build_once, make_cluster, require_library_unchanged
 
 pytest_plugins = ["pytester"]
 
@@ -241,8 +241,11 @@ def _serve_cluster(cluster, root, verdict, worker_id):
     print(f"\n-- build: {verdict} from {SRCDIR}")
     # Printed for the same reason lib.sh prints it: so a reader can tell which
     # binary produced the results below.
+    # The digest the session runs against. The teardown fails the session if it
+    # changed before the end: another session installed into this prefix (#1915).
+    cluster.so_at_start = cluster.so_md5()
     print(f"-- cluster: worker={worker_id} port={cluster.port} "
-          f"{cluster.version} .so={cluster.so_md5()}")
+          f"{cluster.version} .so={cluster.so_at_start}")
     # And the running server is the one that loaded THAT library. @jdatcmd noted
     # a start-time check would be near-vacuous because the cluster is initdb'd
     # fresh each session, so the postmaster always starts after the .so. That is
@@ -280,6 +283,8 @@ def _serve_cluster(cluster, root, verdict, worker_id):
     finally:
         cluster.stop()
         shutil.rmtree(root, ignore_errors=True)
+    # After the finally, so it runs only on a teardown with nothing in flight.
+    require_library_unchanged(cluster.so_path, cluster.so_at_start)
 
 
 @pytest.fixture(scope="module")

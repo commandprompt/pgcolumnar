@@ -546,6 +546,119 @@ true until the next version shipped.
   describes the default. Every run now prints which `pg_config` it used, how it
   chose it, and the version it reports: in the header, or at the end under `-q`.
   Three new tests in `test_harness_deps_classifier.py`. Reported by @OffgridwithJD.
+- The Parquet reader now refuses a page header whose required i32 fields, or
+  whose own header struct, have the wrong Thrift type (#1935). It raises SQLSTATE
+  XX001, as pyarrow refuses such a header. This covers the fields the reader uses
+  and the required fields it does not use: the level encodings of a v1 page,
+  `num_nulls` and `num_rows` of a v2 page, and a dictionary page's `encoding`.
+  Before, it read each field by its id alone. A fuzz run found two corrupt files
+  whose encoding field had type BOOL_TRUE or UUID instead of i32. Both read
+  without an error and with wrong values. Optional fields keep Thrift's rule: a
+  v2 page's `is_compressed` field of another type is skipped, and the page is
+  read as compressed, as in pyarrow.
+  docs/limitations.md. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
+- `import_arrow` now refuses a nested Arrow type that the target column cannot
+  hold with SQLSTATE 42804, naming the column (#1932). Before, a list of
+  lists, of structs or of maps for a `bigint[]` column was refused with XX001.
+  The message, "value buffer too small for the row count", said the file was
+  damaged. A large list was worse: it imported into `bigint[]` or `bigint` as
+  wrong values, with no error. A list of lists now fails as `import_parquet`
+  fails for the same shape (#1917), and the message gives its depth. A plain
+  column for an array column, and a list, map or struct for a scalar column,
+  are refused the same way. A file whose offsets run past its buffers is still
+  refused with XX001. docs/sql-reference.md and docs/limitations.md.
+  `test/arrow_import.sh` and `test_arrow_import.py`.
+- `tier_partition` now refuses a path that a foreign table reads under another
+  spelling of the same object (#1936). Before this it compared the `path`
+  option as text. A foreign table on `s3a://b/k` or `S3://b/k` did not stop a
+  move to `s3://b/k`, and the move overwrote the object that table reads. The
+  check now matches the scheme in any case, as the Parquet readers do, and
+  reads `s3a://` and `s3n://` as `s3://`, as the readers do since #1930. A
+  `NULL` path still gets SQLSTATE 22004. The check still does not see a
+  directory or glob table, a local path spelled another way, or a host in
+  another case (#1941). docs/how-to.md and docs/sql-reference.md.
+  `test/tier_partition.sh` and its pytest twin.
+- Test harness: when a suite runs as `flock <lock> bash test/smoke.sh`, a
+  server that it starts no longer holds the lock, and a run fails when the
+  installed library changes during it (#1915). Before, the suite passed the
+  lock's descriptor to its postmaster. A cluster that outlived the command
+  blocked every other run of that major; one such cluster blocked the PG18
+  queue for about 25 minutes. `test/portlib.sh` now closes a descriptor whose
+  lock another live process took. That process still holds the lock. A lock
+  the suite took itself stays held. The fix does not cover a lock taken with
+  `flock -F` or on a descriptor, as in `( flock 9; bash test/smoke.sh ) 9>lock`:
+  there the suite holds the only copy, so closing it would release the lock. docs/testing.md
+  says what to do instead. A suite that sets `set -e` before it loads lib.sh
+  still runs under flock. On a shared machine, another session can also
+  install into the same prefix during a run. `pgc_summary` now fails the run
+  when the library's digest changed after `pgc_setup`, and names both
+  digests. The pytest session's teardown does the same. docs/testing.md.
+  `test/harness_isolation.sh` and `test_harness_isolation.py`.
+  Reported by @OffgridwithJD.
+
+- The Iceberg REST functions now refuse a namespace whose only level is empty,
+  `''` or `ARRAY['']`, with SQLSTATE 22023 (#1922). Its request path held an
+  empty segment, as in `/v1/namespaces//tables`. The Apache Iceberg REST
+  catalog answers that path with HTTP 400, and a proxy may collapse `//` to
+  `/` and reach another resource. The REST spec has no other way to write it.
+  The refusal comes before any request, including a server's OAuth token
+  request, so it does not depend on whether the catalog is up. The hint names level 1 as empty. `iceberg_rest_namespace_levels`
+  still lists `{""}` and still asks for its children with an empty `?parent=`,
+  which is a query value, not a path segment. The Apache Iceberg REST catalog
+  reads it as `{""}`. `iceberg_rest_namespaces` now writes the levels `""`, `x`
+  as `.x`; before, it wrote `x`, the name of another namespace. A namespace with
+  an empty level among other levels, such as `{db,""}`, still works (#1891).
+  docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`.
+
+- The Parquet reader now refuses a Snappy page whose decompressed size differs
+  from the size in its page header (#1910). It raises SQLSTATE XX001, as it
+  already did for GZIP, ZSTD and LZ4_RAW. Before, it trusted the size inside the
+  Snappy stream alone. The nightly fuzz found a corrupt page that read 50 rows
+  with wrong values and no error, where pyarrow refuses the file. An
+  uncompressed page still reads when its header size is wrong, in a v1 or a v2
+  page, as it does in pyarrow.
+  docs/limitations.md. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
+- The Parquet reader now refuses a schema element whose `num_children` is
+  negative or wider than a 32-bit integer (#1921). It raises SQLSTATE XX001 and
+  names the element. Before,
+  `parquet_schema` returned the columns before that element and dropped the rest
+  without an error. docs/limitations.md. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
+- `test/fuzz_parquet.sh` reads its `struct` seed again (#1920). Since #1909,
+  `parquet_schema` reports a struct of scalars as its field list, such as
+  `composite (x integer, y text)`, which is not a type name. The fuzzer now
+  creates a composite type from that field list and declares the column with
+  it. Before, the seed was refused, so none of its mutants could be compared
+  with the seed's answer. The pytest twin does the same. If a composite type
+  cannot be created, a named check now fails and shows the error. Before, the
+  error was discarded and the seed dropped out of the fuzz without a word.
+- `read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table
+  now refuse a list of lists read into an array column (#1917). Before, they
+  flattened it without an error: the cell `[[1], [2, 3]]` read as `{1,2,3}`. A
+  list of maps flattened the same way. A Parquet leaf under two or more
+  repeated levels now fails with SQLSTATE 42804, and the message gives its
+  depth. PostgreSQL does not tell `int[]` from `int[][]` in a declared type,
+  and the reader builds only one-dimensional arrays, so no column list reads
+  such a leaf. These three entry points therefore cannot read such a file at
+  all, even for a query that does not use that column: they bind every column
+  by position, and a scalar declaration fails as unexpectedly repeated. Before,
+  such a query returned the other columns correctly. docs/limitations.md and
+  docs/sql-reference.md. `test/native_parquet_schema.sh` and
+  `test_native_parquet_schema.py`.
+
+- The pytest layer no longer calls `expected_unrunnable.txt` stale for a listed
+  test that failed or was lost to a crashed xdist worker (#1914). The check read
+  "did not decline" as "ran", and its message told the reader to delete a
+  correct row. Now only a listed test that passed makes its row stale. The run
+  still exits 1 for the failure or the lost test. `test_layer.py`.
+
+- Two provenance comments in `test/pytest/expected_tests.txt` now give counts
+  that add up (#1919). A merge renumbered their `cluster_tests` values but kept
+  the counts collected on the branch. The comments now say where each count
+  was taken. No count changes.
 
 - The five functions that read local files only now also refuse an `s3a://` or
   `s3n://` URL with SQLSTATE 0A000 (#1918): `import_arrow`,

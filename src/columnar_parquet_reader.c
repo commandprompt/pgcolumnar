@@ -148,7 +148,9 @@ typedef struct PqSchemaCol
 	int			type_length;	/* FIXED_LEN_BYTE_ARRAY length */
 	int			scale;			/* DECIMAL scale (0 if none) */
 	int			precision;		/* DECIMAL precision (0 if none) */
-	int			num_children;	/* >0 for a group */
+	int			num_children;	/* >0 for a group; -1 when the stored value is
+								 * negative or wider than int (#1921) */
+	int64		num_children_stored;	/* as stored, for the refusal's DETAIL */
 	int			field_id;		/* SchemaElement field 9, or -1 when absent:
 								 * 0 is a legal id, so absence needs its own
 								 * value. Iceberg projects by this (#388). */
@@ -211,6 +213,8 @@ typedef struct PqFile
 	bool		has_row_groups; /* row_groups (required) was present */
 	bool		has_num_rows;	/* num_rows (required) was present */
 	int64		num_rows;		/* the footer's own total of rows */
+	int			bad_children;	/* schema element whose num_children is negative
+								 * or wider than int, or -1 (#1921) */
 } PqFile;
 
 /*
@@ -534,6 +538,7 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 	sc->scale = 0;
 	sc->precision = 0;
 	sc->num_children = 0;
+	sc->num_children_stored = 0;
 	sc->field_id = -1;
 	sc->name = NULL;
 
@@ -566,7 +571,10 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 					break;
 				}
 			case 5:				/* num_children */
-				num_children = (int) PgColumnarThriftZigzag(r);
+				sc->num_children_stored = PgColumnarThriftZigzag(r);
+				num_children = (sc->num_children_stored < 0 ||
+								sc->num_children_stored > PG_INT32_MAX)
+					? -1 : (int) sc->num_children_stored;
 				sc->num_children = num_children;
 				break;
 			case 6:				/* converted_type */
@@ -687,6 +695,7 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 	pf->has_row_groups = false;
 	pf->has_num_rows = false;
 	pf->num_rows = 0;
+	pf->bad_children = -1;
 
 	for (;;)
 	{
@@ -776,6 +785,20 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 	for (e = 0; e < pf->nelems; e++)
 		if (pf->elems[e].name == NULL)
 			return false;
+
+	/*
+	 * A negative num_children is no valid count (#1921). The walk below read it
+	 * as a group with no children: the next element then took that group's
+	 * place in the tree, and parquet_schema stopped at the empty group and
+	 * dropped every column after it, with no error. The caller names the
+	 * element; a count wider than int is refused the same way.
+	 */
+	for (e = 0; e < pf->nelems; e++)
+		if (pf->elems[e].num_children < 0)
+		{
+			pf->bad_children = e;
+			return false;
+		}
 
 	/* derive leaf columns + their level bounds from the schema tree */
 	{
@@ -1728,7 +1751,50 @@ typedef struct PqPageHeader
 	int			rep_levels_len;
 	bool		is_compressed;	/* v2; default true */
 	bool		is_v2;
+	bool		bad_type;		/* a field had the wrong Thrift type (#1935) */
 } PqPageHeader;
+
+/*
+ * Read a required i32 page header field of compact type ft, whether or not the
+ * reader stores its value. A field of another type is
+ * corrupt (#1935). Read anyway, a varint-shaped field such as an i64 kept the
+ * parse in step, and a BOOL or UUID field had its next bytes taken as the value:
+ * either way the page read without an error, where pyarrow refuses the header.
+ * The field is required by parquet.thrift, so skipping it, as Thrift does, ends
+ * in a refusal too. r->error stops the parse; bad_type tells the caller that a
+ * larger read window cannot help.
+ */
+static int
+pq_page_i32(TCReader *r, PqPageHeader *h, int ft)
+{
+	if (ft != TC_I32)
+	{
+		h->bad_type = true;
+		r->error = true;
+		return 0;
+	}
+	return (int) PgColumnarThriftZigzag(r);
+}
+
+/*
+ * A struct page header field (data_page_header and the like) of another type is
+ * corrupt too. These fields are optional in parquet.thrift, so Thrift, and so
+ * pyarrow, skips one of the wrong type and fails later, if at all. When the
+ * struct is the page's own header, pyarrow then fails too. A data page that also
+ * carried a wrong-typed dictionary_page_header would be refused here where
+ * pyarrow might read it. That is the safe direction.
+ */
+static bool
+pq_page_struct(TCReader *r, PqPageHeader *h, int ft)
+{
+	if (ft != TC_STRUCT)
+	{
+		h->bad_type = true;
+		r->error = true;
+		return false;
+	}
+	return true;
+}
 
 static void
 parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
@@ -1750,10 +1816,14 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			switch (fid)
 			{
 				case 1:
-					h->num_values = (int) PgColumnarThriftZigzag(r);
+					h->num_values = pq_page_i32(r, h, ft);
 					break;
 				case 2:
-					h->encoding = (int) PgColumnarThriftZigzag(r);
+					h->encoding = pq_page_i32(r, h, ft);
+					break;
+				case 3:			/* definition_level_encoding: not stored */
+				case 4:			/* repetition_level_encoding: not stored */
+					(void) pq_page_i32(r, h, ft);
 					break;
 				default:
 					PgColumnarThriftSkip(r, ft);
@@ -1765,19 +1835,31 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			switch (fid)
 			{
 				case 1:
-					h->num_values = (int) PgColumnarThriftZigzag(r);
+					h->num_values = pq_page_i32(r, h, ft);
+					break;
+				case 2:			/* num_nulls: not stored */
+				case 3:			/* num_rows: not stored */
+					(void) pq_page_i32(r, h, ft);
 					break;
 				case 4:
-					h->encoding = (int) PgColumnarThriftZigzag(r);
+					h->encoding = pq_page_i32(r, h, ft);
 					break;
 				case 5:
-					h->def_levels_len = (int) PgColumnarThriftZigzag(r);
+					h->def_levels_len = pq_page_i32(r, h, ft);
 					break;
 				case 6:
-					h->rep_levels_len = (int) PgColumnarThriftZigzag(r);
+					h->rep_levels_len = pq_page_i32(r, h, ft);
 					break;
 				case 7:
-					h->is_compressed = (ft == TC_BOOL_TRUE);
+
+					/*
+					 * is_compressed is optional. Thrift, and so pyarrow, skips a
+					 * field of another type and keeps the default, true.
+					 */
+					if (ft == TC_BOOL_TRUE || ft == TC_BOOL_FALSE)
+						h->is_compressed = (ft == TC_BOOL_TRUE);
+					else
+						PgColumnarThriftSkip(r, ft);
 					break;
 				default:
 					PgColumnarThriftSkip(r, ft);
@@ -1806,21 +1888,24 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 		switch (fid)
 		{
 			case 1:
-				h->type = (int) PgColumnarThriftZigzag(r);
+				h->type = pq_page_i32(r, h, ft);
 				break;
 			case 2:
-				h->uncompressed_size = (int) PgColumnarThriftZigzag(r);
+				h->uncompressed_size = pq_page_i32(r, h, ft);
 				break;
 			case 3:
-				h->compressed_size = (int) PgColumnarThriftZigzag(r);
+				h->compressed_size = pq_page_i32(r, h, ft);
 				break;
 			case 5:				/* DataPageHeader (v1) */
-				parse_data_page_header(r, h, false);
+				if (pq_page_struct(r, h, ft))
+					parse_data_page_header(r, h, false);
 				break;
 			case 7:				/* DictionaryPageHeader */
 				{
 					int			dl = 0;
 
+					if (!pq_page_struct(r, h, ft))
+						break;
 					for (;;)
 					{
 						int			dft,
@@ -1830,14 +1915,17 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 						if (dft == TC_STOP || r->error)
 							break;
 						if (dfid == 1)
-							h->num_values = (int) PgColumnarThriftZigzag(r);
+							h->num_values = pq_page_i32(r, h, dft);
+						else if (dfid == 2)	/* encoding: not stored */
+							(void) pq_page_i32(r, h, dft);
 						else
 							PgColumnarThriftSkip(r, dft);
 					}
 					break;
 				}
 			case 8:				/* DataPageHeaderV2 */
-				parse_data_page_header(r, h, true);
+				if (pq_page_struct(r, h, ft))
+					parse_data_page_header(r, h, true);
 				break;
 			default:
 				PgColumnarThriftSkip(r, ft);
@@ -2162,6 +2250,13 @@ pq_source_open_cfg(const char *path, PqSource *src, PqFile *pf,
 	if (!parse_file_metadata(src->meta, src->metalen, pf))
 	{
 		pq_source_close(src);
+		if (pf->bad_children >= 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("Parquet file \"%s\" has a malformed schema", path),
+					 errdetail("Schema element \"%s\" has num_children " INT64_FORMAT "; a valid one is 0 or more.",
+							   pf->elems[pf->bad_children].name,
+							   pf->elems[pf->bad_children].num_children_stored)));
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						errmsg("could not parse \"%s\" (unsupported or corrupt Parquet metadata)", path)));
 	}
@@ -2261,7 +2356,7 @@ pq_read_page_header(PqSource *src, int64 off, PqPageHeader *h, size_t *hdrlenOut
 			return true;
 		}
 		pfree(buf);
-		if ((int64) n >= avail || win >= PQ_PAGE_HDR_WIN_MAX)
+		if (h->bad_type || (int64) n >= avail || win >= PQ_PAGE_HDR_WIN_MAX)
 			return false;
 		win *= 2;
 	}
@@ -3113,6 +3208,18 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
 			if (pf->leaves[lf].max_rep < 1)
 				IMP_FAIL("target column \"%s\" is an array but the Parquet column is not repeated",
 						 NameStr(att->attname));
+
+			/*
+			 * A leaf under two or more repeated levels (a list of lists, a list
+			 * of maps) has no one-dimensional reading: the decode below builds
+			 * one array per row from the outer level and would drop the inner
+			 * list boundaries, [[1], [2, 3]] reading as {1,2,3} (#1917).
+			 * PostgreSQL does not tell int[] from int[][] in a declared type, and
+			 * this reader builds only one-dimensional arrays, so refuse it.
+			 */
+			if (pf->leaves[lf].max_rep > 1)
+				IMP_FAIL("Parquet column for array \"%s\" is nested %d lists deep, but %s reads one list level into an array",
+						 NameStr(att->attname), pf->leaves[lf].max_rep, caller);
 			if (pf->leaves[lf].sc->phys_type != want)
 				IMP_FAIL("Parquet column for array \"%s\" has incompatible physical type",
 						 NameStr(att->attname));

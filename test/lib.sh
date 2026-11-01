@@ -399,6 +399,9 @@ pgc_setup() {
 			echo "-- source: $_pgc_fresh_current, freshness UNVERIFIED (no stamp for major $PGC_MAJOR)"
 			;;
 	esac
+	# The library these checks run against. pgc_summary fails the run if it
+	# changes before the end (#1915).
+	PGC_RUN_SO_DIGEST="$_pgc_bin_current"
 
 	echo "-- initdb"
 	# -U postgres, because every psql below connects as postgres (#1341). initdb's
@@ -1127,6 +1130,26 @@ pgc_binary_identity_verdict() {	# pgc_binary_identity_verdict RECORDED CURRENT -
 	[ -z "$recorded" ] && { echo unknown; return; }
 	[ -z "$current" ] && { echo unknown; return; }
 	[ "$recorded" = "$current" ] && echo fresh || echo replaced
+}
+
+# THE LIBRARY CAN CHANGE AFTER SETUP, TOO (#1915). pgc_setup refuses a library
+# this tree did not install, but on a shared box another session can install
+# into the same prefix while a suite runs. A suite that restarts its server
+# then loads the other session's code, and its results are about that code.
+# Measured on PG18: /usr/local/pgsql/lib/pgcolumnar.so replaced at 14:45:10
+# between one session's install and its test.
+#
+# pgc_setup records the digest it verified in PGC_RUN_SO_DIGEST; pgc_summary
+# calls this with it. Takes the path, so the suite can drive it on a copy.
+pgc_check_library_unchanged() {	# pgc_check_library_unchanged SO_PATH RECORDED -> 0|1
+	local so="${1:-}" recorded="${2:-}" now
+	[ -n "$recorded" ] || return 0
+	now="$(md5sum "$so" 2>/dev/null | cut -c1-12)"
+	[ "$now" = "$recorded" ] && return 0
+	echo "FAIL  the installed library changed during this run: $recorded at setup, ${now:-absent} now ($so)"
+	echo "      Another session installed into this prefix, so the checks above may"
+	echo "      have measured its code. Build, install and test in one lock hold."
+	return 1
 }
 
 # ONE DECISION, so no caller can claim the binary on source evidence alone. Pure,
@@ -2090,6 +2113,12 @@ pgc_summary() {
 		echo "FAIL  the summary does not reconcile: $PGC_PASSED passed + $PGC_FAILED failed + $PGC_UNRUN unrunnable + $PGC_SKIPPED skipped = $_sum, but $PGC_CHECKS checks ran"
 		echo "      A check was counted whose outcome nothing recorded. Find the helper"
 		echo "      that bumps PGC_CHECKS without touching PGC_PASSED, PGC_FAILED, PGC_UNRUN or PGC_SKIPPED."
+		PGC_FAIL=1
+	fi
+	# Not a check, like the reconciliation above: it is about the run, not about
+	# the code, and every suite that calls pgc_setup gets it (#1915).
+	if [ -n "${PGC_RUN_SO_DIGEST:-}" ] && ! pgc_check_library_unchanged \
+			"$("$PGC_PG_CONFIG" --pkglibdir 2>/dev/null)/pgcolumnar.so" "$PGC_RUN_SO_DIGEST"; then
 		PGC_FAIL=1
 	fi
 	if [ "$PGC_FAIL" != "0" ]; then
