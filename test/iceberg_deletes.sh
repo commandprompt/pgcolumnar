@@ -7,7 +7,9 @@
 # merge-on-read deletes; the data and delete Parquet are real pyarrow files and
 # the manifests set exact sequence numbers, so both ordering rules (position:
 # data_seq <= delete_seq; equality: data_seq < delete_seq, strictly) sit on
-# testable boundaries. The oracle is the data rows minus the deletes.
+# testable boundaries. The oracle is the data rows minus the deletes. A second
+# fixture (warehouse_posmany, #1868) has 32 data files and 106 position-delete
+# rows, and its probe arms bound the rows each data file visits.
 #
 # Usage:  test/iceberg_deletes.sh [PG_CONFIG]
 
@@ -84,7 +86,9 @@ survived() {	# survived BEFORE -> "1" when the server answers and no backend die
 
 FX="$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg"
 WHD="$FX/warehouse_del"
-[ -f "$WHD/db/t/metadata/apply.metadata.json" ] || pgc_skip fixture "delete fixture is missing"
+PMW="$FX/warehouse_posmany"
+[ -f "$WHD/db/t/metadata/apply.metadata.json" ] && [ -f "$PMW/expected_posmany.json" ] ||
+	pgc_skip fixture "delete fixture is missing"
 python3 -c 'import json' 2>/dev/null || pgc_skip python "python3 is needed"
 
 # relocate so recorded root (/tmp/pgc_ice_del) != actual root (rebasing)
@@ -506,6 +510,13 @@ check_text "a position delete naming its s3:// data file as s3a:// is applied" \
 	"$(qe "SELECT id || '|' || region || '|' || amount
 	       FROM pgcolumnar.iceberg_scan('$(dvar mix_s3a)')
 	         AS t(id bigint, region text, amount int) ORDER BY id")" "$ORACLE"
+# mix_files3 is mix_s3a's table, but its second delete row names the data file as
+# file://s3://bb/...: a local path that merely begins with s3://, not the object.
+# The first row (s3a://, id 2) applies and the second (id 4) does not (#1868)
+check "a position delete naming its s3:// data file as file://s3:// does not apply, beside one that does (#1868)" \
+	"$(qe "SELECT string_agg(id::text, ',' ORDER BY id)
+	       FROM pgcolumnar.iceberg_scan('$(dvar mix_files3)')
+	         AS t(id bigint, region text, amount int)")" "1,3,4,5"
 
 # peak QUERY -> "<kB the backend's peak rose by> <the query's last output line>",
 # or the reason there is no reading. VmHWM is the backend's peak resident memory and
@@ -559,5 +570,88 @@ check_text "s3a:// position deletes cost no more memory than s3:// ones (within 
 	"$(pgc_is_number "$s3kb" && pgc_is_number "$s3akb" && [ "${P_S3#* }" = 3 ] && [ "${P_S3A#* }" = 3 ] \
 	   && [ $(( s3akb - s3kb )) -le 16384 ] && echo 1 \
 	   || echo "0 (peak rise: s3:// [$s3kb] kB, s3a:// [$s3akb] kB; readings [$P_S3] [$P_S3A])")" 1
+
+# ---- #1868: many data files, many position-delete rows -----------------------
+# 32 data files of 8 rows and 106 position-delete rows (warehouse_posmany, from
+# gen_posdel_many.py). Each data file is recorded as file:// or bare, and every
+# file's ordinal 0 is deleted by a row spelled the other way. One row names d05
+# under s3://, another a data file not in the table, and a whole file of rows at
+# sequence number 4 is older than the data, so it never applies. The scan
+# reports in DEBUG1 lines how it found each data file's deletes: one line when
+# it indexes the rows by normalized path, and one per data file with the rows it
+# visited and applied, and the group keys it compared to find them. The old walk
+# visited all 106 rows for each of the 32 files (3392); the index visits only the
+# rows naming that file (104 in all, at most 4 for one file), and with each key
+# in its own hash bucket it finds them at the first comparison (32).
+PMDEST="$PGC_WORKDIR/posmany"
+rm -rf "$PMDEST"; mkdir -p "$PMDEST"
+cp -r "$PMW/db" "$PMDEST/db"
+chmod -R u+rwX "$PMDEST"
+PMMD="$PMDEST/db/t/metadata/posmany.metadata.json"
+PMCOLS="AS t(id bigint, region text, amount int)"
+pm_oracle() {	# pm_oracle md5|index|probe -> the generator's expected value
+	python3 - "$PMW/expected_posmany.json" "$1" <<'PY'
+import json, sys
+o = json.load(open(sys.argv[1]))
+k = sys.argv[2]
+if k == "md5":
+    print(o["surviving_md5"])
+elif k == "index":
+    print("builds=%(builds)d rows=%(rows)d paths=%(paths)d" % o["index"])
+else:
+    print("files=%(files)d compared=%(compared)d visited=%(visited)d longest=%(longest)d applied=%(applied)d" % o["probe"])
+PY
+}
+# pm_probe -> "INDEX|PROBE" summed over the DEBUG1 lines of one full scan, in the
+# oracle's two formats; empty fields when no such line came back
+pm_probe() {
+	await_up
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA -c "SET client_min_messages = debug1" \
+		-c "SELECT count(*) FROM pgcolumnar.iceberg_scan('$PMMD') $PMCOLS" 2>&1 |
+	awk '/position-delete index:/ {
+		b++
+		for (i = 1; i <= NF; i++) {
+			split($i, kv, "=")
+			if (kv[1] == "rows") r += kv[2]
+			if (kv[1] == "paths") p += kv[2]
+		}
+	}
+	/iceberg_scan position deletes:/ {
+		f++
+		for (i = 1; i <= NF; i++) {
+			split($i, kv, "=")
+			if (kv[1] == "compared") c += kv[2]
+			if (kv[1] == "visited") { v += kv[2]; if (kv[2] + 0 > l + 0) l = kv[2] }
+			if (kv[1] == "applied") a += kv[2]
+		}
+	}
+	END { printf "builds=%d rows=%d paths=%d|files=%d compared=%d visited=%d longest=%d applied=%d\n",
+		b, r, p, f, c, v, l, a }'
+}
+await_up
+check "premise: the many-file position-delete table holds 256 rows in 32 data files before deletes" \
+	"$(q "SELECT count(*) || ' rows in ' || count(DISTINCT i) || ' files'
+	      FROM generate_series(0, 31) AS i,
+	           LATERAL pgcolumnar.read_parquet(
+	             format('%s/d%s.parquet', '$PMDEST/db/t/data', lpad(i::text, 2, '0'))) $PMCOLS")" \
+	"256 rows in 32 files"
+await_up
+check_text "position deletes over 32 data files drop exactly the oracle's rows (survivors == oracle, #1868)" \
+	"$(q "SELECT md5(string_agg(id::text, ',' ORDER BY id))
+	      FROM pgcolumnar.iceberg_scan('$PMMD') $PMCOLS")" \
+	"$(pm_oracle md5)"
+await_up
+check "ordinal 0, named in the other path spelling (file:// vs bare), is dropped from all 32 data files (#1868)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$PMMD') $PMCOLS WHERE id % 100 = 0")" "0"
+await_up
+check "a delete row naming a data file under s3:// does not apply to the local file (#1868)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$PMMD') $PMCOLS WHERE id = 507")" "1"
+pm_seen="$(pm_probe)"
+echo "-- posmany probe (index|per data file): $pm_seen"
+check "each data file visits only the position-delete rows naming it, not every row (#1868)" \
+	"${pm_seen#*|}" "$(pm_oracle probe)"
+check "the position-delete index is built once per scan, one group per normalized path (#1868)" \
+	"${pm_seen%%|*}" "$(pm_oracle index)"
 
 pgc_summary

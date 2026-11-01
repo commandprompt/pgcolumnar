@@ -264,6 +264,18 @@ true until the next version shipped.
 
 ### Changed
 
+- `iceberg_scan` finds each data file's position deletes through an index
+  built once per scan (#1868). It used to walk every position-delete row for
+  each data file, so the work grew with data files times delete rows. The rows
+  are now grouped by data file, and each data file reads only its own group.
+  Two paths share a group exactly when the walk's comparison called them the
+  same file: `file://` is dropped, `s3://`, `s3a://` and `s3n://` are one
+  prefix, and `file://s3://b/k` is not `s3://b/k`. On a table of 32 data files
+  and 106 delete rows the scan visits 104 rows, where the walk visited 3392.
+  Two DEBUG1 lines report the index and each lookup. `test/iceberg_deletes.sh`
+  and `test_iceberg_deletes.py` check the counts and the survivors, against a
+  new fixture, `warehouse_posmany`, and a delete file that names its `s3://`
+  data file as `s3a://` and as `file://s3://`.
 - `test/objstore_listing.sh` and `test_objstore_listing.py` now run their listing
   arms against a real S3 implementation when `PGC_S3_INTEGRATION_ENDPOINT` is set
   (#1798). The real-S3 block used to be empty, so prefix, glob, paged and

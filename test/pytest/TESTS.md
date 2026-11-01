@@ -10815,7 +10815,7 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 
 ## 270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must
 
-The twin of `test/iceberg_deletes.sh`. Hand-crafted snapshots exercise position deletes (the <= sequence rule, inheritance, per-file scoping, ordinal 0), equality deletes (the strict < rule, multi-column AND, nulls, unions, mixed with position deletes, a hash probe that walks a short chain per data row with thousands of delete rows, and a zero-row delete file, #1817) and partition-scoped equality deletes, against the generator's oracle; thirteen corrupt or unsupported snapshots are refused, each by its own guard, and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies. `fixtures/iceberg/gen_iceberg_variants.py --deletes` then writes delete manifests that spell file_format `parquet`, and two tables with a million position-delete rows recorded under `s3://` and `s3a://`, whose scans must peak within 16 MiB of each other (#1815, #1825).
+The twin of `test/iceberg_deletes.sh`. Hand-crafted snapshots exercise position deletes (the <= sequence rule, inheritance, per-file scoping, ordinal 0), equality deletes (the strict < rule, multi-column AND, nulls, unions, mixed with position deletes, a hash probe that walks a short chain per data row with thousands of delete rows, and a zero-row delete file, #1817) and partition-scoped equality deletes, against the generator's oracle; thirteen corrupt or unsupported snapshots are refused, each by its own guard, and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies. `fixtures/iceberg/gen_iceberg_variants.py --deletes` then writes delete manifests that spell file_format `parquet`, and two tables with a million position-delete rows recorded under `s3://` and `s3a://`, whose scans must peak within 16 MiB of each other (#1815, #1825), and a table whose delete file names its `s3://` data file once as `s3a://`, which applies, and once as `file://s3://`, which does not (#1868). A further warehouse, `warehouse_posmany` (#1868), has 32 data files and 106 position-delete rows in mixed `file://` and bare spellings; its arms read the scan's DEBUG1 lines and require one index build, and per data file one group-key comparison and only the rows naming that file.
 
 ### Every test
 
@@ -10883,9 +10883,16 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_a_lowercase_parquet_position_delete_file_is_applied` | a position-delete file whose file_format is lowercase parquet is applied |
 | `test_a_lowercase_parquet_equality_delete_file_is_applied` | an equality-delete file whose file_format is lowercase parquet is applied |
 | `test_a_position_delete_naming_s3_data_as_s3a_is_applied` | a position delete naming its s3:// data file as s3a:// is applied |
+| `test_a_position_delete_naming_s3_data_as_file_s3_does_not_apply` | a position delete naming its s3:// data file as file://s3:// does not apply, beside one that does (#1868) |
 | `test_a_million_s3_position_delete_rows_apply` | a million s3:// position-delete rows apply (3 rows left) |
 | `test_a_million_s3a_position_delete_rows_apply` | a million s3a:// position-delete rows apply (3 rows left) |
 | `test_s3a_position_deletes_cost_no_more_memory_than_s3` | s3a:// position deletes cost no more memory than s3:// ones (within 16 MiB) |
+| `test_the_many_file_position_delete_table_has_its_rows` | premise: the many-file position-delete table holds 256 rows in 32 data files before deletes |
+| `test_position_deletes_over_many_files_match_the_oracle` | position deletes over 32 data files drop exactly the oracle's rows (survivors == oracle, #1868) |
+| `test_ordinal_zero_in_the_other_spelling_is_dropped_from_every_file` | ordinal 0, named in the other path spelling (file:// vs bare), is dropped from all 32 data files (#1868) |
+| `test_an_s3_spelled_delete_row_does_not_apply_to_a_local_file` | a delete row naming a data file under s3:// does not apply to the local file (#1868) |
+| `test_each_data_file_visits_only_its_own_position_deletes` | each data file visits only the position-delete rows naming it, not every row (#1868) |
+| `test_the_position_delete_index_is_built_once_per_scan` | the position-delete index is built once per scan, one group per normalized path (#1868) |
 
 ## 271. test_logical_subscriber.py: columnar as a logical replication apply target
 

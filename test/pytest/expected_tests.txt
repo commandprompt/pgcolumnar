@@ -1529,4 +1529,9 @@ guard_tests 854
 # over the cluster files: `4774 tests collected`.
 # cluster_tests 4904 -> 4915 at the merge of origin/main (56a95f5f) into fix/1785-remote-glob-scope: main's 4904 plus this branch's 11 in test_objstore_listing.py and test_objstore_http_read.py, by collection: `4915 tests collected`.
 # cluster_tests 4939 -> 4950 at the merge of test/1798-real-s3-listing (cd5e0e6c) into fix/1785-remote-glob-scope: that branch's 4939 plus this branch's 11, by collection: `4950 tests collected`.
-cluster_tests 4950
+# cluster_tests 4904 -> 4911 for #1868 in test_iceberg_deletes.py: the six many-file
+# position-delete tests, and one for a delete row naming its s3:// data file as
+# file://s3://, by collection over the cluster files after the merge of origin/main
+# into fix/1868-posdelete-index: `4911 tests collected`.
+# cluster_tests 4950 -> 4957 at the merge of fix/1785-remote-glob-scope (808b4820) into fix/1868-posdelete-index: that branch's 4950 plus this branch's 7 in test_iceberg_deletes.py, by collection: `4957 tests collected`.
+cluster_tests 4957

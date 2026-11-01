@@ -56,6 +56,11 @@ The --deletes variants, from the warehouse_del table (#1815, #1825):
   mix_s3a     A copy of the table (db/mix_s3a) whose metadata and manifests record
               every path as s3://, while its position-delete file names the data
               file as s3a:// in the same bucket. The delete must still apply.
+  mix_files3  The same table as mix_s3a (db/mix_files3), whose position-delete
+              file names the data file twice: the first row as s3a://, which is
+              the same object, and the second as file://s3://bb/..., a local path
+              that merely begins with s3://, which is not. Only the first row
+              applies (#1868).
 
 The copied tables keep their own metadata, so a suite reads each one by its
 own metadata path. The Avro rewrite keeps every string the same length, so no
@@ -299,6 +304,22 @@ def deletes(root):
                                   pa.array(paths, pa.string())),
                    os.path.join(d, "data", "posdel.parquet"))
     out["mix_s3a"] = md
+
+    # mix_files3: mix_s3a's table, but the second delete row names file://s3://...
+    d2 = os.path.join(root, "db", "mix_files3")
+    shutil.copytree(d, d2)
+    md2 = os.path.join(d2, "metadata", "apply.metadata.json")
+    # the copy's metadata records DEL_S3 paths, the same as mix_s3a's, so only the
+    # delete rows differ; the metadata file is read by its own path
+    old = pq.read_table(os.path.join(d2, "data", "posdel.parquet"))
+    paths = old.column("file_path").to_pylist()
+    if len(paths) != 2 or any(not p.startswith(MIX_S3A) for p in paths):
+        sys.exit(f"gen_iceberg_variants: mix_s3a's posdel.parquet is not two {MIX_S3A} rows: {paths}")
+    paths[1] = "file://" + paths[1].replace(MIX_S3A, DEL_S3, 1)
+    pq.write_table(old.set_column(old.schema.get_field_index("file_path"), old.schema.field("file_path"),
+                                  pa.array(paths, pa.string())),
+                   os.path.join(d2, "data", "posdel.parquet"))
+    out["mix_files3"] = md2
 
     for p in out.values():
         if os.path.isfile(p):
