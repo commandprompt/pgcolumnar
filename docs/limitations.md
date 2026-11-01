@@ -1288,3 +1288,26 @@ table at its current snapshot. It has these limits:
   compared under a nondeterministic collation. Two equal values there need not
   share bytes, so they need not share a bucket. The wrapper reads every file, and
   the query returns the same rows.
+
+## Object storage address refusal
+
+The object-storage module refuses a host that resolves to a link-local or known
+instance-metadata address, even when the host is in
+`pgcolumnar.objstore_allowed_endpoints`. The refusal has SQLSTATE 42501. For the
+full list of refused addresses, see
+[Run object storage safely](best-practices.md#run-object-storage-safely). The
+refusal has these limits:
+
+- The module refuses only `100.100.100.200` in `100.64.0.0/10`. The rest of that
+  range is shared address space for carrier-grade NAT, which can serve object
+  storage legitimately.
+- The module recognises the NAT64 prefixes `64:ff9b::/96` and `64:ff9b:1::/48`.
+  It cannot recognise a NAT64 prefix that your network chose (a network-specific
+  prefix, RFC 6052). An address under such a prefix can reach `169.254.169.254`
+  or `100.100.100.200` through the NAT64 gateway, and the module does not refuse
+  it. On a network with NAT64, do not list a host that can resolve under its
+  prefix.
+- Under `64:ff9b:1::/48` the module checks every place the IPv4 address can sit,
+  so it also refuses some ordinary addresses behind that prefix.
+- Any other address that reaches instance metadata is not refused. Keep the list
+  to the hosts you need.

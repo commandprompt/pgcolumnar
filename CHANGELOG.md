@@ -516,6 +516,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- The object-storage module now refuses a host that resolves to Alibaba Cloud's
+  instance-metadata address `100.100.100.200`, even when the host is listed in
+  `pgcolumnar.objstore_allowed_endpoints` (#1848). Before, it tried to connect.
+  It also refuses it inside an IPv6 address: IPv4-mapped, IPv4-compatible, and
+  behind the NAT64 prefixes `64:ff9b::/96` and `64:ff9b:1::/48`. On an IPv6-only
+  network with DNS64, that is the only address such a name resolves to. It refuses
+  only `100.100.100.200`. The rest of `100.64.0.0/10` is carrier-grade NAT and
+  stays reachable. The module cannot recognise a NAT64 prefix that your network
+  chose, so a metadata address behind such a prefix is still not refused.
+  [Limitations](docs/limitations.md#object-storage-address-refusal) says so.
+  `test/objstore_allowlist.sh` and `test_objstore_allowlist.py`.
 - A remote read tests only the key of an `s3://` URL for `*`, `?` and `[`
   (#1785). The whole URL used to be tested, with three effects. An exact key that
   holds one of those characters read other objects or none: `b/q?mark.parquet`
@@ -669,8 +680,8 @@ true until the next version shipped.
   `64:ff9b:1::/48` the module cannot tell the prefix length, so it checks every
   RFC 6052 position. This also refuses some ordinary addresses, such as
   `10.169.254.5` behind a /48 prefix; `docs/best-practices.md` explains. Other
-  metadata addresses, such as Alibaba Cloud's `100.100.100.200`, are still not
-  refused. `test/objstore_allowlist.sh` and `test_objstore_allowlist.py` resolve
+  metadata addresses were not refused by this change; #1848 adds Alibaba Cloud's
+  `100.100.100.200`. `test/objstore_allowlist.sh` and `test_objstore_allowlist.py` resolve
   test names to each address through a `getaddrinfo()` shim.
 - `export_parquet` and `export_arrow` now export a table with more than 1 GiB of
   one column in a group (#1811). They cut Parquet row groups every 65536 rows and

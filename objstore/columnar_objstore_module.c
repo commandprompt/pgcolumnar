@@ -440,27 +440,45 @@ os_check_endpoint_allowed(PgColumnarObjHandle *h)
 }
 
 /*
- * Link-local refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
+ * An IPv4 address, in host byte order, that is a metadata address: 169.254/16,
+ * or 100.100.100.200, Alibaba Cloud's instance-metadata address (#1848). Only
+ * that one address: the rest of 100.64.0.0/10 is carrier-grade NAT.
+ */
+static bool
+os_v4_is_metadata(uint32 a)
+{
+	return (a & 0xFFFF0000U) == 0xA9FE0000U ||	/* 169.254/16 */
+		a == 0x646464C8U;		/* 100.100.100.200 */
+}
+
+/* The four bytes at b[i], b[j], b[k], b[l] as an IPv4 address in host order */
+static uint32
+os_v4_at(const uint8_t *b, int i, int j, int k, int l)
+{
+	return ((uint32) b[i] << 24) | ((uint32) b[j] << 16) |
+		((uint32) b[k] << 8) | (uint32) b[l];
+}
+
+/*
+ * Metadata-address refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
  * the cloud-metadata credential-theft surface (IMDS lives at
  * 169.254.169.254) and have no legitimate object-storage use. The same
  * surface has IPv6 forms (#1808): AWS's IPv6 IMDS in fd00:ec2::/32, Google
  * Compute Engine's at fd20:ce::254, and
  * 169.254/16 carried inside an IPv6 address -- IPv4-mapped ::ffff:0:0/96,
  * IPv4-compatible ::/96, and the NAT64 prefixes 64:ff9b::/96 and
- * 64:ff9b:1::/48 (RFC 6052, RFC 8215). Checked after
+ * 64:ff9b:1::/48 (RFC 6052, RFC 8215). Alibaba Cloud's metadata address
+ * 100.100.100.200 is refused too, as IPv4 and inside each of those IPv6
+ * forms (#1848). Checked after
  * resolution so a name pinned to a link-local address is caught, and the
  * whole connection is refused rather than the address skipped, so a resolver
  * returning a mixed set cannot steer the choice.
  */
 static bool
-os_addr_is_linklocal(const struct addrinfo *ai)
+os_addr_is_metadata(const struct addrinfo *ai)
 {
 	if (ai->ai_family == AF_INET)
-	{
-		uint32		a = ntohl(((const struct sockaddr_in *) ai->ai_addr)->sin_addr.s_addr);
-
-		return (a & 0xFFFF0000U) == 0xA9FE0000U;	/* 169.254/16 */
-	}
+		return os_v4_is_metadata(ntohl(((const struct sockaddr_in *) ai->ai_addr)->sin_addr.s_addr));
 	if (ai->ai_family == AF_INET6)
 	{
 		const struct in6_addr *a6 =
@@ -471,7 +489,7 @@ os_addr_is_linklocal(const struct addrinfo *ai)
 		static const uint8_t nat64wkp[12] = {0x00, 0x64, 0xff, 0x9b};
 		static const uint8_t gceimds6[16] = {0xfd, 0x20, 0x00, 0xce,
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x54};
-		bool		v4low = (b[12] == 169 && b[13] == 254);
+		bool		v4low = os_v4_is_metadata(os_v4_at(b, 12, 13, 14, 15));
 
 		if (IN6_IS_ADDR_LINKLOCAL(a6))
 			return true;
@@ -481,7 +499,7 @@ os_addr_is_linklocal(const struct addrinfo *ai)
 		/* fd20:ce::254, Google Compute Engine IPv6 instance metadata */
 		if (memcmp(b, gceimds6, 16) == 0)
 			return true;
-		/* ::ffff:0:0/96 (mapped) and ::/96 (compatible) carrying 169.254/16 */
+		/* ::ffff:0:0/96 (mapped) and ::/96 (compatible) carrying a metadata v4 */
 		if (memcmp(b, zero10, 10) == 0 &&
 			((b[10] == 0xff && b[11] == 0xff) || (b[10] == 0 && b[11] == 0)))
 			return v4low;
@@ -491,7 +509,7 @@ os_addr_is_linklocal(const struct addrinfo *ai)
 		/*
 		 * 64:ff9b:1::/48, the NAT64 local-use prefix. Its operator picks the
 		 * prefix length, so the IPv4 address may sit at any RFC 6052 position:
-		 * /48 (bytes 6,7), /56 (7,9), /64 (9,10) or /96 (12,13). The guard
+		 * /48 (bytes 6,7,9,10), /56 (7,9,10,11), /64 (9-12) or /96 (12-15). The guard
 		 * cannot tell which, so it checks all four and fails closed. That
 		 * also refuses some ordinary addresses whose bytes land on another
 		 * layout's position, e.g. 10.169.254.5 behind a /48 prefix; the
@@ -499,8 +517,10 @@ os_addr_is_linklocal(const struct addrinfo *ai)
 		 */
 		if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b &&
 			b[4] == 0x00 && b[5] == 0x01)
-			return (b[6] == 169 && b[7] == 254) || (b[7] == 169 && b[9] == 254) ||
-				(b[9] == 169 && b[10] == 254) || v4low;
+			return os_v4_is_metadata(os_v4_at(b, 6, 7, 9, 10)) ||	/* /48 */
+				os_v4_is_metadata(os_v4_at(b, 7, 9, 10, 11)) ||	/* /56 */
+				os_v4_is_metadata(os_v4_at(b, 9, 10, 11, 12)) ||	/* /64 */
+				v4low;			/* /96 */
 	}
 	return false;
 }
@@ -570,19 +590,21 @@ os_connect(PgColumnarObjHandle *h)
 						h->host, gai_strerror(rc))));
 
 	for (ai = addrs; ai != NULL; ai = ai->ai_next)
-		if (os_addr_is_linklocal(ai))
+		if (os_addr_is_metadata(ai))
 		{
 			freeaddrinfo(addrs);
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("columnar: \"%s\" resolves into a link-local range, "
-							"which object storage never legitimately uses",
+					 errmsg("columnar: \"%s\" resolves into a link-local range "
+							"or an instance-metadata address, which object "
+							"storage never legitimately uses",
 							h->host),
 					 errdetail("Link-local and instance-metadata addresses "
 							   "(169.254.0.0/16, fe80::/10, fd00:ec2::/32, "
-							   "fd20:ce::254, and "
-							   "169.254.0.0/16 inside an IPv4-mapped, "
-							   "IPv4-compatible or NAT64 IPv6 address) are refused "
+							   "fd20:ce::254, Alibaba Cloud's 100.100.100.200, and "
+							   "169.254.0.0/16 or 100.100.100.200 inside an "
+							   "IPv4-mapped, IPv4-compatible or NAT64 IPv6 "
+							   "address) are refused "
 							   "unconditionally: they are the cloud "
 							   "instance-metadata surface.")));
 		}
