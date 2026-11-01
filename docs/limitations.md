@@ -1039,6 +1039,35 @@ The exporter can write `json` and `jsonb` to Parquet, and other tools can read
 them. pgColumnar cannot import them from Parquet at this time. Arrow supports
 both types in each direction.
 
+## Export size limits
+
+`export_parquet`, `export_arrow` and `parallel_export_parquet` write a table of any
+total size. They cap the bytes they buffer for one Parquet row group or Arrow record
+batch at `pgcolumnar.export_group_bytes`, 256 MiB by default. A row that would pass
+the cap starts a new group. A row larger than the cap goes in a group of its own.
+
+The writers count each row in the form they write it, not the form PostgreSQL
+stores it. An unconstrained `numeric` and a `jsonb` are written as text. The text
+can be far longer than the stored value: `1e100000` stores in a few bytes but is
+written as 100001 digits.
+
+One row can still fail an export. PostgreSQL caps one buffer at 1 GiB. An Arrow
+record batch is one buffer, so a row whose written form passes about 1 GiB fails. In
+Parquet each column has its own buffer, so a row fails when one of its columns, as
+written, passes about 1 GiB. The export then stops with PostgreSQL's error
+`string buffer exceeds maximum allowed length (1073741823 bytes)`. pgColumnar does
+not raise an error of its own for this case.
+
+A remote export holds one multipart part in memory. `pgcolumnar.objstore_part_size`
+is at most 512 MiB, because PostgreSQL caps one allocation at 1 GiB. S3 sets its own
+limits, which pgColumnar does not check:
+
+- Each part but the last must be at least 5 MiB. The test suites use smaller parts
+  against a local test server; against S3, keep the setting at `0` (8 MiB) or at
+  5242880 and above.
+- An upload holds at most 10000 parts. At the default 8 MiB part, that is an object
+  of about 78 GiB. Raise the part size for a larger export.
+
 ## Compression codecs
 
 For the native table format, `lz4` and `zstd` are available only when the

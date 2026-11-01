@@ -1428,4 +1428,20 @@ guard_tests 854
 # current-snapshot-id), by collection over the cluster files after merging main (6f88f973): `4593 tests collected`.
 # cluster_tests 4711 at the merge of origin/fix/1793-rest-namespaces (main 3fae8317 + #1802) into
 # fix/1822-strict-metadata-parsing: that branch's 4678 plus this branch's 33, by collection: `4711 tests collected`.
-cluster_tests 4796
+# cluster_tests 4752 -> 4762 for #1811's and #1812's tests in test_parquet_export.py (4), test_arrow_export.py (3)
+# and test_objstore_sink_write.py (3). Re-derived by collection on the merged tree, not by adding
+# the deltas: `4526 tests collected`.
+# cluster_tests 4762 -> 4771 for #1811's review fixes on #1843: test_parquet_export.py (4),
+# test_arrow_export.py (4) and test_parallel_export_parquet.py (1), by collection: the whole
+# corpus collects `5389 tests collected`, guard 854 + cluster 4535.
+# cluster_tests 4776 -> 4795 merging main into #1843 (main's #1783, #1780, #1787, #1794, #1791 with
+# #1811's and #1812's 19), by collection on the merged tree, not by adding the deltas:
+# `5413 tests collected`, guard 854 + cluster 4559.
+# cluster_tests 4795 -> 4797 for #1811's kept-text tests on #1843, one each in test_parquet_export.py
+# and test_arrow_export.py, by collection: `5415 tests collected`, guard 854 + cluster 4561.
+# cluster_tests 4796 -> 4817 merging main (6f88f973) into #1843 again, by collection on the merged tree:
+# `5435 tests collected`, guard 854 + cluster 4581.
+# cluster_tests 4817 -> 4826 for #1843's third review: four tests in test_arrow_export.py and five in
+# test_parquet_export.py (composite, text[], int[], a row over the cap, and Parquet int2), by collection:
+# `5444 tests collected`, guard 854 + cluster 4590.
+cluster_tests 4826

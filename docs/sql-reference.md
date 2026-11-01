@@ -627,14 +627,19 @@ and types that they do not support. See
 
 Writes the live rows of `rel` to an Arrow IPC stream file at `path`. Returns the
 number of rows written. The file has no `ARROW1` header or footer, so pyarrow
-reads it with `pyarrow.ipc.open_stream`, not `open_file`. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage).
+reads it with `pyarrow.ipc.open_stream`, not `open_file`. `path` can be a local
+file or an `s3://` URL. See [Object storage](#object-storage). A record batch
+holds at most 16384 rows and at most `pgcolumnar.export_group_bytes` of buffered
+data, 256 MiB by default, unless one row alone is larger. See
+[Export size limits](limitations.md#export-size-limits).
 
 ### pgcolumnar.export_parquet(rel regclass, path text) returns bigint
 
 Writes the live rows of `rel` to a Parquet file at `path`. Returns the number of
 rows written. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage).
+[Object storage](#object-storage). A row group holds at most 65536 rows and at most
+`pgcolumnar.export_group_bytes` of buffered data, 256 MiB by default, unless one row
+alone is larger. See [Export size limits](limitations.md#export-size-limits).
 
 ### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
 

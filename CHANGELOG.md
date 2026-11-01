@@ -18,6 +18,11 @@ true until the next version shipped.
 
 ### Added
 
+- `pgcolumnar.export_group_bytes`, a new setting, caps the bytes `export_parquet`,
+  `export_arrow` and `parallel_export_parquet` buffer for one Parquet row group or
+  Arrow record batch (#1811). It is 256 MiB by default, which is also its maximum,
+  and at least 1024. Lower it to bound the memory an export holds.
+  docs/configuration.md and docs/limitations.md.
 - `pgcolumnar.approx_count_distinct(col)` with no WHERE or GROUP BY is answered from
   the sketches `sketch_columns` stores (#1309, phase 3). It merges each row group's
   sketch, and reads only the groups with deleted rows or with no sketch. The answer
@@ -465,6 +470,30 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+
+- `export_parquet` and `export_arrow` now export a table with more than 1 GiB of
+  one column in a group (#1811). They cut Parquet row groups every 65536 rows and
+  Arrow record batches every 16384 rows only. Each group buffers in allocations
+  that PostgreSQL caps at 1 GiB, so such a table failed with a raw
+  `string buffer exceeds maximum allowed length` error. The writers now also start
+  a new group before a row that would take it past `pgcolumnar.export_group_bytes`,
+  256 MiB by default. They count each row as written, so a numeric or jsonb
+  counts by its text, which can be far longer than the stored value.
+  `parallel_export_parquet` passes the caller's setting to its workers. A 1.1 GB
+  column of 2200 values of 500 KB exports in 5 groups. One row whose written form
+  passes about 1 GiB still fails with the raw error; docs/limitations.md says so.
+  `test/parquet_export.sh`, `test/arrow_export.sh`,
+  `test/parallel_export_parquet.sh` and their pytest twins.
+- `pgcolumnar.objstore_part_size` now refuses a value above 512 MiB (#1812). The
+  docs gave its range as 0 to INT_MAX, but the export holds one part in one
+  allocation, capped at 1 GiB, so a part of 1 GiB or more failed every remote
+  export over 1 GiB. The remote sink also appended a whole chunk from the writer
+  before it cut a part, so it could hold one part plus one chunk; it now fills
+  the part, uploads it and goes on. docs/limitations.md now lists the S3 part
+  limits. `test/objstore_sink_write.sh` and its pytest twin. If you set a value
+  between 512 MiB and 1 GiB in `postgresql.conf`, it is now out of range:
+  PostgreSQL logs a warning and uses `0`, the 8 MiB module default. Set 512 MiB
+  or less.
 
 - The Parquet reader now refuses a footer it cannot parse exactly (#1822). A
   Thrift field header with type 13, 14 or 15 was skipped as zero bytes, so the

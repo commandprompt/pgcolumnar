@@ -54,4 +54,43 @@ extern void PgColumnarSinkAbortAndRethrow(PqSink *snk);
  */
 extern int	pgcolumnar_sink_fail_after;
 
+/*
+ * Byte cap for one Parquet row group or one Arrow record batch (#1811). The
+ * writers buffer a group in allocations that PostgreSQL caps at 1 GiB, so a
+ * group cut by rows alone failed once one column passed 1 GiB in a group. The
+ * writers now also start a new group before a row that would take the group's
+ * buffered bytes past this cap. Each writer counts the row in its written form
+ * (a numeric written as text by its text), as an upper bound. So a group passes
+ * the cap only when one row alone is larger than the cap; that row goes in a
+ * group of its own. pgcolumnar.export_group_bytes sets it; the default is also
+ * the maximum. A row whose written form passes 1 GiB in one buffer still fails.
+ */
+#define PGC_EXPORT_GROUP_BYTES_MAX	(256 * 1024 * 1024)
+extern int	pgcolumnar_export_group_bytes;
+
+/*
+ * The texts a writer made while it counted a row's bytes, kept in order so the
+ * append that follows uses each one instead of converting the value again
+ * (#1811). A numeric or jsonb is written as text, and its output function is
+ * the costly part of exporting it. Each text records the value it was made
+ * from, and a pop for another value drops the queue, so a text never goes
+ * to the wrong value. A row holds all its kept texts until its append, so one
+ * numeric[] of a million elements holds a million texts at once, and the
+ * queue's arrays keep their largest size until the export ends.
+ */
+typedef struct PgcTextQueue
+{
+	char	  **text;
+	int		   *len;
+	Datum	   *value;
+	int			n;				/* texts pushed for the current row */
+	int			next;			/* the next one to pop */
+	int			cap;
+}			PgcTextQueue;
+
+#define PGC_TEXT_QUEUE_KEEP_MAX		8192
+
+extern void PgcTextQueuePush(PgcTextQueue *q, Datum value, char *text, int len);
+extern char *PgcTextQueuePop(PgcTextQueue *q, Datum value, int *len);
+
 #endif							/* COLUMNAR_SINK_H */
