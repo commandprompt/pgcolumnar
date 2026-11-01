@@ -546,6 +546,17 @@ true until the next version shipped.
   read as compressed, as in pyarrow.
   docs/limitations.md. `test/native_parquet_hardening.sh` and
   `test_native_parquet_hardening.py`.
+- `import_arrow` now refuses a nested Arrow type that the target column cannot
+  hold with SQLSTATE 42804, naming the column (#1932). Before, a list of
+  lists, of structs or of maps for a `bigint[]` column was refused with XX001.
+  The message, "value buffer too small for the row count", said the file was
+  damaged. A large list was worse: it imported into `bigint[]` or `bigint` as
+  wrong values, with no error. A list of lists now fails as `import_parquet`
+  fails for the same shape (#1917), and the message gives its depth. A plain
+  column for an array column, and a list, map or struct for a scalar column,
+  are refused the same way. A file whose offsets run past its buffers is still
+  refused with XX001. docs/sql-reference.md and docs/limitations.md.
+  `test/arrow_import.sh` and `test_arrow_import.py`.
 - `tier_partition` now refuses a path that a foreign table reads under another
   spelling of the same object (#1936). Before this it compared the `path`
   option as text. A foreign table on `s3a://b/k` or `S3://b/k` did not stop a
