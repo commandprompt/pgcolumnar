@@ -7350,7 +7350,7 @@ The pytest twin of `test/fdw_plan_privilege.sh`. A planner estimate is visible t
 
 ## 108. test_arrow_import.py: import_arrow round trips, reads a foreign file, and refuses what it cannot decode
 
-The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the shell's name. A 16-column table survives export and import exactly (a set hash on both sides), non-finite dates and NaN numerics arrive as null, and a non-columnar target and a column-count mismatch are refused by SQLSTATE. A pyarrow-written file imports with its values, in the IPC stream format, the IPC file format (also without the optional end-of-stream marker before its footer) and Feather v2 (#1806); lengths larger than the file are refused before they are allocated, and a footer length that is negative or larger than the file is refused, not read as an empty file; nanosecond values are floored to the microsecond and the loss is reported once, counted in VALUES (two columns, so values and rows differ), never refused; a dictionary batch and a compressed body are refused by SQLSTATE and message; every Arrow date, time and timestamp carrier and unit decodes to the instant it holds or is refused 22008, a file whose declared type does not match its column is refused 42804, and nested units are honoured. An import maintains plain, unique (23505 on a second import) and partial indexes, and a FIFO is refused rather than hung. An object-storage URL is refused 0A000, naming the function and the URL, after the INSERT check and before the target's kind is checked (#1886). The four pyarrow tests decline by name without pyarrow, and fail where `PGC_REQUIRE` names it.
+The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the shell's name. A 16-column table survives export and import exactly (a set hash on both sides), non-finite dates and NaN numerics arrive as null, and a non-columnar target and a column-count mismatch are refused by SQLSTATE. A pyarrow-written file imports with its values, in the IPC stream format, the IPC file format (also without the optional end-of-stream marker before its footer) and Feather v2 (#1806); lengths larger than the file are refused before they are allocated, and a footer length that is negative or larger than the file is refused, not read as an empty file; nanosecond values are floored to the microsecond and the loss is reported once, counted in VALUES (two columns, so values and rows differ), never refused; a dictionary batch and a compressed body are refused by SQLSTATE and message; every Arrow date, time and timestamp carrier and unit decodes to the instant it holds or is refused 22008, a file whose declared type does not match its column is refused 42804, and nested units are honoured. An import maintains plain, unique (23505 on a second import) and partial indexes, and a FIFO is refused rather than hung. An object-storage URL is refused 0A000, naming the function and the URL, after the INSERT check and before the target's kind is checked (#1886), and so are `s3a://` and `s3n://` URLs in any case (#1918). The four pyarrow tests decline by name without pyarrow, and fail where `PGC_REQUIRE` names it.
 
 ### Every test
 
@@ -7363,6 +7363,9 @@ The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the
 | `test_an_import_maintains_the_tables_indexes` | the plan really uses the index, index and sequential scans agree, the unique violation and its row count, and the partial index |
 | `test_a_fifo_is_refused_not_a_hang` | XX001 within the wall clock, and the backend still up |
 | `test_a_remote_url_is_refused_up_front` | (#1886) `import_arrow refuses an s3:// URL with 0A000, naming itself and the URL (#1886)`, the same for `http://`, then `https://`, `gs://`, `az://` and `S3://` in one check, each by SQLSTATE, message and hint; a heap target gets the refusal too, because it comes before the target's kind is checked; and the control: a local path that holds `s3://` past its start still imports its 300 rows |
+| `test_s3a_and_s3n_urls_are_refused_too` | (#1918) `import_arrow refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)`, both in one check, each by SQLSTATE, message and hint |
+| `test_s3a_and_s3n_are_refused_in_any_case` | (#1918) `import_arrow refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)` |
+| `test_a_local_path_holding_s3a_is_still_read` | (#1918) the control: a local path that holds `s3a://` past its start is still read, all 300 rows |
 
 ## 109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar
 
@@ -9361,7 +9364,7 @@ The pytest twin of `test/projection_rewrite.sh` (ported for #1341), every check 
 | `test_the_projection_repair_guards_hold` | one test per row of `GUARDS` (14 rows), each by the shell's name |
 ## 217. test_avro_manifest.py: Iceberg Avro manifests and manifest lists decode, and refuse what they must
 
-The pytest twin of `test/avro_manifest.sh` (ported for #1341), every check by the shell's name. `read_avro_manifest` and `read_manifest_list` decode the pyiceberg-written fixtures under `test/fixtures/iceberg`, checked against the JSON oracles beside them; a hand-built manifest pins an explicit sequence number; a role without `pg_read_server_files` is refused by that gate; a file with no Avro magic is rejected as corrupt; and a deflate zip-bomb is refused by the cumulative cap. Both readers refuse an object-storage URL with 0A000, naming themselves and the URL, after the `pg_read_server_files` gate, and still read a local path that holds `s3://` past its start (#1913).
+The pytest twin of `test/avro_manifest.sh` (ported for #1341), every check by the shell's name. `read_avro_manifest` and `read_manifest_list` decode the pyiceberg-written fixtures under `test/fixtures/iceberg`, checked against the JSON oracles beside them; a hand-built manifest pins an explicit sequence number; a role without `pg_read_server_files` is refused by that gate; a file with no Avro magic is rejected as corrupt; and a deflate zip-bomb is refused by the cumulative cap. Both readers refuse an object-storage URL with 0A000, naming themselves and the URL, after the `pg_read_server_files` gate, and still read a local path that holds `s3://` past its start (#1913). They refuse `s3a://` and `s3n://` URLs too, in any case (#1918).
 
 ### Every test
 
@@ -9395,6 +9398,12 @@ A module fixture on a private database runs the shell's sequence; each test asse
 | `test_read_manifest_list_checks_the_gate_before_refusing_a_url` | read_manifest_list checks pg_read_server_files before it refuses a remote URL (#1913) |
 | `test_read_avro_manifest_still_reads_a_local_path_holding_a_scheme` | control: read_avro_manifest still reads a local path that holds s3:// past its start (#1913) -- the oracle's entry count |
 | `test_read_manifest_list_still_reads_a_local_path_holding_a_scheme` | control: read_manifest_list still reads a local path that holds s3:// past its start (#1913) -- its one entry |
+| `test_read_avro_manifest_refuses_s3a_and_s3n_urls` | read_avro_manifest refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918) -- both in one check, by SQLSTATE, message and hint |
+| `test_read_avro_manifest_refuses_s3a_and_s3n_in_any_case` | read_avro_manifest refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918) |
+| `test_read_manifest_list_refuses_s3a_and_s3n_urls` | read_manifest_list refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918) |
+| `test_read_manifest_list_refuses_s3a_and_s3n_in_any_case` | read_manifest_list refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918) |
+| `test_read_avro_manifest_still_reads_a_local_path_holding_s3a` | control: read_avro_manifest still reads a local path that holds s3a:// past its start (#1918) -- the oracle's entry count |
+| `test_read_manifest_list_still_reads_a_local_path_holding_s3a` | control: read_manifest_list still reads a local path that holds s3a:// past its start (#1918) -- its one entry |
 | `test_the_manifest_fixtures_are_present` | the committed fixture is present; without it the test declines under the shell's skip name, iceberg manifest fixtures are missing |
 | `test_python_can_read_the_oracle` | the oracle lists manifest entries; without json the test declines under the shell's skip name, python3 is needed to read the oracle |
 ## 218. test_column_projection.py: column projection reads only the columns a query references
@@ -11890,7 +11899,7 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 
 ## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
 
-The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
 
 ### Every test
 
@@ -11951,6 +11960,12 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_refuses_a_remote_url_before_the_target` | a heap target gets the 0A000 refusal, not 42809: the URL is refused before the target's kind is checked |
 | `test_parallel_copy_split_still_reads_a_local_path_holding_a_scheme` | control: `file_split_offsets` still splits a local file whose path holds `s3://` past its start; its last offset is the file size |
 | `test_parallel_copy_still_loads_a_local_path_holding_a_scheme` | control: `parallel_copy` still loads that file's 5000 rows |
+| `test_parallel_copy_split_refuses_s3a_and_s3n_urls` | `file_split_offsets` refuses `s3a://` and `s3n://` URLs with 0A000, naming itself and the URL, with the hint, in one check (#1918) |
+| `test_parallel_copy_split_refuses_s3a_and_s3n_in_any_case` | the same for `S3A://` and `S3n://`: the scheme match ignores case |
+| `test_parallel_copy_refuses_s3a_and_s3n_urls` | `parallel_copy` into a single table refuses `s3a://` and `s3n://` URLs the same way, in one check (#1918) |
+| `test_parallel_copy_refuses_s3a_and_s3n_in_any_case` | the same for `S3A://` and `S3n://` |
+| `test_parallel_copy_split_still_reads_a_local_path_holding_s3a` | control: `file_split_offsets` still splits a local file whose path holds `s3a://` past its start; its last offset is the file size |
+| `test_parallel_copy_still_loads_a_local_path_holding_s3a` | control: `parallel_copy` still loads that file's 5000 rows |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
 

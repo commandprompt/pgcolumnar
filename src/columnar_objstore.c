@@ -76,11 +76,20 @@ PgColumnarPathIsRemote(const char *path)
  * caller who may not write the target gets 42501 first, and before they check
  * the target's kind, so a heap target gets the refusal. read_avro_manifest and
  * read_manifest_list call it too (#1913), after their pg_read_server_files gate.
+ *
+ * It also refuses s3a:// and s3n://, in any case (#1918). Those are the Hadoop
+ * names for S3, which the Iceberg reader accepts (#1825), so a user may well
+ * pass one here. PgColumnarPathIsRemote does not list them, and they stay out
+ * of it: it routes the Parquet readers and writers to the object-store module,
+ * which reads s3:// only. Only this refusal widens.
  */
 void
 PgColumnarRefuseRemotePath(const char *funcname, const char *path)
 {
-	if (PgColumnarPathIsRemote(path))
+	if (PgColumnarPathIsRemote(path) ||
+		(path != NULL &&
+		 (pg_strncasecmp(path, "s3a://", 6) == 0 ||
+		  pg_strncasecmp(path, "s3n://", 6) == 0)))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("columnar: %s does not read \"%s\"", funcname, path),

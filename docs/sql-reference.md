@@ -1748,7 +1748,8 @@ wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
 `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
 `read_manifest_list` read local files only. Each of them refuses a URL in any of
 the schemes below with SQLSTATE 0A000 before it reads anything, for example
-`columnar: import_arrow does not read "s3://bucket/m.arrow"`. These URL schemes
+`columnar: import_arrow does not read "s3://bucket/m.arrow"`. They also refuse
+`s3a://` and `s3n://`, the Hadoop names for S3, in any case. These URL schemes
 are recognized:
 
 | Scheme | Meaning |

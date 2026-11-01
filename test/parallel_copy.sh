@@ -618,4 +618,48 @@ check "control: file_split_offsets still splits a local path that holds s3:// pa
 check "control: parallel_copy still loads a local path that holds s3:// past its start (#1886)" \
 	"$(q "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$LOCAL_S3', 2)")" 5000
 
+# ---- #1918: s3a:// and s3n:// are refused too -------------------------------
+# s3a:// and s3n:// are the Hadoop names for S3, and the Iceberg reader accepts
+# them (#1825). PgColumnarPathIsRemote does not list them, so before #1918 they
+# went to open(2) and failed with 58P01. The refusal now covers them in any
+# case. The controls: a LOCAL path with "s3a://" past its start is still read.
+joined_refusals() {	# SQL-with-@URL@ URL... -> remote_refusal per URL, joined by " ; "
+	local sql=$1 u acc=""; shift
+	for u in "$@"; do acc="$acc${acc:+ ; }$(remote_refusal "${sql//@URL@/$u}")"; done
+	printf '%s\n' "$acc"
+}
+joined_wants() {	# FUNCTION URL... -> want_refusal per URL, joined by " ; "
+	local fn=$1 u acc=""; shift
+	for u in "$@"; do acc="$acc${acc:+ ; }$(want_refusal "$fn" "$u")"; done
+	printf '%s\n' "$acc"
+}
+HADOOP="s3a://pgc-test/f1918/data.txt s3n://pgc-test/f1918/data.txt"
+HADOOP_CASE="S3A://pgc-test/f1918/data.txt S3n://pgc-test/f1918/data.txt"
+# shellcheck disable=SC2086
+check "file_split_offsets refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)" \
+	"$(joined_refusals "SELECT pgcolumnar.file_split_offsets('@URL@', 2)" $HADOOP)" \
+	"$(joined_wants file_split_offsets $HADOOP)"
+# shellcheck disable=SC2086
+check "file_split_offsets refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)" \
+	"$(joined_refusals "SELECT pgcolumnar.file_split_offsets('@URL@', 2)" $HADOOP_CASE)" \
+	"$(joined_wants file_split_offsets $HADOOP_CASE)"
+# shellcheck disable=SC2086
+check "parallel_copy refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)" \
+	"$(joined_refusals "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '@URL@', 2)" $HADOOP)" \
+	"$(joined_wants parallel_copy $HADOOP)"
+# shellcheck disable=SC2086
+check "parallel_copy refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)" \
+	"$(joined_refusals "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '@URL@', 2)" $HADOOP_CASE)" \
+	"$(joined_wants parallel_copy $HADOOP_CASE)"
+
+mkdir -p "$DATADIR/s3a:"; chmod 777 "$DATADIR/s3a:"
+if [ "$(id -u)" = "0" ]; then chown postgres "$DATADIR/s3a:"; fi
+LOCAL_S3A="$DATADIR/s3a://ctl.txt"
+psql_run "COPY (SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1, 5000) g)
+          TO '$LOCAL_S3A' WITH (FORMAT text);" >/dev/null
+check "control: file_split_offsets still splits a local path that holds s3a:// past its start (#1918)" \
+	"$(q "SELECT (pgcolumnar.file_split_offsets('$LOCAL_S3A', 2))[3]")" "$(stat -c %s "$DATADIR/s3a:/ctl.txt")"
+check "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$LOCAL_S3A', 2)")" 5000
+
 pgc_summary
