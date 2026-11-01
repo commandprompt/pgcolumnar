@@ -66,7 +66,10 @@
 # x-amz-security-token header, with the right value, inside the signed set.
 # --tamper-bucket names a top-level path component whose requests are verified
 # against a deliberately different secret, so a correctly signing client is
-# always refused there: the suite's 403-surface arm.
+# always refused there: the suite's 403-surface arm. The refusal comes before
+# the body is read, and closes the connection with the body unread, as a real
+# store does: a body larger than the socket buffers then fails to send after
+# the 403 has arrived (#1796 D).
 #
 # Written fresh for pgColumnar.
 
@@ -145,6 +148,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):   # silence stderr chatter
         pass
 
+    def parse_request(self):
+        # The handler serves every request of a connection: forget the last
+        # request's body, so _deny can tell whether this one's was read.
+        self._body = None
+        return super().parse_request()
+
     def _log_line(self):
         rng = self.headers.get("Range", "-").replace(" ", "")
         rawpath, _, query = self.path.partition("?")
@@ -196,6 +205,15 @@ class Handler(BaseHTTPRequestHandler):
                 % code).encode()
         self.send_response(status)
         self.send_header("Content-Length", str(len(body)))
+        # A refusal that leaves a request body unread closes the connection, as
+        # a real store does (#1796 D): the unread bytes are not a next request.
+        # Closing with them unread resets the connection, so a client still
+        # sending a body larger than the socket buffers fails its send after
+        # the answer has arrived.
+        clen = int(self.headers.get("Content-Length", "0") or "0")
+        if clen > 0 and getattr(self, "_body", None) is None:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)

@@ -82,6 +82,20 @@ PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
 #define OS_WAIT_SLICE_MS	5000
 #define OS_MAX_QUIET_SLICES	12	/* 60 s of silence is a dead peer */
 
+/*
+ * Where a handle's signing key came from (#1796). Only the 403 hint reads it:
+ * a refused key is fixed where it was configured, and before this every 403
+ * named the server environment, including a key from a user mapping or one a
+ * REST catalog vended. OS_CRED_ENV is 0, so a handle that never resolves s3://
+ * credentials keeps the hint it always had.
+ */
+typedef enum OsCredSource
+{
+	OS_CRED_ENV = 0,			/* AWS_* of the server process */
+	OS_CRED_MAPPING,			/* the user mapping for the foreign server */
+	OS_CRED_VENDED				/* a REST catalog's loadTable reply */
+} OsCredSource;
+
 struct PgColumnarObjHandle
 {
 	char	   *url;			/* full URL, for error messages */
@@ -108,6 +122,7 @@ struct PgColumnarObjHandle
 	char	   *secret;
 	char	   *token;			/* session token, or NULL */
 	char	   *region;
+	OsCredSource credsrc;		/* where akid came from, for the 403 hint */
 	char		sigDate[9];		/* YYYYMMDD the cached key was derived for */
 	uint8		sigKey[PG_SHA256_DIGEST_LENGTH];
 
@@ -365,14 +380,37 @@ os_check_endpoint_allowed(PgColumnarObjHandle *h)
 	}
 
 	if (!ok)
+	{
+		/*
+		 * The hint names the entry the message names, host:port, appended to
+		 * the current list (#1796). It suggested the bare host as the whole
+		 * list: an entry with no port matches every port on the host, and
+		 * ALTER SYSTEM SET replaces the list, so the advice as written opened
+		 * every port and dropped every other entry. The list goes inside a SQL
+		 * literal, so any quote in it is doubled.
+		 */
+		StringInfoData want;
+		const char *c;
+
+		initStringInfo(&want);
+		for (c = (list != NULL) ? list : ""; *c != '\0'; c++)
+		{
+			if (*c == '\'')
+				appendStringInfoChar(&want, '\'');
+			appendStringInfoChar(&want, *c);
+		}
+		if (want.len > 0)
+			appendStringInfoChar(&want, ',');
+		appendStringInfo(&want, "%s:%d", checkhost, h->port);
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("columnar: endpoint \"%s:%d\" is not in "
 						"pgcolumnar.objstore_allowed_endpoints",
 						checkhost, h->port),
-				 errhint("A superuser can permit it: ALTER SYSTEM SET "
+				 errhint("A superuser can add it: ALTER SYSTEM SET "
 						 "pgcolumnar.objstore_allowed_endpoints = '%s'; "
-						 "SELECT pg_reload_conf();", checkhost)));
+						 "SELECT pg_reload_conf();", want.data)));
+	}
 }
 
 /*
@@ -1303,10 +1341,17 @@ os_reject_403(PgColumnarObjHandle *h, const OsResponse *resp, bool hasBody)
 		pfree(body);
 	}
 
+	/* the hint names where the refused key was configured (#1796) */
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 			 errmsg("columnar: access to \"%s\" was denied (HTTP 403%s%s)",
 					h->url, code[0] ? ": " : "", code),
+			 h->credsrc == OS_CRED_MAPPING ?
+			 errhint("Check access_key_id and secret_access_key in the user "
+					 "mapping the current role uses for this server.") :
+			 h->credsrc == OS_CRED_VENDED ?
+			 errhint("The storage credentials the catalog vended for this "
+					 "table were refused.") :
 			 errhint("Check the AWS_* credential environment of the server "
 					 "process.")));
 }
@@ -1530,6 +1575,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	if (cfg != NULL && cfg->akid != NULL)
 	{
 		/* the mapping's credential triple; the validator required the pair */
+		h->credsrc = cfg->vended ? OS_CRED_VENDED : OS_CRED_MAPPING;
 		h->akid = pstrdup(cfg->akid);
 		h->secret = pstrdup(cfg->secret);
 		h->token = (cfg->token != NULL && cfg->token[0] != '\0')
@@ -1537,6 +1583,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	}
 	else if (ambientOk)
 	{
+		h->credsrc = OS_CRED_ENV;
 		h->akid = pstrdup(os_require_env("AWS_ACCESS_KEY_ID", h->url));
 		h->secret = pstrdup(os_require_env("AWS_SECRET_ACCESS_KEY", h->url));
 		token = getenv("AWS_SESSION_TOKEN");
@@ -1961,6 +2008,32 @@ os_sign_write(PgColumnarObjHandle *h, const char *method, const char *canonPath,
 }
 
 /*
+ * Did the server answer a request we failed to finish sending (#1796 D)? A
+ * store may refuse a PUT from its headers alone, answer 403 or 404, and close
+ * with the body unread. A body larger than the socket buffers then fails to
+ * send (EPIPE or ECONNRESET) although the answer has arrived, and treating the
+ * failed send as no response lost the status. The answer is already in the
+ * receive queue when the send fails, so this only peeks, never waits: an empty
+ * queue keeps the stale keep-alive handling as it was. The store closes the
+ * connection it answered early, so a later request on this handle fails its
+ * send and takes the one reconnect a stale keep-alive takes.
+ *
+ * Plain sockets only. On TLS a failed SSL_write leaves the session unusable
+ * for SSL_read, so a TLS store's early answer is still reported as no response.
+ */
+static bool
+os_answered_early(PgColumnarObjHandle *h)
+{
+	char		c;
+
+	if (h->rb_len > h->rb_off)
+		return true;
+	if (h->tls || h->fd < 0)
+		return false;
+	return recv(h->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT) > 0;
+}
+
+/*
  * One signed write request (PUT/POST/DELETE) with an optional body, a single
  * reconnect on a stale keep-alive. `rawQuery` is the query as it goes on the
  * wire AND the canonical query the signature covers: the caller builds it with
@@ -1985,6 +2058,8 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 	{
 		StringInfoData req;
 		bool		fresh;
+		bool		sent;
+		bool		early;
 
 		if (h->fd < 0)
 			os_connect(h);
@@ -1998,9 +2073,10 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 		os_sign_write(h, method, h->abspath, rawQuery, payloadHex, &req);
 		appendStringInfoString(&req, "User-Agent: pgcolumnar-objstore/1\r\n\r\n");
 
-		if (os_send_all(h, req.data, req.len) &&
-			(bodylen == 0 || os_send_all(h, (const char *) body, bodylen)) &&
-			os_read_head(h, resp))
+		sent = os_send_all(h, req.data, req.len) &&
+			(bodylen == 0 || os_send_all(h, (const char *) body, bodylen));
+		early = !sent && os_answered_early(h);
+		if ((sent || early) && os_read_head(h, resp))
 		{
 			pfree(req.data);
 			break;

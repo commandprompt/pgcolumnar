@@ -33,7 +33,7 @@
 
 #include "postgres.h"
 
-#define PGCOLUMNAR_OBJSTORE_ABI 7
+#define PGCOLUMNAR_OBJSTORE_ABI 8
 
 /* An open remote object (read) / upload (write). Module owns both. */
 typedef struct PgColumnarObjHandle PgColumnarObjHandle;
@@ -69,6 +69,9 @@ typedef struct PgColumnarObjStoreConfig
 	const char *secret;
 	const char *token;			/* optional session token */
 	bool		allow_ambient;	/* may fall back to the environment */
+	bool		vended;			/* the triple came from a REST catalog's
+								 * loadTable reply, not a user mapping (ABI 8,
+								 * #1796); only the 403 hint reads it */
 } PgColumnarObjStoreConfig;
 
 typedef struct PgColumnarObjStoreApi

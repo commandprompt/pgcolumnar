@@ -650,6 +650,7 @@ rest_vended_cfg(JsonbContainer *lt, const char *metadata_location)
 		cfg->region = rest_json_string_opt(chosen, "client.region");
 	cfg->endpoint = rest_json_string_opt(chosen, "s3.endpoint");
 	cfg->allow_ambient = false;
+	cfg->vended = true;			/* a refused key's hint names the catalog (#1796) */
 	return cfg;
 }
 
