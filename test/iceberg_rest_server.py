@@ -34,6 +34,9 @@
 #   --page-size N               return list results N at a time with a
 #                               next-page-token, even when no pageToken was sent
 #   --extra-table T             list T in the table's namespace as well
+#   --namespace-levels J        serve the namespace whose levels are the JSON
+#                               array J, in place of --namespace. A level may
+#                               hold a dot: '["db.x"]' is one level (#1865).
 #   --top-level-all             list every namespace, at every level, when no
 #                               ?parent= is given (not what the spec says)
 #   --ignore-parent             answer ?parent= as if it were absent
@@ -70,6 +73,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ARGS = None
+SERVED = ()     # the levels of the namespace that holds the table
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -118,8 +122,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _all_namespaces(self):
         out = set()
-        for ns in [ARGS.namespace] + (ARGS.extra_namespace or []):
-            levels = tuple(ns.split("."))
+        for levels in [SERVED] + [tuple(ns.split(".")) for ns in ARGS.extra_namespace or []]:
             for i in range(1, len(levels) + 1):
                 out.add(levels[:i])
         return out
@@ -243,23 +246,25 @@ class Handler(BaseHTTPRequestHandler):
         parts = rest.split("/")
         # namespaces/{ns}/tables  and  namespaces/{ns}/tables/{table}
         if len(parts) >= 3 and parts[0] == "namespaces" and parts[2] == "tables":
-            # split the levels on the advertised separator, then decode each
-            ns = urllib.parse.unquote(parts[1]).replace(self._sep(), ".")
+            # split the levels on the advertised separator, then decode each.
+            # The levels are compared as a tuple, so ("db.x",) and ("db", "x")
+            # differ (#1865); ns is only their dot-joined name for messages.
+            levels = tuple(urllib.parse.unquote(parts[1]).split(self._sep()))
+            ns = ".".join(levels)
             if len(parts) == 3:
                 # Only the namespace this catalog serves has tables. Echoing any
                 # namespace back let a client that ignored its namespace argument
                 # list "events" anyway.
-                if ns != ARGS.namespace:
+                if levels != SERVED:
                     self._not_found("no such namespace %s" % ns,
                                     "NoSuchNamespaceException")
                     return
-                levels = ns.split(".")
                 self._page("identifiers",
-                           [{"namespace": levels, "name": t}
+                           [{"namespace": list(levels), "name": t}
                             for t in [ARGS.table] + (ARGS.extra_table or [])], query)
                 return
             table = urllib.parse.unquote(parts[3])
-            self._load_table(ns, table)
+            self._load_table(ns, table, levels)
             return
 
         self._not_found("no such resource")
@@ -302,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass                        # the client stopped reading at its cap
 
-    def _load_table(self, ns, table):
+    def _load_table(self, ns, table, levels):
         # Error replies with the spec's ErrorModel (#1820): the client must put
         # the catalog's message in its error detail for every status it maps.
         if table == "forbidden":
@@ -362,8 +367,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "100000000")
             self.end_headers()
             return
-        # ns arrives dot-joined: do_GET split it on the advertised separator.
-        if ns != ARGS.namespace:
+        # levels arrive split on the advertised separator by do_GET
+        if levels != SERVED:
             self._not_found("no such namespace %s" % ns,
                             "NoSuchNamespaceException")
             return
@@ -433,13 +438,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global ARGS
+    global ARGS, SERVED
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--log", required=True)
     ap.add_argument("--token", default="")
     ap.add_argument("--prefix", default="")
     ap.add_argument("--namespace", default="db")
+    ap.add_argument("--namespace-levels", default="")
     ap.add_argument("--table", default="events")
     ap.add_argument("--metadata-location", required=True)
     ap.add_argument("--table-location", default="")
@@ -466,6 +472,8 @@ def main():
     ap.add_argument("--config-json", default="")
     ap.add_argument("--bad-page-token", choices=["same", "cycle"], default="")
     ARGS = ap.parse_args()
+    SERVED = (tuple(json.loads(ARGS.namespace_levels)) if ARGS.namespace_levels
+              else tuple(ARGS.namespace.split(".")))
     open(ARGS.log, "w").close()
     httpd = ThreadingHTTPServer(("127.0.0.1", ARGS.port), Handler)
     print("READY", flush=True)

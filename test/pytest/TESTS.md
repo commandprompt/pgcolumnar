@@ -7554,7 +7554,7 @@ The pytest twin of `test/objstore_crlf.sh` (ported for #1341), every check by th
 
 ## 127. test_objstore_allowlist.py: the endpoint allow-list, empty by default
 
-The pytest twin of `test/objstore_allowlist.sh` (#393, ported for #1341), every check by the shell's name. An empty `pgcolumnar.objstore_allowed_endpoints` refuses all remote reads with 42501 and names the setting; a local read is untouched. A list admits exactly what it names, host or host:port, any entry of several. Only a superuser may change it (SUSET), and a superuser session SET is the admin override, asserted with the configured list empty so only the SET can admit the read. A link-local address is refused even when listed, before any connection, naming the range. So are the IPv6 forms of the metadata address (#1808), and an IPv6 address just outside those ranges is not.
+The pytest twin of `test/objstore_allowlist.sh` (#393, ported for #1341), every check by the shell's name. An empty `pgcolumnar.objstore_allowed_endpoints` refuses all remote reads with 42501 and names the setting; a local read is untouched. A list admits exactly what it names, host or host:port, any entry of several. Only a superuser may change it (SUSET), and a superuser session SET is the admin override, asserted with the configured list empty so only the SET can admit the read. A link-local address is refused even when listed, before any connection, naming the range. Alibaba Cloud's metadata address 100.100.100.200 is refused the same way, and the detail names it (#1848). The next address, 100.100.100.201, is not refused: a connect is tried, so the guard did not take all of 100.64.0.0/10. The IPv6 forms of the metadata addresses are refused too (#1808, #1848), and an IPv6 address just outside those ranges is not.
 
 The list is changed by ALTER SYSTEM and a reload, and reset in a `finally`. The fixture server is the file's own Range-capable `http.server`, serving one Parquet file from `server_dir`.
 
@@ -7562,8 +7562,8 @@ The list is changed by ALTER SYSTEM and a reload, and reset in a `finally`. The 
 
 | test | what it holds |
 | --- | --- |
-| `test_the_endpoint_allow_list` | the default deny, the list's matching, SUSET and the admin override, and the link-local refusal |
-| `test_metadata_addresses_behind_ipv6_forms` | a listed name resolving to `fd00:ec2::254`, `fd20:ce::254`, `64:ff9b::a9fe:a9fe`, `64:ff9b:1::a9fe:a9fe`, `::ffff:169.254.169.254` or `::169.254.169.254` is refused 42501 and the detail names `fd00:ec2::/32` (#1808). 169.254.169.254 at each local-use position (/48, /56, /64) is refused, and so is `169.254.0.1` at /48, which matches the /48 position alone; `10.169.254.5` at /48 is refused too, the documented over-refusal; `10.0.0.5` at /96 is not refused, so a connect is tried. Eight near misses, each just outside a refused range, are not refused: `::ffff:127.0.0.1` reads the fixture over IPv6, and `fd00:ec3::254`, `fd20:ce::253`, `64:ff9b::a9ff:a9fe`, `64:ff9b::aafe:a9fe` (170.254.169.254), `64:ff9b::1:a9fe:a9fe`, `64:ff9b:2::a9fe:a9fe` and `::1:0:a9fe:a9fe` each reach connect() (08006 or 57014), so a guard that refuses too much fails. A private cluster loads a `getaddrinfo()` shim with LD_PRELOAD; a shim name mapped to 127.0.0.1 reads the fixture, so the shim is proven live |
+| `test_the_endpoint_allow_list` | the default deny, the list's matching, SUSET and the admin override, the link-local refusal, and the 100.100.100.200 refusal with its 100.100.100.201 control |
+| `test_metadata_addresses_behind_ipv6_forms` | a listed name resolving to `fd00:ec2::254`, `fd20:ce::254`, `64:ff9b::a9fe:a9fe`, `64:ff9b:1::a9fe:a9fe`, `::ffff:169.254.169.254` or `::169.254.169.254` is refused 42501 and the detail names `fd00:ec2::/32` (#1808). 169.254.169.254 at each local-use position (/48, /56, /64) is refused, and so is `169.254.0.1` at /48, which matches the /48 position alone; `10.169.254.5` at /48 is refused too, the documented over-refusal; `10.0.0.5` at /96 is not refused, so a connect is tried. Eight near misses, each just outside a refused range, are not refused: `::ffff:127.0.0.1` reads the fixture over IPv6, and `fd00:ec3::254`, `fd20:ce::253`, `64:ff9b::a9ff:a9fe`, `64:ff9b::aafe:a9fe` (170.254.169.254), `64:ff9b::1:a9fe:a9fe`, `64:ff9b:2::a9fe:a9fe` and `::1:0:a9fe:a9fe` each reach connect() (08006 or 57014), so a guard that refuses too much fails. `100.100.100.200` in the mapped, compatible, well-known NAT64 and local-use /96, /48, /56 and /64 forms is refused 42501 (#1848), and `64:ff9b::6464:64c9` (100.100.100.201) is not refused, so a connect is tried. A private cluster loads a `getaddrinfo()` shim with LD_PRELOAD; a shim name mapped to 127.0.0.1 reads the fixture, so the shim is proven live |
 
 ## 128. test_objstore_userinfo.py: userinfo in a URL is refused on every entry point
 
@@ -7615,8 +7615,11 @@ The port of `test/iceberg_data_files.sh`, by name, one check per test (#1341). T
 
 - **The oracle is pyiceberg's own view,** committed as `expected_files.json`, so pyiceberg is not needed at test time.
 - **A manifest list outside the table's location is refused with 22023, by four routes:** a foreign absolute path, a `..` traversal, a sibling sharing the byte prefix, and a symlink under the location that targets a file outside it. XX001 would mean the backend opened the file.
-- **Deletes are refused, not ignored:** a delete manifest in the list, and a delete entry inside a data manifest (#1341 item 49). Each table is crafted Avro, because no available writer emits these shapes. The added and the EXISTING entry must be listed, so a refusal comes from the entry, and a lister that keeps only ADDED entries fails.
+- **Deletes are refused, not ignored:** a delete manifest in the list, and a delete entry inside a data manifest (#1341 item 49), whether ADDED or EXISTING (status 0, a delete file a later commit carried forward). Each table is crafted Avro, because no available writer emits these shapes. The added and the EXISTING data entry must be listed, so a refusal comes from the entry, and a lister that keeps only ADDED entries fails.
 - **A removed entry is skipped, not refused (#1791).** A DELETED (status 2) entry is a data file the current snapshot took out, so it is not live. A crafted entry shows it alone. A real pyiceberg table after a copy-on-write delete (`warehouse_cow`, written by `gen_iceberg_cow.py`) shows it against pyiceberg's own `plan_files`, and a second table whose delete removed every row lists nothing. A premise counts the status-2 entries of both tables in the committed Avro manifests, read with json and zlib only, and in the oracle, and shows both counts, so an oracle that drifted from the fixture fails it.
+- **A delete manifest of removed entries is skipped (#1829).** A rewrite that removes every old delete file leaves a delete manifest whose entries all have status 2. Crafted tables hold one live data file and such a manifest, with and without file counts in the manifest list; both list the data file. Without counts, a live delete entry, ADDED or EXISTING, is still refused (0A000), and a live data entry in a delete manifest is refused as corrupt (XX001).
+- **Partition values render exactly, as valid text (#1816, #1791).** A real pyiceberg warehouse (`warehouse_partvals`, written by `gen_iceberg_partvals.py`) holds one identity-partitioned table per type: decimal(10,2) (including -2.56, whose unscaled low byte is 0x00), decimal(38,10), decimal(9,0), float, double, binary and string. Each listing must equal the oracle's rendering of the written values: exact decimals (no point at scale 0), shortest exact floats, binary as hex, strings with `%`, `,` and `=` percent-encoded, NULL as the bare field name. The binary partitions must pass `convert_from(..., 'UTF8')`, and `read_avro_manifest` must render them the same way.
+- **The rest of the documented format, on a crafted manifest (#1816).** One entry read with `read_avro_manifest`, whose partition record has a field named `a,b=c%`, a string with a TAB and a DEL, a string whose bytes are not UTF-8, a plain `fixed(3)` and a uuid. The field name is escaped as a string is, the control byte and DEL are percent-encoded, the invalid string's high bytes are percent-encoded, and the fixed and uuid are hex.
 - **The privilege** is read under `SET ROLE` to a role without `pg_read_server_files`.
 
 The shell's two skip names, "iceberg warehouse fixture is missing" and "python3 (json, zlib) is needed", are carried as the same declines.
@@ -7630,10 +7633,17 @@ The shell's two skip names, "iceberg warehouse fixture is missing" and "python3 
 | `test_returned_paths_are_rebased_under_the_actual_location`, `test_no_returned_path_leaks_the_recorded_root` | the rebasing |
 | `test_a_manifest_list_outside_the_location_is_refused`, `test_the_backend_survives_the_traversal_attempts` | the four escapes, refused with 22023 |
 | `test_a_snapshot_with_a_delete_manifest_is_refused`, `test_the_backend_survives_the_delete_refusal` | a delete manifest in the list, refused with 0A000 |
-| `test_the_control_entry_is_listed`, `test_an_existing_entry_is_listed`, `test_a_delete_entry_is_refused`, `test_the_backend_survives_the_entry_refusals` | an added and an existing entry are listed; a position-delete and an equality-delete entry are refused with 0A000 |
+| `test_the_control_entry_is_listed`, `test_an_existing_entry_is_listed`, `test_a_delete_entry_is_refused`, `test_the_backend_survives_the_entry_refusals` | an added and an existing entry are listed; a position-delete and an equality-delete entry, and an EXISTING (status 0) position-delete entry, are refused with 0A000 |
 | `test_a_deleted_entry_is_skipped` | a DELETED (status 2) entry is neither listed nor refused (#1791) |
 | `test_the_copy_on_write_fixture_carries_a_deleted_entry` | **premise**: both copy-on-write tables carry a DELETED (status 2) data entry, counted in the committed Avro manifests and in the oracle |
 | `test_a_copy_on_write_delete_lists_the_live_files`, `test_a_copy_on_write_delete_of_every_row_lists_nothing` | after a copy-on-write delete, the live files equal pyiceberg's `plan_files`; after deleting every row, nothing is listed (#1791) |
+| `test_a_delete_manifest_of_removed_entries_is_skipped`, `test_a_delete_manifest_without_counts_of_removed_entries_is_skipped` | a delete manifest whose entries are all removed (status 2) is skipped, with and without file counts in the list; the live data file is listed (#1829) |
+| `test_a_delete_manifest_without_counts_with_a_live_entry_is_refused`, `test_a_delete_manifest_without_counts_with_an_existing_entry_is_refused` | a delete manifest without file counts that holds a live delete entry, ADDED or EXISTING (status 0), is refused with 0A000 |
+| `test_a_live_data_entry_in_a_delete_manifest_is_refused`, `test_the_backend_survives_the_delete_manifest_arms` | a live data entry inside a delete manifest is refused as corrupt (XX001); the backend survives |
+| `test_a_partition_value_renders_by_the_documented_format` | decimal(10,2), decimal(38,10), decimal(9,0), float, double, binary and string partitions equal the oracle's rendering (#1816, #1791) (parametrized) |
+| `test_every_binary_partition_is_valid_utf8` | the binary partitions are valid UTF-8 and keep every byte (#1816) |
+| `test_read_avro_manifest_renders_binary_partitions_as_hex` | `read_avro_manifest` renders the binary partitions as hex too (#1816) |
+| `test_a_crafted_partition_renders_by_the_documented_format` | on a crafted manifest: an escaped field name, control bytes and DEL, a string that is not UTF-8, a plain fixed and a uuid render by the documented format (#1816) (parametrized) |
 | `test_a_table_with_no_current_snapshot_yields_no_data_files`, `test_an_unprivileged_role_is_refused` | no current snapshot lists nothing; a caller without `pg_read_server_files` gets 42501 |
 
 ## 133. test_native_skip.py: a type binary-coercible to its opclass's type prunes
@@ -9268,7 +9278,7 @@ A failed step stops the fixture, as `set -e` stops the shell, and every reading 
 
 ## 213. test_server_file_privilege.py: every server-file function is gated like COPY
 
-The pytest twin of `test/server_file_privilege.sh` (ported for #1341), every check by the shell's name. Each of 21 entry points is called as a role with neither server-file role, which must be refused by the gate its direction needs, and as a role with both, which must get past it. Then every function in the install script that takes a path or filename must be one of them. On a private database.
+The pytest twin of `test/server_file_privilege.sh` (ported for #1341), every check by the shell's name. Each of 25 entry points is called as a role with neither server-file role, which must be refused by the gate its direction needs, and as a role with both, which must get past it. Then every function in the install script that takes a path or filename must be one of them. On a private database.
 
 ### Every test
 
@@ -9276,8 +9286,8 @@ A call reads `refused` when the reply names the gate role, `passed` when it does
 
 | test | what it holds |
 | --- | --- |
-| `test_the_role_with_nothing_is_refused_by_the_gate` | one test per row of `REFUSED` (21 rows), each by the shell's name |
-| `test_the_privileged_role_gets_past_the_gate` | one test per row of `PASSED` (21 rows), each by the shell's name |
+| `test_the_role_with_nothing_is_refused_by_the_gate` | one test per row of `REFUSED` (25 rows, four of them the text[] namespace forms and the level listing of #1865), each by the shell's name |
+| `test_the_privileged_role_gets_past_the_gate` | one test per row of `PASSED` (25 rows, four of them the text[] namespace forms and the level listing of #1865), each by the shell's name |
 | `test_a_file_function_is_covered_by_the_boundary_test` | one test per row of `COVERED` (15 rows), each by the shell's name |
 | `test_the_install_script_defines_no_unnamed_file_function` | the install script defines no file function this suite does not name |
 | `test_the_coverage_check_found_the_file_functions` | coverage check found the file functions (not an empty scan) |
@@ -9757,6 +9767,7 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed an
 | `test_iceberg_scan_reads_the_current_snapshots_rows` | iceberg_scan reads the current snapshot's rows |
 | `test_iceberg_scan_projects_and_reorders_by_field_id` | iceberg_scan projects and reorders by field id (amount, id) |
 | `test_iceberg_scan_reads_a_subset` | iceberg_scan reads a subset (region only) |
+| `test_iceberg_scan_type_refusal_names_iceberg_scan` | iceberg_scan's type refusal names iceberg_scan |
 | `test_a_renamed_column_still_reads_by_field_id` | a column renamed in the schema still reads by field id (amt2 = amount) |
 | `test_an_output_column_not_in_the_schema_is_refused` | an output column not in the schema is refused (42703) |
 | `test_an_unprivileged_role_is_refused_the_scan` | an unprivileged role is refused (42501) |
@@ -10623,7 +10634,7 @@ The pytest twin of `test/catalog_filter_reads.sh` (#1637), every check by the sh
 
 ## 265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging
 
-The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, a dangling current-schema-id, malformed numbers in edited copies of the `db/events` metadata (#1824: a field id above INT32 or fractional, format-version 99, 4 or 0, a string current-snapshot-id; a null or -1 current-snapshot-id still reads as no snapshot), and a `data_file.content`, `manifest_entry.status` or `manifest_file.content` outside the spec, in both the scan and the lister, each refusal naming the value (#1823), and a manifest list's `partition_spec_id` at 2^32, which read as spec 0 (#1878). Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
+The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, a dangling current-schema-id, malformed numbers in edited copies of the `db/events` metadata (#1824: a field id above INT32 or fractional, format-version 99, 4 or 0, a string current-snapshot-id; a null or -1 current-snapshot-id still reads as no snapshot), and a `data_file.content`, `manifest_entry.status` or `manifest_file.content` outside the spec, in both the scan and the lister, each refusal naming the value (#1823), and a manifest list's `partition_spec_id` at 2^32, which read as spec 0 (#1878). A snapshot `schema-id` and a `default-spec-id` outside the 32-bit range are refused naming the value, not cut to 32 bits (#1853). The edges still read: a schema-id of -2147483648, a default-spec-id of 2147483647, and a table with no `default-spec-id`, which means spec 0. Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
 
 ### Every test
 
@@ -10691,6 +10702,16 @@ One module fixture copies the fixtures into `server_dir`, builds the FIFOs there
 | `test_partition_spec_id_2_32_is_refused_by_the_scan` | manifest_file.partition_spec_id 4294967296 is refused by iceberg_scan (XX001), not read as spec 0 |
 | `test_read_manifest_list_refuses_partition_spec_id_2_32` | read_manifest_list refuses partition_spec_id 4294967296 (XX001), not shown as 0 |
 | `test_the_backend_survives_the_enum_refusals` | backend still up after the enum refusals |
+| `test_a_snapshot_schema_id_of_int32_max_reads` | control: a snapshot schema-id of 2147483647 reads as 2147483647 |
+| `test_a_snapshot_schema_id_of_2_32_is_refused_not_truncated` | a snapshot schema-id of 4294967296 is refused by iceberg_current_snapshot (XX001), not truncated to 0 |
+| `test_a_snapshot_schema_id_below_int32_is_refused_not_truncated` | a snapshot schema-id of -2147483649 is refused by iceberg_current_snapshot (XX001), not truncated to 2147483647 |
+| `test_a_foreign_table_with_default_spec_id_0_scans` | control: a foreign table with default-spec-id 0 scans ten rows |
+| `test_a_default_spec_id_of_2_32_is_refused_not_truncated` | a default-spec-id of 4294967296 is refused by the Iceberg foreign table scan (XX001), not truncated to 0 |
+| `test_a_default_spec_id_below_int32_is_refused_not_truncated` | a default-spec-id of -2147483649 is refused by the Iceberg foreign table scan (XX001), not truncated to 2147483647 |
+| `test_a_snapshot_schema_id_of_int32_min_reads` | control: a snapshot schema-id of -2147483648 reads as -2147483648 |
+| `test_a_foreign_table_with_default_spec_id_int32_max_scans` | control: a foreign table with default-spec-id 2147483647 scans ten rows |
+| `test_a_foreign_table_with_no_default_spec_id_scans` | control: a foreign table with no default-spec-id scans ten rows |
+| `test_the_backend_survives_the_int32_id_refusals` | backend still up after the int32 id refusals |
 
 ## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping
 
@@ -11013,6 +11034,12 @@ Four more fixtures cover #1793, one catalog behaviour each. One nests namespaces
 
 Eleven more fixtures cover the review of PR #1859. Two list nested namespaces at the top level, and one of them also ignores `?parent=`; each namespace must come out once. One answers 400 to `?parent=`, and the call must fail with that status. Two serve a `/v1/config` that sets the prefix in more than one place, and only the winning prefix leads to the table. Two advertise an invalid separator or prefix. Two hold a namespace 64 and 65 levels deep. Two send page tokens that never end: one repeats a token at once, one cycles A, B, A. The paging readings run under a 30-second statement timeout, so a client that walks to the page bound reads as 57014.
 
+Two more fixtures cover #1865, a namespace level that holds a dot. One keeps its table in the single level `db.x` and also has the two levels `db`, `x`, with the default separator. A `text[]` namespace reaches the single level, the level listing keeps the two apart, and a listed row passes back; the dotted text still names `db`, `x`. On the nested fixture (separator `%2E`), `ARRAY['db','x']` names the same namespace as `'db.x'`, and a level that holds the separator is refused (22023). The other lists the single level `db.x` with the separator `%2E`, and the walk must list it without asking for its children. An empty, two-dimensional or NULL-holding array is refused.
+
+Four more tests cover the review of PR #1884. On the `%2E` fixture with the level `db.x`, the documented LATERAL example fails with 22023, and the documented filter keeps it running with no rows. The refusal message shows a control byte in the level as `\xNN`. A further fixture advertises the one-byte separator `%C3` and serves the level `é` (bytes C3 A9); the level must reach the catalog, because the separator matches whole characters of the database encoding only.
+
+Four more tests cover the second review of PR #1884. In a LATIN1 database, `é` is the one byte E9, so in the level `é.x` the dot is a whole character: on the `%2E` fixture it must be refused with 22023. A refused level that holds a newline shows it as `\x0A`, not only 0x1F as `\x1F`. `iceberg_rest_tables` of a NULL `text[]` returns no rows, because the function is STRICT; this test runs last, so a crash reddens only it and the survival test. A further fixture serves the level `db<0x1F>x` with the default separator, and the documented filter `strpos(level, chr(31)) > 0` keeps the LATERAL example running with no rows.
+
 ### Every test
 
 Every test makes one check under the shell's name. The not-found reads as 42P01, or 3F000 for a namespace, only when the message is the catalog's 404, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer.
@@ -11060,6 +11087,27 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_namespace_depth_a_namespace_65_levels_deep_is_refused` | namespace depth: a namespace 65 levels deep is refused |
 | `test_paging_a_page_token_repeated_at_once_is_refused` | paging: a page token repeated at once is refused |
 | `test_paging_a_page_token_cycle_is_refused` | paging: a page token cycle A, B, A is refused |
+| `test_dotted_level_iceberg_rest_namespace_levels_lists_the_level_apart` | dotted level: iceberg_rest_namespace_levels lists the level db.x apart from db, x |
+| `test_dotted_level_iceberg_rest_namespaces_still_dot_joins_the_levels` | dotted level: iceberg_rest_namespaces still dot-joins the levels |
+| `test_dotted_level_iceberg_rest_tables_of_an_array_lists_its_tables` | dotted level: iceberg_rest_tables of ARRAY['db.x'] lists its tables |
+| `test_dotted_level_iceberg_rest_table_location_of_an_array_resolves` | dotted level: iceberg_rest_table_location of ARRAY['db.x'] resolves the table |
+| `test_dotted_level_iceberg_rest_scan_of_an_array_returns_the_five_rows` | dotted level: iceberg_rest_scan of ARRAY['db.x'] returns the five rows |
+| `test_dotted_level_a_listed_level_array_passes_back` | dotted level: a listed level array passes back to iceberg_rest_tables |
+| `test_dotted_level_the_text_form_still_names_two_levels` | dotted level: the text form 'db.x' still names the two levels db, x |
+| `test_text_array_form_names_the_same_namespace_as_the_dotted_text` | text[] form: ARRAY['db','x'] names the same namespace as 'db.x' |
+| `test_text_array_form_a_level_holding_the_separator_is_refused` | text[] form: a level that holds the catalog's separator is refused |
+| `test_text_array_form_a_listed_level_holding_the_separator_is_not_walked` | text[] form: a listed level that holds the separator is listed, not walked |
+| `test_text_array_form_the_unfiltered_lateral_example_fails_on_a_dotted_level` | text[] form: the unfiltered LATERAL example fails on a dot-separator catalog |
+| `test_text_array_form_the_documented_filter_keeps_the_lateral_example_running` | text[] form: the documented filter keeps the LATERAL example running on a dot-separator catalog |
+| `test_text_array_form_the_documented_filter_keeps_the_lateral_example_running_by_default` | text[] form: the documented filter keeps the LATERAL example running on a default-separator catalog |
+| `test_separator_refusal_escapes_a_control_byte_in_the_level` | separator refusal: a control byte in the refused level is escaped in the message |
+| `test_separator_refusal_does_not_match_inside_a_utf8_character` | separator refusal: a separator byte above 0x7F does not match inside a UTF-8 character |
+| `test_separator_refusal_in_a_latin1_database_refuses_the_dot_after_e9` | separator refusal: in a LATIN1 database the dot after the byte E9 is refused |
+| `test_separator_refusal_escapes_a_newline_in_the_level` | separator refusal: a newline in the refused level is escaped in the message |
+| `test_text_array_form_an_empty_namespace_array_is_refused` | text[] form: an empty namespace array is refused |
+| `test_text_array_form_a_null_level_is_refused` | text[] form: a NULL level is refused |
+| `test_text_array_form_a_two_dimensional_namespace_array_is_refused` | text[] form: a two-dimensional namespace array is refused |
+| `test_text_array_form_a_null_namespace_array_returns_no_rows` | text[] form: iceberg_rest_tables of a NULL namespace array returns no rows |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
@@ -11468,6 +11516,11 @@ Every test makes one check under the shell's name, over counts the module fixtur
 | `test_no_parquet_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
 | `test_every_parquet_mutant_was_generated_and_ran_its_statements` | every mutant was generated and ran its three statements |
 | `test_the_parquet_corpus_reached_the_decoder` | the corpus reached the decoder at all |
+| `test_the_oracles_rewrite_of_every_pristine_seed_reads_the_seeds_answer` | the oracle's rewrite of every pristine seed reads the seed's answer |
+| `test_no_parquet_mutant_that_reads_returned_a_wrong_answer` | no mutant that reads returned a wrong answer |
+| `test_every_read_that_differed_from_the_seed_was_judged` | every read that differed from the seed was judged |
+| `test_every_schema_sweep_copy_ran_its_read` | every schema-sweep copy ran its read |
+| `test_the_result_oracle_compared_some_answers` | the result oracle compared some answers |
 
 ## 286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead
 
@@ -11908,7 +11961,7 @@ Every comparison refuses a failed reading, so two failed arms never agree. The g
 
 ## 300. test_parallel_export_parquet.py: parallel Parquet export equals serial export equals the source
 
-The pytest twin of `test/parallel_export_parquet.sh` (ported for #1341), every check by the shell's name: 54 tests, nine of the functions parametrized over a literal table of the shell's names (W is 1, 2 and 4). `pgcolumnar.parallel_export_parquet` writes one Parquet file per worker for a single columnar table and one per partition for a partitioned one, and `pgcolumnar.read_parquet` reads the directory back. Also asserted: empty input, an export inside a transaction with uncommitted rows (#329), a cancelled export (#394), the destination-length guard (#863) and the two refusals. On a private database; the exported files live in `server_dir`.
+The pytest twin of `test/parallel_export_parquet.sh` (ported for #1341), every check by the shell's name: 57 tests, nine of the functions parametrized over a literal table of the shell's names (W is 1, 2 and 4). `pgcolumnar.parallel_export_parquet` writes one Parquet file per worker for a single columnar table and one per partition for a partitioned one, and `pgcolumnar.read_parquet` reads the directory back. Also asserted: empty input, an export inside a transaction with uncommitted rows (#329), a cancelled export (#394), a local cancel that must not return while a worker it stopped (SIGSTOP) still runs (#1864 review), the destination-length guard (#863) and the two refusals. On a private database; the exported files live in `server_dir`.
 
 ### Every test
 
@@ -11938,6 +11991,9 @@ The source hashes and counts come from the generator that fills each table, not 
 | `test_pexport_a_cancelled_export_writes_no_marker` | a cancelled export writes no _SUCCESS marker |
 | `test_pexport_a_retry_into_the_cleaned_directory_succeeds` | retry into the cleaned directory succeeds |
 | `test_pexport_the_retry_writes_a_fresh_marker` | the retry writes a fresh _SUCCESS marker |
+| `test_pexport_local_stop_premise_a_worker_was_stopped` | premise: local stop: a worker was stopped before the cancel |
+| `test_pexport_local_stop_premise_the_export_was_cancelled` | premise: local stop: the export was cancelled, not completed |
+| `test_pexport_local_stop_no_worker_runs_when_the_cancel_returns` | local stop: no worker is still running when the cancel returns -- #1864 review: the dispatcher waited for the workers only on a remote prefix, so a local cleanup could race a worker's rename to its final part name |
 | `test_pexport_accepted_boundary_length` | accepted boundary: the destination is exactly MAXPGPATH-40 bytes |
 | `test_pexport_accepted_boundary_still_exports` | accepted boundary: a 984-byte destination still exports |
 | `test_pexport_accepted_boundary_wrote_both_parts` | accepted boundary: it wrote both part files |
@@ -12379,6 +12435,13 @@ Every test makes one check under the shell's name, on a private database, and de
 | `test_millis_scaled_stats_skip_the_non_matching_group` | millis-scaled stats skip the non-matching group |
 | `test_the_millis_file_reads_back_exactly_as_written` | the millis file reads back exactly as written |
 | `test_millis_pushdown_result_equals_the_oracle` | millis pushdown result == oracle |
+| `test_int96_premise_pyarrow_wrote_int96` | premise: pyarrow wrote the INT96 file as INT96 |
+| `test_parquet_schema_advises_timestamptz_for_int96` | parquet_schema advises timestamptz for INT96 |
+| `test_int96_reads_into_timestamptz_as_the_stored_instant` | INT96 reads into timestamptz as the stored instant |
+| `test_int96_reads_into_timestamp_as_the_session_wall_time` | INT96 reads into timestamp as the wall time in the session zone |
+| `test_int96_reads_into_timestamptz_as_the_stored_instant_in_a_non_utc_zone` | INT96 reads into timestamptz as the stored instant in a non-UTC session zone |
+| `test_int96_into_a_non_timestamp_type_is_refused` | INT96 into a non-timestamp type is refused |
+| `test_import_parquet_reads_int96_into_timestamptz` | import_parquet reads INT96 into timestamptz |
 
 ## 317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows
 
@@ -12451,6 +12514,18 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
 | `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
 | `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
+| `test_parquet_hardening_unchanged_repetition_file_reads` | the unchanged repetition file reads 3000/4498500 |
+| `test_parquet_hardening_repetition_required_over_optional_pages_is_refused` | repetition_type REQUIRED over optional pages is refused |
+| `test_parquet_hardening_invalid_repetition_type_is_refused` | repetition_type that is not 0, 1 or 2 is refused |
+| `test_parquet_hardening_import_parquet_refuses_repetition_required_over_optional_pages` | import_parquet refuses repetition_type REQUIRED over optional pages |
+| `test_parquet_hardening_unchanged_list_file_reads` | the unchanged list file reads {} {1,2} {3} {4,5,6} null |
+| `test_parquet_hardening_list_group_marked_optional_over_repeated_pages_is_refused` | a list group marked OPTIONAL over repeated pages is refused |
+| `test_parquet_hardening_list_group_marked_optional_is_refused_into_a_scalar_column` | a list group marked OPTIONAL over repeated pages is refused into a scalar column |
+| `test_parquet_hardening_unpatched_required_int96_file_reads` | the unpatched REQUIRED INT96 file reads its 3 values |
+| `test_parquet_hardening_int96_nanoseconds_of_a_whole_day_are_refused` | INT96 nanoseconds of a whole day are refused |
+| `test_parquet_hardening_int96_negative_nanoseconds_are_refused` | INT96 nanoseconds of -1 are refused |
+| `test_parquet_hardening_int96_negative_julian_day_is_refused` | INT96 Julian day -1 is refused |
+| `test_parquet_hardening_int96_short_page_is_refused` | an INT96 page shorter than its num_values is refused |
 | `test_parquet_hardening_footer_good_file_still_reads` | footer: the good file still reads |
 | `test_parquet_hardening_footer_reencoded_good_file_still_reads` | footer: the re-encoded good file still reads |
 | `test_parquet_hardening_footer_invalid_type_nibble_on_row_groups_is_refused` | footer: an invalid type nibble on row_groups is refused |
@@ -12472,6 +12547,9 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_footer_huge_list_of_non_compact_type_is_refused_at_once` | footer: a huge list whose element type is not a compact type is refused at once |
 | `test_parquet_hardening_footer_byte_list_off_the_end_is_refused_at_once` | footer: a list of bytes that runs off the footer is refused at once |
 | `test_parquet_hardening_footer_double_list_off_the_end_is_refused_at_once` | footer: a list of doubles that runs off the footer is refused at once |
+| `test_parquet_hardening_footer_schema_element_with_no_name_is_refused` | footer: a schema element with no name is refused |
+| `test_parquet_hardening_footer_file_without_level_histograms_still_reads` | footer: the file without level histograms still reads |
+| `test_parquet_hardening_footer_repetition_type_of_2_32_is_refused` | footer: a repetition_type of 2^32 is refused, not read as REQUIRED |
 | `test_parquet_hardening_backend_survived_the_malformed_footers` | backend survived the malformed footers |
 | `test_parquet_hardening_strings_run_in_a_utf8_database` | premise: the string arms run in a UTF8 database |
 | `test_parquet_hardening_read_parquet_plain_string_not_utf8_raises_22021` | read_parquet PLAIN string not UTF-8 -> 22021 naming the column |
@@ -12485,7 +12563,7 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_valid_multibyte_utf8_still_reads_plain` | valid multibyte UTF-8 still reads (PLAIN) |
 | `test_parquet_hardening_valid_multibyte_utf8_still_reads_dictionary` | valid multibyte UTF-8 still reads (dictionary) |
 | `test_parquet_hardening_iceberg_scan_data_file_string_not_utf8_raises_22021` | iceberg_scan data file string not UTF-8 -> 22021 naming the column |
-| `test_parquet_hardening_patched_manifest_table_reads_all_five_rows` | premise: the patched-manifest table reads all five rows |
+| `test_parquet_hardening_patched_manifest_table_reads_all_five_rows` | the patched-manifest table reads all five rows |
 | `test_parquet_hardening_iceberg_fdw_reads_a_file_whose_partition_value_is_not_valid_text` | iceberg FDW reads, not prunes, a file whose partition value is not valid text |
 | `test_parquet_hardening_backend_survives_the_string_arms` | backend survived the string arms |
 
@@ -12639,6 +12717,9 @@ Every test makes one check under the shell's name, on a private database. Every 
 | `test_a_missing_column_definition_list_is_refused` | premise: reject missing column definition list |
 | `test_fewer_declared_columns_than_the_file_is_refused` | reject fewer columns than file |
 | `test_an_incompatible_declared_type_is_refused` | reject incompatible declared type |
+| `test_read_parquet_type_refusal_names_read_parquet` | read_parquet's type refusal names read_parquet |
+| `test_import_parquet_type_refusal_names_import_parquet` | import_parquet's type refusal names import_parquet |
+| `test_parquet_foreign_table_type_refusal_names_the_wrapper` | a Parquet foreign table's type refusal names the foreign-data wrapper |
 | `test_a_file_that_is_not_parquet_is_refused` | reject non-parquet file |
 | `test_read_parquet_keeps_its_own_file_gate` | a role without pg_read_server_files is refused by read_parquet's own gate |
 | `test_a_pg_read_server_files_member_reads_every_row` | and a member of pg_read_server_files reads every row |
@@ -12792,7 +12873,7 @@ Every test reads one observation the module fixture took, and makes one check un
 
 ## 328. test_objstore_s3_read.py: SigV4-signed s3:// reads, every refusal naming its cause
 
-The twin of `test/objstore_s3_read.sh`. A private cluster reads a parquet object through the local fixture server in SigV4 mode, which recomputes every signature with python's stdlib, requires the session token in the signed set, and refuses a tamper bucket against a different secret. Reads are compared with the byte-identical local file, the request count with the unsigned arithmetic, and the region with both AWS_REGION and AWS_DEFAULT_REGION set, then the fallback alone. A missing endpoint, region and secret are each refused naming what is missing; a 403 names the HTTP 403 and a 404 stays 58P01; an https endpoint is never downgraded.
+The twin of `test/objstore_s3_read.sh`. A private cluster reads a parquet object through the local fixture server in SigV4 mode, which recomputes every signature with python's stdlib, requires the session token in the signed set, and refuses a tamper bucket against a different secret. Reads are compared with the byte-identical local file, the request count with the unsigned arithmetic, and the region with both AWS_REGION and AWS_DEFAULT_REGION set, then the fallback alone. A versioned object (#1867) is read with the version id the HEAD named, signed in the canonical query and percent-encoded, so an overwrite mid-read leaves the read on the old version. A missing endpoint, region and secret are each refused naming what is missing; a 403 names the HTTP 403 and a 404 stays 58P01; an https endpoint is never downgraded.
 
 ### Every test
 
@@ -12810,6 +12891,10 @@ Every test makes one check under the shell's name. Refusals are a SQLSTATE plus 
 | `test_count_over_s3` | A: count(*) over s3 |
 | `test_the_signed_run_logged_requests` | premise: signed run logged requests |
 | `test_signing_left_the_request_arithmetic_unchanged` | B: signing left the request arithmetic unchanged |
+| `test_the_versioned_overwrite_pair_has_one_byte_length` | premise: the versioned overwrite pair has one byte length |
+| `test_a_signed_versioned_read_overwritten_mid_read_finishes_on_the_version_it_opened` | C: a signed versioned read overwritten mid-read finishes on the version it opened |
+| `test_the_signed_versioned_read_logged_gets` | premise: the signed versioned read logged GETs |
+| `test_every_signed_ranged_get_of_a_versioned_read_names_the_version` | C: every signed ranged GET of a versioned read names the version |
 | `test_the_tamper_bucket_surfaces_its_403_as_28000` | 403: tamper bucket surfaces 28000 |
 | `test_a_verified_request_for_a_missing_key_still_reaches_404` | 403 ordering premise: verified requests still reach 404 = 58P01 |
 | `test_aws_default_region_is_the_fallback` | region: AWS_DEFAULT_REGION is the fallback |
@@ -12846,7 +12931,7 @@ Every test makes one check under the shell's name. A refusal is 08006, the modul
 
 ## 330. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard
 
-The twin of `test/objstore_http_read.sh`. Foreign tables over the local fixture server (`test/objstore_http_server.py`, the shell's own) read a G-row-group parquet fixture: the answer must equal the byte-identical local file, the buffered request count must equal the arithmetic from the fixture's shape with every GET carrying a Range header, and statement_timeout must cancel a transfer stalled mid-body. An unreachable port, a 404, a server that ignores Range, a short 206 body, EOF mid-body and a server that hangs up are each refused by their own guard; a keep-alive connection the server dropped is retried once, and a fresh connection is not. An object the server overwrites between two ranged GETs of one read is refused with `changed while it was being read`, not read as rows from both versions, and a server that sends only a weak ETag is still read, because the client does not send a weak ETag as If-Match (#1805). An ETag of 79 characters still pins the read, an ETag of 80 is not sent cut short (the read succeeds unpinned), and a server whose ETag changes on every request is refused as if the object changed. Only an `s3://` key is a pattern (#1785): an http URL with a query string reads the object and its HEAD carries the query to the server, and a bracketed IPv6 host is refused by name rather than as a listing.
+The twin of `test/objstore_http_read.sh`. Foreign tables over the local fixture server (`test/objstore_http_server.py`, the shell's own) read a G-row-group parquet fixture: the answer must equal the byte-identical local file, the buffered request count must equal the arithmetic from the fixture's shape with every GET carrying a Range header, and statement_timeout must cancel a transfer stalled mid-body. An unreachable port, a 404, a server that ignores Range, a short 206 body, EOF mid-body and a server that hangs up are each refused by their own guard; a keep-alive connection the server dropped is retried once, and a fresh connection is not. An object the server overwrites between two ranged GETs of one read is refused with `changed while it was being read`, not read as rows from both versions, and a server that sends only a weak ETag is still read, because the client does not send a weak ETag as If-Match (#1805). An ETag of 79 characters still pins the read, an ETag of 80 is not sent cut short (the read succeeds unpinned), and a server whose ETag changes on every request is refused as if the object changed. With `pgcolumnar.objstore_pin_reads` off (#1866) that server is read whole, and an overwrite mid-read is read unpinned, old and new rows mixed. A versioned object is read whole from the version the read opened, with the version id on every ranged GET; an overwrite that changes the length, on a server with no ETag, is refused by the Content-Range total, with the pin on or off (#1867). An object that shrinks below the offset of a later GET gets 416 and is refused the same way. With the pin off no GET names a version, a version id of `null` or one over 1024 bytes is not sent, and a versioned GET answered 403 (no `s3:GetObjectVersion`) is sent again without the version and the read finishes (#1888 review). Only an `s3://` key is a pattern (#1785): an http URL with a query string reads the object and its HEAD carries the query to the server, and a bracketed IPv6 host is refused by name rather than as a listing.
 
 ### Every test
 
@@ -12882,6 +12967,20 @@ Every test makes one check under the shell's name, from readings a module fixtur
 | `test_a_79_character_etag_reads_an_unchanged_object_whole` | C: a 79-character ETag reads an unchanged object whole (http == local) |
 | `test_an_80_character_etag_is_not_sent_cut_short` | C: an 80-character ETag is not sent cut short as If-Match |
 | `test_a_server_whose_etag_changes_on_every_request_is_refused` | C: a server whose ETag changes on every request is refused |
+| `test_the_length_change_pair_differs_in_length` | premise: the length-change pair differs in length |
+| `test_with_the_pin_off_a_fickle_etag_server_is_read_whole` | C: with pgcolumnar.objstore_pin_reads off, a server whose ETag changes on every request is read whole (http == local) |
+| `test_with_the_pin_off_an_overwrite_mid_read_is_read_unpinned` | C: with pgcolumnar.objstore_pin_reads off, an object overwritten mid-read is read unpinned |
+| `test_a_versioned_object_overwritten_mid_read_is_read_from_its_version` | C: a versioned object overwritten mid-read is read whole from the version the read opened |
+| `test_the_versioned_read_logged_gets` | premise: the versioned read logged GETs |
+| `test_every_ranged_get_of_a_versioned_read_names_the_version` | C: every ranged GET of a versioned read names the version |
+| `test_an_object_whose_length_changes_mid_read_is_refused` | C: an object whose length changes mid-read is refused (Content-Range total) |
+| `test_with_the_pin_off_a_length_change_is_still_refused` | C: with pgcolumnar.objstore_pin_reads off, an object whose length changes mid-read is still refused |
+| `test_the_shrink_pairs_new_file_is_shorter_than_its_old_one` | premise: the shrink pair's new file is shorter than its old one (bytes old-new) |
+| `test_an_object_that_shrinks_below_a_later_gets_offset_is_refused` | C: an object that shrinks mid-read below a later GET's offset is refused (HTTP 416) |
+| `test_with_the_pin_off_no_get_names_the_version` | C: with pgcolumnar.objstore_pin_reads off, no ranged GET of a versioned object names the version |
+| `test_a_version_id_of_null_is_not_sent_as_a_pin` | C: a version id of null is not sent as a pin |
+| `test_a_version_id_longer_than_1024_bytes_is_not_sent_cut_short` | C: a version id longer than 1024 bytes is not sent cut short |
+| `test_a_versioned_get_answered_403_is_sent_again_without_the_version` | C: a versioned GET answered 403 is sent again without the version, and the read finishes |
 | `test_a_stalled_transfer_is_cancelled` | D: stalled transfer cancelled with query_canceled |
 | `test_the_http_read_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
 | `test_an_http_url_with_a_query_string_reads_the_object` | E: an http URL with a query string (?raw=true) reads the object, not a listing |
@@ -12891,7 +12990,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. An allow-listed `http://` target, served by a second fixture server without the SigV4 options, is written unsigned and does not crash the backend (#1779): a small export as one PUT and a large one as a multipart upload, each read back as the generator over `http://`, an Arrow export imported back from the server's directory, and an injected fault leaves no upload open. A 403 from an unsigned `http://` target carries a hint that says the request went unsigned, not one that sends the reader to the `AWS_*` credentials, and a 403 to a signed `s3://` request still sends the reader there. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a refused stale-part listing or a refused `_SUCCESS` PUT after every worker finished fails the run by its own 28000 and leaves no part and no earlier marker (`__listing_status__` and the fixture's `__put_status__`, #1781). A refused listing after a larger 4-worker run leaves that run's part-0002 and part-0003 and no marker, which is the limit docs/sql-reference.md documents, and its error names the prefix it listed rather than the dummy key `s3://pgc-bucket/_`. A smaller re-run drops the stale tail, a prefix that ends in one or more `/` gets keys with one slash and reads back through the documented glob (#1782), no form of the prefix deletes part objects under a sibling prefix that shares its leading characters, a smaller re-run keeps a part under a deeper prefix such as `sl/sub/`, a smaller re-run to an `S3://` prefix (uppercase scheme) still drops the stale tail, and a bare bucket is refused before any worker writes. The workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780). A cancelled run on a prefix ending in `/` leaves no object, no marker, no upload open and no key with an empty segment. The shell's three optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432). The first is the restart into that endpoint, so a crash in an earlier arm reports by name rather than ending the run (#1850).
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. When the abort's DELETE is answered as Garage answers it, a 204 with no Content-Length on a connection kept open (`__delete_unframed__`), the export still returns within 4 s (#1830 review). A CreateMultipartUpload reply whose body ends at connection close, and an HTTP/1.0 reply whose connection does not persist (`__uploads_unframed__`), still start the upload, and no request goes on the connection either reply ended (#1830). An export that needs more than 10000 parts stops with 54000 after part 10000 and leaves no key and no upload open. An export to AWS S3 (including `amazonaws.com.cn`), to Cloudflare R2 or to the default GCS endpoint with parts under 5 MiB is refused with 22023 before the upload starts, while a one-part export, 5 MiB parts, and a host such as `notamazonaws.com` that only ends in those letters are not (#1857). An unlisted endpoint is refused by the allow-list. An allow-listed `http://` target, served by a second fixture server without the SigV4 options, is written unsigned and does not crash the backend (#1779): a small export as one PUT and a large one as a multipart upload, each read back as the generator over `http://`, an Arrow export imported back from the server's directory, and an injected fault leaves no upload open. A 403 from an unsigned `http://` target carries a hint that says the request went unsigned, not one that sends the reader to the `AWS_*` credentials, and a 403 to a signed `s3://` request still sends the reader there. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a refused stale-part listing or a refused `_SUCCESS` PUT after every worker finished fails the run by its own 28000 and leaves no part and no earlier marker (`__listing_status__` and the fixture's `__put_status__`, #1781). A refused listing after a larger 4-worker run leaves that run's part-0002 and part-0003 and no marker, which is the limit docs/sql-reference.md documents, and its error names the prefix it listed rather than the dummy key `s3://pgc-bucket/_`. A smaller re-run drops the stale tail, a prefix that ends in one or more `/` gets keys with one slash and reads back through the documented glob (#1782), no form of the prefix deletes part objects under a sibling prefix that shares its leading characters, a smaller re-run keeps a part under a deeper prefix such as `sl/sub/`, a smaller re-run to an `S3://` prefix (uppercase scheme) still drops the stale tail, and a bare bucket is refused before any worker writes. A `gs://` or `http://` prefix is refused before any worker starts, since only an `s3://` prefix can be listed (#1832), and the refusal of an unsupported scheme hints at that (#1831). A 1023-byte prefix is refused as too long before any request (#1849). The workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780). A cancelled run on a prefix ending in `/` leaves no object, no marker, no upload open and no key with an empty segment. A cancel while every worker waits for the answer to its part PUT, which the fixture applies 3 s late, leaves no part (#1864), and with a 12 s hold the cancel returns within 8 s, because the dispatcher waits for the workers once, not twice. The shell's three optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432). The first is the restart into that endpoint, so a crash in an earlier arm reports by name rather than ending the run (#1850).
 
 ### Every test
 
@@ -12919,6 +13018,10 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_refused_part_leaves_no_key` | part failure: the key does not exist |
 | `test_the_part_failure_landed_mid_multipart` | premise: the part failure landed mid-multipart (an upload was started) |
 | `test_a_refused_part_leaves_no_open_upload` | part failure: the server holds no open upload for the key |
+| `test_an_unframed_204_abort_still_fails_the_export` | unframed 204: a refused part fails the export (58030) -- #1830 review, the fixture's `__delete_unframed__` answers the abort as Garage does |
+| `test_the_unframed_204_export_sent_one_abort` | premise: unframed 204: the export sent one abort DELETE |
+| `test_an_abort_answered_204_with_no_length_returns_promptly` | unframed 204: the export returned within 4 s when its abort was answered 204 with no Content-Length -- the fixture closes the idle connection after 8 s |
+| `test_the_unframed_204_abort_leaves_no_open_upload` | unframed 204: the server holds no open upload for the key |
 | `test_an_unlisted_endpoint_is_refused_by_the_allow_list` | allow-list: an unlisted endpoint refuses 42501 before any write |
 | `test_an_arrow_export_to_s3_imports_back_as_the_generator` | arrow export to s3:// also round-trips |
 | `test_a_parallel_export_to_an_s3_prefix_succeeds` | parallel export to an s3:// prefix succeeds |
@@ -12980,6 +13083,11 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_no_completed_object_remains_after_the_cancel` | cancel: no completed object remains at the prefix |
 | `test_no_success_marker_remains_after_the_cancel` | cancel: no _SUCCESS marker at the prefix |
 | `test_no_upload_stays_open_after_the_cancel` | cancel: the server holds no open upload under the prefix -- #1722: the workers the cancel terminates abort their uploads on the way out |
+| `test_all_four_part_puts_reached_the_store_before_the_cancel` | premise: commit hold: all four part PUTs reached the store before the cancel |
+| `test_the_commit_hold_export_was_cancelled_not_completed` | premise: commit hold: the export was cancelled, not completed |
+| `test_a_cancel_leaves_no_part_a_worker_was_committing` | commit hold: a cancel leaves no part that a worker was committing -- #1864: the fixture applies each part PUT 3 s late (`__put_hold__`), and the dispatcher deleted the keys before that |
+| `test_the_long_hold_export_was_cancelled_not_completed` | premise: long hold: the export was cancelled, not completed |
+| `test_a_cancel_waits_for_the_workers_once` | long hold: a cancel waits for the workers once, not twice -- #1864 review: the cancel waited 5 s before the DELETEs and again before the upload abort, about 10 s against a store that held every commit 12 s |
 | `test_terminated_workers_exit_while_the_store_is_silent` | terminate: export workers exit within 75 s while the store is silent -- #1727: each wait slice times out, so the 60 s quiet limit ends a worker's abort |
 | `test_the_unsigned_http_fixture_server_is_up` | premise: unsigned http fixture server is up |
 | `test_a_small_export_to_http_succeeds_unsigned` | http:// small export succeeds unsigned (no crash) -- #1779: the signer read a NULL region and the backend died with signal 11 |
@@ -12994,6 +13102,29 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_injected_http_failure_leaves_no_open_upload` | http:// inject: the server holds no open upload for the key -- the unsigned abort reached the server |
 | `test_a_403_from_an_unsigned_http_target_hints_that_it_went_unsigned` | http:// 403: the hint says the request went unsigned, not to check AWS_* credentials -- the SigV4 fixture server refuses a request with no Authorization header |
 | `test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials` | s3:// 403: a signed request that is refused still hints to check AWS_* credentials -- the fixture verifies the denied bucket against another secret |
+| `test_a_parallel_export_to_gs_is_refused_before_any_worker_starts` | gs:// prefix: a parallel export is refused before any worker starts, with no request sent -- #1832: it uploaded every part and then failed at the s3://-only listing |
+| `test_a_parallel_export_to_http_is_refused_before_any_worker_starts` | http:// prefix: a parallel export is refused before any worker starts, with no request sent -- #1832 |
+| `test_a_1023_byte_prefix_is_refused_as_too_long` | long prefix: a 1023-byte s3:// prefix is refused as too long, with no request sent -- #1849: why the upload cleanup's prefix buffer cannot truncate |
+| `test_the_unsupported_scheme_hint_says_only_s3_can_be_listed` | unsupported scheme: the parallel export's hint says only an s3:// prefix can be listed -- #1831: the hint said a remote prefix cannot be listed at all |
+| `test_an_unframed_upload_id_reply_still_starts_the_upload` | unframed reply: a multipart export succeeds when the UploadId reply ends at connection close -- #1830, the fixture's `__uploads_unframed__` = close |
+| `test_the_unframed_reply_export_sent_one_create` | premise: unframed reply: the export sent CreateMultipartUpload once |
+| `test_no_request_reuses_the_connection_a_close_delimited_reply_ended` | unframed reply: no request went on the connection the close-delimited reply ended -- #1830 review, the fixture shuts down only its sending side and logs REUSED for a request on it |
+| `test_the_unframed_reply_object_reads_back_as_the_generator` | unframed reply: the object reads back as the generator |
+| `test_an_http10_upload_id_reply_still_starts_the_upload` | HTTP/1.0 reply: a multipart export succeeds -- #1830, `__uploads_unframed__` = http10 |
+| `test_the_http10_reply_export_sent_one_create` | premise: HTTP/1.0 reply: the export sent CreateMultipartUpload once |
+| `test_no_request_reuses_the_connection_an_http10_reply_ended` | HTTP/1.0 reply: no request went on the connection the HTTP/1.0 reply ended -- the fixture logs REUSED for a request on it |
+| `test_an_export_needing_more_than_10000_parts_is_refused` | part limit: an export that needs more than 10000 parts is refused by the part limit (54000) -- #1857, 1 KiB parts |
+| `test_the_part_limit_export_uploaded_parts_1_to_10000` | part limit: the export uploaded parts 1 to 10000 -- a `>=` limit stops at 9999 |
+| `test_no_part_above_10000_is_sent` | part limit: no part numbered above 10000 was sent -- the fixture refuses one as S3 does |
+| `test_the_part_limit_leaves_no_open_upload` | part limit: the server holds no open upload for the key |
+| `test_the_part_limit_leaves_no_object` | part limit: the key does not exist |
+| `test_aws_s3_refuses_parts_below_5_mib_before_the_upload` | part minimum: an export to AWS S3 with 256 KiB parts is refused before the upload starts (22023) -- #1857, the allow-list keeps the endpoint unreached |
+| `test_a_one_part_export_to_aws_s3_is_not_refused_by_the_part_minimum` | part minimum: a one-part export to AWS S3 is not refused by the part minimum |
+| `test_5_mib_parts_to_aws_s3_are_not_refused_by_the_part_minimum` | part minimum: an export to AWS S3 with 5 MiB parts is not refused by the part minimum |
+| `test_aws_s3_in_china_refuses_parts_below_5_mib` | part minimum: an export to AWS S3 in China (amazonaws.com.cn) with 256 KiB parts is refused (22023) |
+| `test_cloudflare_r2_refuses_parts_below_5_mib` | part minimum: an export to Cloudflare R2 (r2.cloudflarestorage.com) with 256 KiB parts is refused (22023) -- #1830 review |
+| `test_a_host_only_ending_in_amazonaws_com_is_not_refused_by_the_part_minimum` | part minimum: an export to notamazonaws.com with 256 KiB parts is not refused by the part minimum -- the domain match needs the dot |
+| `test_gcs_refuses_parts_below_5_mib` | part minimum: a gs:// export at the default GCS endpoint with 256 KiB parts is refused (22023) |
 | `test_integration_the_cluster_restarts_with_the_real_s3_credentials` | opt-in: integration: the cluster restarts with the real S3 credentials (#1850: a restart that does not come back is this named red, not an error of the whole module; the restart first waits out a crash recovery) |
 | `test_integration_a_multipart_export_to_real_s3_succeeds` | opt-in: integration: multipart export to real S3 succeeds |
 | `test_integration_the_real_s3_read_back_equals_the_source` | opt-in: integration: real S3 read-back == source |
@@ -13459,7 +13590,7 @@ Every test makes one check under the shell's name, on a private database with se
 | `test_wide_range_count_chosen_plan_is_not_far_slower` | [wide range, narrow projection] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
 ## 347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open
 
-The twin of `test/objstore_export_open_uploads.sh` (#1743, #1722), every check by the shell's name. A `parallel_export_parquet` to `s3://` is ended while its workers' multipart uploads are open, and the dispatcher's cleanup must list the uploads under the prefix and abort each one whose key is one of the export's own part names. Two foreign uploads seeded under each prefix, `part-0004.parquet` (one past a 4-worker export's last part) and `notes.parquet`, must stay open. Five arms: a cancel while every worker sends parts; a cancel while every worker waits for the answer to CreateMultipartUpload, which the fixture server's `__uploads_delay__` hook holds after the upload exists; the workers terminated in that same window; a cancel there followed by a second cancel while the first cancel's cleanup deletes a part key (`__delete_delay__` holds each DELETE 3 s), where the export must still report the first cancel and leave none of its uploads open (#1741); and a cancel there while the store does not answer the listing, where the cleanup's bounded wait must give up and the export still report its own cancel within 30 s. The serial arms (#1810) cancel `export_parquet` and `export_arrow`, and terminate `export_parquet`, while their own CreateMultipartUpload is held: no upload at the key may stay open, and `notes.parquet` and the key plus `.old` must. The commit arms (#1813) cancel `export_parquet` while the store holds the answer to CompleteMultipartUpload (`__complete_delay__`) or to a single PUT (`__put_delay__`), after it wrote the new object over an earlier one: the report must match what the key holds, and the export must warn that it wrote the object. The complete-drop arm (#1846) has the store close the connection with no answer after it applied CompleteMultipartUpload (`__complete_drop__`) and the cancel arrived: the export must send the request only once and fail with the error that says the store may have written the object. The serial double-cancel arm (#1846) cancels `export_parquet` while its CreateMultipartUpload is held, and again while the store holds its cleanup's listing (`__list_uploads_delay__`, 3 s a page): the cleanup holds interrupts, so no upload at the key may stay open. The put-refused arm (#1846) has the store refuse a small export's single PUT (`__put_status__`) while another writer's upload is open at the key: the export sent no create, so it must not list the uploads, and that upload must stay open. The commit arms also check that the clean export run first issued no commit warning. The serial tests are parametrized over the three serial arms and the commit tests over the two commit arms, one collected test per check. Then the messages must name what the caller gave, never the dummy key `s3://pgc-bucket/_` a bucket-level request is resolved from (#1869): with worker 0's part PUT refused (`__put_status__`) and the cleanup's upload listing refused (`__list_uploads_status__`), the dispatcher's LOG of what the cleanup discarded names the prefix it listed; and with no region in the postmaster's environment, the export's endpoint check and `read_parquet`'s directory listing each name the prefix in the region refusal. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+The twin of `test/objstore_export_open_uploads.sh` (#1743, #1722), every check by the shell's name. A `parallel_export_parquet` to `s3://` is ended while its workers' multipart uploads are open, and the dispatcher's cleanup must list the uploads under the prefix and abort each one whose key is one of the export's own part names. Two foreign uploads seeded under each prefix, `part-0004.parquet` (one past a 4-worker export's last part) and `notes.parquet`, must stay open. Five parallel arms: a cancel while every worker sends parts; a cancel while every worker waits for the answer to CreateMultipartUpload, which the fixture server's `__uploads_delay__` hook holds after the upload exists; the workers terminated in that same window; a cancel there followed by a second cancel while the first cancel's cleanup deletes a part key (`__delete_delay__` holds each DELETE 3 s), where the export must still report the first cancel and leave none of its uploads open (#1741); and a cancel there while the store does not answer the listing, where the cleanup's bounded wait must give up and the export still report its own cancel within 30 s. The serial arms (#1810) cancel `export_parquet` and `export_arrow`, and terminate `export_parquet`, while their own CreateMultipartUpload is held; the gs cancel arm (#1854) cancels `export_parquet` to a `gs://` key the same way: no upload at the key may stay open, and `notes.parquet` and the key plus `.old` must. The commit arms (#1813) cancel `export_parquet` while the store holds the answer to CompleteMultipartUpload (`__complete_delay__`) or to a single PUT (`__put_delay__`), after it wrote the new object over an earlier one: the report must match what the key holds, and the export must warn that it wrote the object. The complete-drop arm (#1846) has the store close the connection with no answer after it applied CompleteMultipartUpload (`__complete_drop__`) and the cancel arrived: the export must send the request only once and fail with the error that says the store may have written the object. The serial double-cancel arm (#1846) cancels `export_parquet` while its CreateMultipartUpload is held, and again while the store holds its cleanup's listing (`__list_uploads_delay__`, 3 s a page): the cleanup holds interrupts, so no upload at the key may stay open. The put-refused arm (#1846) has the store refuse a small export's single PUT (`__put_status__`) while another writer's upload is open at the key: the export sent no create, so it must not list the uploads, and that upload must stay open. The commit arms also check that the clean export run first issued no commit warning. The serial tests are parametrized over the four serial arms and the commit tests over the two commit arms, one collected test per check. Then the messages must name what the caller gave, never the dummy key `s3://pgc-bucket/_` a bucket-level request is resolved from (#1869): with worker 0's part PUT refused (`__put_status__`) and the cleanup's upload listing refused (`__list_uploads_status__`), the dispatcher's LOG of what the cleanup discarded names the prefix it listed; and with no region in the postmaster's environment, the export's endpoint check and `read_parquet`'s directory listing each name the prefix in the region refusal. A private cluster, because the postmaster starts with `AWS_*` in its environment.
 
 ### Every test
 
@@ -13497,11 +13628,11 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | `test_silent_listing_reports_its_own_cancel` | silent listing: the export reports its own cancel (57014) |
 | `test_silent_listing_returned_promptly` | silent listing: the export returned within 30 s of the cancel |
 | `test_silent_listing_the_server_survived` | silent listing: the server survived |
-| `test_serial_create_was_unanswered_when_the_signal_landed` | premise: serial cancel: the export_parquet CreateMultipartUpload was unanswered when the signal landed; premise: arrow cancel: the export_arrow CreateMultipartUpload was unanswered when the signal landed; premise: serial terminate: the export_parquet CreateMultipartUpload was unanswered when the signal landed |
-| `test_serial_reports_the_signal` | serial cancel: the export reports the signal; arrow cancel: the export reports the signal; serial terminate: the export reports the signal |
-| `test_serial_leaves_no_upload_at_the_key_open` | serial cancel: no upload at the export's key is left open; arrow cancel: no upload at the export's key is left open; serial terminate: no upload at the export's key is left open |
-| `test_serial_leaves_the_foreign_uploads_open` | serial cancel: the foreign uploads under the prefix are left open; arrow cancel: the foreign uploads under the prefix are left open; serial terminate: the foreign uploads under the prefix are left open |
-| `test_serial_the_server_survived` | serial cancel: the server survived; arrow cancel: the server survived; serial terminate: the server survived |
+| `test_serial_create_was_unanswered_when_the_signal_landed` | premise: serial cancel: the export_parquet CreateMultipartUpload was unanswered when the signal landed; premise: arrow cancel: the export_arrow CreateMultipartUpload was unanswered when the signal landed; premise: serial terminate: the export_parquet CreateMultipartUpload was unanswered when the signal landed; premise: gs cancel: the export_parquet CreateMultipartUpload was unanswered when the signal landed |
+| `test_serial_reports_the_signal` | serial cancel: the export reports the signal; arrow cancel: the export reports the signal; serial terminate: the export reports the signal; gs cancel: the export reports the signal |
+| `test_serial_leaves_no_upload_at_the_key_open` | serial cancel: no upload at the export's key is left open; arrow cancel: no upload at the export's key is left open; serial terminate: no upload at the export's key is left open; gs cancel: no upload at the export's key is left open (#1854) |
+| `test_serial_leaves_the_foreign_uploads_open` | serial cancel: the foreign uploads under the prefix are left open; arrow cancel: the foreign uploads under the prefix are left open; serial terminate: the foreign uploads under the prefix are left open; gs cancel: the foreign uploads under the prefix are left open |
+| `test_serial_the_server_survived` | serial cancel: the server survived; arrow cancel: the server survived; serial terminate: the server survived; gs cancel: the server survived |
 | `test_serial_double_cancel_first_cancel_landed_while_the_create_was_unanswered` | premise: serial double cancel: the export_parquet CreateMultipartUpload was unanswered when the first cancel landed |
 | `test_serial_double_cancel_second_cancel_landed_in_the_listing` | premise: serial double cancel: the cleanup was listing the uploads when the second cancel landed |
 | `test_serial_double_cancel_reports_its_own_cancel` | serial double cancel: the export reports its own cancel (57014) |

@@ -227,6 +227,30 @@ check "premise: the part failure landed mid-multipart (an upload was started)" \
 check_num "part failure: the server holds no open upload for the key" \
 	"$(open_uploads '^pgc-bucket/partfail\.parquet$')" "0"
 
+# ---- #1830 review: an abort answered 204 with no Content-Length -------------
+# Garage answers a DELETE with 204, a Date header and nothing else, and keeps
+# the connection open. A 204 has no body whatever its headers say (RFC 9112
+# section 6.3). A client that reads it as a body ending at connection close
+# waits until the store closes the idle connection: 59 s against Garage. The
+# fixture's __delete_unframed__ answers the same way and closes after 8 s, so
+# the export must return well inside that.
+: > "$S3_LOG"
+echo 8 > "$PGC_WORKDIR/__delete_unframed__"
+echo "500 2" > "$PGC_WORKDIR/__part_status__"
+t0="$(date +%s%N)"
+AB204="$(refusal_of "$PART SELECT pgcolumnar.export_parquet('es_big', 's3://$BUCKET/abort204.parquet')" \
+	"uploading a part of" " by the part check")"
+t1="$(date +%s%N)"
+rm -f "$PGC_WORKDIR/__part_status__" "$PGC_WORKDIR/__delete_unframed__"
+AB204_MS=$(( (t1 - t0) / 1000000 ))
+check "unframed 204: a refused part fails the export (58030)" "$AB204" "58030 by the part check"
+check "premise: unframed 204: the export sent one abort DELETE" \
+	"$(logn '^DELETE /pgc-bucket/abort204.parquet uploadId=')" "1"
+check "unframed 204: the export returned within 4 s when its abort was answered 204 with no Content-Length" \
+	"$( (( AB204_MS <= 4000 )) && echo yes || echo "no, after $AB204_MS ms")" "yes"
+check_num "unframed 204: the server holds no open upload for the key" \
+	"$(open_uploads '^pgc-bucket/abort204\.parquet$')" "0"
+
 # ---- taxonomy: the write side wears the same gates as the read side ---------
 check "allow-list: an unlisted endpoint refuses 42501 before any write" \
 	"$(refusal_of "SELECT pgcolumnar.export_parquet('es_small', 'http://127.0.0.2:1/x.parquet')" \
@@ -238,6 +262,62 @@ q "SELECT pgcolumnar.export_arrow('es_small', 's3://$BUCKET/small.arrow')" >/dev
 q "SELECT pgcolumnar.import_arrow('es_arrow_back', '$PGC_WORKDIR/$BUCKET/small.arrow')" >/dev/null
 check "arrow export to s3:// also round-trips" \
 	"$(pgc_set_hash "SELECT * FROM es_arrow_back")" "$(pgc_set_hash "$GEN_SMALL")"
+
+# ---- #1830: a write reply with no length the client can count on -----------
+# HTTP/1.1 lets a reply end its body by closing the connection, with neither a
+# Content-Length nor chunked framing. The write path read a reply body only when
+# one of those two was present, so the UploadId reply of CreateMultipartUpload
+# was dropped and the export failed. An HTTP/1.0 reply without keep-alive does
+# not keep its connection either, and the write path sent its next request on it.
+# The fixture's __uploads_unframed__ hook answers CreateMultipartUpload each way.
+# first_line SQL -> the first line psql prints for SQL, its result or its error.
+first_line() {
+	wait_up
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA -c "$1" 2>&1 | head -1
+}
+: > "$S3_LOG"
+echo close > "$PGC_WORKDIR/__uploads_unframed__"
+check "unframed reply: a multipart export succeeds when the UploadId reply ends at connection close" \
+	"$(first_line "$PART SELECT pgcolumnar.export_parquet('es_big', 's3://$BUCKET/uc.parquet')")" \
+	"$BIGROWS"
+rm -f "$PGC_WORKDIR/__uploads_unframed__"
+check "premise: unframed reply: the export sent CreateMultipartUpload once" \
+	"$(logn '^POST /pgc-bucket/uc.parquet uploads=')" "1"
+# The fixture ends that body by shutting down only its sending side, so it can
+# still see a request the export sends on the same connection (#1830 review).
+check "unframed reply: no request went on the connection the close-delimited reply ended" \
+	"$(logn '^REUSED ') reused ($(grep -m1 '^REUSED ' "$S3_LOG" || echo none))" "0 reused (none)"
+check "unframed reply: the object reads back as the generator" \
+	"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('s3://$BUCKET/uc.parquet') AS t(id int8, pad text)")" \
+	"$(pgc_set_hash "$GEN_BIG")"
+: > "$S3_LOG"
+echo http10 > "$PGC_WORKDIR/__uploads_unframed__"
+check "HTTP/1.0 reply: a multipart export succeeds" \
+	"$(first_line "$PART SELECT pgcolumnar.export_parquet('es_big', 's3://$BUCKET/u10.parquet')")" \
+	"$BIGROWS"
+rm -f "$PGC_WORKDIR/__uploads_unframed__"
+check "premise: HTTP/1.0 reply: the export sent CreateMultipartUpload once" \
+	"$(logn '^POST /pgc-bucket/u10.parquet uploads=')" "1"
+check "HTTP/1.0 reply: no request went on the connection the HTTP/1.0 reply ended" \
+	"$(logn '^REUSED ') reused ($(grep -m1 '^REUSED ' "$S3_LOG" || echo none))" "0 reused (none)"
+
+# ---- #1857: S3 numbers parts 1 to 10000 --------------------------------------
+# An upload holds at most 10000 parts; the fixture refuses part 10001 as S3 does.
+# The export must stop before it sends part 10001, say why, and abort the upload.
+# 1 KiB parts make the export need more than 10000 of them.
+: > "$S3_LOG"
+check "part limit: an export that needs more than 10000 parts is refused by the part limit (54000)" \
+	"$(refusal_of "SET pgcolumnar.objstore_part_size = 1024; SELECT pgcolumnar.export_parquet('es_big', 's3://$BUCKET/many.parquet')" \
+		"more than 10000 parts" " by the part limit")" "54000 by the part limit"
+check "part limit: the export uploaded parts 1 to 10000" \
+	"$(awk '$1 == "PUT" && $2 == "/pgc-bucket/many.parquet" && match($3, /partNumber=[0-9]+/) { n = substr($3, RSTART + 11, RLENGTH - 11) + 0; if (n <= 10000) lo++ } END { print lo + 0 }' "$S3_LOG")" "10000"
+check_num "part limit: no part numbered above 10000 was sent" \
+	"$(awk '$1 == "PUT" && $2 == "/pgc-bucket/many.parquet" && match($3, /partNumber=[0-9]+/) { n = substr($3, RSTART + 11, RLENGTH - 11) + 0; if (n > 10000) hi++ } END { print hi + 0 }' "$S3_LOG")" "0"
+check_num "part limit: the server holds no open upload for the key" \
+	"$(open_uploads '^pgc-bucket/many\.parquet$')" "0"
+check "part limit: the key does not exist" \
+	"$([ -e "$PGC_WORKDIR/$BUCKET/many.parquet" ] && echo "present ($(stat -c %s "$PGC_WORKDIR/$BUCKET/many.parquet") bytes)" || echo absent)" "absent"
 
 # ---- step 4 (#623): parallel_export_parquet to an s3:// prefix --------------
 # The workers already write per-worker objects remotely through the sink; this
@@ -450,6 +530,26 @@ check_num "bare bucket: the refused exports sent no PUT" "$(logn '^PUT ')" "0"
 check_num "bare bucket: no part object at the bucket root" \
 	"$(ls -p "$PGC_WORKDIR/$BUCKET/" 2>/dev/null | grep -c '^part-.*\.parquet$')" "0"
 
+# #1832: after the workers finish, the export lists its prefix to delete stale
+# parts, and only an s3:// prefix can be listed. A gs:// export used to upload
+# every part and then fail at that listing. It is now refused before any worker
+# starts, so nothing is uploaded.
+: > "$S3_LOG"
+check "gs:// prefix: a parallel export is refused before any worker starts, with no request sent" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 'gs://$BUCKET/gx', 2)" \
+		"parallel_export_parquet cannot write to" " by the scheme check"), $(logn 'gx/part-') requests" \
+	"0A000 by the scheme check, 0 requests"
+
+# #1849: the upload cleanup lists "<prefix>/". The dispatcher refuses a prefix
+# too long for the longest name it builds under it before any worker starts, so
+# a prefix whose "/" would not fit a MAXPGPATH buffer never reaches the cleanup.
+: > "$S3_LOG"
+LONGP="s3://$BUCKET/$(head -c $((1023 - ${#BUCKET} - 6)) /dev/zero | tr '\0' L)"
+check "long prefix: a 1023-byte s3:// prefix is refused as too long, with no request sent" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, '$LONGP', 2)" \
+		"parallel export destination is too long" " (too long)"), ${#LONGP} bytes, $(logn '^[A-Z]+ /pgc-bucket/LLLL') requests" \
+	"54000 (too long), 1023 bytes, 0 requests"
+
 # #1780: the workers obey the calling session's settings, not only the system's. A
 # background worker starts from postgresql.conf, so before the fix a session that SET
 # the allow-list to '' still had its workers upload part-0000, and the error came only
@@ -572,6 +672,71 @@ check "cancel: no _SUCCESS marker at the prefix" \
 check "cancel: the server holds no open upload under the prefix" \
 	"$(open_uploads '^pgc-bucket/cx/')" "0"
 
+# #1864: a cancel must not leave a part a worker was committing. The fixture
+# holds every single-request PUT for 3 s after its body arrives, and only then
+# writes the object (__put_hold__), as a store that applies a commit late. A
+# terminated worker waits for that answer (#1813). The dispatcher used to delete
+# the part keys at once, before the held PUTs were applied, so the parts appeared
+# afterwards and stayed. It now waits for the workers to exit first.
+: > "$S3_LOG"
+rm -rf "$PGC_WORKDIR/$BUCKET/ch"
+echo 3 > "$PGC_WORKDIR/__put_hold__"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/ch', 4)" \
+	>"$PGC_WORKDIR/ch_bg.out" 2>&1 &
+chpid=$!
+ch_puts=0
+for _ in $(seq 1 300); do
+	ch_puts="$(logn '^PUT /pgc-bucket/ch/part-')"
+	[ "$ch_puts" -ge 4 ] && break
+	sleep 0.1
+done
+q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+   WHERE query LIKE '%parallel_export_parquet%' AND state = 'active'
+     AND pid <> pg_backend_pid()" >/dev/null
+wait "$chpid" 2>/dev/null || true
+# a held PUT lands 3 s after it arrived; read the prefix once every hold is over
+sleep 4
+rm -f "$PGC_WORKDIR/__put_hold__"
+check "premise: commit hold: all four part PUTs reached the store before the cancel" \
+	"$([ "$ch_puts" -ge 4 ] && echo yes || echo "no ($ch_puts part PUTs)")" "yes"
+check "premise: commit hold: the export was cancelled, not completed" \
+	"$(grep -qiE 'canceling statement|canceled on user request' "$PGC_WORKDIR/ch_bg.out" && echo cancelled || echo "completed ($(head -1 "$PGC_WORKDIR/ch_bg.out"))")" "cancelled"
+check_num "commit hold: a cancel leaves no part that a worker was committing" \
+	"$(ls "$PGC_WORKDIR/$BUCKET/ch/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "0"
+
+# #1864 review: the cancel waited for the workers twice, up to 5 s each: once
+# before it deleted the parts, and again before it aborted the open uploads. A
+# store that holds every commit for 12 s keeps each terminated worker alive past
+# both waits, so the cancel took about 10 s. One wait is enough: the cancel must
+# return within 8 s.
+: > "$S3_LOG"
+rm -rf "$PGC_WORKDIR/$BUCKET/cl"
+echo 12 > "$PGC_WORKDIR/__put_hold__"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/cl', 4)" \
+	>"$PGC_WORKDIR/cl_bg.out" 2>&1 &
+clpid=$!
+cl_puts=0
+for _ in $(seq 1 300); do
+	cl_puts="$(logn '^PUT /pgc-bucket/cl/part-')"
+	[ "$cl_puts" -ge 4 ] && break
+	sleep 0.1
+done
+cl_t0=$(date +%s%N)
+q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+   WHERE query LIKE '%parallel_export_parquet%' AND state = 'active'
+     AND pid <> pg_backend_pid()" >/dev/null
+wait "$clpid" 2>/dev/null || true
+cl_ms=$(( ($(date +%s%N) - cl_t0) / 1000000 ))
+# a held PUT lands 12 s after it arrived; let every hold end before the next arm
+sleep 12
+rm -f "$PGC_WORKDIR/__put_hold__"
+check "premise: long hold: the export was cancelled, not completed" \
+	"$(grep -qiE 'canceling statement|canceled on user request' "$PGC_WORKDIR/cl_bg.out" && echo cancelled || echo "completed ($(head -1 "$PGC_WORKDIR/cl_bg.out"))")" "cancelled"
+check "long hold: a cancel waits for the workers once, not twice" \
+	"$([ "$cl_ms" -le 8000 ] && echo "at most 8000 ms" || echo "$cl_ms ms")" "at most 8000 ms"
+
 # #1727 review: a worker that SIGTERM ends aborts its upload in an exit callback, and a
 # store that stops answering must not hold it there. Each wait slice times out, so the
 # 60 s quiet limit ends the abort; without WL_TIMEOUT the wait never woke and the review
@@ -674,6 +839,13 @@ check "the http:// fault landed mid-multipart (an upload was started)" \
 	"$(pf_s="$(plogn '^POST /pb/fail.parquet uploads=')"; if [ "${pf_s:-0}" -ge 1 ]; then echo yes; else echo "no (starts=${pf_s:-?})"; fi)" "yes"
 check_num "http:// inject: the server holds no open upload for the key" \
 	"$(if [ -f "$PLAIN_DIR/__open_uploads__" ]; then grep -cE '^pb/fail\.parquet$' "$PLAIN_DIR/__open_uploads__" | tr -d ' '; else echo 0; fi)" "0"
+# #1832: an http:// prefix cannot be listed either, so it is refused before
+# any worker starts too.
+: > "$PLAIN_LOG"
+check "http:// prefix: a parallel export is refused before any worker starts, with no request sent" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, '$PLAIN/px', 2)" \
+		"parallel_export_parquet cannot write to" " by the scheme check"), $(plogn '/pb/px/') requests" \
+	"0A000 by the scheme check, 0 requests"
 kill "$PLAIN_PID" 2>/dev/null
 PLAIN_PID=""
 
@@ -698,6 +870,57 @@ check "http:// 403: the hint says the request went unsigned, not to check AWS_* 
 check "s3:// 403: a signed request that is refused still hints to check AWS_* credentials" \
 	"$(hint_of "SELECT pgcolumnar.export_parquet('es_small', 's3://$DENIED_BUCKET/denied.parquet')")" \
 	"Check the AWS_* credential environment of the server process."
+# #1831: the refusal of a scheme the export cannot use said a remote prefix
+# cannot be listed. The export lists an s3:// prefix (#619), so the hint now
+# says that only an s3:// prefix can be listed.
+check "unsupported scheme: the parallel export's hint says only an s3:// prefix can be listed" \
+	"$(hint_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 'az://container/out', 2)")" \
+	"The export lists its prefix to delete stale parts that an earlier, larger export left, and only an s3:// prefix can be listed. Use an s3:// prefix or a local directory."
+
+# ---- #1857: AWS S3 and GCS refuse a part under 5 MiB, except the last -------
+# The store finds a small part only at CompleteMultipartUpload, after every part
+# has gone up. The export refuses the part size before it starts the upload when
+# the endpoint is AWS S3 or GCS. The endpoints below are never reached: the
+# allow-list (127.0.0.1 only) refuses any connection to them, so a request the
+# export does send shows as the allow-list's 42501.
+pg_restart_env "AWS_ENDPOINT_URL='http://s3.us-east-1.amazonaws.com'" \
+	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" \
+	"AWS_REGION='us-east-1'"
+check "part minimum: an export to AWS S3 with 256 KiB parts is refused before the upload starts (22023)" \
+	"$(refusal_of "$PART SELECT pgcolumnar.export_parquet('es_big', 's3://$BUCKET/min.parquet')" \
+		"below the 5 MiB minimum" " by the part minimum")" "22023 by the part minimum"
+check "part minimum: a one-part export to AWS S3 is not refused by the part minimum" \
+	"$(refusal_of "$PART SELECT pgcolumnar.export_parquet('es_small', 's3://$BUCKET/min1.parquet')" \
+		"is not in pgcolumnar.objstore_allowed_endpoints" " by the allow-list")" "42501 by the allow-list"
+check "part minimum: an export to AWS S3 with 5 MiB parts is not refused by the part minimum" \
+	"$(refusal_of "SET pgcolumnar.objstore_part_size = 5242880; SELECT pgcolumnar.export_parquet('es_big', 's3://$BUCKET/min5.parquet')" \
+		"is not in pgcolumnar.objstore_allowed_endpoints" " by the allow-list")" "42501 by the allow-list"
+pg_restart_env "AWS_ENDPOINT_URL='http://s3.cn-north-1.amazonaws.com.cn'" \
+	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" \
+	"AWS_REGION='cn-north-1'"
+check "part minimum: an export to AWS S3 in China (amazonaws.com.cn) with 256 KiB parts is refused (22023)" \
+	"$(refusal_of "$PART SELECT pgcolumnar.export_parquet('es_big', 's3://$BUCKET/min.parquet')" \
+		"below the 5 MiB minimum" " by the part minimum")" "22023 by the part minimum"
+# Cloudflare R2 documents the same 5 MiB minimum for every part but the last
+# (#1830 review).
+pg_restart_env "AWS_ENDPOINT_URL='http://0123456789abcdef.r2.cloudflarestorage.com'" \
+	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" \
+	"AWS_REGION='auto'"
+check "part minimum: an export to Cloudflare R2 (r2.cloudflarestorage.com) with 256 KiB parts is refused (22023)" \
+	"$(refusal_of "$PART SELECT pgcolumnar.export_parquet('es_big', 's3://$BUCKET/min.parquet')" \
+		"below the 5 MiB minimum" " by the part minimum")" "22023 by the part minimum"
+# A host that ends in the letters "amazonaws.com" without the dot is another
+# domain, so the part minimum does not apply to it.
+pg_restart_env "AWS_ENDPOINT_URL='http://notamazonaws.com'" \
+	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" \
+	"AWS_REGION='us-east-1'"
+check "part minimum: an export to notamazonaws.com with 256 KiB parts is not refused by the part minimum" \
+	"$(refusal_of "$PART SELECT pgcolumnar.export_parquet('es_big', 's3://$BUCKET/min.parquet')" \
+		"is not in pgcolumnar.objstore_allowed_endpoints" " by the allow-list")" "42501 by the allow-list"
+pg_restart_env "AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'"
+check "part minimum: a gs:// export at the default GCS endpoint with 256 KiB parts is refused (22023)" \
+	"$(refusal_of "$PART SELECT pgcolumnar.export_parquet('es_big', 'gs://$BUCKET/min.parquet')" \
+		"below the 5 MiB minimum" " by the part minimum")" "22023 by the part minimum"
 
 # ---- optional: a real S3 implementation (Garage) ----------------------------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then

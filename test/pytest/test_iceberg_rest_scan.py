@@ -21,6 +21,7 @@ under the shell's pgc_skip message and the rest decline.
 """
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -345,6 +346,71 @@ def irs(pgc_cluster):
                 dsn, f"SET statement_timeout = '30s'; SELECT * FROM pgcolumnar.iceberg_rest_tables('{c}','db')",
                 "returned the same page token twice for the table list", " repeated token")
 
+        # #1865: a namespace level that holds a dot. This catalog (separator %1F)
+        # keeps its table in the one level "db.x" and also has the two levels db, x.
+        dcat2 = start_fx("dotlevel", "--namespace-levels", '["db.x"]', "--table", "events",
+                         "--extra-namespace", "db.x")
+        r["dot levels"] = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text, ' ' "
+                                     "ORDER BY array_to_json(ns)::text COLLATE \"C\") "
+                                     f"FROM pgcolumnar.iceberg_rest_namespace_levels('{dcat2}') AS ns")
+        r["dot names"] = _rows(dsn, "SELECT string_agg(ns, ' ' ORDER BY ns COLLATE \"C\") "
+                                    f"FROM pgcolumnar.iceberg_rest_namespaces('{dcat2}') AS ns")
+        r["dot tables"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
+                                     f"FROM pgcolumnar.iceberg_rest_tables('{dcat2}', ARRAY['db.x']) AS t")
+        r["dot location"] = _rows(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{dcat2}', ARRAY['db.x'], 'events')")
+        r["dot scan"] = _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM "
+                                   f"pgcolumnar.iceberg_rest_scan('{dcat2}', ARRAY['db.x'], 'events') {cols} ORDER BY id")
+        r["dot roundtrip"] = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text || '=' || t, ' ' ORDER BY t) "
+                                        f"FROM pgcolumnar.iceberg_rest_namespace_levels('{dcat2}') AS ns, "
+                                        f"LATERAL pgcolumnar.iceberg_rest_tables('{dcat2}', ns) AS t "
+                                        "WHERE ns = ARRAY['db.x']")
+        r["dot text form"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}','db.x')",
+                                      "no such namespace", " for db, x")
+        r["array same ns"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
+                                        f"FROM pgcolumnar.iceberg_rest_tables('{ncat}', ARRAY['db','x']) AS t")
+        r["array sep level"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{ncat}', ARRAY['db.x'])",
+                                        'the namespace level "db.x" contains the catalog\'s namespace separator',
+                                        " with the level named")
+        c = start_fx("dotsep", "--namespace-levels", '["db.x"]', "--table", "events",
+                     "--namespace-separator", "%2E")
+        r["dotsep listed"] = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text, ' ') "
+                                        f"FROM pgcolumnar.iceberg_rest_namespace_levels('{c}') AS ns")
+        r["doc unfiltered"] = _refusal(dsn, f"SELECT ns, t FROM pgcolumnar.iceberg_rest_namespace_levels('{c}') AS ns, "
+                                            f"LATERAL pgcolumnar.iceberg_rest_tables('{c}', ns) AS t",
+                                            'the namespace level "db.x" contains the catalog\'s namespace separator',
+                                            " on the dotted level")
+        r["doc filter"] = _rows(dsn, "SELECT coalesce(string_agg(array_to_json(ns)::text || '=' || t, ' '), 'no rows') "
+                                     f"FROM pgcolumnar.iceberg_rest_namespace_levels('{c}') AS ns, "
+                                     f"LATERAL pgcolumnar.iceberg_rest_tables('{c}', ns) AS t "
+                                     "WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE level LIKE '%.%')")
+        c = start_fx("uslevel", "--namespace-levels", '["db\\u001fx"]', "--table", "events")
+        r["doc filter default"] = _rows(dsn, "SELECT coalesce(string_agg(array_to_json(ns)::text || '=' || t, ' '), 'no rows') "
+                                             f"FROM pgcolumnar.iceberg_rest_namespace_levels('{c}') AS ns, "
+                                             f"LATERAL pgcolumnar.iceberg_rest_tables('{c}', ns) AS t "
+                                             "WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE strpos(level, chr(31)) > 0)")
+        r["sep escaped"] = _sep_level_shown(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}', E'db\\x1fx')")
+        c = start_fx("hisep", "--namespace-levels", '["\\u00e9"]', "--table", "events",
+                     "--namespace-separator", "%C3")
+        r["sep high byte"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
+                                        f"FROM pgcolumnar.iceberg_rest_tables('{c}', ARRAY[E'\\xc3\\xa9']) AS t")
+        # A level is text in the database encoding. In a LATIN1 database "é" is the
+        # one byte E9, so the dot after it is a whole character: refused.
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("CREATE DATABASE latin1db ENCODING 'LATIN1' LOCALE 'C' TEMPLATE template0")
+        l1dsn = cluster.dsn(dbname="latin1db") + " client_encoding=UTF8"
+        with psycopg.connect(l1dsn, autocommit=True) as conn:
+            conn.execute("CREATE EXTENSION pgcolumnar")
+        r["latin1 sep"] = _refusal(l1dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{ncat}', ARRAY[E'\\xe9.x'])",
+                                   "contains the catalog's namespace separator", " with the level named")
+        r["sep newline"] = _sep_level_shown(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}', E'db\\x1f\\nx')")
+        r["array empty"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}', ARRAY[]::text[])",
+                                    "a namespace array must hold at least one level", " as empty")
+        r["array null"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}', ARRAY['db',NULL])",
+                                   "a namespace level must not be NULL", " as NULL")
+        r["array 2d"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dcat2}', ARRAY[['db'],['x']])",
+                                 "a namespace array must have one dimension", " as 2-D")
+        r["array strict"] = _rows(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_rest_tables('{dcat2}', NULL::text[])")
+
         r["survived"] = _survived(dsn, log, before)
         yield r
     finally:
@@ -357,6 +423,21 @@ def irs(pgc_cluster):
             fx.kill()
             fx.wait()
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _sep_level_shown(dsn, sql):
+    """-> the level as the separator refusal names it, with a control byte shown
+    as ^X (as cat -v does), or the whole outcome when the message differs."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        msg = "".join("^" + chr(ord(ch) + 64) if ord(ch) < 32 else ch
+                      for ch in (exc.diag.message_primary or str(exc)))
+        m = re.search(r'the namespace level "(.*)" contains', msg)
+        return m.group(1) if m else msg
+    return "no error"
 
 
 def _declined(irs, expect):
@@ -652,3 +733,147 @@ def test_paging_a_page_token_cycle_is_refused(irs, expect):
     if _declined(irs, expect):
         return
     expect.text(irs["cycle token"], "08P01 repeated token", "paging: a page token cycle A, B, A is refused")
+
+
+def test_dotted_level_iceberg_rest_namespace_levels_lists_the_level_apart(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["dot levels"], '["db","x"] ["db"] ["db.x"]',
+                "dotted level: iceberg_rest_namespace_levels lists the level db.x apart from db, x")
+
+
+def test_dotted_level_iceberg_rest_namespaces_still_dot_joins_the_levels(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["dot names"], "db db.x db.x",
+                "dotted level: iceberg_rest_namespaces still dot-joins the levels")
+
+
+def test_dotted_level_iceberg_rest_tables_of_an_array_lists_its_tables(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["dot tables"], "events",
+                "dotted level: iceberg_rest_tables of ARRAY['db.x'] lists its tables")
+
+
+def test_dotted_level_iceberg_rest_table_location_of_an_array_resolves(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["dot location"], irs["mdloc"],
+                "dotted level: iceberg_rest_table_location of ARRAY['db.x'] resolves the table")
+
+
+def test_dotted_level_iceberg_rest_scan_of_an_array_returns_the_five_rows(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["dot scan"], ROWS5,
+                "dotted level: iceberg_rest_scan of ARRAY['db.x'] returns the five rows")
+
+
+def test_dotted_level_a_listed_level_array_passes_back(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["dot roundtrip"], '["db.x"]=events',
+                "dotted level: a listed level array passes back to iceberg_rest_tables")
+
+
+def test_dotted_level_the_text_form_still_names_two_levels(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["dot text form"], "3F000 for db, x",
+                "dotted level: the text form 'db.x' still names the two levels db, x")
+
+
+def test_text_array_form_names_the_same_namespace_as_the_dotted_text(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["array same ns"], "events,more",
+                "text[] form: ARRAY['db','x'] names the same namespace as 'db.x'")
+
+
+def test_text_array_form_a_level_holding_the_separator_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["array sep level"], "22023 with the level named",
+                "text[] form: a level that holds the catalog's separator is refused")
+
+
+def test_text_array_form_a_listed_level_holding_the_separator_is_not_walked(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["dotsep listed"], '["db.x"]',
+                "text[] form: a listed level that holds the separator is listed, not walked")
+
+
+def test_text_array_form_the_unfiltered_lateral_example_fails_on_a_dotted_level(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["doc unfiltered"], "22023 on the dotted level",
+                "text[] form: the unfiltered LATERAL example fails on a dot-separator catalog")
+
+
+def test_text_array_form_the_documented_filter_keeps_the_lateral_example_running(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["doc filter"], "no rows",
+                "text[] form: the documented filter keeps the LATERAL example running on a dot-separator catalog")
+
+
+def test_text_array_form_the_documented_filter_keeps_the_lateral_example_running_by_default(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["doc filter default"], "no rows",
+                "text[] form: the documented filter keeps the LATERAL example running on a default-separator catalog")
+
+
+def test_separator_refusal_escapes_a_control_byte_in_the_level(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["sep escaped"], "db\\x1Fx",
+                "separator refusal: a control byte in the refused level is escaped in the message")
+
+
+def test_separator_refusal_does_not_match_inside_a_utf8_character(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["sep high byte"], "events",
+                "separator refusal: a separator byte above 0x7F does not match inside a UTF-8 character")
+
+
+def test_separator_refusal_in_a_latin1_database_refuses_the_dot_after_e9(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["latin1 sep"], "22023 with the level named",
+                "separator refusal: in a LATIN1 database the dot after the byte E9 is refused")
+
+
+def test_separator_refusal_escapes_a_newline_in_the_level(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["sep newline"], "db\\x1F\\x0Ax",
+                "separator refusal: a newline in the refused level is escaped in the message")
+
+
+def test_text_array_form_a_null_namespace_array_returns_no_rows(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["array strict"], "0",
+                "text[] form: iceberg_rest_tables of a NULL namespace array returns no rows")
+
+
+def test_text_array_form_an_empty_namespace_array_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["array empty"], "22023 as empty", "text[] form: an empty namespace array is refused")
+
+
+def test_text_array_form_a_null_level_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["array null"], "22004 as NULL", "text[] form: a NULL level is refused")
+
+
+def test_text_array_form_a_two_dimensional_namespace_array_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["array 2d"], "22023 as 2-D", "text[] form: a two-dimensional namespace array is refused")

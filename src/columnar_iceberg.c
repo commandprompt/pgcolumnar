@@ -369,6 +369,25 @@ ice_num_int64(JsonbValue *v, int64 *out)
 }
 
 /*
+ * The table's "default-spec-id", or 0 when it is absent. A spec id is an int in
+ * the Iceberg spec. A larger one used to be cast to int32, so 4294967296 became
+ * spec 0 (#1853). Refuse it instead.
+ */
+static int64
+ice_default_spec_id(JsonbContainer *root, const char *path)
+{
+	int64		defspec = 0;
+
+	if (ice_num_int64(ice_field(root, "default-spec-id"), &defspec) &&
+		(defspec < PG_INT32_MIN || defspec > PG_INT32_MAX))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" has a default-spec-id out of range: " INT64_FORMAT,
+						path, defspec)));
+	return defspec;
+}
+
+/*
  * A schema field's "id" as an int, or -1 when it has none. A field id is an
  * int in the Iceberg spec. A larger one used to truncate, so 2^32 + 1 read as
  * field 1 and the column returned another field's values (#1824).
@@ -909,7 +928,15 @@ pgcolumnar_iceberg_current_snapshot(PG_FUNCTION_ARGS)
 
 	v = ice_field(sc, "schema-id");							/* optional */
 	if (ice_num_int64(v, &num))
+	{
+		/* a schema id is an int; a cast used to truncate a larger one (#1853) */
+		if (num < PG_INT32_MIN || num > PG_INT32_MAX)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: snapshot " INT64_FORMAT " in \"%s\" has a schema-id out of range: " INT64_FORMAT,
+							cur, path, num)));
 		values[6] = Int32GetDatum((int32) num);
+	}
 	else
 		nulls[6] = true;
 
@@ -1012,8 +1039,17 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 					 errmsg("iceberg: manifest \"%s\" has invalid content %d",
 							mfs[mi].manifest_path, mfs[mi].content)));
 
-		/* the lister refuses a delete manifest without even opening it */
-		if (mfs[mi].content != 0 && !collect_deletes)
+		/*
+		 * The lister refuses a delete manifest that the manifest list says
+		 * holds a live delete file (added or existing), without opening it.
+		 * A rewrite or compaction that removed every old delete file leaves a
+		 * delete manifest whose entries are all removed (status 2), with both
+		 * counts 0; and a v1 list may carry no counts at all (read as 0).
+		 * Either way the lister opens the manifest and refuses only a live
+		 * entry, below (#1829).
+		 */
+		if (mfs[mi].content != 0 && !collect_deletes &&
+			(int64) mfs[mi].added_files_count + mfs[mi].existing_files_count > 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("iceberg: snapshot " INT64_FORMAT " has delete files; reading tables with deletes is not supported",
@@ -1050,11 +1086,12 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 
 			if (!collect_deletes)
 			{
-				/* the lister refuses any delete file. A removed entry (status
-				 * 2, DELETED) is a data file this snapshot took out, such as
-				 * the old file of a copy-on-write delete: it is not live, so
-				 * the lister skips it, as the scan does (#1791) */
-				if (e->content != 0)
+				/* the lister refuses any live delete file. A removed entry
+				 * (status 2, DELETED) is a file this snapshot took out, such
+				 * as the old file of a copy-on-write delete (#1791) or a
+				 * delete file a rewrite removed (#1829): it is not live, so
+				 * the lister skips it, as the scan does */
+				if (e->content != 0 && e->status != 2)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("iceberg: snapshot " INT64_FORMAT " has delete files; reading tables with deletes is not supported",
@@ -1063,6 +1100,15 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 									   e->file_path, e->content, e->status)));
 				if (e->status == 2)
 					continue;
+				/* a delete manifest holds delete files only; a live data
+				 * entry in one is corrupt metadata, and listing it would
+				 * trust a manifest the list calls a delete manifest */
+				if (mfs[mi].content != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("iceberg: delete manifest \"%s\" holds a data file entry \"%s\"",
+									mfs[mi].manifest_path,
+									e->file_path ? e->file_path : "(null)")));
 			}
 			else
 			{
@@ -1471,7 +1517,6 @@ PgColumnarIcebergIdentityPartMap(const char *path,
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1483,9 +1528,7 @@ PgColumnarIcebergIdentityPartMap(const char *path,
 	*out_npos = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1574,7 +1617,6 @@ PgColumnarIcebergBucketMap(const char *path, const PgColumnarObjStoreConfig *cfg
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1591,9 +1633,7 @@ PgColumnarIcebergBucketMap(const char *path, const PgColumnarObjStoreConfig *cfg
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1696,7 +1736,6 @@ PgColumnarIcebergTruncateMap(const char *path, const PgColumnarObjStoreConfig *c
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1713,9 +1752,7 @@ PgColumnarIcebergTruncateMap(const char *path, const PgColumnarObjStoreConfig *c
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1816,7 +1853,6 @@ PgColumnarIcebergDayMap(const char *path, const PgColumnarObjStoreConfig *cfg,
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1831,9 +1867,7 @@ PgColumnarIcebergDayMap(const char *path, const PgColumnarObjStoreConfig *cfg,
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1932,7 +1966,6 @@ PgColumnarIcebergTemporalMap(const char *path, const PgColumnarObjStoreConfig *c
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
 	int			trlen = (int) strlen(transform);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1947,9 +1980,7 @@ PgColumnarIcebergTemporalMap(const char *path, const PgColumnarObjStoreConfig *c
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -2543,6 +2574,8 @@ typedef struct IceScanCtx
 	char	   *mdpath;
 	const PgColumnarObjStoreConfig *cfg;	/* vended storage creds, or NULL */
 	const bool *needTop;		/* projection: which output columns to decode, or NULL for all */
+	const char *caller;			/* the entry point the user called, for a type
+								 * refusal (#1871) */
 	List	   *data;			/* IceEntry* content 0 */
 	List	   *posdel;			/* IceEntry* content 1 */
 	List	   *eqdel;			/* IceEntry* content 2 */
@@ -2663,7 +2696,7 @@ ice_read_pos_deletes(IceScanCtx *c)
 							 pd->file_path, "position-delete", c->mdpath);
 		ts = tuplestore_begin_heap(false, false, work_mem);
 		(void) PgColumnarReadParquetByFieldId(safe, dtd, fids, 2, ts, wslot, NULL, 0,
-											  c->cfg);
+											  c->cfg, c->caller);
 		while (tuplestore_gettupleslot(ts, true, false, rslot))
 		{
 			bool		n1,
@@ -3144,7 +3177,8 @@ ice_read_eq_deletes(IceScanCtx *c, JsonbContainer *root, const char *path,
 							 ed->file_path, "equality-delete", c->mdpath);
 		ts = tuplestore_begin_heap(false, false, work_mem);
 		(void) PgColumnarReadParquetByFieldId(safe, dtd, (const int *) E->ids,
-											  E->nids, ts, wslot, NULL, 0, c->cfg);
+											  E->nids, ts, wslot, NULL, 0, c->cfg,
+											  c->caller);
 		while (tuplestore_gettupleslot(ts, true, false, rslot))
 		{
 			IceEqRow   *row;
@@ -3365,7 +3399,7 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 						 "data-file", c->mdpath);
 	ts = tuplestore_begin_heap(false, false, work_mem);
 	(void) PgColumnarReadParquetByFieldId(safe, ptd, uids, nuni, ts, wslot,
-										  NULL, 0, c->cfg);
+										  NULL, 0, c->cfg, c->caller);
 	dv = (Datum *) palloc(nuni * sizeof(Datum));
 	dn = (bool *) palloc(nuni * sizeof(bool));
 	while (tuplestore_gettupleslot(ts, true, false, rslot))
@@ -3433,7 +3467,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 						  const PgColumnarObjStoreConfig *cfg,
 						  Tuplestorestate *tupstore,
 						  PgColumnarIceFileFilter filter, void *filterarg,
-						  const bool *needTop)
+						  const bool *needTop, const char *caller)
 {
 	IceScanCtx	ctx;
 	char	   *json;
@@ -3449,6 +3483,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 
 	ctx.cfg = cfg;				/* vended storage creds for every file, or NULL */
 	ctx.needTop = needTop;
+	ctx.caller = caller;
 
 	/* map output column names -> field ids via the table's current schema */
 	json = ice_slurp_text(path, cfg);
@@ -3675,7 +3710,8 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 													(const char *const *) ctx.nm_names,
 													ctx.nm_ids, ctx.nm_count,
 													ctx.tupstore, ctx.slot,
-													skip, nskip, ctx.needTop, ctx.cfg);
+													skip, nskip, ctx.needTop, ctx.cfg,
+													ctx.caller);
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(ctx.filectx);
 
@@ -3715,7 +3751,8 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 void
 PgColumnarIcebergScanInto(const char *path, TupleDesc tupdesc,
 						  ReturnSetInfo *rsinfo,
-						  const PgColumnarObjStoreConfig *cfg)
+						  const PgColumnarObjStoreConfig *cfg,
+						  const char *caller)
 {
 	MemoryContext oldcxt;
 	TupleDesc	outdesc;
@@ -3729,7 +3766,8 @@ PgColumnarIcebergScanInto(const char *path, TupleDesc tupdesc,
 	rsinfo->setDesc = outdesc;
 	MemoryContextSwitchTo(oldcxt);
 
-	(void) PgColumnarIcebergScanCore(path, outdesc, cfg, tupstore, NULL, NULL, NULL);
+	(void) PgColumnarIcebergScanCore(path, outdesc, cfg, tupstore, NULL, NULL, NULL,
+									 caller);
 }
 
 PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_scan);
@@ -3789,6 +3827,6 @@ pgcolumnar_iceberg_scan(PG_FUNCTION_ARGS)
 				 errmsg("pgcolumnar.iceberg_scan requires a column definition list"),
 				 errhint("Call it as SELECT * FROM pgcolumnar.iceberg_scan(path) AS t(col1 type1, ...).")));
 
-	PgColumnarIcebergScanInto(path, tupdesc, rsinfo, NULL);
+	PgColumnarIcebergScanInto(path, tupdesc, rsinfo, NULL, "pgcolumnar.iceberg_scan");
 	return (Datum) 0;
 }

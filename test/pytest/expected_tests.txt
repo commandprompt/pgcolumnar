@@ -1541,10 +1541,73 @@ guard_tests 854
 # partition_spec_id at 2^32, refused by iceberg_scan and by read_manifest_list), by collection:
 # `4906 tests collected`.
 # cluster_tests 4960 -> 4962 at the merge of test/1873-1874-delete-coverage (8a129379) into fix/1878-partition-spec-id-range: that branch's 4960 plus this branch's 2 in test_iceberg_malformed.py, by collection: `4962 tests collected`.
+# cluster_tests 4962 -> 4969 for #1853's seven int32 id tests in test_iceberg_malformed.py, the twin of
+# iceberg_malformed.sh: 7 checks in 7 tests, by collection over the cluster files: `4770 tests collected`.
+# cluster_tests 4969 -> 4972 for #1853's review: three edge controls in test_iceberg_malformed.py (schema-id
+# -2147483648, default-spec-id 2147483647, no default-spec-id), 3 checks in 3 tests, by collection over the
+# cluster files: `4773 tests collected`.
+# cluster_tests 4972 -> 4985 for #1816's and #1829's test_iceberg_data_files.py: 13 checks in 13 tests
+# (24 -> 37 collected in the file), by collection over the cluster files: `4776 tests collected`.
+# cluster_tests 4985 -> 4992 for the #1879 review of test_iceberg_data_files.py: 7 checks in 7 tests (an
+# EXISTING position-delete entry, an EXISTING delete entry without counts, decimal(9,0), and four crafted
+# partition-format checks; 37 -> 44 collected in the file), by collection over the cluster files: `4783 tests collected`.
+# cluster_tests 4992 -> 5012 for #1830's, #1857's and #1854's tests: 15 in test_objstore_sink_write.py and
+# 5 from the gs cancel arm of test_objstore_export_open_uploads.py's serial parametrization, by collection
+# cluster_tests 5012 -> 5018 for the #1830 review: 4 unframed-204 abort tests and 2 part-minimum host tests
+# (amazonaws.com.cn, notamazonaws.com) in test_objstore_sink_write.py, by collection over the cluster files:
+# `4789 tests collected`.
+# cluster_tests 5018 -> 5020 for the #1830 review's close-delimited reuse test and Cloudflare R2 part-minimum
+# test in test_objstore_sink_write.py, by collection over the cluster files: `4791 tests collected`.
+# cluster_tests 5020 -> 5027 for #1832's gs:// and http:// refusals, #1831's hint, #1849's long-prefix
+# guard and #1864's commit-hold arm (two premises and one check) in test_objstore_sink_write.py:
+# 7 checks in 7 tests, by collection over the cluster files: `4770 tests collected`.
+# cluster_tests 5027 -> 5032 for #1864's review: the long-hold arm (one premise and one check) in
+# test_objstore_sink_write.py and the local-stop arm (two premises and one check) in
+# test_parallel_export_parquet.py, 5 checks in 5 tests, by collection: `5629 tests collected`, 854 guard.
+# cluster_tests 4775 -> 4793 for #1852's, #1855's, #1870's and #1871's 18 checks, by collection over the
+# cluster files: test_fuzz_parquet.py 4 (the result oracle and the schema sweep),
+# test_native_parquet_hardening.py 5 (repetition_type and footer num_rows), test_native_parquet_units.py 5
+# (INT96), test_native_read_parquet.py 3 and test_iceberg_scan.py 1 (the caller named in a type refusal):
+# `4781 tests collected`.
+# cluster_tests 4793 -> 4803 for the review of #1882: test_native_parquet_hardening.py 8 (a list group marked
+# OPTIONAL over repeated pages, and INT96 values that are not timestamps) and test_native_parquet_units.py 2
+# (INT96 into timestamptz in a non-UTC zone, INT96 into a non-timestamp type), by collection over the cluster
+# files: `4791 tests collected`.
+# cluster_tests 4916 -> 4947 for #1852's, #1855's, #1870's and #1871's tests, merging main (56a95f5f) into
+# fix/1855-parquet-footer-checks for the second review of #1882: the branch's 28 less the footer num_rows
+# test that duplicated #1834's, plus test_native_parquet_hardening.py 3 (a schema element with no name, a
+# file without level histograms, a repetition_type of 2^32) and test_fuzz_parquet.py 1 (every differing read
+# judged), by collection on the merged tree: `5789 tests collected`, guard 854 + cluster 4935.
+# cluster_tests 5032 -> 5063 at the merge of origin/fix/1849-pexport-remote-cleanup (b2a01adb) into
+# fix/1855-parquet-footer-checks: that branch's 5032 plus this branch's 31 (test_native_parquet_hardening.py 15,
+# test_native_parquet_units.py 7, test_fuzz_parquet.py 5, test_native_read_parquet.py 3, test_iceberg_scan.py 1).
+# Both sides already held main 56a95f5f, so the two counts share it once; by collection on the merged tree:
+# `5063 tests collected`, the exact union of the two sides' collected test ids.
+# cluster_tests 5063 -> 5084 for #1865's thirteen tests in test_iceberg_rest_scan.py (a namespace level
+# that holds a dot, named by a text[]; the level listing; the refusals) and eight in
+# test_server_file_privilege.py (the gate on the text[] forms and the level listing), by collection:
+# `5779 tests collected`, minus 854.
+# cluster_tests 5084 -> 5088 for #1865's review of PR #1884: four tests in test_iceberg_rest_scan.py (the
+# documented LATERAL example with and without its filter, the escaped control byte, a separator byte
+# above 0x7F inside a UTF-8 character), by collection: `5783 tests collected`, minus 854.
+# cluster_tests 5088 -> 5092 for #1865's second review of PR #1884: four tests in test_iceberg_rest_scan.py
+# (the dot after the byte E9 in a LATIN1 database, an escaped newline, a NULL namespace array, the
+# documented filter on a default-separator catalog), by collection: `5787 tests collected`, minus 854.
+# cluster_tests 5092 -> 5104 for #1866's and #1867's twelve tests: eight in test_objstore_http_read.py (the
+# pin turned off, the versioned read, the Content-Range length check) and four in test_objstore_s3_read.py
+# (the signed versioned read), by collection: `4916 tests collected`.
+# cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
+# premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
+# collection: 5776 tests collected, less guard_tests 854.
 # cluster_tests 4962 -> 4976 for #1902: nine tests in test_objstore_error_advice.py (the https
 # fixture premise and eight Expect: 100-continue arms) and five in test_objstore_listing.py (a
 # premise and four refusals that name the mismatched object), by collection: `4976 tests collected`.
 # cluster_tests 4976 -> 4979 for #1903's review: three tests in test_objstore_error_advice.py
 # (a multipart premise, Expect on one part only against a store that ignores it, and a 200
 # before the body still sends the body), by collection: `4979 tests collected`.
-cluster_tests 4979
+# cluster_tests 5110 -> 5127 at the merge of origin/main (75a57668) into fix/1902-tls-early-403-file-name:
+# main's 5110 plus #1902's and #1903 review's 17 (twelve in test_objstore_error_advice.py: the https fixture
+# premise, eight Expect: 100-continue arms, a multipart premise, Expect on one part only against a store that
+# ignores it, a 200 before the body still sends the body; five in test_objstore_listing.py: a premise and four
+# refusals that name the mismatched object), by collection: `5127 tests collected`.
+cluster_tests 5127

@@ -39,6 +39,24 @@
 #                    client's buffer, which must keep none rather than a cut one.
 #   /fickle/<file>   send a different strong ETag on every request for the same
 #                    bytes, as nodes behind a load balancer can (#1805 review).
+#   /vswap/<file>    a versioned bucket (#1867): HEAD and GET send
+#                    x-amz-version-id, an id with '+' and '/' in it, as AWS ids
+#                    can have. The server keeps the bytes of every version it
+#                    named, and a GET with ?versionId= reads that version, or
+#                    gets 404 NoSuchVersion. After the 4th ranged GET without a
+#                    versionId, or with one, it moves <file>.next over <file>
+#                    once, as /swap/ does.
+#   /lenswap/<file>  send no ETag, and after the 4th ranged GET move <file>.next
+#                    over <file> once: an overwrite with a new length that only
+#                    the Content-Range total can show (#1867). A GET past the
+#                    new end gets 416 with Content-Range: bytes */<length>.
+#   /vnull/<file>    as /vswap/, but the version id is "null", as S3 gives an
+#                    object written while versioning was off (#1888 review).
+#   /vlong/<file>    as /vswap/, but the version id is 1100 bytes, longer than
+#                    the 1024 S3 allows (#1888 review).
+#   /vdeny/<file>    as /vswap/, but a GET that names a version gets 403
+#                    AccessDenied, as S3 answers a caller that has
+#                    s3:GetObject but not s3:GetObjectVersion (#1888 review).
 #
 # Every HEAD and GET of an object sends ETag: "<md5 of the current bytes>", and a
 # GET whose If-Match names any other ETag is answered 412, as S3 does (#1805).
@@ -76,10 +94,35 @@
 #   __put_delay__         a number of seconds (#1813): a single-request PUT
 #                         (no partNumber) writes the object at once and answers
 #                         only after that long, for the same window.
+#   __put_hold__          a number of seconds (#1864): a single-request PUT
+#                         (no partNumber) is held that long after its whole
+#                         body arrived, and only then written and answered: a
+#                         store that applies a commit late, after a DELETE of
+#                         the same key that was sent later.
 #   __complete_drop__     a number of seconds (#1846): CompleteMultipartUpload
 #                         writes the object at once, waits that long, and then
 #                         closes the connection with no answer, as a store
 #                         that applied the request and lost the connection.
+#   __uploads_unframed__  "close" or "http10" (#1830): CreateMultipartUpload
+#                         answers with no framing the client can count on.
+#                         "close": an HTTP/1.1 reply with no Content-Length, no
+#                         Transfer-Encoding and no Connection header; the body
+#                         ends when the server shuts down its sending side. The
+#                         server then waits as for "http10" and logs REUSED for
+#                         a request that comes on that connection.
+#                         "http10": an HTTP/1.0 reply with a Content-Length and
+#                         no Connection header, so the connection does not
+#                         persist. The server then waits up to 5 s for another
+#                         request on that connection and, if one comes, logs
+#                         "REUSED <its request line>" and closes unanswered.
+#   __delete_unframed__   a number of seconds (#1830 review): every DELETE
+#                         that succeeds is answered as Garage answers it, an
+#                         HTTP/1.1 204 with a Date header only: no
+#                         Content-Length and no Connection header. The server
+#                         keeps the connection open for that many seconds of
+#                         quiet and then closes it, as Garage closes an idle
+#                         connection. A client that reads that reply until the
+#                         connection closes waits the whole time.
 #   __list_uploads_status__ an HTTP status: ListMultipartUploads (GET ?uploads)
 #                         is answered with it and an AccessDenied body, so a
 #                         suite can refuse the upload listing alone (#1869).
@@ -138,6 +181,7 @@ import hmac
 import io
 import os
 import re
+import socket
 import ssl
 import sys
 import threading
@@ -168,6 +212,7 @@ class TLSServer(ThreadingHTTPServer):
         return self.tls_ctx.wrap_socket(sock, server_side=True), addr
 
 RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+VERSIONED = ("vswap", "vnull", "vlong", "vdeny")
 AUTH_RE = re.compile(
     r"^AWS4-HMAC-SHA256 Credential=([^/]+)/(\d{8})/([^/]+)/s3/aws4_request,\s*"
     r"SignedHeaders=([^,]+),\s*Signature=([0-9a-f]{64})$")
@@ -296,7 +341,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.unquote(self.path.partition("?")[0])
         mode = "normal"
         for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/",
-                       "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/"):
+                       "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/",
+                       "/vswap/", "/lenswap/", "/vnull/", "/vlong/", "/vdeny/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -421,6 +467,18 @@ class Handler(BaseHTTPRequestHandler):
                 return '"%s-%d"' % (md5, self.server.fickle_seq)
         return '"%s"' % md5
 
+    def _version_of(self, local, data):
+        """/vswap/: the version id of these bytes, kept so a GET can ask for it."""
+        if self._mode == "vnull":
+            vid = "null"
+        elif self._mode == "vlong":
+            vid = "3HL4+kq/" + "x" * 1092
+        else:
+            vid = "3HL4+kq/" + hashlib.md5(data).hexdigest()[:24]
+        with self.server.uploads_lock:
+            self.server.versions[(local, vid)] = data
+        return vid
+
     def do_HEAD(self):
         self._log_line()
         if not self._sigv4_check():
@@ -439,7 +497,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header("ETag", self._etag(local, mode))
+        if mode != "lenswap":
+            self.send_header("ETag", self._etag(local, mode))
+        if mode in VERSIONED:
+            self._mode = mode
+            with open(local, "rb") as f:
+                self.send_header("x-amz-version-id", self._version_of(local, f.read()))
         self.end_headers()
 
     def _do_list_v2(self, query):
@@ -597,6 +660,32 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "dropka":
             self.close_connection = True
         etag = self._etag(local, mode)
+        # /vswap/: a GET that names a version reads that version's bytes.
+        data, vid = None, None
+        if mode in VERSIONED:
+            self._mode = mode
+            # unquote_plus, as S3 reads a query: a '+' sent unencoded is a space.
+            asked = None
+            for part in self.path.partition("?")[2].split("&"):
+                k, _, v = part.partition("=")
+                if k == "versionId":
+                    asked = urllib.parse.unquote_plus(v)
+            if asked is not None and mode == "vdeny":
+                self._deny(403, "AccessDenied")
+                return
+            if asked is not None:
+                with self.server.uploads_lock:
+                    data = self.server.versions.get((local, asked))
+                if data is None:
+                    self._deny(404, "NoSuchVersion")
+                    return
+                vid = asked
+            else:
+                with open(local, "rb") as f:
+                    data = f.read()
+                vid = self._version_of(local, data)
+            size = len(data)
+            etag = '"%s"' % hashlib.md5(data).hexdigest()
         want = self.headers.get("If-Match")
         if want is not None and (mode == "weak" or want.strip() != etag):
             self._deny(412, "PreconditionFailed")
@@ -609,8 +698,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Length", str(size))
             self.end_headers()
-            with open(local, "rb") as f:
-                self.wfile.write(f.read())
+            if data is None:
+                with open(local, "rb") as f:
+                    data = f.read()
+            self.wfile.write(data)
             return
 
         if m.group(1) == "":                     # suffix form bytes=-N
@@ -622,6 +713,7 @@ class Handler(BaseHTTPRequestHandler):
         hi = min(hi, size - 1)
         if lo > hi or lo >= size:
             self.send_response(416)
+            self.send_header("Content-Range", "bytes */%d" % size)
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
@@ -629,13 +721,19 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "short" and hi > lo:
             hi -= 1
         n = hi - lo + 1
-        with open(local, "rb") as f:
-            f.seek(lo)
-            body = f.read(n)
+        if data is not None:
+            body = data[lo:lo + n]
+        else:
+            with open(local, "rb") as f:
+                f.seek(lo)
+                body = f.read(n)
         self.send_response(206)
         self.send_header("Content-Range", "bytes %d-%d/%d" % (lo, hi, size))
         self.send_header("Content-Length", str(n))
-        self.send_header("ETag", etag)
+        if mode != "lenswap":
+            self.send_header("ETag", etag)
+        if vid is not None:
+            self.send_header("x-amz-version-id", vid)
         self.end_headers()
         if mode == "trunc":
             self.wfile.write(body[: n // 2])
@@ -648,7 +746,7 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(300)                      # the suite cancels long before
             return
         self.wfile.write(body)
-        if mode in ("swap", "swap79"):
+        if mode in ("swap", "swap79", "vswap", "lenswap"):
             with self.server.uploads_lock:
                 seen = self.server.swap_gets.get(local, 0) + 1
                 self.server.swap_gets[local] = seen
@@ -687,6 +785,11 @@ class Handler(BaseHTTPRequestHandler):
                 if int(q["partNumber"]) >= first:
                     self._deny(code, "InternalError")
                     return
+            # S3 numbers parts 1 to 10000 and refuses any other number with
+            # 400 InvalidArgument (#1857).
+            if not 1 <= int(q["partNumber"]) <= 10000:
+                self._deny(400, "InvalidArgument")
+                return
             up["parts"][int(q["partNumber"])] = self._body
             _hook_sleep(self.server.rootdir, "__part_delay__")
             etag = hashlib.md5(self._body).hexdigest()
@@ -702,6 +805,7 @@ class Handler(BaseHTTPRequestHandler):
             if os.path.relpath(local, self.server.rootdir) == key:
                 self._deny(int(code), "AccessDenied")
                 return
+        _hook_sleep(self.server.rootdir, "__put_hold__")
         os.makedirs(os.path.dirname(local), exist_ok=True)
         with open(local, "wb") as f:
             f.write(self._body)
@@ -731,6 +835,29 @@ class Handler(BaseHTTPRequestHandler):
             body = ("<?xml version=\"1.0\"?><InitiateMultipartUploadResult>"
                     "<UploadId>%s</UploadId>"
                     "</InitiateMultipartUploadResult>" % uid).encode()
+            unframed = _hook_text(self.server.rootdir, "__uploads_unframed__")
+            if unframed in ("close", "http10"):
+                if unframed == "close":
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\n"
+                                     b"Content-Type: application/xml\r\n\r\n" + body)
+                    self.wfile.flush()
+                    # end the body for the client, but keep reading, so a
+                    # request sent on this connection shows as REUSED
+                    self.connection.shutdown(socket.SHUT_WR)
+                else:
+                    self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: %d\r\n\r\n"
+                                     % len(body) + body)
+                    self.wfile.flush()
+                self.close_connection = True
+                self.connection.settimeout(5)
+                try:
+                    line = self.rfile.readline(65537)
+                except OSError:
+                    line = b""
+                if line:
+                    with open(self.server.reqlog, "a") as f:
+                        f.write("REUSED %s\n" % line.decode("latin-1").strip())
+                return
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -798,6 +925,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
         elif os.path.isfile(local):
             os.unlink(local)
+        idle = _hook_text(self.server.rootdir, "__delete_unframed__")
+        if idle is not None:
+            self.wfile.write(b"HTTP/1.1 204 No Content\r\nDate: %s\r\n\r\n"
+                             % self.date_time_string().encode())
+            self.wfile.flush()
+            # the next read on this connection times out after `idle` seconds,
+            # and the base handler then closes the connection
+            self.connection.settimeout(float(idle) if idle else 8.0)
+            return
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -808,6 +944,15 @@ def _write_open_uploads(srv):
     with open(os.path.join(srv.rootdir, "__open_uploads__"), "w") as f:
         for up in srv.uploads.values():
             f.write(os.path.relpath(up["local"], srv.rootdir) + "\n")
+
+
+def _hook_text(rootdir, name):
+    # The stripped text of <rootdir>/<name>, or None when it does not exist.
+    try:
+        with open(os.path.join(rootdir, name)) as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
 
 
 def _hook_sleep(rootdir, name):
@@ -858,6 +1003,7 @@ def main():
     srv.uploads_lock = threading.Lock()
     srv.swap_gets = {}
     srv.fickle_seq = 0
+    srv.versions = {}
     srv.upload_seq = 0
     for key in args.seed_upload:
         srv.upload_seq += 1

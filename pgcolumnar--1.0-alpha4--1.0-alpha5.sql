@@ -2177,3 +2177,41 @@ CREATE AGGREGATE pgcolumnar.approx_count_distinct(anyelement) (
 
 COMMENT ON AGGREGATE pgcolumnar.approx_count_distinct(anyelement)
 	IS 'approximate count of distinct non-NULL values: HyperLogLog, 2048 registers, standard error about 2.3% (#1309)';
+
+-- #1865: the namespace as a text[] of levels, so a level may hold a dot. The
+-- text forms above split their namespace on every dot.
+CREATE FUNCTION pgcolumnar.iceberg_rest_table_location(catalog_uri text,
+													   namespace text[],
+													   table_name text)
+	RETURNS text
+	LANGUAGE C STRICT
+	AS 'MODULE_PATHNAME', 'pgcolumnar_iceberg_rest_table_location_levels';
+
+COMMENT ON FUNCTION pgcolumnar.iceberg_rest_table_location(text, text[], text)
+	IS 'resolve the current metadata-location of a table named by an Iceberg REST catalog; the namespace is a text[] of levels, so a level may hold a dot (#1865)';
+
+CREATE FUNCTION pgcolumnar.iceberg_rest_scan(catalog_uri text,
+											 namespace text[],
+											 table_name text)
+	RETURNS SETOF record
+	LANGUAGE C STRICT
+	AS 'MODULE_PATHNAME', 'pgcolumnar_iceberg_rest_scan_levels';
+
+COMMENT ON FUNCTION pgcolumnar.iceberg_rest_scan(text, text[], text)
+	IS 'read a table named by an Iceberg REST catalog at its current snapshot; the namespace is a text[] of levels, so a level may hold a dot; supply a column definition list (#1865)';
+
+CREATE FUNCTION pgcolumnar.iceberg_rest_namespace_levels(catalog_uri text)
+	RETURNS SETOF text[]
+	LANGUAGE C STRICT
+	AS 'MODULE_PATHNAME', 'pgcolumnar_iceberg_rest_namespace_levels';
+
+COMMENT ON FUNCTION pgcolumnar.iceberg_rest_namespace_levels(text)
+	IS 'list the namespaces of an Iceberg REST catalog, one per row, each as a text[] of its levels; a row passes back as the namespace argument of the other iceberg_rest_* functions, except a row with a level that holds the catalog''s namespace separator, which they refuse with 22023 (#1865)';
+
+CREATE FUNCTION pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text[])
+	RETURNS SETOF text
+	LANGUAGE C STRICT
+	AS 'MODULE_PATHNAME', 'pgcolumnar_iceberg_rest_tables_levels';
+
+COMMENT ON FUNCTION pgcolumnar.iceberg_rest_tables(text, text[])
+	IS 'list the table names in a namespace of an Iceberg REST catalog, one per row; the namespace is a text[] of levels, so a level may hold a dot (#1865)';

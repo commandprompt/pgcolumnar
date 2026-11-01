@@ -279,6 +279,95 @@ def _cancel_run(dsn, s3log, bucket, r):
     r["cx open"] = _open_uploads(bucket.parent, r"^pgc-bucket/cx/")
 
 
+def _hold_run(dsn, s3log, bucket, r):
+    """The shell's #1864 arm: the fixture holds every single-request PUT for 3 s after
+    its body arrives and only then writes the object (__put_hold__), as a store that
+    applies a commit late. A 4-worker export is cancelled once all four part PUTs have
+    arrived. The dispatcher must wait for the terminated workers to exit before it
+    deletes the part keys, or the held parts appear after the DELETEs and stay."""
+    out = {}
+
+    def run():
+        try:
+            with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+                conn.execute("SELECT pgcolumnar.parallel_export_parquet("
+                             f"'es_par'::regclass, 's3://{BUCKET}/ch', 4)").fetchall()
+            out["result"] = "completed"
+        except psycopg.Error as exc:
+            out["result"] = str(exc)
+
+    hold = bucket.parent / "__put_hold__"
+    shutil.rmtree(bucket / "ch", ignore_errors=True)
+    open(s3log, "w").close()
+    hold.write_text("3\n")
+    try:
+        bg = threading.Thread(target=run)
+        bg.start()
+        puts = 0
+        for _ in range(300):
+            puts = _logn(s3log, r"^PUT /pgc-bucket/ch/part-")
+            if isinstance(puts, int) and puts >= 4:
+                break
+            time.sleep(0.1)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("SELECT pg_cancel_backend(pid) FROM pg_stat_activity "
+                      "WHERE query LIKE '%parallel_export_parquet%' AND state = 'active' "
+                      "AND pid <> pg_backend_pid()")
+        bg.join(600)
+        time.sleep(4)   # a held PUT lands 3 s after it arrived
+    finally:
+        hold.unlink(missing_ok=True)
+    r["ch puts"] = ("yes" if puts >= 4 else f"no ({puts} part PUTs)") if isinstance(puts, int) else puts
+    res = out.get("result", "still running")
+    r["ch cancelled"] = ("cancelled" if re.search(r"canceling statement|canceled on user request", res, re.I)
+                         else f"completed ({res.splitlines()[0] if res else res})")
+    r["ch parts"] = str(_parts(bucket / "ch"))
+
+
+def _long_hold_run(dsn, s3log, bucket, r):
+    """The shell's #1864 review arm: the fixture holds every single-request PUT for
+    12 s, so each terminated worker outlives the dispatcher's 5 s wait. The cancel
+    waited twice, before the DELETEs and again before the upload abort, about 10 s
+    in all. One wait is enough: the cancel must return within 8 s."""
+    out = {}
+
+    def run():
+        try:
+            with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+                conn.execute("SELECT pgcolumnar.parallel_export_parquet("
+                             f"'es_par'::regclass, 's3://{BUCKET}/cl', 4)").fetchall()
+            out["result"] = "completed"
+        except psycopg.Error as exc:
+            out["result"] = str(exc)
+
+    hold = bucket.parent / "__put_hold__"
+    shutil.rmtree(bucket / "cl", ignore_errors=True)
+    open(s3log, "w").close()
+    hold.write_text("12\n")
+    try:
+        bg = threading.Thread(target=run)
+        bg.start()
+        for _ in range(300):
+            puts = _logn(s3log, r"^PUT /pgc-bucket/cl/part-")
+            if isinstance(puts, int) and puts >= 4:
+                break
+            time.sleep(0.1)
+        t0 = time.monotonic()
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("SELECT pg_cancel_backend(pid) FROM pg_stat_activity "
+                      "WHERE query LIKE '%parallel_export_parquet%' AND state = 'active' "
+                      "AND pid <> pg_backend_pid()")
+        bg.join(600)
+        ms = int((time.monotonic() - t0) * 1000)
+        time.sleep(12)  # a held PUT lands 12 s after it arrived
+    finally:
+        hold.unlink(missing_ok=True)
+    res = out.get("result", "still running")
+    r["cl cancelled"] = ("cancelled" if re.search(r"canceling statement|canceled on user request", res, re.I)
+                         else f"completed ({res.splitlines()[0] if res else res})")
+    r["cl wait"] = "at most 8000 ms" if ms <= 8000 else f"{ms} ms"
+
+
 WORKERS = "backend_type = 'pgcolumnar parallel_export worker'"
 
 
@@ -447,6 +536,13 @@ def _plain_run(dsn, work, r, procs):
     r["plain inject started"] = ("yes" if n >= 1 else f"no (starts={n})") if isinstance(n, int) else n
     r["plain inject open"] = _open_uploads(pdir, r"^pb/fail\.parquet$")
 
+    # #1832: an http:// prefix cannot be listed either, so it is refused before any
+    # worker starts too
+    open(plog, "w").close()
+    px = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, '{url}/px', 2)",
+                  "parallel_export_parquet cannot write to", " by the scheme check")
+    r["plain px"] = f"{px}, {_logn(plog, r'/pb/px/')} requests"
+
 
 @pytest.fixture(scope="module")
 def osw(pgc_cluster):
@@ -553,6 +649,23 @@ def osw(pgc_cluster):
         r["part started"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
         r["part open"] = _open_uploads(work, r"^pgc-bucket/partfail\.parquet$")
 
+        # #1830 review: the abort DELETE is answered 204 with no Content-Length and the
+        # connection kept open, as Garage answers it (__delete_unframed__); the fixture
+        # closes it after 8 s of quiet, so the export must return well inside that
+        open(s3log, "w").close()
+        (work / "__delete_unframed__").write_text("8\n")
+        (work / "__part_status__").write_text("500 2\n")
+        t0 = time.monotonic()
+        r["ab204"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/abort204.parquet')",
+                              "uploading a part of", " by the part check", setup=[PART])
+        ms = int((time.monotonic() - t0) * 1000)
+        (work / "__part_status__").unlink()
+        (work / "__delete_unframed__").unlink()
+        n = _logn(s3log, r"^DELETE /pgc-bucket/abort204.parquet uploadId=")
+        r["ab204 deletes"] = str(n) if isinstance(n, int) else n
+        r["ab204 prompt"] = "yes" if ms <= 4000 else f"no, after {ms} ms"
+        r["ab204 open"] = _open_uploads(work, r"^pgc-bucket/abort204\.parquet$")
+
         # taxonomy
         r["allow"] = _refusal(dsn, "SELECT pgcolumnar.export_parquet('es_small', 'http://127.0.0.2:1/x.parquet')",
                               "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list")
@@ -561,6 +674,49 @@ def osw(pgc_cluster):
         _row(dsn, f"SELECT pgcolumnar.export_arrow('es_small', 's3://{BUCKET}/small.arrow')")
         _row(dsn, f"SELECT pgcolumnar.import_arrow('es_arrow_back', '{bucket}/small.arrow')")
         r["arrow back"] = _set_hash(dsn, "SELECT * FROM es_arrow_back")
+
+        # #1830: CreateMultipartUpload answered with no length the client can count on
+        # (__uploads_unframed__): a body that ends at connection close, then an
+        # HTTP/1.0 reply whose connection does not persist
+        open(s3log, "w").close()
+        (work / "__uploads_unframed__").write_text("close\n")
+        r["uc export"] = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/uc.parquet')",
+                              setup=[PART])
+        (work / "__uploads_unframed__").unlink()
+        n = _logn(s3log, r"^POST /pgc-bucket/uc.parquet uploads=")
+        r["uc creates"] = str(n) if isinstance(n, int) else n
+        # the fixture shuts down only its sending side, so it logs REUSED for a
+        # request the export sends on that connection (#1830 review)
+        reused = [ln for ln in pathlib.Path(s3log).read_text(errors="replace").splitlines()
+                  if ln.startswith("REUSED ")]
+        r["uc reused"] = f"{len(reused)} reused ({reused[0] if reused else 'none'})"
+        r["uc back"] = _set_hash(dsn, f"SELECT * FROM pgcolumnar.read_parquet('s3://{BUCKET}/uc.parquet') "
+                                      "AS t(id int8, pad text)")
+        r["uc gen"] = _set_hash(dsn, GEN_BIG)
+        open(s3log, "w").close()
+        (work / "__uploads_unframed__").write_text("http10\n")
+        r["u10 export"] = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/u10.parquet')",
+                               setup=[PART])
+        (work / "__uploads_unframed__").unlink()
+        n = _logn(s3log, r"^POST /pgc-bucket/u10.parquet uploads=")
+        r["u10 creates"] = str(n) if isinstance(n, int) else n
+        reused = [ln for ln in pathlib.Path(s3log).read_text(errors="replace").splitlines()
+                  if ln.startswith("REUSED ")]
+        r["u10 reused"] = f"{len(reused)} reused ({reused[0] if reused else 'none'})"
+
+        # #1857: an upload holds parts 1 to 10000; 1 KiB parts need more
+        open(s3log, "w").close()
+        r["many"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/many.parquet')",
+                             "more than 10000 parts", " by the part limit",
+                             setup=["SET pgcolumnar.objstore_part_size = 1024"])
+        nums = [int(m.group(1)) for ln in pathlib.Path(s3log).read_text(errors="replace").splitlines()
+                if ln.startswith("PUT /pgc-bucket/many.parquet ")
+                for m in [re.search(r"partNumber=([0-9]+)", ln)] if m]
+        r["many low"] = str(sum(1 for n in nums if n <= 10000))
+        r["many high"] = sum(1 for n in nums if n > 10000)
+        r["many open"] = int(_open_uploads(work, r"^pgc-bucket/many\.parquet$"))
+        mk = bucket / "many.parquet"
+        r["many key"] = f"present ({mk.stat().st_size} bytes)" if mk.exists() else "absent"
 
         # step 4: parallel export to an s3:// prefix
         with psycopg.connect(dsn, autocommit=True) as c:
@@ -729,6 +885,21 @@ def osw(pgc_cluster):
         r["bb root parts"] = str(sum(1 for p in bucket.iterdir()
                                      if p.is_file() and re.search(r"^part-.*\.parquet$", p.name)))
 
+        # #1832: only an s3:// prefix can be listed, and the export lists its prefix
+        # after the workers finish. A gs:// export is refused before any worker starts.
+        open(s3log, "w").close()
+        gs = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 'gs://{BUCKET}/gx', 2)",
+                      "parallel_export_parquet cannot write to", " by the scheme check")
+        r["gs refused"] = f"{gs}, {_logn(s3log, r'gx/part-')} requests"
+
+        # #1849: a prefix too long for the longest generated name is refused before any
+        # worker starts, so the upload cleanup never lists a truncated "<prefix>/"
+        open(s3log, "w").close()
+        longp = f"s3://{BUCKET}/" + "L" * (1023 - len(BUCKET) - 6)
+        lp = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, '{longp}', 2)",
+                      "parallel export destination is too long", " (too long)")
+        r["long prefix"] = f"{lp}, {len(longp)} bytes, {_logn(s3log, r'^[A-Z]+ /pgc-bucket/LLLL')} requests"
+
         # #1780: the workers obey the calling session's settings, not only the system's
         open(s3log, "w").close()
         r["sa refused"] = _refusal(
@@ -767,6 +938,8 @@ def osw(pgc_cluster):
             c.execute("INSERT INTO es_parbig SELECT g, md5(g::text)||md5((g+1)::text) "
                       "FROM generate_series(1,3000000) g")
         _cancel_run(dsn, s3log, bucket, r)
+        _hold_run(dsn, s3log, bucket, r)
+        _long_hold_run(dsn, s3log, bucket, r)
         _silent_run(dsn, s3log, bucket, srv, r)
         _plain_run(dsn, work, r, plain)
         # A 403 from an http(s):// target cannot be about AWS_* credentials: those
@@ -779,6 +952,47 @@ def osw(pgc_cluster):
         # secret, so this correctly signed export is refused as a wrong secret would be.
         r["signed 403 hint"] = _hint(dsn, "SELECT pgcolumnar.export_parquet('es_small', "
                                           f"'s3://{DENIED_BUCKET}/denied.parquet')")
+        # #1831: the refusal of a scheme the export cannot use says only an s3:// prefix
+        # can be listed, not that a remote prefix cannot be listed at all
+        r["az hint"] = _hint(dsn, "SELECT pgcolumnar.parallel_export_parquet("
+                                  "'es_par'::regclass, 'az://container/out', 2)")
+
+        # #1857: AWS S3 and GCS refuse a part under 5 MiB except the last. The
+        # allow-list (127.0.0.1) refuses any connection to these endpoints, so a
+        # request the export does send shows as its 42501.
+        _restart(cluster, datadir, log, {"AWS_ENDPOINT_URL": "http://s3.us-east-1.amazonaws.com",
+                                         "AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET,
+                                         "AWS_REGION": "us-east-1"})
+        r["min aws"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min.parquet')",
+                                "below the 5 MiB minimum", " by the part minimum", setup=[PART])
+        r["min one part"] = _refusal(dsn, "SELECT pgcolumnar.export_parquet('es_small', "
+                                          f"'s3://{BUCKET}/min1.parquet')",
+                                     "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list",
+                                     setup=[PART])
+        r["min 5 MiB"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min5.parquet')",
+                                  "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list",
+                                  setup=["SET pgcolumnar.objstore_part_size = 5242880"])
+        _restart(cluster, datadir, log, {"AWS_ENDPOINT_URL": "http://s3.cn-north-1.amazonaws.com.cn",
+                                         "AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET,
+                                         "AWS_REGION": "cn-north-1"})
+        r["min cn"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min.parquet')",
+                               "below the 5 MiB minimum", " by the part minimum", setup=[PART])
+        # Cloudflare R2 documents the same 5 MiB minimum (#1830 review)
+        _restart(cluster, datadir, log, {"AWS_ENDPOINT_URL": "http://0123456789abcdef.r2.cloudflarestorage.com",
+                                         "AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET,
+                                         "AWS_REGION": "auto"})
+        r["min r2"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min.parquet')",
+                               "below the 5 MiB minimum", " by the part minimum", setup=[PART])
+        # a host that ends in the letters "amazonaws.com" without the dot is another domain
+        _restart(cluster, datadir, log, {"AWS_ENDPOINT_URL": "http://notamazonaws.com",
+                                         "AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET,
+                                         "AWS_REGION": "us-east-1"})
+        r["min not aws"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min.parquet')",
+                                    "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list",
+                                    setup=[PART])
+        _restart(cluster, datadir, log, {"AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET})
+        r["min gs"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 'gs://{BUCKET}/min.parquet')",
+                               "below the 5 MiB minimum", " by the part minimum", setup=[PART])
 
         # optional: a real S3 implementation, the shell's last arm. The endpoint's host
         # replaces the fixture's in the allow-list, and the cluster restarts with its
@@ -911,6 +1125,24 @@ def test_the_part_failure_landed_mid_multipart(osw, expect):
 
 def test_a_refused_part_leaves_no_open_upload(osw, expect):
     expect.text(osw["part open"], "0", "part failure: the server holds no open upload for the key")
+
+
+def test_an_unframed_204_abort_still_fails_the_export(osw, expect):
+    # #1830 review
+    expect.text(osw["ab204"], "58030 by the part check", "unframed 204: a refused part fails the export (58030)")
+
+
+def test_the_unframed_204_export_sent_one_abort(osw, expect):
+    expect.text(osw["ab204 deletes"], "1", "premise: unframed 204: the export sent one abort DELETE")
+
+
+def test_an_abort_answered_204_with_no_length_returns_promptly(osw, expect):
+    expect.text(osw["ab204 prompt"], "yes",
+                "unframed 204: the export returned within 4 s when its abort was answered 204 with no Content-Length")
+
+
+def test_the_unframed_204_abort_leaves_no_open_upload(osw, expect):
+    expect.text(osw["ab204 open"], "0", "unframed 204: the server holds no open upload for the key")
 
 
 def test_an_unlisted_endpoint_is_refused_by_the_allow_list(osw, expect):
@@ -1188,6 +1420,33 @@ def test_no_upload_stays_open_after_the_cancel(osw, expect):
     expect.text(osw["cx open"], "0", "cancel: the server holds no open upload under the prefix")
 
 
+def test_all_four_part_puts_reached_the_store_before_the_cancel(osw, expect):
+    expect.text(osw["ch puts"], "yes",
+                "premise: commit hold: all four part PUTs reached the store before the cancel")
+
+
+def test_the_commit_hold_export_was_cancelled_not_completed(osw, expect):
+    expect.text(osw["ch cancelled"], "cancelled",
+                "premise: commit hold: the export was cancelled, not completed")
+
+
+def test_a_cancel_leaves_no_part_a_worker_was_committing(osw, expect):
+    # #1864: the dispatcher deleted the part keys before the terminated workers' held
+    # commits were applied, so the parts appeared afterwards and stayed
+    expect.text(osw["ch parts"], "0", "commit hold: a cancel leaves no part that a worker was committing")
+
+
+def test_the_long_hold_export_was_cancelled_not_completed(osw, expect):
+    expect.text(osw["cl cancelled"], "cancelled",
+                "premise: long hold: the export was cancelled, not completed")
+
+
+def test_a_cancel_waits_for_the_workers_once(osw, expect):
+    # #1864 review: the cancel waited up to 5 s before the DELETEs and again before
+    # the upload abort, so a store that never answered held it about 10 s
+    expect.text(osw["cl wait"], "at most 8000 ms", "long hold: a cancel waits for the workers once, not twice")
+
+
 def test_terminated_workers_exit_while_the_store_is_silent(osw, expect):
     # #1727 review: the exit callback's abort waits in slices that time out, so the 60 s
     # quiet limit ends it; a silent store cannot hold a terminated worker
@@ -1256,6 +1515,123 @@ def test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials(osw, expect
     expect.text(osw["signed 403 hint"],
                 "Check the AWS_* credential environment of the server process.",
                 "s3:// 403: a signed request that is refused still hints to check AWS_* credentials")
+
+
+def test_a_parallel_export_to_gs_is_refused_before_any_worker_starts(osw, expect):
+    # #1832: it uploaded every part and then failed at the s3://-only listing
+    expect.text(osw["gs refused"], "0A000 by the scheme check, 0 requests",
+                "gs:// prefix: a parallel export is refused before any worker starts, with no request sent")
+
+
+def test_a_parallel_export_to_http_is_refused_before_any_worker_starts(osw, expect):
+    # #1832: the same for an http:// prefix
+    expect.text(osw["plain px"], "0A000 by the scheme check, 0 requests",
+                "http:// prefix: a parallel export is refused before any worker starts, with no request sent")
+
+
+def test_a_1023_byte_prefix_is_refused_as_too_long(osw, expect):
+    # #1849: the upload cleanup's "<prefix>/" never meets a prefix this long
+    expect.text(osw["long prefix"], "54000 (too long), 1023 bytes, 0 requests",
+                "long prefix: a 1023-byte s3:// prefix is refused as too long, with no request sent")
+
+
+def test_the_unsupported_scheme_hint_says_only_s3_can_be_listed(osw, expect):
+    # #1831: the hint said a remote prefix cannot be listed at all
+    expect.text(osw["az hint"],
+                "The export lists its prefix to delete stale parts that an earlier, larger export left, "
+                "and only an s3:// prefix can be listed. Use an s3:// prefix or a local directory.",
+                "unsupported scheme: the parallel export's hint says only an s3:// prefix can be listed")
+
+
+def test_an_unframed_upload_id_reply_still_starts_the_upload(osw, expect):
+    # #1830: the reply ends when the server closes the connection
+    expect.text(osw["uc export"], "400000",
+                "unframed reply: a multipart export succeeds when the UploadId reply ends at connection close")
+
+
+def test_the_unframed_reply_export_sent_one_create(osw, expect):
+    expect.text(osw["uc creates"], "1", "premise: unframed reply: the export sent CreateMultipartUpload once")
+
+
+def test_no_request_reuses_the_connection_a_close_delimited_reply_ended(osw, expect):
+    # #1830 review
+    expect.text(osw["uc reused"], "0 reused (none)",
+                "unframed reply: no request went on the connection the close-delimited reply ended")
+
+
+def test_the_unframed_reply_object_reads_back_as_the_generator(osw, expect):
+    expect.text(osw["uc back"], osw["uc gen"], "unframed reply: the object reads back as the generator")
+
+
+def test_an_http10_upload_id_reply_still_starts_the_upload(osw, expect):
+    expect.text(osw["u10 export"], "400000", "HTTP/1.0 reply: a multipart export succeeds")
+
+
+def test_the_http10_reply_export_sent_one_create(osw, expect):
+    expect.text(osw["u10 creates"], "1", "premise: HTTP/1.0 reply: the export sent CreateMultipartUpload once")
+
+
+def test_no_request_reuses_the_connection_an_http10_reply_ended(osw, expect):
+    expect.text(osw["u10 reused"], "0 reused (none)",
+                "HTTP/1.0 reply: no request went on the connection the HTTP/1.0 reply ended")
+
+
+def test_an_export_needing_more_than_10000_parts_is_refused(osw, expect):
+    # #1857
+    expect.text(osw["many"], "54000 by the part limit",
+                "part limit: an export that needs more than 10000 parts is refused by the part limit (54000)")
+
+
+def test_the_part_limit_export_uploaded_parts_1_to_10000(osw, expect):
+    expect.text(osw["many low"], "10000", "part limit: the export uploaded parts 1 to 10000")
+
+
+def test_no_part_above_10000_is_sent(osw, expect):
+    expect.num(osw["many high"], 0, "part limit: no part numbered above 10000 was sent")
+
+
+def test_the_part_limit_leaves_no_open_upload(osw, expect):
+    expect.num(osw["many open"], 0, "part limit: the server holds no open upload for the key")
+
+
+def test_the_part_limit_leaves_no_object(osw, expect):
+    expect.text(osw["many key"], "absent", "part limit: the key does not exist")
+
+
+def test_aws_s3_refuses_parts_below_5_mib_before_the_upload(osw, expect):
+    expect.text(osw["min aws"], "22023 by the part minimum",
+                "part minimum: an export to AWS S3 with 256 KiB parts is refused before the upload starts (22023)")
+
+
+def test_a_one_part_export_to_aws_s3_is_not_refused_by_the_part_minimum(osw, expect):
+    expect.text(osw["min one part"], "42501 by the allow-list",
+                "part minimum: a one-part export to AWS S3 is not refused by the part minimum")
+
+
+def test_5_mib_parts_to_aws_s3_are_not_refused_by_the_part_minimum(osw, expect):
+    expect.text(osw["min 5 MiB"], "42501 by the allow-list",
+                "part minimum: an export to AWS S3 with 5 MiB parts is not refused by the part minimum")
+
+
+def test_aws_s3_in_china_refuses_parts_below_5_mib(osw, expect):
+    expect.text(osw["min cn"], "22023 by the part minimum",
+                "part minimum: an export to AWS S3 in China (amazonaws.com.cn) with 256 KiB parts is refused (22023)")
+
+
+def test_cloudflare_r2_refuses_parts_below_5_mib(osw, expect):
+    # #1830 review
+    expect.text(osw["min r2"], "22023 by the part minimum",
+                "part minimum: an export to Cloudflare R2 (r2.cloudflarestorage.com) with 256 KiB parts is refused (22023)")
+
+
+def test_a_host_only_ending_in_amazonaws_com_is_not_refused_by_the_part_minimum(osw, expect):
+    expect.text(osw["min not aws"], "42501 by the allow-list",
+                "part minimum: an export to notamazonaws.com with 256 KiB parts is not refused by the part minimum")
+
+
+def test_gcs_refuses_parts_below_5_mib(osw, expect):
+    expect.text(osw["min gs"], "22023 by the part minimum",
+                "part minimum: a gs:// export at the default GCS endpoint with 256 KiB parts is refused (22023)")
 
 
 _NO_REAL_S3 = ("PGC_S3_INTEGRATION_ENDPOINT names no real S3 implementation, so the shell "

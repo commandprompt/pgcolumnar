@@ -37,6 +37,15 @@
 # but NUL. Each refusal wants 22021 and the reader's message, which names the
 # column and the first bad bytes, as core's own message does.
 #
+# A FOOTER THAT DOES NOT MATCH ITS PAGES (#1855, #1852). A column whose footer
+# says REQUIRED, while its pages carry definition levels, used to read the levels
+# as values. So did a repetition_type that is no valid value. Both are refused now,
+# and so is a list group marked OPTIONAL whose pages carry repetition levels.
+#
+# INT96 VALUES THAT ARE NOT TIMESTAMPS (#1870). Nanoseconds outside the day, a
+# Julian day before timestamp's range, and a page shorter than its num_values
+# are each refused; a value refusal names both parts of the INT96 value.
+#
 # Usage:  test/native_parquet_hardening.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -227,6 +236,87 @@ check "parquet_schema still describes a bad chunk list" \
 check "valid two-column file still reads" \
 	"$(qw "SELECT string_agg(a || '|' || b, ' ' ORDER BY a) FROM pgcolumnar.read_parquet('$W/two.parquet') AS t(a int4, b int4);")" "1|4 2|5 3|6"
 
+# ---- a repetition_type that does not match the pages (#1855) ---------------
+# The crafter changed the `id` column's repetition_type in the footer: REQUIRED in
+# rep_required.parquet, and 7, which is no repetition_type, in rep_invalid.parquet.
+# The pages still carry definition levels. The reader used to decode those levels
+# as values and return 3000/3019995 instead of 3000/4498500, with no error. The
+# REQUIRED file is refused by its level histogram, which no longer fits the schema;
+# the invalid value is refused when the footer is read.
+# rep_verdict SQL DETAIL SQLSTATE -> "CLEAN REJECT" when SQL raised SQLSTATE with
+# DETAIL, else the ERROR and DETAIL lines it raised (the ERROR line carries its
+# SQLSTATE), or NO ERROR and the rows it returned.
+rep_verdict() {
+	local out
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c '\set VERBOSITY verbose' -c "$1" 2>&1)"
+	case "$out" in
+		*"ERROR:  $3:"*"DETAIL:  $2"*) echo "CLEAN REJECT" ;;
+		*ERROR*) printf '%s' "$out" | grep -E '^(ERROR|DETAIL):' | tr '\n' ' ' ;;
+		*) echo "NO ERROR: $out" ;;
+	esac
+}
+REP_SUM="SELECT count(*) || '/' || sum(id) FROM pgcolumnar.read_parquet"
+REP_HIST='Row group 0 column 0 ("id") has a definition level histogram of 2 entries, but the schema gives it a maximum definition level of 0.'
+REP_ENUM='Schema element "id" has repetition_type 7; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).'
+check "the unchanged repetition file reads 3000/4498500" \
+	"$(qw "$REP_SUM('$W/rep_base.parquet') AS t(id bigint, name text);")" "3000/4498500"
+check "repetition_type REQUIRED over optional pages is refused" \
+	"$(rep_verdict "$REP_SUM('$W/rep_required.parquet') AS t(id bigint, name text);" "$REP_HIST" XX001)" \
+	"CLEAN REJECT"
+check "repetition_type that is not 0, 1 or 2 is refused" \
+	"$(rep_verdict "$REP_SUM('$W/rep_invalid.parquet') AS t(id bigint, name text);" "$REP_ENUM" XX001)" \
+	"CLEAN REJECT"
+psql_run "CREATE TABLE imp_rep (id bigint, name text);"
+check "import_parquet refuses repetition_type REQUIRED over optional pages" \
+	"$(rep_verdict "SELECT pgcolumnar.import_parquet('imp_rep'::regclass, '$W/rep_required.parquet');" "$REP_HIST" XX001)" \
+	"CLEAN REJECT"
+
+# ---- a repetition_type that does not match the repetition levels (#1855) ---
+# lst_optional.parquet is lst_base.parquet, a list<int64> column, with its `list`
+# group marked OPTIONAL instead of REPEATED. The definition levels still fit the
+# schema; the chunk's repetition level histogram of 2 entries does not, since the
+# schema now gives `element` a maximum repetition level of 0. The base file reads,
+# so a check that refuses every repetition histogram fails here.
+LST_HIST='Row group 0 column 0 ("element") has a repetition level histogram of 2 entries, but the schema gives it a maximum repetition level of 0.'
+LST_AGG="SELECT string_agg(coalesce(l::text, 'null'), ' ' ORDER BY l NULLS LAST) FROM pgcolumnar.read_parquet"
+check "the unchanged list file reads {} {1,2} {3} {4,5,6} null" \
+	"$(qw "$LST_AGG('$W/lst_base.parquet') AS t(l bigint[]);")" "{} {1,2} {3} {4,5,6} null"
+check "a list group marked OPTIONAL over repeated pages is refused" \
+	"$(rep_verdict "$LST_AGG('$W/lst_optional.parquet') AS t(l bigint[]);" "$LST_HIST" XX001)" \
+	"CLEAN REJECT"
+check "a list group marked OPTIONAL over repeated pages is refused into a scalar column" \
+	"$(rep_verdict "SELECT count(*) || '/' || count(l) FROM pgcolumnar.read_parquet('$W/lst_optional.parquet') AS t(l bigint);" "$LST_HIST" XX001)" \
+	"CLEAN REJECT"
+
+# ---- INT96 values that are not timestamps (#1870) ---------------------------
+# The crafter patched the second of three values in a REQUIRED, PLAIN INT96
+# column: nanoseconds of one whole day, nanoseconds of -1, and Julian day -1.
+# No valid INT96 value has any of them. Each read wants 22008 and a DETAIL that
+# names both parts. count(t) needs no output function, so only the reader can
+# raise. i96_short.parquet says its page of 3 values is 24 bytes long, not 36:
+# the third value lies past the page's end, and must not be read from there.
+I96_CNT="SELECT count(*) || '/' || count(t) FROM pgcolumnar.read_parquet"
+check "the unpatched REQUIRED INT96 file reads its 3 values" \
+	"$(qw "$I96_CNT('$W/i96_req.parquet') AS t(t timestamptz);")" "3/3"
+check "INT96 nanoseconds of a whole day are refused" \
+	"$(rep_verdict "$I96_CNT('$W/i96_nanos_day.parquet') AS t(t timestamptz);" \
+		'The Parquet file stores an INT96 timestamp of Julian day 2461246 and 86400000000000 nanoseconds, which cannot be represented as timestamp with time zone.' 22008)" \
+	"CLEAN REJECT"
+check "INT96 nanoseconds of -1 are refused" \
+	"$(rep_verdict "$I96_CNT('$W/i96_nanos_neg.parquet') AS t(t timestamptz);" \
+		'The Parquet file stores an INT96 timestamp of Julian day 2461246 and -1 nanoseconds, which cannot be represented as timestamp with time zone.' 22008)" \
+	"CLEAN REJECT"
+check "INT96 Julian day -1 is refused" \
+	"$(rep_verdict "$I96_CNT('$W/i96_jday_neg.parquet') AS t(t timestamptz);" \
+		'The Parquet file stores an INT96 timestamp of Julian day -1 and 123456789 nanoseconds, which cannot be represented as timestamp with time zone.' 22008)" \
+	"CLEAN REJECT"
+check "an INT96 page shorter than its num_values is refused" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		-c '\set VERBOSITY verbose' -c "$I96_CNT('$W/i96_short.parquet') AS t(t timestamptz);" 2>&1 |
+		grep -E '^(ERROR|DETAIL):|^[0-9]+/[0-9]+$' | tr '\n' ' ')" \
+	"ERROR:  XX001: could not decode Parquet column 0 in row group 0 "
 
 # ---- malformed footer Thrift (#1822) ----------------------------------------
 # The crafter decoded a good 3000-row file's footer and wrote variants of it. A
@@ -325,6 +415,16 @@ check "footer: a list of bytes that runs off the footer is refused at once" \
 	"$(footer_timed byte_list_off_end)" "$UNPARSED within 3 s"
 check "footer: a list of doubles that runs off the footer is refused at once" \
 	"$(footer_timed double_list_off_end)" "$UNPARSED within 3 s"
+# The `id` schema element without its name, a required field. A changed byte that
+# ends the element early leaves the rest of the footer read as something else.
+check "footer: a schema element with no name is refused" "$(footer_read no_schema_name)" "$UNPARSED"
+# The `id` element's repetition_type set to 2^32, and the level histograms dropped.
+# A cast to int read 2^32 as 0 (REQUIRED), and the definition levels then read as
+# values. The file without histograms, and nothing else changed, still reads.
+check "footer: the file without level histograms still reads" "$(footer_read rep_nohist)" "NO ERROR: 3000/4498500"
+check "footer: a repetition_type of 2^32 is refused, not read as REQUIRED" \
+	"$(footer_read rep_wide_nohist)" \
+	'XX001: Parquet file "<file>" has a malformed schema / Schema element "id" has repetition_type 4294967296; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).'
 check "backend survived the malformed footers" "$(survived "$FOOTER_BEFORE")" "1"
 
 # ---- string cells that are not valid in the server encoding (#1821) --------
@@ -388,7 +488,7 @@ ICE_PART_MD="$(ls "$W"/ice_part/db/events/metadata/*.metadata.json 2>/dev/null |
 U8 psql_run "CREATE SERVER ice FOREIGN DATA WRAPPER pgcolumnar_iceberg;
 	CREATE FOREIGN TABLE ev_part (id bigint, region text, amount int)
 		SERVER ice OPTIONS (metadata_path '$ICE_PART_MD');"
-check "premise: the patched-manifest table reads all five rows" \
+check "the patched-manifest table reads all five rows" \
 	"$(U8 qw "SELECT string_agg(id || region, ',' ORDER BY id) FROM ev_part;")" "1eu,2eu,3us,4us,5us"
 check "iceberg FDW reads, not prunes, a file whose partition value is not valid text" \
 	"$(U8 qw "SELECT string_agg(id::text, ',' ORDER BY id) FROM ev_part WHERE region = 'eu';")" "1,2"

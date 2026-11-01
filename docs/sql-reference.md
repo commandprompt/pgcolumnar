@@ -910,7 +910,11 @@ its own `part-NNNN.parquet` file, and `pgcolumnar.read_parquet` reads the whole
 directory back as one relation.
 
 The `path` may also be an `s3://` prefix. Each worker writes one
-`part-NNNN.parquet` object under it, exactly as for a local directory. See
+`part-NNNN.parquet` object under it, exactly as for a local directory. No other
+remote scheme is accepted. The export lists its prefix, as the next sentences
+explain, and only an `s3://` prefix can be listed. So a `gs://`, `http://` or
+`https://` prefix is refused with SQLSTATE 0A000 before any worker starts, and
+nothing is uploaded. See
 [Object storage](#object-storage) for the endpoint and credential rules, which
 are the same as for `export_parquet`. One difference applies to a remote prefix.
 The local path is created and checked for emptiness before the export. A remote
@@ -935,7 +939,15 @@ uncommitted rows. There is no coordinator and no shared write state. If any work
 fails, or the statement is cancelled, the dispatcher removes the files it wrote.
 It also removes them when every worker has finished but a later step fails:
 removing stale parts or writing the `_SUCCESS` marker. Over an `s3://` prefix
-the dispatcher deletes the same objects by key. A worker terminated mid-upload
+the dispatcher deletes the same objects by key. On a cancel or a dispatcher
+error, it first waits up to 5 seconds for the stopped workers to exit. It
+waits for a local directory and an `s3://` prefix alike. A stopped
+worker that was committing its part waits for the store's answer. The store can
+apply that commit after a DELETE sent meanwhile. Waiting puts
+the DELETE after the commit. A local worker that was renaming its finished part
+has renamed it before it exits. A worker that is still running after 5 seconds,
+such as one waiting on a store that does not answer, can still leave its part.
+A worker terminated mid-upload
 can leave one incomplete multipart upload that the dispatcher cannot address.
 Set a bucket lifecycle rule that expires incomplete multipart uploads to reclaim
 it, as [Exporting to object storage](#exporting-to-object-storage)
@@ -982,7 +994,9 @@ can be one of three things. It can be a single file. It can be a directory, and
 then the function reads all the `*.parquet` files below it at any depth as one
 relation, in sorted order. It can also be a glob pattern. A local `path` can be
 any of these. An object-storage URL can be an exact key, and an `s3://` URL can
-also be a prefix or a pattern. See [Object storage](#object-storage).
+also be a prefix or a pattern. A remote prefix ends in `/`. Every remote read,
+of a single key as well as a prefix or pattern, needs the object-store module.
+See [Object storage](#object-storage).
 
 The readers return each value as the declared column type, including its type
 modifier. They apply it as PostgreSQL's input functions do. A `numeric(p,s)`
@@ -1071,6 +1085,20 @@ type) is reported as `timestamp with time zone`. A column of wall times
 advised type reads the value unchanged. See
 [Timestamps and time zones](user-guide.md#read-parquet-files-in-place).
 
+A legacy `INT96` timestamp column, which Spark, Hive and Impala write, is reported
+as `timestamp with time zone`. The reader takes an `INT96` value as an instant in
+UTC, as Spark and Hive write it. Impala writes wall time instead, so its values
+read shifted; see [Limitations](limitations.md#reading-external-parquet). A read keeps
+whole microseconds and drops the nanosecond digits by rounding down. The column
+also reads into `timestamp`, which gets the wall time in the session time zone.
+A value whose nanoseconds fall outside the day, or whose Julian day is outside the
+timestamp range, is refused with SQLSTATE 22008. The DETAIL names both the Julian
+day and the nanoseconds the file stores.
+
+When a reader refuses a declared column type, the message names the function or
+foreign-data wrapper you used, for example
+`column "c" has type money, which pgcolumnar.read_parquet does not support`.
+
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when
 the writer emitted no field id. A field id of 0 is a real value, so a NULL and a 0
@@ -1083,8 +1111,9 @@ SELECT * FROM pgcolumnar.parquet_schema('/data/events.parquet');
 ### pgcolumnar.read_avro_manifest(path text) returns table(status int, content int, file_path text, file_format text, record_count bigint, file_size_in_bytes bigint, partition text, sequence_number bigint)
 
 Decodes an Apache Iceberg Avro manifest file and reports its data-file entries.
-Each row is one entry: the file path, format, row count, byte size, the
-partition rendered as `name=value`, and the entry's data sequence number. The
+Each row is one entry: the file path, format, row count, byte size, partition,
+and the entry's data sequence number. The partition is rendered as `name=value`
+(see [How a partition value is shown](#how-a-partition-value-is-shown)). The
 sequence number is NULL when the entry inherits it from the manifest. That is
 the usual case for a freshly written manifest. It is the ordering key for
 reading tables with deletes. A position delete applies to data files with a
@@ -1093,8 +1122,8 @@ applies to a strictly lower one. The caller needs the `pg_read_server_files`
 role, which superusers hold. This is the first step of Iceberg support (#388).
 It is a standalone Avro object-container reader, decoded against the schema
 embedded in the file, so a v3 manifest reads structurally. It reads a local
-file. It does not resolve a table's snapshot or apply delete files, which are
-later steps.
+file. It does not resolve a table's snapshot or apply delete files. To read a
+whole table, use `iceberg_scan`.
 
 ```sql
 SELECT file_path, record_count, partition
@@ -1112,7 +1141,7 @@ superusers hold. This is step two of Iceberg support (#388). It reads the same
 Avro object-container format as `read_avro_manifest`, decoded against the schema
 embedded in the file. A v3 manifest list therefore reads structurally. It reads
 a local file. It does not resolve a table's current snapshot or open the
-manifests it names, which are later steps.
+manifests it names. To read a whole table, use `iceberg_scan`.
 
 ```sql
 SELECT manifest_path, added_files_count, added_rows_count
@@ -1128,12 +1157,12 @@ or `*.metadata.json.gz`). The current snapshot is the one whose id equals the fi
 and operation (`append`, `overwrite`, `delete`, `replace`). It also carries the
 manifest-list file the snapshot points at and its schema id. It returns one row,
 or no rows when the table has no current snapshot. The caller needs the
-`pg_read_server_files` role, which superusers hold. This is the start of Iceberg
-catalog support (#388 phase 3): it resolves the metadata pointer from the
-filesystem without a network. It reports the `manifest_list` path as the file
-records it. It does not yet open that file or resolve the table's data files.
-Those are later steps. The manifest-list it names can then be decoded with
-`read_manifest_list`.
+`pg_read_server_files` role, which superusers hold. The metadata path can be a
+local file or an `s3://`, `http://` or `https://` URL, as for `iceberg_scan`.
+A remote path is read with the server process environment's credentials. The
+function reports the `manifest_list` path as the file records it, without
+opening it. Decode that file with `read_manifest_list`, or read the table with
+`iceberg_scan`.
 
 ```sql
 SELECT snapshot_id, operation, manifest_list
@@ -1145,7 +1174,8 @@ SELECT snapshot_id, operation, manifest_list
 Lists the live data files of an Apache Iceberg table at its current snapshot.
 It resolves the current snapshot from `metadata.json`, reads that snapshot's
 manifest list, then each manifest. It returns one row per data-file entry: the
-file path, format, row count, and partition rendered as `name=value`. The
+file path, format, row count, and partition rendered as `name=value` (see
+[How a partition value is shown](#how-a-partition-value-is-shown)). The
 caller needs the `pg_read_server_files` role, which superusers hold. It returns
 no rows when the table has no current snapshot.
 
@@ -1158,10 +1188,35 @@ A data file that the current snapshot removed is not live, so it is skipped. A
 copy-on-write delete or a filtered overwrite records the file it replaced this
 way, as a manifest entry with status 2 (DELETED).
 
-Delete files are refused, not ignored. A snapshot that carries any delete
-manifest or delete file raises an error here. It does not return rows the table
-says are gone. To read a table that uses deletes, use `iceberg_scan`, which
-applies position, equality, and deletion-vector deletes.
+Delete files are refused, not ignored. A snapshot that carries a live delete
+file raises an error here. It does not return rows the table says are gone. To
+read a table that uses deletes, use `iceberg_scan`, which applies position,
+equality, and deletion-vector deletes. A delete file that the current snapshot
+removed is not live, so it is skipped too. A rewrite or compaction that removes
+every old delete file leaves a delete manifest that holds only such entries
+(#1829); that table lists normally. A delete manifest that holds a live
+data-file entry is corrupt, and is refused with SQLSTATE XX001.
+
+#### How a partition value is shown
+
+`iceberg_data_files` and `read_avro_manifest` show the partition as text. Each
+field is `name=value`, and fields are joined by commas. The text is always valid
+in the database encoding, and each value can be read back exactly:
+
+| Partition value | Shown as | Example |
+|---|---|---|
+| integer, long, and the `date`, `time`, `timestamp`, `bucket`, `truncate` and temporal transform results | the stored integer (days, hours or microseconds for the temporal ones) | `id=7`, `ts_day=19783` |
+| boolean | `true` or `false` | `flag=true` |
+| decimal | the exact value, with the column's scale | `price=-0.50` |
+| float, double | the shortest text that reads back as the same value | `x=0.1` |
+| binary, fixed, uuid | `\x` and lowercase hex, as `bytea` prints it | `b=\xfffe` |
+| string | the value, with `%`, `,`, `=`, control characters and DEL written as `%` and two hex digits | `s=a%2Cb%3Dc` |
+| NULL | the field name alone, with no `=` | `s` |
+
+An empty string is `s=`, so it differs from NULL. In a database whose encoding is
+not UTF8 or SQL_ASCII, a non-ASCII string is also percent-encoded, byte by byte
+of its UTF-8 form (`city=caf%C3%A9`). So is a string that is not valid UTF-8.
+Field names follow the string rule.
 
 ```sql
 SELECT file_path, record_count, partition
@@ -1279,6 +1334,9 @@ SELECT id, region, sum(amount)
 
 ### pgcolumnar.iceberg_rest_table_location(catalog_uri text, namespace text, table_name text) returns text
 
+Also `iceberg_rest_table_location(catalog_uri text, namespace text[], table_name text)`.
+See [Name a namespace](#name-a-namespace).
+
 Resolves a table named by an Iceberg REST catalog to the URI of its current
 metadata file. The function calls the catalog over HTTP or HTTPS. It reads the
 catalog configuration, loads the table, and returns the reported metadata
@@ -1323,9 +1381,36 @@ URL or a log line. A mapping that sets only one of the pair is refused before an
 request is made, even when it also sets a static `token`. A mapping that sets a
 `token` and the complete pair uses the token and mints no bearer.
 
-Multi-level namespaces are given dot-separated, and the function requires the
-`pg_read_server_files` role, like the other Iceberg functions. The server form
-also requires `USAGE` on the server.
+The function requires the `pg_read_server_files` role, like the other Iceberg
+functions. The server form also requires `USAGE` on the server.
+
+#### Name a namespace
+
+Every REST function that takes a namespace accepts it in two forms:
+
+- **`text`**, with levels separated by dots, such as `'analytics.daily'`. The
+  function splits the text on every dot. So this form cannot name a level that
+  itself contains a dot.
+- **`text[]`**, one element per level, such as `ARRAY['analytics', 'daily']`.
+  Each element is one level, exactly as given, so a level may contain a dot:
+  `ARRAY['analytics.v2']` is the single level `analytics.v2` (#1865).
+
+A bare string literal, such as `'analytics'`, selects the `text` form. The
+`text[]` array must have one dimension, at least one element, and no `NULL`
+element. Otherwise the call fails with SQLSTATE 22023 (22004 for a `NULL`
+level).
+
+A catalog cannot be asked about a level that contains its own namespace
+separator, because the catalog would split that level in two. The function
+then fails with SQLSTATE 22023 before it sends any request that names the
+namespace. The Apache Iceberg REST
+catalog uses `.` as its separator. On it, no form can name a level that
+contains a dot, and pgcolumnar refuses `ARRAY['a.b']`. The check applies to the
+`text` form too. For example, on a catalog with the default separator, a level
+that holds the byte 0x1F is refused.
+
+The error message names the level. It shows a control byte as `\xNN`, such as
+`db\x1Fx`.
 
 Every REST function first reads the catalog configuration (`GET /v1/config`) and
 follows it:
@@ -1343,6 +1428,10 @@ follows it:
 SELECT pgcolumnar.iceberg_rest_table_location(
          'https://catalog.example.com', 'analytics', 'events');
 --> s3://warehouse/analytics/events/metadata/00042-....metadata.json
+
+-- a namespace level that contains a dot: give the levels as text[]
+SELECT pgcolumnar.iceberg_rest_table_location(
+         'https://catalog.example.com', ARRAY['analytics.v2'], 'events');
 
 -- server form: the token is per-role and stays in pg_user_mapping
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
@@ -1378,6 +1467,9 @@ When the reply carries the catalog's own error message, the error detail repeats
 it as `The catalog said: <message>`. The message is cut to 512 bytes.
 
 ### pgcolumnar.iceberg_rest_scan(catalog_uri text, namespace text, table_name text) returns setof record
+
+Also `iceberg_rest_scan(catalog_uri text, namespace text[], table_name text)`.
+See [Name a namespace](#name-a-namespace).
 
 Reads a table named by an Iceberg REST catalog at its current snapshot. It takes
 a column definition list exactly like `iceberg_scan`. The catalog resolves the
@@ -1427,7 +1519,46 @@ catalog, list the tables of a namespace you know with `iceberg_rest_tables`.
 Some catalogs also list nested namespaces at the top level. The function
 returns each namespace once.
 
+The dot-joined form is ambiguous: the single level `a.b` and the two levels
+`a`, `b` both come out as `a.b`. To tell them apart, use
+`iceberg_rest_namespace_levels`.
+
+### pgcolumnar.iceberg_rest_namespace_levels(catalog_uri text) returns setof text[]
+
+Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
+its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
+levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
+argument of the other REST functions, with one exception, described next.
+
+A level may contain the catalog's separator. No request can name such a
+namespace, so the function returns it but does not ask for its children.
+Passing that row back fails with SQLSTATE 22023.
+
+```sql
+SELECT ns, t
+  FROM pgcolumnar.iceberg_rest_namespace_levels('https://catalog.example.com') AS ns,
+       LATERAL pgcolumnar.iceberg_rest_tables('https://catalog.example.com', ns) AS t;
+```
+
+> **Caution:** One level that holds the catalog's namespace separator makes
+> this whole query fail with SQLSTATE 22023. The default separator is the byte
+> 0x1F. Some catalogs use `.`, such as the Apache Iceberg REST catalog. Skip
+> those rows first. On a catalog whose separator is `.`:
+
+```sql
+SELECT ns, t
+  FROM pgcolumnar.iceberg_rest_namespace_levels('https://catalog.example.com') AS ns,
+       LATERAL pgcolumnar.iceberg_rest_tables('https://catalog.example.com', ns) AS t
+ WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE level LIKE '%.%');
+```
+
+On a catalog with the default separator, replace `level LIKE '%.%'` with
+`strpos(level, chr(31)) > 0`.
+
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
+
+Also `iceberg_rest_tables(catalog_uri text, namespace text[])`.
+See [Name a namespace](#name-a-namespace).
 
 Lists the table names in a namespace, one per row.
 
@@ -1505,8 +1636,11 @@ scalar. Such a table refuses every query, even one that does not read that
 column (#1788).
 
 The one table option is `metadata_path`, the table's current `metadata.json`
-(a local path or an object-storage URL). The wrapper requires the
-`pg_read_server_files` role. `EXPLAIN (ANALYZE)` reports `Files Pruned`.
+(a local path or an object-storage URL). The wrapper takes no server or
+user-mapping options. It reads a remote table with the server process
+environment's credentials, as `iceberg_scan` does (see
+[Endpoints and credentials](#endpoints-and-credentials)). The wrapper requires
+the `pg_read_server_files` role. `EXPLAIN (ANALYZE)` reports `Files Pruned`.
 
 Partition pruning covers the identity, `bucket[N]`, `truncate[W]`, and temporal
 transforms. Identity partitioning prunes on any predicate. `bucket[N]` prunes on
@@ -1542,9 +1676,12 @@ SELECT sum(amount) FROM events WHERE region = 'eu';
 
 ## Object storage
 
-The Parquet read and export functions, and the foreign-data wrapper, accept an
-object-storage URL wherever they accept a local path. These URL schemes are
-recognized:
+The Parquet read and export functions, `export_arrow` and the Iceberg reader
+accept an object-storage URL wherever they accept a local path. So do the
+`pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data wrappers. The third
+wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
+`file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
+`read_manifest_list` read local files only. These URL schemes are recognized:
 
 | Scheme | Meaning |
 | --- | --- |
@@ -1585,8 +1722,23 @@ the HEAD returns a strong ETag of at most 79 characters, every GET sends that
 ETag in an `If-Match` header. The 79 includes the ETag's two quote marks. If
 another client then overwrites the object during the read, the server answers 412. The query then fails with `changed while it was
 being read`, instead of returning rows from two versions. Run the statement again
-to read the new version. A server that sends no ETag, a weak one, or a longer
-one cannot pin the read (see [limitations](limitations.md#reading-external-parquet)). An
+to read the new version. When the HEAD also returns `x-amz-version-id`, as a
+versioned S3 bucket does, every GET asks for that version with `versionId=`. An
+overwrite during the read then leaves the read on the version it started on,
+and the query succeeds. A GET that names a version needs the
+`s3:GetObjectVersion` permission. If the store answers such a GET with 403, the
+reader asks again without the version, for the rest of that read, and keeps
+`If-Match`. The reader also compares the total length in each 206
+`Content-Range` with the length from the HEAD. When they differ, the query fails
+with `changed while it was being read`, whatever the server sends as ETag. The
+query fails the same way when a GET for bytes inside the HEAD's length gets 416:
+the object has shrunk. Without a strong ETag of at most 79 characters and
+without a version id, the read is not pinned. A server that sends no ETag, a
+weak one, or a longer one pins the read only by version id (see
+[limitations](limitations.md#reading-external-parquet)). Set
+`pgcolumnar.objstore_pin_reads` to `off` for a server whose ETag changes from
+one request to the next: the reader then sends no `If-Match` and no
+`versionId`. An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a
@@ -1597,8 +1749,8 @@ such as `s3://bucket/_landing/`. A pattern matches names as a local glob does.
 It matches a name that begins with `_`. It matches a name that begins with `.`
 only when the pattern spells the dot, such as `.*.parquet`. The scheme is
 compared without case, so `S3://` reads as `s3://` does. Hive
-`partition_columns` work over a remote prefix. A pattern or a prefix requires the
-object-store module, since only it can issue the listing.
+`partition_columns` work over a remote prefix. The object-store module issues the
+listing, as it issues every remote read.
 
 Only the key of an `s3://` URL, the part after the bucket, can be a pattern. The
 scheme and the bucket never are. An `http://` or `https://` URL is always one
@@ -1612,7 +1764,8 @@ literally, so `s3://bucket/a/q\?.parquet` matches only `a/q?.parquet`. A read
 from a host written as an IPv6 literal in brackets, such as
 `http://[::1]:9000/`, is refused with SQLSTATE 0A000.
 
-On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes one
+On write, `parallel_export_parquet` treats an `s3://` URL as a prefix, and
+refuses every other remote URL before any worker starts. It writes one
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`
 marker beside them on completion. Trailing slashes on the prefix make no
 difference: `s3://bucket/out/`, `s3://bucket/out//` and `s3://bucket/out` all
@@ -1653,9 +1806,9 @@ Two calls take a server instead: `export_parquet(rel, path, server)`, and
 `tier_partition`, which writes through it. They resolve the endpoint and the
 credentials as the foreign-data wrapper does, as described next.
 
-For the foreign-data wrapper the endpoint and credentials come from the catalog,
-which keeps them out of a world-readable place. The non-secret settings go on the
-server and the secret ones go on a user mapping:
+For the `pgcolumnar_parquet` foreign-data wrapper the endpoint and credentials
+come from the catalog, which keeps them out of a world-readable place. The
+non-secret settings go on the server and the secret ones go on a user mapping:
 
 ```sql
 CREATE SERVER s3 FOREIGN DATA WRAPPER pgcolumnar_parquet
@@ -1685,6 +1838,12 @@ two cases. The caller is a superuser. Or a superuser has marked the mapping
 default. An ordinary role with no mapping is refused rather than given the server
 process identity.
 
+The `pgcolumnar_iceberg` wrapper works differently. It takes no server or
+user-mapping options, so it has no per-role credentials and no
+`credentials_required`. It reads with the server process environment, as
+`iceberg_scan` does, for every role that may read the foreign table. Its gate is
+the `pg_read_server_files` role.
+
 ### The endpoint allow-list
 
 `pgcolumnar.objstore_allowed_endpoints` lists the endpoints the module may
@@ -1699,9 +1858,10 @@ SELECT pg_reload_conf();
 
 Each entry is a host or a `host:port`. A request whose endpoint matches no entry
 is refused before any connection is made. The link-local ranges and the known
-cloud instance-metadata addresses, such as `169.254.169.254`, are refused
-unconditionally, whether or not they appear in the list. For every refused range,
-see [Run object storage safely](best-practices.md#run-object-storage-safely). The
+cloud instance-metadata addresses are refused unconditionally, whether or not
+they appear in the list. These include `169.254.169.254` and Alibaba Cloud's
+`100.100.100.200`. For every refused range, see
+[Run object storage safely](best-practices.md#run-object-storage-safely). The
 setting is superuser-only, so a role cannot widen its own reach.
 
 ### Exporting to object storage
@@ -1727,8 +1887,24 @@ This cleanup holds when you cancel or terminate the export while it waits for th
 store to start the upload. The export then has no id for that upload. It lists
 the open uploads for its own key and aborts each one, within 10 seconds. Uploads
 at other keys stay open. An upload that another writer started at the same key is
-aborted too. This listing works for `s3://` only. A `gs://` export cancelled at
-that moment leaves the upload open (#1854).
+aborted too. This works for `s3://` and `gs://` URLs.
+
+A multipart upload holds at most 10000 parts of `pgcolumnar.objstore_part_size`
+bytes each, 8 MiB by default. An export that needs more parts fails with SQLSTATE
+54000 before it sends part 10001, and aborts the upload. Raise the part size for
+an object over about 78 GiB. AWS S3, Google Cloud Storage and Cloudflare R2
+refuse parts under 5 MiB, except the last. To those stores, an export with a
+smaller part size fails with SQLSTATE 22023 when it starts a multipart upload,
+before it sends a part. A small object that fits in one part still goes in one
+request. Other stores are not checked.
+
+The export reads each reply from the store by the HTTP/1.1 framing rules. A reply
+with neither a `Content-Length` nor chunked framing ends when the store closes
+the connection; a 204 reply has no body. Some stores send such a reply to a
+write and keep the connection open. The export then waits 60 seconds and fails
+with "timeout reading". A chunked or close-delimited write reply over 1 MiB fails
+the export with "response exceeded". This holds even when the store has already
+written the object.
 
 The last request commits the object. It is the single request of a small object,
 or the request that completes a multipart upload. Once the store has that whole

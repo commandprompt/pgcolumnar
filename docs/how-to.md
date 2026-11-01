@@ -835,8 +835,10 @@ a Parquet encode step. Use Parquet for durable, compressed files.
 
 ## Use object storage
 
-Every path that accepts a local path also accepts an `s3://`, `http://`, or
-`https://` URL. Credentials come from the server process environment.
+The Parquet functions, `export_arrow` and the Iceberg reader accept an `s3://`,
+`http://`, or `https://` URL where they accept a local path. `import_arrow`,
+`file_split_offsets` and `parallel_copy` read local files only. Credentials come
+from the server process environment.
 
 ```sql
 SELECT * FROM pgcolumnar.read_parquet('s3://bucket/events.parquet')
@@ -902,6 +904,12 @@ SELECT * FROM pgcolumnar.iceberg_rest_scan(
 SELECT * FROM pgcolumnar.iceberg_rest_namespaces('https://catalog.example.com');
 SELECT * FROM pgcolumnar.iceberg_rest_tables('https://catalog.example.com', 'analytics');
 ```
+
+A dotted namespace such as `'analytics.daily'` is split into levels at every
+dot. To name a level that itself contains a dot, give the levels as a `text[]`,
+such as `ARRAY['analytics.v2']`. `iceberg_rest_namespace_levels` lists the
+namespaces in that form. See
+[Name a namespace](sql-reference.md#name-a-namespace).
 
 For per-role credentials, name a foreign server instead of a URI. The server
 holds the catalog URI. The current role's user mapping holds the bearer token,
