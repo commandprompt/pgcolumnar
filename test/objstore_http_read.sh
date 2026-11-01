@@ -23,8 +23,13 @@
 #      Content-Range total, or by a 416 inside the old length, is refused
 #      (#1867). The pin off sends no version; a version id of null or one over
 #      1024 bytes is not sent; a versioned GET answered 403 is sent again
-#      without the version (#1888 review). Many guards share 08006 and 08P01, so each refusal must also
-#      carry its own guard's message.
+#      without the version (#1888 review). Two reads of one object in one
+#      statement read one version (#1894); one s3 key on two endpoints is two
+#      objects; the pin lasts one statement start time, so statements sent one
+#      at a time in a transaction get their own pins and the statements of one
+#      query string share one; a write drops the pin; with a weak ETag only the
+#      length is compared (#1907 review). Many guards share 08006 and 08P01, so
+#      each refusal must also carry its own guard's message.
 #   D  cancel: statement_timeout fires within bound while the server stalls
 #      mid-body. Removal proof: with the module's WaitLatchOrSocket wait arm
 #      deleted, this check hangs or reds.
@@ -53,9 +58,11 @@ python3 -c 'import pyarrow' 2>/dev/null || pgc_skip pyarrow "pyarrow is required
 HTTP_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
 HTTP_LOG="$PGC_WORKDIR/http.log"
 SRV_PID=""
+SRV_PID_B=""
 
 objstore_http_teardown() {
 	[ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
+	[ -n "$SRV_PID_B" ] && kill "$SRV_PID_B" 2>/dev/null
 	pgc_teardown
 }
 trap objstore_http_teardown EXIT INT TERM
@@ -90,9 +97,29 @@ check "premise: fixture written" "$([ -s "$PGC_WORKDIR/fixture.parquet" ] && ech
 # that mixes them shows both signs. /swap/ moves .next over the first mid-read.
 # swap79.parquet is a second, identical pair for /swap79/, which swaps it once too.
 # Each server mode swaps its file once, so every read that needs a swap gets its
-# own pair: swapoff.parquet for the unpinned read and vswap.parquet for /vswap/.
+# own pair: swapoff.parquet for the unpinned read, vswap.parquet for /vswap/,
+# and vswapq.parquet for the versioned read through a query string (#1904).
+# hswap.parquet and vhswap.parquet are the pairs for /hswap/ and /vhswap/, which
+# swap between two reads of one statement instead of mid-read (#1894).
+# hswaptx.parquet and hswapmsg.parquet are more pairs for /hswap/, read by two
+# statements of one transaction and of one query string, and whswap.parquet the pair for /whswap/, which sends a weak
+# ETag. xpair.parquet is split over two servers: server A serves the old file
+# and server B the new one, under one s3 key. rw.parquet is the object a
+# statement overwrites and then reads again (#1907 review). vhswapmsg.parquet
+# is read by two statements of one query string from a versioned store,
+# hswapdet.parquet by the DETAIL check, and hswapfn.parquet by two reads inside
+# one plpgsql call, hswapdo.parquet by two reads in one DO block, and
+# hswapdo2.parquet by a DO block and the statement after it (#1907 second
+# review).
 python3 - "$PGC_WORKDIR/swap.parquet" "$PGC_WORKDIR/swap79.parquet" \
-	"$PGC_WORKDIR/swapoff.parquet" "$PGC_WORKDIR/vswap.parquet" <<PYEOF
+	"$PGC_WORKDIR/swapoff.parquet" "$PGC_WORKDIR/vswap.parquet" \
+	"$PGC_WORKDIR/hswap.parquet" "$PGC_WORKDIR/vhswap.parquet" \
+	"$PGC_WORKDIR/hswaptx.parquet" "$PGC_WORKDIR/whswap.parquet" \
+	"$PGC_WORKDIR/xpair.parquet" "$PGC_WORKDIR/rw.parquet" \
+	"$PGC_WORKDIR/hswapmsg.parquet" "$PGC_WORKDIR/vhswapmsg.parquet" \
+	"$PGC_WORKDIR/hswapdet.parquet" "$PGC_WORKDIR/hswapfn.parquet" \
+	"$PGC_WORKDIR/hswapdo.parquet" "$PGC_WORKDIR/hswapdo2.parquet" \
+	"$PGC_WORKDIR/vswapq.parquet" <<PYEOF
 import os, sys
 import pyarrow as pa, pyarrow.parquet as pq
 G, RPG = $G, $ROWS_PER_GROUP
@@ -110,7 +137,11 @@ check "premise: the overwrite pair has one byte length" \
 # is longer. Its first G groups sit at the same offsets as the first file's, so a
 # read that keeps the old footer gets well-formed rows from the new file. Only
 # the total in each 206 Content-Range shows the change. /lenswap/ sends no ETag.
-python3 - "$PGC_WORKDIR/lenswap.parquet" "$PGC_WORKDIR/lenswapoff.parquet" <<PYEOF
+# vhlen.parquet is served by /vhswap/ and whlen.parquet by /whswap/: the
+# overwrite between two reads of one statement changes the length (#1907
+# second review).
+python3 - "$PGC_WORKDIR/lenswap.parquet" "$PGC_WORKDIR/lenswapoff.parquet" \
+	"$PGC_WORKDIR/vhlen.parquet" "$PGC_WORKDIR/whlen.parquet" <<PYEOF
 import os, sys
 import pyarrow as pa, pyarrow.parquet as pq
 G, RPG = $G, $ROWS_PER_GROUP
@@ -151,6 +182,24 @@ for _ in $(seq 1 50); do
 done
 check "premise: fixture server is up" \
 	"$(grep -c READY "$PGC_WORKDIR/http_server.out" 2>/dev/null)" "1"
+
+# Server B (#1907 review): a second store at another endpoint. It holds the
+# same s3 key as server A, bkt/x.parquet, with the same length and other bytes.
+mkdir -p "$PGC_WORKDIR/bkt" "$PGC_WORKDIR/b/bkt"
+cp "$PGC_WORKDIR/xpair.parquet" "$PGC_WORKDIR/bkt/x.parquet"
+cp "$PGC_WORKDIR/xpair.parquet.next" "$PGC_WORKDIR/b/bkt/x.parquet"
+HTTP_PORT_B="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI" $((HTTP_PORT + 13)))"
+HTTP_LOG_B="$PGC_WORKDIR/http_b.log"
+python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
+	--dir "$PGC_WORKDIR/b" --port "$HTTP_PORT_B" --log "$HTTP_LOG_B" \
+	> "$PGC_WORKDIR/http_server_b.out" 2>&1 &
+SRV_PID_B=$!
+for _ in $(seq 1 50); do
+	grep -q READY "$PGC_WORKDIR/http_server_b.out" 2>/dev/null && break
+	sleep 0.1
+done
+check "premise: fixture server B is up" \
+	"$(grep -c READY "$PGC_WORKDIR/http_server_b.out" 2>/dev/null)" "1"
 
 BASE="http://127.0.0.1:$HTTP_PORT"
 COLDEFS="$(python3 -c "print(', '.join('c%d int8' % i for i in range($NCOLS)))")"
@@ -288,6 +337,28 @@ psql_run "CREATE FOREIGN TABLE fvswapoff ($COLDEFS) SERVER osrv OPTIONS (path '$
 psql_run "CREATE FOREIGN TABLE fvnull ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/vnull/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fvlong ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/vlong/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fvdeny ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/vdeny/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswap.parquet');"
+psql_run "CREATE FOREIGN TABLE fvhswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/vhswap/vhswap.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswaptx (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswaptx.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswapmsg (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswapmsg.parquet');"
+psql_run "CREATE FOREIGN TABLE fwhswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/whswap/whswap.parquet');"
+psql_run "CREATE FOREIGN TABLE fvhswapmsg (c0 int8) SERVER osrv OPTIONS (path '$BASE/vhswap/vhswapmsg.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswapdet (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswapdet.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswapfn (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswapfn.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswapdo (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswapdo.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswapdo2 (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswapdo2.parquet');"
+psql_run "CREATE FOREIGN TABLE fvhlen (c0 int8) SERVER osrv OPTIONS (path '$BASE/vhswap/vhlen.parquet');"
+psql_run "CREATE FOREIGN TABLE fwhlen (c0 int8) SERVER osrv OPTIONS (path '$BASE/whswap/whlen.parquet');"
+psql_run "CREATE FOREIGN TABLE frw (c0 int8) SERVER osrv OPTIONS (path '$BASE/rw.parquet');"
+# One s3 key on two endpoints (#1907 review): servers sa and sb name the two
+# fixture servers. The fixture servers do not check signatures, so any key works.
+for _s in a b; do
+	_p="$HTTP_PORT"; [ "$_s" = b ] && _p="$HTTP_PORT_B"
+	psql_run "CREATE SERVER s$_s FOREIGN DATA WRAPPER pgcolumnar_parquet OPTIONS (endpoint 'http://127.0.0.1:$_p', region 'us-east-1');"
+	psql_run "CREATE USER MAPPING FOR CURRENT_USER SERVER s$_s OPTIONS (access_key_id 'pgc', secret_access_key 'pgc');"
+	psql_run "CREATE FOREIGN TABLE fx$_s (c0 int8) SERVER s$_s OPTIONS (path 's3://bkt/x.parquet');"
+	psql_run "CREATE FOREIGN TABLE fvx$_s (c0 int8) SERVER s$_s OPTIONS (path 's3://vswap/bkt/x.parquet');"
+done
 
 check "C: unreachable endpoint SQLSTATE" \
 	"$(refusal_of "SELECT count(*) FROM fdead" "could not connect to")" "08006: could not connect to"
@@ -442,6 +513,171 @@ check "C: a versioned GET answered 403 is sent again without the version, and th
 	"$R; GETs naming a version: $(vgets_named /vdeny/fixture)" \
 	"no error: $LOCAL_C3C7; GETs naming a version: 1"
 
+# Two reads of one object in one statement each send a HEAD (#1894). /hswap/
+# overwrites the object at the 2nd HEAD, so between the two reads. Unpinned
+# across reads, the first read returns the old rows and the second the new
+# ones, and the statement mixes both without an error. Each reading is the
+# statement's result, then how many HEADs of the object it sent.
+heads_of() { awk -v m="$1" '$1 == "HEAD" && index($2, m)' "$HTTP_LOG" | wc -l | tr -d ' '; }
+TWO_READS="SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM (SELECT c0 FROM %s UNION ALL SELECT c0 FROM %s) _u"
+await_server >/dev/null
+: > "$HTTP_LOG"
+R="$(refusal_of "$(printf "$TWO_READS" fhswap fhswap)" "changed while it was being read")"
+check "C: an object overwritten between two reads of one statement is refused" \
+	"$R; HEADs: $(heads_of /hswap/hswap)" \
+	"55000: changed while it was being read; HEADs: 2"
+# The pin lasts one statement: the next statement reads the new object.
+await_server >/dev/null
+check "C: the statement after that reads the new object" \
+	"$(refusal_of "$(printf "$TWO_READS" fhswap fhswap)" "changed while it was being read")" \
+	"no error: old=0 new=$((2 * G * ROWS_PER_GROUP))"
+# A versioned store names the version, so the second read asks for the
+# version the first read opened, and both read the old rows.
+await_server >/dev/null
+: > "$HTTP_LOG"
+R="$(refusal_of "$(printf "$TWO_READS" fvhswap fvhswap)" "changed while it was being read")"
+check "C: two reads of one versioned object in one statement, overwritten between them, read the version the first opened" \
+	"$R; HEADs: $(heads_of /vhswap/vhswap)" \
+	"no error: old=$((2 * G * ROWS_PER_GROUP)) new=0; HEADs: 2"
+
+# The pin belongs to one object in one store (#1907 review). Servers A and B
+# hold the same s3 key with other bytes, so one statement reads A's old rows
+# and B's new rows. A pin keyed on the URL alone refused this as an overwrite,
+# and in a versioned bucket it sent A's version id to B, which answered 404.
+await_server >/dev/null
+check "C: one s3 key on two endpoints, read in one statement, reads each endpoint's own object" \
+	"$(refusal_of "$(printf "$TWO_READS" fxa fxb)" "changed while it was being read")" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=$((G * ROWS_PER_GROUP))"
+await_server >/dev/null
+check "C: one versioned s3 key on two endpoints, read in one statement, reads each endpoint's own version" \
+	"$(refusal_of "$(printf "$TWO_READS" fvxa fvxb)" "changed while it was being read")" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=$((G * ROWS_PER_GROUP))"
+
+# The pin lasts while statement_timestamp() stays the same (#1907 review).
+# Statements sent one at a time in a transaction each get their own pin:
+# /hswap/ overwrites hswaptx.parquet at its 2nd HEAD, between the two
+# statements, so the second reads only the new rows. The reading is each
+# statement's result in turn.
+ONE_READ="SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM %s"
+await_server >/dev/null
+check "C: in one transaction, the next statement reads the new object" \
+	"$(refusal_of "BEGIN;
+$(printf "$ONE_READ" fhswaptx);
+$(printf "$ONE_READ" fhswaptx);
+COMMIT" "changed while it was being read")" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=0 old=0 new=$((G * ROWS_PER_GROUP))"
+# Statements a client sends in one query string, as psql -c does, share one
+# statement start time, but each is its own statement: the pin ends with the
+# top-level statement (#1907 second review). /hswap/ overwrites the object at
+# its 2nd HEAD, between the two statements, so the second reads the new rows,
+# from an unversioned and from a versioned store alike.
+# refusal_of_message SQL PHRASE: refusal_of, with SQL sent as one message (-c).
+refusal_of_message() {
+	local out code err
+	await_server >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA -v VERBOSITY=verbose -c "$1" 2>&1)"
+	err="$(printf '%s\n' "$out" | awk '/^ERROR:/ && !f { print; f = 1 }')"
+	code="$(printf '%s\n' "$err" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p')"
+	if [ -z "$code" ]; then
+		out="${out//$'\n'/ }"
+		echo "no error: ${out:0:200}"
+	elif [[ "$err" == *"$2"* ]]; then
+		echo "$code: $2"
+	else
+		echo "$code: ${err#ERROR:  $code: }"
+	fi
+}
+check "C: two statements sent in one query string each read the current object" \
+	"$(refusal_of_message "$(printf "$ONE_READ" fhswapmsg); $(printf "$ONE_READ" fhswapmsg)" \
+		"changed while it was being read")" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=0 old=0 new=$((G * ROWS_PER_GROUP))"
+check "C: two statements sent in one query string to a versioned store each read the current version" \
+	"$(refusal_of_message "$(printf "$ONE_READ" fvhswapmsg); $(printf "$ONE_READ" fvhswapmsg)" \
+		"changed while it was being read")" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=0 old=0 new=$((G * ROWS_PER_GROUP))"
+
+# The pin lasts the top-level statement, not each statement a function runs
+# inside it (#1907 second review). pgc_two() reads fhswapfn twice in one call;
+# /hswap/ overwrites the object between the two reads, so the second is refused.
+psql_run "CREATE FUNCTION pgc_two() RETURNS text LANGUAGE plpgsql AS \$f\$
+DECLARE a text; b text;
+BEGIN
+	SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) INTO a FROM fhswapfn;
+	SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) INTO b FROM fhswapfn;
+	RETURN a || ' | ' || b;
+END \$f\$;"
+check "C: two reads of one object in one function call, overwritten between them, are refused" \
+	"$(refusal_of "SELECT pgc_two()" "changed while it was being read")" \
+	"55000: changed while it was being read"
+# A DO block is one top-level utility statement: the queries it runs share
+# its pin, and the pin ends when it returns, even with more statements to
+# come in the same query string.
+check "C: two reads of one object in one DO block, overwritten between them, are refused" \
+	"$(refusal_of "DO \$\$ BEGIN PERFORM count(*) FROM fhswapdo; PERFORM count(*) FROM fhswapdo; END \$\$" \
+		"changed while it was being read")" \
+	"55000: changed while it was being read"
+check "C: the statement after a DO block in one query string reads the new object" \
+	"$(refusal_of_message "DO \$\$ BEGIN PERFORM count(*) FROM fhswapdo2; END \$\$; $(printf "$ONE_READ" fhswapdo2)" \
+		"changed while it was being read")" \
+	"no error: old=0 new=$((G * ROWS_PER_GROUP))"
+
+# The refusal's DETAIL names the earlier read and both ETags and lengths
+# (#1907 second review). The reading masks the two ETags, which change per run.
+# detail_of SQL: the first DETAIL line SQL's error gives, or what came instead.
+detail_of() {
+	local out
+	await_server >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA -v VERBOSITY=verbose -c "$1" 2>&1)"
+	out="$(printf '%s\n' "$out" | awk '/^DETAIL:/ && !f { sub(/^DETAIL:  /, ""); print; f = 1 }')"
+	printf '%s\n' "${out:-no DETAIL}" | sed 's/"[^"]*"/"E"/g'
+}
+HSWAPDET_LEN="$(stat -c %s "$PGC_WORKDIR/hswapdet.parquet" 2>&1)"
+check "C: the refusal of an overwrite between two reads names the earlier read of the statement in its DETAIL" \
+	"$(detail_of "$(printf "$TWO_READS" fhswapdet fhswapdet)")" \
+	"An earlier read of the object in this statement saw ETag \"E\" and $HSWAPDET_LEN bytes; this read sees ETag \"E\" and $HSWAPDET_LEN bytes."
+
+# A versioned overwrite that changes the length (#1907 second review): the
+# second read asks for the first read's version, so it must also take that
+# version's length, not the length of the new object its HEAD saw.
+await_server >/dev/null
+check "C: two reads of one versioned object in one statement, overwritten between them by a longer object, read the version the first opened" \
+	"$(refusal_of "$(printf "$TWO_READS" fvhlen fvhlen)" "changed while it was being read")" \
+	"no error: old=$((2 * G * ROWS_PER_GROUP)) new=0"
+# With a weak ETag the length is the only thing the second read can compare
+# (#1907 second review): an overwrite that changes it is refused.
+await_server >/dev/null
+check "C: with a weak ETag, an overwrite that changes the length between two reads of one statement is refused" \
+	"$(refusal_of "$(printf "$TWO_READS" fwhlen fwhlen)" "changed while it was being read")" \
+	"55000: changed while it was being read"
+
+# A statement that writes an object drops its pin, so a later read in the same
+# statement reads what it wrote. pgc_rw() reads frw, exports rwneg (c0 < 0 in
+# every row) over the same URL, and reads frw again, all in one statement.
+psql_run "CREATE TABLE rwneg USING pgcolumnar AS SELECT (-1 - g)::int8 AS c0 FROM generate_series(0, $((G * ROWS_PER_GROUP - 1))) g;"
+psql_run "CREATE FUNCTION pgc_rw() RETURNS text LANGUAGE plpgsql AS \$f\$
+DECLARE a text; b text;
+BEGIN
+	SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) INTO a FROM frw;
+	PERFORM pgcolumnar.export_parquet('rwneg', '$BASE/rw.parquet');
+	SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) INTO b FROM frw;
+	RETURN a || ' | ' || b;
+END \$f\$;"
+await_server >/dev/null
+check "C: a statement that overwrites an object and reads it again reads the new object" \
+	"$(refusal_of "SELECT pgc_rw()" "changed while it was being read")" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=0 | old=0 new=$((G * ROWS_PER_GROUP))"
+
+# With no strong ETag the second read compares only the length (#1907 review).
+# /whswap/ sends a weak ETag and overwrites whswap.parquet at its 2nd HEAD with
+# a file of the same length, so the statement mixes both versions without an
+# error. docs/limitations.md states this limit; this check measures it.
+await_server >/dev/null
+check "C: with a weak ETag, a same-length overwrite between two reads of one statement is not caught" \
+	"$(refusal_of "$(printf "$TWO_READS" fwhswap fwhswap)" "changed while it was being read")" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=$((G * ROWS_PER_GROUP))"
+
 # ---- arm D: cancel while the server stalls mid-body ------------------------
 psql_run "CREATE FOREIGN TABLE fstall ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/stall/fixture.parquet');"
 await_server >/dev/null
@@ -472,6 +708,20 @@ check "E: an http URL with a query string (?raw=true) reads the object, not a li
 E_HEADQ="$(awk '$1 == "HEAD" && $2 == "/fixture.parquet" && $3 == "raw=true"' "$HTTP_LOG" | wc -l | tr -d ' ')"
 check "E: and its HEAD carried the query string to the server" \
 	"$([ "${E_HEADQ:-0}" -ge 1 ] 2>/dev/null && echo carried || echo "not carried ($E_HEADQ HEADs of /fixture.parquet?raw=true in $(reqs) requests)")" "carried"
+# The version pin (#1867) joins a query the URL already has with '&' (#1904).
+# A second '?' hides the versionId inside raw's value, so the server reads the
+# current object, and the overwrite mid-read is refused by If-Match.
+await_server >/dev/null
+: > "$HTTP_LOG"
+R="$(refusal_of "SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM pgcolumnar.read_parquet('$BASE/vswap/vswapq.parquet?raw=true') AS t(c0 int8)" \
+	"changed while it was being read")"
+EQ_GETS="$(awk '$1 == "GET" && $2 == "/vswap/vswapq.parquet"' "$HTTP_LOG" | wc -l | tr -d ' ')"
+EQ_NOT="$(awk '$1 == "GET" && $2 == "/vswap/vswapq.parquet" && $3 !~ /^raw=true&versionId=3HL4%2Bkq%2F/ { print $3 }' "$HTTP_LOG")"
+EQ_BAD="$(printf '%s' "$EQ_NOT" | grep -c .)"
+[ "$EQ_BAD" -gt 0 ] && EQ_BAD="$EQ_BAD (first: $(head -1 <<<"$EQ_NOT"))"
+check "E: a versioned read of an http URL with a query string adds the version with '&' and reads the version it opened" \
+	"$R; GETs without raw=true&versionId=: $EQ_BAD of $EQ_GETS" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=0; GETs without raw=true&versionId=: 0 of $EQ_GETS"
 check "E: an IPv6 literal http host is refused as IPv6, not as a listing" \
 	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('http://[::1]:$HTTP_PORT/fixture.parquet') AS t($COLDEFS)" \
 		"IPv6 literal hosts are not supported")" "0A000: IPv6 literal hosts are not supported"

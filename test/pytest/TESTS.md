@@ -497,6 +497,10 @@ one of those eight measurements exited 0.
 | `test_a_bare_variable_condition_is_met_by_any_value` | `unless-env VAR` is met by any non-empty value, for an opt-in variable that names an endpoint; the inner arm is `test_optin_endpoint` |
 | `test_a_row_with_any_other_suffix_is_refused` | fail closed: an unknown suffix raises, naming the forms a row may take, rather than leaving the row dead |
 | `test_a_listed_test_the_run_never_collected_is_not_a_stale_row` | and the premise that direction owes (#1204). `allowed - actual` reads as "listed, did not decline", which is only answerable for a test the run COLLECTED. A one-file run on PG 15-17 collected none of the others and exited 67 while its own file passed, telling the reader to edit a list that was correct |
+| `test_a_listed_decliner_under_xdist_leaves_the_run_green` | #1892. Under `-n 2` a listed decline exits 0, as the serial run does, and no process reports it as unexpected or stale. A second listed row names a file the run never collects; mutant M6, which skips the #1204 intersection when the workers report ids, calls it stale (`got 1 want 0`). Before the fix the controller judged against an empty collection and exited 67; the inner arms are `test_xdist_inner_decliner`, `test_xdist_inner_one`, `test_xdist_inner_two` and `test_xdist_inner_three` |
+| `test_a_stale_row_under_xdist_is_still_refused` | #1892, the other direction: under `-n 2` a listed test that ran is reported as stale exactly once, by the controller, and the run exits 67. Before the fix both workers reported it |
+| `test_an_unlisted_decliner_under_xdist_is_still_refused` | #1892: under `-n 2` an unlisted decline is reported exactly once and the run exits 67. Before the fix the worker that ran it reported it too |
+| `test_the_unrunnable_collector_registers_without_xdist` | #1892 review: the collector's `pytest_xdist_node_collection_finished` hook is optional, so a plugin manager with no xdist hook specs registers it without an "unknown hook" error. Before the fix: `got 1 want 0` |
 | `test_the_list_is_read_for_the_running_major_only` | a row for 15 does not excuse a decline on 18, which is what a flat set would do |
 | `test_an_unreadable_pg_config_fails_closed` | no major means no judgement, and no judgement means the old behaviour. The dangerous reading is the other one: unknown major treated as expect-anything |
 | `test_a_run_with_nothing_unrunnable_still_exits_zero` | **control**: a green run is untouched | — |
@@ -7399,7 +7403,7 @@ The pytest twin of `test/objstore_credentials.sh` (#393 M4, ported for #1341), e
 
 | test | what it holds |
 | --- | --- |
-| `test_object_store_credentials` | placement, per-user resolution, the half-credential refusals and the request count behind them, no leak, and ambient credentials as a privilege across the restart |
+| `test_object_store_credentials` | placement, per-user resolution, the half-credential refusals and the request count behind them, no leak, and ambient credentials as a privilege across the restart; and (#1887) `a pgcolumnar_iceberg server refuses an endpoint option (#1887)`, `a pgcolumnar_iceberg user mapping refuses an access_key_id option (#1887)`, `premise: carol has no user mapping on either server (#1887)`, `ambient: carol, with no mapping, is refused on the pgcolumnar_parquet table: no credentials (#1887)` and `ambient: carol, with no mapping, reads 5 rows through the pgcolumnar_iceberg table (#1887)` |
 
 ## 112. test_debug_hook_privilege.py: the debug metadata mutators are owner-only
 
@@ -8119,7 +8123,7 @@ The pytest twin of `test/native_encdesc_golden.sh` (ported for #1341), every che
 
 ## 161. test_native_parquet_schema.py: parquet_schema round trip
 
-The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.parquet_schema(path)` reports a Parquet file's leaf columns with the PostgreSQL type each maps to. A columnar table covering every exported type is exported, and each source type must come back, every column nullable. A file that isn't Parquet must be refused by the magic check itself: any error was the old arm, and with the magic check gone the same file is still refused, as a corrupt footer. pyarrow supplies what the exporter can't: a REQUIRED column, and field ids out of order, with absence reported as NULL. The timestamp tests (#1706) export a `timestamp` and a `timestamptz` column and read the file back with pyarrow, the independent reader: a `timestamp` must carry no time zone and read back as its wall time, a `timestamptz` must be UTC-adjusted and read back as its instant. pgcolumnar's own `read_parquet` must return both unchanged under a non-UTC session. Each is one check, and a failed export or read is a `query_error()` that fails that check by name.
+The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.parquet_schema(path)` reports a Parquet file's columns, one row per column `read_parquet` declares, with the PostgreSQL type each maps to. A columnar table covering every exported type is exported, and each source type must come back, every column nullable. A file that isn't Parquet must be refused by the magic check itself: any error was the old arm, and with the magic check gone the same file is still refused, as a corrupt footer. pyarrow supplies what the exporter can't: a REQUIRED column, and field ids out of order, with absence reported as NULL. The timestamp tests (#1706) export a `timestamp` and a `timestamptz` column and read the file back with pyarrow, the independent reader: a `timestamp` must carry no time zone and read back as its wall time, a `timestamptz` must be UTC-adjusted and read back as its instant. pgcolumnar's own `read_parquet` must return both unchanged under a non-UTC session. Each is one check, and a failed export or read is a `query_error()` that fails that check by name. The nested tests (#1893) check that a list and a struct report under their top-level names, not as their leaves. The files from `test/craft_parquet_nested.py` (a map, lists of structs, structs of structs and of lists, a list of lists, a legacy two-level list made by a footer rewrite, REQUIRED nested columns) check that other nesting lists one row per leaf by its path, that the reported rows read as a column list, that a REQUIRED list or struct is not nullable, that a leaf row is nullable only when an OPTIONAL element sits above its first repeated level, and that a struct field name that needs quotes comes quoted, so `CREATE TYPE` takes the composite text.
 
 ### Every test
 
@@ -8132,6 +8136,20 @@ The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every che
 | `test_an_exported_timestamptz_is_utc_adjusted` | an exported timestamptz column is UTC-adjusted (pyarrow reads UTC) |
 | `test_pyarrow_reads_an_exported_timestamp_as_its_wall_time` | pyarrow reads an exported timestamp back as its wall time |
 | `test_pyarrow_reads_an_exported_timestamptz_as_its_instant` | pyarrow reads an exported timestamptz back as its instant |
+| `test_nested_columns_report_by_top_level_name` | a nested file lists its top-level column names (#1893): a list reports `bigint[]`, a struct reports `composite (a bigint, b text)`, and read_parquet reads the file with those names and types |
+| `test_a_map_column_lists_one_row_per_leaf` | parquet_schema lists a map column one row per leaf, each an array (#1893) |
+| `test_a_list_of_a_two_field_struct_lists_one_row_per_leaf` | parquet_schema lists a list of a two-field struct one row per leaf (#1893) |
+| `test_a_list_of_a_one_field_struct_lists_by_its_leaf_path` | parquet_schema lists a list of a one-field struct by its leaf path (#1893) |
+| `test_a_struct_holding_a_list_lists_by_its_leaf_path` | parquet_schema lists a struct holding a list by its leaf path (#1893) |
+| `test_a_struct_of_a_struct_lists_one_scalar_row_per_leaf` | parquet_schema lists a struct of a struct one scalar row per leaf (#1893) |
+| `test_a_struct_holding_a_map_lists_one_row_per_leaf` | parquet_schema lists a struct holding a map one row per leaf (#1893) |
+| `test_a_list_of_maps_reports_null_for_its_leaves` | parquet_schema reports NULL for the leaves of a list of maps, repeated twice (#1893) |
+| `test_a_list_of_lists_reports_null_for_its_leaf` | parquet_schema reports NULL for the leaf of a list of lists, repeated twice (#1893) |
+| `test_a_legacy_two_level_list_reports_by_its_name_as_an_array` | parquet_schema reports a legacy two-level list by its name as an array (#1893) |
+| `test_read_parquet_reads_each_nested_file_with_the_reported_column_list` | read_parquet reads each nested file with the column list parquet_schema reports (#1893) |
+| `test_a_required_list_or_struct_is_not_nullable` | parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893) |
+| `test_a_leaf_row_is_nullable_only_above_its_first_repeated_level` | parquet_schema reports a leaf row nullable only when an OPTIONAL element sits above its first repeated level (#1893) |
+| `test_a_struct_field_name_that_needs_quotes_comes_quoted` | parquet_schema quotes a struct field name that needs quotes, so CREATE TYPE takes the composite text (#1893) |
 
 ## 162. test_native_vecskip.py: per-vector skipping by the zone maps
 
@@ -10780,6 +10798,7 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_name_mapping_reads_an_id_less_file_over_s3` | name mapping reads an id-less file over s3 (5 rows) |
 | `test_an_s3a_metadata_path_reads_over_s3_as_s3_does` | an s3a:// metadata path reads over s3 as s3:// does (3 rows) |
 | `test_an_s3n_metadata_path_reads_over_s3_as_s3_does` | an s3n:// metadata path reads over s3 as s3:// does (3 rows) |
+| `test_iceberg_current_snapshot_reads_an_s3_metadata_file` | iceberg_current_snapshot reads an s3:// metadata file: snapshot id and operation (#1887) |
 | `test_the_backend_is_still_up_after_the_s3_reads` | backend still up after the s3 reads |
 | `test_a_delete_path_outside_the_table_location_is_refused_over_s3` | a delete path outside the table location is refused over s3 (22023) |
 | `test_a_dotdot_escaping_delete_path_is_refused_over_s3` | a dotdot-escaping delete path is refused over s3 (22023) |
@@ -11122,6 +11141,21 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_text_array_form_a_null_level_is_refused` | text[] form: a NULL level is refused |
 | `test_text_array_form_a_two_dimensional_namespace_array_is_refused` | text[] form: a two-dimensional namespace array is refused |
 | `test_text_array_form_a_null_namespace_array_returns_no_rows` | text[] form: iceberg_rest_tables of a NULL namespace array returns no rows |
+| `test_empty_level_a_missing_doubled_dot_gets_a_hint_naming_level_2` | empty level: a missing 'db..x' gets a hint naming level 2 |
+| `test_empty_level_a_missing_trailing_dot_gets_a_hint_naming_level_2` | empty level: a missing 'db.' gets a hint naming level 2 |
+| `test_empty_level_a_missing_empty_text_gets_a_hint_naming_level_1` | empty level: a missing '' gets a hint naming level 1 |
+| `test_empty_level_a_missing_empty_array_element_gets_a_hint_naming_level_2` | empty level: a missing ARRAY['db',''] gets a hint naming level 2 |
+| `test_empty_level_iceberg_rest_scan_of_a_missing_empty_element_gets_a_hint` | empty level: iceberg_rest_scan of a missing ARRAY[''] gets a hint naming level 1 |
+| `test_empty_level_iceberg_rest_table_location_of_a_missing_leading_dot_gets_a_hint` | empty level: iceberg_rest_table_location of a missing '.db' gets a hint naming level 1 |
+| `test_empty_level_a_missing_namespace_with_no_empty_level_gets_no_hint` | empty level: a missing namespace with no empty level gets no empty-level hint |
+| `test_empty_level_iceberg_rest_namespace_levels_lists_the_empty_level` | empty level: iceberg_rest_namespace_levels lists the namespace db, '' |
+| `test_empty_level_iceberg_rest_tables_of_the_array_form_lists_its_tables` | empty level: iceberg_rest_tables of ARRAY['db',''] lists its tables |
+| `test_empty_level_iceberg_rest_tables_of_the_text_form_lists_its_tables` | empty level: iceberg_rest_tables of the text form 'db.' lists its tables |
+| `test_empty_level_iceberg_rest_table_location_resolves_the_table` | empty level: iceberg_rest_table_location of ARRAY['db',''] resolves the table |
+| `test_empty_level_iceberg_rest_scan_returns_the_five_rows` | empty level: iceberg_rest_scan of ARRAY['db',''] returns the five rows |
+| `test_empty_level_a_listed_level_array_with_an_empty_level_passes_back` | empty level: a listed level array with an empty level passes back to iceberg_rest_tables |
+| `test_empty_level_the_server_form_reaches_the_empty_level` | empty level: the server form of iceberg_rest_tables reaches ARRAY['db',''] |
+| `test_empty_level_a_missing_table_in_an_empty_level_namespace_gets_a_hint` | empty level: iceberg_rest_table_location of a missing table in ARRAY['db',''] gets a hint naming level 2 |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
@@ -12388,8 +12422,9 @@ Every test makes one check under the shell's name, on a private database. The wr
 | `test_a_parquet_file_with_no_field_ids_is_refused` | a file with no field ids is refused (22023) |
 | `test_a_duplicate_requested_field_id_is_refused` | a duplicate requested field id is refused (22023) |
 | `test_the_duplicate_requested_id_error_names_the_id` | the duplicate-requested-id error names the id, not the file |
-| `test_the_nested_files_leaves_carry_only_the_child_ids` | premise: the nested file's leaves carry ids 1,5,6,7,8,9 and none of 2,3,4 |
+| `test_the_nested_files_leaves_carry_only_the_child_ids` | premise: the nested file's leaves carry ids 1,5,6,7,8,9 and none of 2,3,4, as pyarrow reads them back |
 | `test_the_nested_files_groups_carry_the_nested_ids` | premise: the nested file's groups carry ids st=2 li=3 mp=4 |
+| `test_parquet_schema_reports_a_lists_and_a_structs_own_field_id_and_a_maps_leaf_ids` | parquet_schema reports a list's and a struct's own field id, and a map's leaf ids (#1893) |
 | `test_a_scalar_beside_nested_columns_still_reads_by_field_id_premise` | premise: a scalar beside nested columns still reads by field id |
 | `test_a_struct_field_id_read_as_text_is_refused_as_nested` | a struct field id read as text is refused as nested (0A000) |
 | `test_a_list_field_id_read_as_int4_is_refused_as_nested` | a list field id read as int4 is refused as nested (0A000) |
@@ -12954,7 +12989,7 @@ Every test makes one check under the shell's name. A refusal is 08006, the modul
 
 ## 330. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard
 
-The twin of `test/objstore_http_read.sh`. Foreign tables over the local fixture server (`test/objstore_http_server.py`, the shell's own) read a G-row-group parquet fixture: the answer must equal the byte-identical local file, the buffered request count must equal the arithmetic from the fixture's shape with every GET carrying a Range header, and statement_timeout must cancel a transfer stalled mid-body. An unreachable port, a 404, a server that ignores Range, a short 206 body, EOF mid-body and a server that hangs up are each refused by their own guard; a keep-alive connection the server dropped is retried once, and a fresh connection is not. An object the server overwrites between two ranged GETs of one read is refused with `changed while it was being read`, not read as rows from both versions, and a server that sends only a weak ETag is still read, because the client does not send a weak ETag as If-Match (#1805). An ETag of 79 characters still pins the read, an ETag of 80 is not sent cut short (the read succeeds unpinned), and a server whose ETag changes on every request is refused as if the object changed. With `pgcolumnar.objstore_pin_reads` off (#1866) that server is read whole, and an overwrite mid-read is read unpinned, old and new rows mixed. A versioned object is read whole from the version the read opened, with the version id on every ranged GET; an overwrite that changes the length, on a server with no ETag, is refused by the Content-Range total, with the pin on or off (#1867). An object that shrinks below the offset of a later GET gets 416 and is refused the same way. With the pin off no GET names a version, a version id of `null` or one over 1024 bytes is not sent, and a versioned GET answered 403 (no `s3:GetObjectVersion`) is sent again without the version and the read finishes (#1888 review). Only an `s3://` key is a pattern (#1785): an http URL with a query string reads the object and its HEAD carries the query to the server, and a bracketed IPv6 host is refused by name rather than as a listing.
+The twin of `test/objstore_http_read.sh`. Foreign tables over the local fixture server (`test/objstore_http_server.py`, the shell's own) read a G-row-group parquet fixture: the answer must equal the byte-identical local file, the buffered request count must equal the arithmetic from the fixture's shape with every GET carrying a Range header, and statement_timeout must cancel a transfer stalled mid-body. An unreachable port, a 404, a server that ignores Range, a short 206 body, EOF mid-body and a server that hangs up are each refused by their own guard; a keep-alive connection the server dropped is retried once, and a fresh connection is not. An object the server overwrites between two ranged GETs of one read is refused with `changed while it was being read`, not read as rows from both versions, and a server that sends only a weak ETag is still read, because the client does not send a weak ETag as If-Match (#1805). An ETag of 79 characters still pins the read, an ETag of 80 is not sent cut short (the read succeeds unpinned), and a server whose ETag changes on every request is refused as if the object changed. With `pgcolumnar.objstore_pin_reads` off (#1866) that server is read whole, and an overwrite mid-read is read unpinned, old and new rows mixed. A versioned object is read whole from the version the read opened, with the version id on every ranged GET; an overwrite that changes the length, on a server with no ETag, is refused by the Content-Range total, with the pin on or off (#1867). An object that shrinks below the offset of a later GET gets 416 and is refused the same way. With the pin off no GET names a version, a version id of `null` or one over 1024 bytes is not sent, and a versioned GET answered 403 (no `s3:GetObjectVersion`) is sent again without the version and the read finishes (#1888 review). Two reads of one object in one statement, a `UNION ALL` of the same foreign table that the server overwrites between the two HEADs, are refused with `changed while it was being read`; the next statement reads the new object; and in a versioned bucket both reads read the version the first opened (#1894). One s3 key on two foreign servers with different endpoints is two objects, plain and versioned; in one transaction a statement sent on its own reads the new object; a statement that overwrites an object and reads it again reads the new object; and with a weak ETag a same-length overwrite between two reads is not caught, the documented limit (#1907 review). The pin ends with the top-level statement (#1907 second review): two statements sent in one query string each read the current object, from a plain and from a versioned store, and so does the statement after a `DO` block in one string, while two reads inside one function call or one `DO` block share the pin and are refused. The refusal's DETAIL names the statement's earlier read with both ETags and lengths. A versioned overwrite by a longer object reads the first version with its own length, and with a weak ETag an overwrite that changes the length is refused. Only an `s3://` key is a pattern (#1785): an http URL with a query string reads the object and its HEAD carries the query to the server, and a bracketed IPv6 host is refused by name rather than as a listing.
 
 ### Every test
 
@@ -12964,6 +12999,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 | --- | --- |
 | `test_the_http_read_fixture_is_written` | premise: fixture written |
 | `test_the_http_read_fixture_server_is_up` | premise: fixture server is up |
+| `test_the_http_read_fixture_server_b_is_up` | premise: fixture server B is up |
 | `test_a_full_scan_over_http_equals_the_local_file` | A: full scan http == local |
 | `test_a_projection_over_http_equals_the_local_file` | A: projection http == local |
 | `test_count_over_http` | A: count(*) over http |
@@ -13004,10 +13040,27 @@ Every test makes one check under the shell's name, from readings a module fixtur
 | `test_a_version_id_of_null_is_not_sent_as_a_pin` | C: a version id of null is not sent as a pin |
 | `test_a_version_id_longer_than_1024_bytes_is_not_sent_cut_short` | C: a version id longer than 1024 bytes is not sent cut short |
 | `test_a_versioned_get_answered_403_is_sent_again_without_the_version` | C: a versioned GET answered 403 is sent again without the version, and the read finishes |
+| `test_an_object_overwritten_between_two_reads_of_one_statement_is_refused` | C: an object overwritten between two reads of one statement is refused |
+| `test_the_statement_after_that_reads_the_new_object` | C: the statement after that reads the new object |
+| `test_two_reads_of_one_versioned_object_read_the_version_the_first_opened` | C: two reads of one versioned object in one statement, overwritten between them, read the version the first opened |
+| `test_one_s3_key_on_two_endpoints_reads_each_endpoints_own_object` | C: one s3 key on two endpoints, read in one statement, reads each endpoint's own object |
+| `test_one_versioned_s3_key_on_two_endpoints_reads_each_endpoints_own_version` | C: one versioned s3 key on two endpoints, read in one statement, reads each endpoint's own version |
+| `test_in_one_transaction_the_next_statement_reads_the_new_object` | C: in one transaction, the next statement reads the new object |
+| `test_two_statements_sent_in_one_query_string_each_read_the_current_object` | C: two statements sent in one query string each read the current object |
+| `test_two_statements_sent_in_one_query_string_to_a_versioned_store_each_read_the_current_version` | C: two statements sent in one query string to a versioned store each read the current version |
+| `test_two_reads_of_one_object_in_one_function_call_are_refused` | C: two reads of one object in one function call, overwritten between them, are refused |
+| `test_two_reads_of_one_object_in_one_do_block_are_refused` | C: two reads of one object in one DO block, overwritten between them, are refused |
+| `test_the_statement_after_a_do_block_in_one_query_string_reads_the_new_object` | C: the statement after a DO block in one query string reads the new object |
+| `test_the_refusal_names_the_earlier_read_of_the_statement_in_its_detail` | C: the refusal of an overwrite between two reads names the earlier read of the statement in its DETAIL |
+| `test_a_versioned_overwrite_by_a_longer_object_reads_the_version_the_first_opened` | C: two reads of one versioned object in one statement, overwritten between them by a longer object, read the version the first opened |
+| `test_with_a_weak_etag_an_overwrite_that_changes_the_length_is_refused` | C: with a weak ETag, an overwrite that changes the length between two reads of one statement is refused |
+| `test_a_statement_that_overwrites_an_object_and_reads_it_again_reads_the_new_object` | C: a statement that overwrites an object and reads it again reads the new object |
+| `test_with_a_weak_etag_a_same_length_overwrite_between_two_reads_is_not_caught` | C: with a weak ETag, a same-length overwrite between two reads of one statement is not caught |
 | `test_a_stalled_transfer_is_cancelled` | D: stalled transfer cancelled with query_canceled |
 | `test_the_http_read_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
 | `test_an_http_url_with_a_query_string_reads_the_object` | E: an http URL with a query string (?raw=true) reads the object, not a listing |
 | `test_the_query_string_reached_the_server` | E: and its HEAD carried the query string to the server |
+| `test_a_versioned_read_of_an_http_url_with_a_query_string_adds_the_version_with_an_ampersand` | E: a versioned read of an http URL with a query string adds the version with '&' and reads the version it opened -- #1904: a second '?' hid the versionId, and the overwrite failed the read |
 | `test_an_ipv6_literal_http_host_is_refused` | E: an IPv6 literal http host is refused as IPv6, not as a listing |
 | `test_the_server_survives` | survival: the server answers and no backend crashed |
 
@@ -13029,6 +13082,7 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_large_export_took_the_multipart_protocol` | premise: the large export took the multipart protocol |
 | `test_the_large_export_completed_its_upload_once` | and completed it exactly once (POST with uploadId, no partNumber) |
 | `test_the_large_object_reads_back_as_the_generator` | large round trip: s3 read-back == source |
+| `test_an_s3_export_and_pinned_read_of_a_key_with_a_literal_question_mark_keep_queries_out_of_the_path` | s3:// export and pinned read of a key with a literal '?' keep each request's query out of the path -- #1904 review: the request path encodes the '?' as %3F |
 | `test_the_part_size_refuses_more_than_512_mib` | objstore_part_size refuses a value above its 512 MiB maximum (#1812) |
 | `test_the_part_size_accepts_512_mib` | objstore_part_size accepts its 512 MiB maximum |
 | `test_a_chunk_bigger_than_the_room_left_in_the_part_uploads_whole` | an 800 MB chunk over 500 MB already staged uploads whole at the 512 MiB part size, in 3 parts; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
@@ -13120,9 +13174,11 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_large_export_to_http_succeeds_unsigned` | http:// large export succeeds unsigned (no crash) |
 | `test_the_large_http_export_took_the_multipart_protocol` | the http:// large export took the multipart protocol -- started, at least two parts, completed once |
 | `test_the_large_http_object_reads_back_as_the_generator` | http:// large round trip: read-back == source |
+| `test_a_multipart_http_export_to_a_url_with_a_query_string_joins_parameters_with_an_ampersand` | http:// multipart export to a URL with a query string joins each request's parameters with '&' -- #1904: raw=true?uploads= was refused with HTTP 400 |
 | `test_an_injected_failure_on_http_surfaces_as_disk_full` | http:// inject: mid-upload failure surfaces as disk-full (53100) |
 | `test_the_injected_http_fault_landed_mid_multipart` | the http:// fault landed mid-multipart (an upload was started) |
 | `test_the_injected_http_failure_leaves_no_open_upload` | http:// inject: the server holds no open upload for the key -- the unsigned abort reached the server |
+| `test_the_abort_of_a_failed_http_export_to_a_url_with_a_query_string_joins_with_an_ampersand` | http:// inject to a URL with a query string: the abort joins uploadId with '&' and no upload stays open -- #1904 review |
 | `test_a_403_from_an_unsigned_http_target_hints_that_it_went_unsigned` | http:// 403: the hint says the request went unsigned, not to check AWS_* credentials -- the SigV4 fixture server refuses a request with no Authorization header |
 | `test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials` | s3:// 403: a signed request that is refused still hints to check AWS_* credentials -- the fixture verifies the denied bucket against another secret |
 | `test_a_parallel_export_to_gs_is_refused_before_any_worker_starts` | gs:// prefix: a parallel export is refused before any worker starts, with no request sent -- #1832: it uploaded every part and then failed at the s3://-only listing |
@@ -13550,6 +13606,9 @@ The pytest twin of `test/parquet_skip_cross_type.sh` (#1712), every check by the
 | `test_pxt_a_timestamptz_equality_after_a_gap_finds_the_heap_row` | a timestamptz constant equal to a row's instant after a spring-forward gap finds that row, as the heap does |
 | `test_pxt_a_timestamp_constant_skips_one_gap_group` | control: a timestamp constant on the timestamp column skips 1 of the 2 row groups |
 | `test_pxt_the_timestamp_constant_returns_the_heap_rows` | and returns the rows the heap returns |
+| `test_pxt_the_four_type_file_holds_four_row_groups` | premise: the four-type file holds 4 row groups (pyarrow's own count) (#1887) |
+| `test_pxt_a_cross_type_constant_skips_row_groups` | parametrized over four (#1887): `an int4 constant on an int2 column skips 3 of the 4 row groups (#1887)`, `an int8 constant on an int4 column skips all 4 row groups (#1887)`, `a float8 constant on a float4 column skips 3 of the 4 row groups (#1887)` and `a date constant on a timestamp column skips 2 of the 4 row groups (#1887)` |
+| `test_pxt_a_cross_type_constant_returns_the_heap_rows` | parametrized over four (#1887): `an int4 constant on an int2 column returns the heap copy's 5000 rows (#1887)`, `an int8 constant on an int4 column returns the heap copy's 0 rows (#1887)`, `a float8 constant on a float4 column returns the heap copy's 20000 rows (#1887)` and `a date constant on a timestamp column returns the heap copy's 86400 rows (#1887)`; each shows the foreign table's count beside the heap copy's |
 
 ## 345. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap
 

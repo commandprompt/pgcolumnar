@@ -145,6 +145,30 @@ psql_run "CREATE FOREIGN TABLE f_big (id int8, pad text) SERVER wsrv OPTIONS (pa
 check "large round trip: s3 read-back == source" \
 	"$(pgc_set_hash "SELECT * FROM f_big")" "$(pgc_set_hash "$GEN_BIG")"
 
+# #1904 review: an s3:// key can hold a literal '?'. The request path encodes it
+# as %3F, so each request starts its own query with '?'. A test of the URL, which
+# still holds the '?', would join with '&' and put the query inside the path.
+# The read goes through /vswap/, the fixture's versioned bucket, so it is pinned
+# by version id. A '?' in an s3:// key makes the read list the bucket first, and
+# the listing of bucket vswap looks under vswap/ on disk, so the copy there lets
+# the listing find the key. The GETs still read the exported object.
+: > "$S3_LOG"
+sq_rows="$(qset "SELECT pgcolumnar.export_parquet('es_big', 's3://$BUCKET/q?.parquet')")"
+mkdir -p "$PGC_WORKDIR/vswap/$BUCKET"
+cp "$PGC_WORKDIR/$BUCKET/q?.parquet" "$PGC_WORKDIR/vswap/$BUCKET/q?.parquet" 2>/dev/null
+sq_back="$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('s3://vswap/$BUCKET/q?.parquet') AS t(id int8, pad text)")"
+sq_all="$(awk '$2 ~ /^(\/vswap)?\/pgc-bucket\/q/ { print $1, $2, $3 }' "$S3_LOG")"
+sq_n="$(printf '%s' "$sq_all" | grep -c .)"
+sq_bad="$(printf '%s' "$sq_all" | awk '$2 != "/pgc-bucket/q%3F.parquet" && $2 != "/vswap/pgc-bucket/q%3F.parquet"')"
+sq_badn="$(printf '%s' "$sq_bad" | grep -c .)"
+[ "$sq_badn" -gt 0 ] && sq_badn="$sq_badn (first: $(head -1 <<<"$sq_bad"))"
+sq_gets="$(printf '%s\n' "$sq_all" | awk '$1 == "GET"' | grep -c .)"
+sq_unpinned="$(printf '%s\n' "$sq_all" | awk '$1 == "GET" && $3 !~ /^versionId=/' | grep -c .)"
+sq_wgets="$sq_gets"; [ "$sq_gets" -ge 1 ] 2>/dev/null || sq_wgets="at least 1"
+check "s3:// export and pinned read of a key with a literal '?' keep each request's query out of the path" \
+	"rows: ${sq_rows:-none}; requests with more than the key in the path: $sq_badn of $sq_n; GETs without versionId: $sq_unpinned of $sq_gets; read-back: $sq_back" \
+	"rows: $BIGROWS; requests with more than the key in the path: 0 of $sq_n; GETs without versionId: 0 of $sq_wgets; read-back: $(pgc_set_hash "$GEN_BIG")"
+
 # ---- the part size has a ceiling the sink can hold (#1812) -------------------
 # The sink stages one part in one allocation, and PostgreSQL caps one allocation at
 # 1 GiB. The setting took any value up to INT_MAX, so a part size near or above 1 GiB
@@ -831,6 +855,21 @@ psql_run "CREATE FOREIGN TABLE fh_big (id int8, pad text) SERVER wsrv OPTIONS (p
 check "http:// large round trip: read-back == source" \
 	"$(pgc_set_hash "SELECT * FROM fh_big")" "$(pgc_set_hash "$GEN_BIG")"
 
+# #1904: an http:// URL keeps its query string, so each multipart request joins
+# its own parameters to it with '&'. A second '?' made the start request read as
+# raw=true?uploads=, and the server refused it.
+: > "$PLAIN_LOG"
+wait_up
+pq_rows="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qAt \
+	-c "$PART SELECT pgcolumnar.export_parquet('es_big', '$PLAIN/bigq.parquet?raw=true')" 2>&1 | tr '\n' ' ' | sed 's/ *$//')"
+pq_all="$(awk '$2 == "/pb/bigq.parquet" { print $1, $3 }' "$PLAIN_LOG")"
+pq_n="$(printf '%s' "$pq_all" | grep -c .)"
+pq_bad="$(printf '%s' "$pq_all" | grep -vc ' raw=true&\(uploads=\|partNumber=\|uploadId=\)')"
+[ "$pq_bad" -gt 0 ] && pq_bad="$pq_bad (first: $(printf '%s\n' "$pq_all" | grep -v ' raw=true&\(uploads=\|partNumber=\|uploadId=\)' | head -1))"
+check "http:// multipart export to a URL with a query string joins each request's parameters with '&'" \
+	"rows: ${pq_rows:-none}; requests not of the form raw=true&...: $pq_bad of $pq_n" \
+	"rows: $BIGROWS; requests not of the form raw=true&...: 0 of $pq_n"
+
 : > "$PLAIN_LOG"
 check "http:// inject: mid-upload failure surfaces as disk-full (53100)" \
 	"$(refusal_of "$PART SET pgcolumnar.sink_fail_after = 900000; SELECT pgcolumnar.export_parquet('es_big', '$PLAIN/fail.parquet')" \
@@ -839,6 +878,20 @@ check "the http:// fault landed mid-multipart (an upload was started)" \
 	"$(pf_s="$(plogn '^POST /pb/fail.parquet uploads=')"; if [ "${pf_s:-0}" -ge 1 ]; then echo yes; else echo "no (starts=${pf_s:-?})"; fi)" "yes"
 check_num "http:// inject: the server holds no open upload for the key" \
 	"$(if [ -f "$PLAIN_DIR/__open_uploads__" ]; then grep -cE '^pb/fail\.parquet$' "$PLAIN_DIR/__open_uploads__" | tr -d ' '; else echo 0; fi)" "0"
+# #1904 review: the abort of a failed multipart export to a URL with a query
+# string joins uploadId to it with '&' too, so the server ends the upload.
+: > "$PLAIN_LOG"
+fq_err="$(refusal_of "$PART SET pgcolumnar.sink_fail_after = 900000; SELECT pgcolumnar.export_parquet('es_big', '$PLAIN/failq.parquet?raw=true')" \
+	"export write failed (injected fault)" " by the injected fault")"
+fq_del="$(awk '$1 == "DELETE" && $2 == "/pb/failq.parquet" { print $3 }' "$PLAIN_LOG")"
+fq_deln="$(printf '%s' "$fq_del" | grep -c .)"
+fq_bad="$(printf '%s' "$fq_del" | grep -vc '^raw=true&uploadId=')"
+[ "$fq_bad" -gt 0 ] && fq_bad="$fq_bad (first: $(grep -v '^raw=true&uploadId=' <<<"$fq_del" | head -1))"
+fq_open="$(if [ -f "$PLAIN_DIR/__open_uploads__" ]; then grep -cE '^pb/failq\.parquet$' "$PLAIN_DIR/__open_uploads__" | tr -d ' '; else echo 0; fi)"
+fq_wdel="$fq_deln"; [ "$fq_deln" -ge 1 ] 2>/dev/null || fq_wdel="at least 1"
+check "http:// inject to a URL with a query string: the abort joins uploadId with '&' and no upload stays open" \
+	"$fq_err; DELETEs not of the form raw=true&uploadId=: $fq_bad of $fq_deln; open uploads: $fq_open" \
+	"53100 by the injected fault; DELETEs not of the form raw=true&uploadId=: 0 of $fq_wdel; open uploads: 0"
 # #1832: an http:// prefix cannot be listed either, so it is refused before
 # any worker starts too.
 : > "$PLAIN_LOG"

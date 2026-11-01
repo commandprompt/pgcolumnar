@@ -171,6 +171,13 @@ def test_object_store_credentials(pgc_cluster, expect):
                    str(fixture), row_group_size=RPG, data_page_size=4096, compression="NONE",
                    use_dictionary=False)
     os.chmod(fixture, 0o644)
+    # An Iceberg table for the pgcolumnar_iceberg arms (#1887), served at s3://BUCKET/db/t
+    # as the shell serves it. noapply.metadata.json reads 5 rows.
+    fx = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "iceberg" / "warehouse_del" / "db"
+    shutil.copytree(fx, work / BUCKET / "db")
+    # chmod -R u+rwX, as the shell does: the owner may read, write and enter.
+    for p in [work / BUCKET / "db", *(work / BUCKET / "db").rglob("*")]:
+        p.chmod(p.stat().st_mode | (0o700 if p.is_dir() else 0o600))
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _SigV4)
     srv.root, srv.requests = str(work), []
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -326,6 +333,38 @@ def test_object_store_credentials(pgc_cluster, expect):
         run("DROP USER MAPPING FOR cred_carol SERVER csrv")
         expect.text(sql("SELECT count(*) FROM fs3", "cred_carol")[0], "28000",
                     "ambient: without her mapping, carol is refused despite the environment")
+
+        # ---- #1887: the pgcolumnar_iceberg wrapper reads with the server environment's
+        # credentials. It takes no server or user-mapping options, so carol, refused
+        # above on the pgcolumnar_parquet table for want of a mapping, reads through it.
+        def outcome(stmt, role="postgres"):
+            """-> the value as text, or "SQLSTATE message" of the error."""
+            state, value, msg = sql(stmt, role)
+            return f"{state} {msg}" if state else str(value)
+
+        expect.text(outcome("CREATE SERVER isrv_bad FOREIGN DATA WRAPPER pgcolumnar_iceberg"
+                            f" OPTIONS (endpoint 'http://127.0.0.1:{port}')"),
+                    'HV00D invalid option "endpoint" for pgcolumnar_iceberg',
+                    "a pgcolumnar_iceberg server refuses an endpoint option (#1887)")
+        run("CREATE SERVER isrv FOREIGN DATA WRAPPER pgcolumnar_iceberg",
+            "CREATE FOREIGN TABLE fice (id bigint, region text, amount int) SERVER isrv"
+            f" OPTIONS (metadata_path 's3://{BUCKET}/db/t/metadata/noapply.metadata.json')",
+            "GRANT USAGE ON FOREIGN SERVER isrv TO cred_carol", "GRANT SELECT ON fice TO cred_carol")
+        # The mapping is tried for a throwaway role, not carol: if the refusal were gone,
+        # the mapping would be created, and carol's no-mapping premise below must not
+        # depend on this check passing.
+        run("CREATE ROLE cred_umprobe NOLOGIN")
+        expect.text(outcome(f"CREATE USER MAPPING FOR cred_umprobe SERVER isrv OPTIONS (access_key_id '{AKID}')"),
+                    'HV00D invalid option "access_key_id" for pgcolumnar_iceberg',
+                    "a pgcolumnar_iceberg user mapping refuses an access_key_id option (#1887)")
+        expect.text(outcome("SELECT count(*) FROM pg_user_mappings WHERE usename = 'cred_carol'"), "0",
+                    "premise: carol has no user mapping on either server (#1887)")
+        expect.text(outcome("SELECT count(*) FROM fs3", "cred_carol"),
+                    f'28000 columnar: no credentials for "s3://{BUCKET}/fixture.parquet"',
+                    "ambient: carol, with no mapping, is refused on the pgcolumnar_parquet table: "
+                    "no credentials (#1887)")
+        expect.text(outcome("SELECT count(*) FROM fice", "cred_carol"), "5",
+                    "ambient: carol, with no mapping, reads 5 rows through the pgcolumnar_iceberg table (#1887)")
         run("DROP USER MAPPING FOR postgres SERVER csrv")
         expect.num(count("SELECT count(*) FROM fs3"), n,
                    "ambient: a superuser with no mapping reads via the environment")

@@ -335,7 +335,11 @@
 # guard_tests 847 -> 849 for #1431's test_the_budget_holds_no_history and
 # test_each_ledger_commit_carries_its_census in test_mutation_ledger.py, by collection over NO_CLUSTER.
 # guard_tests 849 -> 854 for #1767's five conditional-row tests in test_layer.py, merged from main.
-guard_tests 854
+# guard_tests 854 -> 857 for #1892's three xdist arms in test_layer.py: the expected-unrunnable
+# list judged on the controller only, by collection over NO_CLUSTER.
+# guard_tests 857 -> 858 for #1892's test_the_unrunnable_collector_registers_without_xdist in
+# test_layer.py (review of PR #1905), by collection over NO_CLUSTER.
+guard_tests 858
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1622,7 +1626,46 @@ guard_tests 854
 # cluster_tests 5138 -> 5139 for #1886's check order: one test in test_import_export_privilege.py
 # (import_arrow and parallel_copy check INSERT before they refuse a remote URL), by collection:
 # `5139 tests collected`.
-# cluster_tests 5139 -> 5149 for #1913: ten tests in test_avro_manifest.py (read_avro_manifest and
+# cluster_tests 5139 -> 5153 for #1891's fourteen tests in test_iceberg_rest_scan.py (an empty namespace level:
+# a catalog 404 hints at it in the text form 'db..x', 'db.', '' and '.db' and the text[] form, a 404 with no
+# empty level has no hint, and the namespace db, '' is reached in every form, by the server form and by a
+# listed row passed back), by collection: 5978 tests collected, less guard_tests 854.
+# cluster_tests 5153 -> 5154 for #1906's review: one test in test_iceberg_rest_scan.py (a missing table in the
+# namespace db, '' gets the empty-level hint on its 42P01 404), by collection: 5979 tests collected, less
+# guard_tests 854.
+# cluster_tests 5154 -> 5157 for #1893's three tests: two in test_native_parquet_schema.py (nested columns
+# by their top-level names, a map column reported as not supported) and one in test_native_parquet_fieldid.py
+# (a nested column's own field id), by collection: `5967 tests collected`, less guard_tests 854.
+# cluster_tests 5157 -> 5167 for #1893's review: test_native_parquet_schema.py drops the map-as-not-supported
+# test and adds eleven (nine nested shapes listed one row per leaf, the reported rows read as a column list,
+# a REQUIRED list or struct not nullable), by collection: `5977 tests collected`, less guard_tests 854.
+# cluster_tests 5167 -> 5169 for #1893's second review: test_native_parquet_schema.py adds two (a leaf
+# row's nullable rule, a struct field name that needs quotes), by collection: `5979 tests collected`, less
+# guard_tests 854.
+# cluster_tests 5169 -> 5179 for #1887's ten tests: one in test_iceberg_objstore.py (iceberg_current_snapshot
+# over s3) and nine in test_parquet_skip_cross_type.py (four cross-type pairs, skips and rows, and the file's
+# premise), by collection: `5974 tests collected`, less guard_tests 854.
+# cluster_tests 5179 -> 5181 for #1904's two tests: one in test_objstore_http_read.py (the version pin on an
+# http URL with a query string) and one in test_objstore_sink_write.py (a multipart export to such a URL),
+# by collection: `5966 tests collected`, minus 854.
+# cluster_tests 5181 -> 5183 for #1904's review: two tests in test_objstore_sink_write.py (an s3:// key with a
+# literal '?', exported and read pinned; the abort of a failed export to an http URL with a query string),
+# by collection: `5968 tests collected`, minus 854.
+# cluster_tests 5183 -> 5186 for #1894's three tests in test_objstore_http_read.py (two reads of one
+# object in one statement refused, the next statement reads the new object, the versioned pair reads
+# the first read's version), by collection: 5967 tests collected, less guard_tests 854.
+# cluster_tests 5186 -> 5193 for #1907's review: seven tests in test_objstore_http_read.py (server B's
+# premise, one s3 key on two endpoints plain and versioned, the next statement in one transaction, two
+# statements in one query string, a write then a read in one statement, the weak-ETag same-length
+# overwrite), by collection: 5974 tests collected, less guard_tests 854.
+# cluster_tests 5193 -> 5200 for #1907's second review: test_objstore_http_read.py drops one test (two
+# statements in one query string share the pin) and gains eight (each statement of one query string reads
+# the current object, plain and versioned; two reads in one function call and in one DO block refused; the
+# statement after a DO block in one string; the refusal's DETAIL; a versioned overwrite by a longer
+# object; a weak-ETag overwrite that changes the length), by collection: 5981 tests collected, less
+# guard_tests 854.
+# cluster_tests 5200 -> 5210 for #1913: ten tests in test_avro_manifest.py (read_avro_manifest and
 # read_manifest_list each refuse s3://, http:// and the other remote schemes, check pg_read_server_files
-# first, and still read a local path holding s3:// past its start), by collection: `5149 tests collected`.
-cluster_tests 5149
+# first, and still read a local path holding s3:// past its start), by collection: `6068 tests collected`,
+# less guard_tests 858.
+cluster_tests 5210

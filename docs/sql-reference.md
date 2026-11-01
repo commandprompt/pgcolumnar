@@ -1033,7 +1033,8 @@ does not match the list has the same DETAIL. The same rule applies to a foreign
 table's column definitions. Projection pushdown selects the declared columns
 that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
-`parquet_schema` to generate the full list.
+`parquet_schema` to generate the full list: declare one column for each row it
+reports. A composite column covers all the leaves of its struct.
 
 A string cell read into a `text` or `varchar` column must be valid in the
 server encoding (#1821). A cell with an invalid byte sequence or an embedded
@@ -1068,7 +1069,9 @@ column as `double precision`. The positional form above does not widen. An
 absent id is an error. So is an id that matches more than one column, or an
 array or composite output column. An id that belongs to a struct, list or map is
 refused as nested, whatever the output column's type (#1788). None is a silent
-wrong column. Read the ids a file carries with `parquet_schema`.
+wrong column. Read the ids a file carries with `parquet_schema`. It does not
+list the ids of a struct's fields; the `parquet_schema` section below says how
+to find them.
 
 ```sql
 -- the file has columns alpha (id 7), beta (id 3), gamma (id 12);
@@ -1079,8 +1082,8 @@ SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet', ARRAY[12, 7])
 
 ### pgcolumnar.parquet_schema(path text) returns table(column_name text, data_type text, nullable bool, field_id int)
 
-Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
-without reading the data. Useful for writing the column definition list for
+Reports the top-level columns of a Parquet file and the PostgreSQL type each maps
+to, without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
 file. The type it reports holds every value the column can store. So an unsigned
 `UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
@@ -1101,6 +1104,41 @@ also reads into `timestamp`, which gets the wall time in the session time zone.
 A value whose nanoseconds fall outside the day, or whose Julian day is outside the
 timestamp range, is refused with SQLSTATE 22008. The DETAIL names both the Julian
 day and the nanoseconds the file stores.
+
+The rows are the column definition list that `read_parquet` needs: declare one
+column per row, with the reported type. A nested column that `read_parquet` reads
+as one column gets one row under its own name:
+
+- A list of a scalar reports that type's array type, for example `bigint[]`.
+- A struct of scalar fields reports its field list, for example
+  `composite (a bigint, b text)`. Create a composite type with those fields,
+  `CREATE TYPE s_t AS (a bigint, b text)`, and declare the column as `s_t`.
+  A field name that needs quotes comes quoted, so the list works as written.
+
+`read_parquet` reads any other nesting leaf by leaf, so `parquet_schema` reports
+one row for each leaf. A map, a list of structs, a struct of a struct and a struct
+that holds a list are examples. Each row is named by the leaf's path in the file,
+joined with dots, for example `m.key_value.key`. Its type is an array type when
+the leaf repeats. So a map with string keys and bigint values reports
+`m.key_value.key` as `text[]` and `m.key_value.value` as `bigint[]`. A dotted name
+must be quoted in a column definition list, or you can use any other name: the
+reader matches columns by position.
+Two rows can share a name, for example when the file also has a top-level column
+named `s.t.list.element`. Give one of them another name in your list.
+
+`data_type` is NULL for a leaf that no column type reads correctly. A leaf under
+two repeated levels, such as the elements of a list of lists, is one example.
+`read_parquet` reads such a leaf declared as an array by flattening it (#1917).
+
+`nullable` for a nested column says whether the column itself can be NULL. A
+NULL list element or struct field does not make it true. On a leaf row it is true
+when an OPTIONAL element sits on the leaf's path above its first repeated element.
+
+`field_id` for a list or struct row is the column's own id. A leaf row carries
+the leaf's own id. The ids of a struct's fields do not appear when the struct has
+its own row. `read_parquet(path, ids)` still reads a struct field by its id, as a
+scalar column. Read those ids with another Parquet tool, for example pyarrow's
+`ParquetFile(path).schema`.
 
 When a reader refuses a declared column type, the message names the function or
 foreign-data wrapper you used, for example
@@ -1411,6 +1449,21 @@ A bare string literal, such as `'analytics'`, selects the `text` form. The
 element. Otherwise the call fails with SQLSTATE 22023 (22004 for a `NULL`
 level).
 
+A level may be empty. The Iceberg REST catalog accepts a namespace with an
+empty level, so pgcolumnar sends it as given. A `text[]` element `''` is an
+empty level. In the `text` form, a leading, trailing or doubled dot makes one,
+as in `'.db'`, `'db.'` or `'db..x'`, and so does `''`. A stray dot often makes
+one by mistake. So when the catalog answers 404 (not found), the error carries
+a hint that names the empty level, such as
+`Level 2 of 3 of the namespace is empty` (#1891). Both 404 errors carry it: "no
+such namespace" (SQLSTATE 3F000) and "no such table" (SQLSTATE 42P01).
+
+A namespace whose only level is empty, `{""}` or `''`, makes a request path
+with an empty segment, such as `/v1/namespaces//tables`. A server or proxy that
+collapses `//` to `/` routes that request elsewhere, so such a namespace may be
+unreachable through it. This case is untested against the Apache Iceberg REST
+catalog.
+
 A catalog cannot be asked about a level that contains its own namespace
 separator, because the catalog would split that level in two. The function
 then fails with SQLSTATE 22023 before it sends any request that names the
@@ -1539,7 +1592,8 @@ The dot-joined form is ambiguous: the single level `a.b` and the two levels
 Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
 its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
 levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
-argument of the other REST functions, with one exception, described next.
+argument of the other REST functions, with one exception, described next. A
+row with an empty level, such as `{db,""}`, passes back too (#1891).
 
 A level may contain the catalog's separator. No request can name such a
 namespace, so the function returns it but does not ask for its children.
@@ -1752,7 +1806,13 @@ weak one, or a longer one pins the read only by version id (see
 [limitations](limitations.md#reading-external-parquet)). Set
 `pgcolumnar.objstore_pin_reads` to `off` for a server whose ETag changes from
 one request to the next: the reader then sends no `If-Match` and no
-`versionId`. An
+`versionId`. Two reads of one object in a statement, such as a self-join, read
+one version (#1894). The second read asks for the version the first one
+opened. When the store names no version, the second read fails with `changed
+while it was being read` if the ETag or the length changed in between. With
+no strong ETag, only a change of length is caught. The pin lasts one
+top-level statement (see
+[limitations](limitations.md#reading-external-parquet)). An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a
@@ -1776,7 +1836,9 @@ alone, whatever its suffix. Only when none exists is the key matched as a
 pattern. A backslash before a character makes the pattern match that character
 literally, so `s3://bucket/a/q\?.parquet` matches only `a/q?.parquet`. A read
 from a host written as an IPv6 literal in brackets, such as
-`http://[::1]:9000/`, is refused with SQLSTATE 0A000.
+`http://[::1]:9000/`, is refused with SQLSTATE 0A000. When an `http(s)://` URL
+has a query string, the reader and the writer add their own parameters to it
+with `&`. Examples are `versionId=` and `uploadId=`.
 
 On write, `parallel_export_parquet` treats an `s3://` URL as a prefix, and
 refuses every other remote URL before any worker starts. It writes one

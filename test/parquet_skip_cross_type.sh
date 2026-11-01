@@ -107,4 +107,44 @@ check_num "control: a timestamp constant on the timestamp column skips 1 of the 
 check_text "and returns the rows the heap returns" \
 	"$(ids xg "ts > '2024-03-10 02:00'::timestamp")" "$(ids xg_heap "ts > '2024-03-10 02:00'::timestamp")"
 
+# Four more column-and-constant pairs (#1887). docs/limitations.md says each skips;
+# no check held it. A file of 200,000 rows in 4 row groups of 50,000, every column
+# ascending with the row number i: sm int2 = i/10, it int4 = i, r float4 = i/200000,
+# ts timestamp = 2026-01-01 00:00 plus i seconds. A heap copy is the row-count oracle.
+WGROUPS="$(python3 - "$W" <<'PY'
+import sys, datetime as dt, pyarrow as pa, pyarrow.parquet as pq
+w = sys.argv[1]
+n = 200000
+t0 = dt.datetime(2026, 1, 1)
+pq.write_table(pa.table({"sm": pa.array([i // 10 for i in range(n)], pa.int16()),
+                         "it": pa.array(range(n), pa.int32()),
+                         "r": pa.array([i / n for i in range(n)], pa.float32()),
+                         "ts": pa.array([t0 + dt.timedelta(seconds=i) for i in range(n)], pa.timestamp("us"))}),
+               f"{w}/xw.parquet", row_group_size=50000)
+print(pq.ParquetFile(f"{w}/xw.parquet").metadata.num_row_groups)
+PY
+)"
+chmod 644 "$W/xw.parquet"
+psql_run "CREATE FOREIGN TABLE xw (sm int2, it int4, r float4, ts timestamp) SERVER pq OPTIONS (path '$W/xw.parquet');
+          CREATE TABLE xw_heap AS SELECT * FROM xw;"
+# rows_both PREDICATE -> "<foreign table count> <heap count>"
+rows_both() { echo "$(q "SELECT count(*) FROM xw WHERE $1;") $(q "SELECT count(*) FROM xw_heap WHERE $1;")"; }
+check_num "premise: the four-type file holds 4 row groups (pyarrow's own count) (#1887)" "$WGROUPS" "4"
+check_num "an int4 constant on an int2 column skips 3 of the 4 row groups (#1887)" \
+	"$(skipped "SELECT count(*) FROM xw WHERE sm < 500")" "3"
+check_text "an int4 constant on an int2 column returns the heap copy's 5000 rows (#1887)" \
+	"$(rows_both "sm < 500")" "5000 5000"
+check_num "an int8 constant on an int4 column skips all 4 row groups (#1887)" \
+	"$(skipped "SELECT count(*) FROM xw WHERE it > 5000000000")" "4"
+check_text "an int8 constant on an int4 column returns the heap copy's 0 rows (#1887)" \
+	"$(rows_both "it > 5000000000")" "0 0"
+check_num "a float8 constant on a float4 column skips 3 of the 4 row groups (#1887)" \
+	"$(skipped "SELECT count(*) FROM xw WHERE r < 0.1")" "3"
+check_text "a float8 constant on a float4 column returns the heap copy's 20000 rows (#1887)" \
+	"$(rows_both "r < 0.1")" "20000 20000"
+check_num "a date constant on a timestamp column skips 2 of the 4 row groups (#1887)" \
+	"$(skipped "SELECT count(*) FROM xw WHERE ts < DATE '2026-01-02'")" "2"
+check_text "a date constant on a timestamp column returns the heap copy's 86400 rows (#1887)" \
+	"$(rows_both "ts < DATE '2026-01-02'")" "86400 86400"
+
 pgc_summary

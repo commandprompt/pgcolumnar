@@ -271,6 +271,15 @@ true until the next version shipped.
   depends on. A path a foreign table in the database reads is refused; a retry
   over a failed attempt's file is allowed.
 
+- Three object-storage and row-group behaviours that the docs state now have
+  checks (#1887). `iceberg_current_snapshot` reads an `s3://` metadata file
+  (`test/iceberg_objstore.sh`). A role with no user mapping reads through a
+  `pgcolumnar_iceberg` table with the server's credentials, and is refused on a
+  `pgcolumnar_parquet` table (`test/objstore_credentials.sh`). An int4 constant
+  on an int2 column, an int8 constant on an int4 column, a float8 constant on a
+  float4 column and a date constant on a timestamp column each skip row groups
+  (`test/parquet_skip_cross_type.sh`). Each has a pytest twin.
+
 ### Changed
 
 - `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` now check that a delete
@@ -536,6 +545,62 @@ true until the next version shipped.
   `pg_read_server_files` first, so a caller without it gets 42501 for a URL as
   for a local path. docs/sql-reference.md. `test/avro_manifest.sh` and its
   pytest twin.
+- Two reads of one remote object in one statement now read the same version
+  (#1894). Before, each read pinned the version its own HEAD saw. If another
+  client overwrote the object between the two reads, a self-join or a
+  `UNION ALL` of the same foreign table returned rows from both versions
+  without an error. Now the first read of an object in a statement keeps its
+  ETag, version id and length for the rest of the statement. A later read of
+  that object asks for the same version when the store names one. Otherwise
+  it fails with `changed while it was being read` when the ETag or length
+  differs; with no strong ETag, only the length is compared. The object is
+  the endpoint host, port and path, so one `s3://` URL on two servers with
+  different endpoints is two objects. The pin lasts one top-level statement,
+  also when one query string holds several statements, as `psql -c` sends
+  them: the next statement reads the new version. The queries a function or
+  a `DO` block runs share the pin of the statement that runs them. A
+  statement that writes the object drops its pin.
+  docs/limitations.md and docs/sql-reference.md.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+  Reported by @OffgridwithJD.
+
+- `parquet_schema` now reports a nested column under its top-level name (#1893).
+  It used to report the column's leaves instead: a list as `element`, a struct as
+  its field names. Those names do not match the file's columns. A list of a
+  scalar now reports an array type such as `bigint[]`. A struct of scalar fields
+  reports its field list, such as `composite (a bigint, b text)`. Other nesting,
+  such as a map or a list of structs, `read_parquet` reads leaf by leaf, so it
+  still gets one row per leaf. Each leaf row is now named by its path, such as
+  `m.key_value.key`, and reports an array type where the leaf repeats. A leaf
+  under two repeated levels reports `data_type` NULL, because `read_parquet`
+  flattens it (#1917). So the rows are always the column list `read_parquet`
+  needs. A list or struct row is nullable only when the column itself is
+  OPTIONAL: a REQUIRED list of REQUIRED elements used to report nullable. Its
+  `field_id` is the column's own id, so the ids of a struct's fields no longer
+  appear. docs/sql-reference.md.
+  `test/native_parquet_schema.sh` and `test_native_parquet_schema.py`, with the
+  files from `test/craft_parquet_nested.py`.
+  `test/native_parquet_fieldid.sh` and its twin now read the leaf ids of their
+  nested file with pyarrow, and check the nested columns' own ids.
+
+- The REST functions now say when a namespace level is empty (#1891). The
+  text form `'db..x'`, `'db.'`, `'.db'` or `''`, and a `text[]` element `''`,
+  name a namespace with an empty level. The catalog accepts such a namespace,
+  so pgcolumnar still sends it as given and can reach it. When the catalog
+  answers 404 for such a namespace, its "no such namespace" or "no such table"
+  error now carries a hint, such as `Level 2 of 3 of the namespace is empty`.
+  docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
+- A pytest run with `-n` no longer exits 67 when every test passed (#1892). Each
+  xdist worker checked `expected_unrunnable.txt` against tests it never ran, and
+  the controller checked it against an empty collection. So one file run with
+  `-n 4` called the list both stale and incomplete. Now only the controller
+  checks the list, against the tests every worker collected. On PostgreSQL 18,
+  `pytest -n 4 test_objstore_sink_write.py` exited 67 before and exits 0 now.
+  Three new arms in `test/pytest/test_layer.py` hold this. A fourth checks that
+  the new xdist hook is optional, so it adds no error to a run without xdist.
+  Reported by @OffgridwithJD.
+
 - `import_arrow`, `file_split_offsets` and `parallel_copy` now refuse an
   object-storage URL with SQLSTATE 0A000 (#1886). They read local files only,
   and before this an `s3://` or `http://` URL failed with
@@ -601,6 +666,19 @@ true until the next version shipped.
   grants only `s3:GetObject` reads as before. docs/sql-reference.md,
   docs/configuration.md and docs/limitations.md. `test/objstore_http_read.sh`, `test/objstore_s3_read.sh`
   and their pytest twins.
+
+- An `http://` or `https://` URL with a query string now gets well-formed
+  requests when the reader or the writer adds a parameter of its own (#1904).
+  Since #1785 the URL keeps its query string. The version pin (#1867) then sent
+  `?raw=true?versionId=<id>`, so the server did not see a version parameter.
+  Depending on the server, the read failed or the pin was ignored. A multipart
+  export sent
+  `?raw=true?uploads=`, and the server refused it with HTTP 400. Now the second
+  parameter joins the query with `&`. The abort of a failed multipart export
+  does the same. An `s3://` key that holds a literal `?` still starts each
+  request's own query with `?`, because the request path encodes that `?` as
+  `%3F`. docs/sql-reference.md. `test/objstore_http_read.sh`,
+  `test/objstore_sink_write.sh` and their pytest twins.
 
 - The REST functions can now name a namespace level that contains a dot (#1865).
   Before, `iceberg_rest_table_location`, `iceberg_rest_scan` and

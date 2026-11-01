@@ -34,7 +34,10 @@
  *   without s3:GetObjectVersion) drops the version for the rest of the read;
  *   If-Match stays. Whatever the pin, a 206 whose Content-Range total differs
  *   from the HEAD's length fails the read, and so does a 416 for bytes inside
- *   that length (#1867).
+ *   that length (#1867). The pin lasts the statement (#1894): a later read
+ *   of the same object in the statement asks for the first read's version,
+ *   or, with no version, fails if the ETag or length changed. "The same
+ *   object" is the same host, port and path, not the same URL text.
  *
  * - Sockets are cleaned up on abort through a resource-release callback over
  *   the open-handle list. The invariant that makes close-all-on-abort correct:
@@ -64,7 +67,9 @@
 #include <openssl/x509v3.h>
 #endif
 
+#include "access/xact.h"
 #include "common/cryptohash.h"
+#include "common/hashfn.h"
 #include "common/hmac.h"
 #include "common/sha2.h"
 #include "fmgr.h"
@@ -75,6 +80,7 @@
 #include "storage/fd.h"
 #include "storage/latch.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
@@ -85,6 +91,7 @@
 PG_MODULE_MAGIC;
 
 PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
+PGDLLEXPORT void pgcolumnar_objstore_statement_end(void);
 
 /* Response head is bounded before it is parsed; a server cannot size us. */
 #define OS_MAX_HEAD		16384
@@ -241,6 +248,49 @@ typedef struct OsResponse
 static dlist_head os_open_handles = DLIST_STATIC_INIT(os_open_handles);
 static bool os_callback_registered = false;
 
+/*
+ * The pins of the running statement (#1894). The first read of an object in
+ * a statement keeps its HEAD's length, strong ETag and version query here. A
+ * later read of the same object in that statement reads the same version, or
+ * fails if the store names no version and the object has changed.
+ *
+ * The key is the object as the module reaches it: scheme, host, port and
+ * request path after os_resolve_s3, not the URL the user wrote. One s3:// URL
+ * on two servers with different endpoints names two objects (#1907 review).
+ *
+ * A pin lasts one top-level statement. pgColumnar's executor and utility
+ * hooks call pgcolumnar_objstore_statement_end when a top-level statement
+ * ends, which drops every pin (#1907 second review). That matters for the
+ * statements of one simple-query string, such as psql -c 'SELECT ..;
+ * SELECT ..': PostgreSQL gives them one statement_timestamp(), so the time
+ * alone would let the second statement find the first one's pins. A change of
+ * statement_timestamp() and the end of the top-level transaction also drop
+ * the pins; they cover a main library too old to make the call.
+ *
+ * The pins live in os_stmt_pin_cxt, found through a hash of the key, so a
+ * statement over a listing of N objects costs N lookups, not N*N string
+ * compares. A reset frees the whole context at once.
+ */
+typedef struct OsStmtPin
+{
+	dlist_node	node;
+	char	   *key;
+	int64		len;
+	char		etag[OS_ETAG_BUF];	/* "" when the first read was not pinned */
+	char	   *query;			/* the first read's pin_query, or NULL */
+} OsStmtPin;
+
+/* The pins whose keys share one hash value. */
+typedef struct OsStmtPinBucket
+{
+	uint32		hash;			/* the hash key; must be first */
+	dlist_head	pins;
+} OsStmtPinBucket;
+
+static MemoryContext os_stmt_pin_cxt = NULL;
+static HTAB *os_stmt_pin_tab = NULL;
+static TimestampTz os_stmt_pins_stamp = 0;
+
 static void os_tls_handshake(PgColumnarObjHandle *h);
 
 /* ---------------------------------------------------------------- lifecycle */
@@ -308,6 +358,93 @@ os_free_handle(PgColumnarObjHandle *h)
 	pfree(h);
 }
 
+static void
+os_stmt_pin_free(OsStmtPin *p)
+{
+	dlist_delete(&p->node);
+	pfree(p->key);
+	if (p->query)
+		pfree(p->query);
+	pfree(p);
+}
+
+static void
+os_stmt_pins_reset(void)
+{
+	os_stmt_pin_tab = NULL;		/* it lives in os_stmt_pin_cxt */
+	if (os_stmt_pin_cxt != NULL)
+		MemoryContextReset(os_stmt_pin_cxt);
+}
+
+/* The pin key of an open handle: the object as the module reaches it. */
+static char *
+os_stmt_pin_key(const PgColumnarObjHandle *h)
+{
+	return psprintf("%s://%s:%d%s", h->tls ? "https" : "http",
+					h->host, h->port, h->abspath);
+}
+
+/* This statement's pin for key, or NULL. Drops an earlier statement's pins. */
+static OsStmtPin *
+os_stmt_pin_find(const char *key)
+{
+	uint32		hash;
+	OsStmtPinBucket *b;
+	dlist_iter	it;
+
+	if (os_stmt_pins_stamp != GetCurrentStatementStartTimestamp())
+	{
+		os_stmt_pins_reset();
+		os_stmt_pins_stamp = GetCurrentStatementStartTimestamp();
+	}
+	if (os_stmt_pin_tab == NULL)
+		return NULL;
+	hash = hash_bytes((const unsigned char *) key, strlen(key));
+	b = hash_search(os_stmt_pin_tab, &hash, HASH_FIND, NULL);
+	if (b == NULL)
+		return NULL;
+	dlist_foreach(it, &b->pins)
+	{
+		OsStmtPin  *p = dlist_container(OsStmtPin, node, it.cur);
+
+		if (strcmp(p->key, key) == 0)
+			return p;
+	}
+	return NULL;
+}
+
+/* A new, zeroed pin for key. The caller has called os_stmt_pin_find first. */
+static OsStmtPin *
+os_stmt_pin_add(const char *key)
+{
+	uint32		hash = hash_bytes((const unsigned char *) key, strlen(key));
+	OsStmtPinBucket *b;
+	OsStmtPin  *p;
+	bool		found;
+
+	if (os_stmt_pin_cxt == NULL)
+		os_stmt_pin_cxt = AllocSetContextCreate(TopMemoryContext,
+												"pgcolumnar objstore statement pins",
+												ALLOCSET_SMALL_SIZES);
+	if (os_stmt_pin_tab == NULL)
+	{
+		HASHCTL		ctl;
+
+		ctl.keysize = sizeof(uint32);
+		ctl.entrysize = sizeof(OsStmtPinBucket);
+		ctl.hcxt = os_stmt_pin_cxt;
+		os_stmt_pin_tab = hash_create("pgcolumnar objstore statement pins", 64,
+									  &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	b = hash_search(os_stmt_pin_tab, &hash, HASH_ENTER, &found);
+	if (!found)
+		dlist_init(&b->pins);
+	p = MemoryContextAllocZero(os_stmt_pin_cxt, sizeof(OsStmtPin));
+	p->key = MemoryContextStrdup(os_stmt_pin_cxt, key);
+	dlist_push_tail(&b->pins, &p->node);
+	return p;
+}
+
 /*
  * Abort cleanup. ereport out of a read unwinds the scan without reaching
  * close(); this returns the socket and the ExternalFD reservation. See the
@@ -320,6 +457,7 @@ os_resource_release(ResourceReleasePhase phase, bool isCommit,
 	if (phase != RESOURCE_RELEASE_AFTER_LOCKS || !isTopLevel)
 		return;
 
+	os_stmt_pins_reset();
 	while (!dlist_is_empty(&os_open_handles))
 	{
 		PgColumnarObjHandle *h =
@@ -1442,6 +1580,18 @@ os_sign_request(PgColumnarObjHandle *h, const char *method,
 /* ---------------------------------------------------------------- request */
 
 /*
+ * The character that joins a request's own query to the path. An http(s)://
+ * path keeps the URL's query string (#1785), so a second parameter joins it
+ * with '&', never a second '?' (#1904). An S3 path is percent-encoded and
+ * never holds a '?'.
+ */
+static const char *
+os_query_sep(const PgColumnarObjHandle *h)
+{
+	return strchr(h->abspath, '?') != NULL ? "&" : "?";
+}
+
+/*
  * One request/response cycle with a single reconnect on a stale keep-alive
  * connection. `off`/`n` describe the Range for GET; HEAD sends no Range.
  */
@@ -1457,7 +1607,7 @@ os_request(PgColumnarObjHandle *h, const char *method,
 
 	initStringInfo(&req);
 	appendStringInfo(&req, "%s %s%s%s HTTP/1.1\r\nHost: %s:%d\r\n",
-					 method, h->abspath, query != NULL ? "?" : "",
+					 method, h->abspath, query != NULL ? os_query_sep(h) : "",
 					 query != NULL ? query : "", h->host, h->port);
 	if (isGet)
 		appendStringInfo(&req, "Range: bytes=%lld-%lld\r\n",
@@ -2002,6 +2152,48 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 		sprintf(h->pin_query, "versionId=%s", enc);
 		pfree(enc);
 	}
+
+	/*
+	 * One statement reads one version of a URL (#1894). The first read
+	 * keeps its pin for the statement. A later read asks for the version the
+	 * first one read, when the store named one. Otherwise it must see the
+	 * same ETag and length, or the object changed between the two reads.
+	 */
+	{
+		char	   *key = os_stmt_pin_key(h);
+		OsStmtPin  *p = os_stmt_pin_find(key);
+
+		if (p == NULL)
+		{
+			p = os_stmt_pin_add(key);
+			p->len = h->len;
+			strlcpy(p->etag, h->pin_etag, sizeof(p->etag));
+			if (h->pin_query)
+				p->query = MemoryContextStrdup(os_stmt_pin_cxt, h->pin_query);
+		}
+		else if (p->query != NULL)
+		{
+			if (h->pin_query)
+				pfree(h->pin_query);
+			h->pin_query = MemoryContextStrdup(TopMemoryContext, p->query);
+			strlcpy(h->pin_etag, p->etag, sizeof(h->pin_etag));
+			h->len = p->len;
+			*len = h->len;
+		}
+		else if (p->len != h->len ||
+				 (p->etag[0] != '\0' && strcmp(p->etag, h->pin_etag) != 0))
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("columnar: \"%s\" changed while it was being read", url),
+					 errdetail("An earlier read of the object in this statement "
+							   "saw ETag %s and %lld bytes; this read sees ETag %s "
+							   "and %lld bytes.",
+							   p->etag[0] ? p->etag : "(none)", (long long) p->len,
+							   h->pin_etag[0] ? h->pin_etag : "(none)",
+							   (long long) h->len),
+					 errhint("Run the statement again to read the new version.")));
+		pfree(key);
+	}
 	return h;
 }
 
@@ -2514,7 +2706,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 
 		initStringInfo(&req);
 		appendStringInfo(&req, "%s %s%s%s HTTP/1.1\r\nHost: %s:%d\r\n",
-						 method, h->abspath, rawQuery[0] ? "?" : "", rawQuery,
+						 method, h->abspath, rawQuery[0] ? os_query_sep(h) : "", rawQuery,
 						 h->host, h->port);
 		appendStringInfo(&req, "Content-Length: %lld\r\n", (long long) bodylen);
 
@@ -2995,6 +3187,16 @@ objstore_sink_finish(PgColumnarObjSink *s)
 							s->h->url, resp.status)));
 	}
 	os_sink_report_late_interrupt(s);
+
+	/* This statement wrote the object: a later read in it reads the new one. */
+	{
+		char	   *key = os_stmt_pin_key(s->h);
+		OsStmtPin  *p = os_stmt_pin_find(key);
+
+		if (p != NULL)
+			os_stmt_pin_free(p);
+		pfree(key);
+	}
 	os_free_handle(s->h);
 	s->h = NULL;
 	os_sink_free(s);
@@ -4071,4 +4273,17 @@ const PgColumnarObjStoreApi *
 pgcolumnar_objstore_init(void)
 {
 	return &objstore_api;
+}
+
+/*
+ * A top-level statement ended (#1907 second review): drop its pins, so the
+ * next statement reads the object as it is now. pgColumnar finds this symbol
+ * by name, outside the API struct, so it does not change the ABI: a main
+ * library that lacks the call leaves the pins to the statement-time and
+ * transaction-end resets. It never raises.
+ */
+void
+pgcolumnar_objstore_statement_end(void)
+{
+	os_stmt_pins_reset();
 }
