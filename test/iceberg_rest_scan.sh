@@ -41,11 +41,14 @@ TOKEN="rest-scan-token-shh"
 REST_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
 REST_LOG="$PGC_WORKDIR/rest.log"
 SRV_PID=""
+FX_PIDS=()
 PROMO_PID=""
 
 rest_teardown() {
 	[ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
 	[ -n "$PROMO_PID" ] && kill "$PROMO_PID" 2>/dev/null
+	local _p
+	for _p in "${FX_PIDS[@]}"; do kill "$_p" 2>/dev/null; done
 	pgc_teardown
 }
 trap rest_teardown EXIT INT TERM
@@ -183,14 +186,214 @@ check "iceberg_rest_scan of an unknown table is a clean not-found (42P01)" \
 # (sent "db" whatever it was given) passed every check above, because they all
 # ask for "db". Asking for a namespace the catalog does not have must reach the
 # catalog as that namespace and come back as its 404.
+# The catalog's 404 says NoSuchNamespaceException here, so the error names a
+# namespace (3F000), not a table (#1820).
 check "iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$CAT','nosuchns')" \
-	   "the REST catalog has no such table list" " by the catalog's 404")" \
-	"42P01 by the catalog's 404"
+	   "the REST catalog has no such namespace" " by the catalog's 404")" \
+	"3F000 by the catalog's 404"
 check "iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','nosuchns','events') AS t(id bigint)" \
-	   "the REST catalog has no such table" " by the catalog's 404")" \
-	"42P01 by the catalog's 404"
+	   "the REST catalog has no such namespace" " by the catalog's 404")" \
+	"3F000 by the catalog's 404"
+# The catalog's own ErrorModel message reaches the error detail (#1820).
+check "the catalog's 404 message reaches the error detail" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','nosuch') AS t(id bigint)" \
+	   "DETAIL:  The catalog said: no such table db.nosuch" " with the catalog's message")" \
+	"42P01 with the catalog's message"
+
+# detail_of SQL TEXT -> "<SQLSTATE> with the catalog's message" when SQL raised with
+# TEXT in its DETAIL line, else "<SQLSTATE> (detail: <the DETAIL line>)", so a
+# failure shows what the detail held. Every non-200 branch adds the detail (#1820).
+detail_of() {
+	local out state detail
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	detail="$(sed -n 's/^DETAIL:  //p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif [ "$detail" = "$2" ]; then echo "$state with the catalog's message"
+	else echo "$state (detail: $detail)"; fi
+}
+check "the catalog's namespace 404 message reaches the error detail" \
+	"$(detail_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$CAT','nosuchns')" \
+	   "The catalog said: no such namespace nosuchns")" \
+	"3F000 with the catalog's message"
+check "the catalog's 403 message reaches the error detail" \
+	"$(detail_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','forbidden') AS t(id bigint)" \
+	   "The catalog said: no read access to db.forbidden")" \
+	"28000 with the catalog's message"
+check "the catalog's 500 message reaches the error detail" \
+	"$(detail_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','failing') AS t(id bigint)" \
+	   "The catalog said: catalog backend unavailable")" \
+	"08P01 with the catalog's message"
+# An error body nested too deep to parse runs the parser out of stack. That is
+# not a malformed body, and the client must not drop it as one (#1820 review).
+check "a catalog error body too deep to parse raises its stack error (54001)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','deepjson') AS t(id bigint)" \
+	   "stack depth limit exceeded" " by the parser")" \
+	"54001 by the parser"
+# A body that starts with "{" and is cut off passes the client's pre-check, so
+# only the JSON parse rejects it. That parse error (22P02) is about the body:
+# the client drops it and reports the catalog's status (#1820 review).
+check "a malformed catalog error body still reports the status (08P01)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$CAT','db','badjson') AS t(id bigint)" \
+	   "the REST catalog returned HTTP 500 for the table" " with the status")" \
+	"08P01 with the status"
+
+# ---- #1793: nested namespaces, prefixes, the warehouse, paging -------------
+# Each scenario gets its own fixture, so a failure names one catalog behaviour.
+# rows_of SQL -> the rows, or the first ERROR line, so a failed check shows what
+# the catalog answered (q hides the error).
+rows_of() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qAt -c "$1" 2>&1 | grep -v '^$' | sed -n '/^ERROR:/{p;q};p'
+}
+# start_fx NAME ARGS... -> sets FX_PORT; the fixture is killed at teardown.
+start_fx() {
+	local name="$1"; shift
+	FX_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
+	python3 "$(dirname "${BASH_SOURCE[0]}")/iceberg_rest_server.py" \
+		--port "$FX_PORT" --log "$PGC_WORKDIR/$name.log" --token "$TOKEN" \
+		--metadata-location "$MDLOC" "$@" > "$PGC_WORKDIR/$name.out" 2>&1 &
+	FX_PIDS+=("$!")
+	for _ in $(seq 1 50); do grep -q READY "$PGC_WORKDIR/$name.out" 2>/dev/null && break; sleep 0.1; done
+}
+ROWS5="$(printf '1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50')"
+
+# Nested namespaces. Like the Apache Iceberg 1.12 REST catalog, this fixture
+# advertises namespace-separator %2E and answers 400 to a %1F path. It lists
+# only the top level without ?parent=, and it pages every list one item at a
+# time, even unasked. The table is db.x.events; db.x.y and aa have no tables.
+start_fx nested --namespace db.x --table events --extra-table more \
+	--extra-namespace db.x.y --extra-namespace aa \
+	--namespace-separator %2E --page-size 1
+NCAT="http://127.0.0.1:$FX_PORT"
+check "nested namespaces: iceberg_rest_namespaces lists every level, page by page" \
+	"$(rows_of "SELECT string_agg(ns, ',' ORDER BY ns) FROM pgcolumnar.iceberg_rest_namespaces('$NCAT') AS ns")" \
+	"aa,db,db.x,db.x.y"
+check "nested namespaces: iceberg_rest_tables of db.x lists both pages" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('$NCAT','db.x') AS t")" \
+	"events,more"
+check "nested namespaces: iceberg_rest_scan of db.x.events returns the five rows" \
+	"$(rows_of "SELECT id || '|' || region || '|' || amount
+	            FROM pgcolumnar.iceberg_rest_scan('$NCAT','db.x','events') AS t(id bigint, region text, amount int)
+	            ORDER BY id")" \
+	"$ROWS5"
+
+# A prefix with a '/' in it. The client must send it as path segments
+# (catalogs/main), not as one encoded segment (catalogs%2Fmain).
+start_fx slashpfx --namespace db --table events --prefix catalogs/main
+SCAT="http://127.0.0.1:$FX_PORT"
+check "multi-segment prefix: iceberg_rest_table_location resolves the table" \
+	"$(rows_of "SELECT pgcolumnar.iceberg_rest_table_location('$SCAT','db','events')")" \
+	"$MDLOC"
+check "multi-segment prefix: iceberg_rest_scan returns the five rows" \
+	"$(rows_of "SELECT id || '|' || region || '|' || amount
+	            FROM pgcolumnar.iceberg_rest_scan('$SCAT','db','events') AS t(id bigint, region text, amount int)
+	            ORDER BY id")" \
+	"$ROWS5"
+check "multi-segment prefix: iceberg_rest_namespaces lists the namespaces" \
+	"$(rows_of "SELECT string_agg(ns, ',' ORDER BY ns) FROM pgcolumnar.iceberg_rest_namespaces('$SCAT') AS ns")" \
+	"db"
+check "multi-segment prefix: iceberg_rest_tables lists the tables" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('$SCAT','db') AS t")" \
+	"events"
+
+# A prefix in the config "defaults", with no override.
+start_fx defpfx --namespace db --table events --prefix wh1 --prefix-in-defaults
+DCAT="http://127.0.0.1:$FX_PORT"
+check "prefix in config defaults: iceberg_rest_table_location resolves the table" \
+	"$(rows_of "SELECT pgcolumnar.iceberg_rest_table_location('$DCAT','db','events')")" \
+	"$MDLOC"
+check "prefix in config defaults: iceberg_rest_tables lists the tables" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('$DCAT','db') AS t")" \
+	"events"
+
+# A FOREIGN SERVER with a warehouse. The catalog refuses /v1/config without
+# ?warehouse=wh1 and serves its tables under the prefix whp.
+start_fx whcat --namespace db --table events --prefix whp --warehouse wh1
+q "CREATE SERVER irs_wh FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
+   OPTIONS (catalog_uri 'http://127.0.0.1:$FX_PORT', warehouse 'wh1')" >/dev/null
+q "CREATE USER MAPPING FOR postgres SERVER irs_wh OPTIONS (token '$TOKEN')" >/dev/null
+check "warehouse server: iceberg_rest_namespaces sends the warehouse and lists" \
+	"$(rows_of "SELECT string_agg(ns, ',' ORDER BY ns) FROM pgcolumnar.iceberg_rest_namespaces('irs_wh') AS ns")" \
+	"db"
+check "warehouse server: iceberg_rest_tables sends the warehouse and lists" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('irs_wh','db') AS t")" \
+	"events"
+
+# ---- #1859 review: catalogs that bend the spec, and the defensive refusals --
+# A catalog whose top level lists every namespace, nested ones too. The walk
+# into a then finds a.b again; a.b must still come out once.
+start_fx flat --namespace a.b --table events --extra-namespace c --top-level-all
+check "top level lists nested namespaces: iceberg_rest_namespaces lists each once" \
+	"$(rows_of "SELECT string_agg(ns, ',' ORDER BY ns) FROM pgcolumnar.iceberg_rest_namespaces('http://127.0.0.1:$FX_PORT') AS ns")" \
+	"a,a.b,c"
+# The same catalog, and it also answers ?parent= as if it were absent.
+start_fx flatig --namespace a.b --table events --extra-namespace c --top-level-all --ignore-parent
+check "catalog ignores ?parent=: iceberg_rest_namespaces lists each once" \
+	"$(rows_of "SELECT string_agg(ns, ',' ORDER BY ns) FROM pgcolumnar.iceberg_rest_namespaces('http://127.0.0.1:$FX_PORT') AS ns")" \
+	"a,a.b,c"
+# A catalog that answers 400 to ?parent=. The walk needs that answer, so the
+# call fails with the catalog's status (docs/sql-reference.md says so).
+start_fx parent400 --namespace a --table events --parent-status 400
+check "catalog refuses ?parent=: iceberg_rest_namespaces fails with its HTTP 400" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_namespaces('http://127.0.0.1:$FX_PORT')" \
+	   "the REST catalog returned HTTP 400 for the namespaces" " with the catalog's 400")" \
+	"08P01 with the catalog's 400"
+# Config precedence: overrides, then the top-level key, then defaults. Each
+# fixture serves its tables only under the prefix that must win.
+start_fx prec3 --namespace db --table events --prefix ovr \
+	--config-json '{"defaults":{"prefix":"dft"},"prefix":"top","overrides":{"prefix":"ovr"}}'
+check "config precedence: a prefix in overrides wins over the top-level key and defaults" \
+	"$(rows_of "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:$FX_PORT','db','events')")" \
+	"$MDLOC"
+start_fx prec2 --namespace db --table events --prefix top \
+	--config-json '{"defaults":{"prefix":"dft"},"prefix":"top","overrides":{}}'
+check "config precedence: a top-level prefix wins over defaults" \
+	"$(rows_of "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:$FX_PORT','db','events')")" \
+	"$MDLOC"
+start_fx badsep --namespace db --table events \
+	--config-json '{"defaults":{},"overrides":{"namespace-separator":"%G1"}}'
+check "an invalid namespace-separator %G1 is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:$FX_PORT','db','events')" \
+	   'advertised an invalid namespace-separator "%G1"' " invalid separator")" \
+	"XX001 invalid separator"
+start_fx badpfx --namespace db --table events \
+	--config-json '{"defaults":{},"overrides":{"prefix":"a/../b"}}'
+check "an invalid prefix a/../b is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:$FX_PORT','db','events')" \
+	   'advertised an invalid prefix "a/../b"' " invalid prefix")" \
+	"XX001 invalid prefix"
+# The walk bound: 64 levels are listed, a 65th is refused.
+DEEP64="$(seq -s . -f 'l%g' 1 64)"
+start_fx deep64 --namespace db --table events --extra-namespace "$DEEP64"
+check "namespace depth: a namespace 64 levels deep is listed" \
+	"$(rows_of "SELECT max(length(ns) - length(replace(ns, '.', '')) + 1)
+	            FROM pgcolumnar.iceberg_rest_namespaces('http://127.0.0.1:$FX_PORT') AS ns")" \
+	"64"
+start_fx deep65 --namespace db --table events --extra-namespace "$DEEP64.l65"
+check "namespace depth: a namespace 65 levels deep is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_namespaces('http://127.0.0.1:$FX_PORT')" \
+	   "nests namespaces deeper than 64 levels" " deeper than 64")" \
+	"54000 deeper than 64"
+# Page tokens that never end. The statement timeout stops a client that walks
+# to the page bound, so a failure shows 57014, not a hung suite.
+start_fx samepage --namespace db --table events --bad-page-token same
+check "paging: a page token repeated at once is refused" \
+	"$(refusal_of "SET statement_timeout = '30s'; SELECT * FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:$FX_PORT','db')" \
+	   "returned the same page token twice for the table list" " repeated token")" \
+	"08P01 repeated token"
+start_fx cyclepage --namespace db --table events --bad-page-token cycle
+check "paging: a page token cycle A, B, A is refused" \
+	"$(refusal_of "SET statement_timeout = '30s'; SELECT * FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:$FX_PORT','db')" \
+	   "returned the same page token twice for the table list" " repeated token")" \
+	"08P01 repeated token"
 
 check "backend still up after the REST read" "$(survived "$CRASHES_BEFORE")" "1"
 

@@ -198,7 +198,9 @@ def sf(pgc_cluster, server_dir):
                         "CREATE TABLE sfp_parent (k int) PARTITION BY RANGE (k)",
                         "CREATE TABLE sfp_p1 PARTITION OF sfp_parent FOR VALUES FROM (0) TO (10) USING pgcolumnar",
                         "INSERT INTO sfp_parent VALUES (1)",
-                        "GRANT SELECT, UPDATE ON sfp_p1 TO t_none, t_priv"]:
+                        "GRANT SELECT, UPDATE ON sfp_p1 TO t_none, t_priv",
+                        # #1795: the export writes through the server, so it needs USAGE.
+                        "GRANT USAGE ON FOREIGN SERVER pqsrv TO t_none, t_priv"]:
                 conn.execute(sql)
         out, outdir = str(server_dir / "sfp_out"), str(server_dir / "sfp_dir")
         r = {}

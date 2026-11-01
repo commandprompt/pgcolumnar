@@ -121,7 +121,8 @@ typedef struct PexportSpawn
 PGDLLEXPORT void pgcolumnar_parallel_export_worker(Datum main_arg);
 
 /*
- * The settings the object-store module reads by name (#1780). A background
+ * The caller's settings a worker needs: the ones the object-store module
+ * reads by name (#1780), and the Parquet writer's byte cap (#1811). A background
  * worker gets postgresql.conf, ALTER SYSTEM, and the ALTER ROLE and ALTER
  * DATABASE settings applied when it connects, but never the caller's SET, so
  * without these a worker ignored the caller's SET: it uploaded to an endpoint the session
@@ -133,6 +134,7 @@ static const char *const pexport_session_gucs[] = {
 	"pgcolumnar.objstore_allowed_endpoints",
 	"pgcolumnar.objstore_s3_addressing",
 	"pgcolumnar.objstore_part_size",
+	"pgcolumnar.export_group_bytes",	/* the Parquet writer's byte cap (#1811) */
 };
 #define PEXPORT_NGUCS lengthof(pexport_session_gucs)
 
@@ -400,19 +402,35 @@ static void
 pexport_remove_stale_remote_parts(const char *dir, int nkeys)
 {
 	const PgColumnarObjStoreApi *api = PgColumnarObjStoreGet();
+	char	   *prefix;
+	size_t		plen;
 	char	  **keys;
 	int			n = 0;
 	int			i;
 
 	if (api == NULL || api->list_objects == NULL)
 		return;
-	keys = api->list_objects(dir, NULL, &n);
+	/*
+	 * List "<dir>/", not "<dir>": a listing matches leading characters, so
+	 * "out" would also return "outer/..." and "out2/...", and their parts would
+	 * be deleted (#1782). The listing has no delimiter, so it also returns
+	 * keys below the prefix, such as "out/sub/part-0009.parquet", which belong
+	 * to another export. So the name is taken as the whole key after the
+	 * prefix, not as the text after the key's last '/': pexport_part_index
+	 * accepts only "part-NNNN.parquet", so a name with a further '/' is never
+	 * one of this export's parts.
+	 */
+	prefix = psprintf("%s/", dir);	/* never truncated, so always ends in '/' */
+	plen = strlen(prefix);
+	keys = api->list_objects(prefix, NULL, &n);
 	for (i = 0; i < n; i++)
 	{
-		const char *slash = strrchr(keys[i], '/');
-		const char *base = slash ? slash + 1 : keys[i];
+		const char *base;
 		int			idx;
 
+		if (strncmp(keys[i], prefix, plen) != 0)
+			continue;
+		base = keys[i] + plen;
 		if (pexport_part_index(base, &idx) && idx >= nkeys)
 			api->delete_object(keys[i], NULL);
 	}
@@ -817,6 +835,57 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 				 errmsg("target and path must not be null")));
 	relid = PG_GETARG_OID(0);
 	dir = text_to_cstring(PG_GETARG_TEXT_PP(1));
+
+	/*
+	 * Every key below is built as "<dir>/...", and every listing of the prefix
+	 * as "<dir>/". A remote prefix written in the documented
+	 * "s3://bucket/prefix/" form would otherwise give keys such as
+	 * "prefix//part-0000.parquet", which S3 stores as a different key and the
+	 * documented glob never matches (#1782). So strip every trailing slash,
+	 * down to the first '/' after "scheme://" and never past it.
+	 *
+	 * What is left must name a prefix under the bucket. "s3://bucket/" and
+	 * "s3://bucket" name none: the parts would go to the bucket root and the
+	 * reconcile would list the whole bucket. Refuse them here, before any
+	 * worker starts. A local path is left as given, since the filesystem
+	 * already collapses "//".
+	 *
+	 * Both rules treat the first segment after "scheme://" as the bucket,
+	 * which holds for s3:// and gs:// style URLs. For a path-style
+	 * http(s)://host/bucket/ URL the first segment is the host, so the strip
+	 * may remove the slash after the bucket, and "http://host/bucket/" is not
+	 * refused as naming no prefix.
+	 */
+	if (PgColumnarPathIsRemote(dir))
+	{
+		const char *sep;
+		const char *slash;
+		size_t		len;
+
+		/*
+		 * The scheme is matched in any case, but a listing returns every key
+		 * spelled "s3://". Spell the scheme that way here, so the reconcile and
+		 * the upload cleanup, which compare listed keys with "<dir>/", match
+		 * them for "S3://bucket/prefix" too (#1782).
+		 */
+		if (pg_strncasecmp(dir, "s3://", 5) == 0)
+			memcpy(dir, "s3", 2);
+		sep = strstr(dir, "://");
+		slash = sep ? strchr(sep + 3, '/') : NULL;
+		len = strlen(dir);
+
+		if (slash != NULL)
+			while (len > (size_t) (slash - dir) + 1 && dir[len - 1] == '/')
+				dir[--len] = '\0';
+		if (slash == NULL || slash[1] == '\0')
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("columnar: \"%s\" names no prefix under the bucket",
+							dir),
+					 errhint("parallel_export_parquet writes its parts under a "
+							 "prefix, as in s3://bucket/prefix/.")));
+	}
+
 	workers = PG_ARGISNULL(2) ? pexport_auto_workers() : PG_GETARG_INT32(2);
 	if (workers < 1)
 		ereport(ERROR,

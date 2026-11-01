@@ -10,8 +10,9 @@ single-PUT export bigger than the socket buffers, which the store refused before
 reading the body, lost the HTTP status; the 403 and its hint must survive.
 
 One SigV4 fixture with a refused bucket (--tamper-bucket refuses every request there
-403 before any body is read, and closes with the body unread), two REST catalogs over
-the committed iceberg warehouse (one vends a wrong secret, one vends nothing), and a
+403 before any body is read, and closes with the body unread), three REST catalogs over
+the committed iceberg warehouse (one vends a wrong secret in its flat config, one in a
+storage-credentials entry, one vends nothing), and a
 postmaster whose environment holds the fixture's right key, so in the mapping and
 vended arms the environment would have read the object.
 
@@ -222,6 +223,15 @@ def ea(pgc_cluster):
         r["vended refused"] = re.sub(r'/metadata/[^"]*\.metadata\.json"', '/metadata/M.metadata.json"',
                                      _refusal(dsn, "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan("
                                                    f"'{cat_bad}','db','t') {ICE_COLS}"))
+        # the same through a storage-credentials entry (#1861): no flat config, and
+        # the one entry, covering the whole bucket, holds a key the fixture refuses
+        cat_entry = start_rest(46, "--token", RESTTOK, "--vend-key", AKID,
+                               "--vend-secret", SECRET, "--vend-region", REGION,
+                               "--vend-endpoint", s3ep, "--storage-cred", f"s3://{BUCKET}/=bad")
+        r["vended entry refused"] = re.sub(
+            r'/metadata/[^"]*\.metadata\.json"', '/metadata/M.metadata.json"',
+            _refusal(dsn, "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan("
+                          f"'{cat_entry}','db','t') {ICE_COLS}"))
 
         # C: the allow-list hint adds host:port to the current list
         def listed(value):
@@ -337,6 +347,16 @@ def test_a_vended_key_refusal_hints_at_the_vended_credentials(ea, expect):
                 f'28000: columnar: access to "s3://{BUCKET}/db/t/metadata/M.metadata.json" was '
                 f"denied (HTTP 403) | HINT: {VENDED_HINT}",
                 "vended key refused: the 403 hint names the catalog's vended credentials")
+
+
+def test_a_vended_entry_key_refusal_hints_at_the_vended_credentials(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["vended entry refused"],
+                f'28000: columnar: access to "s3://{BUCKET}/db/t/metadata/M.metadata.json" was '
+                f"denied (HTTP 403) | HINT: {VENDED_HINT}",
+                "vended key refused through a storage-credentials entry: the 403 hint names the "
+                "catalog's vended credentials")
 
 
 def test_an_allow_list_refusal_with_an_empty_list_suggests_host_and_port(ea, expect):

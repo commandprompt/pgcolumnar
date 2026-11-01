@@ -408,6 +408,27 @@ ice_fdw_partition_quals(ForeignScanState *node, TupleDesc tupdesc,
 	return compiled;
 }
 
+/*
+ * Can the column's declared typmod change a value the scan returns (#1790)? The
+ * reader applies the typmod to every value: varchar(2) returns a stored 'eu  ' as
+ * 'eu', and timestamp(0) returns 00:59:59.7 as 01:00:00. A partition value in the
+ * manifest is the stored one, so it need not describe the returned rows, and the
+ * FDW must not prune on such a column. A time or timestamp at full microsecond
+ * precision changes nothing.
+ */
+static bool
+ice_fdw_typmod_changes_values(TupleDesc tupdesc, int attno)
+{
+	Form_pg_attribute att = TupleDescAttr(tupdesc, attno - 1);
+
+	if (att->atttypmod < 0)
+		return false;
+	if ((att->atttypid == TIMESTAMPOID || att->atttypid == TIMESTAMPTZOID ||
+		 att->atttypid == TIMEOID) && att->atttypmod >= MAX_TIMESTAMP_PRECISION)
+		return false;
+	return true;
+}
+
 /* Is `typid` an identity-partition column type this increment can prune on? Only
  * these are put in the partition mask, so a qual over, say, a date-partitioned
  * column is never compiled and its files are read in full (sound). */
@@ -743,6 +764,15 @@ ice_fdw_bucket_quals(ForeignScanState *node, TupleDesc tupdesc,
 			continue;
 		if (var->varattno < 1 || contain_volatile_functions((Node *) op))
 			continue;
+		/*
+		 * The stored bucket need not match a value the typmod changed (#1790).
+		 * Not reachable today: the only bucket source types with a typmod are
+		 * varchar(n), and "=" on varchar wraps the Var in a cast to text, which
+		 * the test above rejects. The guard keeps this sound if that changes.
+		 */
+		if (var->varattno <= tupdesc->natts &&
+			ice_fdw_typmod_changes_values(tupdesc, var->varattno))
+			continue;
 
 		interp = PgColumnarGetOpInterpretation(op->opno);
 		foreach(ic, interp)
@@ -1059,6 +1089,8 @@ ice_fdw_temporal_quals(ForeignScanState *node, TupleDesc tupdesc,
 
 			if (!ice_temporal_source_ok(kind, atttypid))
 				continue;
+			if (ice_fdw_typmod_changes_values(tupdesc, var->varattno))
+				continue;		/* the stored bucket need not match (#1790) */
 			if (con->constisnull || con->consttype != atttypid)
 				continue;		/* only a constant of the column's own type */
 			if (!ice_const_to_timestamp(atttypid, con->constvalue, &cts))
@@ -1478,7 +1510,8 @@ icefdwBeginForeignScan(ForeignScanState *node, int eflags)
 		 * covers a per-file mismatch of a supported-type column at read time.
 		 */
 		if (a >= 1 && a <= tupdesc->natts &&
-			ice_fdw_type_supported(TupleDescAttr(tupdesc, a - 1)->atttypid))
+			ice_fdw_type_supported(TupleDescAttr(tupdesc, a - 1)->atttypid) &&
+			!ice_fdw_typmod_changes_values(tupdesc, a))
 		{
 			partMask[a - 1] = true;
 			any = true;

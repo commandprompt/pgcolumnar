@@ -21,9 +21,9 @@
 # arms are in test/objstore_export_open_uploads.sh.
 #
 # One SigV4 fixture with a refused bucket (--tamper-bucket: every request there
-# is verified against another secret, refused 403 before any body is read), two
-# REST catalogs over the committed iceberg warehouse (one vends a wrong secret,
-# one vends nothing), and a postmaster whose environment holds the fixture's
+# is verified against another secret, refused 403 before any body is read), three
+# REST catalogs over the committed iceberg warehouse (one vends a wrong secret in
+# its flat config, one in a storage-credentials entry, one vends nothing), and a postmaster whose environment holds the fixture's
 # right key. So in the mapping and vended arms the environment would have read
 # the object, and a premise shows it does.
 #
@@ -159,6 +159,18 @@ check "premise: the iceberg table reads through a catalog that vends nothing (se
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('$CAT_NONE','db','t') AS t(id bigint, region text, amount int)")" "3"
 check "vended key refused: the 403 hint names the catalog's vended credentials" \
 	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('$CAT_BAD','db','t') AS t(id bigint, region text, amount int)" \
+		| sed -E 's#/metadata/[^"]*\.metadata\.json"#/metadata/M.metadata.json"#')" \
+	"28000: columnar: access to \"s3://$BUCKET/db/t/metadata/M.metadata.json\" was denied (HTTP 403) | HINT: The storage credentials the catalog vended for this table were refused."
+
+# The same through a storage-credentials entry (#1861): the catalog vends no flat
+# config, and its one entry, covering the whole bucket, holds a key the fixture
+# refuses. The reader signs with the entry it chose for each file, so that
+# entry's config, not a flat one, must carry the vended mark into the module.
+start_rest --token "$RESTTOK" --vend-key "$AKID" --vend-secret "$SECRET" \
+	--vend-region "$REGION" --vend-endpoint "$S3EP" --storage-cred "s3://$BUCKET/=bad"
+CAT_ENTRY="http://127.0.0.1:$LAST_PORT"
+check "vended key refused through a storage-credentials entry: the 403 hint names the catalog's vended credentials" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('$CAT_ENTRY','db','t') AS t(id bigint, region text, amount int)" \
 		| sed -E 's#/metadata/[^"]*\.metadata\.json"#/metadata/M.metadata.json"#')" \
 	"28000: columnar: access to \"s3://$BUCKET/db/t/metadata/M.metadata.json\" was denied (HTTP 403) | HINT: The storage credentials the catalog vended for this table were refused."
 
