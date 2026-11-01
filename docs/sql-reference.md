@@ -1131,7 +1131,12 @@ named `s.t.list.element`. Give one of them another name in your list.
 
 `data_type` is NULL for a leaf that no column type reads correctly. A leaf under
 two repeated levels, such as the elements of a list of lists, is one example.
-`read_parquet` reads such a leaf declared as an array by flattening it (#1917).
+`read_parquet` cannot read a file that holds such a leaf. Declared as an array,
+the leaf fails with SQLSTATE 42804, because a one-dimensional array would lose
+the inner lists. Declared as a scalar, it fails as unexpectedly repeated.
+`read_parquet` binds every column by position, so you cannot leave it out
+either. `import_parquet` and the `pgcolumnar_parquet` foreign table refuse the
+file the same way, even for a query that does not use that column (#1917).
 
 `nullable` for a nested column says whether the column itself can be NULL. A
 NULL list element or struct field does not make it true. On a leaf row it is true
@@ -1461,11 +1466,14 @@ a hint that names the empty level, such as
 `Level 2 of 3 of the namespace is empty` (#1891). Both 404 errors carry it: "no
 such namespace" (SQLSTATE 3F000) and "no such table" (SQLSTATE 42P01).
 
-A namespace whose only level is empty, `{""}` or `''`, makes a request path
-with an empty segment, such as `/v1/namespaces//tables`. A server or proxy that
-collapses `//` to `/` routes that request elsewhere, so such a namespace may be
-unreachable through it. This case is untested against the Apache Iceberg REST
-catalog.
+A namespace whose only level is empty, `ARRAY['']` or `''`, is refused with
+SQLSTATE 22023 (#1922). The refusal comes before any request, including a
+server's OAuth token request, so it does not depend on whether the catalog can
+be reached. Its request path would hold
+an empty segment, such as `/v1/namespaces//tables`. The Apache Iceberg REST
+catalog answers that path with HTTP 400, and a proxy may collapse `//` to `/`.
+The REST spec has no other way to write it. The error's hint reads
+`Level 1 of 1 of the namespace is empty`.
 
 A catalog cannot be asked about a level that contains its own namespace
 separator, because the catalog would split that level in two. The function
@@ -1588,19 +1596,27 @@ returns each namespace once.
 
 The dot-joined form is ambiguous: the single level `a.b` and the two levels
 `a`, `b` both come out as `a.b`. To tell them apart, use
-`iceberg_rest_namespace_levels`.
+`iceberg_rest_namespace_levels`. An empty level keeps its dot: the levels `""`,
+`x` come out as `.x` (#1922).
 
 ### pgcolumnar.iceberg_rest_namespace_levels(catalog_uri text) returns setof text[]
 
 Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
 its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
 levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
-argument of the other REST functions, with one exception, described next. A
+argument of the other REST functions, with two exceptions, described next. A
 row with an empty level, such as `{db,""}`, passes back too (#1891).
 
 A level may contain the catalog's separator. No request can name such a
 namespace, so the function returns it but does not ask for its children.
 Passing that row back fails with SQLSTATE 22023.
+
+A catalog may also hold the namespace whose only level is empty. The function
+returns it as `{""}`. Passing that row back fails with SQLSTATE 22023 too
+(#1922). The function still asks for its children, with an empty `?parent=`.
+The Apache Iceberg REST catalog reads an empty `?parent=` as `{""}`, so a child
+such as `{"",x}` is listed, and passes back. A catalog that reads an empty
+`?parent=` as the top level gives no children of `{""}`.
 
 ```sql
 SELECT ns, t
@@ -1622,6 +1638,9 @@ SELECT ns, t
 
 On a catalog with the default separator, replace `level LIKE '%.%'` with
 `strpos(level, chr(31)) > 0`.
+
+The row `{""}` also makes the whole query fail with SQLSTATE 22023 (#1922). To
+skip it, add `AND ns <> ARRAY['']` to the `WHERE` clause.
 
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
 
