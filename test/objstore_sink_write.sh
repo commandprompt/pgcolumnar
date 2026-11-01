@@ -574,6 +574,38 @@ check "premise: commit hold: the export was cancelled, not completed" \
 check_num "commit hold: a cancel leaves no part that a worker was committing" \
 	"$(ls "$PGC_WORKDIR/$BUCKET/ch/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "0"
 
+# #1864 review: the cancel waited for the workers twice, up to 5 s each: once
+# before it deleted the parts, and again before it aborted the open uploads. A
+# store that holds every commit for 12 s keeps each terminated worker alive past
+# both waits, so the cancel took about 10 s. One wait is enough: the cancel must
+# return within 8 s.
+: > "$S3_LOG"
+rm -rf "$PGC_WORKDIR/$BUCKET/cl"
+echo 12 > "$PGC_WORKDIR/__put_hold__"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/cl', 4)" \
+	>"$PGC_WORKDIR/cl_bg.out" 2>&1 &
+clpid=$!
+cl_puts=0
+for _ in $(seq 1 300); do
+	cl_puts="$(logn '^PUT /pgc-bucket/cl/part-')"
+	[ "$cl_puts" -ge 4 ] && break
+	sleep 0.1
+done
+cl_t0=$(date +%s%N)
+q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+   WHERE query LIKE '%parallel_export_parquet%' AND state = 'active'
+     AND pid <> pg_backend_pid()" >/dev/null
+wait "$clpid" 2>/dev/null || true
+cl_ms=$(( ($(date +%s%N) - cl_t0) / 1000000 ))
+# a held PUT lands 12 s after it arrived; let every hold end before the next arm
+sleep 12
+rm -f "$PGC_WORKDIR/__put_hold__"
+check "premise: long hold: the export was cancelled, not completed" \
+	"$(grep -qiE 'canceling statement|canceled on user request' "$PGC_WORKDIR/cl_bg.out" && echo cancelled || echo "completed ($(head -1 "$PGC_WORKDIR/cl_bg.out"))")" "cancelled"
+check "long hold: a cancel waits for the workers once, not twice" \
+	"$([ "$cl_ms" -le 8000 ] && echo "at most 8000 ms" || echo "$cl_ms ms")" "at most 8000 ms"
+
 # #1727 review: a worker that SIGTERM ends aborts its upload in an exit callback, and a
 # store that stops answering must not hold it there. Each wait slice times out, so the
 # 60 s quiet limit ends the abort; without WL_TIMEOUT the wait never woke and the review

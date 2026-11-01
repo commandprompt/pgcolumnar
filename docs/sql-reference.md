@@ -889,10 +889,12 @@ fails, or the statement is cancelled, the dispatcher removes the files it wrote.
 It also removes them when every worker has finished but a later step fails:
 removing stale parts or writing the `_SUCCESS` marker. Over an `s3://` prefix
 the dispatcher deletes the same objects by key. On a cancel or a dispatcher
-error, it first waits up to 5 seconds for the stopped workers to exit. A stopped
+error, it first waits up to 5 seconds for the stopped workers to exit. It
+waits for a local directory and an `s3://` prefix alike. A stopped
 worker that was committing its part waits for the store's answer. The store can
 apply that commit after a DELETE sent meanwhile. Waiting puts
-the DELETE after the commit. A worker that is still running after 5 seconds,
+the DELETE after the commit. A local worker that was renaming its finished part
+has renamed it before it exits. A worker that is still running after 5 seconds,
 such as one waiting on a store that does not answer, can still leave its part.
 A worker terminated mid-upload
 can leave one incomplete multipart upload that the dispatcher cannot address.

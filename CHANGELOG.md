@@ -473,18 +473,25 @@ true until the next version shipped.
   `s3://` as its only remote scheme. The refusal's hint no longer says that
   pgColumnar cannot list a remote prefix (#1831). It says that the export lists
   its prefix and that only an `s3://` prefix can be listed.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
 - A cancelled or failed `parallel_export_parquet` to `s3://` no longer leaves a
   part that a worker was committing (#1864). The dispatcher deleted the part keys
   as soon as it had terminated the workers. A terminated worker that had sent its
   commit request waits for the answer, and the store could apply that commit
   after the DELETE, so the part appeared afterwards and stayed. The dispatcher now
-  waits up to 5 seconds for the workers to exit before it deletes the parts.
+  waits up to 5 seconds for the workers to exit before it deletes the parts. It
+  now also waits before it cleans a local directory. A local worker stops only at
+  its next interrupt check, so it could rename its finished part between the
+  dispatcher's directory listing and its unlink, and that part stayed. The
+  dispatcher now waits once per cleanup. Before, it waited a second time before
+  it aborted the open uploads, so a cancel against a store that never answered
+  took about 10 seconds, not 5. `test/objstore_sink_write.sh`,
+  `test/parallel_export_parquet.sh` and their pytest twins.
 - The upload cleanup of `parallel_export_parquet` builds its listing prefix with
   `psprintf`, as the stale-part reconcile does (#1849). The fixed buffer could not
   truncate in practice: the export refuses a prefix too long for its generated
   names before any worker starts.
   `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
-
 - `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
   URL now write the object instead of crashing the backend (#1779). Every write
   request was signed, and a plain-HTTP target has no region or credentials, so the

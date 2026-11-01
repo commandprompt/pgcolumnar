@@ -315,6 +315,50 @@ def _hold_run(dsn, s3log, bucket, r):
     r["ch parts"] = str(_parts(bucket / "ch"))
 
 
+def _long_hold_run(dsn, s3log, bucket, r):
+    """The shell's #1864 review arm: the fixture holds every single-request PUT for
+    12 s, so each terminated worker outlives the dispatcher's 5 s wait. The cancel
+    waited twice, before the DELETEs and again before the upload abort, about 10 s
+    in all. One wait is enough: the cancel must return within 8 s."""
+    out = {}
+
+    def run():
+        try:
+            with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+                conn.execute("SELECT pgcolumnar.parallel_export_parquet("
+                             f"'es_par'::regclass, 's3://{BUCKET}/cl', 4)").fetchall()
+            out["result"] = "completed"
+        except psycopg.Error as exc:
+            out["result"] = str(exc)
+
+    hold = bucket.parent / "__put_hold__"
+    shutil.rmtree(bucket / "cl", ignore_errors=True)
+    open(s3log, "w").close()
+    hold.write_text("12\n")
+    try:
+        bg = threading.Thread(target=run)
+        bg.start()
+        for _ in range(300):
+            puts = _logn(s3log, r"^PUT /pgc-bucket/cl/part-")
+            if isinstance(puts, int) and puts >= 4:
+                break
+            time.sleep(0.1)
+        t0 = time.monotonic()
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("SELECT pg_cancel_backend(pid) FROM pg_stat_activity "
+                      "WHERE query LIKE '%parallel_export_parquet%' AND state = 'active' "
+                      "AND pid <> pg_backend_pid()")
+        bg.join(600)
+        ms = int((time.monotonic() - t0) * 1000)
+        time.sleep(12)  # a held PUT lands 12 s after it arrived
+    finally:
+        hold.unlink(missing_ok=True)
+    res = out.get("result", "still running")
+    r["cl cancelled"] = ("cancelled" if re.search(r"canceling statement|canceled on user request", res, re.I)
+                         else f"completed ({res.splitlines()[0] if res else res})")
+    r["cl wait"] = "at most 8000 ms" if ms <= 8000 else f"{ms} ms"
+
+
 WORKERS = "backend_type = 'pgcolumnar parallel_export worker'"
 
 
@@ -781,6 +825,7 @@ def osw(pgc_cluster):
                       "FROM generate_series(1,3000000) g")
         _cancel_run(dsn, s3log, bucket, r)
         _hold_run(dsn, s3log, bucket, r)
+        _long_hold_run(dsn, s3log, bucket, r)
         _silent_run(dsn, s3log, bucket, srv, r)
         _plain_run(dsn, work, r, plain)
         # A 403 from an http(s):// target cannot be about AWS_* credentials: those
@@ -1193,6 +1238,17 @@ def test_a_cancel_leaves_no_part_a_worker_was_committing(osw, expect):
     # #1864: the dispatcher deleted the part keys before the terminated workers' held
     # commits were applied, so the parts appeared afterwards and stayed
     expect.text(osw["ch parts"], "0", "commit hold: a cancel leaves no part that a worker was committing")
+
+
+def test_the_long_hold_export_was_cancelled_not_completed(osw, expect):
+    expect.text(osw["cl cancelled"], "cancelled",
+                "premise: long hold: the export was cancelled, not completed")
+
+
+def test_a_cancel_waits_for_the_workers_once(osw, expect):
+    # #1864 review: the cancel waited up to 5 s before the DELETEs and again before
+    # the upload abort, so a store that never answered held it about 10 s
+    expect.text(osw["cl wait"], "at most 8000 ms", "long hold: a cancel waits for the workers once, not twice")
 
 
 def test_terminated_workers_exit_while_the_store_is_silent(osw, expect):

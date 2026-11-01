@@ -525,7 +525,8 @@ pexport_wait_workers_stopped(BackgroundWorkerHandle **handles, int nhandles)
  *		someone else's upload and is left alone.
  *
  *		The workers must have stopped first, so none starts an upload after the
- *		listing. Interrupts are held from the wait to the last abort, and every
+ *		listing. A caller that has already waited for them passes no handles.
+ *		Interrupts are held from the wait to the last abort, and every
  *		wait is bounded: the worker wait by PEXPORT_STOP_WAIT_MS on a timed
  *		latch, the store's answers by the module's timeout_ms, which ends each
  *		wait at PEXPORT_UPLOAD_CLEANUP_MS after the listing starts.
@@ -629,6 +630,12 @@ pexport_abort_own_uploads(const char *dir, int nkeys,
  * meanwhile. The part would then appear after the DELETE and stay. Once the
  * worker has exited, its commit has been answered, so the DELETE comes after.
  * A worker still running when the wait ends can still leave its part.
+ *
+ * A local directory needs the same wait. A terminated worker stops only at its
+ * next CHECK_FOR_INTERRUPTS, and PgColumnarSinkFinish has none between its fsync
+ * and its rename to the final name. Without the wait, that rename could land
+ * between the directory listing below and the unlink of the temporary name, and
+ * the final part would stay.
  */
 static void
 pexport_cleanup(int code, Datum arg)
@@ -639,8 +646,7 @@ pexport_cleanup(int code, Datum arg)
 	for (i = 0; i < s->n; i++)
 		if (s->handles[i] != NULL)
 			TerminateBackgroundWorker(s->handles[i]);
-	if (PgColumnarPathIsRemote(s->dirpath))
-		pexport_wait_workers_stopped(s->handles, s->n);
+	pexport_wait_workers_stopped(s->handles, s->n);
 	pexport_remove_outputs(s->dirpath, s->nkeys);
 }
 
@@ -656,7 +662,12 @@ pexport_cleanup_in_catch(void *arg)
 	PexportSpawn *s = (PexportSpawn *) arg;
 
 	pexport_cleanup(0, PointerGetDatum(s));
-	pexport_abort_own_uploads(s->dirpath, s->nkeys, s->handles, s->n);
+	/*
+	 * pexport_cleanup has already waited for the workers. No handles, so the
+	 * abort does not wait a second PEXPORT_STOP_WAIT_MS for a worker that the
+	 * first wait could not see stop.
+	 */
+	pexport_abort_own_uploads(s->dirpath, s->nkeys, NULL, 0);
 }
 
 /*

@@ -1420,4 +1420,7 @@ guard_tests 854
 # cluster_tests 4763 -> 4770 for #1832's gs:// and http:// refusals, #1831's hint, #1849's long-prefix
 # guard and #1864's commit-hold arm (two premises and one check) in test_objstore_sink_write.py:
 # 7 checks in 7 tests, by collection over the cluster files: `4770 tests collected`.
-cluster_tests 4770
+# cluster_tests 4770 -> 4775 for #1864's review: the long-hold arm (one premise and one check) in
+# test_objstore_sink_write.py and the local-stop arm (two premises and one check) in
+# test_parallel_export_parquet.py, 5 checks in 5 tests, by collection: `5629 tests collected`, 854 guard.
+cluster_tests 4775
