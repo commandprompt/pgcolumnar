@@ -8471,6 +8471,7 @@ tid_range_scan	tid_range_scan	premise: the table has many row groups, so skippin
 tid_range_scan	tid_range_scan	premise: the table holds every row	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	rows inserted earlier in the same transaction are in the range, as the filter sees them	15;16;17;18;19	never	-
 tier_partition	tier_partition	a DEFAULT partition is refused	15;16;17;18;19	2026-10-13	tier_partition without the DEFAULT refusal
+tier_partition	tier_partition	a NULL path is refused as null, not as a file a foreign table reads	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition compares the paths with count(DISTINCT), so a NULL path counts as a match (#1937)
 tier_partition	tier_partition	a column with its own collation moves and reads back the same	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix;tier_partition returning 0 rows moved;tier_partition's foreign table without the columns' collations
 tier_partition	tier_partition	a failure after attach leaves the rows exactly once, still local	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
 tier_partition	tier_partition	a failure after create leaves the rows exactly once, still local	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
@@ -8495,8 +8496,13 @@ tier_partition	tier_partition	a partition that is not columnar is refused	15;16;
 tier_partition	tier_partition	a partition with a foreign key of its own is refused before anything moves	15;16;17;18;19	2026-10-13	tier_partition without the dependents check
 tier_partition	tier_partition	a partition with a row-level policy is refused before anything moves	15;16;17;18;19	2026-10-13	tier_partition without the dependents check
 tier_partition	tier_partition	a partition with a trigger of its own is refused before anything moves	15;16;17;18;19	2026-10-13	tier_partition without the dependents check
+tier_partition	tier_partition	a path a foreign table reads as Az:// is refused like the identical az:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition's gs/az/http(s) scheme-case branch removed (#1937)
+tier_partition	tier_partition	a path a foreign table reads as GS:// is refused like the identical gs:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition's gs/az/http(s) scheme-case branch removed (#1937)
+tier_partition	tier_partition	a path a foreign table reads as HTTP:// is refused like the identical http:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition's gs/az/http(s) scheme-case branch removed (#1937)
+tier_partition	tier_partition	a path a foreign table reads as HTTPS:// is refused like the identical https:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition's gs/az/http(s) scheme-case branch removed (#1937)
 tier_partition	tier_partition	a path a foreign table reads as S3:// is refused like the identical s3:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition compares the path= option as text, before the scheme normalisation (#1936)
 tier_partition	tier_partition	a path a foreign table reads as s3a:// is refused like the identical s3:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition compares the path= option as text, before the scheme normalisation (#1936)
+tier_partition	tier_partition	a path a foreign table reads as s3n:// is refused like the identical s3:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition's s3[an]? alias pattern narrowed to s3a? (#1937)
 tier_partition	tier_partition	a query on the other range scans only the local partition, beside a foreign one	15;16;17;18;19	never	-
 tier_partition	tier_partition	a query on the tiered range scans only the foreign partition	15;16;17;18;19	never	-
 tier_partition	tier_partition	a retry over the failed attempt's file moves the partition, exactly once	15;16;17;18;19	2026-10-16	tier_partition naming the foreign table with a suffix;tier_partition refusing every existing path (the first version's rule);tier_partition returning 0 rows moved;tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
@@ -8509,6 +8515,7 @@ tier_partition	tier_partition	a table that is not a partition is refused	15;16;1
 tier_partition	tier_partition	a virtual generated column moves and reads back the same	15;16;17;18;19	2026-10-13	tier_partition's foreign table without generation expressions (PG18, where the virtual arm runs)
 tier_partition	tier_partition	a write in flight when the move starts is in the exported rows	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved;tier_partition without the SHARE lock on the partition
 tier_partition	tier_partition	after the move the caller's lock_timeout is the caller's again	15;16;17;18;19	2026-10-13	tier_partition leaving lock_wait as the caller's lock_timeout
+tier_partition	tier_partition	an S3:// path is refused when a foreign table reads the identical s3:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition compares the target path as written, without the scheme normalisation (#1937)
 tier_partition	tier_partition	an existing path is refused, so no file a table reads is overwritten	15;16;17;18;19	2026-10-13	tier_partition without the path refusal
 tier_partition	tier_partition	an insert racing the move leaves every row exactly once, whichever side gives way	15;16;17;18;19	2026-10-13	tier_partition without the SHARE lock on the partition
 tier_partition	tier_partition	an insert routed to the tiered range is refused	15;16;17;18;19	never	-

@@ -735,12 +735,17 @@ every row is stored exactly once.
 **A failed attempt leaves its file behind.** A transaction cannot remove a file
 that it wrote. You can retry with the same `path`: the function overwrites a
 file that no foreign table in the database reads. It refuses a `path` that a
-foreign table in this database reads (`58P02`). The check compares the paths
-as the readers read them. The scheme of a remote URL matches in any case, and
-`s3a://` and `s3n://` match `s3://`. So `s3a://b/k` and `S3://b/k` both block a
-move to `s3://b/k` (#1936). Bucket names and keys must match exactly. Any other
-difference in spelling, for example a symbolic link, is not recognised. It also cannot see readers outside the database, so do
-not reuse a path that another system reads.
+foreign table in this database reads (`58P02`). The check normalises the
+scheme of each path and then compares the two. The scheme of a remote URL
+matches in any case, and `s3a://` and `s3n://` match `s3://`. So `s3a://b/k`
+and `S3://b/k` both block a move to `s3://b/k` (#1936). The host, bucket and
+key must match exactly, so `http://H.example/k` does not block
+`http://h.example/k`. The check compares one path with another. It does not
+see a foreign table on a directory or a glob, such as `s3://b/dir/` or
+`s3://b/g/*.parquet`, that covers the path. It does not see a local file
+spelled another way, for example through a symbolic link. It also cannot see
+readers outside the database. So do not reuse a path that another system reads,
+or that any foreign table reads under another spelling (#1941).
 
 The function refuses these partitions before it moves anything:
 

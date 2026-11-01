@@ -166,8 +166,34 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "a path a foreign table reads as s3a:// is refused like the identical s3:// spelling")
     expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', 's3://tierb/s_apr_u.parquet')"),
                 "58P02", "a path a foreign table reads as S3:// is refused like the identical s3:// spelling")
+    # Each branch of the rule has a check of its own (#1937 review): s3n:// on
+    # the table side, an upper-case scheme on the target side, and the scheme
+    # case of gs://, az://, http:// and https://.
+    dups = {"s_dup_s3n": "s3n://tierb/s_apr_n.parquet", "s_dup_lower": "s3://tierb/s_apr_l.parquet",
+            "s_dup_gs": "GS://tierb/s_apr_g.parquet", "s_dup_az": "Az://tierb/s_apr_z.parquet",
+            "s_dup_http": "HTTP://h.example/s_apr_h.parquet",
+            "s_dup_https": "HTTPS://h.example/s_apr_t.parquet"}
     with conn.cursor() as cur:
-        cur.execute("DROP FOREIGN TABLE s_dup_s3a, s_dup_upper")
+        for name, p in dups.items():
+            cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
+    expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', 's3://tierb/s_apr_n.parquet')"),
+                "58P02", "a path a foreign table reads as s3n:// is refused like the identical s3:// spelling")
+    expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', 'S3://tierb/s_apr_l.parquet')"),
+                "58P02", "an S3:// path is refused when a foreign table reads the identical s3:// spelling")
+    expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', 'gs://tierb/s_apr_g.parquet')"),
+                "58P02", "a path a foreign table reads as GS:// is refused like the identical gs:// spelling")
+    expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', 'az://tierb/s_apr_z.parquet')"),
+                "58P02", "a path a foreign table reads as Az:// is refused like the identical az:// spelling")
+    expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', 'http://h.example/s_apr_h.parquet')"),
+                "58P02", "a path a foreign table reads as HTTP:// is refused like the identical http:// spelling")
+    expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', 'https://h.example/s_apr_t.parquet')"),
+                "58P02", "a path a foreign table reads as HTTPS:// is refused like the identical https:// spelling")
+    # tier_partition is not STRICT. With foreign tables on a path= option
+    # present, a NULL path must still reach the null refusal.
+    expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', NULL)"),
+                "22004", "a NULL path is refused as null, not as a file a foreign table reads")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_s3a, s_dup_upper, " + ", ".join(dups))
     expect.text(_digest(conn, "s"), rb, "and the refusals moved nothing")
     expect.text(_one(conn, "SELECT relkind::text FROM pg_class WHERE oid = 's_apr'::regclass"), "r",
                 "the other partition is still local after the refusals")

@@ -538,9 +538,12 @@ true until the next version shipped.
   spelling of the same object (#1936). Before this it compared the `path`
   option as text. A foreign table on `s3a://b/k` or `S3://b/k` did not stop a
   move to `s3://b/k`, and the move overwrote the object that table reads. The
-  check now matches the scheme in any case and reads `s3a://` and `s3n://` as
-  `s3://`, as the Parquet readers do since #1930. docs/how-to.md and
-  docs/sql-reference.md. `test/tier_partition.sh` and its pytest twin.
+  check now matches the scheme in any case, as the Parquet readers do, and
+  reads `s3a://` and `s3n://` as `s3://`, as the readers do since #1930. A
+  `NULL` path still gets SQLSTATE 22004. The check still does not see a
+  directory or glob table, a local path spelled another way, or a host in
+  another case (#1941). docs/how-to.md and docs/sql-reference.md.
+  `test/tier_partition.sh` and its pytest twin.
 - The five functions that read local files only now also refuse an `s3a://` or
   `s3n://` URL with SQLSTATE 0A000 (#1918): `import_arrow`,
   `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
