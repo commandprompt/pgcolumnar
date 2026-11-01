@@ -226,7 +226,9 @@ def ohr(pgc_cluster):
     fixture.chmod(0o644)
     swap, swap79 = work / "swap.parquet", work / "swap79.parquet"
     swapoff, vswap = work / "swapoff.parquet", work / "vswap.parquet"
-    subprocess.run([sys.executable, "-c", SWAP_WRITER, str(swap), str(swap79), str(swapoff), str(vswap)],
+    vswapq = work / "vswapq.parquet"
+    subprocess.run([sys.executable, "-c", SWAP_WRITER, str(swap), str(swap79), str(swapoff), str(vswap),
+                    str(vswapq)],
                    check=True, capture_output=True, text=True)
     swap_sizes = (swap.with_name("swap.parquet.next").stat().st_size, swap.stat().st_size)
     lenswap, lenswapoff = work / "lenswap.parquet", work / "lenswapoff.parquet"
@@ -239,7 +241,7 @@ def ohr(pgc_cluster):
                    check=True, capture_output=True, text=True)
     shrank = (lenshrink.stat().st_size
               - lenshrink.with_name("lenshrink.parquet.next").stat().st_size > 60000)
-    for f in (swap, swap79, swapoff, vswap, lenswap, lenswapoff, lenshrink):
+    for f in (swap, swap79, swapoff, vswap, vswapq, lenswap, lenswapoff, lenshrink):
         f.chmod(0o644)
         f.with_name(f.name + ".next").chmod(0o644)
 
@@ -411,6 +413,20 @@ def ohr(pgc_cluster):
                                    f"'{base}/fixture.parquet?raw=true') AS t({COLDEFS})")
         r["E headq"] = _count(hlog, lambda f: f[:3] == ["HEAD", "/fixture.parquet", "raw=true"])
         r["E reqs"] = _count(hlog)
+        # #1904: the version pin joins the URL's own query with '&'
+        _await_server(dsn)
+        pathlib.Path(hlog).write_text("")
+        got = _refusal(dsn, "SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || "
+                            "count(*) FILTER (WHERE c0 < 0) FROM pgcolumnar.read_parquet("
+                            f"'{base}/vswap/vswapq.parquet?raw=true') AS t(c0 int8)", changed)
+        lines = _requests(hlog)
+        if isinstance(lines, list):
+            qgets = [f for f in lines if len(f) > 2 and f[:2] == ["GET", "/vswap/vswapq.parquet"]]
+            nots = [f[2] for f in qgets if not f[2].startswith("raw=true&versionId=3HL4%2Bkq%2F")]
+            bad = f"{len(nots)} (first: {nots[0]})" if nots else 0
+            r["E vquery"] = (f"{got}; GETs without raw=true&versionId=: {bad} of {len(qgets)}", len(qgets))
+        else:
+            r["E vquery"] = (f"{got}; GETs unreadable: {lines}", lines)
         r["E ipv6"] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
                                     f"'http://[::1]:{port}/fixture.parquet') AS t({COLDEFS})",
                                "IPv6 literal hosts are not supported")
@@ -756,6 +772,15 @@ def test_the_query_string_reached_the_server(ohr, expect):
     got = "carried" if isinstance(n, int) and n >= 1 else \
         f"not carried ({n} HEADs of /fixture.parquet?raw=true in {ohr['E reqs']} requests)"
     expect.text(got, "carried", "E: and its HEAD carried the query string to the server")
+
+
+def test_a_versioned_read_of_an_http_url_with_a_query_string_adds_the_version_with_an_ampersand(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    got, n = ohr["E vquery"]
+    expect.text(got, f"no error: old={G * ROWS_PER_GROUP} new=0; GETs without raw=true&versionId=: 0 of {n}",
+                "E: a versioned read of an http URL with a query string adds the version with '&' and "
+                "reads the version it opened")
 
 
 def test_an_ipv6_literal_http_host_is_refused(ohr, expect):

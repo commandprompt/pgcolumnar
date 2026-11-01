@@ -1442,6 +1442,18 @@ os_sign_request(PgColumnarObjHandle *h, const char *method,
 /* ---------------------------------------------------------------- request */
 
 /*
+ * The character that joins a request's own query to the path. An http(s)://
+ * path keeps the URL's query string (#1785), so a second parameter joins it
+ * with '&', never a second '?' (#1904). An S3 path is percent-encoded and
+ * never holds a '?'.
+ */
+static const char *
+os_query_sep(const PgColumnarObjHandle *h)
+{
+	return strchr(h->abspath, '?') != NULL ? "&" : "?";
+}
+
+/*
  * One request/response cycle with a single reconnect on a stale keep-alive
  * connection. `off`/`n` describe the Range for GET; HEAD sends no Range.
  */
@@ -1457,7 +1469,7 @@ os_request(PgColumnarObjHandle *h, const char *method,
 
 	initStringInfo(&req);
 	appendStringInfo(&req, "%s %s%s%s HTTP/1.1\r\nHost: %s:%d\r\n",
-					 method, h->abspath, query != NULL ? "?" : "",
+					 method, h->abspath, query != NULL ? os_query_sep(h) : "",
 					 query != NULL ? query : "", h->host, h->port);
 	if (isGet)
 		appendStringInfo(&req, "Range: bytes=%lld-%lld\r\n",
@@ -2514,7 +2526,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 
 		initStringInfo(&req);
 		appendStringInfo(&req, "%s %s%s%s HTTP/1.1\r\nHost: %s:%d\r\n",
-						 method, h->abspath, rawQuery[0] ? "?" : "", rawQuery,
+						 method, h->abspath, rawQuery[0] ? os_query_sep(h) : "", rawQuery,
 						 h->host, h->port);
 		appendStringInfo(&req, "Content-Length: %lld\r\n", (long long) bodylen);
 

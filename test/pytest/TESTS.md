@@ -13033,6 +13033,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 | `test_the_http_read_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
 | `test_an_http_url_with_a_query_string_reads_the_object` | E: an http URL with a query string (?raw=true) reads the object, not a listing |
 | `test_the_query_string_reached_the_server` | E: and its HEAD carried the query string to the server |
+| `test_a_versioned_read_of_an_http_url_with_a_query_string_adds_the_version_with_an_ampersand` | E: a versioned read of an http URL with a query string adds the version with '&' and reads the version it opened -- #1904: a second '?' hid the versionId, and the overwrite failed the read |
 | `test_an_ipv6_literal_http_host_is_refused` | E: an IPv6 literal http host is refused as IPv6, not as a listing |
 | `test_the_server_survives` | survival: the server answers and no backend crashed |
 
@@ -13054,6 +13055,7 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_large_export_took_the_multipart_protocol` | premise: the large export took the multipart protocol |
 | `test_the_large_export_completed_its_upload_once` | and completed it exactly once (POST with uploadId, no partNumber) |
 | `test_the_large_object_reads_back_as_the_generator` | large round trip: s3 read-back == source |
+| `test_an_s3_export_and_pinned_read_of_a_key_with_a_literal_question_mark_keep_queries_out_of_the_path` | s3:// export and pinned read of a key with a literal '?' keep each request's query out of the path -- #1904 review: the request path encodes the '?' as %3F |
 | `test_the_part_size_refuses_more_than_512_mib` | objstore_part_size refuses a value above its 512 MiB maximum (#1812) |
 | `test_the_part_size_accepts_512_mib` | objstore_part_size accepts its 512 MiB maximum |
 | `test_a_chunk_bigger_than_the_room_left_in_the_part_uploads_whole` | an 800 MB chunk over 500 MB already staged uploads whole at the 512 MiB part size, in 3 parts; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
@@ -13145,9 +13147,11 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_large_export_to_http_succeeds_unsigned` | http:// large export succeeds unsigned (no crash) |
 | `test_the_large_http_export_took_the_multipart_protocol` | the http:// large export took the multipart protocol -- started, at least two parts, completed once |
 | `test_the_large_http_object_reads_back_as_the_generator` | http:// large round trip: read-back == source |
+| `test_a_multipart_http_export_to_a_url_with_a_query_string_joins_parameters_with_an_ampersand` | http:// multipart export to a URL with a query string joins each request's parameters with '&' -- #1904: raw=true?uploads= was refused with HTTP 400 |
 | `test_an_injected_failure_on_http_surfaces_as_disk_full` | http:// inject: mid-upload failure surfaces as disk-full (53100) |
 | `test_the_injected_http_fault_landed_mid_multipart` | the http:// fault landed mid-multipart (an upload was started) |
 | `test_the_injected_http_failure_leaves_no_open_upload` | http:// inject: the server holds no open upload for the key -- the unsigned abort reached the server |
+| `test_the_abort_of_a_failed_http_export_to_a_url_with_a_query_string_joins_with_an_ampersand` | http:// inject to a URL with a query string: the abort joins uploadId with '&' and no upload stays open -- #1904 review |
 | `test_a_403_from_an_unsigned_http_target_hints_that_it_went_unsigned` | http:// 403: the hint says the request went unsigned, not to check AWS_* credentials -- the SigV4 fixture server refuses a request with no Authorization header |
 | `test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials` | s3:// 403: a signed request that is refused still hints to check AWS_* credentials -- the fixture verifies the denied bucket against another secret |
 | `test_a_parallel_export_to_gs_is_refused_before_any_worker_starts` | gs:// prefix: a parallel export is refused before any worker starts, with no request sent -- #1832: it uploaded every part and then failed at the s3://-only listing |

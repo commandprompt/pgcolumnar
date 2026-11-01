@@ -637,6 +637,19 @@ true until the next version shipped.
   docs/configuration.md and docs/limitations.md. `test/objstore_http_read.sh`, `test/objstore_s3_read.sh`
   and their pytest twins.
 
+- An `http://` or `https://` URL with a query string now gets well-formed
+  requests when the reader or the writer adds a parameter of its own (#1904).
+  Since #1785 the URL keeps its query string. The version pin (#1867) then sent
+  `?raw=true?versionId=<id>`, so the server did not see a version parameter.
+  Depending on the server, the read failed or the pin was ignored. A multipart
+  export sent
+  `?raw=true?uploads=`, and the server refused it with HTTP 400. Now the second
+  parameter joins the query with `&`. The abort of a failed multipart export
+  does the same. An `s3://` key that holds a literal `?` still starts each
+  request's own query with `?`, because the request path encodes that `?` as
+  `%3F`. docs/sql-reference.md. `test/objstore_http_read.sh`,
+  `test/objstore_sink_write.sh` and their pytest twins.
+
 - The REST functions can now name a namespace level that contains a dot (#1865).
   Before, `iceberg_rest_table_location`, `iceberg_rest_scan` and
   `iceberg_rest_tables` split their namespace argument on every dot, so the
