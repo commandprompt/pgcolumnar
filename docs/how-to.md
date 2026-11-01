@@ -835,8 +835,10 @@ a Parquet encode step. Use Parquet for durable, compressed files.
 
 ## Use object storage
 
-Every path that accepts a local path also accepts an `s3://`, `http://`, or
-`https://` URL. Credentials come from the server process environment.
+The Parquet functions, `export_arrow` and the Iceberg reader accept an `s3://`,
+`http://`, or `https://` URL where they accept a local path. `import_arrow`,
+`file_split_offsets` and `parallel_copy` read local files only. Credentials come
+from the server process environment.
 
 ```sql
 SELECT * FROM pgcolumnar.read_parquet('s3://bucket/events.parquet')
