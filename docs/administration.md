@@ -390,9 +390,10 @@ is not tested.
 
 ## Object storage
 
-The Parquet functions, the Iceberg reader, and both foreign-data wrappers reach
-object storage. They accept an `s3://`, `http://`, or `https://` URL where they
-accept a local path. The support lives in a separate module,
+The Parquet functions, `export_arrow`, the Iceberg reader, and both foreign-data
+wrappers reach object storage. They accept an `s3://`, `http://`, or `https://`
+URL where they accept a local path. `import_arrow`, `file_split_offsets` and
+`parallel_copy` read local files only. The support lives in a separate module,
 `pgcolumnar_objstore`, loaded on the first remote use.
 
 Remote access is default-deny. `pgcolumnar.objstore_allowed_endpoints` lists the
@@ -415,7 +416,9 @@ Credentials for the function API come from the server process environment:
 `AWS_DEFAULT_REGION`, and `AWS_ENDPOINT_URL`. The `pgcolumnar_parquet` foreign-data
 wrapper can take `access_key_id`, `secret_access_key`, `session_token`, and
 `credentials_required` from its server and user mapping instead, so each role uses
-its own credentials. An `s3://` request is signed with AWS Signature Version 4.
+its own credentials. The `pgcolumnar_iceberg` wrapper takes no such options: it
+reads with the server process environment, as `iceberg_scan` does. An `s3://`
+request is signed with AWS Signature Version 4.
 
 `pgcolumnar.objstore_s3_addressing` selects path-style or virtual-host addressing,
 and `pgcolumnar.objstore_part_size` sets the multipart part size for an export. See
@@ -469,9 +472,12 @@ function needs `pg_read_server_files`. A write function needs
 `pg_write_server_files`. A role without the matching role is refused in C at the
 point of use.
 
-The same functions reach an object-storage URL where they reach a local path. A
-remote path is gated by a second control, the endpoint allow-list, in addition to
-the server-file role. See [Object storage](#object-storage) below.
+Most of these functions also reach an object-storage URL. They are
+`import_parquet`, `read_parquet`, `parquet_schema`, a `pgcolumnar_parquet` scan,
+`export_parquet`, `export_arrow` and `parallel_export_parquet`. `import_arrow`,
+`file_split_offsets` and `parallel_copy` read local files only. A remote path is
+gated by a second control, the endpoint allow-list, in addition to the
+server-file role. See [Object storage](#object-storage) below.
 
 Two layers keep an unprivileged role out. The `pgcolumnar` schema does not grant
 `USAGE` to `PUBLIC`, so a role without schema access cannot reach the functions. A

@@ -1200,27 +1200,15 @@ carry:
   `timestamp with time zone`. A `text`, `bytea`, `uuid`, `boolean` or
   byte-array `numeric` column carries a null count and no bounds. A predicate on
   one of those filters, but it never skips.
-- The constant must still match the column's type exactly, per the condition
-  above. How the literal is written decides its type, in three ways.
-
-    - **Quoted, with no type named.** The literal is `unknown` and takes the
-      column's type, so all nine types skip. `smallint_col < '500'` skips.
-      `smallint_col < 500` does not. A temporal literal is usually written this
-      way, which is why it skips as written.
-    - **Named type, quoted or cast.** The literal is that type, not `unknown`.
-      The exact-type condition then applies to it like any other constant.
-      `DATE '2026-01-01'` is a `date`, so `date_col < DATE '2026-01-01'` skips
-      and `timestamp_col < DATE '2026-01-01'` does not.
-    - **Unquoted.** The literal is typed by its own text, so it matches the
-      column only sometimes. A digit string is an `integer` while the value fits
-      in one, and a `bigint` when it does not. It matches whichever of those two
-      widths the column is, and never the other: `bigint_col < 5000000000`
-      skips, while `bigint_col < 5` and `integer_col < 5000000000` do not. It
-      always matches `double precision`, whose operand is widened. A literal
-      with a decimal point is a `numeric`, and it matches `double precision`
-      alone. Against an integer column PostgreSQL casts the column rather than
-      the constant, so `bigint_col < 5.0` skips nothing. `smallint` and `real`
-      match no unquoted literal at all.
+- The constant may be of another type in the operator's family, per the
+  condition above. So `smallint_col < 500`, `bigint_col < 5`,
+  `integer_col > 5000000000`, `real_col < 0.4` and
+  `timestamp_col < DATE '2026-01-01'` all skip. A quoted literal with no type
+  named, such as `smallint_col < '500'`, takes the column's type and skips too.
+  Two forms do not skip. A literal with a decimal point against an integer
+  column, such as `bigint_col < 5.0`, makes PostgreSQL cast the column instead
+  of the constant. A `timestamptz` constant against a `timestamp` column is
+  refused for the reason given above.
 - A file exported by 1.0-alpha2 or earlier carries no statistics. Nothing
   rewrites it in place. Export it again to make it skippable.
 

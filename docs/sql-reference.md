@@ -980,8 +980,9 @@ require the `pg_read_server_files` role, which superusers hold, and operate on
 little-endian hosts. In each function, `path`
 can be one of three things. It can be a single file. It can be a directory, and
 then the function reads all the `*.parquet` files below it at any depth as one
-relation, in sorted order. It can also be a glob pattern. A local `path` can be
-any of these; an object-storage URL must be a single object key. See
+relation, in sorted order. It can also be a glob pattern. A local `path` and an
+object-storage URL can each be any of these. A remote prefix ends in `/`, and a
+remote prefix or pattern needs the object-store module. See
 [Object storage](#object-storage).
 
 The readers return each value as the declared column type, including its type
@@ -1091,8 +1092,8 @@ applies to a strictly lower one. The caller needs the `pg_read_server_files`
 role, which superusers hold. This is the first step of Iceberg support (#388).
 It is a standalone Avro object-container reader, decoded against the schema
 embedded in the file, so a v3 manifest reads structurally. It reads a local
-file. It does not resolve a table's snapshot or apply delete files, which are
-later steps.
+file. It does not resolve a table's snapshot or apply delete files. To read a
+whole table, use `iceberg_scan`.
 
 ```sql
 SELECT file_path, record_count, partition
@@ -1110,7 +1111,7 @@ superusers hold. This is step two of Iceberg support (#388). It reads the same
 Avro object-container format as `read_avro_manifest`, decoded against the schema
 embedded in the file. A v3 manifest list therefore reads structurally. It reads
 a local file. It does not resolve a table's current snapshot or open the
-manifests it names, which are later steps.
+manifests it names. To read a whole table, use `iceberg_scan`.
 
 ```sql
 SELECT manifest_path, added_files_count, added_rows_count
@@ -1126,12 +1127,12 @@ or `*.metadata.json.gz`). The current snapshot is the one whose id equals the fi
 and operation (`append`, `overwrite`, `delete`, `replace`). It also carries the
 manifest-list file the snapshot points at and its schema id. It returns one row,
 or no rows when the table has no current snapshot. The caller needs the
-`pg_read_server_files` role, which superusers hold. This is the start of Iceberg
-catalog support (#388 phase 3): it resolves the metadata pointer from the
-filesystem without a network. It reports the `manifest_list` path as the file
-records it. It does not yet open that file or resolve the table's data files.
-Those are later steps. The manifest-list it names can then be decoded with
-`read_manifest_list`.
+`pg_read_server_files` role, which superusers hold. The metadata path can be a
+local file or an `s3://`, `http://` or `https://` URL, as for `iceberg_scan`.
+A remote path is read with the server process environment's credentials. The
+function reports the `manifest_list` path as the file records it, without
+opening it. Decode that file with `read_manifest_list`, or read the table with
+`iceberg_scan`.
 
 ```sql
 SELECT snapshot_id, operation, manifest_list
@@ -1503,8 +1504,11 @@ scalar. Such a table refuses every query, even one that does not read that
 column (#1788).
 
 The one table option is `metadata_path`, the table's current `metadata.json`
-(a local path or an object-storage URL). The wrapper requires the
-`pg_read_server_files` role. `EXPLAIN (ANALYZE)` reports `Files Pruned`.
+(a local path or an object-storage URL). The wrapper takes no server or
+user-mapping options. It reads a remote table with the server process
+environment's credentials, as `iceberg_scan` does (see
+[Endpoints and credentials](#endpoints-and-credentials)). The wrapper requires
+the `pg_read_server_files` role. `EXPLAIN (ANALYZE)` reports `Files Pruned`.
 
 Partition pruning covers the identity, `bucket[N]`, `truncate[W]`, and temporal
 transforms. Identity partitioning prunes on any predicate. `bucket[N]` prunes on
@@ -1540,9 +1544,11 @@ SELECT sum(amount) FROM events WHERE region = 'eu';
 
 ## Object storage
 
-The Parquet read and export functions, and the foreign-data wrapper, accept an
-object-storage URL wherever they accept a local path. These URL schemes are
-recognized:
+The Parquet read and export functions, `export_arrow`, the Iceberg reader, and
+both foreign-data wrappers accept an object-storage URL wherever they accept a
+local path. `import_arrow`, `file_split_offsets`, `parallel_copy`,
+`read_avro_manifest` and `read_manifest_list` read local files only. These URL
+schemes are recognized:
 
 | Scheme | Meaning |
 | --- | --- |
@@ -1638,7 +1644,8 @@ Two calls take a server instead: `export_parquet(rel, path, server)`, and
 `tier_partition`, which writes through it. They resolve the endpoint and the
 credentials as the foreign-data wrapper does, as described next.
 
-For the foreign-data wrapper the endpoint and credentials come from the catalog,
+For the `pgcolumnar_parquet` foreign-data wrapper the endpoint and credentials
+come from the catalog,
 which keeps them out of a world-readable place. The non-secret settings go on the
 server and the secret ones go on a user mapping:
 
@@ -1669,6 +1676,12 @@ two cases. The caller is a superuser. Or a superuser has marked the mapping
 `credentials_required 'false'`. Ambient credentials are a privilege, not a
 default. An ordinary role with no mapping is refused rather than given the server
 process identity.
+
+The `pgcolumnar_iceberg` wrapper works differently. It takes no server or
+user-mapping options, so it has no per-role credentials and no
+`credentials_required`. It reads with the server process environment, as
+`iceberg_scan` does, for every role that may read the foreign table. Its gate is
+the `pg_read_server_files` role.
 
 ### The endpoint allow-list
 

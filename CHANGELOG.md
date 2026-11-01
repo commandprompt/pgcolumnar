@@ -481,6 +481,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- The docs no longer contradict the code on object storage, credentials and
+  row-group skipping (#1797). `import_arrow`, `file_split_offsets` and
+  `parallel_copy` read local files only; the docs had said every Arrow and
+  server-file path takes an object-storage URL. `read_parquet` reads a remote
+  prefix and a remote pattern, not only one object key. The
+  `pgcolumnar_iceberg` wrapper takes no server or user-mapping options and reads
+  with the server process environment. `iceberg_current_snapshot` reads an
+  `s3://` metadata file. A cross-type constant such as `bigint_col < 5` or
+  `timestamp_col < DATE '2026-01-01'` skips row groups; the docs had said it
+  does not. docs/administration.md, docs/configuration.md, docs/features.md,
+  docs/how-to.md, docs/limitations.md and docs/sql-reference.md.
 - `iceberg_rest_scan` now chooses a vended storage credential for each file it
   reads (#1820). Before, it matched each `storage-credentials` prefix against the
   metadata location only, and that one credential signed every file. So a
