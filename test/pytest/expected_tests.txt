@@ -1667,4 +1667,7 @@ guard_tests 858
 # cluster_tests 5200 -> 5203 for #1917's three tests in test_native_parquet_schema.py (read_parquet refuses a
 # list of lists and a list of maps declared as one-dimensional arrays; import_parquet refuses a list of lists),
 # by collection: 5203 tests collected in the cluster half, guard half 858.
-cluster_tests 5203
+# cluster_tests 5203 -> 5204 for #1917's foreign-table test in test_native_parquet_schema.py (the
+# pgcolumnar_parquet foreign table refuses a list of lists, even in a query that leaves it out), by
+# collection: 6062 tests collected, less guard_tests 858.
+cluster_tests 5204

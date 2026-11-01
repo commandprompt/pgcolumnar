@@ -318,6 +318,14 @@ SQLEOF
 	check_text "import_parquet refuses a list of lists for a one-dimensional array column (#1917)" \
 		"$(nested_refusal "SELECT pgcolumnar.import_parquet('lol_imp', '$PGC_WORKDIR/lol.parquet')")|$(q "SELECT count(*) FROM lol_imp;")" \
 		'42804 Parquet column for array "l" is nested 2 lists deep, but pgcolumnar.import_parquet reads one list level into an array|0'
+	# The foreign table reaches the same bind through its own call site. It binds
+	# every leaf by position, so a query that leaves l out is refused too: such a
+	# file has no declaration it reads under (#1917 review).
+	psql_run "CREATE SERVER lol_srv FOREIGN DATA WRAPPER pgcolumnar_parquet;"
+	psql_run "CREATE FOREIGN TABLE lol_f (l bigint[], n int) SERVER lol_srv OPTIONS (path '$PGC_WORKDIR/lol.parquet');"
+	check_text "the pgcolumnar_parquet foreign table refuses a list of lists, even in a query that leaves it out (#1917)" \
+		"$(nested_refusal "SELECT string_agg(f::text, ';') FROM lol_f f")|$(nested_refusal "SELECT string_agg(n::text, ';') FROM lol_f")" \
+		'42804 Parquet column for array "l" is nested 2 lists deep, but the pgcolumnar_parquet foreign-data wrapper reads one list level into an array|42804 Parquet column for array "l" is nested 2 lists deep, but the pgcolumnar_parquet foreign-data wrapper reads one list level into an array'
 	# nullable is the column's own OPTIONAL flag: a REQUIRED list of REQUIRED
 	# elements is not nullable, though its leaf has a definition level (the
 	# repeated group's). The leaf rule reported l as nullable.
@@ -361,6 +369,7 @@ else
 		"read_parquet refuses a list of lists declared as a one-dimensional array (#1917)" \
 		"read_parquet refuses a list of maps declared as one-dimensional arrays (#1917)" \
 		"import_parquet refuses a list of lists for a one-dimensional array column (#1917)" \
+		"the pgcolumnar_parquet foreign table refuses a list of lists, even in a query that leaves it out (#1917)" \
 		"parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893)" \
 		"parquet_schema reports a leaf row nullable only when an OPTIONAL element sits above its first repeated level (#1893)" \
 		"parquet_schema quotes a struct field name that needs quotes, so CREATE TYPE takes the composite text (#1893)"; do

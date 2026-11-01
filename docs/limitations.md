@@ -996,10 +996,14 @@ hosts.
 They support one-dimensional arrays and composite types built from the scalar
 types below, with nulls at every level. Multi-dimensional arrays and types not
 listed are rejected.
-The Parquet readers also refuse a list of lists, or a list of maps, read into an
-array column. The error has SQLSTATE 42804. Such a leaf has two repeated levels,
-and a one-dimensional array holds only one, so a read would lose the inner lists
-(#1917).
+`read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table
+cannot read a file that holds a list of lists or a list of maps. They fail with
+SQLSTATE 42804, even for a query that does not use that column. Such a column
+has two repeated levels, and a one-dimensional array holds only one, so a read
+would lose the inner lists. The readers bind every Parquet column by position,
+so you cannot leave the column out, and declaring it as a scalar fails too
+(#1917). To read the other columns, rewrite the file without that column, for
+example with pyarrow.
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
 | --- | --- | --- | --- | --- |

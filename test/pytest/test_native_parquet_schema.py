@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 import psycopg
+from psycopg import sql as pgsql
 
 from pgc_vacuity import QUERY_ERROR, query_error
 
@@ -373,6 +374,26 @@ def test_import_parquet_refuses_a_list_of_lists_for_a_one_dimensional_array(pgc_
                 '42804 Parquet column for array "l" is nested 2 lists deep, '
                 'but pgcolumnar.import_parquet reads one list level into an array|0',
                 "import_parquet refuses a list of lists for a one-dimensional array column (#1917)")
+
+
+# The foreign table reaches the same bind through its own call site. It binds every
+# leaf by position, so a query that leaves l out is refused too: such a file has no
+# declaration it reads under (#1917 review).
+def test_the_parquet_foreign_table_refuses_a_list_of_lists_even_when_left_out(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect,
+                 "the pgcolumnar_parquet foreign table refuses a list of lists, even in a query that leaves it out (#1917)")
+    if w is None:
+        return
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE SERVER lol_srv FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        cur.execute(pgsql.SQL("CREATE FOREIGN TABLE lol_f (l bigint[], n int) SERVER lol_srv OPTIONS (path {})")
+                    .format(pgsql.Literal(str(w / "lol.parquet"))))
+    whole = _nested_refusal(pgc_conn, "SELECT string_agg(f::text, ';') FROM lol_f f", None)
+    only_n = _nested_refusal(pgc_conn, "SELECT string_agg(n::text, ';') FROM lol_f", None)
+    want = ('42804 Parquet column for array "l" is nested 2 lists deep, '
+            'but the pgcolumnar_parquet foreign-data wrapper reads one list level into an array')
+    expect.text(f"{whole}|{only_n}", f"{want}|{want}",
+                "the pgcolumnar_parquet foreign table refuses a list of lists, even in a query that leaves it out (#1917)")
 
 
 def test_a_required_list_or_struct_is_not_nullable(pgc_conn, server_dir, expect):
