@@ -539,4 +539,83 @@ check "parallel_copy on a FIFO via the partitioned coordinator is refused, not a
 exec 9<>"$PCFIFO2" 2>/dev/null; exec 9>&- 2>/dev/null
 check "backend still up after the partitioned-coordinator FIFO refusal" "$(survived "$CRASHES_BEFORE")" "1"
 
+
+# ---- #1886: a remote URL is refused up front, not opened as a local file -----
+# file_split_offsets and parallel_copy read local files only. Before #1886 an
+# s3:// or http:// URL went to open(2) and failed with ENOENT ("could not open
+# file "s3://..."), which says the object does not exist when the real reason is
+# that these functions never read object storage. Each now refuses every scheme
+# PgColumnarPathIsRemote recognises with 0A000, naming itself and the URL, with a
+# hint that it reads local files only. parallel_copy refuses after the INSERT
+# check (test/import_export_privilege.sh pins that order) and before it checks
+# the target's kind, so a heap target gets the refusal, not 42809. The controls
+# hold the other side: a LOCAL path that carries "s3://" past its first byte is
+# still read.
+remote_refusal() {	# SQL -> "SQLSTATE message | hint" of its error, or "no error (...)"
+	local out msg hint
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$1" 2>&1)"
+	case "$out" in
+		*ERROR:*)
+			msg="$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' <<<"$out")"
+			hint="$(sed -n '/^HINT:/{s/^HINT: *//p;q;}' <<<"$out")"
+			printf '%s | %s\n' "$msg" "${hint:-no hint}";;
+		*) printf 'no error (%s)\n' "$out";;
+	esac
+}
+want_refusal() {	# FUNCTION URL -> the refusal #1886 promises
+	printf '0A000 columnar: %s does not read "%s" | %s reads local files only. Use a local filesystem path.\n' \
+		"$1" "$2" "$1"
+}
+REMOTE_S3="s3://pgc-test/f1886/data.txt"
+REMOTE_HTTP="http://127.0.0.1:9/f1886/data.txt"
+REMOTE_OTHER="https://127.0.0.1:9/f1886/data.txt gs://pgc-test/f1886/data.txt az://pgc-test/f1886/data.txt S3://pgc-test/f1886/data.txt"
+each_refusal() {	# SQL-with-@URL@ -> one remote_refusal per URL in REMOTE_OTHER, joined by " ; "
+	local u acc=""
+	for u in $REMOTE_OTHER; do acc="$acc${acc:+ ; }$(remote_refusal "${1//@URL@/$u}")"; done
+	printf '%s\n' "$acc"
+}
+each_want() {	# FUNCTION -> want_refusal per URL in REMOTE_OTHER, joined by " ; "
+	local u acc=""
+	for u in $REMOTE_OTHER; do acc="$acc${acc:+ ; }$(want_refusal "$1" "$u")"; done
+	printf '%s\n' "$acc"
+}
+
+check "file_split_offsets refuses an s3:// URL with 0A000, naming itself and the URL (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.file_split_offsets('$REMOTE_S3', 2)")" \
+	"$(want_refusal file_split_offsets "$REMOTE_S3")"
+check "file_split_offsets refuses an http:// URL with 0A000, naming itself and the URL (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.file_split_offsets('$REMOTE_HTTP', 2)")" \
+	"$(want_refusal file_split_offsets "$REMOTE_HTTP")"
+check "file_split_offsets refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1886)" \
+	"$(each_refusal "SELECT pgcolumnar.file_split_offsets('@URL@', 2)")" \
+	"$(each_want file_split_offsets)"
+
+psql_run "DROP TABLE IF EXISTS t_rem; CREATE TABLE t_rem (id int, txt text) USING pgcolumnar;" >/dev/null
+mkpart t_rem_part 4
+check "parallel_copy refuses an s3:// URL with 0A000, naming itself and the URL (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$REMOTE_S3', 2)")" \
+	"$(want_refusal parallel_copy "$REMOTE_S3")"
+check "parallel_copy refuses an http:// URL with 0A000, naming itself and the URL (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$REMOTE_HTTP', 2)")" \
+	"$(want_refusal parallel_copy "$REMOTE_HTTP")"
+check "parallel_copy refuses https://, gs://, az:// and S3:// URLs for a partitioned target with 0A000 too (#1886)" \
+	"$(each_refusal "SELECT pgcolumnar.parallel_copy('t_rem_part'::regclass, '@URL@', 2)")" \
+	"$(each_want parallel_copy)"
+check "parallel_copy refuses a remote URL before it looks at the target: a heap target gets 0A000 (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.parallel_copy('t_heaptgt'::regclass, '$REMOTE_S3', 2)")" \
+	"$(want_refusal parallel_copy "$REMOTE_S3")"
+
+# The controls: "$DATADIR/s3:" is a directory, so "$DATADIR/s3://ctl.txt" is a
+# local file whose path holds "s3://" past its start.
+mkdir -p "$DATADIR/s3:"; chmod 777 "$DATADIR/s3:"
+if [ "$(id -u)" = "0" ]; then chown postgres "$DATADIR/s3:"; fi
+LOCAL_S3="$DATADIR/s3://ctl.txt"
+psql_run "COPY (SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1, 5000) g)
+          TO '$LOCAL_S3' WITH (FORMAT text);" >/dev/null
+check "control: file_split_offsets still splits a local path that holds s3:// past its start (#1886)" \
+	"$(q "SELECT (pgcolumnar.file_split_offsets('$LOCAL_S3', 2))[3]")" "$(stat -c %s "$DATADIR/s3:/ctl.txt")"
+check "control: parallel_copy still loads a local path that holds s3:// past its start (#1886)" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$LOCAL_S3', 2)")" 5000
+
 pgc_summary

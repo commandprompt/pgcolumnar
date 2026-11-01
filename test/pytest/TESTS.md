@@ -497,6 +497,10 @@ one of those eight measurements exited 0.
 | `test_a_bare_variable_condition_is_met_by_any_value` | `unless-env VAR` is met by any non-empty value, for an opt-in variable that names an endpoint; the inner arm is `test_optin_endpoint` |
 | `test_a_row_with_any_other_suffix_is_refused` | fail closed: an unknown suffix raises, naming the forms a row may take, rather than leaving the row dead |
 | `test_a_listed_test_the_run_never_collected_is_not_a_stale_row` | and the premise that direction owes (#1204). `allowed - actual` reads as "listed, did not decline", which is only answerable for a test the run COLLECTED. A one-file run on PG 15-17 collected none of the others and exited 67 while its own file passed, telling the reader to edit a list that was correct |
+| `test_a_listed_decliner_under_xdist_leaves_the_run_green` | #1892. Under `-n 2` a listed decline exits 0, as the serial run does, and no process reports it as unexpected or stale. A second listed row names a file the run never collects; mutant M6, which skips the #1204 intersection when the workers report ids, calls it stale (`got 1 want 0`). Before the fix the controller judged against an empty collection and exited 67; the inner arms are `test_xdist_inner_decliner`, `test_xdist_inner_one`, `test_xdist_inner_two` and `test_xdist_inner_three` |
+| `test_a_stale_row_under_xdist_is_still_refused` | #1892, the other direction: under `-n 2` a listed test that ran is reported as stale exactly once, by the controller, and the run exits 67. Before the fix both workers reported it |
+| `test_an_unlisted_decliner_under_xdist_is_still_refused` | #1892: under `-n 2` an unlisted decline is reported exactly once and the run exits 67. Before the fix the worker that ran it reported it too |
+| `test_the_unrunnable_collector_registers_without_xdist` | #1892 review: the collector's `pytest_xdist_node_collection_finished` hook is optional, so a plugin manager with no xdist hook specs registers it without an "unknown hook" error. Before the fix: `got 1 want 0` |
 | `test_the_list_is_read_for_the_running_major_only` | a row for 15 does not excuse a decline on 18, which is what a flat set would do |
 | `test_an_unreadable_pg_config_fails_closed` | no major means no judgement, and no judgement means the old behaviour. The dangerous reading is the other one: unknown major treated as expect-anything |
 | `test_a_run_with_nothing_unrunnable_still_exits_zero` | **control**: a green run is untouched | — |
@@ -7305,12 +7309,15 @@ The pytest twin of `test/import_export_privilege.sh` (#559, #566), with the para
 
 `parallel_copy` and `parallel_export_parquet` always checked INSERT and SELECT, and nothing asked them. Their loaders and workers skip the executor's permission check, so that check is the only one.
 
+`import_arrow` and `parallel_copy` refuse an object-storage URL with 0A000 (#1886), but only after the INSERT check, so the attacker gets 42501 for an `s3://` URL as for a local path.
+
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_the_premises_isolate_the_table_acl` | the attacker logs in, holds both server-file roles, schema USAGE and EXECUTE, and nothing on `victim`; `victim` has its rows; the attacker's own source files exist |
 | `test_a_table_the_caller_holds_no_grant_on_is_refused` | the seven deny arms, serial and parallel, in the shell's order; then `victim` keeps exactly its rows and no file of it was written |
+| `test_a_remote_url_is_refused_only_after_the_insert_check` | (#1886) `import_arrow checks INSERT before it refuses a remote URL (#1886)` and `parallel_copy checks INSERT before it refuses a remote URL (#1886)`: the attacker gets "42501 permission denied for table victim" for an `s3://` URL, not 0A000 |
 | `test_the_owner_is_not_refused` | the owner's own exports, storage id and import are not refused |
 | `test_the_owner_runs_the_parallel_twins` | the owner's `parallel_copy` loads its 50 rows, and its `parallel_export_parquet` writes some |
 
@@ -7343,7 +7350,7 @@ The pytest twin of `test/fdw_plan_privilege.sh`. A planner estimate is visible t
 
 ## 108. test_arrow_import.py: import_arrow round trips, reads a foreign file, and refuses what it cannot decode
 
-The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the shell's name. A 16-column table survives export and import exactly (a set hash on both sides), non-finite dates and NaN numerics arrive as null, and a non-columnar target and a column-count mismatch are refused by SQLSTATE. A pyarrow-written file imports with its values, in the IPC stream format, the IPC file format (also without the optional end-of-stream marker before its footer) and Feather v2 (#1806); lengths larger than the file are refused before they are allocated, and a footer length that is negative or larger than the file is refused, not read as an empty file; nanosecond values are floored to the microsecond and the loss is reported once, counted in VALUES (two columns, so values and rows differ), never refused; a dictionary batch and a compressed body are refused by SQLSTATE and message; every Arrow date, time and timestamp carrier and unit decodes to the instant it holds or is refused 22008, a file whose declared type does not match its column is refused 42804, and nested units are honoured. An import maintains plain, unique (23505 on a second import) and partial indexes, and a FIFO is refused rather than hung. The four pyarrow tests decline by name without pyarrow, and fail where `PGC_REQUIRE` names it.
+The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the shell's name. A 16-column table survives export and import exactly (a set hash on both sides), non-finite dates and NaN numerics arrive as null, and a non-columnar target and a column-count mismatch are refused by SQLSTATE. A pyarrow-written file imports with its values, in the IPC stream format, the IPC file format (also without the optional end-of-stream marker before its footer) and Feather v2 (#1806); lengths larger than the file are refused before they are allocated, and a footer length that is negative or larger than the file is refused, not read as an empty file; nanosecond values are floored to the microsecond and the loss is reported once, counted in VALUES (two columns, so values and rows differ), never refused; a dictionary batch and a compressed body are refused by SQLSTATE and message; every Arrow date, time and timestamp carrier and unit decodes to the instant it holds or is refused 22008, a file whose declared type does not match its column is refused 42804, and nested units are honoured. An import maintains plain, unique (23505 on a second import) and partial indexes, and a FIFO is refused rather than hung. An object-storage URL is refused 0A000, naming the function and the URL, after the INSERT check and before the target's kind is checked (#1886). The four pyarrow tests decline by name without pyarrow, and fail where `PGC_REQUIRE` names it.
 
 ### Every test
 
@@ -7355,6 +7362,7 @@ The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the
 | `test_the_refusals_and_every_temporal_carrier` | the dictionary and compressed refusals, every carrier and unit, the 22008 guards, the 42804 type matches with their controls, an empty target after a refusal, and nested units |
 | `test_an_import_maintains_the_tables_indexes` | the plan really uses the index, index and sequential scans agree, the unique violation and its row count, and the partial index |
 | `test_a_fifo_is_refused_not_a_hang` | XX001 within the wall clock, and the backend still up |
+| `test_a_remote_url_is_refused_up_front` | (#1886) `import_arrow refuses an s3:// URL with 0A000, naming itself and the URL (#1886)`, the same for `http://`, then `https://`, `gs://`, `az://` and `S3://` in one check, each by SQLSTATE, message and hint; a heap target gets the refusal too, because it comes before the target's kind is checked; and the control: a local path that holds `s3://` past its start still imports its 300 rows |
 
 ## 109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar
 
@@ -11857,7 +11865,7 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 
 ## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
 
-The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
 
 ### Every test
 
@@ -11909,6 +11917,15 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
 | `test_parallel_copy_fifo_on_a_partitioned_target_is_refused_not_a_hang` | a FIFO given to a partitioned load is refused with 42809 within 5 seconds |
 | `test_parallel_copy_partitioned_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
+| `test_parallel_copy_split_refuses_an_s3_url` | `file_split_offsets` refuses an `s3://` URL with 0A000, naming itself and the URL, with the local-files-only hint (#1886) |
+| `test_parallel_copy_split_refuses_an_http_url` | the same for an `http://` URL |
+| `test_parallel_copy_split_refuses_the_other_remote_schemes` | the same for `https://`, `gs://`, `az://` and `S3://`, in one check |
+| `test_parallel_copy_refuses_an_s3_url` | `parallel_copy` into a single table refuses an `s3://` URL with 0A000, naming itself and the URL, with the hint (#1886) |
+| `test_parallel_copy_refuses_an_http_url` | the same for an `http://` URL |
+| `test_parallel_copy_refuses_the_other_remote_schemes_for_a_partitioned_target` | a partitioned target refuses `https://`, `gs://`, `az://` and `S3://` the same way, in one check |
+| `test_parallel_copy_refuses_a_remote_url_before_the_target` | a heap target gets the 0A000 refusal, not 42809: the URL is refused before the target's kind is checked |
+| `test_parallel_copy_split_still_reads_a_local_path_holding_a_scheme` | control: `file_split_offsets` still splits a local file whose path holds `s3://` past its start; its last offset is the file size |
+| `test_parallel_copy_still_loads_a_local_path_holding_a_scheme` | control: `parallel_copy` still loads that file's 5000 rows |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
 
@@ -12756,7 +12773,7 @@ Every test makes one check under the shell's name, on a private database. Every 
 
 ## 324. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused
 
-The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, the hidden-name skip applies only below the prefix the user named and a remote glob matches `_` and dot names as a local glob does (#1784), an exact key is read with no LIST, an exact key holding `*`, `?` or `[` reads that object alone while a pattern naming no object of its exact name still expands (#1785), a bracketed `s3://[::1]/` authority is refused as an IPv6 literal, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard, and the backend survives. The shell's optional real-S3 arms (#1798) run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation: the layout goes there under a per-run prefix, and every remote prefix and glob reads as the same layout does from local disk, including 1100 one-row objects that a real server cannot list in one 1000-key page. The virtual-host arm also needs `PGC_S3_INTEGRATION_VHOST_ENDPOINT`, an endpoint whose bucket subdomain resolves. Otherwise they decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
+The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, the hidden-name skip applies only below the prefix the user named and a remote glob matches `_` and dot names as a local glob does (#1784), an exact key is read with no LIST, an exact key holding `*`, `?` or `[` reads that object alone while a pattern naming no object of its exact name still expands (#1785), a bracketed `s3://[::1]/` authority is refused as an IPv6 literal, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard. When one object under a prefix or glob does not match the declared columns, the refusal names it in its DETAIL (#1902): `mix/` holds one string id among int64 ids, read by position, by field id and through the FDW, and `wide/` holds one file with an extra column, read by a glob. The backend survives. The shell's optional real-S3 arms (#1798) run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation: the layout goes there under a per-run prefix, and every remote prefix and glob reads as the same layout does from local disk, including 1100 one-row objects that a real server cannot list in one 1000-key page. The virtual-host arm also needs `PGC_S3_INTEGRATION_VHOST_ENDPOINT`, an endpoint whose bucket subdomain resolves. Otherwise they decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
 
 ### Every test
 
@@ -12781,6 +12798,11 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_non_advancing_continuation_token_is_refused` | a non-advancing continuation token is refused, not an infinite paging loop |
 | `test_a_truncated_page_with_no_keys_is_refused` | a truncated page with no keys is refused, not looped |
 | `test_a_list_that_fails_is_refused_not_read_as_empty` | a LIST that returns HTTP 500 is refused, not read as an empty prefix |
+| `test_the_matching_objects_of_the_mixed_prefix_read` | premise: the matching objects of mix/ read |
+| `test_a_prefix_read_names_the_object_whose_type_does_not_match` | read_parquet over a prefix names the object whose column type does not match |
+| `test_a_glob_read_names_the_object_with_an_extra_column` | read_parquet over a glob names the object with an extra column |
+| `test_a_field_id_prefix_read_names_the_object_whose_type_does_not_match` | read_parquet by field id over a prefix names the object whose column type does not match |
+| `test_the_fdw_over_a_prefix_names_the_object_whose_type_does_not_match` | the FDW over a prefix names the object whose column type does not match |
 | `test_the_backend_is_still_up_after_the_listing_refusals` | backend still up after the listing refusals |
 | `test_integration_the_listing_cluster_restarts_with_the_real_s3_credentials` | opt-in: integration: the cluster restarts with the real S3 credentials |
 | `test_integration_a_real_s3_prefix_read_equals_the_local_directory` | opt-in: integration: real S3 prefix read == local directory (`lst/`, by set hash) |
@@ -13815,7 +13837,7 @@ The twin of `test/native_sketch_fold.sh` (#1309 phase 3), every check by the she
 
 ## 353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status
 
-The twin of `test/objstore_error_advice.sh` (#1796), every check by the shell's name. Three object-store messages that pointed the reader at the wrong thing. A 403 hint must name where the refused key was configured: the server environment, the user mapping, or the credentials a REST catalog vended. An allow-list refusal's hint must suggest the `host:port` the message names, appended to the current list with any quote doubled, and the list it suggests must permit the endpoint. A single-PUT export to an `http://` endpoint, larger than the socket buffers, which the store refuses before reading the body, must report the 403 and its hint, not `failed before a response`. An `https://` store still reports `failed before a response` (#1902). One SigV4 fixture with a refused bucket (`--tamper-bucket`, which refuses before reading a body and closes with it unread), three REST catalogs over the committed iceberg warehouse (one vends a wrong secret in its flat config, one in a storage-credentials entry (#1861), one vends nothing), and a postmaster whose environment holds the right key, so the environment would have read what the mapping and vended keys were refused. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+The twin of `test/objstore_error_advice.sh` (#1796), every check by the shell's name. Three object-store messages that pointed the reader at the wrong thing. A 403 hint must name where the refused key was configured: the server environment, the user mapping, or the credentials a REST catalog vended. An allow-list refusal's hint must suggest the `host:port` the message names, appended to the current list with any quote doubled, and the list it suggests must permit the endpoint. A single-PUT export to an `http://` endpoint, larger than the socket buffers, which the store refuses before reading the body, must report the 403 and its hint, not `failed before a response`. Over `https://` (#1902) a failed send leaves the session unreadable, so a write over 1 MiB sends `Expect: 100-continue` and the store's refusal must arrive before the body; a store that answers 100 Continue, ignores `Expect`, sends its 100 late or answers 417 must still get the object, a small export must carry no `Expect`, a multipart export to a store that ignores `Expect` must send it on one part only (the wait is paid once per handle, #1903 review), a single PUT answered 200 before its body must still send the body so the object holds the rows, one answered 200 with neither a length nor chunked framing (a reply that ends at connection close) must fail `failed before a response` and leave no object, and a refusal that comes after the wait must still keep its 403 over `http://`. One SigV4 fixture with a refused bucket (`--tamper-bucket`, which refuses before reading a body and closes with it unread), the same fixture over `https://` with a certificate the postmaster trusts through `SSL_CERT_FILE`, three REST catalogs over the committed iceberg warehouse (one vends a wrong secret in its flat config, one in a storage-credentials entry (#1861), one vends nothing), and a postmaster whose environment holds the right key, so the environment would have read what the mapping and vended keys were refused. A private cluster, because the postmaster starts with `AWS_*` in its environment.
 
 ### Every test
 
@@ -13824,6 +13846,7 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | test | what it holds |
 | --- | --- |
 | `test_the_advice_suite_can_run_here` | premise: the SigV4 S3 fixture and both REST catalogs are up |
+| `test_the_https_fixture_is_up` | premise: the https SigV4 fixture is up |
 | `test_the_environment_key_writes_and_reads` | premise: the server environment's key writes and reads s3://pgc-bucket/small.parquet |
 | `test_an_environment_key_refusal_hints_at_the_environment` | environment key refused: the 403 hint names the server environment |
 | `test_the_foreign_table_reads_with_the_right_mapping_secret` | premise: the foreign table reads with the right secret in the user mapping |
@@ -13839,4 +13862,16 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | `test_the_mid_size_export_is_one_put` | premise: the mid-size export is one PUT of more than 4 MiB |
 | `test_a_small_export_to_the_refused_bucket_reports_the_403` | a small export to the refused bucket reports the 403 and its hint |
 | `test_a_mid_size_export_refused_early_keeps_the_403` | mid-size export refused before its body was read: the 403 and its hint survive |
+| `test_a_mid_size_export_over_https_answered_100_continue_writes_the_object` | a mid-size export over https whose store answers 100 Continue writes the object |
+| `test_the_mid_size_put_over_https_carries_expect` | the mid-size PUT over https carried Expect: 100-continue |
+| `test_a_small_export_over_https_sends_no_expect` | a small export over https sends no Expect header |
+| `test_a_mid_size_export_over_https_refused_early_keeps_the_403` | mid-size export over https refused before its body was sent: the 403 and its hint survive |
+| `test_a_store_that_ignores_expect_gets_the_body_after_the_wait` | a mid-size export over https to a store that ignores Expect is sent after the wait |
+| `test_a_late_100_continue_is_passed_over_for_the_final_answer` | a 100 Continue that comes after the wait is passed over for the final answer |
+| `test_a_417_sends_the_export_again_without_expect` | a store that answers 417 to Expect gets the export again without it |
+| `test_the_multipart_export_to_an_expect_ignoring_store_is_several_parts` | premise: the multipart export to a store that ignores Expect is 3 or more parts, all read back |
+| `test_a_store_that_ignores_expect_gets_it_on_one_part_only` | a multipart export to a store that ignores Expect sends it on one part only |
+| `test_a_200_before_the_body_still_sends_the_body` | a single PUT answered 200 before its body still sends the body, and the object holds the rows |
+| `test_a_200_with_no_framing_before_the_body_is_not_taken_as_written` | a single PUT answered 200 with no framing before its body is not taken as written |
+| `test_a_refusal_after_the_expect_wait_keeps_the_403_over_http` | mid-size export refused after the Expect wait ran out (http): the 403 and its hint survive |
 | `test_the_server_survived_the_refusals` | the server survived the refusals |
