@@ -1752,9 +1752,9 @@ alone, whatever its suffix. Only when none exists is the key matched as a
 pattern. A backslash before a character makes the pattern match that character
 literally, so `s3://bucket/a/q\?.parquet` matches only `a/q?.parquet`. A read
 from a host written as an IPv6 literal in brackets, such as
-`http://[::1]:9000/`, is refused with SQLSTATE 0A000. When the reader or the
-writer adds a parameter of its own to an `http(s)://` URL that has a query
-string, such as `versionId=` or `uploadId=`, it joins it with `&`.
+`http://[::1]:9000/`, is refused with SQLSTATE 0A000. When an `http(s)://` URL
+has a query string, the reader and the writer add their own parameters to it
+with `&`. Examples are `versionId=` and `uploadId=`.
 
 On write, `parallel_export_parquet` treats an `s3://` URL as a prefix, and
 refuses every other remote URL before any worker starts. It writes one
