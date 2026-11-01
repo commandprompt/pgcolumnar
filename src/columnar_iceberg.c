@@ -41,6 +41,7 @@
 #include "utils/builtins.h"
 #include "executor/tuptable.h"
 #include "utils/datum.h"
+#include "utils/hsearch.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -365,6 +366,25 @@ ice_num_int64(JsonbValue *v, int64 *out)
 				 errmsg("iceberg: metadata holds the non-integer number %s where an integer is required",
 						DatumGetCString(DirectFunctionCall1(numeric_out, num)))));
 	return true;
+}
+
+/*
+ * The table's "default-spec-id", or 0 when it is absent. A spec id is an int in
+ * the Iceberg spec. A larger one used to be cast to int32, so 4294967296 became
+ * spec 0 (#1853). Refuse it instead.
+ */
+static int64
+ice_default_spec_id(JsonbContainer *root, const char *path)
+{
+	int64		defspec = 0;
+
+	if (ice_num_int64(ice_field(root, "default-spec-id"), &defspec) &&
+		(defspec < PG_INT32_MIN || defspec > PG_INT32_MAX))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" has a default-spec-id out of range: " INT64_FORMAT,
+						path, defspec)));
+	return defspec;
 }
 
 /*
@@ -908,7 +928,15 @@ pgcolumnar_iceberg_current_snapshot(PG_FUNCTION_ARGS)
 
 	v = ice_field(sc, "schema-id");							/* optional */
 	if (ice_num_int64(v, &num))
+	{
+		/* a schema id is an int; a cast used to truncate a larger one (#1853) */
+		if (num < PG_INT32_MIN || num > PG_INT32_MAX)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: snapshot " INT64_FORMAT " in \"%s\" has a schema-id out of range: " INT64_FORMAT,
+							cur, path, num)));
 		values[6] = Int32GetDatum((int32) num);
+	}
 	else
 		nulls[6] = true;
 
@@ -1011,8 +1039,17 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 					 errmsg("iceberg: manifest \"%s\" has invalid content %d",
 							mfs[mi].manifest_path, mfs[mi].content)));
 
-		/* the lister refuses a delete manifest without even opening it */
-		if (mfs[mi].content != 0 && !collect_deletes)
+		/*
+		 * The lister refuses a delete manifest that the manifest list says
+		 * holds a live delete file (added or existing), without opening it.
+		 * A rewrite or compaction that removed every old delete file leaves a
+		 * delete manifest whose entries are all removed (status 2), with both
+		 * counts 0; and a v1 list may carry no counts at all (read as 0).
+		 * Either way the lister opens the manifest and refuses only a live
+		 * entry, below (#1829).
+		 */
+		if (mfs[mi].content != 0 && !collect_deletes &&
+			(int64) mfs[mi].added_files_count + mfs[mi].existing_files_count > 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("iceberg: snapshot " INT64_FORMAT " has delete files; reading tables with deletes is not supported",
@@ -1049,11 +1086,12 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 
 			if (!collect_deletes)
 			{
-				/* the lister refuses any delete file. A removed entry (status
-				 * 2, DELETED) is a data file this snapshot took out, such as
-				 * the old file of a copy-on-write delete: it is not live, so
-				 * the lister skips it, as the scan does (#1791) */
-				if (e->content != 0)
+				/* the lister refuses any live delete file. A removed entry
+				 * (status 2, DELETED) is a file this snapshot took out, such
+				 * as the old file of a copy-on-write delete (#1791) or a
+				 * delete file a rewrite removed (#1829): it is not live, so
+				 * the lister skips it, as the scan does */
+				if (e->content != 0 && e->status != 2)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("iceberg: snapshot " INT64_FORMAT " has delete files; reading tables with deletes is not supported",
@@ -1062,6 +1100,15 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 									   e->file_path, e->content, e->status)));
 				if (e->status == 2)
 					continue;
+				/* a delete manifest holds delete files only; a live data
+				 * entry in one is corrupt metadata, and listing it would
+				 * trust a manifest the list calls a delete manifest */
+				if (mfs[mi].content != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("iceberg: delete manifest \"%s\" holds a data file entry \"%s\"",
+									mfs[mi].manifest_path,
+									e->file_path ? e->file_path : "(null)")));
 			}
 			else
 			{
@@ -1470,7 +1517,6 @@ PgColumnarIcebergIdentityPartMap(const char *path,
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1482,9 +1528,7 @@ PgColumnarIcebergIdentityPartMap(const char *path,
 	*out_npos = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1573,7 +1617,6 @@ PgColumnarIcebergBucketMap(const char *path, const PgColumnarObjStoreConfig *cfg
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1590,9 +1633,7 @@ PgColumnarIcebergBucketMap(const char *path, const PgColumnarObjStoreConfig *cfg
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1695,7 +1736,6 @@ PgColumnarIcebergTruncateMap(const char *path, const PgColumnarObjStoreConfig *c
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1712,9 +1752,7 @@ PgColumnarIcebergTruncateMap(const char *path, const PgColumnarObjStoreConfig *c
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1815,7 +1853,6 @@ PgColumnarIcebergDayMap(const char *path, const PgColumnarObjStoreConfig *cfg,
 	JsonbContainer *root = &jb->root;
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1830,9 +1867,7 @@ PgColumnarIcebergDayMap(const char *path, const PgColumnarObjStoreConfig *cfg,
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -1931,7 +1966,6 @@ PgColumnarIcebergTemporalMap(const char *path, const PgColumnarObjStoreConfig *c
 	JsonbContainer *fieldsc = ice_current_schema_fields(root, path);
 	uint32		nf = JsonContainerSize(fieldsc);
 	int			trlen = (int) strlen(transform);
-	JsonbValue *dv;
 	JsonbValue *specs;
 	JsonbContainer *specfields = NULL;
 	uint32		nspec = 0;
@@ -1946,9 +1980,7 @@ PgColumnarIcebergTemporalMap(const char *path, const PgColumnarObjStoreConfig *c
 	*out_count = 0;
 	*out_specid = 0;
 
-	dv = ice_field(root, "default-spec-id");
-	if (dv != NULL)
-		(void) ice_num_int64(dv, &defspec);
+	defspec = ice_default_spec_id(root, path);
 	*out_specid = (int32) defspec;
 
 	specs = ice_field(root, "partition-specs");
@@ -2400,6 +2432,129 @@ typedef struct IcePosDel
 	int64		pos;
 	int64		seq;
 }			IcePosDel;
+
+/*
+ * The position-delete rows grouped by the data file they name (#1868). The scan
+ * builds this once, so each data file looks up its own rows instead of walking
+ * every row: the walk cost data files x position-delete rows.
+ *
+ * Two paths share a group exactly when ice_path_eq() calls them the same file,
+ * the test the walk applied to each row: file:///a and /a share one, s3a://b/k
+ * and s3://b/k share one, s3:///a and /a do not, and file://s3://b/k is not
+ * s3://b/k. The table is keyed by a 64-bit hash of ice_path_tail() with its s3
+ * flag as the seed, which is equal for any two paths ice_path_eq() calls equal.
+ * A bucket keeps one group per distinct file, each holding the path of its
+ * first row, and a lookup confirms a group with ice_path_eq(), so a hash
+ * collision never merges two data files' rows. Nothing is allocated per path.
+ */
+typedef struct IcePosGroup
+{
+	const char *path;			/* the first row's file_path */
+	List	   *rows;			/* IcePosDel *, in read order */
+}			IcePosGroup;
+
+typedef struct IcePosBucket
+{
+	uint64		hash;			/* the key; must be first */
+	List	   *groups;			/* IcePosGroup *, one per distinct file */
+}			IcePosBucket;
+
+static uint64
+ice_posdel_hash(const char *path)
+{
+	bool		s3;
+	const char *tail = ice_path_tail(path, &s3);
+
+	return hash_bytes_extended((const unsigned char *) tail, (int) strlen(tail),
+							   s3 ? 1 : 0);
+}
+
+/* the group in bucket b naming the same file as path, or NULL; *compared
+ * counts the groups compared, for the DEBUG1 line */
+static IcePosGroup *
+ice_posdel_group(IcePosBucket *b, const char *path, int *compared)
+{
+	ListCell   *lc;
+
+	foreach(lc, b->groups)
+	{
+		IcePosGroup *g = (IcePosGroup *) lfirst(lc);
+
+		(*compared)++;
+		if (ice_path_eq(g->path, path))
+			return g;
+	}
+	return NULL;
+}
+
+/* index posdels by data-file path, in the current memory context; NULL when
+ * there are no rows */
+static HTAB *
+ice_index_pos_deletes(List *posdels)
+{
+	HASHCTL		ctl;
+	HTAB	   *idx;
+	ListCell   *lc;
+	long		ngroups = 0;
+
+	if (posdels == NIL)
+		return NULL;
+	memset(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(uint64);
+	ctl.entrysize = sizeof(IcePosBucket);
+	ctl.hcxt = CurrentMemoryContext;
+	idx = hash_create("pgcolumnar iceberg_scan position deletes",
+					  list_length(posdels), &ctl,
+					  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	foreach(lc, posdels)
+	{
+		IcePosDel  *pd = (IcePosDel *) lfirst(lc);
+		uint64		h = ice_posdel_hash(pd->dpath);
+		IcePosBucket *b;
+		IcePosGroup *g = NULL;
+		bool		found;
+		int			unused = 0;
+
+		b = (IcePosBucket *) hash_search(idx, &h, HASH_ENTER, &found);
+		if (!found)
+			b->groups = NIL;
+		else
+			g = ice_posdel_group(b, pd->dpath, &unused);
+		if (g == NULL)
+		{
+			g = (IcePosGroup *) palloc(sizeof(IcePosGroup));
+			g->path = pd->dpath;
+			g->rows = NIL;
+			b->groups = lappend(b->groups, g);
+			ngroups++;
+		}
+		g->rows = lappend(g->rows, pd);
+	}
+	/* the index's size, for tests and diagnosis (#1868) */
+	elog(DEBUG1, "pgcolumnar iceberg_scan position-delete index: rows=%d paths=%ld",
+		 list_length(posdels), ngroups);
+	return idx;
+}
+
+/* the position-delete rows naming the data file at dp (as recorded, scheme
+ * and all); *compared counts the groups compared on the way, for the DEBUG1
+ * line */
+static List *
+ice_pos_deletes_for(HTAB *idx, const char *dp, int *compared)
+{
+	uint64		h;
+	IcePosBucket *b;
+	IcePosGroup *g;
+
+	if (idx == NULL)
+		return NIL;
+	h = ice_posdel_hash(dp);
+	b = (IcePosBucket *) hash_search(idx, &h, HASH_FIND, NULL);
+	if (b == NULL)
+		return NIL;
+	g = ice_posdel_group(b, dp, compared);
+	return g != NULL ? g->rows : NIL;
+}
 
 /* iceberg_scan collects the current snapshot's entries first (data and
  * position-delete files), then reads the data files applying the deletes. */
@@ -3320,6 +3475,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 	int		   *field_ids;
 	int			nfield;
 	List	   *posdels;
+	HTAB	   *posidx;
 	List	   *dvdels;
 	List	   *eqdels;
 	ListCell   *lc;
@@ -3361,6 +3517,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 	 * an unpartitioned spec, mappable column types -- while a delete no data
 	 * file is strictly older than is skipped as having no effect) */
 	posdels = ice_read_pos_deletes(&ctx);
+	posidx = ice_index_pos_deletes(posdels);
 	{
 		int64		fmtver = 0;
 		int64		min_data_seq = PG_INT64_MAX;
@@ -3430,6 +3587,9 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 		 * fold all existing position deletes into it. */
 		{
 			bool		dv_applies = false;
+			int			pd_visited = 0;
+			int			pd_applied = 0;
+			int			pd_compared = 0;
 
 			foreach(lc2, dvdels)
 			{
@@ -3459,15 +3619,17 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 			 * to data written in the same commit or earlier), so the
 			 * comparison is >=, not > -- an equal sequence number (a
 			 * single-commit upsert) still applies. Equality deletes use
-			 * strict < instead. Skipped entirely when a DV applies. */
+			 * strict < instead. Skipped entirely when a DV applies. Only the
+			 * rows naming this file are visited, through the index (#1868). */
 			if (!dv_applies)
-				foreach(lc2, posdels)
+				foreach(lc2, ice_pos_deletes_for(posidx, dp, &pd_compared))
 				{
 					IcePosDel  *pd = (IcePosDel *) lfirst(lc2);
 
-					if (pd->seq >= d->seq &&
-						ice_path_eq(pd->dpath, dp))
+					pd_visited++;
+					if (pd->seq >= d->seq)
 					{
+						pd_applied++;
 						if (nskip == cap)
 						{
 							cap = cap ? cap * 2 : 16;
@@ -3478,6 +3640,9 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 						skip[nskip++] = (uint64) pd->pos;
 					}
 				}
+			/* the lookup's cost, for tests and diagnosis (#1868) */
+			elog(DEBUG1, "pgcolumnar iceberg_scan position deletes: compared=%d visited=%d applied=%d",
+				 pd_compared, pd_visited, pd_applied);
 		}
 
 		/* equality deletes: STRICTLY newer than the data file only (spec rule
@@ -3572,6 +3737,8 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 		list_free(elig);
 	}
 
+	if (posidx != NULL)
+		hash_destroy(posidx);
 	MemoryContextDelete(ctx.filectx);
 	ExecDropSingleTupleTableSlot(ctx.slot);
 	return pruned;

@@ -186,23 +186,26 @@ it as narrow as the deployment allows.
   - `169.254.0.0/16` and `fe80::/10`, the link-local ranges;
   - `fd00:ec2::/32`, which holds AWS's IPv6 metadata address `fd00:ec2::254`;
   - `fd20:ce::254`, Google Compute Engine's IPv6 metadata address;
-  - `169.254.0.0/16` carried inside an IPv6 address: IPv4-mapped (`::ffff:0:0/96`),
-    IPv4-compatible (`::/96`), or behind a NAT64 prefix (`64:ff9b::/96`,
-    `64:ff9b:1::/48`).
+  - `100.100.100.200`, Alibaba Cloud's metadata address. The rest of
+    `100.64.0.0/10` is carrier-grade NAT, so the module does not refuse it;
+  - `169.254.0.0/16` or `100.100.100.200` carried inside an IPv6 address:
+    IPv4-mapped (`::ffff:0:0/96`), IPv4-compatible (`::/96`), or behind a NAT64
+    prefix (`64:ff9b::/96`, `64:ff9b:1::/48`).
 
   You cannot rely on the allow-list alone to block them, and you do not need to.
 
-  The module refuses only these ranges. It does not refuse a metadata address
-  outside them, such as Alibaba Cloud's `100.100.100.200`, or `169.254.169.254`
-  behind a NAT64 prefix your network chose itself. Do not list a host that can
-  resolve to one.
+  The module refuses only these addresses. It does not refuse `169.254.169.254`
+  or `100.100.100.200` behind a NAT64 prefix your network chose itself, or any
+  other metadata address. Do not list a host that can resolve to one. See
+  [Object storage address refusal](limitations.md#object-storage-address-refusal).
 
   The local-use prefix `64:ff9b:1::/48` can be cut at /48, /56, /64 or /96, and
   each cut puts the IPv4 address at a different place. The module cannot tell
   which cut your network uses, so it checks all four places. As a result, it also
   refuses some ordinary IPv4 addresses behind that prefix. For example, behind a
   /48 cut, `10.169.254.5` puts 169 and 254 where the /56 cut puts them, so the
-  module refuses it with SQLSTATE 42501. The well-known prefix `64:ff9b::/96` has
+  module refuses it with SQLSTATE 42501. The same applies to `100.100.100.200`
+  at each of the four places. The well-known prefix `64:ff9b::/96` has
   only one layout and no such over-refusal.
 - **Prefer per-role credentials over ambient environment keys.** The object-storage
   foreign-data wrapper takes `access_key_id`, `secret_access_key`, `session_token`,

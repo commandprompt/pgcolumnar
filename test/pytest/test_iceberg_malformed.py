@@ -11,7 +11,8 @@ empty file passed on its SQLSTATE alone with the regular-file guard removed. A F
 read that is still running after 5s is a HANG; its write end is then opened, so the
 backend is released. A manifest enum value outside the spec (data_file.content,
 manifest_entry.status, manifest_file.content) is refused in the scan and the lister,
-naming the value, against a two-file control that reads ten rows (#1823).
+naming the value, against a two-file control that reads ten rows (#1823). So is a
+manifest list's partition_spec_id outside int32, which read as spec 0 (#1878).
 
 A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED. A fresh connection answers
 again after crash recovery, so every survival check also reads the server log's count
@@ -61,6 +62,11 @@ MF5 = (r'manifest ".*/dm\.avro" has invalid content 5$', "invalid manifest conte
 OLD4G = (r'manifest entry has invalid content 4294967296$', "invalid content 4294967296")
 STATUS4G = (r'manifest entry has invalid status 4294967297$', "invalid status 4294967297")
 MF4G = (r'manifest ".*/dm\.avro" has invalid content 4294967296$', "invalid manifest content 4294967296")
+SID4G = (r'snapshot 4242 in ".*" has a schema-id out of range: 4294967296$', "schema-id 4294967296")
+SIDNEG = (r'snapshot 4242 in ".*" has a schema-id out of range: -2147483649$', "schema-id -2147483649")
+DS4G = (r'".*" has a default-spec-id out of range: 4294967296$', "default-spec-id 4294967296")
+DSNEG = (r'".*" has a default-spec-id out of range: -2147483649$', "default-spec-id -2147483649")
+SPEC4G = (r'manifest ".*/dm\.avro" has invalid partition_spec_id 4294967296$', "invalid partition_spec_id 4294967296")
 
 
 def _message(exc):
@@ -92,12 +98,15 @@ def _reading(exc, want):
 
 
 def _refusal(dsn, sql, want):
+    """-> the refusal reading; with no error, "no error, read: <rows>" as the
+    shell prints them, so a failure shows the value read."""
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
-            conn.execute(sql).fetchall()
+            rows = conn.execute(sql).fetchall()
     except psycopg.Error as exc:
         return _reading(exc, want)
-    return "no error"
+    cells = " ".join("|".join("" if v is None else str(v) for v in row) for row in rows)
+    return f"no error, read: {cells}" if cells else "no error"
 
 
 def _refusal_or_hang(dsn, sql, fifo):
@@ -306,7 +315,48 @@ def imf(pgc_cluster, server_dir):
         r["old4g scan"] = _refusal(dsn, scan("content4g_old"), OLD4G)
         r["status4g scan"] = _refusal(dsn, scan("status4g_old"), STATUS4G)
         r["mf4g scan"] = _refusal(dsn, scan("mfcontent4g"), MF4G)
+        # #1878: partition_spec_id had the same cast, so 2^32 read as spec 0
+        r["spec4g scan"] = _refusal(dsn, scan("specid4g"), SPEC4G)
+        r["spec4g list"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_manifest_list("
+                                         f"'{dest}/specid4g/db/t/metadata/ml.avro')", SPEC4G)
         r["enum up"] = alive(b)
+        # #1853: enum_ctl's metadata with one int32 id out of range
+        ids = dest / "enum_ctl" / "db" / "t" / "metadata"
+
+        def ids_md(tag, key, val):
+            m = json.loads((ids / "t.metadata.json").read_text())
+            m["partition-specs"] = [{"spec-id": 0, "fields": []}]
+            m["default-spec-id"] = 0
+            if val is None:
+                del m[key]
+            elif key == "schema-id":
+                m["snapshots"][0]["schema-id"] = val
+            else:
+                m[key] = val
+            out = ids / f"ids_{tag}.metadata.json"
+            out.write_text(json.dumps(m))
+            out.chmod(0o666)
+            return out
+
+        snap = lambda f: f"SELECT schema_id FROM pgcolumnar.iceberg_current_snapshot('{f}')"  # noqa: E731
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE SERVER ice_ids FOREIGN DATA WRAPPER pgcolumnar_iceberg")
+            for tag, val in (("ds0", 0), ("ds4g", 4294967296), ("dsneg", -2147483649),
+                             ("dsmax", 2147483647), ("dsnone", None)):
+                f = ids_md(tag, "default-spec-id", val)
+                c.execute(f"CREATE FOREIGN TABLE ids_{tag} (id bigint, region text, amount int) "
+                          f"SERVER ice_ids OPTIONS (metadata_path '{f}')")
+        r["sid max"] = _value(dsn, snap(ids_md("sidmax", "schema-id", 2147483647)))
+        b = crashes()
+        r["sid 4g"] = _refusal(dsn, snap(ids_md("sid4g", "schema-id", 4294967296)), SID4G)
+        r["sid neg"] = _refusal(dsn, snap(ids_md("sidneg", "schema-id", -2147483649)), SIDNEG)
+        r["ds 0"] = _value(dsn, "SELECT count(*) FROM ids_ds0")
+        r["ds 4g"] = _refusal(dsn, "SELECT count(*) FROM ids_ds4g", DS4G)
+        r["ds neg"] = _refusal(dsn, "SELECT count(*) FROM ids_dsneg", DSNEG)
+        r["sid min"] = _value(dsn, snap(ids_md("sidmin", "schema-id", -2147483648)))
+        r["ds max"] = _value(dsn, "SELECT count(*) FROM ids_dsmax")
+        r["ds none"] = _value(dsn, "SELECT count(*) FROM ids_dsnone")
+        r["ids up"] = alive(b)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -704,7 +754,85 @@ def test_manifest_content_2_32_is_refused_not_wrapped(imf, expect):
     expect.text(imf["mf4g scan"], "XX001 (invalid manifest content 4294967296)", "manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not wrapped to 0")
 
 
+def test_partition_spec_id_2_32_is_refused_by_the_scan(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["spec4g scan"], "XX001 (invalid partition_spec_id 4294967296)",
+                "manifest_file.partition_spec_id 4294967296 is refused by iceberg_scan (XX001), not read as spec 0")
+
+
+def test_read_manifest_list_refuses_partition_spec_id_2_32(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["spec4g list"], "XX001 (invalid partition_spec_id 4294967296)",
+                "read_manifest_list refuses partition_spec_id 4294967296 (XX001), not shown as 0")
+
+
 def test_the_backend_survives_the_enum_refusals(imf, expect):
     if _declined(imf, expect):
         return
     expect.text(imf["enum up"], "1", "backend still up after the enum refusals")
+
+
+def test_a_snapshot_schema_id_of_int32_max_reads(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["sid max"], "2147483647", "control: a snapshot schema-id of 2147483647 reads as 2147483647")
+
+
+def test_a_snapshot_schema_id_of_2_32_is_refused_not_truncated(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["sid 4g"], "XX001 (schema-id 4294967296)",
+                "a snapshot schema-id of 4294967296 is refused by iceberg_current_snapshot (XX001), not truncated to 0")
+
+
+def test_a_snapshot_schema_id_below_int32_is_refused_not_truncated(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["sid neg"], "XX001 (schema-id -2147483649)",
+                "a snapshot schema-id of -2147483649 is refused by iceberg_current_snapshot (XX001), not truncated to 2147483647")
+
+
+def test_a_foreign_table_with_default_spec_id_0_scans(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["ds 0"], "10", "control: a foreign table with default-spec-id 0 scans ten rows")
+
+
+def test_a_default_spec_id_of_2_32_is_refused_not_truncated(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["ds 4g"], "XX001 (default-spec-id 4294967296)",
+                "a default-spec-id of 4294967296 is refused by the Iceberg foreign table scan (XX001), not truncated to 0")
+
+
+def test_a_default_spec_id_below_int32_is_refused_not_truncated(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["ds neg"], "XX001 (default-spec-id -2147483649)",
+                "a default-spec-id of -2147483649 is refused by the Iceberg foreign table scan (XX001), not truncated to 2147483647")
+
+
+def test_a_snapshot_schema_id_of_int32_min_reads(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["sid min"], "-2147483648", "control: a snapshot schema-id of -2147483648 reads as -2147483648")
+
+
+def test_a_foreign_table_with_default_spec_id_int32_max_scans(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["ds max"], "10", "control: a foreign table with default-spec-id 2147483647 scans ten rows")
+
+
+def test_a_foreign_table_with_no_default_spec_id_scans(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["ds none"], "10", "control: a foreign table with no default-spec-id scans ten rows")
+
+
+def test_the_backend_survives_the_int32_id_refusals(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["ids up"], "1", "backend still up after the int32 id refusals")

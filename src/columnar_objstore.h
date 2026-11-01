@@ -33,7 +33,7 @@
 
 #include "postgres.h"
 
-#define PGCOLUMNAR_OBJSTORE_ABI 7
+#define PGCOLUMNAR_OBJSTORE_ABI 8
 
 /* An open remote object (read) / upload (write). Module owns both. */
 typedef struct PgColumnarObjHandle PgColumnarObjHandle;
@@ -69,6 +69,9 @@ typedef struct PgColumnarObjStoreConfig
 	const char *secret;
 	const char *token;			/* optional session token */
 	bool		allow_ambient;	/* may fall back to the environment */
+	bool		vended;			/* the triple came from a REST catalog's
+								 * loadTable reply, not a user mapping (ABI 8,
+								 * #1796); only the 403 hint reads it */
 
 	/*
 	 * Per-object credentials (#1820), or NULL. pgColumnar-side only: every
@@ -192,9 +195,10 @@ typedef struct PgColumnarObjStoreApi
 	 * of. The parallel export's dispatcher finds those by listing.
 	 *
 	 * list_uploads lists the uploads in progress under `url`, an
-	 * s3://bucket/prefix (ListMultipartUploads, paged by the module). It
-	 * returns a palloc'd array of `*nuploads` keys, each a full s3://bucket/key
-	 * URL, and sets `*upload_ids` to a parallel array of upload ids, both in
+	 * s3://bucket/prefix or gs://bucket/prefix (ListMultipartUploads, paged by
+	 * the module; gs:// since #1854). It returns a palloc'd array of
+	 * `*nuploads` keys, each a full bucket/key URL in the lowercase scheme of
+	 * `url`, and sets `*upload_ids` to a parallel array of upload ids, both in
 	 * the current memory context. It raises on a transport or parse failure.
 	 *
 	 * abort_upload aborts one upload (AbortMultipartUpload, DELETE ?uploadId=)

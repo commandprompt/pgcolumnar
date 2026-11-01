@@ -993,8 +993,8 @@ little-endian hosts. In each function, `path`
 can be one of three things. It can be a single file. It can be a directory, and
 then the function reads all the `*.parquet` files below it at any depth as one
 relation, in sorted order. It can also be a glob pattern. A local `path` can be
-any of these; an object-storage URL must be a single object key. See
-[Object storage](#object-storage).
+any of these. An object-storage URL can be an exact key, and an `s3://` URL can
+also be a prefix or a pattern. See [Object storage](#object-storage).
 
 The readers return each value as the declared column type, including its type
 modifier. They apply it as PostgreSQL's input functions do. A `numeric(p,s)`
@@ -1107,8 +1107,9 @@ SELECT * FROM pgcolumnar.parquet_schema('/data/events.parquet');
 ### pgcolumnar.read_avro_manifest(path text) returns table(status int, content int, file_path text, file_format text, record_count bigint, file_size_in_bytes bigint, partition text, sequence_number bigint)
 
 Decodes an Apache Iceberg Avro manifest file and reports its data-file entries.
-Each row is one entry: the file path, format, row count, byte size, the
-partition rendered as `name=value`, and the entry's data sequence number. The
+Each row is one entry: the file path, format, row count, byte size, partition,
+and the entry's data sequence number. The partition is rendered as `name=value`
+(see [How a partition value is shown](#how-a-partition-value-is-shown)). The
 sequence number is NULL when the entry inherits it from the manifest. That is
 the usual case for a freshly written manifest. It is the ordering key for
 reading tables with deletes. A position delete applies to data files with a
@@ -1169,7 +1170,8 @@ SELECT snapshot_id, operation, manifest_list
 Lists the live data files of an Apache Iceberg table at its current snapshot.
 It resolves the current snapshot from `metadata.json`, reads that snapshot's
 manifest list, then each manifest. It returns one row per data-file entry: the
-file path, format, row count, and partition rendered as `name=value`. The
+file path, format, row count, and partition rendered as `name=value` (see
+[How a partition value is shown](#how-a-partition-value-is-shown)). The
 caller needs the `pg_read_server_files` role, which superusers hold. It returns
 no rows when the table has no current snapshot.
 
@@ -1182,10 +1184,35 @@ A data file that the current snapshot removed is not live, so it is skipped. A
 copy-on-write delete or a filtered overwrite records the file it replaced this
 way, as a manifest entry with status 2 (DELETED).
 
-Delete files are refused, not ignored. A snapshot that carries any delete
-manifest or delete file raises an error here. It does not return rows the table
-says are gone. To read a table that uses deletes, use `iceberg_scan`, which
-applies position, equality, and deletion-vector deletes.
+Delete files are refused, not ignored. A snapshot that carries a live delete
+file raises an error here. It does not return rows the table says are gone. To
+read a table that uses deletes, use `iceberg_scan`, which applies position,
+equality, and deletion-vector deletes. A delete file that the current snapshot
+removed is not live, so it is skipped too. A rewrite or compaction that removes
+every old delete file leaves a delete manifest that holds only such entries
+(#1829); that table lists normally. A delete manifest that holds a live
+data-file entry is corrupt, and is refused with SQLSTATE XX001.
+
+#### How a partition value is shown
+
+`iceberg_data_files` and `read_avro_manifest` show the partition as text. Each
+field is `name=value`, and fields are joined by commas. The text is always valid
+in the database encoding, and each value can be read back exactly:
+
+| Partition value | Shown as | Example |
+|---|---|---|
+| integer, long, and the `date`, `time`, `timestamp`, `bucket`, `truncate` and temporal transform results | the stored integer (days, hours or microseconds for the temporal ones) | `id=7`, `ts_day=19783` |
+| boolean | `true` or `false` | `flag=true` |
+| decimal | the exact value, with the column's scale | `price=-0.50` |
+| float, double | the shortest text that reads back as the same value | `x=0.1` |
+| binary, fixed, uuid | `\x` and lowercase hex, as `bytea` prints it | `b=\xfffe` |
+| string | the value, with `%`, `,`, `=`, control characters and DEL written as `%` and two hex digits | `s=a%2Cb%3Dc` |
+| NULL | the field name alone, with no `=` | `s` |
+
+An empty string is `s=`, so it differs from NULL. In a database whose encoding is
+not UTF8 or SQL_ASCII, a non-ASCII string is also percent-encoded, byte by byte
+of its UTF-8 form (`city=caf%C3%A9`). So is a string that is not valid UTF-8.
+Field names follow the string rule.
 
 ```sql
 SELECT file_path, record_count, partition
@@ -1602,7 +1629,8 @@ without it reads and writes local files as before, and a remote URL reports that
 the module is required.
 
 A remote path is read as an exact key, a prefix, or a pattern. An `s3://` URL
-that names an object reads that one object, with no listing. The read starts
+that names an object reads that one object, with no listing. A key that holds
+`*`, `?` or `[` is the exception described below. The read starts
 with one HEAD, then fetches the footer and the column data with ranged GETs. When
 the HEAD returns a strong ETag of at most 79 characters, every GET sends that
 ETag in an `If-Match` header. The 79 includes the ETag's two quote marks. If
@@ -1622,6 +1650,18 @@ only when the pattern spells the dot, such as `.*.parquet`. The scheme is
 compared without case, so `S3://` reads as `s3://` does. Hive
 `partition_columns` work over a remote prefix. A pattern or a prefix requires the
 object-store module, since only it can issue the listing.
+
+Only the key of an `s3://` URL, the part after the bucket, can be a pattern. The
+scheme and the bucket never are. An `http://` or `https://` URL is always one
+object, so a `?` in it starts a query string, which is sent to the server. A key
+may itself contain `*`, `?` or `[`, because S3 allows them. When an `s3://` URL
+holds one of these characters, the reader lists the prefix and first looks for
+an object with exactly that key. If one exists, the reader reads that object
+alone, whatever its suffix. Only when none exists is the key matched as a
+pattern. A backslash before a character makes the pattern match that character
+literally, so `s3://bucket/a/q\?.parquet` matches only `a/q?.parquet`. A read
+from a host written as an IPv6 literal in brackets, such as
+`http://[::1]:9000/`, is refused with SQLSTATE 0A000.
 
 On write, `parallel_export_parquet` treats an `s3://` URL as a prefix, and
 refuses every other remote URL before any worker starts. It writes one
@@ -1711,9 +1751,10 @@ SELECT pg_reload_conf();
 
 Each entry is a host or a `host:port`. A request whose endpoint matches no entry
 is refused before any connection is made. The link-local ranges and the known
-cloud instance-metadata addresses, such as `169.254.169.254`, are refused
-unconditionally, whether or not they appear in the list. For every refused range,
-see [Run object storage safely](best-practices.md#run-object-storage-safely). The
+cloud instance-metadata addresses are refused unconditionally, whether or not
+they appear in the list. These include `169.254.169.254` and Alibaba Cloud's
+`100.100.100.200`. For every refused range, see
+[Run object storage safely](best-practices.md#run-object-storage-safely). The
 setting is superuser-only, so a role cannot widen its own reach.
 
 ### Exporting to object storage
@@ -1729,8 +1770,24 @@ This cleanup holds when you cancel or terminate the export while it waits for th
 store to start the upload. The export then has no id for that upload. It lists
 the open uploads for its own key and aborts each one, within 10 seconds. Uploads
 at other keys stay open. An upload that another writer started at the same key is
-aborted too. This listing works for `s3://` only. A `gs://` export cancelled at
-that moment leaves the upload open (#1854).
+aborted too. This works for `s3://` and `gs://` URLs.
+
+A multipart upload holds at most 10000 parts of `pgcolumnar.objstore_part_size`
+bytes each, 8 MiB by default. An export that needs more parts fails with SQLSTATE
+54000 before it sends part 10001, and aborts the upload. Raise the part size for
+an object over about 78 GiB. AWS S3, Google Cloud Storage and Cloudflare R2
+refuse parts under 5 MiB, except the last. To those stores, an export with a
+smaller part size fails with SQLSTATE 22023 when it starts a multipart upload,
+before it sends a part. A small object that fits in one part still goes in one
+request. Other stores are not checked.
+
+The export reads each reply from the store by the HTTP/1.1 framing rules. A reply
+with neither a `Content-Length` nor chunked framing ends when the store closes
+the connection; a 204 reply has no body. Some stores send such a reply to a
+write and keep the connection open. The export then waits 60 seconds and fails
+with "timeout reading". A chunked or close-delimited write reply over 1 MiB fails
+the export with "response exceeded". This holds even when the store has already
+written the object.
 
 The last request commits the object. It is the single request of a small object,
 or the request that completes a multipart upload. Once the store has that whole
