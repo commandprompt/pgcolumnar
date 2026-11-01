@@ -1712,4 +1712,8 @@ guard_tests 860
 # cluster_tests 5281 unchanged for #1915's second review fix in test_harness_isolation.py: the set -e
 # test that sourced lib.sh is gone (shell-only, declared in test_compare_to_bash.py) and a flock -F
 # own-lock test takes its place; by collection: 6065 tests collected, less guard_tests 858.
-cluster_tests 5281
+# cluster_tests 5281 -> 5287 for #1932's six tests in test_arrow_import.py (import_arrow refuses a list of
+# lists, a list of structs or of maps, a large list and a plain int64 by type, 42804 naming the column; a
+# list<int64> and a map still import; an offset past the value buffer is still XX001), by collection: 6147
+# tests collected, less guard_tests 860.
+cluster_tests 5287

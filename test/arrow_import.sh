@@ -1032,4 +1032,87 @@ psql_run "SELECT pgcolumnar.export_arrow('ia_ctl_src', '$PGC_WORKDIR/s3a://ctl.a
 check "control: import_arrow still reads a local path that holds s3a:// past its start (#1918)" \
 	"$(q "SELECT pgcolumnar.import_arrow('ia_rem', '$PGC_WORKDIR/s3a://ctl.arrows')")" 300
 
+# --- #1932: a nested Arrow type the target column cannot hold -----------------
+# A list of lists into bigint[] was refused with XX001 "value buffer too small
+# for the row count", which says the file is damaged when it is a valid file of
+# the wrong type: the schema walk compared a node's tag only with temporal and
+# numeric kinds, so the inner List tag under the bigint element was ignored and
+# the batch was read with the wrong buffer layout. A large list into bigint[]
+# was worse: it IMPORTED, as {} and {1,2} for [[1,2],[3]], because its 64-bit
+# offsets were read as 32-bit ones. Each is now refused with 42804, naming the
+# column, as import_parquet refuses the same shape (#1917). The controls are a
+# list<int64> file and a map file that must still import, and a list<int64>
+# file whose last offset runs past its value buffer, which is genuinely damaged
+# and must still be XX001: the refusal is by type, not a weaker bounds check.
+if [ "$have_pyarrow" = 1 ]; then
+	echo "-- #1932: nested types the target cannot hold"
+	_ai_nest_hits="$(python3 - "$PGC_WORKDIR" <<'PY'
+import os, struct, sys, pyarrow as pa, pyarrow.ipc as ipc
+out = sys.argv[1]
+def write(name, arr):
+    t = pa.table({'l': arr, 'n': pa.array([1, 2], pa.int32())})
+    with ipc.new_stream(pa.OSFile(os.path.join(out, name + '.arrows'), 'wb'), t.schema) as w:
+        w.write_table(t)
+write('nl_lol', pa.array([[[1], [2, 3]], [[4]]], pa.list_(pa.list_(pa.int64()))))
+write('nl_lstruct', pa.array([[{'a': 1}, {'a': 2}], [{'a': 3}]], pa.list_(pa.struct([('a', pa.int64())]))))
+write('nl_lmap', pa.array([[[('k', 1)]], [[('j', 2), ('i', 3)]]], pa.list_(pa.map_(pa.string(), pa.int64()))))
+write('nl_large', pa.array([[1, 2], [3]], pa.large_list(pa.int64())))
+write('nl_int', pa.array([5, 6], pa.int64()))
+write('nl_list', pa.array([[1, 2], [3]], pa.list_(pa.int64())))
+write('nl_map', pa.array([[('k', 1)], [('j', 2), ('i', 3)]], pa.map_(pa.string(), pa.int64())))
+# nl_list with its last list offset raised from 3 to 1000: the offsets stay
+# non-decreasing, but 1000 elements do not fit the 24-byte value buffer. The
+# number of places the offsets [0, 2, 3] were found leads the reading, so a
+# builder that patched the wrong bytes, or none, fails the check.
+d = open(os.path.join(out, 'nl_list.arrows'), 'rb').read()
+pat = struct.pack('<3i', 0, 2, 3)
+hits = d.count(pat)
+i = d.find(pat)
+open(os.path.join(out, 'nl_trunc.arrows'), 'wb').write(d[:i] + struct.pack('<3i', 0, 2, 1000) + d[i + 12:])
+print(hits)
+PY
+)"
+	chmod 644 "$PGC_WORKDIR"/nl_*.arrows
+	psql_run "CREATE TYPE nl_kv AS (k text, v bigint);"
+	nl_import() {	# nl_import FIXTURE PGTYPE [TABLE] -> "<import result or SQLSTATE message>|<rows stored>"
+		local t="${3:-nl_t_$1}"
+		psql_run "CREATE TABLE $t (l $2, n int) USING pgcolumnar;"
+		printf '%s|%s\n' "$(ai_outcome "SELECT pgcolumnar.import_arrow('$t', '$PGC_WORKDIR/$1.arrows')")" \
+			"$(q "SELECT count(*) FROM $t;")"
+	}
+	check "import_arrow refuses a list of lists for a bigint[] column with 42804, naming the column (#1932)" \
+		"$(nl_import nl_lol 'bigint[]')" \
+		'42804 Arrow column for array "l" is nested 2 lists deep, but pgcolumnar.import_arrow reads one list level into an array|0'
+	check "import_arrow refuses a list of structs and a list of maps for a bigint[] column with 42804 (#1932)" \
+		"$(nl_import nl_lstruct 'bigint[]') / $(nl_import nl_lmap 'bigint[]')" \
+		'42804 Arrow column "l" holds a struct, which pgcolumnar.import_arrow cannot read into type bigint|0 / 42804 Arrow column "l" holds a map, which pgcolumnar.import_arrow cannot read into type bigint|0'
+	check "import_arrow refuses a large list for a bigint[] or a bigint column with 42804, not read as wrong arrays (#1932)" \
+		"$(nl_import nl_large 'bigint[]') / $(nl_import nl_large bigint nl_t_nl_large_scalar)" \
+		'42804 Arrow column "l" holds a large list, which pgcolumnar.import_arrow cannot read into type bigint[]|0 / 42804 Arrow column "l" holds a large list, which pgcolumnar.import_arrow cannot read into type bigint|0'
+	check "import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)" \
+		"$(nl_import nl_int 'bigint[]')" \
+		'42804 Arrow column "l" holds an integer, which pgcolumnar.import_arrow cannot read into type bigint[]|0'
+	check "control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)" \
+		"$(nl_import nl_list 'bigint[]')|$(q "SELECT sum(e) FROM nl_t_nl_list, unnest(l) e;")" "2|2|6"
+	check "control: a map file still imports into an array of a composite (#1932)" \
+		"$(nl_import nl_map 'nl_kv[]')|$(q "SELECT string_agg(l::text, ';' ORDER BY n) FROM nl_t_nl_map;")" \
+		'2|2|{"(k,1)"};{"(j,2)","(i,3)"}'
+	check "a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)" \
+		"$_ai_nest_hits|$(nl_import nl_trunc 'bigint[]')" \
+		"1|XX001 columnar: malformed Arrow IPC file: value buffer too small for the row count|0"
+else
+	for _ai_nest in \
+			"import_arrow refuses a list of lists for a bigint[] column with 42804, naming the column (#1932)" \
+			"import_arrow refuses a list of structs and a list of maps for a bigint[] column with 42804 (#1932)" \
+			"import_arrow refuses a large list for a bigint[] or a bigint column with 42804, not read as wrong arrays (#1932)" \
+			"import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)" \
+			"control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)" \
+			"control: a map file still imports into an array of a composite (#1932)" \
+			"a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)"; do
+		check_skip "$_ai_nest" \
+			"SKIP  $_ai_nest (pyarrow not available)" \
+			"pyarrow not available"
+	done
+fi
+
 pgc_summary

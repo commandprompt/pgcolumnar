@@ -648,3 +648,139 @@ def test_a_local_path_holding_s3a_is_still_read(pgc_conn, server_dir, expect):
         got = query_error(f"{e.sqlstate} {e.diag.message_primary}")
     expect.num(got, 300,
                "control: import_arrow still reads a local path that holds s3a:// past its start (#1918)")
+
+
+def _nested_fixtures(pa, out):
+    """#1932's files, as the shell writes them: a column `l` of each nested shape
+    beside an int32 `n`, plus nl_list with its last list offset raised from 3 to
+    1000. -> how many times the offsets [0, 2, 3] occur in nl_list, which leads the
+    truncation check's reading, so a builder that patched the wrong bytes fails it."""
+    def write(name, arr):
+        t = pa.table({"l": arr, "n": pa.array([1, 2], pa.int32())})
+        _write_stream(pa, out / f"{name}.arrows", t)
+
+    write("nl_lol", pa.array([[[1], [2, 3]], [[4]]], pa.list_(pa.list_(pa.int64()))))
+    write("nl_lstruct", pa.array([[{"a": 1}, {"a": 2}], [{"a": 3}]], pa.list_(pa.struct([("a", pa.int64())]))))
+    write("nl_lmap", pa.array([[[("k", 1)]], [[("j", 2), ("i", 3)]]], pa.list_(pa.map_(pa.string(), pa.int64()))))
+    write("nl_large", pa.array([[1, 2], [3]], pa.large_list(pa.int64())))
+    write("nl_int", pa.array([5, 6], pa.int64()))
+    write("nl_list", pa.array([[1, 2], [3]], pa.list_(pa.int64())))
+    write("nl_map", pa.array([[("k", 1)], [("j", 2), ("i", 3)]], pa.map_(pa.string(), pa.int64())))
+    d = (out / "nl_list.arrows").read_bytes()
+    pat = struct.pack("<3i", 0, 2, 3)
+    i = d.find(pat)
+    (out / "nl_trunc.arrows").write_bytes(d[:i] + struct.pack("<3i", 0, 2, 1000) + d[i + 12:])
+    for f in out.glob("nl_*.arrows"):
+        f.chmod(0o644)
+    return d.count(pat)
+
+
+def _nl_import(conn, out, fixture, pgtype, table=None):
+    """-> "<what import_arrow returned, or 'SQLSTATE message'>|<rows stored>", as the
+    shell's nl_import."""
+    t = table or f"nl_t_{fixture}"
+    _run(conn, f"CREATE TABLE {t} (l {pgtype}, n int) USING pgcolumnar")
+    got = _outcome(conn, f"SELECT pgcolumnar.import_arrow('{t}', '{out / (fixture + '.arrows')}')")
+    return f"{got}|{_one(conn, f'SELECT count(*) FROM {t}')}"
+
+
+def _nested_pa(expect, name, out):
+    """-> pyarrow, with #1932's fixtures written to `out`, or None after declining by
+    `name` because pyarrow is absent."""
+    pa = expect.require_module("pyarrow", name=name)
+    if pa is not None:
+        _nested_fixtures(pa, out)
+    return pa
+
+
+# #1932: a list of lists into bigint[] was refused with XX001 ("value buffer too
+# small for the row count"), as though the file were damaged. The schema walk never
+# compared a List or Struct tag with the node the target gave it, so the batch was
+# read with the wrong buffer layout. A large list was worse: it imported, as {} and
+# {1,2} for [[1,2],[3]]. Each is now refused with 42804, naming the column, as
+# import_parquet refuses a list of lists (#1917). One test per check, so each one's
+# red shows on its own.
+
+def test_a_list_of_lists_is_refused_by_type_naming_the_column(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses a list of lists for a bigint[] column with 42804, naming the column (#1932)"
+    if _nested_pa(expect, name, server_dir) is None:
+        return
+    expect.text(_nl_import(pgc_conn, server_dir, "nl_lol", "bigint[]"),
+                '42804 Arrow column for array "l" is nested 2 lists deep, but pgcolumnar.import_arrow reads'
+                " one list level into an array|0",
+                "import_arrow refuses a list of lists for a bigint[] column with 42804, naming the column (#1932)")
+
+
+def test_a_list_of_structs_or_of_maps_is_refused_by_type(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses a list of structs and a list of maps for a bigint[] column with 42804 (#1932)"
+    if _nested_pa(expect, name, server_dir) is None:
+        return
+    expect.text(_nl_import(pgc_conn, server_dir, "nl_lstruct", "bigint[]") + " / "
+                + _nl_import(pgc_conn, server_dir, "nl_lmap", "bigint[]"),
+                '42804 Arrow column "l" holds a struct, which pgcolumnar.import_arrow cannot read into type bigint|0'
+                ' / 42804 Arrow column "l" holds a map, which pgcolumnar.import_arrow cannot read into type bigint|0',
+                "import_arrow refuses a list of structs and a list of maps for a bigint[] column with 42804 (#1932)")
+
+
+def test_a_large_list_is_refused_by_type(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a large list for a bigint[] or a bigint column with 42804, not read as wrong"
+            " arrays (#1932)")
+    if _nested_pa(expect, name, server_dir) is None:
+        return
+    expect.text(_nl_import(pgc_conn, server_dir, "nl_large", "bigint[]") + " / "
+                + _nl_import(pgc_conn, server_dir, "nl_large", "bigint", "nl_t_nl_large_scalar"),
+                '42804 Arrow column "l" holds a large list, which pgcolumnar.import_arrow cannot read into type'
+                ' bigint[]|0 / 42804 Arrow column "l" holds a large list, which pgcolumnar.import_arrow cannot read'
+                " into type bigint|0",
+                "import_arrow refuses a large list for a bigint[] or a bigint column with 42804, not read as wrong"
+                " arrays (#1932)")
+
+
+def test_a_plain_int64_is_refused_by_type_for_an_array_column(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)"
+    if _nested_pa(expect, name, server_dir) is None:
+        return
+    expect.text(_nl_import(pgc_conn, server_dir, "nl_int", "bigint[]"),
+                '42804 Arrow column "l" holds an integer, which pgcolumnar.import_arrow cannot read into type'
+                " bigint[]|0",
+                "import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)")
+
+
+def test_a_list_or_map_the_target_can_hold_still_imports(pgc_conn, server_dir, expect):
+    """#1932's controls: the refusal is by shape, so a list<int64> into bigint[] and a
+    map into an array of a (text, bigint) composite, whose buffers a list of structs
+    shares, must still import."""
+    pa = expect.require_module(
+        "pyarrow",
+        name="control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)")
+    if pa is None:
+        return
+    conn = pgc_conn
+    _nested_fixtures(pa, server_dir)
+    expect.text(_nl_import(conn, server_dir, "nl_list", "bigint[]")
+                + f"|{_one(conn, 'SELECT sum(e) FROM nl_t_nl_list, unnest(l) e')}",
+                "2|2|6",
+                "control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)")
+    _run(conn, "CREATE TYPE nl_kv AS (k text, v bigint)")
+    expect.text(_nl_import(conn, server_dir, "nl_map", "nl_kv[]")
+                + f"|{_one(conn, 'SELECT string_agg(l::text, chr(59) ORDER BY n) FROM nl_t_nl_map')}",
+                '2|2|{"(k,1)"};{"(j,2)","(i,3)"}',
+                "control: a map file still imports into an array of a composite (#1932)")
+
+
+def test_a_list_whose_offset_runs_past_its_values_is_still_malformed(pgc_conn, server_dir, expect):
+    """#1932's bounds control: the type refusal must not stand in for the bounds check.
+    A list<int64> file whose last offset (1000) runs past its 24-byte value buffer is
+    damaged, and must still be refused with XX001."""
+    pa = expect.require_module(
+        "pyarrow",
+        name="a list<int64> file whose last offset runs past its value buffer is still refused as malformed"
+             " with XX001 (#1932)")
+    if pa is None:
+        return
+    conn = pgc_conn
+    hits = _nested_fixtures(pa, server_dir)
+    expect.text(f"{hits}|{_nl_import(conn, server_dir, 'nl_trunc', 'bigint[]')}",
+                "1|XX001 columnar: malformed Arrow IPC file: value buffer too small for the row count|0",
+                "a list<int64> file whose last offset runs past its value buffer is still refused as malformed"
+                " with XX001 (#1932)")
