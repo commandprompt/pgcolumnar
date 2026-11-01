@@ -491,7 +491,9 @@ true until the next version shipped.
   `s3://` metadata file. A cross-type constant such as `bigint_col < 5` or
   `timestamp_col < DATE '2026-01-01'` skips row groups; the docs had said it
   does not. docs/administration.md, docs/configuration.md, docs/features.md,
-  docs/how-to.md, docs/limitations.md and docs/sql-reference.md.
+  docs/how-to.md, docs/limitations.md, docs/sql-reference.md and
+  docs/user-guide.md. A clear refusal of a remote URL by those three functions
+  is tracked in #1886.
 - `iceberg_rest_scan` now chooses a vended storage credential for each file it
   reads (#1820). Before, it matched each `storage-credentials` prefix against the
   metadata location only, and that one credential signed every file. So a

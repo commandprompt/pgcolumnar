@@ -390,9 +390,10 @@ is not tested.
 
 ## Object storage
 
-The Parquet functions, `export_arrow`, the Iceberg reader, and both foreign-data
-wrappers reach object storage. They accept an `s3://`, `http://`, or `https://`
-URL where they accept a local path. `import_arrow`, `file_split_offsets` and
+The Parquet functions, `export_arrow`, the Iceberg reader, and the
+`pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data wrappers reach object
+storage. They accept an `s3://`, `http://`, or `https://` URL where they accept a
+local path. `import_arrow`, `file_split_offsets` and
 `parallel_copy` read local files only. The support lives in a separate module,
 `pgcolumnar_objstore`, loaded on the first remote use.
 

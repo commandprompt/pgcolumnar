@@ -95,8 +95,9 @@ disk. It never changes the values that a table returns.
 ### Object storage
 
 These govern the object-store module that reads and writes remote Parquet
-files, reads remote Iceberg tables, and writes remote Arrow files. See [Object storage](sql-reference.md#object-storage) for the URL
-schemes and the credential model.
+files, reads remote Iceberg tables, and writes remote Arrow files. See
+[Object storage](sql-reference.md#object-storage) for the URL schemes and the
+credential model.
 
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |

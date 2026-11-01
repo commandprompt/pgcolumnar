@@ -1191,7 +1191,7 @@ The `Row Groups Skipped` counter in `EXPLAIN ANALYZE` reports what was actually
 skipped.
 
 From 1.0-alpha3, `pgcolumnar.export_parquet` writes per-row-group statistics, so
-a file pgColumnar wrote can be skipped. Three limits apply to what those files
+a file pgColumnar wrote can be skipped. Two limits apply to what those files
 carry:
 
 - Bounds are written for the columns stored as INT32, INT64, FLOAT or DOUBLE.
@@ -1200,15 +1200,6 @@ carry:
   `timestamp with time zone`. A `text`, `bytea`, `uuid`, `boolean` or
   byte-array `numeric` column carries a null count and no bounds. A predicate on
   one of those filters, but it never skips.
-- The constant may be of another type in the operator's family, per the
-  condition above. So `smallint_col < 500`, `bigint_col < 5`,
-  `integer_col > 5000000000`, `real_col < 0.4` and
-  `timestamp_col < DATE '2026-01-01'` all skip. A quoted literal with no type
-  named, such as `smallint_col < '500'`, takes the column's type and skips too.
-  Two forms do not skip. A literal with a decimal point against an integer
-  column, such as `bigint_col < 5.0`, makes PostgreSQL cast the column instead
-  of the constant. A `timestamptz` constant against a `timestamp` column is
-  refused for the reason given above.
 - A file exported by 1.0-alpha2 or earlier carries no statistics. Nothing
   rewrites it in place. Export it again to make it skippable.
 

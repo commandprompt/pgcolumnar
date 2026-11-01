@@ -981,9 +981,9 @@ little-endian hosts. In each function, `path`
 can be one of three things. It can be a single file. It can be a directory, and
 then the function reads all the `*.parquet` files below it at any depth as one
 relation, in sorted order. It can also be a glob pattern. A local `path` and an
-object-storage URL can each be any of these. A remote prefix ends in `/`, and a
-remote prefix or pattern needs the object-store module. See
-[Object storage](#object-storage).
+object-storage URL can each be any of these. A remote prefix ends in `/`. Every
+remote read, of a single key as well as a prefix or pattern, needs the
+object-store module. See [Object storage](#object-storage).
 
 The readers return each value as the declared column type, including its type
 modifier. They apply it as PostgreSQL's input functions do. A `numeric(p,s)`
@@ -1544,11 +1544,12 @@ SELECT sum(amount) FROM events WHERE region = 'eu';
 
 ## Object storage
 
-The Parquet read and export functions, `export_arrow`, the Iceberg reader, and
-both foreign-data wrappers accept an object-storage URL wherever they accept a
-local path. `import_arrow`, `file_split_offsets`, `parallel_copy`,
-`read_avro_manifest` and `read_manifest_list` read local files only. These URL
-schemes are recognized:
+The Parquet read and export functions, `export_arrow` and the Iceberg reader
+accept an object-storage URL wherever they accept a local path. So do the
+`pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data wrappers. The third
+wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
+`file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
+`read_manifest_list` read local files only. These URL schemes are recognized:
 
 | Scheme | Meaning |
 | --- | --- |
@@ -1600,8 +1601,8 @@ such as `s3://bucket/_landing/`. A pattern matches names as a local glob does.
 It matches a name that begins with `_`. It matches a name that begins with `.`
 only when the pattern spells the dot, such as `.*.parquet`. The scheme is
 compared without case, so `S3://` reads as `s3://` does. Hive
-`partition_columns` work over a remote prefix. A pattern or a prefix requires the
-object-store module, since only it can issue the listing.
+`partition_columns` work over a remote prefix. The object-store module issues the
+listing, as it issues every remote read.
 
 On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes one
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`
@@ -1645,9 +1646,8 @@ Two calls take a server instead: `export_parquet(rel, path, server)`, and
 credentials as the foreign-data wrapper does, as described next.
 
 For the `pgcolumnar_parquet` foreign-data wrapper the endpoint and credentials
-come from the catalog,
-which keeps them out of a world-readable place. The non-secret settings go on the
-server and the secret ones go on a user mapping:
+come from the catalog, which keeps them out of a world-readable place. The
+non-secret settings go on the server and the secret ones go on a user mapping:
 
 ```sql
 CREATE SERVER s3 FOREIGN DATA WRAPPER pgcolumnar_parquet
