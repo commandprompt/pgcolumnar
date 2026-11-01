@@ -534,6 +534,13 @@ true until the next version shipped.
 
 ### Fixed
 
+- Tests: a check now shows that `iceberg_rest_namespace_levels` lists a child
+  of a namespace with an empty level among other levels, such as `{db,"",x}`
+  under `{db,""}` (#1939). Before, no check covered it, so a walk that stopped
+  at `{db,""}` passed every check. The code was already correct. The
+  `emptylevel` fixture in `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py` now serves `{db,"",x}`. docs/sql-reference.md.
+
 - Test harness: when a suite runs as `flock <lock> bash test/smoke.sh`, a
   server that it starts no longer holds the lock, and a run fails when the
   installed library changes during it (#1915). Before, the suite passed the

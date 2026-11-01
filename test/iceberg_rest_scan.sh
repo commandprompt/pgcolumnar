@@ -546,12 +546,19 @@ check "empty level: a missing namespace with no empty level gets no empty-level 
 # This catalog (separator %1F) keeps its table in the namespace db, '' (an
 # empty second level), as the Apache Iceberg REST catalog allows. The client
 # must reach it in every form, and a listed row must pass back unchanged.
-start_fx emptylevel --namespace-levels '["db",""]' --table events
+# The catalog also serves db, '', x, a child of db, '' (#1939).
+start_fx emptylevel --namespace-levels '["db",""]' --table events --extra-namespace 'db..x'
 ECAT="http://127.0.0.1:$FX_PORT"
 check "empty level: iceberg_rest_namespace_levels lists the namespace db, ''" \
 	"$(rows_of "SELECT string_agg(array_to_json(ns)::text, ' ' ORDER BY array_to_json(ns)::text COLLATE \"C\")
 	            FROM pgcolumnar.iceberg_rest_namespace_levels('$ECAT') AS ns")" \
-	'["db",""] ["db"]'
+	'["db","","x"] ["db",""] ["db"]'
+# The walk must go on below db, '': an empty level among other levels can be
+# named in ?parent=, so its children are listed (#1939).
+check "empty level: iceberg_rest_namespace_levels lists the child db, '', x of db, ''" \
+	"$(rows_of "SELECT count(*) FILTER (WHERE ns = ARRAY['db','','x']) || ' of ' || count(*)
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$ECAT') AS ns")" \
+	"1 of 3"
 check "empty level: iceberg_rest_tables of ARRAY['db',''] lists its tables" \
 	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('$ECAT', ARRAY['db','']) AS t")" \
 	"events"
