@@ -232,7 +232,8 @@ CAPPED_FILES = ("list_elem15_huge",)    # read under a 5 s statement_timeout
 UNPARSED = '0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
 GOOD_READ = "NO ERROR: 3000/4498500"
 PAGE_FILES = ("page_snappy_v1", "page_snappy_v2", "page_snappy_v1_long", "page_snappy_v1_short",
-              "page_snappy_v2_long", "page_none_v1_long", "page_none_v2_c", "page_none_v2_c_short")
+              "page_snappy_v2_long", "page_none_v1_long", "page_none_v2_c", "page_none_v2_c_short",
+              "page_enc_bool", "page_enc_uuid", "page_bool_sweep_06")
 PAGE_REFUSED = "XX001: could not decode Parquet column 0 in row group 0"
 
 
@@ -378,6 +379,23 @@ def pqh(pgc_cluster, server_dir):
         for name in PAGE_FILES:
             r[name] = _value(dsn, f"SELECT pgc_err($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
                                   f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint)$q$)")
+        # ---- a page header field of the wrong Thrift type (#1935) ----
+        for key, prefix, width, what, where in (
+                ("page type sweep", "page_type_sweep_", 4, "read without an error", "v LIKE 'NO ERROR%'"),
+                ("page bool sweep", "page_bool_sweep_", 2, "read a wrong answer",
+                 "v LIKE 'NO ERROR%' AND v <> 'NO ERROR: 100/5050'")):
+            try:
+                n = (w / f"{prefix[:-1]}.count").read_text().strip()
+            except OSError:
+                n = ""
+            r[f"{key} n"] = n
+            r[key] = _value(dsn, (
+                f"SELECT count(*) || ' of {n} {what}' "
+                "|| coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '') "
+                "FROM (SELECT i, pgc_err(format($f$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+                "pgcolumnar.read_parquet(%L) AS t(id bigint)$f$, "
+                f"'{w}/{prefix}' || lpad(i::text, {width}, '0') || '.parquet')) AS v "
+                f"FROM generate_series(0, {n or 0} - 1) AS i) s WHERE {where}"))
 
         # ---- a repetition_type that does not match the pages (#1855) ----
         rep_sum = "SELECT count(*) || '/' || sum(id) FROM pgcolumnar.read_parquet"
@@ -1204,3 +1222,49 @@ def test_parquet_hardening_page_uncompressed_v2_header_size_below_level_bytes_re
         return
     expect.text(r["page_none_v2_c_short"], "NO ERROR: 100/5050",
                 "page: an UNCOMPRESSED v2 page whose header size is below its level bytes reads, as in pyarrow")
+
+
+# ---- a page header field of the wrong Thrift type (#1935) ---------------------------
+# The page reader read each page header field by its id and never looked at its Thrift
+# type, so a corrupt type nibble read without an error. pyarrow refuses every copy in
+# the first three tests. is_compressed is optional: pyarrow skips it when its type is
+# not bool, so a copy may read, but only with the right answer.
+
+def test_parquet_hardening_page_encoding_field_of_type_bool_true_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["page_enc_bool"], PAGE_REFUSED,
+                "page: a data page encoding field of Thrift type BOOL_TRUE is refused")
+
+
+def test_parquet_hardening_page_encoding_field_of_type_uuid_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["page_enc_uuid"], PAGE_REFUSED,
+                "page: a data page encoding field of Thrift type UUID is refused")
+
+
+def test_parquet_hardening_page_every_i32_or_struct_field_of_another_type_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["page type sweep"], f"0 of {r['page type sweep n']} read without an error",
+                "page: every i32 or struct page header field of another Thrift type is refused")
+
+
+def test_parquet_hardening_page_no_is_compressed_of_another_type_reads_a_wrong_answer(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["page bool sweep"], f"0 of {r['page bool sweep n']} read a wrong answer",
+                "page: no v2 is_compressed field of another Thrift type reads a wrong answer")
+
+
+def test_parquet_hardening_page_is_compressed_of_type_list_is_skipped_and_reads(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["page_bool_sweep_06"], "NO ERROR: 100/5050",
+                "page: a v2 is_compressed field of type LIST is skipped and reads, as in pyarrow")

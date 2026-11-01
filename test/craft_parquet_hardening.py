@@ -958,3 +958,61 @@ for _gname, _gval in (("grp_neg_children", -1), ("grp_wide_children", 4294967297
     _gfoot = enc_struct(_gm)
     open(f"{W}/{_gname}.parquet", "wb").write(
         _grp[:_gstart] + _gfoot + len(_gfoot).to_bytes(4, "little") + b"PAR1")
+
+
+# ---- a page header field of the wrong Thrift type (#1935) ------------------------
+# The page reader read each page header field by its id and never looked at its
+# Thrift type. pyarrow refuses a field whose type is not the one parquet.thrift
+# gives it ("Couldn't deserialize thrift"). The fuzzer found two mutants that
+# changed only the type nibble of a DataPageHeader's encoding field (i32, header
+# byte 0x15): to 1 (BOOL_TRUE) and to 13 (UUID). pgColumnar read both without an
+# error, and a change to the page's values then gave a wrong answer.
+# The bases are page_snappy_v1 and page_snappy_v2 (above). From byte 4:
+#   v1  15 00 | 15 ce 0c | 15 ea 06 | 2c | 15 c8 01 | 15 00 | ...
+#       PageHeader type, uncompressed and compressed size (i32), data_page_header
+#       (struct, field 5), then its num_values and encoding (i32)
+#   v2  15 06 | 15 c6 0c | 15 c4 06 | 5c | 15 c8 01 | 15 00 | 15 c8 01 | 15 00 |
+#       15 06 | 15 00 | 11 | ...
+#       PageHeader as above but data_page_header_v2 (struct, field 8), then its
+#       num_values, num_nulls, num_rows, encoding, definition and repetition level
+#       lengths (i32), and is_compressed (bool, field 7)
+#   page_enc_bool.parquet    the v1 encoding field's type set to 1 (BOOL_TRUE)
+#   page_enc_uuid.parquet    the same field's type set to 13 (UUID)
+#   page_type_sweep_NNNN.parquet   each i32 or struct field the reader reads, at
+#                            each offset in _PT_FIELDS, set to every other
+#                            compact type 1..13. pyarrow refuses every copy: an
+#                            i32 field is required, and a struct field holds the
+#                            page's own header. page_type_sweep.count holds the
+#                            number of copies.
+#   page_bool_sweep_NN.parquet     the v2 is_compressed field (byte 27) set to every
+#                            type but 1 and 2, which are its value. The field is
+#                            optional, so pyarrow skips it and keeps its default,
+#                            true: it reads the LIST and SET copies (100 rows,
+#                            sum 5050) and refuses the rest. page_bool_sweep.count
+#                            holds the number of copies.
+_PT_FIELDS = {"v1": (4, 6, 9, 12, 13, 16), "v2": (4, 6, 9, 12, 13, 21, 23, 25)}
+_pt = {v: open(f"{W}/page_snappy_{v}.parquet", "rb").read() for v in ("v1", "v2")}
+assert _pt["v1"][4:18] == bytes.fromhex("1500 15ce0c 15ea06 2c 15c801 1500"), _pt["v1"][4:24].hex()
+assert _pt["v2"][4:28] == bytes.fromhex("1506 15c60c 15c406 5c 15c801 1500 15c801 1500 1506 1500 11"), \
+    _pt["v2"][4:32].hex()
+
+
+def _retype(buf, at, t):
+    return buf[:at] + bytes([(buf[at] & 0xF0) | t]) + buf[at + 1:]
+
+
+open(f"{W}/page_enc_bool.parquet", "wb").write(_retype(_pt["v1"], 16, 1))
+open(f"{W}/page_enc_uuid.parquet", "wb").write(_retype(_pt["v1"], 16, 13))
+_ptn = 0
+for _v, _offs in _PT_FIELDS.items():
+    for _at in _offs:
+        for _t in range(1, 14):
+            if _t != _pt[_v][_at] & 0x0F:
+                open(f"{W}/page_type_sweep_{_ptn:04d}.parquet", "wb").write(_retype(_pt[_v], _at, _t))
+                _ptn += 1
+open(f"{W}/page_type_sweep.count", "w").write(f"{_ptn}\n")
+_pbn = 0
+for _t in range(3, 14):
+    open(f"{W}/page_bool_sweep_{_pbn:02d}.parquet", "wb").write(_retype(_pt["v2"], 27, _t))
+    _pbn += 1
+open(f"{W}/page_bool_sweep.count", "w").write(f"{_pbn}\n")

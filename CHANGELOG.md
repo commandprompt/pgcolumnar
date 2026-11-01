@@ -534,6 +534,14 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Parquet reader now refuses a page header field whose Thrift type is wrong
+  (#1935). It raises SQLSTATE XX001, as pyarrow refuses such a header. Before, it
+  read each field by its id alone. A fuzz run found two corrupt files whose
+  encoding field had type BOOL_TRUE or UUID instead of i32. Both read without an
+  error and with wrong values. A v2 page's `is_compressed` field of another type
+  is skipped, and the page is read as compressed, as in pyarrow.
+  docs/limitations.md. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
 - The Parquet reader now refuses a Snappy page whose decompressed size differs
   from the size in its page header (#1910). It raises SQLSTATE XX001, as it
   already did for GZIP, ZSTD and LZ4_RAW. Before, it trusted the size inside the

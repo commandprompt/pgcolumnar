@@ -1751,7 +1751,42 @@ typedef struct PqPageHeader
 	int			rep_levels_len;
 	bool		is_compressed;	/* v2; default true */
 	bool		is_v2;
+	bool		bad_type;		/* a field had the wrong Thrift type (#1935) */
 } PqPageHeader;
+
+/*
+ * Read an i32 page header field of compact type ft. A field of another type is
+ * corrupt (#1935). Read anyway, a varint-shaped field such as an i64 kept the
+ * parse in step, and a BOOL or UUID field had its next bytes taken as the value:
+ * either way the page read without an error, where pyarrow refuses the header.
+ * The field is required by parquet.thrift, so skipping it, as Thrift does, ends
+ * in a refusal too. r->error stops the parse; bad_type tells the caller that a
+ * larger read window cannot help.
+ */
+static int
+pq_page_i32(TCReader *r, PqPageHeader *h, int ft)
+{
+	if (ft != TC_I32)
+	{
+		h->bad_type = true;
+		r->error = true;
+		return 0;
+	}
+	return (int) PgColumnarThriftZigzag(r);
+}
+
+/* A struct page header field (data_page_header and the like) of another type is corrupt too. */
+static bool
+pq_page_struct(TCReader *r, PqPageHeader *h, int ft)
+{
+	if (ft != TC_STRUCT)
+	{
+		h->bad_type = true;
+		r->error = true;
+		return false;
+	}
+	return true;
+}
 
 static void
 parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
@@ -1773,10 +1808,10 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			switch (fid)
 			{
 				case 1:
-					h->num_values = (int) PgColumnarThriftZigzag(r);
+					h->num_values = pq_page_i32(r, h, ft);
 					break;
 				case 2:
-					h->encoding = (int) PgColumnarThriftZigzag(r);
+					h->encoding = pq_page_i32(r, h, ft);
 					break;
 				default:
 					PgColumnarThriftSkip(r, ft);
@@ -1788,19 +1823,27 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			switch (fid)
 			{
 				case 1:
-					h->num_values = (int) PgColumnarThriftZigzag(r);
+					h->num_values = pq_page_i32(r, h, ft);
 					break;
 				case 4:
-					h->encoding = (int) PgColumnarThriftZigzag(r);
+					h->encoding = pq_page_i32(r, h, ft);
 					break;
 				case 5:
-					h->def_levels_len = (int) PgColumnarThriftZigzag(r);
+					h->def_levels_len = pq_page_i32(r, h, ft);
 					break;
 				case 6:
-					h->rep_levels_len = (int) PgColumnarThriftZigzag(r);
+					h->rep_levels_len = pq_page_i32(r, h, ft);
 					break;
 				case 7:
-					h->is_compressed = (ft == TC_BOOL_TRUE);
+
+					/*
+					 * is_compressed is optional. Thrift, and so pyarrow, skips a
+					 * field of another type and keeps the default, true.
+					 */
+					if (ft == TC_BOOL_TRUE || ft == TC_BOOL_FALSE)
+						h->is_compressed = (ft == TC_BOOL_TRUE);
+					else
+						PgColumnarThriftSkip(r, ft);
 					break;
 				default:
 					PgColumnarThriftSkip(r, ft);
@@ -1829,21 +1872,24 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 		switch (fid)
 		{
 			case 1:
-				h->type = (int) PgColumnarThriftZigzag(r);
+				h->type = pq_page_i32(r, h, ft);
 				break;
 			case 2:
-				h->uncompressed_size = (int) PgColumnarThriftZigzag(r);
+				h->uncompressed_size = pq_page_i32(r, h, ft);
 				break;
 			case 3:
-				h->compressed_size = (int) PgColumnarThriftZigzag(r);
+				h->compressed_size = pq_page_i32(r, h, ft);
 				break;
 			case 5:				/* DataPageHeader (v1) */
-				parse_data_page_header(r, h, false);
+				if (pq_page_struct(r, h, ft))
+					parse_data_page_header(r, h, false);
 				break;
 			case 7:				/* DictionaryPageHeader */
 				{
 					int			dl = 0;
 
+					if (!pq_page_struct(r, h, ft))
+						break;
 					for (;;)
 					{
 						int			dft,
@@ -1853,14 +1899,15 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 						if (dft == TC_STOP || r->error)
 							break;
 						if (dfid == 1)
-							h->num_values = (int) PgColumnarThriftZigzag(r);
+							h->num_values = pq_page_i32(r, h, dft);
 						else
 							PgColumnarThriftSkip(r, dft);
 					}
 					break;
 				}
 			case 8:				/* DataPageHeaderV2 */
-				parse_data_page_header(r, h, true);
+				if (pq_page_struct(r, h, ft))
+					parse_data_page_header(r, h, true);
 				break;
 			default:
 				PgColumnarThriftSkip(r, ft);
@@ -2291,7 +2338,7 @@ pq_read_page_header(PqSource *src, int64 off, PqPageHeader *h, size_t *hdrlenOut
 			return true;
 		}
 		pfree(buf);
-		if ((int64) n >= avail || win >= PQ_PAGE_HDR_WIN_MAX)
+		if (h->bad_type || (int64) n >= avail || win >= PQ_PAGE_HDR_WIN_MAX)
 			return false;
 		win *= 2;
 	}

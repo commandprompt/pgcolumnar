@@ -1672,4 +1672,8 @@ guard_tests 858
 # and of -(2^32) + 1 each refused by parquet_schema); in test_fuzz_parquet.py two for #1920 (every
 # composite type built from a seed's field list is created, the pristine struct seed reads under its own
 # column list), by collection: 6072 tests collected, less guard_tests 858.
-cluster_tests 5214
+# cluster_tests 5214 -> 5219 for #1935's five tests: in test_native_parquet_hardening.py a data page
+# encoding field of Thrift type BOOL_TRUE and of type UUID each refused, every i32 or struct page header
+# field of another Thrift type refused, no v2 is_compressed field of another type reads a wrong answer,
+# and one of type LIST is skipped and reads, by collection: 6077 tests collected, less guard_tests 858.
+cluster_tests 5219
