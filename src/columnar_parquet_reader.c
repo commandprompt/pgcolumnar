@@ -3143,6 +3143,18 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
 			if (pf->leaves[lf].max_rep < 1)
 				IMP_FAIL("target column \"%s\" is an array but the Parquet column is not repeated",
 						 NameStr(att->attname));
+
+			/*
+			 * A leaf under two or more repeated levels (a list of lists, a list
+			 * of maps) has no one-dimensional reading: the decode below builds
+			 * one array per row from the outer level and would drop the inner
+			 * list boundaries, [[1], [2, 3]] reading as {1,2,3} (#1917).
+			 * PostgreSQL does not tell int[] from int[][] in a declared type, and
+			 * this reader builds only one-dimensional arrays, so refuse it.
+			 */
+			if (pf->leaves[lf].max_rep > 1)
+				IMP_FAIL("Parquet column for array \"%s\" is nested %d lists deep, but %s reads one list level into an array",
+						 NameStr(att->attname), pf->leaves[lf].max_rep, caller);
 			if (pf->leaves[lf].sc->phys_type != want)
 				IMP_FAIL("Parquet column for array \"%s\" has incompatible physical type",
 						 NameStr(att->attname));
@@ -3775,6 +3787,13 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 {
 	struct stat st;
 	List	   *files = NIL;
+
+	/*
+	 * s3a:// and s3n:// read as s3://, as in the Iceberg reader (#1930). Every
+	 * Parquet read resolves its path here first, so the listing, the glob, the
+	 * open and the module all see s3://, and so do the paths returned.
+	 */
+	path = PgColumnarS3Alias(path);
 
 	if (PgColumnarPathIsRemote(path))
 	{
@@ -5001,10 +5020,17 @@ pqfdw_get_option(Oid foreigntableid, const char *name)
 	return NULL;
 }
 
+/*
+ * The table's path option, with s3a:// and s3n:// rewritten to s3:// (#1930).
+ * pq_resolve_paths rewrites them too, but the scan also keeps this path as the
+ * Hive partition root, which must be spelled as the resolved files are: a root
+ * of s3a://b/t/ would match no s3://b/t/... file, and the components above the
+ * root would then count as partition values.
+ */
 static char *
 pqfdw_get_path(Oid foreigntableid)
 {
-	return pqfdw_get_option(foreigntableid, "path");
+	return (char *) PgColumnarS3Alias(pqfdw_get_option(foreigntableid, "path"));
 }
 
 /*
