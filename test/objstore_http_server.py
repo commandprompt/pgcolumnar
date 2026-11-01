@@ -76,6 +76,11 @@
 #   __put_delay__         a number of seconds (#1813): a single-request PUT
 #                         (no partNumber) writes the object at once and answers
 #                         only after that long, for the same window.
+#   __put_hold__          a number of seconds (#1864): a single-request PUT
+#                         (no partNumber) is held that long after its whole
+#                         body arrived, and only then written and answered: a
+#                         store that applies a commit late, after a DELETE of
+#                         the same key that was sent later.
 #   __complete_drop__     a number of seconds (#1846): CompleteMultipartUpload
 #                         writes the object at once, waits that long, and then
 #                         closes the connection with no answer, as a store
@@ -597,6 +602,7 @@ class Handler(BaseHTTPRequestHandler):
             if os.path.relpath(local, self.server.rootdir) == key:
                 self._deny(int(code), "AccessDenied")
                 return
+        _hook_sleep(self.server.rootdir, "__put_hold__")
         os.makedirs(os.path.dirname(local), exist_ok=True)
         with open(local, "wb") as f:
             f.write(self._body)

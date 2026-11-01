@@ -5,7 +5,9 @@ group carries one column chunk, string cells that are not valid UTF-8 (#1821), a
 footers whose Thrift is malformed (#1822). Given the committed Iceberg warehouse (test/fixtures/iceberg/warehouse), it also
 writes two copies of its events table under DIR: one whose eu data file holds an
 invalid string, and one whose manifest records the eu partition value as invalid
-bytes. One writer for both twins, so neither can drift from the other. Needs pyarrow."""
+bytes. It also writes the footers that do not match their pages (#1855, #1852) and
+the INT96 values that are not timestamps (#1870). One writer for both twins, so
+neither can drift from the other. Needs pyarrow."""
 import os
 import shutil
 import sys
@@ -697,3 +699,189 @@ if len(sys.argv) > 2:
         for f in files:
             os.chmod(os.path.join(d, f), 0o644)
     print(f"  ice_part: {swapped} eu cell(s) -> 0xff 0xfe", file=sys.stderr)
+
+
+# ---- a schema repetition_type that does not match the pages (#1855) -------------
+# pyarrow writes `id` OPTIONAL (repetition_type 1, stored as the zigzag byte 0x02),
+# so every data page carries definition levels. rep_required.parquet says REQUIRED
+# instead, and rep_invalid.parquet says 7, which is no repetition_type at all. The
+# reader used to decode the definition levels as values and return a wrong sum with
+# no error. Three row groups of 1000 rows, as in the issue.
+def repetition_byte(buf, name):
+    """-> the offset of the one-byte repetition_type value of schema element `name`."""
+    flen = int.from_bytes(buf[-8:-4], "little")
+    st = {"pos": len(buf) - 8 - flen}
+
+    def byte():
+        b = buf[st["pos"]]
+        st["pos"] += 1
+        return b
+
+    def uvar():
+        shift = out = 0
+        while True:
+            b = byte()
+            out |= (b & 0x7F) << shift
+            if not b & 0x80:
+                return out
+            shift += 7
+
+    def lhdr():
+        b = byte()
+        n = (b >> 4) & 0x0F
+        if n == 0x0F:
+            n = uvar()
+        return n, b & 0x0F
+
+    def fhdr(last):
+        b = byte()
+        if b == 0:
+            return 0, 0
+        t, d = b & 0x0F, b >> 4
+        if d:
+            return t, last + d
+        u = uvar()
+        return t, (u >> 1) ^ -(u & 1)
+
+    def skip(t):
+        if t in (1, 2):
+            return
+        if t == 3:
+            st["pos"] += 1
+        elif t in (4, 5, 6):
+            uvar()
+        elif t == 7:
+            st["pos"] += 8
+        elif t == 8:
+            n = uvar()
+            st["pos"] += n
+        elif t in (9, 10):
+            n, et = lhdr()
+            for _ in range(n):
+                skip(et)
+        elif t == 12:
+            last = 0
+            while True:
+                ft, f = fhdr(last)
+                if ft == 0:
+                    break
+                last = f
+                skip(ft)
+
+    last = 0
+    while True:
+        ft, fid = fhdr(last)
+        assert ft != 0, "no schema list"
+        last = fid
+        if fid == 2 and ft == 9:
+            n, et = lhdr()
+            assert et == 12, et
+            for _ in range(n):
+                rep_at, el_name, flast = None, None, 0
+                while True:
+                    t, f = fhdr(flast)
+                    if t == 0:
+                        break
+                    flast = f
+                    if f == 3:
+                        rep_at = st["pos"]
+                    if f == 4:
+                        ln = uvar()
+                        el_name = bytes(buf[st["pos"]:st["pos"] + ln]).decode()
+                        st["pos"] += ln
+                        continue
+                    skip(t)
+                if el_name == name:
+                    assert rep_at is not None, name
+                    return rep_at
+            raise AssertionError(f"no schema element {name}")
+        skip(ft)
+
+
+pq.write_table(pa.table({"id": pa.array(range(3000), pa.int64()),
+                         "name": pa.array([f"n{i}" for i in range(3000)])}),
+               f"{W}/rep_base.parquet", row_group_size=1000)
+_rep = bytearray(open(f"{W}/rep_base.parquet", "rb").read())
+_at = repetition_byte(_rep, "id")
+assert _rep[_at] == 0x02, hex(_rep[_at])         # zigzag 1: OPTIONAL
+for _name, _byte in (("rep_required", 0x00),      # zigzag 0: REQUIRED
+                     ("rep_invalid", 0x0E)):      # zigzag 7: not a repetition_type
+    _out = bytearray(_rep)
+    _out[_at] = _byte
+    open(f"{W}/{_name}.parquet", "wb").write(bytes(_out))
+print(f"  id repetition_type at footer byte "
+      f"{_at - (len(_rep) - 8 - int.from_bytes(_rep[-8:-4], 'little'))}", file=sys.stderr)
+
+
+# ---- a repetition_type that does not match a repetition histogram (#1855) -------
+# pyarrow writes a list<int64> column as l (OPTIONAL group) > list (REPEATED group) >
+# element (OPTIONAL int64), so element's pages carry repetition levels 0 and 1, and
+# its chunk carries a repetition level histogram of 2 entries. lst_optional.parquet
+# says the `list` group is OPTIONAL (zigzag 1, 0x02) instead of REPEATED (zigzag 2,
+# 0x04), so the schema gives element a maximum repetition level of 0. The definition
+# levels still fit (3 either way), so only the repetition histogram can tell.
+pq.write_table(pa.table({"l": pa.array([[1, 2], [3], [], None, [4, 5, 6]], pa.list_(pa.int64()))}),
+               f"{W}/lst_base.parquet")
+_lst = bytearray(open(f"{W}/lst_base.parquet", "rb").read())
+_at = repetition_byte(_lst, "list")
+assert _lst[_at] == 0x04, hex(_lst[_at])         # zigzag 2: REPEATED
+_lst[_at] = 0x02                                  # zigzag 1: OPTIONAL
+open(f"{W}/lst_optional.parquet", "wb").write(bytes(_lst))
+
+
+# ---- INT96 values the decode must refuse (#1870) ---------------------------------
+# A REQUIRED INT96 column, PLAIN and uncompressed, so each value's 12 bytes (8 of
+# nanoseconds in the day, then 4 of Julian day, little-endian) sit in the file as
+# written and can be patched in place. The second value is the one patched:
+#   i96_nanos_day.parquet   nanoseconds 86400e9, one whole day: no valid value has it
+#   i96_nanos_neg.parquet   nanoseconds -1
+#   i96_jday_neg.parquet    Julian day -1, before timestamp's first day
+# i96_short.parquet keeps the values and the page's num_values of 3, but says the
+# page is 24 bytes long instead of 36. The third value's 12 bytes still follow in
+# the file, so a decode that read past the page's end would return a whole value.
+_I96_VALS = [1784851200_000_000_000, 1784851200_123_456_789, 1784851200_500_000_000]
+pq.write_table(pa.table([pa.array(_I96_VALS, pa.timestamp("ns", tz="UTC"))],
+                        schema=pa.schema([pa.field("t", pa.timestamp("ns", tz="UTC"), nullable=False)])),
+               f"{W}/i96_req.parquet", use_deprecated_int96_timestamps=True,
+               use_dictionary=False, compression="NONE", write_statistics=False)
+_i96 = bytes(open(f"{W}/i96_req.parquet", "rb").read())
+_day, _ns = divmod(_I96_VALS[1], 86400 * 10**9)
+_v1 = _ns.to_bytes(8, "little") + (2440588 + _day).to_bytes(4, "little")
+assert _i96.count(_v1) == 1, _i96.count(_v1)
+_v1_at = _i96.index(_v1)
+for _name, _new in (("i96_nanos_day", (86400 * 10**9).to_bytes(8, "little") + _v1[8:]),
+                    ("i96_nanos_neg", (-1).to_bytes(8, "little", signed=True) + _v1[8:]),
+                    ("i96_jday_neg", _v1[:8] + (-1).to_bytes(4, "little", signed=True))):
+    open(f"{W}/{_name}.parquet", "wb").write(_i96[:_v1_at] + _new + _i96[_v1_at + 12:])
+# The data page header begins at byte 4: type (field 1, i32: header 0x15) DATA_PAGE
+# 0x00, then uncompressed_page_size and compressed_page_size (fields 2 and 3, i32),
+# each the zigzag varint 0x48 for 36. 0x30 says 24. Both stay one byte long.
+assert _i96[4:10] == b"\x15\x00\x15\x48\x15\x48", _i96[4:10].hex()
+open(f"{W}/i96_short.parquet", "wb").write(_i96[:4] + b"\x15\x00\x15\x30\x15\x30" + _i96[10:])
+
+
+# ---- a schema element with no name, and a repetition_type wider than int (#1882) --
+# Both are footer_good.parquet with one edit to the `id` schema element (element 1).
+# no_schema_name.parquet drops its name (field 4), a required field of SchemaElement.
+# rep_wide_nohist.parquet sets its repetition_type (field 3) to 2^32, which a cast to
+# int truncates to 0 (REQUIRED). It also drops every chunk's size statistics (column
+# meta_data field 16), so no level histogram can catch the mismatch: the pages still
+# carry definition levels. rep_nohist.parquet drops only the size statistics, so the
+# suite can show that the file reads without them.
+def _drop_size_stats(m):
+    for rg in fld(m, 4)[2][1]:
+        for ch in fld(rg, 1)[2][1]:
+            md = fld(ch, 3)[2]
+            md[:] = [f for f in md if f[0] != 16]
+
+
+def _rep_wide(m):
+    _drop_size_stats(m)
+    el = fld(m, 2)[2][1][1]
+    assert fld(el, 4)[2] == b"id", fld(el, 4)[2]
+    fld(el, 3)[2] = 2**32
+
+
+variant("no_schema_name", lambda m: fld(m, 2)[2][1][1].remove(fld(fld(m, 2)[2][1][1], 4)))
+variant("rep_nohist", _drop_size_stats)
+variant("rep_wide_nohist", _rep_wide)

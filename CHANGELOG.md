@@ -502,6 +502,42 @@ true until the next version shipped.
   `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`; gate checks in
   `test/server_file_privilege.sh`.
   Found in review of PR #1859.
+- The Parquet reader refuses a footer whose schema does not match its pages, instead
+  of returning wrong values with no error (#1855). A `repetition_type` that is not
+  0, 1 or 2 is refused when the file is opened. A level histogram whose length does
+  not fit the schema is refused on read: a column marked REQUIRED whose pages carry
+  definition levels used to have those levels read as values. In a 3000-row file,
+  `sum(id)` came back as 3019995 instead of 4498500. A file without level
+  histograms is not checked this way; see Limitations. The same check refuses a
+  list group marked OPTIONAL whose pages carry repetition levels.
+- The Parquet reader refuses a schema element that has no `name`, a required
+  field (#1852). A single changed byte can end the element early and leave the
+  rest of the footer read as something else. A missing `num_rows` or `row_groups`
+  and a row-count sum that does not match were already refused by #1822.
+- The Parquet reader keeps a `repetition_type` as the file stores it. It used to
+  cast the value to `int`, so 2^32 became 0 (REQUIRED) and got past the check
+  above. In a 3000-row file without level histograms, `sum(id)` came back as
+  3019995 instead of 4498500. `test/native_parquet_hardening.sh`.
+- `test/fuzz_parquet.sh` now checks the answer of every mutant that reads without
+  an error (#1852). The answer must equal the seed's, or pgColumnar's answer for
+  pyarrow's rewrite of the mutant (`test/parquet_oracle.py`). After the random
+  mutants, the suite sweeps every byte of one seed's schema, which found #1855.
+  A read the oracle cannot judge now fails the suite, and a wrong answer from a
+  random mutant names the first byte that differs from its seed.
+  `test_fuzz_parquet.py` runs the same checks.
+- `parquet_schema` now advises `timestamp with time zone` for a legacy `INT96`
+  timestamp column, and the readers read one (#1870). It used to report no type,
+  and every declared type was refused. The value is read as an instant in UTC,
+  as Spark and Hive write it, with the nanoseconds rounded down to microseconds.
+  Impala's wall-time `INT96` reads shifted; see Limitations. A value whose nanoseconds or
+  Julian day are out of range is refused with 22008, and the DETAIL names both.
+  `test/native_parquet_units.sh` and `test/native_parquet_hardening.sh`.
+- A reader's type refusal names the function the user called (#1871). It named
+  `columnar.import_parquet` for `read_parquet` and the Parquet foreign table, and
+  `columnar.read_parquet` for `iceberg_scan`. It now names
+  `pgcolumnar.read_parquet`, `pgcolumnar.import_parquet`,
+  `pgcolumnar.iceberg_scan`, `pgcolumnar.iceberg_rest_scan`, or the
+  `pgcolumnar_parquet` or `pgcolumnar_iceberg` foreign-data wrapper.
 - `iceberg_rest_scan` now chooses a vended storage credential for each file it
   reads (#1820). Before, it matched each `storage-credentials` prefix against the
   metadata location only, and that one credential signed every file. So a
@@ -660,6 +696,32 @@ true until the next version shipped.
   `current-snapshot-id` that is present but not an integer, which it used to
   read as an empty table. Absent, `null` and `-1` still mean no snapshot.
 
+- A `parallel_export_parquet` to a `gs://`, `http://` or `https://` prefix is now
+  refused before any worker starts, with SQLSTATE 0A000 (#1832). Before, the
+  workers uploaded every part, and the export then failed at the stale-part
+  listing, which works for `s3://` only. The documentation of the function names
+  `s3://` as its only remote scheme. The refusal's hint no longer says that
+  pgColumnar cannot list a remote prefix (#1831). It says that the export lists
+  its prefix and that only an `s3://` prefix can be listed.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+- A cancelled or failed `parallel_export_parquet` to `s3://` no longer leaves a
+  part that a worker was committing (#1864). The dispatcher deleted the part keys
+  as soon as it had terminated the workers. A terminated worker that had sent its
+  commit request waits for the answer, and the store could apply that commit
+  after the DELETE, so the part appeared afterwards and stayed. The dispatcher now
+  waits up to 5 seconds for the workers to exit before it deletes the parts. It
+  now also waits before it cleans a local directory. A local worker stops only at
+  its next interrupt check, so it could rename its finished part between the
+  dispatcher's directory listing and its unlink, and that part stayed. The
+  dispatcher now waits once per cleanup. Before, it waited a second time before
+  it aborted the open uploads, so a cancel against a store that never answered
+  took about 10 seconds, not 5. `test/objstore_sink_write.sh`,
+  `test/parallel_export_parquet.sh` and their pytest twins.
+- The upload cleanup of `parallel_export_parquet` builds its listing prefix with
+  `psprintf`, as the stale-part reconcile does (#1849). The fixed buffer could not
+  truncate in practice: the export refuses a prefix too long for its generated
+  names before any worker starts.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
 - `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
   URL now write the object instead of crashing the backend (#1779). Every write
   request was signed, and a plain-HTTP target has no region or credentials, so the

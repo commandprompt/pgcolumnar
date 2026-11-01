@@ -9751,6 +9751,7 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed an
 | `test_iceberg_scan_reads_the_current_snapshots_rows` | iceberg_scan reads the current snapshot's rows |
 | `test_iceberg_scan_projects_and_reorders_by_field_id` | iceberg_scan projects and reorders by field id (amount, id) |
 | `test_iceberg_scan_reads_a_subset` | iceberg_scan reads a subset (region only) |
+| `test_iceberg_scan_type_refusal_names_iceberg_scan` | iceberg_scan's type refusal names iceberg_scan |
 | `test_a_renamed_column_still_reads_by_field_id` | a column renamed in the schema still reads by field id (amt2 = amount) |
 | `test_an_output_column_not_in_the_schema_is_refused` | an output column not in the schema is refused (42703) |
 | `test_an_unprivileged_role_is_refused_the_scan` | an unprivileged role is refused (42501) |
@@ -11477,6 +11478,11 @@ Every test makes one check under the shell's name, over counts the module fixtur
 | `test_no_parquet_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
 | `test_every_parquet_mutant_was_generated_and_ran_its_statements` | every mutant was generated and ran its three statements |
 | `test_the_parquet_corpus_reached_the_decoder` | the corpus reached the decoder at all |
+| `test_the_oracles_rewrite_of_every_pristine_seed_reads_the_seeds_answer` | the oracle's rewrite of every pristine seed reads the seed's answer |
+| `test_no_parquet_mutant_that_reads_returned_a_wrong_answer` | no mutant that reads returned a wrong answer |
+| `test_every_read_that_differed_from_the_seed_was_judged` | every read that differed from the seed was judged |
+| `test_every_schema_sweep_copy_ran_its_read` | every schema-sweep copy ran its read |
+| `test_the_result_oracle_compared_some_answers` | the result oracle compared some answers |
 
 ## 286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead
 
@@ -11917,7 +11923,7 @@ Every comparison refuses a failed reading, so two failed arms never agree. The g
 
 ## 300. test_parallel_export_parquet.py: parallel Parquet export equals serial export equals the source
 
-The pytest twin of `test/parallel_export_parquet.sh` (ported for #1341), every check by the shell's name: 54 tests, nine of the functions parametrized over a literal table of the shell's names (W is 1, 2 and 4). `pgcolumnar.parallel_export_parquet` writes one Parquet file per worker for a single columnar table and one per partition for a partitioned one, and `pgcolumnar.read_parquet` reads the directory back. Also asserted: empty input, an export inside a transaction with uncommitted rows (#329), a cancelled export (#394), the destination-length guard (#863) and the two refusals. On a private database; the exported files live in `server_dir`.
+The pytest twin of `test/parallel_export_parquet.sh` (ported for #1341), every check by the shell's name: 57 tests, nine of the functions parametrized over a literal table of the shell's names (W is 1, 2 and 4). `pgcolumnar.parallel_export_parquet` writes one Parquet file per worker for a single columnar table and one per partition for a partitioned one, and `pgcolumnar.read_parquet` reads the directory back. Also asserted: empty input, an export inside a transaction with uncommitted rows (#329), a cancelled export (#394), a local cancel that must not return while a worker it stopped (SIGSTOP) still runs (#1864 review), the destination-length guard (#863) and the two refusals. On a private database; the exported files live in `server_dir`.
 
 ### Every test
 
@@ -11947,6 +11953,9 @@ The source hashes and counts come from the generator that fills each table, not 
 | `test_pexport_a_cancelled_export_writes_no_marker` | a cancelled export writes no _SUCCESS marker |
 | `test_pexport_a_retry_into_the_cleaned_directory_succeeds` | retry into the cleaned directory succeeds |
 | `test_pexport_the_retry_writes_a_fresh_marker` | the retry writes a fresh _SUCCESS marker |
+| `test_pexport_local_stop_premise_a_worker_was_stopped` | premise: local stop: a worker was stopped before the cancel |
+| `test_pexport_local_stop_premise_the_export_was_cancelled` | premise: local stop: the export was cancelled, not completed |
+| `test_pexport_local_stop_no_worker_runs_when_the_cancel_returns` | local stop: no worker is still running when the cancel returns -- #1864 review: the dispatcher waited for the workers only on a remote prefix, so a local cleanup could race a worker's rename to its final part name |
 | `test_pexport_accepted_boundary_length` | accepted boundary: the destination is exactly MAXPGPATH-40 bytes |
 | `test_pexport_accepted_boundary_still_exports` | accepted boundary: a 984-byte destination still exports |
 | `test_pexport_accepted_boundary_wrote_both_parts` | accepted boundary: it wrote both part files |
@@ -12388,6 +12397,13 @@ Every test makes one check under the shell's name, on a private database, and de
 | `test_millis_scaled_stats_skip_the_non_matching_group` | millis-scaled stats skip the non-matching group |
 | `test_the_millis_file_reads_back_exactly_as_written` | the millis file reads back exactly as written |
 | `test_millis_pushdown_result_equals_the_oracle` | millis pushdown result == oracle |
+| `test_int96_premise_pyarrow_wrote_int96` | premise: pyarrow wrote the INT96 file as INT96 |
+| `test_parquet_schema_advises_timestamptz_for_int96` | parquet_schema advises timestamptz for INT96 |
+| `test_int96_reads_into_timestamptz_as_the_stored_instant` | INT96 reads into timestamptz as the stored instant |
+| `test_int96_reads_into_timestamp_as_the_session_wall_time` | INT96 reads into timestamp as the wall time in the session zone |
+| `test_int96_reads_into_timestamptz_as_the_stored_instant_in_a_non_utc_zone` | INT96 reads into timestamptz as the stored instant in a non-UTC session zone |
+| `test_int96_into_a_non_timestamp_type_is_refused` | INT96 into a non-timestamp type is refused |
+| `test_import_parquet_reads_int96_into_timestamptz` | import_parquet reads INT96 into timestamptz |
 
 ## 317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows
 
@@ -12460,6 +12476,18 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
 | `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
 | `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
+| `test_parquet_hardening_unchanged_repetition_file_reads` | the unchanged repetition file reads 3000/4498500 |
+| `test_parquet_hardening_repetition_required_over_optional_pages_is_refused` | repetition_type REQUIRED over optional pages is refused |
+| `test_parquet_hardening_invalid_repetition_type_is_refused` | repetition_type that is not 0, 1 or 2 is refused |
+| `test_parquet_hardening_import_parquet_refuses_repetition_required_over_optional_pages` | import_parquet refuses repetition_type REQUIRED over optional pages |
+| `test_parquet_hardening_unchanged_list_file_reads` | the unchanged list file reads {} {1,2} {3} {4,5,6} null |
+| `test_parquet_hardening_list_group_marked_optional_over_repeated_pages_is_refused` | a list group marked OPTIONAL over repeated pages is refused |
+| `test_parquet_hardening_list_group_marked_optional_is_refused_into_a_scalar_column` | a list group marked OPTIONAL over repeated pages is refused into a scalar column |
+| `test_parquet_hardening_unpatched_required_int96_file_reads` | the unpatched REQUIRED INT96 file reads its 3 values |
+| `test_parquet_hardening_int96_nanoseconds_of_a_whole_day_are_refused` | INT96 nanoseconds of a whole day are refused |
+| `test_parquet_hardening_int96_negative_nanoseconds_are_refused` | INT96 nanoseconds of -1 are refused |
+| `test_parquet_hardening_int96_negative_julian_day_is_refused` | INT96 Julian day -1 is refused |
+| `test_parquet_hardening_int96_short_page_is_refused` | an INT96 page shorter than its num_values is refused |
 | `test_parquet_hardening_footer_good_file_still_reads` | footer: the good file still reads |
 | `test_parquet_hardening_footer_reencoded_good_file_still_reads` | footer: the re-encoded good file still reads |
 | `test_parquet_hardening_footer_invalid_type_nibble_on_row_groups_is_refused` | footer: an invalid type nibble on row_groups is refused |
@@ -12481,6 +12509,9 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_footer_huge_list_of_non_compact_type_is_refused_at_once` | footer: a huge list whose element type is not a compact type is refused at once |
 | `test_parquet_hardening_footer_byte_list_off_the_end_is_refused_at_once` | footer: a list of bytes that runs off the footer is refused at once |
 | `test_parquet_hardening_footer_double_list_off_the_end_is_refused_at_once` | footer: a list of doubles that runs off the footer is refused at once |
+| `test_parquet_hardening_footer_schema_element_with_no_name_is_refused` | footer: a schema element with no name is refused |
+| `test_parquet_hardening_footer_file_without_level_histograms_still_reads` | footer: the file without level histograms still reads |
+| `test_parquet_hardening_footer_repetition_type_of_2_32_is_refused` | footer: a repetition_type of 2^32 is refused, not read as REQUIRED |
 | `test_parquet_hardening_backend_survived_the_malformed_footers` | backend survived the malformed footers |
 | `test_parquet_hardening_strings_run_in_a_utf8_database` | premise: the string arms run in a UTF8 database |
 | `test_parquet_hardening_read_parquet_plain_string_not_utf8_raises_22021` | read_parquet PLAIN string not UTF-8 -> 22021 naming the column |
@@ -12494,7 +12525,7 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_hardening_valid_multibyte_utf8_still_reads_plain` | valid multibyte UTF-8 still reads (PLAIN) |
 | `test_parquet_hardening_valid_multibyte_utf8_still_reads_dictionary` | valid multibyte UTF-8 still reads (dictionary) |
 | `test_parquet_hardening_iceberg_scan_data_file_string_not_utf8_raises_22021` | iceberg_scan data file string not UTF-8 -> 22021 naming the column |
-| `test_parquet_hardening_patched_manifest_table_reads_all_five_rows` | premise: the patched-manifest table reads all five rows |
+| `test_parquet_hardening_patched_manifest_table_reads_all_five_rows` | the patched-manifest table reads all five rows |
 | `test_parquet_hardening_iceberg_fdw_reads_a_file_whose_partition_value_is_not_valid_text` | iceberg FDW reads, not prunes, a file whose partition value is not valid text |
 | `test_parquet_hardening_backend_survives_the_string_arms` | backend survived the string arms |
 
@@ -12648,6 +12679,9 @@ Every test makes one check under the shell's name, on a private database. Every 
 | `test_a_missing_column_definition_list_is_refused` | premise: reject missing column definition list |
 | `test_fewer_declared_columns_than_the_file_is_refused` | reject fewer columns than file |
 | `test_an_incompatible_declared_type_is_refused` | reject incompatible declared type |
+| `test_read_parquet_type_refusal_names_read_parquet` | read_parquet's type refusal names read_parquet |
+| `test_import_parquet_type_refusal_names_import_parquet` | import_parquet's type refusal names import_parquet |
+| `test_parquet_foreign_table_type_refusal_names_the_wrapper` | a Parquet foreign table's type refusal names the foreign-data wrapper |
 | `test_a_file_that_is_not_parquet_is_refused` | reject non-parquet file |
 | `test_read_parquet_keeps_its_own_file_gate` | a role without pg_read_server_files is refused by read_parquet's own gate |
 | `test_a_pg_read_server_files_member_reads_every_row` | and a member of pg_read_server_files reads every row |
@@ -12881,7 +12915,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
 
-The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. An allow-listed `http://` target, served by a second fixture server without the SigV4 options, is written unsigned and does not crash the backend (#1779): a small export as one PUT and a large one as a multipart upload, each read back as the generator over `http://`, an Arrow export imported back from the server's directory, and an injected fault leaves no upload open. A 403 from an unsigned `http://` target carries a hint that says the request went unsigned, not one that sends the reader to the `AWS_*` credentials, and a 403 to a signed `s3://` request still sends the reader there. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a refused stale-part listing or a refused `_SUCCESS` PUT after every worker finished fails the run by its own 28000 and leaves no part and no earlier marker (`__listing_status__` and the fixture's `__put_status__`, #1781). A refused listing after a larger 4-worker run leaves that run's part-0002 and part-0003 and no marker, which is the limit docs/sql-reference.md documents, and its error names the prefix it listed rather than the dummy key `s3://pgc-bucket/_`. A smaller re-run drops the stale tail, a prefix that ends in one or more `/` gets keys with one slash and reads back through the documented glob (#1782), no form of the prefix deletes part objects under a sibling prefix that shares its leading characters, a smaller re-run keeps a part under a deeper prefix such as `sl/sub/`, a smaller re-run to an `S3://` prefix (uppercase scheme) still drops the stale tail, and a bare bucket is refused before any worker writes. The workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780). A cancelled run on a prefix ending in `/` leaves no object, no marker, no upload open and no key with an empty segment. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. An unlisted endpoint is refused by the allow-list. An allow-listed `http://` target, served by a second fixture server without the SigV4 options, is written unsigned and does not crash the backend (#1779): a small export as one PUT and a large one as a multipart upload, each read back as the generator over `http://`, an Arrow export imported back from the server's directory, and an injected fault leaves no upload open. A 403 from an unsigned `http://` target carries a hint that says the request went unsigned, not one that sends the reader to the `AWS_*` credentials, and a 403 to a signed `s3://` request still sends the reader there. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a refused stale-part listing or a refused `_SUCCESS` PUT after every worker finished fails the run by its own 28000 and leaves no part and no earlier marker (`__listing_status__` and the fixture's `__put_status__`, #1781). A refused listing after a larger 4-worker run leaves that run's part-0002 and part-0003 and no marker, which is the limit docs/sql-reference.md documents, and its error names the prefix it listed rather than the dummy key `s3://pgc-bucket/_`. A smaller re-run drops the stale tail, a prefix that ends in one or more `/` gets keys with one slash and reads back through the documented glob (#1782), no form of the prefix deletes part objects under a sibling prefix that shares its leading characters, a smaller re-run keeps a part under a deeper prefix such as `sl/sub/`, a smaller re-run to an `S3://` prefix (uppercase scheme) still drops the stale tail, and a bare bucket is refused before any worker writes. A `gs://` or `http://` prefix is refused before any worker starts, since only an `s3://` prefix can be listed (#1832), and the refusal of an unsupported scheme hints at that (#1831). A 1023-byte prefix is refused as too long before any request (#1849). The workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780). A cancelled run on a prefix ending in `/` leaves no object, no marker, no upload open and no key with an empty segment. A cancel while every worker waits for the answer to its part PUT, which the fixture applies 3 s late, leaves no part (#1864), and with a 12 s hold the cancel returns within 8 s, because the dispatcher waits for the workers once, not twice. The shell's two optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432).
 
 ### Every test
 
@@ -12970,6 +13004,11 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_no_completed_object_remains_after_the_cancel` | cancel: no completed object remains at the prefix |
 | `test_no_success_marker_remains_after_the_cancel` | cancel: no _SUCCESS marker at the prefix |
 | `test_no_upload_stays_open_after_the_cancel` | cancel: the server holds no open upload under the prefix -- #1722: the workers the cancel terminates abort their uploads on the way out |
+| `test_all_four_part_puts_reached_the_store_before_the_cancel` | premise: commit hold: all four part PUTs reached the store before the cancel |
+| `test_the_commit_hold_export_was_cancelled_not_completed` | premise: commit hold: the export was cancelled, not completed |
+| `test_a_cancel_leaves_no_part_a_worker_was_committing` | commit hold: a cancel leaves no part that a worker was committing -- #1864: the fixture applies each part PUT 3 s late (`__put_hold__`), and the dispatcher deleted the keys before that |
+| `test_the_long_hold_export_was_cancelled_not_completed` | premise: long hold: the export was cancelled, not completed |
+| `test_a_cancel_waits_for_the_workers_once` | long hold: a cancel waits for the workers once, not twice -- #1864 review: the cancel waited 5 s before the DELETEs and again before the upload abort, about 10 s against a store that held every commit 12 s |
 | `test_terminated_workers_exit_while_the_store_is_silent` | terminate: export workers exit within 75 s while the store is silent -- #1727: each wait slice times out, so the 60 s quiet limit ends a worker's abort |
 | `test_the_unsigned_http_fixture_server_is_up` | premise: unsigned http fixture server is up |
 | `test_a_small_export_to_http_succeeds_unsigned` | http:// small export succeeds unsigned (no crash) -- #1779: the signer read a NULL region and the backend died with signal 11 |
@@ -12984,6 +13023,10 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_injected_http_failure_leaves_no_open_upload` | http:// inject: the server holds no open upload for the key -- the unsigned abort reached the server |
 | `test_a_403_from_an_unsigned_http_target_hints_that_it_went_unsigned` | http:// 403: the hint says the request went unsigned, not to check AWS_* credentials -- the SigV4 fixture server refuses a request with no Authorization header |
 | `test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials` | s3:// 403: a signed request that is refused still hints to check AWS_* credentials -- the fixture verifies the denied bucket against another secret |
+| `test_a_parallel_export_to_gs_is_refused_before_any_worker_starts` | gs:// prefix: a parallel export is refused before any worker starts, with no request sent -- #1832: it uploaded every part and then failed at the s3://-only listing |
+| `test_a_parallel_export_to_http_is_refused_before_any_worker_starts` | http:// prefix: a parallel export is refused before any worker starts, with no request sent -- #1832 |
+| `test_a_1023_byte_prefix_is_refused_as_too_long` | long prefix: a 1023-byte s3:// prefix is refused as too long, with no request sent -- #1849: why the upload cleanup's prefix buffer cannot truncate |
+| `test_the_unsupported_scheme_hint_says_only_s3_can_be_listed` | unsupported scheme: the parallel export's hint says only an s3:// prefix can be listed -- #1831: the hint said a remote prefix cannot be listed at all |
 | `test_integration_a_multipart_export_to_real_s3_succeeds` | opt-in: integration: multipart export to real S3 succeeds |
 | `test_integration_the_real_s3_read_back_equals_the_source` | opt-in: integration: real S3 read-back == source |
 
