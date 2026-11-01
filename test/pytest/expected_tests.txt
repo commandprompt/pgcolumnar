@@ -1512,6 +1512,7 @@ guard_tests 854
 # with a secret and no key id is ignored), by collection: `4659 tests collected`.
 # cluster_tests 4645 -> 4650 for #1869: test_objstore_export_open_uploads.py gains the twins of
 # objstore_export_open_uploads.sh's refused-upload-listing and no-region arms (5 tests), by collection: `4650 tests collected`.
+# cluster_tests 4904 -> 4909 at the merge of origin/main (56a95f5f) into fix/1869-list-uploads-url: main's 4904 plus this branch's 5 tests in test_objstore_export_open_uploads.py, by collection: `4909 tests collected`.
 # cluster_tests 4650 -> 4666 for #1796: test_objstore_error_advice.py, the twin of the new
 # objstore_error_advice.sh (16 tests), by collection: `4666 tests collected`.
 # cluster_tests 4904 -> 4926 at the merge of origin/main (56a95f5f) into fix/1796-objstore-error-advice: main's 4904
