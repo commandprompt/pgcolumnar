@@ -65,6 +65,60 @@ PgColumnarPathIsRemote(const char *path)
 }
 
 /*
+ * s3a:// and s3n:// are the Hadoop names for an S3 store. Spark and Hive write
+ * them into table metadata, and users copy them out of Hadoop configuration.
+ * The scheme is matched in any case, and only at the start of the path: a
+ * local path that holds "s3a://" further on is a local path.
+ */
+bool
+PgColumnarPathIsS3Alias(const char *path)
+{
+	return path != NULL &&
+		(pg_strncasecmp(path, "s3a://", 6) == 0 ||
+		 pg_strncasecmp(path, "s3n://", 6) == 0);
+}
+
+/*
+ * The s3:// form of an s3a:// or s3n:// path, palloc'd, and any other path
+ * unchanged. The readers call this before anything else looks at the path:
+ * the Iceberg reader for every path it reads (#1825), and the Parquet readers
+ * (read_parquet, parquet_schema, import_parquet and the pgcolumnar_parquet
+ * FDW) for the path the user gave (#1930). So routing, listing, globbing,
+ * request signing and endpoint resolution all see s3://, and the object-store
+ * module, which handles s3://, gs:// and http(s):// only, never sees the alias.
+ *
+ * PgColumnarPathIsRemote does not list the aliases, because the exports call it
+ * too and write s3:// only: an export refuses an alias by name instead
+ * (PgColumnarRefuseS3AliasWrite). An error raised after the rewrite names the
+ * s3:// URL, which is the one that was signed and requested.
+ */
+const char *
+PgColumnarS3Alias(const char *path)
+{
+	if (PgColumnarPathIsS3Alias(path))
+		return psprintf("s3://%s", path + 6);
+	return path;
+}
+
+/*
+ * Refuse an s3a:// or s3n:// path in an export (#1930). The readers read an
+ * alias as s3://, but the exports write only the schemes PgColumnarPathIsRemote
+ * lists, as the Iceberg reader, which reads the aliases, writes nothing. Before
+ * this an alias reached the local write path and failed with 58P01 "could not
+ * open file "s3a://..." for writing". The hint names the s3:// URL to use.
+ */
+void
+PgColumnarRefuseS3AliasWrite(const char *funcname, const char *path)
+{
+	if (PgColumnarPathIsS3Alias(path))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("columnar: %s does not write \"%s\"", funcname, path),
+				 errdetail("s3a:// and s3n:// URLs are read as s3://, but not written."),
+				 errhint("Write to \"%s\" instead.", PgColumnarS3Alias(path))));
+}
+
+/*
  * Refuse a remote URL in a function that reads local files only (#1886).
  * import_arrow, file_split_offsets and parallel_copy open their path with
  * open(2), so an s3:// or http:// URL used to fail with ENOENT ("could not
@@ -74,12 +128,18 @@ PgColumnarPathIsRemote(const char *path)
  * for a scheme they cannot read, and it names the function. import_arrow and
  * parallel_copy call it after their INSERT and RLS checks on the target, so a
  * caller who may not write the target gets 42501 first, and before they check
- * the target's kind, so a heap target gets the refusal.
+ * the target's kind, so a heap target gets the refusal. read_avro_manifest and
+ * read_manifest_list call it too (#1913), after their pg_read_server_files gate.
+ *
+ * It also refuses s3a:// and s3n://, in any case (#1918). Those are the Hadoop
+ * names for S3, which the Iceberg and Parquet readers accept (#1825, #1930), so
+ * a user may well pass one here. PgColumnarPathIsRemote does not list them (see
+ * PgColumnarS3Alias), so this refusal names them itself.
  */
 void
 PgColumnarRefuseRemotePath(const char *funcname, const char *path)
 {
-	if (PgColumnarPathIsRemote(path))
+	if (PgColumnarPathIsRemote(path) || PgColumnarPathIsS3Alias(path))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("columnar: %s does not read \"%s\"", funcname, path),

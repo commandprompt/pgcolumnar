@@ -12,7 +12,8 @@ unsorted file, a DEFAULT partition, more workers than prepared-transaction slots
 missing file, a heap target, and a FIFO, which it must refuse rather than hang on.
 Both functions read local files only, so both refuse an object-storage URL with
 0A000, naming themselves and the URL (#1886). parallel_copy refuses after its INSERT
-check and before it checks the target's kind, so a heap target gets 0A000.
+check and before it checks the target's kind, so a heap target gets 0A000. The
+refusal covers s3a:// and s3n:// too, in any case (#1918).
 
 THREE FIXES THE SHELL SHARES. The per-range loads are compared with the generator
 that wrote the file, not with a single columnar COPY of it, which shares every defect
@@ -43,6 +44,8 @@ REMOTE_S3 = "s3://pgc-test/f1886/data.txt"
 REMOTE_HTTP = "http://127.0.0.1:9/f1886/data.txt"
 REMOTE_OTHER = ("https://127.0.0.1:9/f1886/data.txt", "gs://pgc-test/f1886/data.txt",
                 "az://pgc-test/f1886/data.txt", "S3://pgc-test/f1886/data.txt")
+HADOOP = ("s3a://pgc-test/f1918/data.txt", "s3n://pgc-test/f1918/data.txt")
+HADOOP_CASE = ("S3A://pgc-test/f1918/data.txt", "S3n://pgc-test/f1918/data.txt")
 
 # (reading key, the shell's check name)
 STRUCTURE = (
@@ -495,6 +498,27 @@ def pcopy(pgc_cluster, server_dir):
         except OSError as exc:
             r["split local size"] = query_error(f"cannot stat the control file: {exc}")
         r["pcopy local"] = db.value(f"SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '{local}', 2)")
+
+        # ---- #1918: s3a:// and s3n:// are refused too, in any case ---------------
+        for key, urls in (("hadoop", HADOOP), ("hadoop case", HADOOP_CASE)):
+            r[f"split {key}"] = " ; ".join(
+                db.remote_refusal(f"SELECT pgcolumnar.file_split_offsets('{u}', 2)") for u in urls)
+            r[f"pcopy {key}"] = " ; ".join(
+                db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '{u}', 2)") for u in urls)
+        # d/"s3a:" is a directory, so d/"s3a://ctl.txt" is a local file whose path
+        # holds "s3a://" past its start.
+        sub_a = d / "s3a:"
+        sub_a.mkdir()
+        os.chmod(sub_a, 0o777)
+        local_a = f"{d}/s3a://ctl.txt"
+        db.run(f"COPY ({GEN_F.format(n=5000)}) TO '{local_a}' WITH (FORMAT text)")
+        offs = db.offsets(local_a, 2)
+        r["split local s3a"] = offs[2] if isinstance(offs, list) and len(offs) == 3 else offs
+        try:
+            r["split local s3a size"] = (sub_a / "ctl.txt").stat().st_size
+        except OSError as exc:
+            r["split local s3a size"] = query_error(f"cannot stat the control file: {exc}")
+        r["pcopy local s3a"] = db.value(f"SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '{local_a}', 2)")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -749,3 +773,36 @@ def test_parallel_copy_split_still_reads_a_local_path_holding_a_scheme(pcopy, ex
 def test_parallel_copy_still_loads_a_local_path_holding_a_scheme(pcopy, expect):
     expect.num(pcopy["pcopy local"], 5000,
                "control: parallel_copy still loads a local path that holds s3:// past its start (#1886)")
+
+
+# ---- #1918: s3a:// and s3n:// are refused too ----------------------------------------
+
+def test_parallel_copy_split_refuses_s3a_and_s3n_urls(pcopy, expect):
+    expect.text(pcopy["split hadoop"], " ; ".join(_want_refusal("file_split_offsets", u) for u in HADOOP),
+                "file_split_offsets refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)")
+
+
+def test_parallel_copy_split_refuses_s3a_and_s3n_in_any_case(pcopy, expect):
+    expect.text(pcopy["split hadoop case"],
+                " ; ".join(_want_refusal("file_split_offsets", u) for u in HADOOP_CASE),
+                "file_split_offsets refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)")
+
+
+def test_parallel_copy_refuses_s3a_and_s3n_urls(pcopy, expect):
+    expect.text(pcopy["pcopy hadoop"], " ; ".join(_want_refusal("parallel_copy", u) for u in HADOOP),
+                "parallel_copy refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)")
+
+
+def test_parallel_copy_refuses_s3a_and_s3n_in_any_case(pcopy, expect):
+    expect.text(pcopy["pcopy hadoop case"], " ; ".join(_want_refusal("parallel_copy", u) for u in HADOOP_CASE),
+                "parallel_copy refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)")
+
+
+def test_parallel_copy_split_still_reads_a_local_path_holding_s3a(pcopy, expect):
+    expect.num(pcopy["split local s3a"], pcopy["split local s3a size"],
+               "control: file_split_offsets still splits a local path that holds s3a:// past its start (#1918)")
+
+
+def test_parallel_copy_still_loads_a_local_path_holding_s3a(pcopy, expect):
+    expect.num(pcopy["pcopy local s3a"], 5000,
+               "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)")

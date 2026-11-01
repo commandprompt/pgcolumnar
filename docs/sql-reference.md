@@ -1128,7 +1128,12 @@ named `s.t.list.element`. Give one of them another name in your list.
 
 `data_type` is NULL for a leaf that no column type reads correctly. A leaf under
 two repeated levels, such as the elements of a list of lists, is one example.
-`read_parquet` reads such a leaf declared as an array by flattening it (#1917).
+`read_parquet` cannot read a file that holds such a leaf. Declared as an array,
+the leaf fails with SQLSTATE 42804, because a one-dimensional array would lose
+the inner lists. Declared as a scalar, it fails as unexpectedly repeated.
+`read_parquet` binds every column by position, so you cannot leave it out
+either. `import_parquet` and the `pgcolumnar_parquet` foreign table refuse the
+file the same way, even for a query that does not use that column (#1917).
 
 `nullable` for a nested column says whether the column itself can be NULL. A
 NULL list element or struct field does not make it true. On a leaf row it is true
@@ -1167,8 +1172,10 @@ applies to a strictly lower one. The caller needs the `pg_read_server_files`
 role, which superusers hold. This is the first step of Iceberg support (#388).
 It is a standalone Avro object-container reader, decoded against the schema
 embedded in the file, so a v3 manifest reads structurally. It reads a local
-file. It does not resolve a table's snapshot or apply delete files. To read a
-whole table, use `iceberg_scan`.
+file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). A caller without `pg_read_server_files` gets
+`42501` for a URL too. It does not resolve a table's snapshot or apply delete
+files. To read a whole table, use `iceberg_scan`.
 
 ```sql
 SELECT file_path, record_count, partition
@@ -1185,7 +1192,9 @@ writer recorded. The caller needs the `pg_read_server_files` role, which
 superusers hold. This is step two of Iceberg support (#388). It reads the same
 Avro object-container format as `read_avro_manifest`, decoded against the schema
 embedded in the file. A v3 manifest list therefore reads structurally. It reads
-a local file. It does not resolve a table's current snapshot or open the
+a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). A caller without `pg_read_server_files` gets
+`42501` for a URL too. It does not resolve a table's current snapshot or open the
 manifests it names. To read a whole table, use `iceberg_scan`.
 
 ```sql
@@ -1756,19 +1765,24 @@ accept an object-storage URL wherever they accept a local path. So do the
 `pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data wrappers. The third
 wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
 `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
-`read_manifest_list` read local files only. `import_arrow`, `file_split_offsets`
-and `parallel_copy` refuse a URL in any of the schemes below with SQLSTATE 0A000
-before they read anything, for example
+`read_manifest_list` read local files only. Each of them refuses a URL in any of
+the schemes below with SQLSTATE 0A000 before it reads anything, for example
 `columnar: import_arrow does not read "s3://bucket/m.arrow"`. These URL schemes
 are recognized:
 
 | Scheme | Meaning |
 | --- | --- |
 | `s3://bucket/key` | An S3 or S3-compatible object. The request is signed with AWS Signature Version 4. |
+| `s3a://bucket/key`, `s3n://bucket/key` | The Hadoop names for S3, matched in any case. The readers read them as `s3://bucket/key`: the Parquet functions, the `pgcolumnar_parquet` wrapper and the Iceberg reader. The exports refuse them with SQLSTATE 0A000, for example `columnar: export_parquet does not write "s3a://bucket/t.parquet"`, with a hint that names the `s3://` URL. The local-only functions above refuse them too. |
 | `gs://bucket/key` | A Google Cloud Storage object, read and written through the interoperable XML API. It signs with the same Signature Version 4 as `s3://`, so a GCS HMAC key is given as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The endpoint defaults to `https://storage.googleapis.com` and the region to `auto`; set `AWS_ENDPOINT_URL` to override. |
 | `http://host[:port]/path` | A plain-HTTP object. The request carries no credential, but the data crosses the network in clear, so use it on a trusted network only. |
 | `https://host[:port]/path` | An HTTPS object. Available when the object-store module was built with OpenSSL. The server certificate is verified. |
 | `az://container/key` | Reserved for Azure Blob Storage, which no module reads yet. pgcolumnar treats the URL as remote, not as a local path, and refuses it with SQLSTATE 0A000: `reading "az://..." is not supported`, or, without the object-store module, `reading "az://..." requires the object-store module`. |
+
+A reader rewrites an `s3a://` or `s3n://` URL to `s3://` before it lists, signs or
+opens anything. So the request, the endpoint and the credentials are those of the
+`s3://` URL. Error messages name the `s3://` URL too, because that is the URL that was
+requested. Only the start of the URL counts: `xs3a://` or `s3ax://` is a local path.
 
 Requests to an `http://` or `https://` URL are never signed and carry no
 credential, for reads and for exports alike. An export sends one `PUT`, or, for a
