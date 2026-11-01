@@ -136,6 +136,11 @@ def ptz(pgc_cluster, server_dir):
         r["legacy ts"] = _value(dsn, "SELECT t::text || ' ' || (t = '2024-06-01 12:00+00'::timestamptz::timestamp)::text "
                                      "FROM f_leg_ts")
         r["legacy tz"] = _value(dsn, "SELECT t::text FROM f_leg_tz")
+        # parquet_schema's advice per leaf, "name|type" comma-separated (#1807)
+        for f in ("adjusted", "naive", "rt", "legacy"):
+            r[f"advice {f}"] = _value(dsn, "SELECT string_agg(column_name || '|' || data_type, ',' ORDER BY n)"
+                                           f" FROM pgcolumnar.parquet_schema('{w}/{f}.parquet')"
+                                           " WITH ORDINALITY AS s(column_name, data_type, nullable, field_id, n)")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -259,3 +264,25 @@ def test_ptz_a_legacy_file_into_timestamptz_keeps_its_instant(request, expect):
     if r is not None:
         expect.text(r["legacy tz"], "2024-06-01 08:00:00-04",
                     "a legacy TIMESTAMP_MICROS file read into timestamptz keeps its instant")
+
+
+def test_ptz_parquet_schema_advises_timestamptz_for_an_adjusted_file(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(f"{r['advice adjusted']} {r['advice naive']}",
+                    "t|timestamp with time zone t|timestamp without time zone",
+                    "parquet_schema advises timestamptz for an adjusted file and timestamp for a naive one (#1807)")
+
+
+def test_ptz_parquet_schema_advises_the_exported_source_types(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["advice rt"], "ts|timestamp without time zone,tz|timestamp with time zone",
+                    "parquet_schema advises the source types for export_parquet's timestamp and timestamptz (#1807)")
+
+
+def test_ptz_parquet_schema_advises_timestamptz_for_a_legacy_column(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["advice legacy"], "t|timestamp with time zone",
+                    "parquet_schema advises timestamptz for a legacy TIMESTAMP_MICROS column (#1807)")

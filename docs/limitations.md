@@ -1039,6 +1039,35 @@ The exporter can write `json` and `jsonb` to Parquet, and other tools can read
 them. pgColumnar cannot import them from Parquet at this time. Arrow supports
 both types in each direction.
 
+## Export size limits
+
+`export_parquet`, `export_arrow` and `parallel_export_parquet` write a table of any
+total size. They cap the bytes they buffer for one Parquet row group or Arrow record
+batch at `pgcolumnar.export_group_bytes`, 256 MiB by default. A row that would pass
+the cap starts a new group. A row larger than the cap goes in a group of its own.
+
+The writers count each row in the form they write it, not the form PostgreSQL
+stores it. An unconstrained `numeric` and a `jsonb` are written as text. The text
+can be far longer than the stored value: `1e100000` stores in a few bytes but is
+written as 100001 digits.
+
+One row can still fail an export. PostgreSQL caps one buffer at 1 GiB. An Arrow
+record batch is one buffer, so a row whose written form passes about 1 GiB fails. In
+Parquet each column has its own buffer, so a row fails when one of its columns, as
+written, passes about 1 GiB. The export then stops with PostgreSQL's error
+`string buffer exceeds maximum allowed length (1073741823 bytes)`. pgColumnar does
+not raise an error of its own for this case.
+
+A remote export holds one multipart part in memory. `pgcolumnar.objstore_part_size`
+is at most 512 MiB, because PostgreSQL caps one allocation at 1 GiB. S3 sets its own
+limits, which pgColumnar does not check:
+
+- Each part but the last must be at least 5 MiB. The test suites use smaller parts
+  against a local test server; against S3, keep the setting at `0` (8 MiB) or at
+  5242880 and above.
+- An upload holds at most 10000 parts. At the default 8 MiB part, that is an object
+  of about 78 GiB. Raise the part size for a larger export.
+
 ## Compression codecs
 
 For the native table format, `lz4` and `zstd` are available only when the
@@ -1190,11 +1219,32 @@ table at its current snapshot. It has these limits:
 - The reader refuses malformed or hostile metadata rather than crashing or
   returning wrong rows. It rejects a non-regular file, such as a FIFO, named as a
   path. It also rejects a null manifest sequence number, a null or negative
-  position-delete position, and a `current-schema-id` that names no schema. It
-  also rejects a manifest `content` or `status` value outside the Iceberg spec.
-  A file of unknown kind is never skipped as a delete.
+  position-delete position, and a `current-schema-id` that names no schema.
+  It refuses a fractional number where the spec wants an integer, and a field
+  id outside 0 to 2147483647. It refuses a `format-version` other than 1, 2 or
+  3, and a `current-snapshot-id` that is present but not an integer (#1824).
+  It also rejects a manifest `content` or `status` value outside the Iceberg
+  spec. A file of unknown kind is never skipped as a delete.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
-  vectors. The data files must be Parquet.
+  vectors. The data files must be Parquet. The reader accepts the file format in
+  any case, so `parquet` and `PARQUET` both read.
+- The table metadata file may be plain JSON or gzip-compressed. Writers produce a
+  gzip file when the table property `write.metadata.compression-codec` is `gzip`,
+  and name it `*.gz.metadata.json` or `*.metadata.json.gz`. The reader detects
+  gzip by its first two bytes, not by the name. The cap of 64 MiB applies to the
+  inflated JSON. A larger file is refused with SQLSTATE 54000.
+- Manifests and manifest lists must use the Avro codec `null` or `deflate`. The
+  reader refuses `zstandard`, `snappy`, `bzip2`, and `xz` with SQLSTATE 0A000.
+  Java Iceberg writes `zstd` or `snappy` manifests when the table property
+  `write.avro.compression-codec` asks for them. Rewrite such a table with
+  `gzip` (deflate) or no compression to read it here.
+- The metadata path and every path the table records may be a local path, or an
+  `s3://`, `gs://`, `http://`, or `https://` URL. The reader treats `s3a://` and
+  `s3n://`, the Hadoop names for S3, as `s3://`. So a table may record its location
+  under one of the three names and its files under another. An `az://` URL is
+  refused with SQLSTATE 0A000, because no module reads Azure Blob Storage yet.
+  Other schemes, such as `abfs://` or `hdfs://`, are opened as local paths and fail
+  with "could not open file".
 - A scan holds every applicable equality-delete row in memory until it ends.
   The memory is not bounded by `work_mem`, so a table with very many
   equality-delete rows needs memory in proportion to them.

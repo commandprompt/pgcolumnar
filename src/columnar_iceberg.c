@@ -25,6 +25,10 @@
  */
 #include "postgres.h"
 
+#ifdef HAVE_LIBZ
+#include <zlib.h>
+#endif
+
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
@@ -123,22 +127,156 @@ ice_slurp_remote(const char *url, int64 *outlen,
 }
 
 /*
+ * s3a:// and s3n:// are the Hadoop names for an S3 store, and Spark and Hive
+ * write them into table metadata. Return the s3:// form of such a path, which
+ * the object-store module reads, and any other path unchanged (#1825).
+ */
+static const char *
+ice_s3_alias(const char *path)
+{
+	if (path != NULL &&
+		(pg_strncasecmp(path, "s3a://", 6) == 0 ||
+		 pg_strncasecmp(path, "s3n://", 6) == 0))
+		return psprintf("s3://%s", path + 6);
+	return path;
+}
+
+#ifdef HAVE_LIBZ
+/*
+ * zlib's allocator, on palloc: an ERROR raised while the stream is open (a
+ * cancel, or out of memory) then frees zlib's state with the memory context,
+ * where malloc'd state would leak until the backend exits.
+ */
+static voidpf
+ice_zalloc(voidpf opaque, uInt items, uInt size)
+{
+	return palloc((Size) items * size);
+}
+
+static void
+ice_zfree(voidpf opaque, voidpf address)
+{
+	pfree(address);
+}
+#endif
+
+/*
+ * Inflate a gzip-compressed metadata.json (#1815). Iceberg writes one when the
+ * table property write.metadata.compression-codec is gzip, and names it
+ * *.gz.metadata.json (older writers: *.metadata.json.gz). The caller detects it
+ * by the gzip magic bytes, not by the name, so a file of either name, or of a
+ * name that does not say, reads the same. The inflated size is held to the same
+ * cap as a plain file, so a small file cannot make the backend allocate without
+ * bound. A gzip file may hold several members back to back, and the text is
+ * all of them. Bytes after a member that do not start another one are padding,
+ * and are ignored, as Java's GZIPInputStream ignores them. Returns a palloc'd,
+ * NUL-terminated buffer.
+ */
+static char *
+ice_gunzip(const char *path, const uint8 *in, int64 inlen)
+{
+#ifdef HAVE_LIBZ
+	z_stream	zs;
+	int64		cap = Min(Max(inlen * 8, (int64) 64 * 1024), ICE_MAX_METADATA);
+	char	   *out = palloc(cap + 1);
+	int64		used;
+	int			rc;
+
+	memset(&zs, 0, sizeof(zs));
+	zs.zalloc = ice_zalloc;
+	zs.zfree = ice_zfree;
+	if (inflateInit2(&zs, 15 + 16) != Z_OK)	/* 15 + 16: the gzip wrapper */
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("iceberg: could not start inflating \"%s\"", path)));
+	zs.next_in = (Bytef *) in;
+	zs.avail_in = (uInt) inlen;
+	zs.next_out = (Bytef *) out;
+	zs.avail_out = (uInt) cap;
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+		rc = inflate(&zs, Z_NO_FLUSH);
+		if (rc == Z_STREAM_END)
+		{
+			/* another member follows only where the gzip magic does */
+			if (zs.avail_in < 2 || zs.next_in[0] != 0x1f || zs.next_in[1] != 0x8b)
+				break;
+			/* inflateReset zeroes total_out, so count output by next_out */
+			if (inflateReset(&zs) != Z_OK)
+				rc = Z_DATA_ERROR;
+			else
+				continue;
+		}
+		if (rc == Z_OK && zs.avail_out == 0)
+		{
+			used = (int64) ((char *) zs.next_out - out);
+			if (cap >= ICE_MAX_METADATA)
+			{
+				inflateEnd(&zs);
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("iceberg: gzip-compressed metadata \"%s\" inflates past %d MiB",
+								path, (int) (ICE_MAX_METADATA / (1024 * 1024))),
+						 errdetail("pgcolumnar reads a metadata.json of at most %d MiB, compressed or not.",
+								   (int) (ICE_MAX_METADATA / (1024 * 1024)))));
+			}
+			cap = Min(cap * 2, ICE_MAX_METADATA);
+			out = repalloc(out, cap + 1);
+			zs.next_out = (Bytef *) out + used;
+			zs.avail_out = (uInt) (cap - used);
+			continue;
+		}
+		if (rc == Z_OK && zs.avail_in > 0)
+			continue;
+		/* Z_OK with all input used and room left: the stream was cut short */
+		inflateEnd(&zs);
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" starts as gzip but is not a complete gzip stream",
+						path),
+				 errdetail("zlib reported: %s.",
+						   rc == Z_OK || rc == Z_BUF_ERROR ? "unexpected end of input" :
+						   (zs.msg != NULL ? zs.msg : "invalid data"))));
+	}
+	used = (int64) ((char *) zs.next_out - out);
+	out[used] = '\0';
+	inflateEnd(&zs);
+	return out;
+#else
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("iceberg: \"%s\" is gzip-compressed metadata, and this build has no zlib",
+					path),
+			 errhint("Rebuild pgcolumnar with the zlib development files installed.")));
+	return NULL;				/* keep the compiler quiet */
+#endif
+}
+
+/*
  * slurp a whole (small) file into a palloc'd, NUL-terminated string so jsonb_in
  * can parse it. A local path is read with AllocateFile; a remote URL (s3://,
- * http(s)://) through the object-store module.
+ * http(s)://) through the object-store module. A gzip-compressed file is
+ * inflated first (#1815).
  */
 static char *
 ice_slurp_text(const char *path, const PgColumnarObjStoreConfig *cfg)
 {
 	int64		flen;
+	char	   *buf;
 
+	path = ice_s3_alias(path);
 	if (PgColumnarPathIsRemote(path))
-		return (char *) ice_slurp_remote(path, &flen, cfg);
-
-	/* Race-free local open (rejects a FIFO without a stat-before-open window),
-	 * NUL-terminated so the JSON parser can treat it as a cstring. */
-	return PgColumnarSlurpLocalRegularFile(path, ICE_MAX_METADATA,
-										   "Iceberg metadata", &flen);
+		buf = (char *) ice_slurp_remote(path, &flen, cfg);
+	else
+		/* Race-free local open (rejects a FIFO without a stat-before-open
+		 * window), NUL-terminated so the JSON parser can treat it as a cstring. */
+		buf = PgColumnarSlurpLocalRegularFile(path, ICE_MAX_METADATA,
+											  "Iceberg metadata", &flen);
+	/* the gzip magic, 1f 8b: no JSON text starts with either byte */
+	if (flen >= 2 && (uint8) buf[0] == 0x1f && (uint8) buf[1] == 0x8b)
+		return ice_gunzip(path, (const uint8 *) buf, flen);
+	return buf;
 }
 
 /* slurp a whole binary file (a manifest list, manifest, or Puffin file) into a
@@ -201,15 +339,49 @@ ice_field(JsonbContainer *c, const char *key)
 										palloc(sizeof(JsonbValue)));
 }
 
-/* interpret a JSON number as an int64; false if v is not a (non-null) number */
+/*
+ * Interpret a JSON number as an int64; false if v is not a (non-null) number.
+ * Every number this reader takes from metadata.json is an integer in the
+ * Iceberg spec. numeric_int8 rounds, so a fraction such as 1.4 used to read as
+ * 1 and could name another field (#1824). Refuse a fraction instead. A number
+ * outside int64 is refused by numeric_int8 itself.
+ */
 static bool
 ice_num_int64(JsonbValue *v, int64 *out)
 {
+	Datum		num;
+
 	if (v == NULL || v->type != jbvNumeric)
 		return false;
-	*out = DatumGetInt64(DirectFunctionCall1(numeric_int8,
-											 NumericGetDatum(v->val.numeric)));
+	num = NumericGetDatum(v->val.numeric);
+	*out = DatumGetInt64(DirectFunctionCall1(numeric_int8, num));
+	if (DatumGetInt32(DirectFunctionCall2(numeric_cmp, num,
+										  NumericGetDatum(int64_to_numeric(*out)))) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: metadata holds the non-integer number %s where an integer is required",
+						DatumGetCString(DirectFunctionCall1(numeric_out, num)))));
 	return true;
+}
+
+/*
+ * A schema field's "id" as an int, or -1 when it has none. A field id is an
+ * int in the Iceberg spec. A larger one used to truncate, so 2^32 + 1 read as
+ * field 1 and the column returned another field's values (#1824).
+ */
+static int64
+ice_schema_field_id(JsonbContainer *f, const char *name, int namelen)
+{
+	int64		fid;
+
+	if (!ice_num_int64(ice_field(f, "id"), &fid))
+		return -1;
+	if (fid < 0 || fid > PG_INT32_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: schema field \"%.*s\" has a field id out of range: " INT64_FORMAT,
+						namelen, name, fid)));
+	return fid;
 }
 
 /* a JSON string field as a palloc'd text Datum, or set the null flag */
@@ -253,9 +425,11 @@ ice_str_required(JsonbContainer *c, const char *key, const char *path)
 static JsonbContainer *
 ice_current_snapshot(JsonbContainer *root, const char *path, int64 *cur)
 {
+	JsonbValue *fv;
 	JsonbValue *csid;
 	JsonbValue *snaps;
 	JsonbContainer *arr;
+	int64		fmtver;
 	uint32		i,
 				n;
 
@@ -265,16 +439,36 @@ ice_current_snapshot(JsonbContainer *root, const char *path, int64 *cur)
 				 errmsg("iceberg: metadata \"%s\" is not a JSON object", path)));
 	/* a minimal is-this-Iceberg gate so a random JSON file is rejected, not
 	 * silently read as an empty table */
-	if (ice_field(root, "format-version") == NULL)
+	fv = ice_field(root, "format-version");
+	if (fv == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("iceberg: \"%s\" has no format-version; not a table metadata file",
 						path)));
+	/* the spec says a reader must refuse a format-version it does not know */
+	if (!ice_num_int64(fv, &fmtver))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" has a non-numeric format-version",
+						path)));
+	if (fmtver < 1 || fmtver > 3)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("iceberg: \"%s\" has an unsupported format-version " INT64_FORMAT,
+						path, fmtver),
+				 errdetail("This reader supports format-version 1, 2 and 3.")));
 
 	csid = ice_field(root, "current-snapshot-id");
 	/* absent, JSON null, or -1: a table with no current snapshot */
-	if (csid == NULL || csid->type == jbvNull ||
-		!ice_num_int64(csid, cur) || *cur < 0)
+	if (csid == NULL || csid->type == jbvNull)
+		return NULL;
+	/* a string here used to read as "no snapshot": an empty table (#1824) */
+	if (!ice_num_int64(csid, cur))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: \"%s\" has a current-snapshot-id that is not an integer",
+						path)));
+	if (*cur < 0)
 		return NULL;
 
 	snaps = ice_field(root, "snapshots");
@@ -335,20 +529,60 @@ ice_dirname(const char *path)
 static char *
 ice_actual_location(const char *metadata_path)
 {
-	char	   *metadir = ice_dirname(metadata_path);
+	char	   *metadir = ice_dirname(ice_s3_alias(metadata_path));
 
 	return ice_dirname(metadir);
 }
 
 /* strip a leading "file://" scheme from a recorded root, in place-ish. A remote
  * scheme (s3://, http(s)://) is left intact, so a recorded remote key keeps its
- * scheme and the same containment logic applies to its key portion. */
+ * scheme and the same containment logic applies to its key portion. s3a:// and
+ * s3n:// become s3://, so a table may record its location under one of the three
+ * names and its files under another (#1825). */
 static const char *
 ice_strip_scheme(const char *path)
 {
 	if (strncmp(path, "file://", 7) == 0)
 		return path + 7;
+	return ice_s3_alias(path);
+}
+
+/*
+ * Do two recorded paths name the same file, under ice_strip_scheme's rules?
+ * The answer is strcmp(ice_strip_scheme(a), ice_strip_scheme(b)) == 0, found
+ * without allocating: the delete-matching loops call this once per delete row
+ * per data file, and one allocation each grew a scan's memory with files x
+ * delete rows (#1825 review).
+ */
+static const char *
+ice_path_tail(const char *path, bool *s3)
+{
+	*s3 = false;
+	if (strncmp(path, "file://", 7) == 0)
+		return path + 7;
+	if (pg_strncasecmp(path, "s3a://", 6) == 0 ||
+		pg_strncasecmp(path, "s3n://", 6) == 0)
+	{
+		*s3 = true;
+		return path + 6;
+	}
+	if (strncmp(path, "s3://", 5) == 0)
+	{
+		*s3 = true;
+		return path + 5;
+	}
 	return path;
+}
+
+static bool
+ice_path_eq(const char *a, const char *b)
+{
+	bool		as3,
+				bs3;
+	const char *at = ice_path_tail(a, &as3);
+	const char *bt = ice_path_tail(b, &bs3);
+
+	return as3 == bs3 && strcmp(at, bt) == 0;
 }
 
 /* does a path segment sequence contain a ".." component? For object storage a
@@ -733,7 +967,7 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 	 * the actual root is the location derived lexically from the metadata URL,
 	 * and containment is the lexical key-prefix check in ice_rebase. */
 	recorded_root = ice_strip_scheme(ice_str_required(root, "location", path));
-	if (PgColumnarPathIsRemote(path))
+	if (PgColumnarPathIsRemote(ice_s3_alias(path)))
 		actual_root = ice_actual_location(path);
 	else
 	{
@@ -1126,7 +1360,9 @@ ice_field_ids_for_columns(JsonbContainer *root, TupleDesc tupdesc,
 									? pnstrdup(kind->val.string.val, kind->val.string.len)
 									: "nested")));
 				}
-				if (ice_num_int64(ice_field(f->val.binary.data, "id"), &fid))
+				fid = ice_schema_field_id(f->val.binary.data,
+										  fn->val.string.val, fn->val.string.len);
+				if (fid >= 0)
 					found = (int) fid;
 				break;
 			}
@@ -1151,7 +1387,6 @@ ice_field_id_by_name(JsonbContainer *fieldsc, uint32 nf, const char *nm)
 	{
 		JsonbValue *sf = getIthJsonbValueFromContainer(fieldsc, j);
 		JsonbValue *sfn;
-		int64		fid;
 
 		if (sf == NULL || sf->type != jbvBinary)
 			continue;
@@ -1160,11 +1395,8 @@ ice_field_id_by_name(JsonbContainer *fieldsc, uint32 nf, const char *nm)
 			continue;
 		if ((int) strlen(nm) == sfn->val.string.len &&
 			strncmp(nm, sfn->val.string.val, sfn->val.string.len) == 0)
-		{
-			if (ice_num_int64(ice_field(sf->val.binary.data, "id"), &fid))
-				return fid;
-			return -1;
-		}
+			return ice_schema_field_id(sf->val.binary.data,
+									   sfn->val.string.val, sfn->val.string.len);
 	}
 	return -1;
 }
@@ -2293,7 +2525,7 @@ ice_read_pos_deletes(IceScanCtx *c)
 			continue;
 		/* v2 position deletes are Parquet; any other delete-file format is
 		 * refused here with a clear cause rather than a parse error */
-		if (pd->file_format != NULL && strcmp(pd->file_format, "PARQUET") != 0)
+		if (pd->file_format != NULL && pg_strcasecmp(pd->file_format, "PARQUET") != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("iceberg: position-delete file \"%s\" has format %s; only PARQUET position deletes are supported",
@@ -2430,8 +2662,7 @@ ice_read_dvs(IceScanCtx *c, int64 format_version)
 		 * one-DV-per-data-file check must too, or an aliased pair (one with a
 		 * file:// scheme, one without) would slip past and be unioned */
 		foreach(lc2, seen)
-			if (strcmp(ice_strip_scheme((const char *) lfirst(lc2)),
-					   ice_strip_scheme(pd->ref_data_file)) == 0)
+			if (ice_path_eq((const char *) lfirst(lc2), pd->ref_data_file))
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_CORRUPTED),
 						 errmsg("iceberg: two deletion vectors reference data file \"%s\"",
@@ -2709,7 +2940,7 @@ ice_read_eq_deletes(IceScanCtx *c, JsonbContainer *root, const char *path,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("iceberg: equality delete file \"%s\" has no equality_ids",
 							ed->file_path)));
-		if (ed->file_format != NULL && strcmp(ed->file_format, "PARQUET") != 0)
+		if (ed->file_format != NULL && pg_strcasecmp(ed->file_format, "PARQUET") != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("iceberg: equality-delete file \"%s\" has format %s; only PARQUET equality deletes are supported",
@@ -3144,7 +3375,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 	foreach(lc, ctx.data)
 	{
 		IceEntry   *d = (IceEntry *) lfirst(lc);
-		const char *dp = ice_strip_scheme(d->file_path);
+		const char *dp = d->file_path;
 		uint64	   *skip = NULL;
 		int			nskip = 0;
 		int			cap = 0;
@@ -3178,7 +3409,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 			}
 		}
 
-		if (d->file_format != NULL && strcmp(d->file_format, "PARQUET") != 0)
+		if (d->file_format != NULL && pg_strcasecmp(d->file_format, "PARQUET") != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("iceberg: data file \"%s\" has format %s; only PARQUET is supported",
@@ -3198,7 +3429,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 				IceDvDel   *dv = (IceDvDel *) lfirst(lc2);
 
 				if (dv->seq >= d->seq &&
-					strcmp(ice_strip_scheme(dv->dpath), dp) == 0)
+					ice_path_eq(dv->dpath, dp))
 				{
 					dv_applies = true;
 					if (dv->npos > 0)
@@ -3228,7 +3459,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 					IcePosDel  *pd = (IcePosDel *) lfirst(lc2);
 
 					if (pd->seq >= d->seq &&
-						strcmp(ice_strip_scheme(pd->dpath), dp) == 0)
+						ice_path_eq(pd->dpath, dp))
 					{
 						if (nskip == cap)
 						{
