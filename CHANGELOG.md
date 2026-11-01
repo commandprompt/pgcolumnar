@@ -541,9 +541,9 @@ true until the next version shipped.
   blocked every other run of that major; one such cluster blocked the PG18
   queue for about 25 minutes. `test/portlib.sh` now closes a descriptor whose
   lock another live process took. That process still holds the lock. A lock
-  the suite took itself stays held. The fix does not cover a lock taken on a
-  descriptor, as in `( flock 9; bash test/smoke.sh ) 9>lock`: there the suite
-  holds the only copy, so closing it would release the lock. docs/testing.md
+  the suite took itself stays held. The fix does not cover a lock taken with
+  `flock -F` or on a descriptor, as in `( flock 9; bash test/smoke.sh ) 9>lock`:
+  there the suite holds the only copy, so closing it would release the lock. docs/testing.md
   says what to do instead. A suite that sets `set -e` before it loads lib.sh
   still runs under flock. On a shared machine, another session can also
   install into the same prefix during a run. `pgc_summary` now fails the run

@@ -14,8 +14,10 @@ Two hazards from the shared dev container:
    digest changed (`require_library_unchanged`), so the run ends failed. The
    replacement is made on a copy; the shared library is never touched.
 
-The Python harness's own machinery throughout, except one check: a set -e shell
-suite must still load lib.sh under flock, and only lib.sh can show that.
+The Python harness's own machinery throughout. One shell check has no twin here:
+"a set -e suite under flock still loads lib.sh". Only lib.sh can show it, and this
+harness has no descriptor-closing loop to measure instead, so it belongs to the
+shell harness alone (CONTEXT.md, Tests; declared in test_compare_to_bash.py).
 """
 import fcntl
 import os
@@ -127,16 +129,36 @@ def test_a_lock_the_harness_took_itself_stays_held(pgc_cluster, lock, expect):
             shutil.rmtree(root, ignore_errors=True)
 
 
-def test_a_set_e_suite_under_flock_still_loads_lib_sh(lock, expect):
-    """The one check here that drives lib.sh: the defect lives in the shell harness,
-    and the shell suites that set -e before they load it (smoke.sh, audit.sh,
-    phase2-6.sh) have no Python counterpart to stand in for them."""
+OWN_F = """
+import subprocess, sys, shutil
+sys.path.insert(0, {here!r})
+import pgc_cluster
+cluster, root = pgc_cluster.make_cluster({cfg!r}, "gw-isolation")
+try:
+    pm = int((cluster.datadir / "postmaster.pid").read_text().split()[0])
+    import os
+    links = [os.readlink(f"/proc/{{pm}}/fd/" + n) for n in os.listdir(f"/proc/{{pm}}/fd")]
+    held = sum(1 for link in links if link == {lock!r})
+    free = subprocess.run(["flock", "-n", {lock!r}, "true"]).returncode
+    print(f"lock free={{free}}, postmaster holds {{held}} of {{max(len(links), 1)}}")
+finally:
+    cluster.stop()
+    shutil.rmtree(root, ignore_errors=True)
+"""
+
+
+def test_a_lock_taken_by_flock_no_fork_stays_held(pgc_cluster, lock, expect):
+    """`flock -F` does not fork: the harness's process is the one that took the
+    lock and holds its only descriptor. Starting a cluster there must neither
+    release the lock nor pass it to the server. Review of #1928 (S9)."""
     proc = subprocess.run(
-        ["flock", str(lock), "bash", "-c",
-         f"set -euo pipefail; . '{HERE.parent / 'lib.sh'}'; echo sourced"],
+        ["flock", "-w", "10", "-F", str(lock), sys.executable, "-c",
+         OWN_F.format(here=str(HERE), cfg=pgc_cluster.pg_config, lock=str(lock))],
         capture_output=True, text=True)
-    got = " ".join((proc.stdout + proc.stderr).split() + [f"rc={proc.returncode}"])
-    expect.text(got, "sourced rc=0", "a set -e suite under flock still loads lib.sh")
+    got = proc.stdout.strip() or f"rc={proc.returncode}: {proc.stderr[-500:]}"
+    total = got.rsplit(" of ", 1)[-1] if " of " in got else "1"
+    expect.text(got, f"lock free=1, postmaster holds 0 of {total}",
+                "a lock taken as flock -F on the harness's own process stays held")
 
 
 def test_the_session_records_the_library_it_runs(pgc_cluster, expect):
@@ -170,19 +192,34 @@ def test_a_replaced_library_is_reported(copy_of_library, expect):
                 "a library replaced after setup is reported with both digests")
 
 
-def test_a_run_whose_library_changed_fails(copy_of_library, expect):
-    before = pc._md5_of(copy_of_library)
-    with open(copy_of_library, "ab") as fh:
-        fh.write(b"x")
-    fn = getattr(pc, "require_library_unchanged", None)
-    try:
-        if fn is None:
-            raise LookupError("pgc_cluster has no require_library_unchanged")
-        fn(copy_of_library, before)
-        outcome = "the run went on"
-    except RuntimeError as exc:
-        outcome = f"failed: {type(exc).__name__}" if "changed during this run" in str(exc) \
-            else f"failed for another reason: {exc}"
-    except LookupError as exc:
-        outcome = str(exc)
-    expect.text(outcome, "failed: RuntimeError", "a run whose library changed mid-run ends failed")
+# Indented, as pytester dedents it: a column-0 `def test_` is read as a corpus
+# test by the TESTS.md guard.
+INNER_CHANGE = """
+    import shutil
+
+
+    def test_inner_the_library_changes_under_the_session(pgc_cluster, tmp_path, expect):
+        # The session's library becomes a copy, which then changes. The shared
+        # library is never touched.
+        shutil.copyfile(pgc_cluster.so_path, tmp_path / "pgcolumnar.so")
+        pgc_cluster.libdir = str(tmp_path)
+        with open(pgc_cluster.so_path, "ab") as fh:
+            fh.write(b"x")
+        expect.num(1, 1, "the inner test ran")
+"""
+
+
+def test_a_run_whose_library_changed_fails(pgc_cluster, pytester, expect):
+    """An inner session through the real conftest (`-p conftest`), whose test
+    changes the library the session recorded. Its teardown must end the session
+    failed, naming the change. Review of #1928 (P2): calling
+    `require_library_unchanged` directly could not show that the session calls it."""
+    pytester.makepyfile(INNER_CHANGE)
+    result = pytester.runpytest("-p", "pgc_vacuity", "-p", "conftest",
+                                f"--pg-config={pgc_cluster.pg_config}")
+    out = "\n".join(result.outlines + result.errlines)
+    errors = result.parseoutcomes().get("errors", 0)
+    expect.text(f"rc!=0: {int(result.ret != 0)}, errors: {errors}, "
+                f"library line: {int('changed during this run' in out)}",
+                "rc!=0: 1, errors: 1, library line: 1",
+                "a run whose library changed mid-run ends failed")

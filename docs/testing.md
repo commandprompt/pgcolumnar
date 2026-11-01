@@ -610,7 +610,8 @@ Do these four things:
 
 1. Build, install and test in one lock hold. Run the suite without
    `PGC_SKIP_BUILD`, or run the whole sequence inside one `flock` command.
-2. Take the lock with `flock <lock> bash test/smoke.sh`. Do not take it on a
+2. Take the lock with `flock <lock> bash test/smoke.sh`. Do not use
+   `flock -F <lock> bash test/smoke.sh`, and do not take the lock on a
    descriptor, as in `( flock 9; bash test/smoke.sh ) 9>lock` or
    `exec 9>lock; flock 9`. In those forms the suite holds the only copy of the
    descriptor, so the harness cannot close it. Every server the suite starts
@@ -625,7 +626,8 @@ The harness also protects a run (#1915):
   another live process took. Under `flock <lock> bash test/smoke.sh`, that process
   is `flock` itself. It keeps its own descriptor, so runs stay serialised, but
   no server that the suite starts holds the lock. A lock that the suite's own
-  process took stays held, and so does a lock taken on a descriptor (step 2).
+  process took stays held, and so does a lock taken with `flock -F` or on a
+  descriptor (step 2).
 - `pgc_setup` refuses a library that this tree did not install (#959).
 - `pgc_summary` fails the run when the installed library changed after
   `pgc_setup`. It prints both digests, for example

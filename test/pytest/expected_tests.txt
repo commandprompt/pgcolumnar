@@ -1672,4 +1672,7 @@ guard_tests 858
 # cluster_tests 5206 -> 5207 for #1915's review fix in test_harness_isolation.py (a set -e suite
 # under flock still loads lib.sh), by collection: 5207 tests collected for the cluster half, guard_tests
 # 858 unchanged.
+# cluster_tests 5207 unchanged for #1915's second review fix in test_harness_isolation.py: the set -e
+# test that sourced lib.sh is gone (shell-only, declared in test_compare_to_bash.py) and a flock -F
+# own-lock test takes its place; by collection: 6065 tests collected, less guard_tests 858.
 cluster_tests 5207

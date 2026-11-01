@@ -1601,12 +1601,13 @@ hardening	hardening	invalid descriptor raises error	15;16;17;18;19	2026-10-17	co
 hardening	hardening	premise: the corrupt descriptor replaces one chunk's	15;16;17;18;19	never	-
 hardening	hardening	premise: the malformed bloom replaces k's filter	15;16;17;18;19	never	-
 harness_isolation	harness_isolation	a library replaced after setup is reported with both digests	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
+harness_isolation	harness_isolation	a lock taken as flock -F on the harness's own process stays held	15;16;17;18;19	2026-10-31	portlib.sh closes a lock its own process took (taker-is-not-me test removed), so flock -F releases the caller's lock (#1915, review of #1928 S9)
 harness_isolation	harness_isolation	a lock the harness's own process took stays held	15;16;17;18;19	2026-11-01	portlib.sh drops a lock whose taker has exited (live-taker test removed) (#1915)
-harness_isolation	harness_isolation	a postmaster started under a held lock holds no descriptor on it	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
+harness_isolation	harness_isolation	a postmaster started under a held lock holds no descriptor on it	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915);portlib.sh never calls pgc_drop_inherited_locks, so the postmaster inherits the caller's lock (#1915, review of #1928 S7)
 harness_isolation	harness_isolation	a run whose library changed mid-run ends failed	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
 harness_isolation	harness_isolation	a set -e suite under flock still loads lib.sh	15;16;17;18;19	2026-11-01	portlib.sh read-failure fallback (|| taker="") reverted, so a set -e suite under flock exits rc=2 (#1915)
 harness_isolation	harness_isolation	an unchanged library is not reported	15;16;17;18;19	2026-11-01	lib.sh pgc_check_library_unchanged equality return removed, so an unchanged library is reported (#1915);portlib.sh lock drop and lib.sh library-change check absent (#1915)
-harness_isolation	harness_isolation	another run takes that lock while the postmaster runs	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
+harness_isolation	harness_isolation	another run takes that lock while the postmaster runs	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915);portlib.sh never calls pgc_drop_inherited_locks, so the postmaster inherits the caller's lock (#1915, review of #1928 S7)
 harness_isolation	harness_isolation	control: a child of a plain shell under flock holds the lock	15;16;17;18;19	never	-
 harness_isolation	harness_isolation	premise: the postmaster outlives the flock command that started it	15;16;17;18;19	never	-
 harness_isolation	harness_isolation	setup records the digest of the library it verified	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
