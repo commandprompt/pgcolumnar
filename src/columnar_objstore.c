@@ -30,6 +30,9 @@
 static const PgColumnarObjStoreApi *objstore_api = NULL;
 static bool objstore_tried = false;
 
+/* The module's statement-end entry point, or NULL (see PgColumnarObjStoreStatementEnd). */
+static void (*objstore_statement_end) (void) = NULL;
+
 /*
  * Is the module file actually there? Resolves $libdir the way the server does,
  * because the SQLSTATE cannot distinguish a missing library from a broken one.
@@ -368,7 +371,29 @@ PgColumnarObjStoreGet(void)
 		return NULL;
 	}
 
+	/*
+	 * The statement-end entry point (#1907 second review) is found by name,
+	 * not through the API struct, so a module built without it still loads:
+	 * signalNotFound = false leaves the pointer NULL. The library is already
+	 * loaded, so this lookup cannot fail for a missing file.
+	 */
+	objstore_statement_end = (void (*) (void))
+		load_external_function("$libdir/pgcolumnar_objstore",
+							   "pgcolumnar_objstore_statement_end", false, NULL);
+
 	objstore_api = api;
 	objstore_tried = true;
 	return objstore_api;
+}
+
+/*
+ * A top-level statement ended: tell the module, if it is loaded, so the
+ * object versions it pinned for the statement are dropped (#1907 second
+ * review). Never loads the module and never raises.
+ */
+void
+PgColumnarObjStoreStatementEnd(void)
+{
+	if (objstore_api != NULL && objstore_statement_end != NULL)
+		objstore_statement_end();
 }

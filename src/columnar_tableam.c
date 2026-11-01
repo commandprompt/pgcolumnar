@@ -73,6 +73,7 @@
 #include "utils/syscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "columnar_objstore.h"
 
 PG_MODULE_MAGIC;
 
@@ -220,6 +221,21 @@ pgcolumnar_record_rewritten(Oid relid)
 static object_access_hook_type prev_object_access_hook = NULL;
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
+static ExecutorRun_hook_type prev_executor_run_hook = NULL;
+static ExecutorFinish_hook_type prev_executor_finish_hook = NULL;
+
+/*
+ * How deep we are in the executor and in ProcessUtility, counted the way
+ * pg_stat_statements counts its nesting level (#1907 second review). It is 0
+ * outside every statement and while a top-level statement's ExecutorEnd runs
+ * or its ProcessUtility returns, and above 0 inside any statement that one
+ * runs, such as a query in a plpgsql function. The object-store module drops
+ * its per-statement pins when it is 0 there; statement_timestamp() cannot
+ * tell those apart, because PostgreSQL sets it once for all the statements of
+ * one simple-query string. pgColumnar is in shared_preload_libraries, so the
+ * count starts with the session and is never off by a frame entered earlier.
+ */
+static int pgcolumnar_exec_depth = 0;
 #if PG_VERSION_NUM >= 190000
 static build_simple_rel_hook_type prev_build_simple_rel_hook = NULL;
 #else
@@ -2902,6 +2918,55 @@ pgcolumnar_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
  * is correctly discarded on its rollback (spec 9).
  * ------------------------------------------------------------------------- */
 
+#if PG_VERSION_NUM >= 180000
+static void
+pgcolumnar_executor_run(QueryDesc *queryDesc, ScanDirection direction, uint64 count)
+#else
+static void
+pgcolumnar_executor_run(QueryDesc *queryDesc, ScanDirection direction, uint64 count,
+						bool execute_once)
+#endif
+{
+	pgcolumnar_exec_depth++;
+	PG_TRY();
+	{
+#if PG_VERSION_NUM >= 180000
+		if (prev_executor_run_hook)
+			prev_executor_run_hook(queryDesc, direction, count);
+		else
+			standard_ExecutorRun(queryDesc, direction, count);
+#else
+		if (prev_executor_run_hook)
+			prev_executor_run_hook(queryDesc, direction, count, execute_once);
+		else
+			standard_ExecutorRun(queryDesc, direction, count, execute_once);
+#endif
+	}
+	PG_FINALLY();
+	{
+		pgcolumnar_exec_depth--;
+	}
+	PG_END_TRY();
+}
+
+static void
+pgcolumnar_executor_finish(QueryDesc *queryDesc)
+{
+	pgcolumnar_exec_depth++;
+	PG_TRY();
+	{
+		if (prev_executor_finish_hook)
+			prev_executor_finish_hook(queryDesc);
+		else
+			standard_ExecutorFinish(queryDesc);
+	}
+	PG_FINALLY();
+	{
+		pgcolumnar_exec_depth--;
+	}
+	PG_END_TRY();
+}
+
 static void
 pgcolumnar_executor_end(QueryDesc *queryDesc)
 {
@@ -2909,6 +2974,10 @@ pgcolumnar_executor_end(QueryDesc *queryDesc)
 		prev_executor_end_hook(queryDesc);
 	else
 		standard_ExecutorEnd(queryDesc);
+
+	/* A top-level statement ended: its object-store pins end with it. */
+	if (pgcolumnar_exec_depth == 0)
+		PgColumnarObjStoreStatementEnd();
 
 	/*
 	 * ONLY THIS SUBTRANSACTION'S BUFFERS (#1341). A statement ending inside a
@@ -3806,6 +3875,35 @@ pgcolumnar_process_utility(PlannedStmt *pstmt, const char *queryString,
 			}
 		}
 	}
+}
+
+/*
+ * The installed ProcessUtility hook: pgcolumnar_process_utility, counted in
+ * pgcolumnar_exec_depth (#1907 second review). A utility statement runs its
+ * queries, such as CREATE TABLE AS or the statements of a DO block, one level
+ * down, so their ExecutorEnd does not end the top-level statement. When a
+ * top-level utility statement returns, its object-store pins end with it.
+ */
+static void
+pgcolumnar_process_utility_counted(PlannedStmt *pstmt, const char *queryString,
+								   bool readOnlyTree, ProcessUtilityContext context,
+								   ParamListInfo params, QueryEnvironment *queryEnv,
+								   DestReceiver *dest, QueryCompletion *qc)
+{
+	pgcolumnar_exec_depth++;
+	PG_TRY();
+	{
+		pgcolumnar_process_utility(pstmt, queryString, readOnlyTree, context,
+								   params, queryEnv, dest, qc);
+	}
+	PG_FINALLY();
+	{
+		pgcolumnar_exec_depth--;
+	}
+	PG_END_TRY();
+
+	if (pgcolumnar_exec_depth == 0)
+		PgColumnarObjStoreStatementEnd();
 }
 
 /*
@@ -4866,10 +4964,16 @@ _PG_init(void)
 	object_access_hook = pgcolumnar_object_access;
 
 	prev_process_utility_hook = ProcessUtility_hook;
-	ProcessUtility_hook = pgcolumnar_process_utility;
+	ProcessUtility_hook = pgcolumnar_process_utility_counted;
 
 	prev_executor_end_hook = ExecutorEnd_hook;
 	ExecutorEnd_hook = pgcolumnar_executor_end;
+
+	prev_executor_run_hook = ExecutorRun_hook;
+	ExecutorRun_hook = pgcolumnar_executor_run;
+
+	prev_executor_finish_hook = ExecutorFinish_hook;
+	ExecutorFinish_hook = pgcolumnar_executor_finish;
 
 	/*
 	 * Forbid index-only scans on columnar tables. PG19 replaced

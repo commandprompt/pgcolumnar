@@ -1651,4 +1651,17 @@ guard_tests 858
 # cluster_tests 5181 -> 5183 for #1904's review: two tests in test_objstore_sink_write.py (an s3:// key with a
 # literal '?', exported and read pinned; the abort of a failed export to an http URL with a query string),
 # by collection: `5968 tests collected`, minus 854.
-cluster_tests 5183
+# cluster_tests 5183 -> 5186 for #1894's three tests in test_objstore_http_read.py (two reads of one
+# object in one statement refused, the next statement reads the new object, the versioned pair reads
+# the first read's version), by collection: 5967 tests collected, less guard_tests 854.
+# cluster_tests 5186 -> 5193 for #1907's review: seven tests in test_objstore_http_read.py (server B's
+# premise, one s3 key on two endpoints plain and versioned, the next statement in one transaction, two
+# statements in one query string, a write then a read in one statement, the weak-ETag same-length
+# overwrite), by collection: 5974 tests collected, less guard_tests 854.
+# cluster_tests 5193 -> 5200 for #1907's second review: test_objstore_http_read.py drops one test (two
+# statements in one query string share the pin) and gains eight (each statement of one query string reads
+# the current object, plain and versioned; two reads in one function call and in one DO block refused; the
+# statement after a DO block in one string; the refusal's DETAIL; a versioned overwrite by a longer
+# object; a weak-ETag overwrite that changes the length), by collection: 5981 tests collected, less
+# guard_tests 854.
+cluster_tests 5200

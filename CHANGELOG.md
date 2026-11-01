@@ -534,6 +534,25 @@ true until the next version shipped.
 
 ### Fixed
 
+- Two reads of one remote object in one statement now read the same version
+  (#1894). Before, each read pinned the version its own HEAD saw. If another
+  client overwrote the object between the two reads, a self-join or a
+  `UNION ALL` of the same foreign table returned rows from both versions
+  without an error. Now the first read of an object in a statement keeps its
+  ETag, version id and length for the rest of the statement. A later read of
+  that object asks for the same version when the store names one. Otherwise
+  it fails with `changed while it was being read` when the ETag or length
+  differs; with no strong ETag, only the length is compared. The object is
+  the endpoint host, port and path, so one `s3://` URL on two servers with
+  different endpoints is two objects. The pin lasts one top-level statement,
+  also when one query string holds several statements, as `psql -c` sends
+  them: the next statement reads the new version. The queries a function or
+  a `DO` block runs share the pin of the statement that runs them. A
+  statement that writes the object drops its pin.
+  docs/limitations.md and docs/sql-reference.md.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+  Reported by @OffgridwithJD.
+
 - `parquet_schema` now reports a nested column under its top-level name (#1893).
   It used to report the column's leaves instead: a list as `element`, a struct as
   its field names. Those names do not match the file's columns. A list of a
