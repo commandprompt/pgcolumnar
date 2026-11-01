@@ -534,6 +534,20 @@ true until the next version shipped.
 
 ### Fixed
 
+- Test harness: a server that a suite starts no longer holds a lock its caller
+  took, and a run fails when the installed library changes during it (#1915).
+  Run as `flock <lock> bash test/x.sh`, a suite passed the lock's descriptor to
+  its postmaster. A cluster that outlived the command blocked every other run
+  of that major; one such cluster blocked the PG18 queue for about 25 minutes.
+  `test/portlib.sh` now closes a descriptor that holds a lock a live parent
+  took, and the parent still holds the lock. A lock the suite took itself stays
+  held. On a shared machine, another session can also install into the same
+  prefix during a run. `pgc_summary` now fails the run when the library's
+  digest changed after `pgc_setup`, and names both digests. The pytest
+  session's teardown does the same. docs/testing.md.
+  `test/harness_isolation.sh` and `test_harness_isolation.py`.
+  Reported by @OffgridwithJD.
+
 - Two reads of one remote object in one statement now read the same version
   (#1894). Before, each read pinned the version its own HEAD saw. If another
   client overwrote the object between the two reads, a self-join or a

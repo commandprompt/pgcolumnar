@@ -1600,6 +1600,15 @@ hardening	hardening	corrupt bloom present	15;16;17;18;19	2026-10-17	columnar_blo
 hardening	hardening	invalid descriptor raises error	15;16;17;18;19	2026-10-17	columnar_reader.c: an unrecognized native encoding descriptor aborts the backend, with the value-stream bounds before it off
 hardening	hardening	premise: the corrupt descriptor replaces one chunk's	15;16;17;18;19	never	-
 hardening	hardening	premise: the malformed bloom replaces k's filter	15;16;17;18;19	never	-
+harness_isolation	harness_isolation	a library replaced after setup is reported with both digests	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
+harness_isolation	harness_isolation	a lock the harness's own process took stays held	15;16;17;18;19	2026-11-01	portlib.sh drops a lock whose taker has exited (live-taker test removed) (#1915)
+harness_isolation	harness_isolation	a postmaster started under a held lock holds no descriptor on it	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
+harness_isolation	harness_isolation	a run whose library changed mid-run ends failed	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
+harness_isolation	harness_isolation	an unchanged library is not reported	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
+harness_isolation	harness_isolation	another run takes that lock while the postmaster runs	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
+harness_isolation	harness_isolation	control: a child of a plain shell under flock holds the lock	15;16;17;18;19	never	-
+harness_isolation	harness_isolation	premise: setup recorded the digest of the library it verified	15;16;17;18;19	2026-11-01	portlib.sh lock drop and lib.sh library-change check absent (#1915)
+harness_isolation	harness_isolation	premise: the postmaster outlives the flock command that started it	15;16;17;18;19	never	-
 harness_selftest	030-assertions	nothing leaked into the squatter	15;16;17;18;19	never	-
 harness_selftest	030-assertions	pgc_port_free says the squatter's port is busy	15;16;17;18;19	never	-
 harness_selftest	030-assertions	squatter survived untouched	15;16;17;18;19	never	-

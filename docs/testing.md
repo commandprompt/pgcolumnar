@@ -600,6 +600,38 @@ runner cannot hold their wall-clock ratios steady. Skipping them there is a deli
 reasons unrelated to the change teaches its readers to discount red, which is
 worse than not running it.
 
+## Running on a shared machine
+
+This section is for anyone who runs suites on a machine that others also use.
+It assumes that runs are serialised with a lock file and `flock(1)`. Several
+sessions then build and install into the same `/usr/local/<prefix>/lib`.
+
+Do these three things:
+
+1. Build, install and test in one lock hold. Run the suite without
+   `PGC_SKIP_BUILD`, or run the whole sequence inside one `flock` command.
+2. Start a server by hand with `flock -o <lock> <command>`. Without `-o`, the
+   server inherits the lock's descriptor and holds the lock until it stops.
+3. Stop a throwaway cluster before the lock hold ends.
+
+The harness also protects a run (#1915):
+
+- When a suite loads `test/portlib.sh`, it closes every descriptor that holds a
+  lock a live parent process took. The parent keeps its own descriptor, so runs
+  stay serialised, but no server that the suite starts holds the lock. A lock
+  that the suite's own process took stays held.
+- `pgc_setup` refuses a library that this tree did not install (#959).
+- `pgc_summary` fails the run when the installed library changed after
+  `pgc_setup`. It prints both digests, for example
+  `FAIL  the installed library changed during this run: 44d276203348 at setup, 8777edbdfec1 now`.
+- The pytest corpus starts servers through `subprocess`, which closes inherited
+  descriptors. Its session teardown raises when the library changed during the
+  session.
+
+A suite with its own harness that does not call `pgc_setup` gets the first
+protection only. `test/harness_isolation.sh` and `test_harness_isolation.py`
+check all of this.
+
 ## Stopping a run
 
 The matrix runs itself again from a private copy in `/tmp`, and it runs its

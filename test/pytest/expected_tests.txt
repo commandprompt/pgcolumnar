@@ -1664,4 +1664,9 @@ guard_tests 858
 # statement after a DO block in one string; the refusal's DETAIL; a versioned overwrite by a longer
 # object; a weak-ETag overwrite that changes the length), by collection: 5981 tests collected, less
 # guard_tests 854.
-cluster_tests 5200
+# cluster_tests 5200 -> 5206 for #1915's six tests in test_harness_isolation.py, the twin of the new
+# harness_isolation.sh (a cluster started under a held lock does not hold it, with its control and
+# premise; a lock the harness took itself stays held; the session records its library digest; a
+# replaced library is reported; a run whose library changed fails), by collection: 5206 tests collected
+# for the cluster half, guard_tests 858 unchanged.
+cluster_tests 5206
