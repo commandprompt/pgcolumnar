@@ -1004,6 +1004,9 @@ would lose the inner lists. The readers bind every Parquet column by position,
 so you cannot leave the column out, and declaring it as a scalar fails too
 (#1917). To read the other columns, rewrite the file without that column, for
 example with pyarrow.
+`import_arrow` refuses a list of lists or a list of maps for an array column
+too. The error has SQLSTATE 42804 and names the column (#1932). It also refuses
+a large list, which it does not read.
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
 | --- | --- | --- | --- | --- |

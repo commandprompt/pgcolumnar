@@ -1690,4 +1690,8 @@ guard_tests 860
 # and of -(2^32) + 1 each refused by parquet_schema); in test_fuzz_parquet.py two for #1920 (every
 # composite type built from a seed's field list is created, the pristine struct seed reads under its own
 # column list), by collection: 6072 tests collected, less guard_tests 858.
-cluster_tests 5261
+# cluster_tests 5261 -> 5267 for #1932's six tests in test_arrow_import.py (import_arrow refuses a list of
+# lists, a list of structs or of maps, a large list and a plain int64 by type, 42804 naming the column; a
+# list<int64> and a map still import; an offset past the value buffer is still XX001), by collection: 6127
+# tests collected, less guard_tests 860.
+cluster_tests 5267
