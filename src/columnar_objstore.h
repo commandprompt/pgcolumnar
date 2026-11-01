@@ -33,7 +33,7 @@
 
 #include "postgres.h"
 
-#define PGCOLUMNAR_OBJSTORE_ABI 7
+#define PGCOLUMNAR_OBJSTORE_ABI 8
 
 /* An open remote object (read) / upload (write). Module owns both. */
 typedef struct PgColumnarObjHandle PgColumnarObjHandle;
@@ -69,7 +69,36 @@ typedef struct PgColumnarObjStoreConfig
 	const char *secret;
 	const char *token;			/* optional session token */
 	bool		allow_ambient;	/* may fall back to the environment */
+	bool		vended;			/* the triple came from a REST catalog's
+								 * loadTable reply, not a user mapping (ABI 8,
+								 * #1796); only the 403 hint reads it */
+
+	/*
+	 * Per-object credentials (#1820), or NULL. pgColumnar-side only: every
+	 * pgColumnar call into the module first passes the config through
+	 * PgColumnarObjStoreConfigFor, which returns the config for that object
+	 * with this field NULL. So the module never sees it set, and its meaning
+	 * for the module is unchanged: the ABI version stays as it was. A config
+	 * that reached the module unresolved has no credential triple and
+	 * allow_ambient false, so the module refuses it (28000).
+	 */
+	const struct PgColumnarObjStoreCredSet *byprefix;
 } PgColumnarObjStoreConfig;
+
+/*
+ * The storage credentials a REST catalog vended for one table (#1820). For each
+ * object, PgColumnarObjStoreConfigFor uses the entry with the longest prefix of
+ * the object's URL. When no prefix matches it uses `fallback` (the catalog's
+ * flat config), and when there is no fallback it refuses the read (28000). It
+ * never falls back to the server's ambient AWS_* identity.
+ */
+typedef struct PgColumnarObjStoreCredSet
+{
+	int			n;
+	const char **prefix;		/* n storage location prefixes */
+	const PgColumnarObjStoreConfig **cfg;	/* n configs, byprefix NULL */
+	const PgColumnarObjStoreConfig *fallback;	/* or NULL: refuse */
+} PgColumnarObjStoreCredSet;
 
 typedef struct PgColumnarObjStoreApi
 {
@@ -219,6 +248,14 @@ extern const PgColumnarObjStoreApi *PgColumnarObjStoreGet(void);
 
 /* Does `path` look like a remote URL at all? Cheap, no module load. */
 extern bool PgColumnarPathIsRemote(const char *path);
+
+/*
+ * The config to use for the object at `url`: `cfg` itself unless it carries
+ * per-object credentials (cfg->byprefix), else the longest-prefix match, else
+ * the fallback, else a 28000 refusal that names `url`.
+ */
+extern const PgColumnarObjStoreConfig *PgColumnarObjStoreConfigFor(const PgColumnarObjStoreConfig *cfg,
+																	const char *url);
 
 /*
  * Open a local regular file for reading with no stat-before-open race: opens

@@ -3,7 +3,7 @@
 # pgColumnar #393 M1: the HTTP ranged byte source, with the request count
 # ASSERTED rather than reported (the M1 test spec agreed on the issue).
 #
-# Four arms, per design/ISSUE_393_M1_HTTP_SOURCE.md:
+# Five arms, A to D per design/ISSUE_393_M1_HTTP_SOURCE.md:
 #   A  differential oracle: a foreign table over http://127.0.0.1 returns the
 #      same rows as the byte-identical local file. Premise for everything else.
 #   B  request count, both arms in one run: buffered requests == K where K is
@@ -14,11 +14,16 @@
 #      the URL and produce no rows; a Range-ignoring server is an error, never a
 #      silent whole-object read; a short 206 body and EOF mid-body are refused;
 #      a keep-alive connection the server dropped is retried once, and a fresh
-#      connection the server hangs up on is not. Many guards share 08006 and
-#      08P01, so each refusal must also carry its own guard's message.
+#      connection the server hangs up on is not; an object overwritten
+#      mid-read is refused, a weak ETag or one longer than 79 characters is not
+#      used as a pin, and a server whose ETag changes per request is refused
+#      (#1805). Many guards share 08006 and 08P01, so each refusal must also
+#      carry its own guard's message.
 #   D  cancel: statement_timeout fires within bound while the server stalls
 #      mid-body. Removal proof: with the module's WaitLatchOrSocket wait arm
 #      deleted, this check hangs or reds.
+#   E  only an s3:// key is a pattern (#1785): a query string on an http URL
+#      reaches the server, and a bracketed IPv6 host is refused by name.
 #   Survival: the server still answers and no backend died across the arms (the
 #      server log's "terminated by signal" count, read after waiting for it).
 #
@@ -72,6 +77,25 @@ assert md.num_row_groups == G, md.num_row_groups
 print("fixture: %d groups, %d cols, %d rows" % (md.num_row_groups, md.num_columns, md.num_rows))
 PYEOF
 check "premise: fixture written" "$([ -s "$PGC_WORKDIR/fixture.parquet" ] && echo yes)" "yes"
+
+# The overwrite pair (#1805): swap.parquet and swap.parquet.next have the same
+# layout and byte length, so every offset in one footer is valid in the other.
+# The first has c0 >= 0 in every row, the second c0 < 0 in every row, so a read
+# that mixes them shows both signs. /swap/ moves .next over the first mid-read.
+# swap79.parquet is a second, identical pair for /swap79/, which swaps it once too.
+python3 - "$PGC_WORKDIR/swap.parquet" "$PGC_WORKDIR/swap79.parquet" <<PYEOF
+import os, sys
+import pyarrow as pa, pyarrow.parquet as pq
+G, RPG = $G, $ROWS_PER_GROUP
+for first in sys.argv[1:]:
+    for path, sign in ((first, 1), (first + ".next", -1)):
+        c0 = pa.array([sign * v - (sign < 0) for v in range(G * RPG)], pa.int64())
+        pq.write_table(pa.table({"c0": c0}), path, row_group_size=RPG,
+                       compression="NONE", use_dictionary=False, write_statistics=False)
+    assert os.path.getsize(first) == os.path.getsize(first + ".next")
+PYEOF
+check "premise: the overwrite pair has one byte length" \
+	"$(stat -c %s "$PGC_WORKDIR/swap.parquet.next" 2>&1)" "$(stat -c %s "$PGC_WORKDIR/swap.parquet" 2>&1)"
 
 # ---- fixture server --------------------------------------------------------
 python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
@@ -206,6 +230,12 @@ psql_run "CREATE FOREIGN TABLE fshort ($COLDEFS) SERVER osrv OPTIONS (path '$BAS
 psql_run "CREATE FOREIGN TABLE ftrunc ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/trunc/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fdropka ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/dropka/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fhangup ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/hangup/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/swap/swap.parquet');"
+psql_run "CREATE FOREIGN TABLE fweak ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/weak/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fswap79 (c0 int8) SERVER osrv OPTIONS (path '$BASE/swap79/swap79.parquet');"
+psql_run "CREATE FOREIGN TABLE fetag79 ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/etag79/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE flongetag ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/longetag/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE ffickle ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/fickle/fixture.parquet');"
 
 check "C: unreachable endpoint SQLSTATE" \
 	"$(refusal_of "SELECT count(*) FROM fdead" "could not connect to")" "08006: could not connect to"
@@ -228,6 +258,39 @@ check "C: a server that hangs up on a fresh connection is refused" \
 check_num "C: and that fresh connection is not retried (one request logged)" \
 	"$(wc -l < "$HTTP_LOG" | tr -d ' ')" "1"
 
+# An object overwritten between two ranged GETs of one read (#1805). Without a
+# pin the footer comes from the old object and later chunks from the new one,
+# and the read returns rows of both; the measurement then shows both signs.
+await_server >/dev/null
+check "C: an object overwritten mid-read is refused" \
+	"$(refusal_of "SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM fswap" \
+		"changed while it was being read")" "55000: changed while it was being read"
+# A weak ETag cannot pin a ranged read (If-Match compares strongly), so the
+# client must not send it: the read still equals the local file.
+await_server >/dev/null
+check "C: a weak ETag is not sent as If-Match (http == local)" \
+	"$(pgc_set_hash "SELECT c3, c7 FROM fweak")" "$(pgc_set_hash "SELECT c3, c7 FROM flocal")"
+# The client keeps an ETag of up to 79 characters. At 79 the read is pinned, so
+# the overwrite is refused; at 80 the client keeps none, because a cut-down ETag
+# matches nothing and every GET would fail. Then the read is unpinned, and rows
+# come back.
+check "C: a 79-character ETag still pins the read" \
+	"$(refusal_of "SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM fswap79" \
+		"changed while it was being read")" "55000: changed while it was being read"
+# The same 79-character ETag on an object nobody overwrites: the read is pinned
+# and every GET must match, so a pin kept shorter than the ETag fails each GET.
+await_server >/dev/null
+check "C: a 79-character ETag reads an unchanged object whole (http == local)" \
+	"$(pgc_set_hash "SELECT c3, c7 FROM fetag79")" "$(pgc_set_hash "SELECT c3, c7 FROM flocal")"
+check "C: an 80-character ETag is not sent cut short as If-Match" \
+	"$(refusal_of "SELECT 'rows=' || count(*) FROM flongetag" "changed while it was being read")" \
+	"no error: rows=$((G * ROWS_PER_GROUP))"
+# A server that sends a new ETag on every request for the same bytes looks like
+# an overwrite, so the read is refused: the client cannot tell the two apart.
+check "C: a server whose ETag changes on every request is refused" \
+	"$(refusal_of "SELECT 'rows=' || count(*) FROM ffickle" "changed while it was being read")" \
+	"55000: changed while it was being read"
+
 # ---- arm D: cancel while the server stalls mid-body ------------------------
 psql_run "CREATE FOREIGN TABLE fstall ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/stall/fixture.parquet');"
 await_server >/dev/null
@@ -243,6 +306,24 @@ D_ELAPSED=$(( $(date +%s) - D_START ))
 check "D: stalled transfer cancelled with query_canceled" "$D_STATE" "57014"
 check_num "D: cancel latency bounded (<=10s)" \
 	"$([ "$D_ELAPSED" -le 10 ] 2>/dev/null && echo 1 || echo 0)" "1"
+
+# ---- arm E: only an s3:// key is a pattern (#1785) -------------------------
+# Listing exists only for s3://, so a `?` in an http(s) URL is a query string,
+# never a glob, and a bracketed host is refused as an IPv6 literal before any
+# path resolution. Both used to fail as "listing a prefix is only supported for
+# s3:// URLs".
+: > "$HTTP_LOG"
+E_ROWS="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
+	-c "SELECT count(*) FROM pgcolumnar.read_parquet('$BASE/fixture.parquet?raw=true') AS t($COLDEFS)" 2>&1)"
+E_ROWS="$(awk '/^ERROR:/ { print; f = 1; exit } { last = $0 } END { if (!f) print last }' <<<"$E_ROWS")"
+check "E: an http URL with a query string (?raw=true) reads the object, not a listing" \
+	"$E_ROWS" "$((G * ROWS_PER_GROUP))"
+E_HEADQ="$(awk '$1 == "HEAD" && $2 == "/fixture.parquet" && $3 == "raw=true"' "$HTTP_LOG" | wc -l | tr -d ' ')"
+check "E: and its HEAD carried the query string to the server" \
+	"$([ "${E_HEADQ:-0}" -ge 1 ] 2>/dev/null && echo carried || echo "not carried ($E_HEADQ HEADs of /fixture.parquet?raw=true in $(reqs) requests)")" "carried"
+check "E: an IPv6 literal http host is refused as IPv6, not as a listing" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('http://[::1]:$HTTP_PORT/fixture.parquet') AS t($COLDEFS)" \
+		"IPv6 literal hosts are not supported")" "0A000: IPv6 literal hosts are not supported"
 
 # ---- survival ----------------------------------------------------------------
 # A crash is restarted from, so a bare SELECT 1 alone passes once recovery ends:

@@ -41,15 +41,22 @@ objstore_sink_teardown() {
 }
 trap objstore_sink_teardown EXIT INT TERM
 
-pg_restart_env() {
-	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
-	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
-	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done
-	echo "FATAL: cluster did not come back"; exit 1
-}
 # wait_up: wait up to 15 s for the server, so a backend that crashed in one reading
 # fails that reading, not every reading after it during recovery.
 wait_up() { for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done; }
+# pg_restart_env ENV... -> 0 once the cluster answers again with ENV in its
+# environment, 1 when it does not; it never exits the suite (#1850). It waits out
+# a crash recovery first: with the last arm's backend just killed, a fast stop
+# sent while the startup process replayed WAL did not finish in pg_ctl's 60 s,
+# the start found the old postmaster, and the suite used to exit here before its
+# summary. The caller records the failure by name.
+pg_restart_env() {
+	wait_up
+	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
+	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
+	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done
+	return 1
+}
 
 # refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
 # message, the bare SQLSTATE when the message lacks it, or what happened instead. The
@@ -93,7 +100,7 @@ check "premise: sigv4 fixture server is up" \
 
 pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.1:$S3_PORT'" \
 	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" \
-	"AWS_REGION='$REGION'"
+	"AWS_REGION='$REGION'" || { echo "FATAL: cluster did not come back"; exit 1; }
 
 # ---- fixtures: small (single PUT) and large (multipart) ---------------------
 psql_run "CREATE TABLE es_small (id int, t text) USING pgcolumnar;"
@@ -137,6 +144,50 @@ check_num "and completed it exactly once (POST with uploadId, no partNumber)" \
 psql_run "CREATE FOREIGN TABLE f_big (id int8, pad text) SERVER wsrv OPTIONS (path 's3://$BUCKET/big.parquet');"
 check "large round trip: s3 read-back == source" \
 	"$(pgc_set_hash "SELECT * FROM f_big")" "$(pgc_set_hash "$GEN_BIG")"
+
+# ---- the part size has a ceiling the sink can hold (#1812) -------------------
+# The sink stages one part in one allocation, and PostgreSQL caps one allocation at
+# 1 GiB. The setting took any value up to INT_MAX, so a part size near or above 1 GiB
+# failed every export over 1 GiB with a raw string-buffer error. Its maximum is now
+# 512 MiB, and SET refuses more. 512 MiB itself is accepted.
+part_set() {	# part_set VALUE -> "accepted", or the ERROR text of the refusal
+	local out e
+	out="$(psql_run "SET pgcolumnar.objstore_part_size = $1" 2>&1)"
+	e="$(sed -n 's/^ERROR: *//p' <<<"$out" | head -1)"
+	echo "${e:-accepted}"
+}
+check "objstore_part_size refuses a value above its 512 MiB maximum" \
+	"$(part_set 536870913)" \
+	'536870913 is outside the valid range for parameter "pgcolumnar.objstore_part_size" (0 .. 536870912)'
+check "objstore_part_size accepts its 512 MiB maximum" "$(part_set 536870912)" "accepted"
+
+# A chunk bigger than the room left in the part (#1812). The sink appended the whole
+# chunk before it cut a part, so it staged up to one part plus one chunk. A writer's
+# chunk is a whole Arrow record batch. Here 2000 rows of 250000 bytes, about 500 MB in
+# two batches, are staged under the 512 MiB part when the writer hands over the batch
+# of one row with two 400 MB values: 1.3 GB, past what one allocation holds. The sink
+# now fills the part, uploads it, and goes on, so it never stages more than one part.
+# Opt-in, as large_values.sh's arm is: the export is about 1.3 GB.
+OVERPART="an 800 MB chunk over 500 MB already staged uploads whole at the 512 MiB part size, in 3 parts"
+if [ "${PGC_RUN_OVER_1GB:-0}" = 1 ]; then
+	psql_run "CREATE TABLE es_staged (id int, a text, b text) USING pgcolumnar;
+	          SELECT pgcolumnar.set_options('es_staged', stripe_row_limit => 1000);
+	          INSERT INTO es_staged SELECT g, repeat('y', 250000), '' FROM generate_series(1, 2000) g;
+	          INSERT INTO es_staged VALUES (2001, repeat('z', 400000000), repeat('w', 400000000));" >/dev/null
+	: > "$S3_LOG"
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		-c "SET statement_timeout = '900s'" -c "SET pgcolumnar.objstore_part_size = 536870912" \
+		-c "SELECT pgcolumnar.export_arrow('es_staged', 's3://$BUCKET/staged.arrow')" 2>&1)"
+	got="$(grep -m1 '^ERROR' <<<"$out" || tail -1 <<<"$out")"
+	q "SELECT pgcolumnar.export_arrow('es_staged', '$PGC_WORKDIR/staged-local.arrow')" >/dev/null
+	same="$(cmp -s "$PGC_WORKDIR/$BUCKET/staged.arrow" "$PGC_WORKDIR/staged-local.arrow" && echo identical \
+		|| echo "differs ($(stat -c %s "$PGC_WORKDIR/$BUCKET/staged.arrow" 2>/dev/null || echo missing) vs $(stat -c %s "$PGC_WORKDIR/staged-local.arrow" 2>/dev/null || echo missing) bytes)")"
+	check "$OVERPART" "$got|parts=$(logn '^PUT /pgc-bucket/staged.arrow partNumber=')|$same" "2001|parts=3|identical"
+	rm -f "$PGC_WORKDIR/$BUCKET/staged.arrow" "$PGC_WORKDIR/staged-local.arrow"
+	psql_run "DROP TABLE es_staged;"
+else
+	check_skip "$OVERPART" "SKIP  $OVERPART (set PGC_RUN_OVER_1GB=1; it needs several GB of memory and disk)" "opt-in heavy arm"
+fi
 
 # ---- injection: abort mid-part leaves NOTHING -------------------------------
 : > "$S3_LOG"
@@ -775,12 +826,16 @@ check "part minimum: a gs:// export at the default GCS endpoint with 256 KiB par
 
 # ---- optional: a real S3 implementation (Garage) ----------------------------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then
-	pg_restart_env "AWS_ENDPOINT_URL='$PGC_S3_INTEGRATION_ENDPOINT'" \
+	# A failed restart is a named red, and the arms below still run and fail by
+	# name, so the reds of the arms above reach the summary (#1850).
+	if pg_restart_env "AWS_ENDPOINT_URL='$PGC_S3_INTEGRATION_ENDPOINT'" \
 		"AWS_ACCESS_KEY_ID='$PGC_S3_INTEGRATION_KEY'" \
 		"AWS_SECRET_ACCESS_KEY='$PGC_S3_INTEGRATION_SECRET'" \
 		"AWS_REGION='${PGC_S3_INTEGRATION_REGION:-garage}'"
+	then int_up=yes; else int_up="no (the cluster did not answer SELECT 1 within 15 s of the restart)"; fi
+	check "integration: the cluster restarts with the real S3 credentials" "$int_up" "yes"
 	pgc_pg "echo \"pgcolumnar.objstore_allowed_endpoints='$(echo "${PGC_S3_INTEGRATION_ENDPOINT#http://}" | cut -d/ -f1 | cut -d: -f1)'\" >> '$PGC_PGDATA/postgresql.conf'"
-	psql_run "SELECT pg_reload_conf();"
+	q "SELECT pg_reload_conf()" >/dev/null
 	IB="${PGC_S3_INTEGRATION_BUCKET:-pgcolumnar-test}"
 	check_num "integration: multipart export to real S3 succeeds" \
 		"$(q "SELECT pgcolumnar.export_parquet('es_big', 's3://$IB/m2sink-$$.parquet')")" "$BIGROWS"

@@ -32,6 +32,7 @@
 #include "fmgr.h"
 #include "foreign/foreign.h"
 #include "lib/stringinfo.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -476,6 +477,69 @@ rest_json_string_opt(JsonbContainer *c, const char *key)
 }
 
 /*
+ * The catalog's ErrorModel from a non-200 body, {"error":{"message","type"}}:
+ * *msg and *type are palloc'd strings, or NULL when absent (#1820). A body that
+ * is not JSON is not an error of its own here: the caller still reports the
+ * status. The message is the catalog's text, so it goes in an errdetail, cut to
+ * REST_ERROR_MSG_MAX bytes on a character boundary.
+ */
+#define REST_ERROR_MSG_MAX 512
+static void
+rest_error_model(const PgColumnarHttpResult *r, char **msg, char **type)
+{
+	MemoryContext oldcxt = CurrentMemoryContext;
+	Jsonb	   *volatile doc = NULL;
+
+	*msg = NULL;
+	*type = NULL;
+	if (r->body == NULL || r->body_len <= 0 || r->body[0] != '{' ||
+		strlen(r->body) != (size_t) r->body_len)
+		return;
+	PG_TRY();
+	{
+		doc = DatumGetJsonbP(DirectFunctionCall1(jsonb_in,
+												 CStringGetDatum(r->body)));
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		/*
+		 * Not JSON: drop the parse error, and the status alone is reported.
+		 * jsonb_in raises a parse error in the data-exception class (22xxx) and
+		 * holds no resource, so no subtransaction is needed to drop it. Any
+		 * other error (stack depth, out of memory, a cancel) is not about the
+		 * body, so it rises unchanged (#1820 review).
+		 */
+		MemoryContextSwitchTo(oldcxt);
+		edata = CopyErrorData();
+		if (ERRCODE_TO_CATEGORY(edata->sqlerrcode) != ERRCODE_DATA_EXCEPTION)
+		{
+			FreeErrorData(edata);
+			PG_RE_THROW();
+		}
+		FreeErrorData(edata);
+		FlushErrorState();
+		doc = NULL;
+	}
+	PG_END_TRY();
+	if (doc != NULL && JsonContainerIsObject(&doc->root))
+	{
+		JsonbValue	vbuf;
+		JsonbValue *ev = getKeyJsonValueFromContainer(&doc->root, "error", 5, &vbuf);
+
+		if (ev != NULL && ev->type == jbvBinary &&
+			JsonContainerIsObject(ev->val.binary.data))
+		{
+			*msg = rest_json_string_opt(ev->val.binary.data, "message");
+			*type = rest_json_string_opt(ev->val.binary.data, "type");
+		}
+	}
+	if (*msg != NULL && strlen(*msg) > REST_ERROR_MSG_MAX)
+		(*msg)[pg_mbcliplen(*msg, strlen(*msg), REST_ERROR_MSG_MAX)] = '\0';
+}
+
+/*
  * GET catalog_uri + resource_path, sending the bearer token when set. Maps the
  * transport-level statuses the catalog can return to clean SQLSTATEs; returns
  * the parsed JSON body of a 200 as a Jsonb, or raises. `what` labels errors.
@@ -489,6 +553,8 @@ rest_get_json(const char *catalog_uri, const char *resource_path,
 	const char *headers[2];
 	int			nheaders = 0;
 	char	   *authhdr = NULL;
+	char	   *emsg = NULL;
+	char	   *etype = NULL;
 	PgColumnarHttpResult r;
 	Datum		jd;
 
@@ -511,22 +577,34 @@ rest_get_json(const char *catalog_uri, const char *resource_path,
 	if (authhdr != NULL)
 		pfree(authhdr);
 
+	if (r.status != 200)
+		rest_error_model(&r, &emsg, &etype);
 	if (r.status == 401 || r.status == 403)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 				 errmsg("iceberg: the REST catalog refused the request (HTTP %d)",
 						r.status),
+				 emsg ? errdetail("The catalog said: %s", emsg) : 0,
 				 errhint("Provide the catalog's bearer token via a USER MAPPING "
 						 "or the %s server environment variable.", REST_TOKEN_ENV)));
+	/* the ErrorModel type tells a missing namespace from a missing table */
+	if (r.status == 404 && etype != NULL &&
+		strcmp(etype, "NoSuchNamespaceException") == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_SCHEMA_NAME),
+				 errmsg("iceberg: the REST catalog has no such namespace (HTTP 404)"),
+				 emsg ? errdetail("The catalog said: %s", emsg) : 0));
 	if (r.status == 404)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_TABLE),
-				 errmsg("iceberg: the REST catalog has no such %s (HTTP 404)", what)));
+				 errmsg("iceberg: the REST catalog has no such %s (HTTP 404)", what),
+				 emsg ? errdetail("The catalog said: %s", emsg) : 0));
 	if (r.status != 200)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg("iceberg: the REST catalog returned HTTP %d for the %s",
-						r.status, what)));
+						r.status, what),
+				 emsg ? errdetail("The catalog said: %s", emsg) : 0));
 	if (r.body == NULL || r.body_len == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
@@ -735,35 +813,74 @@ rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
 }
 
 /*
- * Build an object-store config from the storage credentials a loadTable reply
- * vends, or NULL when it vends none (the caller then falls back to ambient). A
- * `storage-credentials` array is preferred, choosing the entry whose `prefix` is
- * the longest match for `metadata_location`; otherwise the flat `config` object.
- * allow_ambient is false: once a catalog vends credentials a read must use them,
- * never silently the server's ambient identity.
+ * One vended credential config as an object-store config, or NULL when it holds
+ * no s3.access-key-id and s3.secret-access-key (it vends no usable credential).
+ * allow_ambient is false: the module must use these keys, never the server's.
  */
 static PgColumnarObjStoreConfig *
-rest_vended_cfg(JsonbContainer *lt, const char *metadata_location)
+rest_cred_cfg(JsonbContainer *c)
 {
-	JsonbContainer *chosen = NULL;
-	int			bestlen = -1;
+	char	   *akid = rest_json_string_opt(c, "s3.access-key-id");
+	char	   *secret = rest_json_string_opt(c, "s3.secret-access-key");
+	PgColumnarObjStoreConfig *cfg;
+
+	if (akid == NULL || secret == NULL)
+		return NULL;
+	cfg = (PgColumnarObjStoreConfig *) palloc0(sizeof(PgColumnarObjStoreConfig));
+	cfg->akid = akid;
+	cfg->secret = secret;
+	cfg->token = rest_json_string_opt(c, "s3.session-token");
+	cfg->region = rest_json_string_opt(c, "s3.region");
+	if (cfg->region == NULL)
+		cfg->region = rest_json_string_opt(c, "client.region");
+	cfg->endpoint = rest_json_string_opt(c, "s3.endpoint");
+	cfg->allow_ambient = false;
+	cfg->vended = true;			/* a refused key's hint names the catalog (#1796) */
+	return cfg;
+}
+
+/*
+ * Build an object-store config from the storage credentials a loadTable reply
+ * vends, or NULL when it vends none (the read then uses the ambient
+ * environment, as for iceberg_scan).
+ *
+ * With no usable `storage-credentials` entry, the flat `config` signs every
+ * file. Otherwise the result carries every entry, and the reader chooses one
+ * per file (#1820): the entry whose `prefix` is the longest match for that
+ * file's URL, else the flat config, else it refuses the file. An entry or a
+ * flat config without both S3 keys vends nothing and is ignored. Once a catalog
+ * vends credentials, no file is read silently with the server's ambient
+ * identity.
+ */
+static PgColumnarObjStoreConfig *
+rest_vended_cfg(JsonbContainer *lt)
+{
 	JsonbValue	vbuf;
 	JsonbValue *sc;
-	char	   *akid;
-	char	   *secret;
+	JsonbValue *fv;
+	PgColumnarObjStoreConfig *flat = NULL;
+	PgColumnarObjStoreCredSet *cs;
 	PgColumnarObjStoreConfig *cfg;
 
 	if (lt == NULL || !JsonContainerIsObject(lt))
 		return NULL;
 
+	fv = getKeyJsonValueFromContainer(lt, "config", 6, &vbuf);
+	if (fv != NULL && fv->type == jbvBinary &&
+		JsonContainerIsObject(fv->val.binary.data))
+		flat = rest_cred_cfg(fv->val.binary.data);
+
+	cs = (PgColumnarObjStoreCredSet *) palloc0(sizeof(PgColumnarObjStoreCredSet));
 	sc = getKeyJsonValueFromContainer(lt, "storage-credentials", 19, &vbuf);
 	if (sc != NULL && sc->type == jbvBinary &&
 		JsonContainerIsArray(sc->val.binary.data))
 	{
 		uint32		n = JsonContainerSize(sc->val.binary.data);
 		uint32		i;
-		int			mloclen = (int) strlen(metadata_location);
 
+		cs->prefix = (const char **) palloc0(sizeof(char *) * Max(n, 1));
+		cs->cfg = (const PgColumnarObjStoreConfig **)
+			palloc0(sizeof(PgColumnarObjStoreConfig *) * Max(n, 1));
 		for (i = 0; i < n; i++)
 		{
 			JsonbValue *e = getIthJsonbValueFromContainer(sc->val.binary.data, i);
@@ -771,6 +888,7 @@ rest_vended_cfg(JsonbContainer *lt, const char *metadata_location)
 						cbuf;
 			JsonbValue *pv;
 			JsonbValue *cv;
+			PgColumnarObjStoreConfig *ec;
 
 			if (e == NULL || e->type != jbvBinary ||
 				!JsonContainerIsObject(e->val.binary.data))
@@ -781,42 +899,26 @@ rest_vended_cfg(JsonbContainer *lt, const char *metadata_location)
 				cv == NULL || cv->type != jbvBinary ||
 				!JsonContainerIsObject(cv->val.binary.data))
 				continue;
-			if (pv->val.string.len <= mloclen &&
-				strncmp(metadata_location, pv->val.string.val,
-						pv->val.string.len) == 0 &&
-				pv->val.string.len > bestlen)
-			{
-				bestlen = pv->val.string.len;
-				chosen = cv->val.binary.data;
-			}
+			ec = rest_cred_cfg(cv->val.binary.data);
+			if (ec == NULL)
+				continue;
+			cs->prefix[cs->n] = pnstrdup(pv->val.string.val, pv->val.string.len);
+			cs->cfg[cs->n] = ec;
+			cs->n++;
 		}
 	}
 
-	if (chosen == NULL)
-	{
-		JsonbValue *cv = getKeyJsonValueFromContainer(lt, "config", 6, &vbuf);
+	if (cs->n == 0)
+		return flat;			/* NULL here means the ambient environment */
 
-		if (cv != NULL && cv->type == jbvBinary &&
-			JsonContainerIsObject(cv->val.binary.data))
-			chosen = cv->val.binary.data;
-	}
-	if (chosen == NULL)
-		return NULL;
-
-	akid = rest_json_string_opt(chosen, "s3.access-key-id");
-	secret = rest_json_string_opt(chosen, "s3.secret-access-key");
-	if (akid == NULL || secret == NULL)
-		return NULL;			/* no usable vended creds -> ambient fallback */
-
+	/*
+	 * No credential triple and allow_ambient false: if this config ever reached
+	 * the module unresolved, the module would refuse it (28000).
+	 */
+	cs->fallback = flat;
 	cfg = (PgColumnarObjStoreConfig *) palloc0(sizeof(PgColumnarObjStoreConfig));
-	cfg->akid = akid;
-	cfg->secret = secret;
-	cfg->token = rest_json_string_opt(chosen, "s3.session-token");
-	cfg->region = rest_json_string_opt(chosen, "s3.region");
-	if (cfg->region == NULL)
-		cfg->region = rest_json_string_opt(chosen, "client.region");
-	cfg->endpoint = rest_json_string_opt(chosen, "s3.endpoint");
 	cfg->allow_ambient = false;
+	cfg->byprefix = cs;
 	return cfg;
 }
 
@@ -905,7 +1007,7 @@ pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	/* one loadTable: the metadata-location AND the vended storage creds (if any) */
 	lt = rest_load_table_doc(catalog_uri, ns, table, token, warehouse, &loc);
-	cfg = rest_vended_cfg(&lt->root, loc);
+	cfg = rest_vended_cfg(&lt->root);
 	/*
 	 * A metadata-location is a URI. The reader's remote path handles s3:// and
 	 * http(s)://; a file:// location is a local path, and the local read path

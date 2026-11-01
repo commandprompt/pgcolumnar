@@ -32,6 +32,7 @@
 
 #include "fmgr.h"
 #include "funcapi.h"
+#include "access/detoast.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/table.h"
@@ -304,6 +305,7 @@ typedef struct ArrowCol
 	int16		elemlen;
 	bool		elembyval;
 	char		elemalign;
+	PgcTextQueue pending;		/* this row's texts, made by arrowcol_value_bytes */
 }			ArrowCol;
 
 static void
@@ -623,8 +625,15 @@ arrowcol_append(ArrowCol *c, Datum d, bool isnull)
 				{
 					if (c->convertText)
 					{
-						char	   *str = OutputFunctionCall(&c->outFinfo, d);
-						int			len = (int) strlen(str);
+						/* the text arrowcol_value_bytes made, or a new one */
+						int			len = 0;
+						char	   *str = PgcTextQueuePop(&c->pending, d, &len);
+
+						if (str == NULL)
+						{
+							str = OutputFunctionCall(&c->outFinfo, d);
+							len = (int) strlen(str);
+						}
 
 						if (len > 0)
 							appendBinaryStringInfo(&c->vardata, str, len);
@@ -964,6 +973,144 @@ write_record_batch(PqSink *snk, ArrowCol *cols, int ncols, int64 nrows)
 }
 
 /*
+ * arrowcol_bytes
+ *		The bytes one column has buffered for the current batch, its children
+ *		included (#1811).
+ */
+static int64
+arrowcol_bytes(const ArrowCol *c)
+{
+	int64		bytes = (int64) c->valid.len + c->fixed.len + c->boolvals.len +
+		c->vardata.len + c->offs.len;
+	int			k;
+
+	for (k = 0; k < c->nchildren; k++)
+		bytes += arrowcol_bytes(&c->children[k]);
+	return bytes;
+}
+
+/*
+ * arrowcol_value_bytes
+ *		An upper bound on the bytes arrowcol_append adds for one value, counted
+ *		in the column's written form (#1811, #1843 review): the validity byte,
+ *		the fixed width or the offset, and the bytes of a variable-length value.
+ *		A numeric or jsonb written as text is measured by its text, which can be
+ *		far longer than the stored value. A value that arrowcol_append folds to
+ *		null adds less than this. The column keeps that text for arrowcol_append,
+ *		which takes the texts in the same order, so each value converts once.
+ */
+static int64
+arrowcol_value_bytes(ArrowCol *c, Datum d, bool isnull)
+{
+	int64		bytes = 1;		/* validity */
+	int			k;
+
+	switch (c->kind)
+	{
+		case A_BOOL:
+			return bytes + 1;
+		case A_UTF8:
+		case A_BINARY:
+			bytes += 4;			/* offset */
+			if (isnull)
+				return bytes;
+			if (c->convertText)
+			{
+				char	   *str = OutputFunctionCall(&c->outFinfo, d);
+				int			len = (int) strlen(str);
+
+				bytes += (int64) len;
+				PgcTextQueuePush(&c->pending, d, str, len);
+			}
+			else
+				bytes += (int64) toast_raw_datum_size(d) - VARHDRSZ;
+			return bytes;
+		case A_LIST:
+			bytes += 4;			/* list offset */
+			if (!isnull)
+			{
+				ArrowCol   *e = &c->children[0];
+				ArrayType  *arr = DatumGetArrayTypeP(d);
+				int			n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+
+				if (e->nchildren == 0 && !e->convertText &&
+					e->kind != A_UTF8 && e->kind != A_BINARY)
+					bytes += (int64) n * (1 + Max(e->width, 1));
+				else if (e->nchildren == 0 && !e->convertText)
+					bytes += (int64) n * (1 + 4) + ARR_SIZE(arr);
+				else
+				{
+					Datum	   *elems;
+					bool	   *enulls;
+					int			nelems;
+
+					deconstruct_array(arr, c->elemtype, c->elemlen,
+									  c->elembyval, c->elemalign,
+									  &elems, &enulls, &nelems);
+					for (k = 0; k < nelems; k++)
+						bytes += arrowcol_value_bytes(e, elems[k], enulls[k]);
+					pfree(elems);
+					pfree(enulls);
+				}
+				if ((Pointer) arr != DatumGetPointer(d))
+					pfree(arr);
+			}
+			return bytes;
+		case A_STRUCT:
+			if (isnull)
+			{
+				for (k = 0; k < c->nchildren; k++)
+					bytes += arrowcol_value_bytes(&c->children[k], (Datum) 0, true);
+			}
+			else
+			{
+				HeapTupleHeader th = DatumGetHeapTupleHeader(d);
+				TupleDesc	td = lookup_rowtype_tupdesc(HeapTupleHeaderGetTypeId(th),
+														HeapTupleHeaderGetTypMod(th));
+				HeapTupleData tmptup;
+				Datum	   *av = palloc(sizeof(Datum) * td->natts);
+				bool	   *an = palloc(sizeof(bool) * td->natts);
+				int			a;
+				int			fi = 0;
+
+				tmptup.t_len = HeapTupleHeaderGetDatumLength(th);
+				ItemPointerSetInvalid(&tmptup.t_self);
+				tmptup.t_tableOid = InvalidOid;
+				tmptup.t_data = th;
+				heap_deform_tuple(&tmptup, td, av, an);
+				for (a = 0; a < td->natts; a++)
+				{
+					if (TupleDescAttr(td, a)->attisdropped)
+						continue;
+					bytes += arrowcol_value_bytes(&c->children[fi], av[a], an[a]);
+					fi++;
+				}
+				ReleaseTupleDesc(td);
+				pfree(av);
+				pfree(an);
+			}
+			return bytes;
+		default:
+			return bytes + c->width;
+	}
+}
+
+/* write the buffered rows as one RecordBatch, then reset the columns */
+static void
+arrow_flush_batch(PqSink *snk, ArrowCol *cols, int ncols, int64 nrows,
+				  MemoryContext batchCtx)
+{
+	MemoryContext oldCtx = MemoryContextSwitchTo(batchCtx);
+	int			i;
+
+	write_record_batch(snk, cols, ncols, nrows);
+	MemoryContextSwitchTo(oldCtx);
+	MemoryContextReset(batchCtx);
+	for (i = 0; i < ncols; i++)
+		arrowcol_reset(&cols[i]);
+}
+
+/*
  * pgcolumnar_export_arrow
  *		SQL: pgcolumnar.export_arrow(rel regclass, path text) -> bigint.
  *		Write a columnar table to an Arrow IPC stream file; returns the number
@@ -1129,7 +1276,29 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 
 	while (PgColumnarReadNextRow(readState, values, nulls, &rowNumber))
 	{
+		int64		batchBytes = 0;
+		int64		rowBytes = 0;
+
 		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * Cut by bytes too (#1811): write the batch before a row that would
+		 * take its buffered bytes past the cap. The batch body is built in
+		 * one allocation, capped at 1 GiB. The row is counted as written,
+		 * not as stored (#1843 review).
+		 */
+		for (i = 0; i < ncols; i++)
+		{
+			batchBytes += arrowcol_bytes(&cols[i]);
+			rowBytes += arrowcol_value_bytes(&cols[i], values[i], nulls[i]);
+		}
+		if (batchRows > 0 &&
+			batchBytes + rowBytes > (int64) pgcolumnar_export_group_bytes)
+		{
+			arrow_flush_batch(snk, cols, ncols, batchRows, batchCtx);
+			batchRows = 0;
+		}
+
 		for (i = 0; i < ncols; i++)
 			arrowcol_append(&cols[i], values[i], nulls[i]);
 		batchRows++;
@@ -1137,12 +1306,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 
 		if (batchRows == ARROW_BATCH_ROWS)
 		{
-			oldCtx = MemoryContextSwitchTo(batchCtx);
-			write_record_batch(snk, cols, ncols, batchRows);
-			MemoryContextSwitchTo(oldCtx);
-			MemoryContextReset(batchCtx);
-			for (i = 0; i < ncols; i++)
-				arrowcol_reset(&cols[i]);
+			arrow_flush_batch(snk, cols, ncols, batchRows, batchCtx);
 			batchRows = 0;
 		}
 	}
