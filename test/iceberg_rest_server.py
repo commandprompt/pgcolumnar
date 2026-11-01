@@ -40,6 +40,9 @@
 #   --top-level-all             list every namespace, at every level, when no
 #                               ?parent= is given (not what the spec says)
 #   --ignore-parent             answer ?parent= as if it were absent
+#   --honour-empty-parent       read an empty ?parent= as the namespace [""],
+#                               as the Apache Iceberg REST catalog does (#1922).
+#                               Without it, an empty ?parent= means no parent.
 #   --parent-status N           answer HTTP N to any ?parent= request
 #   --config-json J             answer /v1/config with the JSON text J
 #   --bad-page-token same|cycle return every list item on the first page, then
@@ -229,7 +232,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if ARGS.ignore_parent:
                 parent = ""
-            if parent:
+            asked_empty = (ARGS.honour_empty_parent and not ARGS.ignore_parent and not parent and
+                           "parent" in
+                           urllib.parse.parse_qs(parsed.query, keep_blank_values=True))
+            if parent or asked_empty:
                 ptuple = tuple(parent.split(self._sep()))
                 if ptuple not in known:
                     self._not_found("no such namespace %s" % parent)
@@ -468,6 +474,7 @@ def main():
     ap.add_argument("--page-size", type=int, default=0)
     ap.add_argument("--top-level-all", action="store_true")
     ap.add_argument("--ignore-parent", action="store_true")
+    ap.add_argument("--honour-empty-parent", action="store_true")
     ap.add_argument("--parent-status", type=int, default=0)
     ap.add_argument("--config-json", default="")
     ap.add_argument("--bad-page-token", choices=["same", "cycle"], default="")

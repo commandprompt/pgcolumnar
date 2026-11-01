@@ -534,6 +534,21 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Iceberg REST functions now refuse a namespace whose only level is empty,
+  `''` or `ARRAY['']`, with SQLSTATE 22023 (#1922). Its request path held an
+  empty segment, as in `/v1/namespaces//tables`. The Apache Iceberg REST
+  catalog answers that path with HTTP 400, and a proxy may collapse `//` to
+  `/` and reach another resource. The REST spec has no other way to write it.
+  The refusal comes before any request, including a server's OAuth token
+  request, so it does not depend on whether the catalog is up. The hint names level 1 as empty. `iceberg_rest_namespace_levels`
+  still lists `{""}` and still asks for its children with an empty `?parent=`,
+  which is a query value, not a path segment. The Apache Iceberg REST catalog
+  reads it as `{""}`. `iceberg_rest_namespaces` now writes the levels `""`, `x`
+  as `.x`; before, it wrote `x`, the name of another namespace. A namespace with
+  an empty level among other levels, such as `{db,""}`, still works (#1891).
+  docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`.
+
 - The Parquet reader now refuses a Snappy page whose decompressed size differs
   from the size in its page header (#1910). It raises SQLSTATE XX001, as it
   already did for GZIP, ZSTD and LZ4_RAW. Before, it trusted the size inside the

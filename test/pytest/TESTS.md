@@ -11171,6 +11171,19 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_empty_level_a_listed_level_array_with_an_empty_level_passes_back` | empty level: a listed level array with an empty level passes back to iceberg_rest_tables |
 | `test_empty_level_the_server_form_reaches_the_empty_level` | empty level: the server form of iceberg_rest_tables reaches ARRAY['db',''] |
 | `test_empty_level_a_missing_table_in_an_empty_level_namespace_gets_a_hint` | empty level: iceberg_rest_table_location of a missing table in ARRAY['db',''] gets a hint naming level 2 |
+| `test_empty_only_level_iceberg_rest_namespace_levels_asks_for_its_children` | empty only level: iceberg_rest_namespace_levels lists ARRAY[''] and asks for its children with an empty parent |
+| `test_empty_only_level_iceberg_rest_tables_of_the_array_form_is_refused` | empty only level: iceberg_rest_tables of ARRAY[''] is refused naming level 1 |
+| `test_empty_only_level_iceberg_rest_table_location_of_the_text_form_is_refused` | empty only level: iceberg_rest_table_location of '' is refused naming level 1 |
+| `test_empty_only_level_iceberg_rest_scan_of_the_text_form_is_refused` | empty only level: iceberg_rest_scan of '' is refused naming level 1 |
+| `test_empty_only_level_the_documented_filter_keeps_the_lateral_example_running` | empty only level: the documented filter keeps the LATERAL example running |
+| `test_empty_only_level_iceberg_rest_namespace_levels_lists_the_child` | empty only level: iceberg_rest_namespace_levels lists the child of ARRAY[''] when the catalog reads an empty parent as ARRAY[''] |
+| `test_empty_only_level_iceberg_rest_namespaces_lists_the_child` | empty only level: iceberg_rest_namespaces lists '' and its child '.x' |
+| `test_empty_only_level_the_documented_filter_reaches_the_child` | empty only level: the documented filter lets the LATERAL example reach the child of ARRAY[''] |
+| `test_empty_only_level_location_is_refused_when_the_catalog_cannot_be_reached` | empty only level: iceberg_rest_table_location of '' is refused when the catalog cannot be reached |
+| `test_empty_only_level_tables_is_refused_when_the_catalog_cannot_be_reached` | empty only level: iceberg_rest_tables of ARRAY[''] is refused when the catalog cannot be reached |
+| `test_empty_only_level_oauth_server_location_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request |
+| `test_empty_only_level_oauth_server_scan_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_scan of '' is refused before the token request |
+| `test_empty_only_level_no_request_has_an_empty_path_segment` | empty only level: no request reaches the catalog with an empty path segment |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
