@@ -31,6 +31,7 @@ named red, not an error of the whole module (#1850).
 """
 import os
 import pathlib
+import re
 import shutil
 import socket
 import subprocess
@@ -221,6 +222,24 @@ def _s3cli(ep, *args):
         return None
 
 
+def _first_page(ep, ib, region, key, secret, prefix):
+    """ListObjectsV2's first page under `prefix`, signed by curl's own SigV4 (the shell's
+    s3firstpage; `aws s3api` fails to start on some aws-cli 2 / Python 3.14 installs).
+    -> "KeyCount IsTruncated" ("1000 True"), or the failure as a query_error()."""
+    try:
+        got = subprocess.run(["curl", "-sS", "--aws-sigv4", f"aws:amz:{region}:s3", "--user", f"{key}:{secret}",
+                              f"{ep}/{ib}?list-type=2&prefix={prefix}"], capture_output=True, text=True)
+    except OSError as exc:
+        return query_error(f"curl could not be run: {exc}")
+    if got.returncode != 0:
+        return query_error(f"curl failed ({got.returncode}): {got.stderr.strip()[:200]}")
+    n = re.search(r"<KeyCount>([0-9]+)</KeyCount>", got.stdout)
+    t = re.search(r"<IsTruncated>(true|false)</IsTruncated>", got.stdout)
+    if not n or not t:
+        return query_error(f"no KeyCount and IsTruncated in the reply: {got.stdout.strip()[:200]}")
+    return f"{n.group(1)} {t.group(1).capitalize()}"
+
+
 def _integration(cluster, datadir, log, bucket, work):
     """The shell's real-S3 block (#1798). -> None when PGC_S3_INTEGRATION_ENDPOINT is
     unset, else a dict holding "restart" and, when the upload worked, the readings."""
@@ -267,10 +286,7 @@ def _integration(cluster, datadir, log, bucket, work):
         i["named"] = (rd(remote, *named), rd(str(local), *named))
         # the server's own first page, read by another client: the premise that 1100
         # keys cannot come back in one page
-        first = _s3cli(ep, "s3api", "list-objects-v2", "--bucket", ib, "--prefix", f"{run}/page/",
-                       "--no-paginate", "--query", "[KeyCount, IsTruncated]", "--output", "text")
-        i["page cap"] = (first.stdout.strip().replace("\t", " ") if first is not None and first.returncode == 0
-                         else query_error(f"list-objects-v2: {first.stderr.strip() if first else 'no aws CLI'}"))
+        i["page cap"] = _first_page(ep, ib, region, key, secret, f"{run}/page/")
         i["paged"] = rd(remote, "page/")
         vep = os.environ.get("PGC_S3_INTEGRATION_VHOST_ENDPOINT", "")
         vhost = vep.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]

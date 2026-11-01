@@ -291,6 +291,26 @@ if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then
 			AWS_DEFAULT_REGION="${PGC_S3_INTEGRATION_REGION:-garage}" \
 			aws --endpoint-url "$1" "${@:2}"
 	}
+	# s3firstpage PREFIX -> "KeyCount IsTruncated" of ListObjectsV2's first page
+	# under PREFIX ("1000 True"), or why there is none
+	s3firstpage() {
+		local x n t
+		if ! x="$(curl -sS --aws-sigv4 "aws:amz:${PGC_S3_INTEGRATION_REGION:-garage}:s3" \
+			--user "$PGC_S3_INTEGRATION_KEY:$PGC_S3_INTEGRATION_SECRET" \
+			"$PGC_S3_INTEGRATION_ENDPOINT/$IB?list-type=2&prefix=$1" 2>&1)"
+		then
+			echo "no listing (curl failed: $(printf '%s' "$x" | tr '\n' ' ' | cut -c1-200))"
+			return
+		fi
+		n="$(printf '%s' "$x" | sed -n 's:.*<KeyCount>\([0-9]*\)</KeyCount>.*:\1:p')"
+		t="$(printf '%s' "$x" | sed -n 's:.*<IsTruncated>\([a-z]*\)</IsTruncated>.*:\1:p')"
+		case "$t" in true) t=True ;; false) t=False ;; esac
+		if [ -n "$n" ] && [ -n "$t" ]; then
+			echo "$n $t"
+		else
+			echo "no KeyCount and IsTruncated in the reply: $(printf '%s' "$x" | tr '\n' ' ' | cut -c1-200)"
+		fi
+	}
 	mkdir -p "$INT"
 	cp -a "$PGC_WORKDIR/$BUCKET/lst" "$PGC_WORKDIR/$BUCKET/_landing" \
 		"$PGC_WORKDIR/$BUCKET/.dir" "$PGC_WORKDIR/$BUCKET/glb" "$INT/"
@@ -344,11 +364,11 @@ PYEOF
 			"$(rd "$R/_landing/" "$R/.dir/" "$R/_landing/*.parquet" "$R/.dir/*.parquet")" \
 			"$(rd "$INT/_landing/" "$INT/.dir/" "$INT/_landing/*.parquet" "$INT/.dir/*.parquet")"
 		# the server's own first page, read by another client: the premise that
-		# 1100 keys cannot come back in one page
+		# 1100 keys cannot come back in one page. curl signs the ListObjectsV2
+		# request itself (--aws-sigv4), since `aws s3api` fails to start on some
+		# aws-cli 2 / Python 3.14 installs ("badly formed help string")
 		check "integration: the real S3 serves the 1100 keys in pages of at most 1000" \
-			"$(s3cli "$PGC_S3_INTEGRATION_ENDPOINT" s3api list-objects-v2 --bucket "$IB" \
-				--prefix "$IRUN/page/" --no-paginate --query '[KeyCount, IsTruncated]' \
-				--output text 2>&1 | tr '\t' ' ')" "1000 True"
+			"$(s3firstpage "$IRUN/page/")" "1000 True"
 		check "integration: real S3 listing pages past 1000 keys" \
 			"$(rd "$R/page/")" "1100 604450"
 		VEP="${PGC_S3_INTEGRATION_VHOST_ENDPOINT:-}"
