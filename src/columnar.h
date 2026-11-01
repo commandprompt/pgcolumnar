@@ -283,6 +283,7 @@ extern bool pgcolumnar_enable_column_projection;
 extern bool pgcolumnar_enable_custom_scan;
 extern bool pgcolumnar_enable_bloom_filter;	/* bloom equality skipping (I7) */
 extern bool pgcolumnar_objstore_buffered;	/* chunk-granular remote reads (#393) */
+extern bool pgcolumnar_objstore_pin_reads;	/* pin remote reads to one version (#1866) */
 extern char *pgcolumnar_objstore_allowed_endpoints; /* #393 allow-list, SUSET */
 extern int	pgcolumnar_objstore_part_size;	/* #394 remote multipart part size */
 extern char *pgcolumnar_objstore_s3_addressing; /* #621 path|virtual addressing */

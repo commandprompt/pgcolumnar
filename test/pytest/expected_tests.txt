@@ -1593,4 +1593,10 @@ guard_tests 854
 # cluster_tests 5088 -> 5092 for #1865's second review of PR #1884: four tests in test_iceberg_rest_scan.py
 # (the dot after the byte E9 in a LATIN1 database, an escaped newline, a NULL namespace array, the
 # documented filter on a default-separator catalog), by collection: `5787 tests collected`, minus 854.
-cluster_tests 5092
+# cluster_tests 5092 -> 5104 for #1866's and #1867's twelve tests: eight in test_objstore_http_read.py (the
+# pin turned off, the versioned read, the Content-Range length check) and four in test_objstore_s3_read.py
+# (the signed versioned read), by collection: `4916 tests collected`.
+# cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
+# premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
+# collection: 5776 tests collected, less guard_tests 854.
+cluster_tests 5110

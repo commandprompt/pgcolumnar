@@ -59,6 +59,22 @@ shutil.copyfile(sys.argv[1],
                 sys.argv[1].rsplit("/", 1)[0] + "/dir with space/f 1.parquet")
 '''
 
+# The versioned overwrite pair (#1867), as the shell writes it: one layout and byte
+# length, c0 >= 0 in every row of the first and c0 < 0 in every row of .next.
+WRITE_VSWAP = r'''
+import os, sys
+import pyarrow as pa, pyarrow.parquet as pq
+G, RPG = (int(a) for a in sys.argv[2:4])
+first = sys.argv[1]
+for path, sign in ((first, 1), (first + ".next", -1)):
+    c0 = pa.array([sign * v - (sign < 0) for v in range(G * RPG)], pa.int64())
+    pq.write_table(pa.table({"c0": c0}), path, row_group_size=RPG,
+                   compression="NONE", use_dictionary=False, write_statistics=False)
+assert os.path.getsize(first) == os.path.getsize(first + ".next")
+'''
+VSWAP_SQL = ("SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || "
+             "count(*) FILTER (WHERE c0 < 0) FROM fs3vswap")
+
 
 def _message(exc):
     return str(exc).splitlines()[0] if str(exc) else type(exc).__name__
@@ -117,6 +133,28 @@ def _refusal(dsn, sql, phrase, label):
             return query_error(_message(exc))
         return exc.sqlstate + (label if phrase in str(exc) else "")
     return "no error"
+
+
+def _rows_or_refusal(dsn, sql, phrase, label):
+    """The shell's refusal_of when `sql` succeeds: -> "no error (<first value>)", else
+    what _refusal gives."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        return exc.sqlstate + (label if phrase in str(exc) else "")
+    return f"no error ({row[0] if row else ''})"
+
+
+def _log_fields(log):
+    """-> the request log's lines split into fields (METHOD path query range)."""
+    try:
+        return [l.split() for l in pathlib.Path(log).read_text(errors="replace").splitlines()]
+    except OSError as exc:
+        return query_error(f"request log unreadable: {exc}")
 
 
 def _requests(log):
@@ -221,6 +259,13 @@ def osr(pgc_cluster):
                                str(ROWS_PER_GROUP)], capture_output=True, text=True)
         if made.returncode != 0:
             raise RuntimeError(f"the parquet fixture was not written: {made.stderr.strip()}")
+        vswap = bucket / "vswap.parquet"
+        made = subprocess.run([sys.executable, "-c", WRITE_VSWAP, str(vswap), str(G), str(ROWS_PER_GROUP)],
+                              capture_output=True, text=True)
+        if made.returncode != 0:
+            raise RuntimeError(f"the versioned pair was not written: {made.stderr.strip()}")
+        r["vswap sizes"] = (str(vswap.with_name("vswap.parquet.next").stat().st_size),
+                            str(vswap.stat().st_size))
         for p in [bucket, *bucket.rglob("*")]:
             p.chmod(0o777 if p.is_dir() else 0o666)
         r["fixture written"] = "yes" if fixture.is_file() and fixture.stat().st_size > 0 else "no"
@@ -257,6 +302,9 @@ def osr(pgc_cluster):
                                ("fs3tamper", "s3://tamperbkt/fixture.parquet"),
                                ("fs3miss", f"s3://{BUCKET}/no_such.parquet")):
                 c.execute(f"CREATE FOREIGN TABLE {name} ({COLDEFS}) SERVER s3srv OPTIONS (path '{path}')")
+            # Bucket "vswap" selects the server's versioned mode (#1867).
+            c.execute("CREATE FOREIGN TABLE fs3vswap (c0 int8) SERVER s3srv "
+                      f"OPTIONS (path 's3://vswap/{BUCKET}/vswap.parquet')")
 
         # phase 1: no AWS environment at all. The baseline comes first: a backend that
         # dies in this read must move the count.
@@ -279,6 +327,17 @@ def osr(pgc_cluster):
         open(s3log, "w").close()
         _value(dsn, f"SELECT {SUM_ALL} FROM fs3")
         r["requests"] = _requests(s3log)
+        _wait_up(dsn)
+        open(s3log, "w").close()
+        r["vswap"] = _rows_or_refusal(dsn, VSWAP_SQL, "changed while it was being read",
+                                      " changed while it was being read")
+        fields = _log_fields(s3log)
+        if isinstance(fields, list):
+            gets = [f for f in fields if len(f) > 2 and f[0] == "GET" and "vswap" in f[1]]
+            r["vswap gets"] = len(gets)
+            r["vswap no id"] = sum(1 for f in gets if not f[2].startswith("versionId=3HL4%2Bkq%2F"))
+        else:
+            r["vswap gets"] = r["vswap no id"] = fields
         r["tamper"] = _refusal(dsn, "SELECT count(*) FROM fs3tamper",
                                "was denied (HTTP 403", " as a 403")
         r["miss"] = _refusal(dsn, "SELECT count(*) FROM fs3miss", "does not exist (HTTP 404)", " as a 404")
@@ -386,6 +445,33 @@ def test_signing_left_the_request_arithmetic_unchanged(request, expect):
     r = _readings(request, expect)
     if r is not None:
         expect.text(str(r["requests"]), str(4 + G * NCOLS), "B: signing left the request arithmetic unchanged")
+
+
+def test_the_versioned_overwrite_pair_has_one_byte_length(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(*r["vswap sizes"], "premise: the versioned overwrite pair has one byte length")
+
+
+def test_a_signed_versioned_read_overwritten_mid_read_finishes_on_the_version_it_opened(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["vswap"], f"no error (old={G * ROWS_PER_GROUP} new=0)",
+                    "C: a signed versioned read overwritten mid-read finishes on the version it opened")
+
+
+def test_the_signed_versioned_read_logged_gets(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        n = r["vswap gets"]
+        expect.text("yes" if isinstance(n, int) and n > 0 else f"no ({n})", "yes",
+                    "premise: the signed versioned read logged GETs")
+
+
+def test_every_signed_ranged_get_of_a_versioned_read_names_the_version(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.num(r["vswap no id"], 0, "C: every signed ranged GET of a versioned read names the version")
 
 
 def test_the_tamper_bucket_surfaces_its_403_as_28000(request, expect):
