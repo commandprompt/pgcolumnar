@@ -1736,7 +1736,10 @@ weak one, or a longer one pins the read only by version id (see
 [limitations](limitations.md#reading-external-parquet)). Set
 `pgcolumnar.objstore_pin_reads` to `off` for a server whose ETag changes from
 one request to the next: the reader then sends no `If-Match` and no
-`versionId`. An
+`versionId`. Two reads of one URL in a statement, such as a self-join, read
+one version (#1894). The second read asks for the version the first one
+opened. When the store names no version, the second read fails with `changed
+while it was being read` if the object changed in between. An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a

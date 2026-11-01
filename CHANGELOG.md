@@ -525,6 +525,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- Two reads of one remote object in one statement now read the same version
+  (#1894). Before, each read pinned the version its own HEAD saw. If another
+  client overwrote the object between the two reads, a self-join or a
+  `UNION ALL` of the same foreign table returned rows from both versions
+  without an error. Now the first read of a URL in a statement keeps its ETag,
+  version id and length for the rest of the statement. A later read of that URL
+  asks for the same version when the store names one. Otherwise it fails with
+  `changed while it was being read` when the ETag or length differs. The next
+  statement reads the new version. A statement that writes the URL drops its
+  pin. docs/limitations.md and docs/sql-reference.md.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+  Reported by @OffgridwithJD.
+
 - The docs no longer contradict the code on object storage, credentials and
   row-group skipping (#1797). `import_arrow`, `file_split_offsets` and
   `parallel_copy` read local files only; the docs had said every Arrow and

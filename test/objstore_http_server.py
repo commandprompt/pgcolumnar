@@ -57,6 +57,11 @@
 #   /vdeny/<file>    as /vswap/, but a GET that names a version gets 403
 #                    AccessDenied, as S3 answers a caller that has
 #                    s3:GetObject but not s3:GetObjectVersion (#1888 review).
+#   /hswap/<file>    serve normally, but on the 2nd HEAD of <file> move
+#                    <file>.next over <file> before answering, once: another
+#                    writer overwrote the key between two reads of it in one
+#                    statement, each with its own HEAD (#1894).
+#   /vhswap/<file>   as /hswap/, in a versioned bucket as /vswap/ is.
 #
 # Every HEAD and GET of an object sends ETag: "<md5 of the current bytes>", and a
 # GET whose If-Match names any other ETag is answered 412, as S3 does (#1805).
@@ -186,7 +191,7 @@ class TLSServer(ThreadingHTTPServer):
         return self.tls_ctx.wrap_socket(sock, server_side=True), addr
 
 RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
-VERSIONED = ("vswap", "vnull", "vlong", "vdeny")
+VERSIONED = ("vswap", "vnull", "vlong", "vdeny", "vhswap")
 AUTH_RE = re.compile(
     r"^AWS4-HMAC-SHA256 Credential=([^/]+)/(\d{8})/([^/]+)/s3/aws4_request,\s*"
     r"SignedHeaders=([^,]+),\s*Signature=([0-9a-f]{64})$")
@@ -267,7 +272,8 @@ class Handler(BaseHTTPRequestHandler):
         mode = "normal"
         for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/",
                        "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/",
-                       "/vswap/", "/lenswap/", "/vnull/", "/vlong/", "/vdeny/"):
+                       "/vswap/", "/lenswap/", "/vnull/", "/vlong/", "/vdeny/",
+                       "/hswap/", "/vhswap/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -410,6 +416,12 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "hangup":
             self.close_connection = True
             return
+        if mode in ("hswap", "vhswap"):
+            with self.server.uploads_lock:
+                seen = self.server.swap_heads.get(local, 0) + 1
+                self.server.swap_heads[local] = seen
+                if seen == 2 and os.path.exists(local + ".next"):
+                    os.replace(local + ".next", local)
         size = self._head_common(local)
         if size < 0:
             return
@@ -923,6 +935,7 @@ def main():
     srv.uploads = {}
     srv.uploads_lock = threading.Lock()
     srv.swap_gets = {}
+    srv.swap_heads = {}
     srv.fickle_seq = 0
     srv.versions = {}
     srv.upload_seq = 0

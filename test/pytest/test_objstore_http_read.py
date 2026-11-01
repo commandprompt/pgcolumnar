@@ -101,6 +101,9 @@ for path, rows in ((first, list(range(G * RPG))), (first + ".next", [-1])):
                    compression="NONE", use_dictionary=False, write_statistics=False)
 """ % (G, ROWS_PER_GROUP)
 NOPIN = "SET pgcolumnar.objstore_pin_reads = off"
+# Two reads of one object in one statement (#1894), as the shell's TWO_READS.
+TWO_READS = ("SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || "
+             "count(*) FILTER (WHERE c0 < 0) FROM (SELECT c0 FROM %s UNION ALL SELECT c0 FROM %s) _u")
 HASH_SQL = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), 'EMPTY') FROM "
             "(SELECT _r::text AS t FROM (SELECT c3, c7 FROM %s) _r) _s")
 
@@ -226,7 +229,9 @@ def ohr(pgc_cluster):
     fixture.chmod(0o644)
     swap, swap79 = work / "swap.parquet", work / "swap79.parquet"
     swapoff, vswap = work / "swapoff.parquet", work / "vswap.parquet"
-    subprocess.run([sys.executable, "-c", SWAP_WRITER, str(swap), str(swap79), str(swapoff), str(vswap)],
+    hswap, vhswap = work / "hswap.parquet", work / "vhswap.parquet"
+    subprocess.run([sys.executable, "-c", SWAP_WRITER, str(swap), str(swap79), str(swapoff), str(vswap),
+                    str(hswap), str(vhswap)],
                    check=True, capture_output=True, text=True)
     swap_sizes = (swap.with_name("swap.parquet.next").stat().st_size, swap.stat().st_size)
     lenswap, lenswapoff = work / "lenswap.parquet", work / "lenswapoff.parquet"
@@ -239,7 +244,7 @@ def ohr(pgc_cluster):
                    check=True, capture_output=True, text=True)
     shrank = (lenshrink.stat().st_size
               - lenshrink.with_name("lenshrink.parquet.next").stat().st_size > 60000)
-    for f in (swap, swap79, swapoff, vswap, lenswap, lenswapoff, lenshrink):
+    for f in (swap, swap79, swapoff, vswap, hswap, vhswap, lenswap, lenswapoff, lenshrink):
         f.chmod(0o644)
         f.with_name(f.name + ".next").chmod(0o644)
 
@@ -299,7 +304,9 @@ def ohr(pgc_cluster):
             for name, path in (("fswapoff", "swap/swapoff.parquet"), ("fvswap", "vswap/vswap.parquet"),
                                ("flenswap", "lenswap/lenswap.parquet"),
                                ("flenswapoff", "lenswap/lenswapoff.parquet"),
-                               ("flenshrink", "lenswap/lenshrink.parquet")):
+                               ("flenshrink", "lenswap/lenshrink.parquet"),
+                               ("fhswap", "hswap/hswap.parquet"),
+                               ("fvhswap", "vhswap/vhswap.parquet")):
                 c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.{name} (c0 int8) SERVER ohr_srv "
                           f"OPTIONS (path '{base}/{path}')")
         r["crashes0"] = _crashes(plog)
@@ -393,6 +400,22 @@ def ohr(pgc_cluster):
             pathlib.Path(hlog).write_text("")
             got = reader(dsn, HASH_SQL % table, phrase)
             r[key] = (f"{got}; GETs naming a version: {vnamed(part)}", local_c3c7)
+
+        # #1894: two reads of one object in one statement, overwritten between
+        # them; each reading is the result, then how many HEADs the object got
+        def heads(part):
+            return _count(hlog, lambda f: len(f) > 1 and f[0] == "HEAD" and part in f[1])
+
+        _await_server(dsn)
+        pathlib.Path(hlog).write_text("")
+        got = _refusal(dsn, TWO_READS % ("fhswap", "fhswap"), changed)
+        r["C hswap"] = f"{got}; HEADs: {heads('/hswap/hswap')}"
+        _await_server(dsn)
+        r["C hswap next"] = _refusal(dsn, TWO_READS % ("fhswap", "fhswap"), changed)
+        _await_server(dsn)
+        pathlib.Path(hlog).write_text("")
+        got = _refusal(dsn, TWO_READS % ("fvhswap", "fvhswap"), changed)
+        r["C vhswap"] = f"{got}; HEADs: {heads('/vhswap/vhswap')}"
 
         _await_server(dsn)
         t0 = time.monotonic()
@@ -727,6 +750,28 @@ def test_a_versioned_get_answered_403_is_sent_again_without_the_version(ohr, exp
     expect.text(*_versioned(ohr, "C vdeny", 1),
                 "C: a versioned GET answered 403 is sent again without the version, and the read "
                 "finishes")
+
+
+def test_an_object_overwritten_between_two_reads_of_one_statement_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C hswap"], "55000: changed while it was being read; HEADs: 2",
+                "C: an object overwritten between two reads of one statement is refused")
+
+
+def test_the_statement_after_that_reads_the_new_object(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C hswap next"], f"no error: old=0 new={2 * G * ROWS_PER_GROUP}",
+                "C: the statement after that reads the new object")
+
+
+def test_two_reads_of_one_versioned_object_read_the_version_the_first_opened(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C vhswap"], f"no error: old={2 * G * ROWS_PER_GROUP} new=0; HEADs: 2",
+                "C: two reads of one versioned object in one statement, overwritten between them, "
+                "read the version the first opened")
 
 
 def test_a_stalled_transfer_is_cancelled(ohr, expect):

@@ -91,8 +91,11 @@ check "premise: fixture written" "$([ -s "$PGC_WORKDIR/fixture.parquet" ] && ech
 # swap79.parquet is a second, identical pair for /swap79/, which swaps it once too.
 # Each server mode swaps its file once, so every read that needs a swap gets its
 # own pair: swapoff.parquet for the unpinned read and vswap.parquet for /vswap/.
+# hswap.parquet and vhswap.parquet are the pairs for /hswap/ and /vhswap/, which
+# swap between two reads of one statement instead of mid-read (#1894).
 python3 - "$PGC_WORKDIR/swap.parquet" "$PGC_WORKDIR/swap79.parquet" \
-	"$PGC_WORKDIR/swapoff.parquet" "$PGC_WORKDIR/vswap.parquet" <<PYEOF
+	"$PGC_WORKDIR/swapoff.parquet" "$PGC_WORKDIR/vswap.parquet" \
+	"$PGC_WORKDIR/hswap.parquet" "$PGC_WORKDIR/vhswap.parquet" <<PYEOF
 import os, sys
 import pyarrow as pa, pyarrow.parquet as pq
 G, RPG = $G, $ROWS_PER_GROUP
@@ -288,6 +291,8 @@ psql_run "CREATE FOREIGN TABLE fvswapoff ($COLDEFS) SERVER osrv OPTIONS (path '$
 psql_run "CREATE FOREIGN TABLE fvnull ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/vnull/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fvlong ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/vlong/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fvdeny ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/vdeny/fixture.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswap.parquet');"
+psql_run "CREATE FOREIGN TABLE fvhswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/vhswap/vhswap.parquet');"
 
 check "C: unreachable endpoint SQLSTATE" \
 	"$(refusal_of "SELECT count(*) FROM fdead" "could not connect to")" "08006: could not connect to"
@@ -441,6 +446,33 @@ R="$(refusal_of "$(printf "$HASH_SQL" fvdeny)" "AccessDenied")"
 check "C: a versioned GET answered 403 is sent again without the version, and the read finishes" \
 	"$R; GETs naming a version: $(vgets_named /vdeny/fixture)" \
 	"no error: $LOCAL_C3C7; GETs naming a version: 1"
+
+# Two reads of one object in one statement each send a HEAD (#1894). /hswap/
+# overwrites the object at the 2nd HEAD, so between the two reads. Unpinned
+# across reads, the first read returns the old rows and the second the new
+# ones, and the statement mixes both without an error. Each reading is the
+# statement's result, then how many HEADs of the object it sent.
+heads_of() { awk -v m="$1" '$1 == "HEAD" && index($2, m)' "$HTTP_LOG" | wc -l | tr -d ' '; }
+TWO_READS="SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM (SELECT c0 FROM %s UNION ALL SELECT c0 FROM %s) _u"
+await_server >/dev/null
+: > "$HTTP_LOG"
+R="$(refusal_of "$(printf "$TWO_READS" fhswap fhswap)" "changed while it was being read")"
+check "C: an object overwritten between two reads of one statement is refused" \
+	"$R; HEADs: $(heads_of /hswap/hswap)" \
+	"55000: changed while it was being read; HEADs: 2"
+# The pin lasts one statement: the next statement reads the new object.
+await_server >/dev/null
+check "C: the statement after that reads the new object" \
+	"$(refusal_of "$(printf "$TWO_READS" fhswap fhswap)" "changed while it was being read")" \
+	"no error: old=0 new=$((2 * G * ROWS_PER_GROUP))"
+# A versioned store names the version, so the second read asks for the
+# version the first read opened, and both read the old rows.
+await_server >/dev/null
+: > "$HTTP_LOG"
+R="$(refusal_of "$(printf "$TWO_READS" fvhswap fvhswap)" "changed while it was being read")"
+check "C: two reads of one versioned object in one statement, overwritten between them, read the version the first opened" \
+	"$R; HEADs: $(heads_of /vhswap/vhswap)" \
+	"no error: old=$((2 * G * ROWS_PER_GROUP)) new=0; HEADs: 2"
 
 # ---- arm D: cancel while the server stalls mid-body ------------------------
 psql_run "CREATE FOREIGN TABLE fstall ($COLDEFS) SERVER osrv OPTIONS (path '$BASE/stall/fixture.parquet');"

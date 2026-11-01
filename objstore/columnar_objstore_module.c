@@ -34,7 +34,9 @@
  *   without s3:GetObjectVersion) drops the version for the rest of the read;
  *   If-Match stays. Whatever the pin, a 206 whose Content-Range total differs
  *   from the HEAD's length fails the read, and so does a 416 for bytes inside
- *   that length (#1867).
+ *   that length (#1867). The pin lasts the statement (#1894): a later read
+ *   of the same URL in the statement asks for the first read's version, or,
+ *   with no version, fails if the ETag or length changed.
  *
  * - Sockets are cleaned up on abort through a resource-release callback over
  *   the open-handle list. The invariant that makes close-all-on-abort correct:
@@ -64,6 +66,7 @@
 #include <openssl/x509v3.h>
 #endif
 
+#include "access/xact.h"
 #include "common/cryptohash.h"
 #include "common/hmac.h"
 #include "common/sha2.h"
@@ -220,6 +223,26 @@ typedef struct OsResponse
 static dlist_head os_open_handles = DLIST_STATIC_INIT(os_open_handles);
 static bool os_callback_registered = false;
 
+/*
+ * The pins of the running statement (#1894). The first read of a URL in a
+ * statement keeps its HEAD's length, strong ETag and version query here. A
+ * later read of the same URL in that statement reads the same version, or
+ * fails if the store names no version and the object has changed. A new
+ * statement (a new statement start time) or the end of the top-level
+ * transaction drops them all.
+ */
+typedef struct OsStmtPin
+{
+	dlist_node	node;
+	char	   *url;
+	int64		len;
+	char		etag[OS_ETAG_BUF];	/* "" when the first read was not pinned */
+	char	   *query;			/* the first read's pin_query, or NULL */
+} OsStmtPin;
+
+static dlist_head os_stmt_pins = DLIST_STATIC_INIT(os_stmt_pins);
+static TimestampTz os_stmt_pins_stamp = 0;
+
 static void os_tls_handshake(PgColumnarObjHandle *h);
 
 /* ---------------------------------------------------------------- lifecycle */
@@ -287,6 +310,45 @@ os_free_handle(PgColumnarObjHandle *h)
 	pfree(h);
 }
 
+static void
+os_stmt_pin_free(OsStmtPin *p)
+{
+	dlist_delete(&p->node);
+	pfree(p->url);
+	if (p->query)
+		pfree(p->query);
+	pfree(p);
+}
+
+static void
+os_stmt_pins_reset(void)
+{
+	while (!dlist_is_empty(&os_stmt_pins))
+		os_stmt_pin_free(dlist_container(OsStmtPin, node,
+										 dlist_head_node(&os_stmt_pins)));
+}
+
+/* This statement's pin for url, or NULL. Drops an earlier statement's pins. */
+static OsStmtPin *
+os_stmt_pin_find(const char *url)
+{
+	dlist_iter	it;
+
+	if (os_stmt_pins_stamp != GetCurrentStatementStartTimestamp())
+	{
+		os_stmt_pins_reset();
+		os_stmt_pins_stamp = GetCurrentStatementStartTimestamp();
+	}
+	dlist_foreach(it, &os_stmt_pins)
+	{
+		OsStmtPin  *p = dlist_container(OsStmtPin, node, it.cur);
+
+		if (strcmp(p->url, url) == 0)
+			return p;
+	}
+	return NULL;
+}
+
 /*
  * Abort cleanup. ereport out of a read unwinds the scan without reaching
  * close(); this returns the socket and the ExternalFD reservation. See the
@@ -299,6 +361,7 @@ os_resource_release(ResourceReleasePhase phase, bool isCommit,
 	if (phase != RESOURCE_RELEASE_AFTER_LOCKS || !isTopLevel)
 		return;
 
+	os_stmt_pins_reset();
 	while (!dlist_is_empty(&os_open_handles))
 	{
 		PgColumnarObjHandle *h =
@@ -1981,6 +2044,48 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 		sprintf(h->pin_query, "versionId=%s", enc);
 		pfree(enc);
 	}
+
+	/*
+	 * One statement reads one version of a URL (#1894). The first read
+	 * keeps its pin for the statement. A later read asks for the version the
+	 * first one read, when the store named one. Otherwise it must see the
+	 * same ETag and length, or the object changed between the two reads.
+	 */
+	{
+		OsStmtPin  *p = os_stmt_pin_find(url);
+
+		if (p == NULL)
+		{
+			p = MemoryContextAllocZero(TopMemoryContext, sizeof(OsStmtPin));
+			p->url = MemoryContextStrdup(TopMemoryContext, url);
+			p->len = h->len;
+			strlcpy(p->etag, h->pin_etag, sizeof(p->etag));
+			if (h->pin_query)
+				p->query = MemoryContextStrdup(TopMemoryContext, h->pin_query);
+			dlist_push_tail(&os_stmt_pins, &p->node);
+		}
+		else if (p->query != NULL)
+		{
+			if (h->pin_query)
+				pfree(h->pin_query);
+			h->pin_query = MemoryContextStrdup(TopMemoryContext, p->query);
+			strlcpy(h->pin_etag, p->etag, sizeof(h->pin_etag));
+			h->len = p->len;
+			*len = h->len;
+		}
+		else if (p->len != h->len ||
+				 (p->etag[0] != '\0' && strcmp(p->etag, h->pin_etag) != 0))
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("columnar: \"%s\" changed while it was being read", url),
+					 errdetail("An earlier read of the object in this statement saw "
+							   "ETag %s and %lld bytes; this read sees ETag %s "
+							   "and %lld bytes.",
+							   p->etag[0] ? p->etag : "(none)", (long long) p->len,
+							   h->pin_etag[0] ? h->pin_etag : "(none)",
+							   (long long) h->len),
+					 errhint("Run the statement again to read the new version.")));
+	}
 	return h;
 }
 
@@ -2793,6 +2898,14 @@ objstore_sink_finish(PgColumnarObjSink *s)
 							s->h->url, resp.status)));
 	}
 	os_sink_report_late_interrupt(s);
+
+	/* This statement wrote the URL: a later read in it reads the new object. */
+	{
+		OsStmtPin  *p = os_stmt_pin_find(s->h->url);
+
+		if (p != NULL)
+			os_stmt_pin_free(p);
+	}
 	os_free_handle(s->h);
 	s->h = NULL;
 	os_sink_free(s);
