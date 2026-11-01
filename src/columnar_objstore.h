@@ -195,9 +195,10 @@ typedef struct PgColumnarObjStoreApi
 	 * of. The parallel export's dispatcher finds those by listing.
 	 *
 	 * list_uploads lists the uploads in progress under `url`, an
-	 * s3://bucket/prefix (ListMultipartUploads, paged by the module). It
-	 * returns a palloc'd array of `*nuploads` keys, each a full s3://bucket/key
-	 * URL, and sets `*upload_ids` to a parallel array of upload ids, both in
+	 * s3://bucket/prefix or gs://bucket/prefix (ListMultipartUploads, paged by
+	 * the module; gs:// since #1854). It returns a palloc'd array of
+	 * `*nuploads` keys, each a full bucket/key URL in the lowercase scheme of
+	 * `url`, and sets `*upload_ids` to a parallel array of upload ids, both in
 	 * the current memory context. It raises on a transport or parse failure.
 	 *
 	 * abort_upload aborts one upload (AbortMultipartUpload, DELETE ?uploadId=)

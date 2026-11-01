@@ -919,6 +919,22 @@ os_fill(PgColumnarObjHandle *h)
 /* --------------------------------------------------------------- response */
 
 /*
+ * True when the header line [line, eol) contains `token`, in any case. The
+ * Connection header's tokens are case-insensitive (RFC 9110 section 7.6.1).
+ */
+static bool
+os_line_has_token(const char *line, const char *eol, const char *token)
+{
+	size_t		tlen = strlen(token);
+	const char *p;
+
+	for (p = line; p + tlen <= eol; p++)
+		if (pg_strncasecmp(p, token, tlen) == 0)
+			return true;
+	return false;
+}
+
+/*
  * Read and parse one response head. Returns false when the connection died
  * before a single status byte arrived (the stale keep-alive case); raises on
  * everything else.
@@ -927,6 +943,7 @@ static bool
 os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 {
 	int			headEnd = -1;
+	bool		keepAlive = false;
 
 	memset(resp, 0, sizeof(*resp));
 	resp->content_length = -1;
@@ -994,9 +1011,13 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 			else if (pg_strncasecmp(line, "Transfer-Encoding:", 18) == 0 &&
 					 strstr(line, "chunked") != NULL && strstr(line, "chunked") < eol)
 				resp->chunked = true;
-			else if (pg_strncasecmp(line, "Connection:", 11) == 0 &&
-					 strstr(line, "close") != NULL && strstr(line, "close") < eol)
-				resp->conn_close = true;
+			else if (pg_strncasecmp(line, "Connection:", 11) == 0)
+			{
+				if (os_line_has_token(line + 11, eol, "close"))
+					resp->conn_close = true;
+				if (os_line_has_token(line + 11, eol, "keep-alive"))
+					keepAlive = true;
+			}
 			else if (pg_strncasecmp(line, "ETag:", 5) == 0)
 			{
 				const char *p = line + 5;
@@ -1014,6 +1035,14 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 			}
 			line = eol + 1;
 		}
+
+		/*
+		 * An HTTP/1.0 connection does not persist unless the reply says
+		 * keep-alive (RFC 9112 section 9.3). Reusing it sent the next request
+		 * into a connection the server was closing (#1830).
+		 */
+		if (head[7] == '0' && !keepAlive)
+			resp->conn_close = true;
 	}
 
 	h->rb_off += headEnd;
@@ -1151,6 +1180,9 @@ os_read_body(PgColumnarObjHandle *h, const OsResponse *resp,
 		os_read_exact(h, dst, cl);
 	}
 }
+
+static char *os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp,
+						   int64 cap, int64 *outlen);
 
 /* ---------------------------------------------------------------- signing */
 
@@ -2172,6 +2204,8 @@ os_answered_early(PgColumnarObjHandle *h)
  * are byte-identical. The response body, if any, is captured into *outBody
  * (palloc'd) for the caller.
  */
+#define OS_WRITE_MAX_REPLY	(1024 * 1024)
+
 static void
 os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuery,
 				 const uint8 *body, int64 bodylen, OsResponse *resp,
@@ -2268,22 +2302,49 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 	if (resp->status == 403)
 		os_reject_403(h, resp, true);
 
+	/*
+	 * Read the reply body with the same reader as the listing (#1830). It
+	 * handles a Content-Length, chunked framing, and a body that ends when the
+	 * server closes the connection, which HTTP/1.1 allows. The old code read
+	 * only the first two, so it dropped a close-delimited UploadId and left
+	 * the body's bytes on the handle for the next request to read as its
+	 * reply. A 1xx, 204 or 304 reply has no body whatever its headers say
+	 * (RFC 9112 section 6.3). Garage answers a DELETE with a 204 that has no
+	 * Content-Length and keeps the connection open, so reading that reply
+	 * until close would wait until Garage drops the idle connection, about
+	 * 60 s. A body with a length of 1 MiB or more is an error page nobody
+	 * reads, so it is drained.
+	 *
+	 * Any other reply with neither a length nor chunked framing ends at
+	 * connection close (RFC 9112 section 6.3). A store that sends such a
+	 * reply and keeps the connection open makes this read wait for the
+	 * quiet-slice timeout. A chunked or close-delimited body over 1 MiB
+	 * raises os_slurp_body's size error, even on a 200 to
+	 * CompleteMultipartUpload, after the store has written the object. A
+	 * real S3 reply is far smaller; docs/sql-reference.md states the limit.
+	 */
 	{
 		char	   *b = NULL;
+		bool		untilClose = false;
 
-		if (!resp->chunked && resp->content_length > 0 &&
-			resp->content_length < 1024 * 1024)
-		{
-			b = palloc((Size) resp->content_length + 1);
-			os_read_exact(h, (uint8 *) b, resp->content_length);
-			b[resp->content_length] = '\0';
-		}
-		else if (resp->content_length > 0 || resp->chunked)
+		if ((resp->status >= 100 && resp->status < 200) ||
+			resp->status == 204 || resp->status == 304)
+			;
+		else if (!resp->chunked && resp->content_length >= OS_WRITE_MAX_REPLY)
 			os_read_body(h, resp, NULL, 0);		/* drain */
+		else if (resp->chunked || resp->content_length != 0)
+		{
+			untilClose = (!resp->chunked && resp->content_length < 0);
+			b = os_slurp_body(h, resp, OS_WRITE_MAX_REPLY, NULL);
+		}
 		if (outBody != NULL)
 			*outBody = b;
 		else if (b != NULL)
 			pfree(b);
+
+		/* a close-delimited body leaves the connection at end of stream */
+		if (untilClose)
+			resp->conn_close = true;
 	}
 
 	if (resp->conn_close)
@@ -2294,15 +2355,69 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 		RESUME_INTERRUPTS();
 }
 
+/*
+ * S3 multipart limits (#1857). An upload holds parts 1 to 10000, and AWS S3
+ * and GCS refuse a part under 5 MiB unless it is the last. The store checks
+ * the part size only when the upload completes, after every part went up.
+ */
+#define OS_MAX_PARTS		10000
+#define OS_MIN_PART_SIZE	(5 * 1024 * 1024)
+
+/* True when `host` is `domain` or a name under it, in any case. */
+static bool
+os_host_in_domain(const char *host, const char *domain)
+{
+	size_t		hl = strlen(host);
+	size_t		dl = strlen(domain);
+
+	if (hl > 0 && host[hl - 1] == '.')
+		hl--;					/* a fully qualified name's trailing dot */
+	if (hl == dl)
+		return pg_strncasecmp(host, domain, dl) == 0;
+	return hl > dl && host[hl - dl - 1] == '.' &&
+		pg_strncasecmp(host + hl - dl, domain, dl) == 0;
+}
+
+/*
+ * True when the write goes to AWS S3, Google Cloud Storage or Cloudflare R2,
+ * the stores known to refuse a part under 5 MiB. Other stores are not checked:
+ * some accept smaller parts, and the test servers rely on that.
+ */
+static bool
+os_store_needs_part_minimum(const PgColumnarObjHandle *h)
+{
+	const char *host = h->auth_host != NULL ? h->auth_host : h->host;
+
+	if (!h->sign || host == NULL)
+		return false;
+	return os_host_in_domain(host, "amazonaws.com") ||
+		os_host_in_domain(host, "amazonaws.com.cn") ||
+		os_host_in_domain(host, "storage.googleapis.com") ||
+		os_host_in_domain(host, "r2.cloudflarestorage.com");
+}
+
 /* Upload the buffered bytes as the next multipart part; record its ETag. */
 static void
 os_flush_part(PgColumnarObjSink *s)
 {
 	OsResponse	resp;
 	char	   *body = NULL;
-	char	   *encId = os_uriencode_query(s->uploadId);
-	char	   *query = psprintf("partNumber=%d&uploadId=%s", s->partNo, encId);
+	char	   *encId;
+	char	   *query;
 	const char *etag;
+
+	/* refuse part 10001 before sending it; the abort then ends the upload */
+	if (s->partNo > OS_MAX_PARTS)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("columnar: \"%s\" needs more than %d parts at a part size of %d bytes",
+						s->h->url, OS_MAX_PARTS, s->partSize),
+				 errdetail("A multipart upload holds at most %d parts. The export had produced %lld bytes.",
+						   OS_MAX_PARTS, (long long) s->total),
+				 errhint("Raise pgcolumnar.objstore_part_size so the object fits in %d parts.",
+						 OS_MAX_PARTS)));
+	encId = os_uriencode_query(s->uploadId);
+	query = psprintf("partNumber=%d&uploadId=%s", s->partNo, encId);
 
 	os_write_request(s->h, "PUT", query, (uint8 *) s->buf.data, s->buf.len,
 					 &resp, &body);
@@ -2335,6 +2450,23 @@ os_begin_multipart(PgColumnarObjSink *s)
 	char	   *idStart;
 	char	   *idEnd;
 	MemoryContext oldcxt;
+
+	/*
+	 * A part under 5 MiB that is not the last makes AWS S3 and GCS refuse the
+	 * complete step (#1857). The upload starts when the buffer holds a whole
+	 * part, so the object will almost always need more than one part. Refuse
+	 * now, before the store holds anything. An object of exactly one part is
+	 * refused too, although the store would accept it; that edge is rare.
+	 */
+	if (s->partSize < OS_MIN_PART_SIZE && os_store_needs_part_minimum(s->h))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("columnar: a part size of %d bytes is below the 5 MiB minimum that \"%s\" requires",
+						s->partSize, s->h->url),
+				 errdetail("AWS S3 and Google Cloud Storage refuse a multipart upload whose parts, except the last, are under 5 MiB (%d bytes).",
+						   OS_MIN_PART_SIZE),
+				 errhint("Set pgcolumnar.objstore_part_size to %d or more, or to 0 for the 8 MiB default.",
+						 OS_MIN_PART_SIZE)));
 
 	/* from here the store may hold an upload this sink has no id for */
 	s->createSent = true;
@@ -2546,10 +2678,10 @@ static int	objstore_abort_upload(const char *url, const char *upload_id,
  * another writer started at this same key cannot be told apart, and is
  * aborted too.
  *
- * Only s3:// has a listing, so a gs:// upload stays open here (#1854). The
- * listing and the aborts use the cfg the sink was created with, so they reach
- * the same endpoint with the same credentials as the upload. Raises on
- * failure; the caller holds interrupts and catches.
+ * This runs for s3:// and gs:// (#1854): the GCS XML API lists multipart
+ * uploads the same way. The listing and the aborts use the cfg the sink was
+ * created with, so they reach the same endpoint with the same credentials as
+ * the upload. Raises on failure; the caller holds interrupts and catches.
  */
 static void
 os_sink_abort_unanswered(PgColumnarObjSink *s)
@@ -2561,14 +2693,15 @@ os_sink_abort_unanswered(PgColumnarObjSink *s)
 	int			n = 0;
 	int			i;
 
-	if (pg_strncasecmp(url, "s3://", 5) != 0)
+	if (pg_strncasecmp(url, "s3://", 5) != 0 &&
+		pg_strncasecmp(url, "gs://", 5) != 0)
 		return;
 	keys = objstore_list_uploads(url, s->cfg, OS_SINK_CLEANUP_MS, &ids, &n);
 	for (i = 0; i < n; i++)
 	{
 		long		left;
 
-		/* the listing names keys s3://bucket/key; compare past the scheme */
+		/* the listing names keys s3:// or gs://bucket/key; compare past it */
 		if (strlen(keys[i]) < 5 || strcmp(keys[i] + 5, url + 5) != 0)
 			continue;
 		left = OS_SINK_CLEANUP_MS -
@@ -3177,9 +3310,9 @@ objstore_list_objects(const char *url, const PgColumnarObjStoreConfig *cfg,
  * NextUploadIdMarker.
  */
 static void
-os_uploads_parse_page(const char *body, int64 blen, const char *bucket,
-					  List **keys, List **ids, bool *truncated,
-					  char **nextKey, char **nextId)
+os_uploads_parse_page(const char *body, int64 blen, const char *scheme,
+					  const char *bucket, List **keys, List **ids,
+					  bool *truncated, char **nextKey, char **nextId)
 {
 	StringInfoData v;
 	StringInfoData kbuf;
@@ -3213,7 +3346,7 @@ os_uploads_parse_page(const char *body, int64 blen, const char *bucket,
 		if (ue < 0)
 			break;
 		resetStringInfo(&kbuf);
-		appendStringInfo(&kbuf, "s3://%s/", bucket);
+		appendStringInfo(&kbuf, "%s://%s/", scheme, bucket);
 		resetStringInfo(&v);
 		if (os_xml_element(body + us, ue - us, "<Key>", "</Key>", &kbuf) &&
 			os_xml_element(body + us, ue - us, "<UploadId>", "</UploadId>", &v) &&
@@ -3261,18 +3394,27 @@ objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
 	char	  **outIds;
 	int			pages = 0;
 	int			i;
+	const char *scheme;
 
-	if (pg_strncasecmp(url, "s3://", 5) != 0)
+	/*
+	 * s3:// and, through the GCS XML API, gs:// (#1854). Keys come back in
+	 * the URL's scheme, lowercase.
+	 */
+	if (pg_strncasecmp(url, "s3://", 5) == 0)
+		scheme = "s3";
+	else if (pg_strncasecmp(url, "gs://", 5) == 0)
+		scheme = "gs";
+	else
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("columnar: listing uploads is only supported for s3:// URLs, not \"%s\"",
+				 errmsg("columnar: listing uploads is only supported for s3:// and gs:// URLs, not \"%s\"",
 						url)));
 	bstart = url + 5;
 	slash = strchr(bstart, '/');
 	if (slash == NULL || slash == bstart)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("columnar: \"%s\" is not s3://bucket/prefix", url)));
+				 errmsg("columnar: \"%s\" is not %s://bucket/prefix", url, scheme)));
 	bucket = pnstrdup(bstart, slash - bstart);
 	encPrefix = os_uriencode_query(slash + 1);
 
@@ -3280,7 +3422,7 @@ objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
 	 * As objstore_list_objects: resolve from a dummy key, request the bucket,
 	 * and name the prefix being listed in every message (#1869).
 	 */
-	h = os_write_handle_as(psprintf("s3://%s/_", bucket), url, cfg);
+	h = os_write_handle_as(psprintf("%s://%s/_", scheme, bucket), url, cfg);
 	os_set_deadline(h, timeout_ms);
 	os_target_bucket_root(h, bucket);
 
@@ -3323,7 +3465,7 @@ objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
 
 			body = os_list_request(h, q.data, &blen);
 			pfree(q.data);
-			os_uploads_parse_page(body, blen, bucket, &keys, &ids,
+			os_uploads_parse_page(body, blen, scheme, bucket, &keys, &ids,
 								  &truncated, &nextKey, &nextId);
 			pfree(body);
 

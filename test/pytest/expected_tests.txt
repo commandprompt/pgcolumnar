@@ -1551,4 +1551,11 @@ guard_tests 854
 # cluster_tests 4985 -> 4992 for the #1879 review of test_iceberg_data_files.py: 7 checks in 7 tests (an
 # EXISTING position-delete entry, an EXISTING delete entry without counts, decimal(9,0), and four crafted
 # partition-format checks; 37 -> 44 collected in the file), by collection over the cluster files: `4783 tests collected`.
-cluster_tests 4992
+# cluster_tests 4992 -> 5012 for #1830's, #1857's and #1854's tests: 15 in test_objstore_sink_write.py and
+# 5 from the gs cancel arm of test_objstore_export_open_uploads.py's serial parametrization, by collection
+# cluster_tests 5012 -> 5018 for the #1830 review: 4 unframed-204 abort tests and 2 part-minimum host tests
+# (amazonaws.com.cn, notamazonaws.com) in test_objstore_sink_write.py, by collection over the cluster files:
+# `4789 tests collected`.
+# cluster_tests 5018 -> 5020 for the #1830 review's close-delimited reuse test and Cloudflare R2 part-minimum
+# test in test_objstore_sink_write.py, by collection over the cluster files: `4791 tests collected`.
+cluster_tests 5020

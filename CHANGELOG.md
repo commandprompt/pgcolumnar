@@ -516,6 +516,39 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote export reads a write reply whose body ends when the store closes the
+  connection (#1830). HTTP/1.1 allows that framing. The write path read a reply
+  body only when it had a `Content-Length` or chunked framing, so it dropped the
+  UploadId of such a reply and the export failed with "could not start a
+  multipart upload (HTTP 200)". It now reads write replies with the same reader
+  as the listing, and closes the connection after a body that ends at close. An
+  HTTP/1.0 reply without `keep-alive` now also closes the connection: the export
+  used to send its next request into it. A 204 reply, which Garage sends to a
+  DELETE with no `Content-Length` on a connection it keeps open, is read as
+  having no body, so an abort returns at once rather than after about 60 s.
+  Two behaviours change for a store that breaks the HTTP framing rules. A write
+  reply other than 1xx, 204 or 304 with neither a length nor chunked framing
+  ends only when the store closes the connection (RFC 9112 section 6.3). If the
+  store keeps the connection open, the export used to go on and now waits 60 s,
+  then fails with "timeout reading". A chunked or close-delimited write reply
+  over 1 MiB now fails with "response exceeded" instead of being skipped. That
+  holds for a 200 to CompleteMultipartUpload too: the store has then written the
+  object, but the export reports an error. `test/objstore_sink_write.sh` and its
+  pytest twin.
+- A remote export checks the S3 multipart limits before the store refuses it
+  (#1857). An upload that would need part 10001 fails with SQLSTATE 54000 before
+  sending that part, names the part size, and aborts the upload. To AWS S3,
+  Google Cloud Storage or Cloudflare R2, an export whose part size is under 5 MiB fails with
+  SQLSTATE 22023 when it starts a multipart upload, before the store holds
+  anything. Those stores used to refuse it only at the last step, after every part
+  had gone up. Other endpoints still accept any part size. An object of exactly
+  one part under 5 MiB is refused too, although those stores would accept it.
+  `test/objstore_sink_write.sh` and its pytest twin.
+- A serial `export_parquet` or `export_arrow` to `gs://`, cancelled or terminated
+  while it waits for the store to start its multipart upload, now aborts that
+  upload (#1854). The upload listing that #1846 added for `s3://` now also works
+  for `gs://`, through the GCS XML API. `test/objstore_export_open_uploads.sh` and
+  its pytest twin.
 - `iceberg_data_files` and `read_avro_manifest` now show every partition value
   exactly, as valid text (#1816, #1791). A decimal, float or double value used to
   show as `?`. A binary value was copied raw into the text: invalid UTF-8 that
