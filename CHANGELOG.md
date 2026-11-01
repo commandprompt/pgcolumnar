@@ -274,7 +274,8 @@ true until the next version shipped.
   and 106 delete rows the scan visits 104 rows, where the walk visited 3392.
   Two DEBUG1 lines report the index and each lookup. `test/iceberg_deletes.sh`
   and `test_iceberg_deletes.py` check the counts and the survivors, against a
-  new fixture, `warehouse_posmany`.
+  new fixture, `warehouse_posmany`, and a delete file that names its `s3://`
+  data file as `s3a://` and as `file://s3://`.
 - The Iceberg REST functions report a missing namespace as SQLSTATE `3F000`, not
   `42P01` (#1820). They do this when the catalog's 404 reply has the type
   `NoSuchNamespaceException`. The message now says "no such namespace". A client

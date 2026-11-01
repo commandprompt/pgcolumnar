@@ -1510,7 +1510,8 @@ guard_tests 854
 # in test_iceberg_rest_scan.py (a malformed error body), by collection: `4658 tests collected`.
 # cluster_tests 4903 -> 4904 for #1820's fourth review: one test in test_iceberg_rest_vended.py (an entry
 # with a secret and no key id is ignored), by collection: `4659 tests collected`.
-# cluster_tests 4904 -> 4910 for #1868's six tests in test_iceberg_deletes.py (the
-# many-file position-delete arms), by collection over the cluster files at the merge of
-# origin/main into fix/1868-posdelete-index: `4910 tests collected`.
-cluster_tests 4910
+# cluster_tests 4904 -> 4911 for #1868 in test_iceberg_deletes.py: the six many-file
+# position-delete tests, and one for a delete row naming its s3:// data file as
+# file://s3://, by collection over the cluster files after the merge of origin/main
+# into fix/1868-posdelete-index: `4911 tests collected`.
+cluster_tests 4911

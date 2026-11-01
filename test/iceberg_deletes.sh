@@ -510,6 +510,13 @@ check_text "a position delete naming its s3:// data file as s3a:// is applied" \
 	"$(qe "SELECT id || '|' || region || '|' || amount
 	       FROM pgcolumnar.iceberg_scan('$(dvar mix_s3a)')
 	         AS t(id bigint, region text, amount int) ORDER BY id")" "$ORACLE"
+# mix_files3 is mix_s3a's table, but its second delete row names the data file as
+# file://s3://bb/...: a local path that merely begins with s3://, not the object.
+# The first row (s3a://, id 2) applies and the second (id 4) does not (#1868)
+check "a position delete naming its s3:// data file as file://s3:// does not apply, beside one that does (#1868)" \
+	"$(qe "SELECT string_agg(id::text, ',' ORDER BY id)
+	       FROM pgcolumnar.iceberg_scan('$(dvar mix_files3)')
+	         AS t(id bigint, region text, amount int)")" "1,3,4,5"
 
 # peak QUERY -> "<kB the backend's peak rose by> <the query's last output line>",
 # or the reason there is no reading. VmHWM is the backend's peak resident memory and

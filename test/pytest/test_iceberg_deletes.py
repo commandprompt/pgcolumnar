@@ -389,6 +389,8 @@ def dl(pgc_cluster, server_dir):
                                          f"FROM pgcolumnar.iceberg_scan('{vpath('plower')}/eqapply.metadata.json') {COLS}")
         r["mix_s3a"] = _read(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, E'\\n' ORDER BY id) "
                                   f"FROM pgcolumnar.iceberg_scan('{vpath('mix_s3a')}') {COLS}")
+        r["mix_files3"] = _read(dsn, f"SELECT string_agg(id::text, ',' ORDER BY id) "
+                                     f"FROM pgcolumnar.iceberg_scan('{vpath('mix_files3')}') {COLS}")
         for name in ("bloat_s3", "bloat_s3a"):
             r[name] = _peak(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{vpath(name)}') {COLS}")
         # #1868: many data files, many position-delete rows, in their own warehouse
@@ -837,6 +839,15 @@ def test_a_position_delete_naming_s3_data_as_s3a_is_applied(dl, expect):
         return
     expect.text(str(dl["mix_s3a"]), dl["oracle"],
                 "a position delete naming its s3:// data file as s3a:// is applied")
+
+
+def test_a_position_delete_naming_s3_data_as_file_s3_does_not_apply(dl, expect):
+    # mix_s3a's table; the second delete row names file://s3://bb/..., a local path
+    # that merely begins with s3://, so only the first (s3a://, id 2) applies (#1868)
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["mix_files3"]), "1,3,4,5",
+                "a position delete naming its s3:// data file as file://s3:// does not apply, beside one that does (#1868)")
 
 
 def test_a_million_s3_position_delete_rows_apply(dl, expect):
