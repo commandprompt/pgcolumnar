@@ -495,10 +495,12 @@ true until the next version shipped.
   byte 0x1F on a default-separator catalog, was sent and named the wrong
   namespace, and is now refused. `iceberg_rest_namespaces` no longer asks for
   the children of such a level. The error message shows a control byte in the
-  level as `\xNN`. The separator matches whole UTF-8 characters only, so a
-  one-byte separator at or above 0x80 does not match inside a multibyte
-  character. docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
-  `test_iceberg_rest_scan.py`; gate checks in `test/server_file_privilege.sh`.
+  level as `\xNN`. The separator matches whole characters of the database
+  encoding only. So in a UTF-8 database, a one-byte separator at or above 0x80
+  does not match inside a multibyte character. In a LATIN1 database, `é` is one
+  byte, and a dot after it is still refused. docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`; gate checks in
+  `test/server_file_privilege.sh`.
   Found in review of PR #1859.
 - `iceberg_rest_scan` now chooses a vended storage credential for each file it
   reads (#1820). Before, it matched each `storage-credentials` prefix against the

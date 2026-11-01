@@ -1517,4 +1517,7 @@ guard_tests 854
 # cluster_tests 4925 -> 4929 for #1865's review of PR #1884: four tests in test_iceberg_rest_scan.py (the
 # documented LATERAL example with and without its filter, the escaped control byte, a separator byte
 # above 0x7F inside a UTF-8 character), by collection: `5783 tests collected`, minus 854.
-cluster_tests 4929
+# cluster_tests 4929 -> 4933 for #1865's second review of PR #1884: four tests in test_iceberg_rest_scan.py
+# (the dot after the byte E9 in a LATIN1 database, an escaped newline, a NULL namespace array, the
+# documented filter on a default-separator catalog), by collection: `5787 tests collected`, minus 854.
+cluster_tests 4933

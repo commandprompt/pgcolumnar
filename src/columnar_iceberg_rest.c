@@ -302,11 +302,16 @@ typedef struct RestCatalogConfig
 /* The REST spec's default namespace separator, the unit separator 0x1F. */
 #define REST_DEFAULT_SEPARATOR	"%1F"
 
-/* The byte length of the UTF-8 character at p, never past the string's end. */
+/*
+ * The byte length of the character at p in the database encoding, never past
+ * the string's end. A level is text in the database encoding: in a LATIN1
+ * database "é" is the one byte E9, so a UTF-8 length would step over the next
+ * two bytes (#1865).
+ */
 static int
-rest_utf8_char_len(const char *p)
+rest_char_len(const char *p)
 {
-	int			len = pg_utf_mblen((const unsigned char *) p);
+	int			len = pg_mblen(p);	/* every major has it; clamped below */
 	int			n = 0;
 
 	while (n < len && p[n] != '\0')
@@ -315,10 +320,10 @@ rest_utf8_char_len(const char *p)
 }
 
 /*
- * Whether `level` holds the separator `rawsep`. The catalog reads a path as
- * UTF-8 characters, so the separator matches only as whole characters: it must
- * start and end on a character boundary. A one-byte separator at or above 0x80
- * thus never matches part of a multibyte character (#1865).
+ * Whether `level` holds the separator `rawsep`. The separator matches only as
+ * whole characters of the database encoding: it must start and end on a
+ * character boundary. In a UTF-8 database, a one-byte separator at or above
+ * 0x80 thus never matches part of a multibyte character (#1865).
  */
 static bool
 rest_level_holds_separator(const char *level, const char *rawsep)
@@ -326,14 +331,14 @@ rest_level_holds_separator(const char *level, const char *rawsep)
 	int			seplen = (int) strlen(rawsep);
 	const char *p;
 
-	for (p = level; *p != '\0'; p += rest_utf8_char_len(p))
+	for (p = level; *p != '\0'; p += rest_char_len(p))
 	{
 		int			covered = 0;
 
 		if (strncmp(p, rawsep, seplen) != 0)
 			continue;
 		while (covered < seplen)
-			covered += rest_utf8_char_len(p + covered);
+			covered += rest_char_len(p + covered);
 		if (covered == seplen)
 			return true;
 	}

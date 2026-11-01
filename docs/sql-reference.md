@@ -1483,9 +1483,10 @@ SELECT ns, t
        LATERAL pgcolumnar.iceberg_rest_tables('https://catalog.example.com', ns) AS t;
 ```
 
-> **Caution:** Some catalogs use `.` as their separator, such as the Apache
-> Iceberg REST catalog. On them, one level that contains a dot makes this whole
-> query fail with SQLSTATE 22023. On such a catalog, skip those rows first:
+> **Caution:** One level that holds the catalog's namespace separator makes
+> this whole query fail with SQLSTATE 22023. The default separator is the byte
+> 0x1F. Some catalogs use `.`, such as the Apache Iceberg REST catalog. Skip
+> those rows first. On a catalog whose separator is `.`:
 
 ```sql
 SELECT ns, t
@@ -1493,6 +1494,9 @@ SELECT ns, t
        LATERAL pgcolumnar.iceberg_rest_tables('https://catalog.example.com', ns) AS t
  WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE level LIKE '%.%');
 ```
+
+On a catalog with the default separator, replace `level LIKE '%.%'` with
+`strpos(level, chr(31)) > 0`.
 
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
 

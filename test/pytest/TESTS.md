@@ -10997,7 +10997,9 @@ Eleven more fixtures cover the review of PR #1859. Two list nested namespaces at
 
 Two more fixtures cover #1865, a namespace level that holds a dot. One keeps its table in the single level `db.x` and also has the two levels `db`, `x`, with the default separator. A `text[]` namespace reaches the single level, the level listing keeps the two apart, and a listed row passes back; the dotted text still names `db`, `x`. On the nested fixture (separator `%2E`), `ARRAY['db','x']` names the same namespace as `'db.x'`, and a level that holds the separator is refused (22023). The other lists the single level `db.x` with the separator `%2E`, and the walk must list it without asking for its children. An empty, two-dimensional or NULL-holding array is refused.
 
-Four more tests cover the review of PR #1884. On the `%2E` fixture with the level `db.x`, the documented LATERAL example fails with 22023, and the documented filter keeps it running with no rows. The refusal message shows a control byte in the level as `\xNN`. A further fixture advertises the one-byte separator `%C3` and serves the level `é` (bytes C3 A9); the level must reach the catalog, because the separator matches whole UTF-8 characters only.
+Four more tests cover the review of PR #1884. On the `%2E` fixture with the level `db.x`, the documented LATERAL example fails with 22023, and the documented filter keeps it running with no rows. The refusal message shows a control byte in the level as `\xNN`. A further fixture advertises the one-byte separator `%C3` and serves the level `é` (bytes C3 A9); the level must reach the catalog, because the separator matches whole characters of the database encoding only.
+
+Four more tests cover the second review of PR #1884. In a LATIN1 database, `é` is the one byte E9, so in the level `é.x` the dot is a whole character: on the `%2E` fixture it must be refused with 22023. A refused level that holds a newline shows it as `\x0A`, not only 0x1F as `\x1F`. `iceberg_rest_tables` of a NULL `text[]` returns no rows, because the function is STRICT; this test runs last, so a crash reddens only it and the survival test. A further fixture serves the level `db<0x1F>x` with the default separator, and the documented filter `strpos(level, chr(31)) > 0` keeps the LATERAL example running with no rows.
 
 ### Every test
 
@@ -11058,11 +11060,15 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_text_array_form_a_listed_level_holding_the_separator_is_not_walked` | text[] form: a listed level that holds the separator is listed, not walked |
 | `test_text_array_form_the_unfiltered_lateral_example_fails_on_a_dotted_level` | text[] form: the unfiltered LATERAL example fails on a dot-separator catalog |
 | `test_text_array_form_the_documented_filter_keeps_the_lateral_example_running` | text[] form: the documented filter keeps the LATERAL example running on a dot-separator catalog |
+| `test_text_array_form_the_documented_filter_keeps_the_lateral_example_running_by_default` | text[] form: the documented filter keeps the LATERAL example running on a default-separator catalog |
 | `test_separator_refusal_escapes_a_control_byte_in_the_level` | separator refusal: a control byte in the refused level is escaped in the message |
 | `test_separator_refusal_does_not_match_inside_a_utf8_character` | separator refusal: a separator byte above 0x7F does not match inside a UTF-8 character |
+| `test_separator_refusal_in_a_latin1_database_refuses_the_dot_after_e9` | separator refusal: in a LATIN1 database the dot after the byte E9 is refused |
+| `test_separator_refusal_escapes_a_newline_in_the_level` | separator refusal: a newline in the refused level is escaped in the message |
 | `test_text_array_form_an_empty_namespace_array_is_refused` | text[] form: an empty namespace array is refused |
 | `test_text_array_form_a_null_level_is_refused` | text[] form: a NULL level is refused |
 | `test_text_array_form_a_two_dimensional_namespace_array_is_refused` | text[] form: a two-dimensional namespace array is refused |
+| `test_text_array_form_a_null_namespace_array_returns_no_rows` | text[] form: iceberg_rest_tables of a NULL namespace array returns no rows |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 

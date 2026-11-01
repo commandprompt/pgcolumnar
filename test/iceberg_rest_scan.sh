@@ -460,6 +460,15 @@ check "text[] form: the documented filter keeps the LATERAL example running on a
 	                 LATERAL pgcolumnar.iceberg_rest_tables('http://127.0.0.1:$FX_PORT', ns) AS t
 	            WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE level LIKE '%.%')")" \
 	"no rows"
+# docs/sql-reference.md: on a default-separator catalog the filter is
+# strpos(level, chr(31)) > 0, so a listed level db<0x1F>x does not abort it.
+start_fx uslevel --namespace-levels '["db\u001fx"]' --table events
+check "text[] form: the documented filter keeps the LATERAL example running on a default-separator catalog" \
+	"$(rows_of "SELECT coalesce(string_agg(array_to_json(ns)::text || '=' || t, ' '), 'no rows')
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('http://127.0.0.1:$FX_PORT') AS ns,
+	                 LATERAL pgcolumnar.iceberg_rest_tables('http://127.0.0.1:$FX_PORT', ns) AS t
+	            WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE strpos(level, chr(31)) > 0)")" \
+	"no rows"
 # The refusal message names the level. A control byte in it (0x1F is the
 # default separator) is shown escaped, not sent raw to the log and client.
 check "separator refusal: a control byte in the refused level is escaped in the message" \
@@ -473,6 +482,21 @@ start_fx hisep --namespace-levels '["\u00e9"]' --table events --namespace-separa
 check "separator refusal: a separator byte above 0x7F does not match inside a UTF-8 character" \
 	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:$FX_PORT', ARRAY[E'\\xc3\\xa9']) AS t")" \
 	"events"
+# A level is text in the database encoding, which need not be UTF-8. In a
+# LATIN1 database "é" is the one byte E9, and the dot after it is a whole
+# character the catalog (separator %2E) would split on, so it is refused.
+# The client reads UTF-8, so the refusal message names the level as é.x.
+q "CREATE DATABASE latin1db ENCODING 'LATIN1' LOCALE 'C' TEMPLATE template0" >/dev/null
+PGC_DB=latin1db rows_of "CREATE EXTENSION pgcolumnar" >/dev/null
+check "separator refusal: in a LATIN1 database the dot after the byte E9 is refused" \
+	"$(PGC_DB=latin1db PGCLIENTENCODING=UTF8 refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$NCAT', ARRAY[E'\\xe9.x'])" \
+	   'contains the catalog'"'"'s namespace separator' " with the level named")" \
+	"22023 with the level named"
+# Every control byte in a refused level is escaped, not 0x1F alone.
+check "separator refusal: a newline in the refused level is escaped in the message" \
+	"$(rows_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', E'db\\x1f\\nx')" | cat -v |
+	   sed -e 's/.*the namespace level "\(.*\)" contains.*/\1/')" \
+	'db\x1F\x0Ax'
 check "text[] form: an empty namespace array is refused" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY[]::text[])" \
 	   "a namespace array must hold at least one level" " as empty")" \
@@ -485,6 +509,11 @@ check "text[] form: a two-dimensional namespace array is refused" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY[['db'],['x']])" \
 	   "a namespace array must have one dimension" " as 2-D")" \
 	"22023 as 2-D"
+# The text[] overloads are STRICT: a NULL namespace array gives no rows. It runs last,
+# so a crash here reddens only it and the survival check below.
+check "text[] form: iceberg_rest_tables of a NULL namespace array returns no rows" \
+	"$(rows_of "SELECT count(*) FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', NULL::text[])")" \
+	"0"
 
 check "backend still up after the REST read" "$(survived "$CRASHES_BEFORE")" "1"
 
