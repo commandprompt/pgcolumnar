@@ -12830,6 +12830,21 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_the_injected_http_failure_leaves_no_open_upload` | http:// inject: the server holds no open upload for the key -- the unsigned abort reached the server |
 | `test_a_403_from_an_unsigned_http_target_hints_that_it_went_unsigned` | http:// 403: the hint says the request went unsigned, not to check AWS_* credentials -- the SigV4 fixture server refuses a request with no Authorization header |
 | `test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials` | s3:// 403: a signed request that is refused still hints to check AWS_* credentials -- the fixture verifies the denied bucket against another secret |
+| `test_an_unframed_upload_id_reply_still_starts_the_upload` | unframed reply: a multipart export succeeds when the UploadId reply ends at connection close -- #1830, the fixture's `__uploads_unframed__` = close |
+| `test_the_unframed_reply_export_sent_one_create` | premise: unframed reply: the export sent CreateMultipartUpload once |
+| `test_the_unframed_reply_object_reads_back_as_the_generator` | unframed reply: the object reads back as the generator |
+| `test_an_http10_upload_id_reply_still_starts_the_upload` | HTTP/1.0 reply: a multipart export succeeds -- #1830, `__uploads_unframed__` = http10 |
+| `test_the_http10_reply_export_sent_one_create` | premise: HTTP/1.0 reply: the export sent CreateMultipartUpload once |
+| `test_no_request_reuses_the_connection_an_http10_reply_ended` | HTTP/1.0 reply: no request went on the connection the HTTP/1.0 reply ended -- the fixture logs REUSED for a request on it |
+| `test_an_export_needing_more_than_10000_parts_is_refused` | part limit: an export that needs more than 10000 parts is refused by the part limit (54000) -- #1857, 1 KiB parts |
+| `test_the_part_limit_export_uploaded_parts_1_to_10000` | premise: part limit: the export uploaded parts 1 to 10000 |
+| `test_no_part_above_10000_is_sent` | part limit: no part numbered above 10000 was sent -- the fixture refuses one as S3 does |
+| `test_the_part_limit_leaves_no_open_upload` | part limit: the server holds no open upload for the key |
+| `test_the_part_limit_leaves_no_object` | part limit: the key does not exist |
+| `test_aws_s3_refuses_parts_below_5_mib_before_the_upload` | part minimum: an export to AWS S3 with 256 KiB parts is refused before the upload starts (22023) -- #1857, the allow-list keeps the endpoint unreached |
+| `test_a_one_part_export_to_aws_s3_is_not_refused_by_the_part_minimum` | part minimum: a one-part export to AWS S3 is not refused by the part minimum |
+| `test_5_mib_parts_to_aws_s3_are_not_refused_by_the_part_minimum` | part minimum: an export to AWS S3 with 5 MiB parts is not refused by the part minimum |
+| `test_gcs_refuses_parts_below_5_mib` | part minimum: a gs:// export at the default GCS endpoint with 256 KiB parts is refused (22023) |
 | `test_integration_a_multipart_export_to_real_s3_succeeds` | opt-in: integration: multipart export to real S3 succeeds |
 | `test_integration_the_real_s3_read_back_equals_the_source` | opt-in: integration: real S3 read-back == source |
 
@@ -13318,11 +13333,11 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | `test_silent_listing_reports_its_own_cancel` | silent listing: the export reports its own cancel (57014) |
 | `test_silent_listing_returned_promptly` | silent listing: the export returned within 30 s of the cancel |
 | `test_silent_listing_the_server_survived` | silent listing: the server survived |
-| `test_serial_create_was_unanswered_when_the_signal_landed` | premise: serial cancel: the export_parquet CreateMultipartUpload was unanswered when the signal landed; premise: arrow cancel: the export_arrow CreateMultipartUpload was unanswered when the signal landed; premise: serial terminate: the export_parquet CreateMultipartUpload was unanswered when the signal landed |
-| `test_serial_reports_the_signal` | serial cancel: the export reports the signal; arrow cancel: the export reports the signal; serial terminate: the export reports the signal |
-| `test_serial_leaves_no_upload_at_the_key_open` | serial cancel: no upload at the export's key is left open; arrow cancel: no upload at the export's key is left open; serial terminate: no upload at the export's key is left open |
-| `test_serial_leaves_the_foreign_uploads_open` | serial cancel: the foreign uploads under the prefix are left open; arrow cancel: the foreign uploads under the prefix are left open; serial terminate: the foreign uploads under the prefix are left open |
-| `test_serial_the_server_survived` | serial cancel: the server survived; arrow cancel: the server survived; serial terminate: the server survived |
+| `test_serial_create_was_unanswered_when_the_signal_landed` | premise: serial cancel: the export_parquet CreateMultipartUpload was unanswered when the signal landed; premise: arrow cancel: the export_arrow CreateMultipartUpload was unanswered when the signal landed; premise: serial terminate: the export_parquet CreateMultipartUpload was unanswered when the signal landed; premise: gs cancel: the export_parquet CreateMultipartUpload was unanswered when the signal landed |
+| `test_serial_reports_the_signal` | serial cancel: the export reports the signal; arrow cancel: the export reports the signal; serial terminate: the export reports the signal; gs cancel: the export reports the signal |
+| `test_serial_leaves_no_upload_at_the_key_open` | serial cancel: no upload at the export's key is left open; arrow cancel: no upload at the export's key is left open; serial terminate: no upload at the export's key is left open; gs cancel: no upload at the export's key is left open (#1854) |
+| `test_serial_leaves_the_foreign_uploads_open` | serial cancel: the foreign uploads under the prefix are left open; arrow cancel: the foreign uploads under the prefix are left open; serial terminate: the foreign uploads under the prefix are left open; gs cancel: the foreign uploads under the prefix are left open |
+| `test_serial_the_server_survived` | serial cancel: the server survived; arrow cancel: the server survived; serial terminate: the server survived; gs cancel: the server survived |
 | `test_serial_double_cancel_first_cancel_landed_while_the_create_was_unanswered` | premise: serial double cancel: the export_parquet CreateMultipartUpload was unanswered when the first cancel landed |
 | `test_serial_double_cancel_second_cancel_landed_in_the_listing` | premise: serial double cancel: the cleanup was listing the uploads when the second cancel landed |
 | `test_serial_double_cancel_reports_its_own_cancel` | serial double cancel: the export reports its own cancel (57014) |

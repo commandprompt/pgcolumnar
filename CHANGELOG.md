@@ -466,6 +466,28 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote export reads a write reply whose body ends when the store closes the
+  connection (#1830). HTTP/1.1 allows that framing. The write path read a reply
+  body only when it had a `Content-Length` or chunked framing, so it dropped the
+  UploadId of such a reply and the export failed with "could not start a
+  multipart upload (HTTP 200)". It now reads write replies with the same reader
+  as the listing, and closes the connection after a body that ends at close. An
+  HTTP/1.0 reply without `keep-alive` now also closes the connection: the export
+  used to send its next request into it. `test/objstore_sink_write.sh` and its
+  pytest twin.
+- A remote export checks the S3 multipart limits before the store refuses it
+  (#1857). An upload that would need part 10001 fails with SQLSTATE 54000 before
+  sending that part, names the part size, and aborts the upload. To AWS S3 or
+  Google Cloud Storage, an export whose part size is under 5 MiB fails with
+  SQLSTATE 22023 when it starts a multipart upload, before the store holds
+  anything. Those stores used to refuse it only at the last step, after every part
+  had gone up. Other endpoints still accept any part size.
+  `test/objstore_sink_write.sh` and its pytest twin.
+- A serial `export_parquet` or `export_arrow` to `gs://`, cancelled or terminated
+  while it waits for the store to start its multipart upload, now aborts that
+  upload (#1854). The upload listing that #1846 added for `s3://` now also works
+  for `gs://`, through the GCS XML API. `test/objstore_export_open_uploads.sh` and
+  its pytest twin.
 - `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
   URL now write the object instead of crashing the backend (#1779). Every write
   request was signed, and a plain-HTTP target has no region or credentials, so the

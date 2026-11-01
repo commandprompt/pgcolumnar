@@ -5612,6 +5612,10 @@ objstore_export_open_uploads	objstore_export_open_uploads	double cancel: the exp
 objstore_export_open_uploads	objstore_export_open_uploads	double cancel: the foreign uploads under the prefix are left open	15;16;17;18;19	2026-10-23	src/columnar_parallel_export.c: pexport_abort_own_uploads aborts every upload listed under the prefix (the own-part-name match removed);src/columnar_parallel_export.c: the own-part match is off by one (idx > nkeys for idx >= nkeys), so part-<nkeys> counts as the export's own
 objstore_export_open_uploads	objstore_export_open_uploads	double cancel: the server log has no 'errstart was not called'	15;16;17;18;19	2026-10-23	src/columnar_parallel_export.c: the export's PG_CATCH runs pexport_cleanup_in_catch with the handled error still on the stack, then PG_RE_THROW (PgColumnarCleanupAndRethrow bypassed)
 objstore_export_open_uploads	objstore_export_open_uploads	double cancel: the server survived	15;16;17;18;19	never	-
+objstore_export_open_uploads	objstore_export_open_uploads	gs cancel: no upload at the export's key is left open	15;16;17;18;19	2026-11-01	columnar_objstore_module.c reverted to main: os_sink_abort_unanswered returns at once for gs:// and objstore_list_uploads refuses gs:// (#1854)
+objstore_export_open_uploads	objstore_export_open_uploads	gs cancel: the export reports the signal	15;16;17;18;19	never	-
+objstore_export_open_uploads	objstore_export_open_uploads	gs cancel: the foreign uploads under the prefix are left open	15;16;17;18;19	never	-
+objstore_export_open_uploads	objstore_export_open_uploads	gs cancel: the server survived	15;16;17;18;19	never	-
 objstore_export_open_uploads	objstore_export_open_uploads	parts: no upload of this export is left open	15;16;17;18;19	never	-
 objstore_export_open_uploads	objstore_export_open_uploads	parts: the export reports its own cancel (57014)	15;16;17;18;19	never	-
 objstore_export_open_uploads	objstore_export_open_uploads	parts: the foreign uploads under the prefix are left open	15;16;17;18;19	2026-10-22	src/columnar_parallel_export.c: pexport_abort_own_uploads aborts every upload listed under the prefix (the own-part-name match removed);src/columnar_parallel_export.c: the own-part match is off by one (idx > nkeys for idx >= nkeys), so part-<nkeys> counts as the export's own
@@ -5624,6 +5628,7 @@ objstore_export_open_uploads	objstore_export_open_uploads	premise: complete drop
 objstore_export_open_uploads	objstore_export_open_uploads	premise: complete drop: the store had written the new object and held the answer when the cancel landed	15;16;17;18;19	never	-
 objstore_export_open_uploads	objstore_export_open_uploads	premise: double cancel: every worker's CreateMultipartUpload was unanswered when the first cancel landed	15;16;17;18;19	never	-
 objstore_export_open_uploads	objstore_export_open_uploads	premise: double cancel: the first cancel's cleanup was deleting a part when the second cancel landed	15;16;17;18;19	never	-
+objstore_export_open_uploads	objstore_export_open_uploads	premise: gs cancel: the export_parquet CreateMultipartUpload was unanswered when the signal landed	15;16;17;18;19	never	-
 objstore_export_open_uploads	objstore_export_open_uploads	premise: parts: every worker was sending parts when the cancel landed	15;16;17;18;19	never	-
 objstore_export_open_uploads	objstore_export_open_uploads	premise: put cancel: an earlier object is at the key	15;16;17;18;19	never	-
 objstore_export_open_uploads	objstore_export_open_uploads	premise: put cancel: the store had written the new object and held the answer when the cancel landed	15;16;17;18;19	never	-
@@ -5762,6 +5767,8 @@ objstore_s3_read	objstore_s3_read	premise: signed run logged requests	15;16;17;1
 objstore_s3_read	objstore_s3_read	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 objstore_s3_read	objstore_s3_read	region: AWS_DEFAULT_REGION is the fallback	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION is never consulted
 objstore_s3_read	objstore_s3_read	region: AWS_REGION outranks AWS_DEFAULT_REGION	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: AWS_DEFAULT_REGION outranks AWS_REGION
+objstore_sink_write	objstore_sink_write	HTTP/1.0 reply: a multipart export succeeds	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	HTTP/1.0 reply: no request went on the connection the HTTP/1.0 reply ended	15;16;17;18;19	2026-11-01	columnar_objstore_module.c reverted to main: write replies read only with Content-Length or chunked framing and HTTP/1.0 connections reused (#1830), no multipart part-count or part-size check (#1857)
 objstore_sink_write	objstore_sink_write	all four workers' uploads were open before the cancel	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the sink never flushes a part, so no export opens a multipart upload
 objstore_sink_write	objstore_sink_write	allow-list: an unlisted endpoint refuses 42501 before any write	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	and completed it exactly once (POST with uploadId, no partNumber)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: CompleteMultipartUpload is never sent and read as done
@@ -5813,17 +5820,28 @@ objstore_sink_write	objstore_sink_write	parallel: the union of the per-worker ob
 objstore_sink_write	objstore_sink_write	part failure: a refused part fails the export (58030)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: a part upload the server refused is read as stored
 objstore_sink_write	objstore_sink_write	part failure: the key does not exist	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: no multipart, the growing object is PUT to the final key as it grows
 objstore_sink_write	objstore_sink_write	part failure: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
+objstore_sink_write	objstore_sink_write	part limit: an export that needs more than 10000 parts is refused by the part limit (54000)	15;16;17;18;19	2026-11-01	columnar_objstore_module.c reverted to main: write replies read only with Content-Length or chunked framing and HTTP/1.0 connections reused (#1830), no multipart part-count or part-size check (#1857)
+objstore_sink_write	objstore_sink_write	part limit: no part numbered above 10000 was sent	15;16;17;18;19	2026-11-01	columnar_objstore_module.c reverted to main: write replies read only with Content-Length or chunked framing and HTTP/1.0 connections reused (#1830), no multipart part-count or part-size check (#1857)
+objstore_sink_write	objstore_sink_write	part limit: the key does not exist	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	part limit: the server holds no open upload for the key	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	part minimum: a gs:// export at the default GCS endpoint with 256 KiB parts is refused (22023)	15;16;17;18;19	2026-11-01	columnar_objstore_module.c reverted to main: write replies read only with Content-Length or chunked framing and HTTP/1.0 connections reused (#1830), no multipart part-count or part-size check (#1857)
+objstore_sink_write	objstore_sink_write	part minimum: a one-part export to AWS S3 is not refused by the part minimum	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	part minimum: an export to AWS S3 with 256 KiB parts is refused before the upload starts (22023)	15;16;17;18;19	2026-11-01	columnar_objstore_module.c reverted to main: write replies read only with Content-Length or chunked framing and HTTP/1.0 connections reused (#1830), no multipart part-count or part-size check (#1857)
+objstore_sink_write	objstore_sink_write	part minimum: an export to AWS S3 with 5 MiB parts is not refused by the part minimum	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: HTTP/1.0 reply: the export sent CreateMultipartUpload once	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: a worker was uploading before the cancel	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: lister refused: an earlier complete run left its marker at lf/	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: lister refused: both workers' parts were uploaded before the listing	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: listing refused after a larger run: the 4-worker run left 4 parts and its marker at lt/	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: marker refused: both workers' parts were uploaded before the marker	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: part limit: the export uploaded parts 1 to 10000	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: sigv4 fixture server is up	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the export was cancelled, not completed	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the fault landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the large export took the multipart protocol	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: the part failure landed mid-multipart (an upload was started)	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: unframed reply: the export sent CreateMultipartUpload once	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: unsigned http fixture server is up	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	s3:// 403: a signed request that is refused still hints to check AWS_* credentials	15;16;17;18;19	2026-10-31	os_reject_403 gives every 403 the unsigned http(s):// hint, a signed s3:// one included (mutation, #1779)
 objstore_sink_write	objstore_sink_write	session allow-list: a new session sees an empty system list before the widen arm	15;16;17;18;19	2026-10-31	objstore_sink_write.sh: the pg_reload_conf() after ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '' removed, so the system list never becomes '' (#1780)
@@ -5851,6 +5869,8 @@ objstore_sink_write	objstore_sink_write	trailing slash: no request named a key w
 objstore_sink_write	objstore_sink_write	trailing slash: parallel export to an s3:// prefix ending in / succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	trailing slash: the documented glob read-back equals the source	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	trailing slash: the marker went to sl/_SUCCESS (one slash)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
+objstore_sink_write	objstore_sink_write	unframed reply: a multipart export succeeds when the UploadId reply ends at connection close	15;16;17;18;19	2026-11-01	columnar_objstore_module.c reverted to main: write replies read only with Content-Length or chunked framing and HTTP/1.0 connections reused (#1830), no multipart part-count or part-size check (#1857)
+objstore_sink_write	objstore_sink_write	unframed reply: the object reads back as the generator	15;16;17;18;19	2026-11-01	columnar_objstore_module.c reverted to main: write replies read only with Content-Length or chunked framing and HTTP/1.0 connections reused (#1830), no multipart part-count or part-size check (#1857)
 objstore_sink_write	objstore_sink_write	uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts	15;16;17;18;19	2026-10-31	the S3:// scheme normalisation in pgcolumnar_parallel_export_parquet removed, as at d0fd4f8a (#1782);the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
 objstore_sink_write	objstore_sink_write	uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003	15;16;17;18;19	2026-10-31	the S3:// scheme normalisation in pgcolumnar_parallel_export_parquet removed, as at d0fd4f8a (#1782);the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)

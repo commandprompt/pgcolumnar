@@ -508,6 +508,44 @@ def osw(pgc_cluster):
         _row(dsn, f"SELECT pgcolumnar.import_arrow('es_arrow_back', '{bucket}/small.arrow')")
         r["arrow back"] = _set_hash(dsn, "SELECT * FROM es_arrow_back")
 
+        # #1830: CreateMultipartUpload answered with no length the client can count on
+        # (__uploads_unframed__): a body that ends at connection close, then an
+        # HTTP/1.0 reply whose connection does not persist
+        open(s3log, "w").close()
+        (work / "__uploads_unframed__").write_text("close\n")
+        r["uc export"] = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/uc.parquet')",
+                              setup=[PART])
+        (work / "__uploads_unframed__").unlink()
+        n = _logn(s3log, r"^POST /pgc-bucket/uc.parquet uploads=")
+        r["uc creates"] = str(n) if isinstance(n, int) else n
+        r["uc back"] = _set_hash(dsn, f"SELECT * FROM pgcolumnar.read_parquet('s3://{BUCKET}/uc.parquet') "
+                                      "AS t(id int8, pad text)")
+        r["uc gen"] = _set_hash(dsn, GEN_BIG)
+        open(s3log, "w").close()
+        (work / "__uploads_unframed__").write_text("http10\n")
+        r["u10 export"] = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/u10.parquet')",
+                               setup=[PART])
+        (work / "__uploads_unframed__").unlink()
+        n = _logn(s3log, r"^POST /pgc-bucket/u10.parquet uploads=")
+        r["u10 creates"] = str(n) if isinstance(n, int) else n
+        reused = [ln for ln in pathlib.Path(s3log).read_text(errors="replace").splitlines()
+                  if ln.startswith("REUSED ")]
+        r["u10 reused"] = f"{len(reused)} reused ({reused[0] if reused else 'none'})"
+
+        # #1857: an upload holds parts 1 to 10000; 1 KiB parts need more
+        open(s3log, "w").close()
+        r["many"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/many.parquet')",
+                             "more than 10000 parts", " by the part limit",
+                             setup=["SET pgcolumnar.objstore_part_size = 1024"])
+        nums = [int(m.group(1)) for ln in pathlib.Path(s3log).read_text(errors="replace").splitlines()
+                if ln.startswith("PUT /pgc-bucket/many.parquet ")
+                for m in [re.search(r"partNumber=([0-9]+)", ln)] if m]
+        r["many low"] = str(sum(1 for n in nums if n <= 10000))
+        r["many high"] = sum(1 for n in nums if n > 10000)
+        r["many open"] = int(_open_uploads(work, r"^pgc-bucket/many\.parquet$"))
+        mk = bucket / "many.parquet"
+        r["many key"] = f"present ({mk.stat().st_size} bytes)" if mk.exists() else "absent"
+
         # step 4: parallel export to an s3:// prefix
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("CREATE TABLE es_par (id int8, v int) USING pgcolumnar")
@@ -725,6 +763,25 @@ def osw(pgc_cluster):
         # secret, so this correctly signed export is refused as a wrong secret would be.
         r["signed 403 hint"] = _hint(dsn, "SELECT pgcolumnar.export_parquet('es_small', "
                                           f"'s3://{DENIED_BUCKET}/denied.parquet')")
+
+        # #1857: AWS S3 and GCS refuse a part under 5 MiB except the last. The
+        # allow-list (127.0.0.1) refuses any connection to these endpoints, so a
+        # request the export does send shows as its 42501.
+        _restart(cluster, datadir, log, {"AWS_ENDPOINT_URL": "http://s3.us-east-1.amazonaws.com",
+                                         "AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET,
+                                         "AWS_REGION": "us-east-1"})
+        r["min aws"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min.parquet')",
+                                "below the 5 MiB minimum", " by the part minimum", setup=[PART])
+        r["min one part"] = _refusal(dsn, "SELECT pgcolumnar.export_parquet('es_small', "
+                                          f"'s3://{BUCKET}/min1.parquet')",
+                                     "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list",
+                                     setup=[PART])
+        r["min 5 MiB"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min5.parquet')",
+                                  "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list",
+                                  setup=["SET pgcolumnar.objstore_part_size = 5242880"])
+        _restart(cluster, datadir, log, {"AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET})
+        r["min gs"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 'gs://{BUCKET}/min.parquet')",
+                               "below the 5 MiB minimum", " by the part minimum", setup=[PART])
 
         # optional: a real S3 implementation, the shell's last arm. The endpoint's host
         # replaces the fixture's in the allow-list, and the cluster restarts with its
@@ -1175,6 +1232,75 @@ def test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials(osw, expect
     expect.text(osw["signed 403 hint"],
                 "Check the AWS_* credential environment of the server process.",
                 "s3:// 403: a signed request that is refused still hints to check AWS_* credentials")
+
+
+def test_an_unframed_upload_id_reply_still_starts_the_upload(osw, expect):
+    # #1830: the reply ends when the server closes the connection
+    expect.text(osw["uc export"], "400000",
+                "unframed reply: a multipart export succeeds when the UploadId reply ends at connection close")
+
+
+def test_the_unframed_reply_export_sent_one_create(osw, expect):
+    expect.text(osw["uc creates"], "1", "premise: unframed reply: the export sent CreateMultipartUpload once")
+
+
+def test_the_unframed_reply_object_reads_back_as_the_generator(osw, expect):
+    expect.text(osw["uc back"], osw["uc gen"], "unframed reply: the object reads back as the generator")
+
+
+def test_an_http10_upload_id_reply_still_starts_the_upload(osw, expect):
+    expect.text(osw["u10 export"], "400000", "HTTP/1.0 reply: a multipart export succeeds")
+
+
+def test_the_http10_reply_export_sent_one_create(osw, expect):
+    expect.text(osw["u10 creates"], "1", "premise: HTTP/1.0 reply: the export sent CreateMultipartUpload once")
+
+
+def test_no_request_reuses_the_connection_an_http10_reply_ended(osw, expect):
+    expect.text(osw["u10 reused"], "0 reused (none)",
+                "HTTP/1.0 reply: no request went on the connection the HTTP/1.0 reply ended")
+
+
+def test_an_export_needing_more_than_10000_parts_is_refused(osw, expect):
+    # #1857
+    expect.text(osw["many"], "54000 by the part limit",
+                "part limit: an export that needs more than 10000 parts is refused by the part limit (54000)")
+
+
+def test_the_part_limit_export_uploaded_parts_1_to_10000(osw, expect):
+    expect.text(osw["many low"], "10000", "premise: part limit: the export uploaded parts 1 to 10000")
+
+
+def test_no_part_above_10000_is_sent(osw, expect):
+    expect.num(osw["many high"], 0, "part limit: no part numbered above 10000 was sent")
+
+
+def test_the_part_limit_leaves_no_open_upload(osw, expect):
+    expect.num(osw["many open"], 0, "part limit: the server holds no open upload for the key")
+
+
+def test_the_part_limit_leaves_no_object(osw, expect):
+    expect.text(osw["many key"], "absent", "part limit: the key does not exist")
+
+
+def test_aws_s3_refuses_parts_below_5_mib_before_the_upload(osw, expect):
+    expect.text(osw["min aws"], "22023 by the part minimum",
+                "part minimum: an export to AWS S3 with 256 KiB parts is refused before the upload starts (22023)")
+
+
+def test_a_one_part_export_to_aws_s3_is_not_refused_by_the_part_minimum(osw, expect):
+    expect.text(osw["min one part"], "42501 by the allow-list",
+                "part minimum: a one-part export to AWS S3 is not refused by the part minimum")
+
+
+def test_5_mib_parts_to_aws_s3_are_not_refused_by_the_part_minimum(osw, expect):
+    expect.text(osw["min 5 MiB"], "42501 by the allow-list",
+                "part minimum: an export to AWS S3 with 5 MiB parts is not refused by the part minimum")
+
+
+def test_gcs_refuses_parts_below_5_mib(osw, expect):
+    expect.text(osw["min gs"], "22023 by the part minimum",
+                "part minimum: a gs:// export at the default GCS endpoint with 256 KiB parts is refused (22023)")
 
 
 _NO_REAL_S3 = ("PGC_S3_INTEGRATION_ENDPOINT names no real S3 implementation, so the shell "

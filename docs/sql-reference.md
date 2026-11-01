@@ -1581,8 +1581,16 @@ This cleanup holds when you cancel or terminate the export while it waits for th
 store to start the upload. The export then has no id for that upload. It lists
 the open uploads for its own key and aborts each one, within 10 seconds. Uploads
 at other keys stay open. An upload that another writer started at the same key is
-aborted too. This listing works for `s3://` only. A `gs://` export cancelled at
-that moment leaves the upload open (#1854).
+aborted too. This works for `s3://` and `gs://` URLs.
+
+A multipart upload holds at most 10000 parts of `pgcolumnar.objstore_part_size`
+bytes each, 8 MiB by default. An export that needs more parts fails with SQLSTATE
+54000 before it sends part 10001, and aborts the upload. Raise the part size for
+an object over about 78 GiB. AWS S3 and Google Cloud Storage refuse parts under
+5 MiB, except the last. To those stores, an export with a smaller part size fails
+with SQLSTATE 22023 when it starts a multipart upload, before it sends a part. A
+small object that fits in one part still goes in one request. Other stores are not
+checked.
 
 The last request commits the object. It is the single request of a small object,
 or the request that completes a multipart upload. Once the store has that whole

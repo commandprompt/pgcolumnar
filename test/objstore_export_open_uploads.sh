@@ -36,7 +36,8 @@
 # The serial arms (#1810) do the same for export_parquet and export_arrow,
 # which write one key through one multipart upload. They are cancelled, or
 # terminated, while their own POST ?uploads is held. The sink must then list
-# the uploads for its exact key and abort them. Two foreign uploads stay open:
+# the uploads for its exact key and abort them. The gs cancel arm (#1854) does
+# the same for a gs:// key. Two foreign uploads stay open:
 # notes.parquet under the same prefix, and one at the key plus ".old", which a
 # listing by the key as prefix also returns.
 #
@@ -177,6 +178,7 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
 	--seed-upload "$BUCKET/sa/notes.parquet" --seed-upload "$BUCKET/sa/out.arrow.old" \
 	--seed-upload "$BUCKET/st/notes.parquet" --seed-upload "$BUCKET/st/out.parquet.old" \
 	--seed-upload "$BUCKET/sd/notes.parquet" --seed-upload "$BUCKET/sd/out.parquet.old" \
+	--seed-upload "$BUCKET/sg/notes.parquet" --seed-upload "$BUCKET/sg/out.parquet.old" \
 	--seed-upload "$BUCKET/sf/out.parquet" \
 	> "$PGC_WORKDIR/ou_server.out" 2>&1 &
 SRV_PID=$!
@@ -348,12 +350,12 @@ signal_serial() {	# signal_serial pg_cancel_backend|pg_terminate_backend
 	   WHERE application_name = 'pgc_serial' AND pid <> pg_backend_pid()" >/dev/null
 }
 
-# serial_create_arm ARM FUNC PREFIX KEY SIGNAL WANT
+# serial_create_arm ARM FUNC PREFIX KEY SIGNAL WANT [SCHEME]
 serial_create_arm() {
-	local arm="$1" fn="$2" pfx="$3" key="$4" sig="$5" want="$6"
+	local arm="$1" fn="$2" pfx="$3" key="$4" sig="$5" want="$6" scheme="${7:-s3}"
 	: > "$S3_LOG"
 	echo 20 > "$PGC_WORKDIR/__uploads_delay__"
-	start_serial "$fn" ou_big "s3://$BUCKET/$pfx/$key" "$PGC_WORKDIR/$pfx.out"
+	start_serial "$fn" ou_big "$scheme://$BUCKET/$pfx/$key" "$PGC_WORKDIR/$pfx.out"
 	check "premise: $arm: the $fn CreateMultipartUpload was unanswered when the signal landed" \
 		"$(wait_key_unanswered "$pfx" "$key")" "1 open, 0 parts"
 	signal_serial "$sig"
@@ -372,6 +374,9 @@ serial_create_arm "arrow cancel" export_arrow sa out.arrow pg_cancel_backend \
 	"ERROR:  57014: canceling statement due to user request"
 serial_create_arm "serial terminate" export_parquet st out.parquet pg_terminate_backend \
 	"FATAL:  57P01: terminating connection due to administrator command"
+# #1854: the same for gs://. AWS_ENDPOINT_URL points gs:// at the fixture too.
+serial_create_arm "gs cancel" export_parquet sg out.parquet pg_cancel_backend \
+	"ERROR:  57014: canceling statement due to user request" gs
 
 # ---- serial double cancel (#1846): a second cancel lands in the listing ----
 # The first cancel ends the wait for the create's answer. The cleanup then

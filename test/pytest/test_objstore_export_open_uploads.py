@@ -18,7 +18,8 @@ promptly.
 
 The serial arms (#1810) end export_parquet and export_arrow, which write one key through
 one upload, while their own POST ?uploads is held: cancelled (both) and terminated
-(export_parquet). No upload at the key may stay open; notes.parquet and the key plus
+(export_parquet); the gs cancel arm (#1854) cancels export_parquet to a gs:// key. No
+upload at the key may stay open; notes.parquet and the key plus
 ".old" (a listing by the key as prefix returns it too) must. The commit arms (#1813)
 cancel export_parquet while the store holds the answer to the request that commits the
 object, CompleteMultipartUpload (__complete_delay__) or a single PUT (__put_delay__),
@@ -56,7 +57,8 @@ from pgc_vacuity import query_error
 TEST = pathlib.Path(__file__).resolve().parents[1]
 AKID, SECRET, REGION, BUCKET = "PGCTESTKEYID", "pgctest-secret-shhh", "pgc-test-1", "pgc-bucket"
 OWN = re.compile(r"^part-000[0-3]\.parquet$")
-SERIAL_KEYS = {"sc": "out.parquet", "sa": "out.arrow", "st": "out.parquet", "sd": "out.parquet"}
+SERIAL_KEYS = {"sc": "out.parquet", "sa": "out.arrow", "st": "out.parquet", "sd": "out.parquet",
+               "sg": "out.parquet"}
 
 
 def _message(exc):
@@ -428,14 +430,17 @@ def ou(pgc_cluster):
         r["os survived"] = _survived(dsn, log, crashes0)
 
         # serial (#1810): one key, one upload, ended while its POST ?uploads is held
-        for pfx, fn, sig in (("sc", "export_parquet", "pg_cancel_backend"),
-                             ("sa", "export_arrow", "pg_cancel_backend"),
-                             ("st", "export_parquet", "pg_terminate_backend")):
+        # #1854: the gs cancel arm does the same for a gs:// key; AWS_ENDPOINT_URL
+        # points gs:// at the fixture too
+        for pfx, fn, sig, scheme in (("sc", "export_parquet", "pg_cancel_backend", "s3"),
+                                     ("sa", "export_arrow", "pg_cancel_backend", "s3"),
+                                     ("st", "export_parquet", "pg_terminate_backend", "s3"),
+                                     ("sg", "export_parquet", "pg_cancel_backend", "gs")):
             key = SERIAL_KEYS[pfx]
             s3log.write_text("")
             uploads_delay.write_text("20\n")
             got = {}
-            t = _start_serial(dsn, fn, "ou_big", f"s3://{BUCKET}/{pfx}/{key}", got)
+            t = _start_serial(dsn, fn, "ou_big", f"{scheme}://{BUCKET}/{pfx}/{key}", got)
             r[f"{pfx} unanswered"] = _wait_key_unanswered(work, s3log, pfx, key)
             _signal_serial(dsn, sig)
             t.join(300)
@@ -720,7 +725,9 @@ SERIAL_ARMS = [("serial cancel", "sc", "export_parquet",
                ("arrow cancel", "sa", "export_arrow",
                 "57014: canceling statement due to user request"),
                ("serial terminate", "st", "export_parquet",
-                "57P01: terminating connection due to administrator command")]
+                "57P01: terminating connection due to administrator command"),
+               ("gs cancel", "sg", "export_parquet",
+                "57014: canceling statement due to user request")]
 
 
 @pytest.mark.parametrize("arm,pfx,fn,want", SERIAL_ARMS, ids=[a[1] for a in SERIAL_ARMS])

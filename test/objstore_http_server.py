@@ -57,6 +57,16 @@
 #                         writes the object at once, waits that long, and then
 #                         closes the connection with no answer, as a store
 #                         that applied the request and lost the connection.
+#   __uploads_unframed__  "close" or "http10" (#1830): CreateMultipartUpload
+#                         answers with no framing the client can count on.
+#                         "close": an HTTP/1.1 reply with no Content-Length, no
+#                         Transfer-Encoding and no Connection header; the body
+#                         ends when the server closes the connection.
+#                         "http10": an HTTP/1.0 reply with a Content-Length and
+#                         no Connection header, so the connection does not
+#                         persist. The server then waits up to 5 s for another
+#                         request on that connection and, if one comes, logs
+#                         "REUSED <its request line>" and closes unanswered.
 #   __put_status__        "STATUS KEY": a plain PUT (no multipart) of exactly
 #                         "bucket/KEY" is answered with STATUS and not stored,
 #                         so a suite can refuse one object, such as a parallel
@@ -520,6 +530,11 @@ class Handler(BaseHTTPRequestHandler):
                 if int(q["partNumber"]) >= first:
                     self._deny(code, "InternalError")
                     return
+            # S3 numbers parts 1 to 10000 and refuses any other number with
+            # 400 InvalidArgument (#1857).
+            if not 1 <= int(q["partNumber"]) <= 10000:
+                self._deny(400, "InvalidArgument")
+                return
             up["parts"][int(q["partNumber"])] = self._body
             _hook_sleep(self.server.rootdir, "__part_delay__")
             etag = hashlib.md5(self._body).hexdigest()
@@ -564,6 +579,27 @@ class Handler(BaseHTTPRequestHandler):
             body = ("<?xml version=\"1.0\"?><InitiateMultipartUploadResult>"
                     "<UploadId>%s</UploadId>"
                     "</InitiateMultipartUploadResult>" % uid).encode()
+            unframed = _hook_text(self.server.rootdir, "__uploads_unframed__")
+            if unframed == "close":
+                self.wfile.write(b"HTTP/1.1 200 OK\r\n"
+                                 b"Content-Type: application/xml\r\n\r\n" + body)
+                self.wfile.flush()
+                self.close_connection = True
+                return
+            if unframed == "http10":
+                self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: %d\r\n\r\n"
+                                 % len(body) + body)
+                self.wfile.flush()
+                self.close_connection = True
+                self.connection.settimeout(5)
+                try:
+                    line = self.rfile.readline(65537)
+                except OSError:
+                    line = b""
+                if line:
+                    with open(self.server.reqlog, "a") as f:
+                        f.write("REUSED %s\n" % line.decode("latin-1").strip())
+                return
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -641,6 +677,15 @@ def _write_open_uploads(srv):
     with open(os.path.join(srv.rootdir, "__open_uploads__"), "w") as f:
         for up in srv.uploads.values():
             f.write(os.path.relpath(up["local"], srv.rootdir) + "\n")
+
+
+def _hook_text(rootdir, name):
+    # The stripped text of <rootdir>/<name>, or None when it does not exist.
+    try:
+        with open(os.path.join(rootdir, name)) as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
 
 
 def _hook_sleep(rootdir, name):

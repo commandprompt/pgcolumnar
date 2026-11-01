@@ -103,7 +103,7 @@ schemes and the credential model.
 | `pgcolumnar.objstore_allowed_endpoints` | string | `''` (empty) | The endpoints the module may connect to, comma-separated as `host` or `host:port`. An entry with no port matches any port on that host; add a port to restrict it. Empty refuses every remote endpoint, so a role that can read or write server files cannot reach an arbitrary host through the extension. Link-local addresses, including `169.254.169.254`, are refused whether or not they are listed. Superuser-only, so a role cannot widen its own reach. |
 | `pgcolumnar.objstore_s3_addressing` | string | `path` | The S3 request addressing style. `path` sends `s3://bucket/key` to `endpoint/bucket/key`; `virtual` sends it to `bucket.endpoint/key`, which is what AWS now prefers. Under virtual-host addressing the allow-list still authorizes the endpoint, not the per-bucket hostname. |
 | `pgcolumnar.objstore_buffered` | boolean | `on` | Coalesce remote Parquet reads to one request per column chunk instead of many small ranged reads. |
-| `pgcolumnar.objstore_part_size` | integer | `0` | Multipart part size in bytes for a remote export. `0` uses the module default of 8 MiB. Raise it for a fast link. Range 0 to INT_MAX. |
+| `pgcolumnar.objstore_part_size` | integer | `0` | Multipart part size in bytes for a remote export. `0` uses the module default of 8 MiB. Raise it for a fast link. An upload holds at most 10000 parts, so the part size limits the object size: 8 MiB parts allow about 78 GiB. An export that needs more parts fails before it sends part 10001. AWS S3 and Google Cloud Storage need parts of at least 5 MiB (5242880 bytes); to them, a smaller part size fails when the export starts a multipart upload. Range 0 to INT_MAX. |
 
 ### Concurrent writes
 
