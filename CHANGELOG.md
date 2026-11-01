@@ -471,6 +471,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote `read_parquet` or `pgcolumnar_parquet` foreign table no longer mixes
+  two versions of an object (#1805). The reader sends one HEAD and then one ranged
+  GET per footer or column chunk. When another client overwrote the key during
+  the read, later GETs read the new object, and one query returned rows from both
+  versions without an error. The reader now keeps the ETag from the HEAD and sends
+  it as `If-Match` on every ranged GET. After an overwrite the server answers 412,
+  and the query fails with `"<url>" changed while it was being read` (SQLSTATE
+  55000). The reader pins only a strong ETag of at most 79 characters, its two
+  quote marks included. A server that sends no ETag, a weak one or a longer one
+  is not pinned, and a server that sends a new ETag for the same bytes on each
+  request is refused (#1866 asks for an opt-out); docs/limitations.md says so.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
 - `tier_partition` now writes the Parquet file with the server it names and
   your user mapping on that server (#1795). Before, it wrote with the endpoint
   and keys of the server process environment, but the foreign partition reads
