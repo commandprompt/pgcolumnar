@@ -1002,4 +1002,34 @@ psql_run "SELECT pgcolumnar.export_arrow('ia_ctl_src', '$PGC_WORKDIR/s3://ctl.ar
 check "control: import_arrow still reads a local path that holds s3:// past its start (#1886)" \
 	"$(q "SELECT pgcolumnar.import_arrow('ia_rem', '$PGC_WORKDIR/s3://ctl.arrows')")" 300
 
+# --- #1918: s3a:// and s3n:// are refused too ----------------------------------
+# s3a:// and s3n:// are the Hadoop names for S3, and the Iceberg reader accepts
+# them (#1825). PgColumnarPathIsRemote does not list them, so before #1918 they
+# went to open(2) and failed with 58P01. The refusal now covers them in any
+# case. The control: a LOCAL path with "s3a://" past its start is still read.
+echo "-- s3a:// and s3n:// refusal"
+joined_refusals() {	# URL... -> remote_refusal per URL, joined by " ; "
+	local u acc=""
+	for u in "$@"; do acc="$acc${acc:+ ; }$(remote_refusal "SELECT pgcolumnar.import_arrow('ia_rem', '$u')")"; done
+	printf '%s\n' "$acc"
+}
+joined_wants() {	# URL... -> want_refusal per URL, joined by " ; "
+	local u acc=""
+	for u in "$@"; do acc="$acc${acc:+ ; }$(want_refusal "$u")"; done
+	printf '%s\n' "$acc"
+}
+HADOOP="s3a://pgc-test/f1918/m.arrow s3n://pgc-test/f1918/m.arrow"
+HADOOP_CASE="S3A://pgc-test/f1918/m.arrow S3n://pgc-test/f1918/m.arrow"
+# shellcheck disable=SC2086
+check "import_arrow refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)" \
+	"$(joined_refusals $HADOOP)" "$(joined_wants $HADOOP)"
+# shellcheck disable=SC2086
+check "import_arrow refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)" \
+	"$(joined_refusals $HADOOP_CASE)" "$(joined_wants $HADOOP_CASE)"
+mkdir -p "$PGC_WORKDIR/s3a:"; chmod 777 "$PGC_WORKDIR/s3a:"
+if [ "$(id -u)" = "0" ]; then chown postgres "$PGC_WORKDIR/s3a:"; fi
+psql_run "SELECT pgcolumnar.export_arrow('ia_ctl_src', '$PGC_WORKDIR/s3a://ctl.arrows');" >/dev/null
+check "control: import_arrow still reads a local path that holds s3a:// past its start (#1918)" \
+	"$(q "SELECT pgcolumnar.import_arrow('ia_rem', '$PGC_WORKDIR/s3a://ctl.arrows')")" 300
+
 pgc_summary

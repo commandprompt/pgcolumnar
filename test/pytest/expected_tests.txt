@@ -1668,4 +1668,12 @@ guard_tests 860
 # statement after a DO block in one string; the refusal's DETAIL; a versioned overwrite by a longer
 # object; a weak-ETag overwrite that changes the length), by collection: 5981 tests collected, less
 # guard_tests 854.
-cluster_tests 5200
+# cluster_tests 5200 -> 5210 for #1913: ten tests in test_avro_manifest.py (read_avro_manifest and
+# read_manifest_list each refuse s3://, http:// and the other remote schemes, check pg_read_server_files
+# first, and still read a local path holding s3:// past its start), by collection: `6068 tests collected`,
+# less guard_tests 858.
+# cluster_tests 5225 -> 5243 for #1930: eighteen tests in test_objstore_listing.py (s3a:// and s3n://
+# read as s3://, in any case, through read_parquet, parquet_schema, import_parquet and the FDW, a Hive
+# prefix and root included; a missing object named by its s3:// URL; the s3ax:// and xs3a:// controls;
+# and the three exports' refusals), by collection: `5243 tests collected`.
+cluster_tests 5243

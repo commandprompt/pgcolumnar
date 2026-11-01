@@ -1660,6 +1660,7 @@ pgcolumnar_export_parquet(PG_FUNCTION_ARGS)
 
 	relid = PG_GETARG_OID(0);
 	path = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	PgColumnarRefuseS3AliasWrite("export_parquet", path);
 
 	/*
 	 * The server is resolved before the file is opened, so a missing server,

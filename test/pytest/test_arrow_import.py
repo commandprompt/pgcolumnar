@@ -599,3 +599,52 @@ def test_a_remote_url_is_refused_up_front(pgc_conn, server_dir, expect):
          f"SELECT pgcolumnar.export_arrow('ia_ctl_src', '{local}')")
     expect.num(_one(conn, f"SELECT pgcolumnar.import_arrow('ia_rem', '{local}')"), 300,
                "control: import_arrow still reads a local path that holds s3:// past its start (#1886)")
+
+
+HADOOP = ("s3a://pgc-test/f1918/m.arrow", "s3n://pgc-test/f1918/m.arrow")
+HADOOP_CASE = ("S3A://pgc-test/f1918/m.arrow", "S3n://pgc-test/f1918/m.arrow")
+
+
+def test_s3a_and_s3n_urls_are_refused_too(pgc_conn, expect):
+    """#1918: s3a:// and s3n:// are the Hadoop names for S3, which the Iceberg reader
+    accepts (#1825). PgColumnarPathIsRemote does not list them, so they went to open(2)
+    and failed with 58P01. They are now refused like s3://."""
+    conn = pgc_conn
+    _run(conn, "CREATE TABLE ia_had (a int) USING pgcolumnar")
+    expect.text(" ; ".join(_remote_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_had', '{u}')")
+                           for u in HADOOP),
+                " ; ".join(_want_refusal(u) for u in HADOOP),
+                "import_arrow refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)")
+
+
+def test_s3a_and_s3n_are_refused_in_any_case(pgc_conn, expect):
+    """#1918: the s3a:// and s3n:// match ignores case, as PgColumnarPathIsRemote's does."""
+    conn = pgc_conn
+    _run(conn, "CREATE TABLE ia_had_case (a int) USING pgcolumnar")
+    expect.text(" ; ".join(_remote_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_had_case', '{u}')")
+                           for u in HADOOP_CASE),
+                " ; ".join(_want_refusal(u) for u in HADOOP_CASE),
+                "import_arrow refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)")
+
+
+def test_a_local_path_holding_s3a_is_still_read(pgc_conn, server_dir, expect):
+    """#1918's control: a LOCAL path holding "s3a://" past its start is still read.
+    server_dir/"s3a:" is a directory, so server_dir/"s3a://ctl.arrows" is such a path."""
+    conn = pgc_conn
+    sub = server_dir / "s3a:"
+    sub.mkdir()
+    os.chmod(sub, 0o777)
+    local = f"{server_dir}/s3a://ctl.arrows"
+    _run(conn, "CREATE TABLE ia_had_ctl (a int) USING pgcolumnar",
+         "CREATE TABLE ia_had_src (a int) USING pgcolumnar",
+         "INSERT INTO ia_had_src SELECT g FROM generate_series(1, 300) g",
+         f"SELECT pgcolumnar.export_arrow('ia_had_src', '{local}')")
+    # A refusal here is a reading, not an error, so a mutant reddens the named check.
+    import psycopg
+    from pgc_vacuity import query_error
+    try:
+        got = _one(conn, f"SELECT pgcolumnar.import_arrow('ia_had_ctl', '{local}')")
+    except psycopg.Error as e:
+        got = query_error(f"{e.sqlstate} {e.diag.message_primary}")
+    expect.num(got, 300,
+               "control: import_arrow still reads a local path that holds s3a:// past its start (#1918)")

@@ -545,6 +545,39 @@ true until the next version shipped.
   the counts collected on the branch. The comments now say where each count
   was taken. No count changes.
 
+- The five functions that read local files only now also refuse an `s3a://` or
+  `s3n://` URL with SQLSTATE 0A000 (#1918): `import_arrow`,
+  `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
+  `read_manifest_list`. These are the Hadoop names for S3, which the Iceberg
+  reader accepts (#1825). Before this they failed with
+  `58P01 could not open file "s3a://..." for reading`, which says the object
+  does not exist. The match ignores case, and the message and hint are #1886's.
+  Only this refusal changes here. The Parquet readers read such a path as
+  `s3://` since #1930. docs/sql-reference.md. `test/arrow_import.sh`,
+  `test/parallel_copy.sh`, `test/avro_manifest.sh` and their pytest twins.
+- The Parquet readers read an `s3a://` or `s3n://` URL as `s3://`, in any case,
+  as the Iceberg reader does (#1930). These are `read_parquet`,
+  `parquet_schema`, `import_parquet` and the `pgcolumnar_parquet` wrapper.
+  Before this they took such a URL for a local path and failed with
+  `58P01 could not open file "s3a://..." for reading`. The reader rewrites the
+  URL before it routes, lists, globs or signs it, so a prefix, a glob and a Hive
+  root all work, and an error names the `s3://` URL that was requested. Only the
+  start of the path counts, so `xs3a://` and `s3ax://` stay local paths. The
+  exports write `s3://` only: `export_parquet`, `export_arrow` and
+  `parallel_export_parquet` refuse an alias with SQLSTATE 0A000 and a hint that
+  names the `s3://` URL, where they failed with 58P01 before.
+  docs/sql-reference.md. `test/objstore_listing.sh` and its pytest twin.
+- `read_avro_manifest` and `read_manifest_list` now refuse an object-storage URL
+  with SQLSTATE 0A000 (#1913), as `import_arrow` does since #1886. They read
+  local files only, and before this an `s3://` or `http://` URL failed with
+  `58P01 could not open file "s3://..." for reading`, which says the object does
+  not exist. Every scheme the readers treat as remote is refused: `s3://`,
+  `gs://`, `az://`, `http://` and `https://`, in any case, with #1886's message
+  and hint, for example
+  `columnar: read_avro_manifest does not read "s3://bucket/m.avro"`. Both check
+  `pg_read_server_files` first, so a caller without it gets 42501 for a URL as
+  for a local path. docs/sql-reference.md. `test/avro_manifest.sh` and its
+  pytest twin.
 - Two reads of one remote object in one statement now read the same version
   (#1894). Before, each read pinned the version its own HEAD saw. If another
   client overwrote the object between the two reads, a self-join or a
