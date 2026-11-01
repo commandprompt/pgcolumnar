@@ -496,7 +496,9 @@ pexport_write_success_marker(const char *dir)
  *
  *		Best effort, and never raises: anything the listing or an abort raises
  *		ends the cleanup and is discarded. The caller must have an empty error
- *		stack, so discarding it discards nothing else.
+ *		stack, so discarding it discards nothing else. What was discarded is
+ *		LOGged first (#1869): the uploads it leaves open are billed until
+ *		someone aborts them, and the log is the only place that says why.
  */
 static void
 pexport_abort_own_uploads(const char *dir, int nkeys,
@@ -578,6 +580,8 @@ pexport_abort_own_uploads(const char *dir, int nkeys,
 	}
 	PG_CATCH();
 	{
+		ErrorData  *edata;
+
 		/*
 		 * errfinish zeroed the holdoff counts before the longjmp; put back what
 		 * this function held, so the RESUME below balances the HOLD above.
@@ -585,7 +589,13 @@ pexport_abort_own_uploads(const char *dir, int nkeys,
 		InterruptHoldoffCount = held;
 		QueryCancelHoldoffCount = cancelHeld;
 		MemoryContextSwitchTo(cxt);
+		edata = CopyErrorData();
 		FlushErrorState();		/* the caller's stack was empty: only ours */
+		ereport(LOG,
+				(errmsg("columnar: parallel_export_parquet could not clean up "
+						"the open uploads under \"%s\": %s",
+						dir, edata->message)));
+		FreeErrorData(edata);
 	}
 	PG_END_TRY();
 
