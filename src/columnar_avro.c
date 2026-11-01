@@ -608,14 +608,19 @@ av_read_long(AvReader *r, AvSchema *s, bool *have)
  * value that then passed the reader's range check (#1823). A value outside
  * int32 is refused here as corrupt metadata (XX001), naming the value and,
  * when it is already decoded, the path. `what` is "manifest entry" or
- * "manifest", as in the reader's own range-check messages.
+ * "manifest", as in the reader's own range-check messages. `havep`, when not
+ * NULL, says whether the field was present (partition_spec_id keeps that; a
+ * manifest list's partition_spec_id at 4294967296 read as spec 0, #1878).
  */
 static int32
 av_read_int32_field(AvReader *r, AvSchema *s, const char *what,
-					const char *path, const char *field)
+					const char *path, const char *field, bool *havep)
 {
 	bool		have;
 	int64		v = av_read_long(r, s, &have);
+
+	if (havep != NULL)
+		*havep = have;
 
 	if (v < PG_INT32_MIN || v > PG_INT32_MAX)
 	{
@@ -876,7 +881,7 @@ av_decode_data_file(AvReader *r, AvSchema *s, PgColumnarAvroManifestEntry *e)
 			e->file_format = av_read_string(r, ft);
 		else if (strcmp(nm, "content") == 0)
 			e->content = av_read_int32_field(r, ft, "manifest entry",
-											 e->file_path, "content");
+											 e->file_path, "content", NULL);
 		else if (strcmp(nm, "record_count") == 0)
 			e->record_count = av_read_long(r, ft, &have);
 		else if (strcmp(nm, "file_size_in_bytes") == 0)
@@ -925,7 +930,7 @@ av_decode_entry(AvReader *r, AvSchema *s, PgColumnarAvroManifestEntry *e)
 
 		if (strcmp(nm, "status") == 0)
 			e->status = av_read_int32_field(r, ft, "manifest entry",
-											e->file_path, "status");
+											e->file_path, "status", NULL);
 		/* the data sequence number; "sequence_number" in v2 manifests as
 		 * pyiceberg writes them, "data_sequence_number" in the newer spec name.
 		 * Nullable: null means inherit the manifest's sequence number. */
@@ -972,12 +977,15 @@ av_decode_manifest_file(AvReader *r, AvSchema *s, PgColumnarAvroManifestFile *e)
 			e->manifest_length = av_read_long(r, ft, &have);
 		else if (strcmp(nm, "partition_spec_id") == 0)
 		{
-			e->partition_spec_id = (int32) av_read_long(r, ft, &have);
+			e->partition_spec_id = av_read_int32_field(r, ft, "manifest",
+													   e->manifest_path,
+													   "partition_spec_id",
+													   &have);
 			e->has_partition_spec_id = have;
 		}
 		else if (strcmp(nm, "content") == 0)
 			e->content = av_read_int32_field(r, ft, "manifest",
-											 e->manifest_path, "content");
+											 e->manifest_path, "content", NULL);
 		else if (strcmp(nm, "sequence_number") == 0)
 		{
 			e->sequence_number = av_read_long(r, ft, &have);

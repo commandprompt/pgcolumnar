@@ -1537,4 +1537,8 @@ guard_tests 854
 # cluster_tests 4904 -> 4907 for #1873's non-Parquet delete-file refusals in test_iceberg_deletes.py:
 # 3 checks in 3 tests, restated at the merge of origin/main (56a95f5f), by collection over the cluster files.
 # cluster_tests 4957 -> 4960 at the merge of fix/1868-posdelete-index (e4fe36af) into test/1873-1874-delete-coverage: that branch's 4957 plus this branch's 3 in test_iceberg_deletes.py, by collection: `4960 tests collected`.
-cluster_tests 4960
+# cluster_tests 4904 -> 4906 for #1878: two tests in test_iceberg_malformed.py (a manifest list's
+# partition_spec_id at 2^32, refused by iceberg_scan and by read_manifest_list), by collection:
+# `4906 tests collected`.
+# cluster_tests 4960 -> 4962 at the merge of test/1873-1874-delete-coverage (8a129379) into fix/1878-partition-spec-id-range: that branch's 4960 plus this branch's 2 in test_iceberg_malformed.py, by collection: `4962 tests collected`.
+cluster_tests 4962

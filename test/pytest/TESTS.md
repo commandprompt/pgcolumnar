@@ -10623,7 +10623,7 @@ The pytest twin of `test/catalog_filter_reads.sh` (#1637), every check by the sh
 
 ## 265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging
 
-The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, a dangling current-schema-id, malformed numbers in edited copies of the `db/events` metadata (#1824: a field id above INT32 or fractional, format-version 99, 4 or 0, a string current-snapshot-id; a null or -1 current-snapshot-id still reads as no snapshot), and a `data_file.content`, `manifest_entry.status` or `manifest_file.content` outside the spec, in both the scan and the lister, each refusal naming the value (#1823). Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
+The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, a dangling current-schema-id, malformed numbers in edited copies of the `db/events` metadata (#1824: a field id above INT32 or fractional, format-version 99, 4 or 0, a string current-snapshot-id; a null or -1 current-snapshot-id still reads as no snapshot), and a `data_file.content`, `manifest_entry.status` or `manifest_file.content` outside the spec, in both the scan and the lister, each refusal naming the value (#1823), and a manifest list's `partition_spec_id` at 2^32, which read as spec 0 (#1878). Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
 
 ### Every test
 
@@ -10688,6 +10688,8 @@ One module fixture copies the fixtures into `server_dir`, builds the FIFOs there
 | `test_content_2_32_on_the_oldest_file_is_refused_not_wrapped` | data_file.content 4294967296 on the oldest file is refused by iceberg_scan (XX001), not wrapped to 0 |
 | `test_status_2_32_plus_1_is_refused_not_wrapped` | manifest_entry.status 4294967297 is refused by iceberg_scan (XX001), not wrapped to 1 |
 | `test_manifest_content_2_32_is_refused_not_wrapped` | manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not wrapped to 0 |
+| `test_partition_spec_id_2_32_is_refused_by_the_scan` | manifest_file.partition_spec_id 4294967296 is refused by iceberg_scan (XX001), not read as spec 0 |
+| `test_read_manifest_list_refuses_partition_spec_id_2_32` | read_manifest_list refuses partition_spec_id 4294967296 (XX001), not shown as 0 |
 | `test_the_backend_survives_the_enum_refusals` | backend still up after the enum refusals |
 
 ## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping
