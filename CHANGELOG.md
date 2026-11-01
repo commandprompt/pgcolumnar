@@ -534,6 +534,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- The five functions that read local files only now also refuse an `s3a://` or
+  `s3n://` URL with SQLSTATE 0A000 (#1918): `import_arrow`,
+  `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
+  `read_manifest_list`. These are the Hadoop names for S3, which the Iceberg
+  reader accepts (#1825). Before this they failed with
+  `58P01 could not open file "s3a://..." for reading`, which says the object
+  does not exist. The match ignores case, and the message and hint are #1886's.
+  Only this refusal changes: the Parquet readers and writers still treat such a
+  path as local. docs/sql-reference.md. `test/arrow_import.sh`,
+  `test/parallel_copy.sh`, `test/avro_manifest.sh` and their pytest twins.
 - `read_avro_manifest` and `read_manifest_list` now refuse an object-storage URL
   with SQLSTATE 0A000 (#1913), as `import_arrow` does since #1886. They read
   local files only, and before this an `s3://` or `http://` URL failed with

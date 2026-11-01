@@ -1668,4 +1668,4 @@ guard_tests 858
 # read_manifest_list each refuse s3://, http:// and the other remote schemes, check pg_read_server_files
 # first, and still read a local path holding s3:// past its start), by collection: `6068 tests collected`,
 # less guard_tests 858.
-cluster_tests 5210
+cluster_tests 5225

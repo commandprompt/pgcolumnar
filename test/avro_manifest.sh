@@ -301,4 +301,44 @@ check "control: read_avro_manifest still reads a local path that holds s3:// pas
 check "control: read_manifest_list still reads a local path that holds s3:// past its start (#1913)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_manifest_list('$PGC_WORKDIR/s3://ml.avro')")" "1"
 
+# ---- #1918: s3a:// and s3n:// are refused too -------------------------------
+# s3a:// and s3n:// are the Hadoop names for S3, and the Iceberg reader accepts
+# them (#1825). PgColumnarPathIsRemote does not list them, so before #1918 they
+# went to open(2) and failed with 58P01. The refusal now covers them in any
+# case. The controls: a LOCAL path with "s3a://" past its start is still read.
+echo "-- s3a:// and s3n:// refusal"
+joined_refusals() {	# function URL... -> remote_refusal per URL, joined by " ; "
+	local fn=$1 u acc=""; shift
+	for u in "$@"; do acc="$acc${acc:+ ; }$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.$fn('$u')")"; done
+	printf '%s\n' "$acc"
+}
+joined_wants() {	# function URL... -> want_refusal per URL, joined by " ; "
+	local fn=$1 u acc=""; shift
+	for u in "$@"; do acc="$acc${acc:+ ; }$(want_refusal "$fn" "$u")"; done
+	printf '%s\n' "$acc"
+}
+HADOOP="s3a://pgc-test/f1918/m.avro s3n://pgc-test/f1918/m.avro"
+HADOOP_CASE="S3A://pgc-test/f1918/m.avro S3n://pgc-test/f1918/m.avro"
+# shellcheck disable=SC2086
+check "read_avro_manifest refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)" \
+	"$(joined_refusals read_avro_manifest $HADOOP)" "$(joined_wants read_avro_manifest $HADOOP)"
+# shellcheck disable=SC2086
+check "read_avro_manifest refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)" \
+	"$(joined_refusals read_avro_manifest $HADOOP_CASE)" "$(joined_wants read_avro_manifest $HADOOP_CASE)"
+# shellcheck disable=SC2086
+check "read_manifest_list refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)" \
+	"$(joined_refusals read_manifest_list $HADOOP)" "$(joined_wants read_manifest_list $HADOOP)"
+# shellcheck disable=SC2086
+check "read_manifest_list refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)" \
+	"$(joined_refusals read_manifest_list $HADOOP_CASE)" "$(joined_wants read_manifest_list $HADOOP_CASE)"
+
+mkdir -p "$PGC_WORKDIR/s3a:"; chmod 777 "$PGC_WORKDIR/s3a:"
+cp "$M0" "$PGC_WORKDIR/s3a://m0.avro"; cp "$ML" "$PGC_WORKDIR/s3a://ml.avro"
+chmod 644 "$PGC_WORKDIR/s3a://m0.avro" "$PGC_WORKDIR/s3a://ml.avro"
+if [ "$(id -u)" = "0" ]; then chown -R postgres "$PGC_WORKDIR/s3a:"; fi
+check "control: read_avro_manifest still reads a local path that holds s3a:// past its start (#1918)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/s3a://m0.avro')")" "$EXP_N"
+check "control: read_manifest_list still reads a local path that holds s3a:// past its start (#1918)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_manifest_list('$PGC_WORKDIR/s3a://ml.avro')")" "1"
+
 pgc_summary
