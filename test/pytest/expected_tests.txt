@@ -1518,4 +1518,8 @@ guard_tests 854
 # cluster_tests 4904 -> 4926 at the merge of origin/main (56a95f5f) into fix/1796-objstore-error-advice: main's 4904
 # plus #1869's 5 tests in test_objstore_export_open_uploads.py and 17 in test_objstore_error_advice.py (this branch's 16
 # and the merge's vended storage-credentials entry check, for #1861's builder), by collection: `4926 tests collected`.
-cluster_tests 4926
+# cluster_tests 4763 -> 4766 for #1875's three retry-budget premises in test_vm_clear_on_renumber.py, the twin of
+# vm_clear_on_renumber.sh: 3 checks in 3 tests, by collection over the cluster files: `4766 tests collected`.
+# cluster_tests 4904 -> 4907 at the merge of origin/main (56a95f5f) into fix/1875-vm-clear-vacuum-flake: main's 4904 plus this branch's 3 premise tests in test_vm_clear_on_renumber.py, by collection: `4907 tests collected`.
+# cluster_tests 4926 -> 4929 at the merge of fix/1796-objstore-error-advice (9f2956b0) into fix/1875-vm-clear-vacuum-flake: that branch's 4926 plus this branch's 3 in test_vm_clear_on_renumber.py, by collection: `4929 tests collected`.
+cluster_tests 4929

@@ -8698,8 +8698,11 @@ The pytest twin of `test/vm_clear_on_renumber.sh` (ported for #1341), every chec
 
 Each check is its own test over a module fixture that runs the shell's steps in order. Every "cleared" reading is the transition `before->after` and wants `t->f`, so a VACUUM that set no bit cannot pass as a clear. The shell's geometry premises, which exit rather than record, refuse the fixture, so every test errors rather than passes.
 
+A private database does not keep VACUUM's horizon clear (#1875). Any session connected to it whose snapshot is older than the INSERT holds the all-visible marking back, such as an autovacuum worker's ANALYZE whose snapshot starts below an xid open in another database. So each VACUUM repeats until the blocks the arms read are set, up to 100 times, 0.2 s apart.
+
 | test | what it holds |
 | --- | --- |
+| `test_a_vacuum_of_cw_set_its_arms_blocks_all_visible_within_the_retry_budget` | premise: VACUUM, retried up to 100 times, set every block Part 1 reads; otherwise names the sessions holding an xmin here (#1875) |
 | `test_vacuum_set_all_visible_on_group_3s_late_block` | premise: VACUUM set group 3's late block all-visible |
 | `test_and_on_the_untouched_control_groups_block` | premise: and group 5's block |
 | `test_the_delete_cleared_the_block_holding_the_deleted_rows` | deleting the front of group 3 takes its first block `t->f` |
@@ -8709,6 +8712,8 @@ Each check is its own test over a module fixture that runs the shell's steps in 
 | `test_group_3_is_gone_from_the_catalog` | premise: group 3 has no `row_group` row |
 | `test_rewrite_one_group_cleared_the_retired_groups_late_block` | the late block goes `t->f` through the rewrite alone |
 | `test_a_group_the_rewrite_did_not_touch_keeps_its_all_visible_bit` | control: group 5's block stays `t`, which fails a clear widened to the relation |
+| `test_a_vacuum_of_rc_set_its_arms_blocks_all_visible_within_the_retry_budget` | premise: the same for `rc`'s early and late blocks (#1875) |
+| `test_a_vacuum_of_rcctl_set_its_arms_blocks_all_visible_within_the_retry_budget` | premise: and for `rcctl`'s (#1875) |
 | `test_vacuum_set_all_visible_early_in_rc` | premise: an interior early block of `rc` is set |
 | `test_and_late_in_rc` | premise: and an interior late block |
 | `test_and_on_the_control_relation` | premise: and the control relation's block |
