@@ -154,7 +154,13 @@ empty_output(StringInfo scratch, const uint8 **out, size_t *outlen)
  * MaxAllocSize up front so a crafted page yields a clean "return false" rather
  * than a generic allocation error deep in enlargeStringInfo or a decompressor.
  * Every codec that consumes usize also caps its output at it, so none can be
- * driven to allocate or inflate more than the header declares.
+ * driven to allocate or inflate more than the header declares. When usize is
+ * above 0, every real codec also refuses an output whose length is not usize
+ * (#1910). When usize is 0, GZIP, ZSTD and LZ4_RAW return an empty output
+ * without decompressing (see below), so they do not compare the stream with
+ * usize; SNAPPY does, and refuses a stream that is not empty. UNCOMPRESSED
+ * copies nothing and returns the srclen bytes the page holds, so its usize
+ * changes nothing that is read; pyarrow reads such a page too, v1 or v2.
  *
  * A declared size of 0 gives an empty output for GZIP, ZSTD and LZ4_RAW (#1786),
  * as it already did for UNCOMPRESSED and SNAPPY. pyarrow writes the dictionary
@@ -178,8 +184,12 @@ PgColumnarParquetDecompress(int codec, const uint8 *src, size_t srclen, size_t u
 
 		case PQC_SNAPPY:
 			/* Snappy self-describes its output length (a leading varint), which
-			 * snappy_raw_uncompress bounds; usize is not consulted. */
-			if (!snappy_raw_uncompress(src, srclen, scratch))
+			 * snappy_raw_uncompress bounds. The page header's size must agree
+			 * too, as it must for every other codec (#1910): a corrupt stream
+			 * whose own length still matched read without an error and gave a
+			 * wrong answer, where pyarrow refuses the page. */
+			if (!snappy_raw_uncompress(src, srclen, scratch) ||
+				(size_t) scratch->len != usize)
 				return false;
 			*out = (const uint8 *) scratch->data;
 			*outlen = scratch->len;

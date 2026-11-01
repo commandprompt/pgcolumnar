@@ -1150,6 +1150,19 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   without level histograms whose schema marks a column REQUIRED, while its pages
   carry definition levels, still reads wrong values without an error. pyarrow 23
   and 26 write the histograms by default.
+- The reader refuses a schema element whose `num_children` is negative or wider
+  than a 32-bit integer, with SQLSTATE XX001 (#1921). `parquet_schema` refuses it
+  too. It used to return the columns before that element and drop the rest
+  without an error.
+- The reader checks that each compressed page decompresses to the size its page
+  header declares (#1910). A page that does not is refused with SQLSTATE XX001.
+  Before, the reader did not check a Snappy page's size, so a corrupt Snappy page
+  could read wrong values without an error. One case is not checked. When the
+  header declares a size of 0, the reader does not decompress a GZIP, ZSTD or
+  LZ4_RAW page and takes it as empty. A page that holds values is then refused
+  later, when its values are missing. An uncompressed page is not refused when its two header
+  sizes differ, in a v1 or a v2 page. The reader reads the bytes the page holds,
+  as pyarrow does.
 - The reader reads a file in parts and does not load the whole file. It holds the
   footer for the length of the scan. It reads the pages one at a time. Peak memory for the
   raw file data is one page, not one file, so file size is not a limit. What does

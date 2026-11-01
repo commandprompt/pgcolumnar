@@ -46,6 +46,11 @@
 # Julian day before timestamp's range, and a page shorter than its num_values
 # are each refused; a value refusal names both parts of the INT96 value.
 #
+# A PAGE WHOSE SIZE IS NOT ITS HEADER'S (#1910), AND A NEGATIVE num_children
+# (#1921). A Snappy page that decompresses to a size other than its header's is
+# refused, as GZIP, ZSTD and LZ4_RAW pages already were. A schema group whose
+# num_children is negative is refused, by parquet_schema as well.
+#
 # Usage:  test/native_parquet_hardening.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -425,7 +430,59 @@ check "footer: the file without level histograms still reads" "$(footer_read rep
 check "footer: a repetition_type of 2^32 is refused, not read as REQUIRED" \
 	"$(footer_read rep_wide_nohist)" \
 	'XX001: Parquet file "<file>" has a malformed schema / Schema element "id" has repetition_type 4294967296; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).'
+# A group whose num_children is -1 (#1921). The schema walk read it as a group
+# with no children, and parquet_schema stopped there: it returned the columns
+# before it and dropped the rest, with no error. The reading is the row count and
+# the column names, or the refusal.
+# schema_read FILE -> "N rows: names" of parquet_schema, or the refusal
+schema_read() {
+	qw "SELECT pgc_err(\$q\$SELECT count(*) || ' rows: ' || string_agg(column_name, ' ') FROM pgcolumnar.parquet_schema('$W/$1.parquet')\$q\$);"
+}
+check "footer: the unpatched struct file's schema has its three columns" \
+	"$(schema_read grp_base)" "NO ERROR: 3 rows: a s b"
+check "footer: a negative num_children is refused by parquet_schema" \
+	"$(schema_read grp_neg_children)" \
+	'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children -1; a valid one is 0 or more.'
+# A count wider than int (#1921). A plain cast to int keeps the low 32 bits, so
+# 2^32 + 1 and -(2^32) + 1 would both read as 1, a valid count.
+check "footer: a num_children of 2^32 + 1 is refused by parquet_schema" \
+	"$(schema_read grp_wide_children)" \
+	'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children 4294967297; a valid one is 0 or more.'
+check "footer: a num_children of -(2^32) + 1 is refused by parquet_schema" \
+	"$(schema_read grp_neg_wide_children)" \
+	'XX001: Parquet file "<file>" has a malformed schema / Schema element "s" has num_children -4294967295; a valid one is 0 or more.'
 check "backend survived the malformed footers" "$(survived "$FOOTER_BEFORE")" "1"
+
+# ---- a page whose decompressed length is not its header's (#1910) -----------
+# Each copy changes only the page header's uncompressed_page_size. The SNAPPY
+# reader trusted the length inside the Snappy stream and never compared it with
+# the header, so a corrupt page read without an error: the nightly fuzz found a
+# wide64.parquet mutant that read 50 rows with a different answer, which pyarrow
+# refuses. The reading is "count/sum(id)", or the refusal.
+# page_read FILE -> "count/sum(id)" of the file, or the refusal
+page_read() {
+	qw "SELECT pgc_err(\$q\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id bigint)\$q\$);"
+}
+PAGE_REFUSED='XX001: could not decode Parquet column 0 in row group 0'
+check "page: the unpatched SNAPPY v1 file reads" "$(page_read page_snappy_v1)" "NO ERROR: 100/5050"
+check "page: the unpatched SNAPPY v2 file reads" "$(page_read page_snappy_v2)" "NO ERROR: 100/5050"
+check "page: a SNAPPY v1 page shorter than its header's size is refused" \
+	"$(page_read page_snappy_v1_long)" "$PAGE_REFUSED"
+check "page: a SNAPPY v1 page longer than its header's size is refused" \
+	"$(page_read page_snappy_v1_short)" "$PAGE_REFUSED"
+check "page: a SNAPPY v2 page whose values are shorter than its header's size is refused" \
+	"$(page_read page_snappy_v2_long)" "$PAGE_REFUSED"
+# An uncompressed page copies no bytes, so its header's size cannot change what
+# is read. pyarrow reads this file, and so does pgColumnar.
+check "page: an uncompressed page whose header size differs still reads, as in pyarrow" \
+	"$(page_read page_none_v1_long)" "NO ERROR: 100/5050"
+# An UNCOMPRESSED v2 page that says is_compressed=true, so its values go through
+# the codec. A header size below the page's level bytes changes nothing that is
+# read, and pyarrow reads both copies.
+check "page: an UNCOMPRESSED v2 page marked compressed reads" \
+	"$(page_read page_none_v2_c)" "NO ERROR: 100/5050"
+check "page: an UNCOMPRESSED v2 page whose header size is below its level bytes reads, as in pyarrow" \
+	"$(page_read page_none_v2_c_short)" "NO ERROR: 100/5050"
 
 # ---- string cells that are not valid in the server encoding (#1821) --------
 # A database created as UTF8 whatever the cluster's encoding (see the header).
