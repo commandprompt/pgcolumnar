@@ -627,14 +627,46 @@ and types that they do not support. See
 
 Writes the live rows of `rel` to an Arrow IPC stream file at `path`. Returns the
 number of rows written. The file has no `ARROW1` header or footer, so pyarrow
-reads it with `pyarrow.ipc.open_stream`, not `open_file`. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage).
+reads it with `pyarrow.ipc.open_stream`, not `open_file`. `path` can be a local
+file or an `s3://` URL. See [Object storage](#object-storage). A record batch
+holds at most 16384 rows and at most `pgcolumnar.export_group_bytes` of buffered
+data, 256 MiB by default, unless one row alone is larger. See
+[Export size limits](limitations.md#export-size-limits).
 
 ### pgcolumnar.export_parquet(rel regclass, path text) returns bigint
 
 Writes the live rows of `rel` to a Parquet file at `path`. Returns the number of
 rows written. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage).
+[Object storage](#object-storage). A row group holds at most 65536 rows and at most
+`pgcolumnar.export_group_bytes` of buffered data, 256 MiB by default, unless one row
+alone is larger. See [Export size limits](limitations.md#export-size-limits).
+
+### pgcolumnar.export_parquet(rel regclass, path text, server name) returns bigint
+
+Writes the file as the two-argument form does, but a remote `path` is written
+with the settings of `server`. These are the settings that a foreign table of
+`server` reads with, so a foreign table on `path` can read the file back.
+
+- The endpoint and region come from the server's `endpoint` and `region`
+  options. If the server has no such option, the value comes from
+  `AWS_ENDPOINT_URL` or `AWS_REGION` in the environment, whoever the caller is.
+  A read does the same.
+- The credentials come from your user mapping on the server, or from its
+  `PUBLIC` mapping. The environment's keys are used only where a read may use
+  them: see [Endpoints and credentials](#endpoints-and-credentials). A role that
+  is not a superuser and has no mapping is refused (`28000`).
+
+The function refuses these before it writes anything:
+
+- a null `server` (`22004`);
+- a `server` that does not exist (`42704`);
+- a `server` that does not use the `pgcolumnar_parquet` wrapper (`42809`);
+- a caller without `USAGE` on `server` (`42501`).
+
+A local `path` writes no object and uses no endpoint, region or key. The
+function still makes every check above and still looks up your credentials on
+the server. So a mapping that holds only half a credential refuses a local
+`path` too (`28000`).
 
 ### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
 
@@ -714,6 +746,23 @@ attaches the file as a foreign table of `server`, which must use the
 columns (with their collations and generated expressions), owner, bounds,
 grants and comment. Returns the number of rows moved.
 
+The function writes the file with the settings of `server`, as
+`export_parquet(partition, path, server)` does: the server's endpoint and
+region, and your user mapping on the server. A mapping that the object store
+rejects stops the move before anything is detached, and the rows stay in the
+columnar partition.
+
+After the attach, the function counts the rows through the new foreign
+partition, as you, before it commits. If that read fails or counts a different
+number, the move rolls back and the rows stay in the columnar partition. This
+catches a key that can write but not read. The file that the export wrote stays
+in place; a retry with the same `path` overwrites it.
+
+You need both `pg_write_server_files` and `pg_read_server_files`, or superuser:
+the function writes the file and then reads it. Every role that queries the
+parent after the move needs `pg_read_server_files` and a mapping on `server` that
+can read the file.
+
 The function runs as one transaction, at READ COMMITTED only (`25000`
 otherwise). It holds `ACCESS EXCLUSIVE` on the parent from the detach until
 commit. Every lock waits at most `lock_wait` (`55P03`).
@@ -725,6 +774,8 @@ The function refuses these:
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
 - a relation that is not a columnar partition (`42809`).
+- a caller that is not a member of both `pg_write_server_files` and
+  `pg_read_server_files` (`42501`), before anything is written.
 
 See
 [Move cold partitions to Parquet](how-to.md#move-cold-partitions-to-parquet).
@@ -933,6 +984,18 @@ relation, in sorted order. It can also be a glob pattern. A local `path` can be
 any of these; an object-storage URL must be a single object key. See
 [Object storage](#object-storage).
 
+The readers return each value as the declared column type, including its type
+modifier. They apply it as PostgreSQL's input functions do. A `numeric(p,s)`
+column rounds each value to scale `s`. A value with more than `p - s` digits
+before the point is an error, SQLSTATE 22003 (`numeric field overflow`). A
+`varchar(n)` column refuses a longer value with SQLSTATE 22001 (`value too long`),
+unless the extra characters are spaces; those it drops. A `timestamp(p)` or
+`time(p)` column rounds to `p` fractional digits. This holds for `read_parquet`,
+`import_parquet`, `iceberg_scan` and both foreign-data wrappers, and for array
+elements and composite fields. So `CREATE TABLE AS` or `INSERT ... SELECT` from a
+reader never stores a value that breaks the declared type. A row that an Iceberg
+delete removes is not checked.
+
 ### pgcolumnar.read_parquet(path text) returns setof record
 
 Returns the rows of a Parquet file. You must supply a column definition list. It
@@ -1057,7 +1120,8 @@ SELECT manifest_path, added_files_count, added_rows_count
 ### pgcolumnar.iceberg_current_snapshot(metadata_path text) returns table(snapshot_id bigint, parent_snapshot_id bigint, sequence_number bigint, timestamp_ms bigint, operation text, manifest_list text, schema_id int)
 
 Reads an Apache Iceberg table `metadata.json` and reports the current snapshot
-the table declares. The current snapshot is the one whose id equals the file's
+the table declares. The file may be plain or gzip-compressed (`*.gz.metadata.json`
+or `*.metadata.json.gz`). The current snapshot is the one whose id equals the file's
 `current-snapshot-id`. The row carries its sequence number, commit timestamp,
 and operation (`append`, `overwrite`, `delete`, `replace`). It also carries the
 manifest-list file the snapshot points at and its schema id. It returns one row,
@@ -1189,7 +1253,14 @@ value, is refused. The recorded file paths are rebased
 onto the table's actual location and resolved against a path boundary. A
 relocated table reads, and a path pointing outside the table is refused.
 Applying equality deletes reads each affected data file's delete columns
-twice. A probe pass computes the row ordinals to drop.
+twice. A probe pass computes the row ordinals to drop. Each applicable
+equality-delete file is read once per scan into an in-memory hash table keyed
+on its `equality_ids` columns. The probe hashes each data row once per delete
+file and walks only that hash's bucket. There it compares the data row only
+with delete rows that have the same hash. The cost therefore grows with the number of data
+rows times the number of applicable delete files, plus the number of delete
+rows. It no longer grows with data rows times delete rows. All delete rows stay
+in memory until the scan ends.
 
 A malformed manifest is refused, not read as far as it parses. A manifest entry
 that records no data-file path is an error, as is a manifest whose embedded Avro
@@ -1213,8 +1284,10 @@ location. That location is an ordinary metadata path, so it is read with
 `iceberg_scan` and the other functions above.
 
 The catalog endpoint is subject to `pgcolumnar.objstore_allowed_endpoints`, the
-allow-list that governs every other remote access. A host that resolves to a
-link-local or instance-metadata address is refused whether or not it is listed.
+allow-list that governs every other remote access. The module refuses a host
+that resolves to a link-local range or a known instance-metadata address, whether
+or not it is listed. See
+[the refused ranges](best-practices.md#run-object-storage-safely).
 The request is carried by the `pgcolumnar_objstore` module, so no additional TLS
 library is loaded into the server process. HTTPS requires the module to be built
 with OpenSSL, as for object storage.
@@ -1289,6 +1362,19 @@ multi-warehouse catalog and is sent as the `?warehouse=` parameter on the
 `credentials_required`. A secret on a server, where options are world-readable,
 is rejected. Setting `credentials_required 'false'` is restricted to a superuser.
 
+When the catalog answers with an error status, the call fails with one of these
+SQLSTATEs:
+
+| Catalog reply | SQLSTATE |
+|---|---|
+| HTTP 401 or 403 | `28000` |
+| HTTP 404 of type `NoSuchNamespaceException` | `3F000` |
+| any other HTTP 404 | `42P01` |
+| any other status but 200 | `08P01` |
+
+When the reply carries the catalog's own error message, the error detail repeats
+it as `The catalog said: <message>`. The message is cut to 512 bytes.
+
 ### pgcolumnar.iceberg_rest_scan(catalog_uri text, namespace text, table_name text) returns setof record
 
 Reads a table named by an Iceberg REST catalog at its current snapshot. It takes
@@ -1300,10 +1386,16 @@ the allow-list, the link-local refusal, and the environment bearer token.
 
 A catalog can vend storage credentials in its `loadTable` reply. The data,
 metadata, and delete files are then read with those credentials, not the server
-environment. Both the flat `config` keys and the `storage-credentials` array are
-read, and the longest-prefix match is used. Vended credentials do not bypass the
-allow-list. The endpoint is still checked. A table that vends no credentials is
-read with the ambient environment, as before.
+environment. Each file gets its own credential. For each file, the reader uses
+the `storage-credentials` entry whose `prefix` is the longest match for the
+file's location. A file that no prefix covers uses the flat `config` keys. If
+the flat `config` vends no keys either, the read fails with SQLSTATE 28000 and
+names the file. The server's own `AWS_*` credentials are never used for a table
+whose catalog vends credentials. An entry, or a flat `config`, counts as a
+credential only when it has both `s3.access-key-id` and `s3.secret-access-key`.
+Vended credentials do not bypass the allow-list. The endpoint is still checked.
+A table that vends no credentials is read with the ambient environment, as
+before.
 
 ```sql
 SELECT region, sum(amount)
@@ -1355,6 +1447,13 @@ query's predicate are skipped, and only referenced columns are decoded. Skipping
 requires a `column op constant` clause over an integer or floating-point column
 with a constant of the same type; [limitations.md](limitations.md) lists the
 conditions. A scan that skips nothing still returns correct rows.
+
+The wrapper skips no row group on a column whose type modifier can change a
+value, because the statistics hold the stored values. Examples are
+`numeric(18,1)` over a file whose DECIMAL scale is 2, which reads a stored 99.99
+as 100.0, and `timestamp(3)`, which rounds microseconds. A `timestamp(6)` column,
+or a `numeric(p,s)` column with the file's own scale and at least its precision,
+still skips.
 
 The `path` option can name a local file, directory, or glob, or an
 object-storage URL. A remote URL is an exact object, a prefix ending in a slash,
@@ -1425,6 +1524,11 @@ is read, not skipped, and the row filter runs on it. A `timestamp with time zone
 value is compared as its UTC instant, matching the catalog. Metrics pruning
 covers integer and boolean columns; other column types are read in full.
 
+A column whose type modifier can change a value is never used to prune. Examples
+are `varchar(2)`, which reads a stored `'eu  '` as `'eu'`, and `timestamp(0)`,
+which reads `00:59:59.7` as `01:00:00`. The manifest holds the stored value, so
+it does not describe the value the scan returns.
+
 ```sql
 CREATE SERVER ice FOREIGN DATA WRAPPER pgcolumnar_iceberg;
 CREATE FOREIGN TABLE events (id bigint, region text, amount int)
@@ -1446,6 +1550,7 @@ recognized:
 | `gs://bucket/key` | A Google Cloud Storage object, read and written through the interoperable XML API. It signs with the same Signature Version 4 as `s3://`, so a GCS HMAC key is given as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The endpoint defaults to `https://storage.googleapis.com` and the region to `auto`; set `AWS_ENDPOINT_URL` to override. |
 | `http://host[:port]/path` | A plain-HTTP object. The request carries no credential, but the data crosses the network in clear, so use it on a trusted network only. |
 | `https://host[:port]/path` | An HTTPS object. Available when the object-store module was built with OpenSSL. The server certificate is verified. |
+| `az://container/key` | Reserved for Azure Blob Storage, which no module reads yet. pgcolumnar treats the URL as remote, not as a local path, and refuses it with SQLSTATE 0A000: `reading "az://..." is not supported`, or, without the object-store module, `reading "az://..." requires the object-store module`. |
 
 Requests to an `http://` or `https://` URL are never signed and carry no
 credential, for reads and for exports alike. An export sends one `PUT`, or, for a
@@ -1471,7 +1576,14 @@ without it reads and writes local files as before, and a remote URL reports that
 the module is required.
 
 A remote path is read as an exact key, a prefix, or a pattern. An `s3://` URL
-that names an object reads that one object with a single GET, no listing. An
+that names an object reads that one object, with no listing. The read starts
+with one HEAD, then fetches the footer and the column data with ranged GETs. When
+the HEAD returns a strong ETag of at most 79 characters, every GET sends that
+ETag in an `If-Match` header. The 79 includes the ETag's two quote marks. If
+another client then overwrites the object during the read, the server answers 412. The query then fails with `changed while it was
+being read`, instead of returning rows from two versions. Run the statement again
+to read the new version. A server that sends no ETag, a weak one, or a longer
+one cannot pin the read (see [limitations](limitations.md#reading-external-parquet)). An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a
@@ -1522,6 +1634,10 @@ credentials come from the environment of the server process:
 | `AWS_SESSION_TOKEN` | A session token, when the credentials are temporary. Optional. |
 | `AWS_REGION` or `AWS_DEFAULT_REGION` | The signing region. |
 
+Two calls take a server instead: `export_parquet(rel, path, server)`, and
+`tier_partition`, which writes through it. They resolve the endpoint and the
+credentials as the foreign-data wrapper does, as described next.
+
 For the foreign-data wrapper the endpoint and credentials come from the catalog,
 which keeps them out of a world-readable place. The non-secret settings go on the
 server and the secret ones go on a user mapping:
@@ -1543,6 +1659,10 @@ only on a user mapping. Any other placement is an error at `CREATE` or `ALTER`
 time. `pg_user_mapping` is not world-readable, so a secret placed there is not
 exposed the way a server option is.
 
+A server with no `endpoint` or `region` option takes that value from
+`AWS_ENDPOINT_URL` or `AWS_REGION` (or `AWS_DEFAULT_REGION`) in the environment.
+This applies to every caller, because an endpoint and a region are not secrets.
+
 A read resolves the scanning user's mapping first, then a `PUBLIC` mapping. When a
 mapping supplies no credentials, the server process environment is used only in
 two cases. The caller is a superuser. Or a superuser has marked the mapping
@@ -1563,10 +1683,11 @@ SELECT pg_reload_conf();
 ```
 
 Each entry is a host or a `host:port`. A request whose endpoint matches no entry
-is refused before any connection is made. Link-local addresses, including the
-cloud instance-metadata address `169.254.169.254`, are refused unconditionally,
-whether or not they appear in the list. The setting is superuser-only, so a role
-cannot widen its own reach.
+is refused before any connection is made. The link-local ranges and the known
+cloud instance-metadata addresses, such as `169.254.169.254`, are refused
+unconditionally, whether or not they appear in the list. For every refused range,
+see [Run object storage safely](best-practices.md#run-object-storage-safely). The
+setting is superuser-only, so a role cannot widen its own reach.
 
 ### Exporting to object storage
 

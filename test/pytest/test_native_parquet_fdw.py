@@ -94,13 +94,14 @@ def _refusal(dsn, sql, regex, label):
     _wait_up(dsn)
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
-            conn.execute(sql)
+            cur = conn.execute(sql)
+            row = cur.fetchone() if cur.description else None
     except psycopg.Error as exc:
         if not exc.sqlstate:
             return "no refusal: the connection was lost"
         msg = exc.diag.message_primary or ""
         return f"{exc.sqlstate} ({label})" if re.search(regex, msg) else f"{exc.sqlstate}: {msg}"
-    return "no error"
+    return f"no error ({'|'.join('' if v is None else str(v) for v in row) if row else ''})"
 
 
 def _crashes(cluster):
@@ -199,6 +200,22 @@ def pfdw(pgc_cluster, server_dir):
                   f"c_ts timestamp) SERVER pqsrv OPTIONS (path '{scalar}')")
         r["wrong type"] = _refusal(dsn, "SELECT * FROM fwrongtype",
                                    r'physical type is not compatible with target column "c_i4"', "type mismatch")
+
+        # a declared typmod applies to every value (#1790)
+        ftm, ftm_fit = server_dir / "fdw_ftm.parquet", server_dir / "fdw_ftm_fit.parquet"
+        _run(dsn, "CREATE TABLE ftm_src (d numeric(10,3), s text) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ftm_src VALUES (12345.678, 'hello')")
+        _run(dsn, "CREATE TABLE ftm_fitsrc (d numeric(10,3), s text) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ftm_fitsrc VALUES (1.005, 'ab'), (2.5, 'abc  ')")
+        _rows(dsn, f"SELECT pgcolumnar.export_parquet('ftm_src', '{ftm}')")
+        _rows(dsn, f"SELECT pgcolumnar.export_parquet('ftm_fitsrc', '{ftm_fit}')")
+        _run(dsn, f"CREATE FOREIGN TABLE ftm_num (d numeric(5,2), s text) SERVER pqsrv OPTIONS (path '{ftm}')")
+        _run(dsn, f"CREATE FOREIGN TABLE ftm_fit (d numeric(5,2), s text) SERVER pqsrv OPTIONS (path '{ftm_fit}')")
+        _run(dsn, f"CREATE FOREIGN TABLE ftm_str (d numeric(10,3), s varchar(3)) SERVER pqsrv OPTIONS (path '{ftm}')")
+        r["tm overflow"] = _refusal(dsn, "SELECT * FROM ftm_num", r"numeric field overflow", "overflow")
+        r["tm round"] = _rows(dsn, "SELECT string_agg(d::text, ',' ORDER BY d) FROM ftm_fit")
+        r["tm long"] = _refusal(dsn, "SELECT * FROM ftm_str",
+                                r"value too long for type character varying\(3\)", "too long")
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -284,6 +301,21 @@ def test_a_scan_of_a_non_parquet_file_errors(pfdw, expect):
 
 def test_a_scan_with_an_incompatible_declared_type_errors(pfdw, expect):
     expect.text(pfdw["wrong type"], "42804 (type mismatch)", "scan with incompatible declared type errors (42804)")
+
+
+def test_a_numeric_5_2_foreign_column_refuses_an_overflow(pfdw, expect):
+    expect.text(pfdw["tm overflow"], "22003 (overflow)",
+                "typmod: a numeric(5,2) foreign column refuses 12345.678 (22003)")
+
+
+def test_a_numeric_5_2_foreign_column_rounds_to_scale_2(pfdw, expect):
+    expect.text(pfdw["tm round"], "1.01,2.50",
+                "typmod: a numeric(5,2) foreign column rounds 1.005 and 2.500 to scale 2")
+
+
+def test_a_varchar_3_foreign_column_refuses_a_longer_value(pfdw, expect):
+    expect.text(pfdw["tm long"], "22001 (too long)",
+                "typmod: a varchar(3) foreign column refuses 'hello' (22001)")
 
 
 def test_the_backend_is_still_up_after_the_fdw_refusals(pfdw, expect):

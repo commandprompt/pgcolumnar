@@ -1417,6 +1417,99 @@ guard_tests 854
 # cluster_tests 4750 -> 4763 at the merge of origin/fix/1782-pexport-trailing-slash (2f9022ed) into
 # fix/1779-http-write-unsigned: that branch's 4701 plus this branch's 13 tests in test_objstore_sink_write.py
 # (4516 -> 4529), by collection over the cluster files: `4714 tests collected`.
-# cluster_tests 4763 -> 4766 for #1873's non-Parquet delete-file refusals in test_iceberg_deletes.py:
-# 3 checks in 3 tests, by collection over the cluster files (`4766 tests collected`).
-cluster_tests 4766
+# cluster_tests 4763 -> 4783 for #1822's footer tests in test_native_parquet_hardening.py (12) and #1824's
+# malformed-number tests in test_iceberg_malformed.py (8), by collection over the cluster files.
+# cluster_tests 4783 -> 4789 for #1834's review: six tests in test_native_parquet_hardening.py (a UUID field
+# and list skipped whole, a type-13 sweep, a list of element type 14, and byte and double lists that run off
+# the footer), by collection over the cluster files: `4542 tests collected` before main's 44 were merged in.
+# cluster_tests 4789 -> 4796 for #1834's second review: four tests in test_native_parquet_hardening.py (a row
+# group num_rows below the footer total, a footer num_rows above it, a type-0 nibble with a delta, a huge list
+# of element type 15) and three in test_iceberg_malformed.py (format-version 4 and 0, a null
+# current-snapshot-id), by collection over the cluster files after merging main (6f88f973): `4593 tests collected`.
+# cluster_tests 4711 at the merge of origin/fix/1793-rest-namespaces (main 3fae8317 + #1802) into
+# fix/1822-strict-metadata-parsing: that branch's 4678 plus this branch's 33, by collection: `4711 tests collected`.
+# cluster_tests 4752 -> 4762 for #1811's and #1812's tests in test_parquet_export.py (4), test_arrow_export.py (3)
+# and test_objstore_sink_write.py (3). Re-derived by collection on the merged tree, not by adding
+# the deltas: `4526 tests collected`.
+# cluster_tests 4762 -> 4771 for #1811's review fixes on #1843: test_parquet_export.py (4),
+# test_arrow_export.py (4) and test_parallel_export_parquet.py (1), by collection: the whole
+# corpus collects `5389 tests collected`, guard 854 + cluster 4535.
+# cluster_tests 4776 -> 4795 merging main into #1843 (main's #1783, #1780, #1787, #1794, #1791 with
+# #1811's and #1812's 19), by collection on the merged tree, not by adding the deltas:
+# `5413 tests collected`, guard 854 + cluster 4559.
+# cluster_tests 4795 -> 4797 for #1811's kept-text tests on #1843, one each in test_parquet_export.py
+# and test_arrow_export.py, by collection: `5415 tests collected`, guard 854 + cluster 4561.
+# cluster_tests 4796 -> 4817 merging main (6f88f973) into #1843 again, by collection on the merged tree:
+# `5435 tests collected`, guard 854 + cluster 4581.
+# cluster_tests 4817 -> 4826 for #1843's third review: four tests in test_arrow_export.py and five in
+# test_parquet_export.py (composite, text[], int[], a row over the cap, and Parquet int2), by collection:
+# `5444 tests collected`, guard 854 + cluster 4590.
+# cluster_tests 4826 -> 4827 for #1808's test_metadata_addresses_behind_ipv6_forms in
+# test_objstore_allowlist.py, by collection over the cluster files: `4561 tests collected`.
+# cluster_tests 4787 -> 4797 for #1815's and #1825's tests in test_iceberg_scan.py (8: gzip metadata,
+# lowercase parquet, mixed s3/s3a paths) and test_iceberg_objstore.py (2: s3a:// and s3n:// metadata
+# paths), by collection over the cluster files.
+# cluster_tests 4797 -> 4805 for #1815's and #1825's review tests (PR #1835) in test_iceberg_scan.py (3: a
+# two-member gzip file, zero padding after gzip, an az:// refusal) and test_iceberg_deletes.py (5:
+# lowercase parquet position and equality deletes, a million s3:// and s3a:// delete rows, and their
+# memory), by collection over the cluster files.
+# cluster_tests 4805 -> 4807 for the second review of PR #1835 (#1815, #1825): two tests in
+# test_iceberg_scan.py (a gzip file that outgrows the first inflate buffer, and a data file_format
+# that is not Parquet), by collection over the cluster files: `4536 tests collected`.
+# cluster_tests 4576 at the merge of origin/main (1a1c4018) into fix/1815-iceberg-metadata-formats,
+# by collection: `5430 tests collected` in all, less the 854 guard tests.
+# cluster_tests 4580 at the merge of origin/main (6f88f973) into fix/1815-iceberg-metadata-formats,
+# by collection over the cluster files: `4580 tests collected`.
+# cluster_tests 4617 at the merge of origin/main (312452ce) into fix/1815-iceberg-metadata-formats,
+# by collection over the cluster files: `4617 tests collected`.
+# cluster_tests 4631 at the merge of origin/main (6968a6f4) into fix/1815-iceberg-metadata-formats,
+# by collection over the cluster files: `4631 tests collected`.
+# cluster_tests 4847 -> 4849 for the third review of PR #1835 (#1815, #1825): one test in
+# test_iceberg_scan.py (a two-member gzip file that grows the buffer in its second member) and
+# one in test_iceberg_deletes.py (an s3a:// position delete on an s3:// data file), by collection
+# over the cluster files: `4633 tests collected`.
+# cluster_tests 4849 at the merge of origin/fix/1808-linklocal-ipv6-imds (16149a48) into
+# fix/1815-iceberg-metadata-formats, by collection over the cluster files: `4849 tests collected`.
+# cluster_tests 4849 -> 4851 for #1817's two tests in test_iceberg_deletes.py: many equality-delete
+# rows drop the matching rows, and the probe's comparison count stays bounded, by collection.
+# cluster_tests 4851 -> 4852 for #1817's zero-row equality-delete test in test_iceberg_deletes.py
+# (review of #1860), by collection.
+# cluster_tests 4852 -> 4873 for #1790's declared-typmod checks: 11 in test_native_read_parquet.py,
+# 3 in test_native_parquet_fdw.py, 4 in test_iceberg_scan.py and 3 in test_iceberg_fdw.py (the 3 in
+# test_native_parquet_pushdown.py join an existing test), by collection.
+# cluster_tests 4873 -> 4881 for #1790's review checks: 5 in test_iceberg_deletes.py, 2 in
+# test_iceberg_fdw.py and 1 in test_native_parquet_pushdown.py. Restated at the 6987adea merge; the
+# collection before that merge, against an older main, read `4674 tests collected`.
+# cluster_tests 4881 -> 4882 for #1790's second review: test_native_read_parquet.py gains the twin of
+# numeric(5,3), the file's scale with a lower precision, refusing 12345.678. Restated at the 6987adea merge;
+# the collection before that merge, against an older main, read `4675 tests collected`.
+# cluster_tests 4708 at the merge of origin/main (6987adea) into fix/1790-apply-typmod,
+# by collection: `4708 tests collected`.
+# cluster_tests 4882 at the merge of origin/fix/1817-equality-delete-hash (4615aa23) into fix/1790-apply-typmod:
+# that branch's 4852 plus this branch's 30, by collection over the cluster files: `4882 tests collected`.
+# cluster_tests 4882 -> 4883 for #1795's test_tier_partition_writes_through_the_named_server in
+# test_tier_partition.py, by collection on the merged tree: `4646 tests collected`.
+# cluster_tests 4883 -> 4886 for #1805's three tests in test_objstore_http_read.py (the overwrite
+# pair premise, the mid-read overwrite refusal, the weak ETag), by collection. (This line first gave `4543 tests collected`, a figure from an older base.)
+# cluster_tests 4886 -> 4889 for #1805's review: three tests in test_objstore_http_read.py (the 79-character
+# ETag pin, the 80-character ETag not sent cut short, the per-request ETag refusal), by collection.
+# cluster_tests 4889 -> 4890 for #1805's second review: test_objstore_http_read.py gains the
+# 79-character ETag read of an unchanged object (http == local), by collection: `4652 tests collected`.
+# cluster_tests 4890 at the merge of origin/fix/1795-tier-partition-credentials (648f15f3) into
+# fix/1805-pin-object-version: that branch's 4883 plus this branch's 7, by collection: `4890 tests collected`.
+# cluster_tests 4890 -> 4895 for #1820's four tests in test_iceberg_rest_vended.py (a vended credential
+# per file) and one in test_iceberg_rest_scan.py (the catalog's 404 message), by collection.
+# cluster_tests 4616 at the merge of origin/main (6968a6f4) into fix/1820-vended-credential-prefix,
+# by collection: `4616 tests collected`.
+# cluster_tests 4895 -> 4899 for #1820's review: four tests in test_iceberg_rest_scan.py (the catalog's
+# message in the detail of the namespace 404, a 403 and a 500, and a too-deep error body), by collection.
+# cluster_tests 4654 at the merge of origin/main (3fae8317) into fix/1820-vended-credential-prefix,
+# by collection: `4654 tests collected`.
+# cluster_tests 4899 -> 4903 for #1820's third review: three tests in test_iceberg_rest_vended.py (the
+# longest prefix listed first, an entry with a key id and no secret, and the backend surviving it) and one
+# in test_iceberg_rest_scan.py (a malformed error body), by collection: `4658 tests collected`.
+# cluster_tests 4903 -> 4904 for #1820's fourth review: one test in test_iceberg_rest_vended.py (an entry
+# with a secret and no key id is ignored), by collection: `4659 tests collected`.
+# cluster_tests 4904 -> 4907 for #1873's non-Parquet delete-file refusals in test_iceberg_deletes.py:
+# 3 checks in 3 tests, restated at the merge of origin/main (56a95f5f), by collection over the cluster files.
+cluster_tests 4907

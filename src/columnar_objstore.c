@@ -62,6 +62,55 @@ PgColumnarPathIsRemote(const char *path)
 }
 
 /*
+ * Choose the config for one object (#1820). The Iceberg REST spec scopes each
+ * vended StorageCredential to "a storage location prefix where the credential
+ * is relevant", so the choice is made per object URL, not once per table: a
+ * catalog may vend one key for metadata/ and another for data/.
+ *
+ * The prefix is compared with the URL pgColumnar is about to read, byte for
+ * byte, as the bytes the credential will sign. A URL no prefix covers gets the
+ * fallback (the catalog's flat config). With no fallback the read is refused:
+ * once a catalog vends credentials for a table, none of its files is read with
+ * the server's ambient identity.
+ */
+const PgColumnarObjStoreConfig *
+PgColumnarObjStoreConfigFor(const PgColumnarObjStoreConfig *cfg, const char *url)
+{
+	const PgColumnarObjStoreCredSet *cs;
+	const PgColumnarObjStoreConfig *best = NULL;
+	size_t		bestlen = 0;
+	size_t		ulen;
+	int			i;
+
+	if (cfg == NULL || cfg->byprefix == NULL)
+		return cfg;
+	cs = cfg->byprefix;
+	ulen = strlen(url);
+	for (i = 0; i < cs->n; i++)
+	{
+		size_t		plen = strlen(cs->prefix[i]);
+
+		if (plen <= ulen && strncmp(url, cs->prefix[i], plen) == 0 &&
+			(best == NULL || plen > bestlen))
+		{
+			best = cs->cfg[i];
+			bestlen = plen;
+		}
+	}
+	if (best != NULL)
+		return best;
+	if (cs->fallback != NULL)
+		return cs->fallback;
+	ereport(ERROR,
+			(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+			 errmsg("columnar: no vended storage credential covers \"%s\"", url),
+			 errdetail("The REST catalog vended credentials for %d location prefix(es), and none is a prefix of this file. pgColumnar does not read the file with the server's own AWS_* credentials instead.",
+					   cs->n),
+			 errhint("Have the catalog vend a credential whose prefix covers the whole table location.")));
+	return NULL;				/* keep the compiler quiet */
+}
+
+/*
  * Open a LOCAL regular file for reading with no stat-before-open race.
  *
  * AllocateFile()/fopen("rb") on a FIFO blocks in open(2) until a writer appears;
