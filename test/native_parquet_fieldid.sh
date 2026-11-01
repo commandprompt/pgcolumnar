@@ -182,12 +182,15 @@ check "premise: the nested file's leaves carry ids 1,5,6,7,8,9 and none of 2,3,4
 	"$(cat "$NEST_LEAVES" 2>/dev/null)" "1,5,6,7,8,9"
 check "premise: the nested file's groups carry ids st=2 li=3 mp=4" \
 	"$(cat "$NEST_GROUPS" 2>/dev/null)" "st=2 li=3 mp=4"
-# parquet_schema reports one row per top-level column (#1893), so a nested column
-# carries its own id, the group's, which is the id Iceberg names it by.
-check "parquet_schema reports each nested column's own field id, 1,2,3,4 (#1893)" \
+# parquet_schema reports a list of a scalar and a struct of scalars as one row
+# under the column's own name (#1893), so that row carries the group's id, the id
+# Iceberg names it by. A map reads leaf by leaf, so it reports one row per leaf,
+# each with the leaf's own id.
+check "parquet_schema reports a list's and a struct's own field id, and a map's leaf ids (#1893)" \
 	"$(q "SELECT string_agg(column_name || '=' || coalesce(field_id::text, 'NULL'), ' ' ORDER BY ord)
 	      FROM (SELECT column_name, field_id, row_number() OVER () AS ord
-	            FROM pgcolumnar.parquet_schema('$NEST')) s")" "id=1 st=2 li=3 mp=4"
+	            FROM pgcolumnar.parquet_schema('$NEST')) s")" \
+	"id=1 st=2 li=3 mp.key_value.key=8 mp.key_value.value=9"
 check "premise: a scalar beside nested columns still reads by field id" \
 	"$(q "SELECT id FROM pgcolumnar.read_parquet('$NEST', ARRAY[1]) AS t(id int8)")" "1"
 check "a struct field id read as text is refused as nested (0A000)" \

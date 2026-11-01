@@ -2220,4 +2220,4 @@ COMMENT ON FUNCTION pgcolumnar.iceberg_rest_tables(text, text[])
 -- leaves (#1893). The comment in pgcolumnar--1.0-alpha5.sql says so too, so a
 -- fresh install and an upgraded one converge.
 COMMENT ON FUNCTION pgcolumnar.parquet_schema(text)
-	IS 'report the top-level columns of a Parquet file and the PostgreSQL type each maps to, a nested column under its own name (#1893); for a directory or glob, of its first file; field_id is the SchemaElement field id Iceberg projects by, NULL when the writer emitted none (Phase G scan core, #388)';
+	IS 'report the columns of a Parquet file, one row per column read_parquet declares, and the PostgreSQL type each maps to: a list or struct under its own name, other nesting one row per leaf (#1893); for a directory or glob, of its first file; field_id is the SchemaElement field id Iceberg projects by, NULL when the writer emitted none (Phase G scan core, #388)';

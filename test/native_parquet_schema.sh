@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # pgColumnar external-Parquet scan core (Phase G). pgcolumnar.parquet_schema(path)
-# reads a server-side Parquet file's footer and reports its leaf columns with the
-# PostgreSQL type each maps to. This suite is the round-trip differential: it
+# reads a server-side Parquet file's footer and reports its top-level columns with
+# the PostgreSQL type each maps to (a nested column read_parquet takes leaf by
+# leaf: one row per leaf, #1893). This suite is the round-trip differential: it
 # exports a columnar table covering every type the Parquet exporter emits, then
 # asserts parquet_schema reports the source column types back. The exporter and
 # the scan core share the type mapping, so a faithful mapping is a byte-for-byte
@@ -240,21 +241,75 @@ check_text "parquet_schema reports a struct column as a composite with its field
 check_text "read_parquet reads a nested file with the reported names and types (#1893)" \
 	"$(q "SELECT string_agg(l::text || (s).a || (s).b || n, ';' ORDER BY n) FROM pgcolumnar.read_parquet('$NEST') AS t(l bigint[], s nest_s, n integer);")" \
 	"{1,2}1x1;{3}2y2"
-if python3 -c 'import pyarrow.parquet' 2>/dev/null; then
-	# a map has no read_parquet type: it reports by name, marked as not supported
-	MAPF="$PGC_WORKDIR/map.parquet"
-	python3 - "$MAPF" <<'PY'
-import sys, pyarrow as pa, pyarrow.parquet as pq
-pq.write_table(pa.table({"m": pa.array([[("k", 1)]], pa.map_(pa.string(), pa.int64())),
-                         "n": pa.array([1], pa.int32())}), sys.argv[1])
-PY
-	check_text "parquet_schema reports a map column by name as not supported (#1893)" \
-		"$(q "SELECT string_agg(column_name || ':' || coalesce(data_type, 'NULL'), ',') FROM pgcolumnar.parquet_schema('$MAPF');")" \
-		"m:map (not supported),n:integer"
+# ---- nested shapes read_parquet takes leaf by leaf (#1893 review) ------------
+# read_parquet binds every leaf by position, so a map, a list of structs, a
+# struct holding a list or a struct of a struct still reads: one declared column
+# per leaf, an array where the leaf repeats. parquet_schema lists such a column
+# one row per leaf, named by its path in the file, so its rows are the column
+# list read_parquet needs. A leaf under two repeated levels (a list of lists)
+# has no faithful type: read_parquet flattens it into one array, so it reports
+# NULL. craft_parquet_nested.py writes the files, one writer for both twins.
+if python3 -I "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_nested.py" "$PGC_WORKDIR"; then
+	schema_rows() {	# schema_rows FILE -> name:type,... in file order
+		q "SELECT string_agg(column_name || ':' || coalesce(data_type, 'NULL'), ',' ORDER BY ord)
+		   FROM (SELECT column_name, data_type, row_number() OVER () AS ord
+		         FROM pgcolumnar.parquet_schema('$PGC_WORKDIR/$1.parquet')) s;"
+	}
+	check_text "parquet_schema lists a map column one row per leaf, each an array (#1893)" \
+		"$(schema_rows map)" "m.key_value.key:text[],m.key_value.value:bigint[],n:integer"
+	check_text "parquet_schema lists a list of a two-field struct one row per leaf (#1893)" \
+		"$(schema_rows los)" "l.list.element.x:bigint[],l.list.element.y:text[],n:integer"
+	check_text "parquet_schema lists a list of a one-field struct by its leaf path (#1893)" \
+		"$(schema_rows lofs)" "l.list.element.x:bigint[],n:integer"
+	check_text "parquet_schema lists a struct holding a list by its leaf path (#1893)" \
+		"$(schema_rows shl)" "s.x.list.element:bigint[],n:integer"
+	check_text "parquet_schema lists a struct of a struct one scalar row per leaf (#1893)" \
+		"$(schema_rows sos)" "s.t.a:bigint,s.t.b:text,n:integer"
+	check_text "parquet_schema lists a struct holding a map one row per leaf (#1893)" \
+		"$(schema_rows smap)" "s.m.key_value.key:text[],s.m.key_value.value:bigint[],n:integer"
+	check_text "parquet_schema reports NULL for the leaves of a list of maps, repeated twice (#1893)" \
+		"$(schema_rows lmap)" "l.list.element.key_value.key:NULL,l.list.element.key_value.value:NULL,n:integer"
+	check_text "parquet_schema reports NULL for the leaf of a list of lists, repeated twice (#1893)" \
+		"$(schema_rows lol)" "l.list.element.list.element:NULL,n:integer"
+	check_text "parquet_schema reports a legacy two-level list by its name as an array (#1893)" \
+		"$(schema_rows twolevel)" "l:bigint[],n:integer"
+	# The rows are the column list: declare one column per row, under its quoted
+	# name, with its type, and read every file whose rows all have a type. Not
+	# twolevel: read_parquet reads its REQUIRED repeated leaf as empty arrays, an
+	# older defect of the reader, not of parquet_schema (#1916).
+	read_rows=""
+	for f in map los lofs shl sos smap; do
+		cols=$(q "SELECT string_agg(quote_ident(column_name) || ' ' || data_type, ', ' ORDER BY ord)
+		          FROM (SELECT column_name, data_type, row_number() OVER () AS ord
+		                FROM pgcolumnar.parquet_schema('$PGC_WORKDIR/$f.parquet')) s;")
+		got=$(q "SELECT string_agg(t::text, ';') FROM pgcolumnar.read_parquet('$PGC_WORKDIR/$f.parquet') AS t($cols);" 2>&1 | head -1)
+		read_rows="$read_rows$f=$got "
+	done
+	check_text "read_parquet reads each nested file with the column list parquet_schema reports (#1893)" \
+		"${read_rows% }" \
+		'map=("{k,j}","{1,2}",1);({z},{3},2) los=({1},{a},1);("{2,3}","{b,c}",2) lofs=("{1,2}",1);({3},2) shl=("{1,2}",1);({3},2) sos=(1,x,1);(2,y,2) smap=({k},{1},1);({z},{3},2)'
+	# nullable is the column's own OPTIONAL flag: a REQUIRED list of REQUIRED
+	# elements is not nullable, though its leaf has a definition level (the
+	# repeated group's). The leaf rule reported l as nullable.
+	check_text "parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893)" \
+		"$(q "SELECT string_agg(column_name || ':' || nullable::text, ',' ORDER BY ord)
+		      FROM (SELECT column_name, nullable, row_number() OVER () AS ord
+		            FROM pgcolumnar.parquet_schema('$PGC_WORKDIR/req.parquet')) s;")" \
+		"l:false,s:false,o:true"
 else
-	check_skip "parquet_schema reports a map column by name as not supported (#1893)" \
-		"SKIP  parquet_schema reports a map column by name as not supported (#1893) (pyarrow not available to write the fixture)" \
-		"pyarrow not available"
+	for c in "parquet_schema lists a map column one row per leaf, each an array (#1893)" \
+		"parquet_schema lists a list of a two-field struct one row per leaf (#1893)" \
+		"parquet_schema lists a list of a one-field struct by its leaf path (#1893)" \
+		"parquet_schema lists a struct holding a list by its leaf path (#1893)" \
+		"parquet_schema lists a struct of a struct one scalar row per leaf (#1893)" \
+		"parquet_schema lists a struct holding a map one row per leaf (#1893)" \
+		"parquet_schema reports NULL for the leaves of a list of maps, repeated twice (#1893)" \
+		"parquet_schema reports NULL for the leaf of a list of lists, repeated twice (#1893)" \
+		"parquet_schema reports a legacy two-level list by its name as an array (#1893)" \
+		"read_parquet reads each nested file with the column list parquet_schema reports (#1893)" \
+		"parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893)"; do
+		check_skip "$c" "SKIP  $c (craft_parquet_nested.py failed: pyarrow missing?)" "no fixtures"
+	done
 fi
 
 pgc_summary

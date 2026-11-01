@@ -303,13 +303,15 @@ def test_the_nested_files_groups_carry_the_nested_ids(request, expect):
     expect.text(r["nest groups"], "st=2 li=3 mp=4", "premise: the nested file's groups carry ids st=2 li=3 mp=4")
 
 
-def test_parquet_schema_reports_each_nested_columns_own_field_id(request, expect):
-    # one row per top-level column (#1893): a nested column carries its group's id
+def test_parquet_schema_reports_a_lists_and_a_structs_own_field_id_and_a_maps_leaf_ids(request, expect):
+    # a list of a scalar and a struct of scalars are one row under the column's
+    # name, with the group's id (#1893); a map reads leaf by leaf, one row per
+    # leaf, with each leaf's own id
     if expect.require_module("pyarrow.parquet", name="pyarrow is needed to write the field-id fixture") is None:
         return
     r = request.getfixturevalue("pfid")
-    expect.text(r["nest top ids"], "id=1 st=2 li=3 mp=4",
-                "parquet_schema reports each nested column's own field id, 1,2,3,4 (#1893)")
+    expect.text(r["nest top ids"], "id=1 st=2 li=3 mp.key_value.key=8 mp.key_value.value=9",
+                "parquet_schema reports a list's and a struct's own field id, and a map's leaf ids (#1893)")
 
 
 def test_a_scalar_beside_nested_columns_still_reads_by_field_id_premise(request, expect):

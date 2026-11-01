@@ -1,5 +1,5 @@
-"""pgcolumnar.parquet_schema(path) reports a Parquet file's leaf columns with the
-PostgreSQL type each maps to (Phase G, #388, #1341). The pytest twin of
+"""pgcolumnar.parquet_schema(path) reports a Parquet file's columns, one row per
+column read_parquet declares (#1893), with the PostgreSQL type each maps to (Phase G, #388, #1341). The pytest twin of
 `test/native_parquet_schema.sh`, every check by the shell's name.
 
 The round trip: a columnar table covering every type the exporter emits is exported,
@@ -11,6 +11,8 @@ the exporter cannot: a REQUIRED column (nullable=f), and field ids out of order 
 disjoint from positions, with absence reported as NULL, since 0 is a legal id.
 """
 import pathlib
+import subprocess
+import sys
 
 import psycopg
 
@@ -204,18 +206,132 @@ def test_nested_columns_report_by_top_level_name(pgc_conn, server_dir, expect):
                     "{1,2}1x1;{3}2y2", "read_parquet reads a nested file with the reported names and types (#1893)")
 
 
-def test_a_map_column_reports_by_name_as_not_supported(pgc_conn, server_dir, expect):
-    name = "parquet_schema reports a map column by name as not supported (#1893)"
-    pa = expect.require_module("pyarrow", name=name)
-    if pa is None:
-        return
-    pq = expect.require_module("pyarrow.parquet", name=name)
-    mapf = server_dir / "map.parquet"
-    pq.write_table(pa.table({"m": pa.array([[("k", 1)]], pa.map_(pa.string(), pa.int64())),
-                             "n": pa.array([1], pa.int32())}), str(mapf))
-    mapf.chmod(0o644)
+# ---- nested shapes read_parquet takes leaf by leaf (#1893 review) ---------------------
+# read_parquet binds every leaf by position, so a map, a list of structs, a struct holding
+# a list or a struct of a struct reads as one declared column per leaf, an array where
+# the leaf repeats. parquet_schema lists such a column one row per leaf, named by its path
+# in the file. A leaf under two repeated levels has no faithful type and reports NULL.
+# test/craft_parquet_nested.py, the shell's own writer, writes the files.
+CRAFTER = pathlib.Path(__file__).resolve().parent.parent / "craft_parquet_nested.py"
+
+
+def _crafted(server_dir, expect, name):
+    if expect.require_module("pyarrow.parquet", name=name) is None:
+        return None
+    done = subprocess.run([sys.executable, "-I", str(CRAFTER), str(server_dir)], capture_output=True, text=True)
+    if done.returncode != 0:
+        expect.text(done.stderr.strip()[-300:] or f"exit {done.returncode}", "crafted", name)
+        return None
+    return server_dir
+
+
+def _schema_rows(cur, path):
+    return _one(cur, "SELECT string_agg(column_name || ':' || coalesce(data_type, 'NULL'), ',' ORDER BY ord) "
+                     "FROM (SELECT column_name, data_type, row_number() OVER () AS ord "
+                     "FROM pgcolumnar.parquet_schema(%s)) s", (path,))
+
+
+def _shape_rows(pgc_conn, w, f):
     with pgc_conn.cursor() as cur:
-        expect.text(_one(cur, "SELECT string_agg(column_name || ':' || coalesce(data_type, 'NULL'), ',') "
-                              "FROM pgcolumnar.parquet_schema(%s)", (str(mapf),)),
-                    "m:map (not supported),n:integer",
-                    "parquet_schema reports a map column by name as not supported (#1893)")
+        return _schema_rows(cur, str(w / f"{f}.parquet"))
+
+
+def test_a_map_column_lists_one_row_per_leaf(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "parquet_schema lists a map column one row per leaf, each an array (#1893)")
+    if w is not None:
+        expect.text(_shape_rows(pgc_conn, w, "map"), "m.key_value.key:text[],m.key_value.value:bigint[],n:integer",
+                    "parquet_schema lists a map column one row per leaf, each an array (#1893)")
+
+
+def test_a_list_of_a_two_field_struct_lists_one_row_per_leaf(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "parquet_schema lists a list of a two-field struct one row per leaf (#1893)")
+    if w is not None:
+        expect.text(_shape_rows(pgc_conn, w, "los"), "l.list.element.x:bigint[],l.list.element.y:text[],n:integer",
+                    "parquet_schema lists a list of a two-field struct one row per leaf (#1893)")
+
+
+def test_a_list_of_a_one_field_struct_lists_by_its_leaf_path(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "parquet_schema lists a list of a one-field struct by its leaf path (#1893)")
+    if w is not None:
+        expect.text(_shape_rows(pgc_conn, w, "lofs"), "l.list.element.x:bigint[],n:integer",
+                    "parquet_schema lists a list of a one-field struct by its leaf path (#1893)")
+
+
+def test_a_struct_holding_a_list_lists_by_its_leaf_path(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "parquet_schema lists a struct holding a list by its leaf path (#1893)")
+    if w is not None:
+        expect.text(_shape_rows(pgc_conn, w, "shl"), "s.x.list.element:bigint[],n:integer",
+                    "parquet_schema lists a struct holding a list by its leaf path (#1893)")
+
+
+def test_a_struct_of_a_struct_lists_one_scalar_row_per_leaf(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "parquet_schema lists a struct of a struct one scalar row per leaf (#1893)")
+    if w is not None:
+        expect.text(_shape_rows(pgc_conn, w, "sos"), "s.t.a:bigint,s.t.b:text,n:integer",
+                    "parquet_schema lists a struct of a struct one scalar row per leaf (#1893)")
+
+
+def test_a_struct_holding_a_map_lists_one_row_per_leaf(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "parquet_schema lists a struct holding a map one row per leaf (#1893)")
+    if w is not None:
+        expect.text(_shape_rows(pgc_conn, w, "smap"), "s.m.key_value.key:text[],s.m.key_value.value:bigint[],n:integer",
+                    "parquet_schema lists a struct holding a map one row per leaf (#1893)")
+
+
+def test_a_list_of_maps_reports_null_for_its_leaves(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "parquet_schema reports NULL for the leaves of a list of maps, repeated twice (#1893)")
+    if w is not None:
+        expect.text(_shape_rows(pgc_conn, w, "lmap"), "l.list.element.key_value.key:NULL,l.list.element.key_value.value:NULL,n:integer",
+                    "parquet_schema reports NULL for the leaves of a list of maps, repeated twice (#1893)")
+
+
+def test_a_list_of_lists_reports_null_for_its_leaf(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "parquet_schema reports NULL for the leaf of a list of lists, repeated twice (#1893)")
+    if w is not None:
+        expect.text(_shape_rows(pgc_conn, w, "lol"), "l.list.element.list.element:NULL,n:integer",
+                    "parquet_schema reports NULL for the leaf of a list of lists, repeated twice (#1893)")
+
+
+def test_a_legacy_two_level_list_reports_by_its_name_as_an_array(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "parquet_schema reports a legacy two-level list by its name as an array (#1893)")
+    if w is not None:
+        expect.text(_shape_rows(pgc_conn, w, "twolevel"), "l:bigint[],n:integer",
+                    "parquet_schema reports a legacy two-level list by its name as an array (#1893)")
+
+
+def test_read_parquet_reads_each_nested_file_with_the_reported_column_list(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect,
+                 "read_parquet reads each nested file with the column list parquet_schema reports (#1893)")
+    if w is None:
+        return
+    got = []
+    with pgc_conn.cursor() as cur:
+        # not twolevel: read_parquet reads its REQUIRED repeated leaf as empty arrays, an
+        # older defect of the reader, not of parquet_schema (#1916)
+        for f in ("map", "los", "lofs", "shl", "sos", "smap"):
+            path = str(w / f"{f}.parquet")
+            cols = _one(cur, "SELECT string_agg(quote_ident(column_name) || ' ' || data_type, ', ' ORDER BY ord) "
+                             "FROM (SELECT column_name, data_type, row_number() OVER () AS ord "
+                             "FROM pgcolumnar.parquet_schema(%s)) s", (path,))
+            try:
+                got.append(f"{f}=" + str(_one(cur, f"SELECT string_agg(t::text, ';') FROM "
+                                                   f"pgcolumnar.read_parquet(%s) AS t({cols})", (path,))))
+            except psycopg.Error as exc:
+                got.append(f"{f}=" + (exc.diag.message_primary or str(exc)))
+    expect.text(" ".join(got),
+                'map=("{k,j}","{1,2}",1);({z},{3},2) los=({1},{a},1);("{2,3}","{b,c}",2) lofs=("{1,2}",1);({3},2) '
+                'shl=("{1,2}",1);({3},2) sos=(1,x,1);(2,y,2) smap=({k},{1},1);({z},{3},2)',
+                "read_parquet reads each nested file with the column list parquet_schema reports (#1893)")
+
+
+def test_a_required_list_or_struct_is_not_nullable(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "parquet_schema reports a REQUIRED list or struct as not nullable, "
+                                     "an OPTIONAL list as nullable (#1893)")
+    if w is None:
+        return
+    with pgc_conn.cursor() as cur:
+        expect.text(_one(cur, "SELECT string_agg(column_name || ':' || nullable::text, ',' ORDER BY ord) "
+                              "FROM (SELECT column_name, nullable, row_number() OVER () AS ord "
+                              "FROM pgcolumnar.parquet_schema(%s)) s", (str(w / "req.parquet"),)),
+                    "l:false,s:false,o:true",
+                    "parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893)")

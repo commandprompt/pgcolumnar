@@ -323,7 +323,8 @@ feeds three surfaces over the same file parse and type inference:
 
 - `import_parquet` inserts into a target table via `table_tuple_insert`.
 - `read_parquet` returns rows as a set-returning function, and `parquet_schema`
-  reports the leaf columns and their inferred PostgreSQL types.
+  reports the columns to declare (one per list, struct or scalar, one per leaf
+  for other nesting) and their inferred PostgreSQL types.
 - The `pgcolumnar_parquet` foreign-data wrapper streams the file one row group
   at a time. Each scan step decodes the next row group into a bounded buffer that
   the executor drains. The scan holds one row group rather than the whole file. A
