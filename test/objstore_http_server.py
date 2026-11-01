@@ -61,12 +61,22 @@
 #                         answers with no framing the client can count on.
 #                         "close": an HTTP/1.1 reply with no Content-Length, no
 #                         Transfer-Encoding and no Connection header; the body
-#                         ends when the server closes the connection.
+#                         ends when the server shuts down its sending side. The
+#                         server then waits as for "http10" and logs REUSED for
+#                         a request that comes on that connection.
 #                         "http10": an HTTP/1.0 reply with a Content-Length and
 #                         no Connection header, so the connection does not
 #                         persist. The server then waits up to 5 s for another
 #                         request on that connection and, if one comes, logs
 #                         "REUSED <its request line>" and closes unanswered.
+#   __delete_unframed__   a number of seconds (#1830 review): every DELETE
+#                         that succeeds is answered as Garage answers it, an
+#                         HTTP/1.1 204 with a Date header only: no
+#                         Content-Length and no Connection header. The server
+#                         keeps the connection open for that many seconds of
+#                         quiet and then closes it, as Garage closes an idle
+#                         connection. A client that reads that reply until the
+#                         connection closes waits the whole time.
 #   __put_status__        "STATUS KEY": a plain PUT (no multipart) of exactly
 #                         "bucket/KEY" is answered with STATUS and not stored,
 #                         so a suite can refuse one object, such as a parallel
@@ -93,6 +103,7 @@ import hashlib
 import hmac
 import os
 import re
+import socket
 import ssl
 import sys
 import threading
@@ -580,16 +591,18 @@ class Handler(BaseHTTPRequestHandler):
                     "<UploadId>%s</UploadId>"
                     "</InitiateMultipartUploadResult>" % uid).encode()
             unframed = _hook_text(self.server.rootdir, "__uploads_unframed__")
-            if unframed == "close":
-                self.wfile.write(b"HTTP/1.1 200 OK\r\n"
-                                 b"Content-Type: application/xml\r\n\r\n" + body)
-                self.wfile.flush()
-                self.close_connection = True
-                return
-            if unframed == "http10":
-                self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: %d\r\n\r\n"
-                                 % len(body) + body)
-                self.wfile.flush()
+            if unframed in ("close", "http10"):
+                if unframed == "close":
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\n"
+                                     b"Content-Type: application/xml\r\n\r\n" + body)
+                    self.wfile.flush()
+                    # end the body for the client, but keep reading, so a
+                    # request sent on this connection shows as REUSED
+                    self.connection.shutdown(socket.SHUT_WR)
+                else:
+                    self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: %d\r\n\r\n"
+                                     % len(body) + body)
+                    self.wfile.flush()
                 self.close_connection = True
                 self.connection.settimeout(5)
                 try:
@@ -667,6 +680,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
         elif os.path.isfile(local):
             os.unlink(local)
+        idle = _hook_text(self.server.rootdir, "__delete_unframed__")
+        if idle is not None:
+            self.wfile.write(b"HTTP/1.1 204 No Content\r\nDate: %s\r\n\r\n"
+                             % self.date_time_string().encode())
+            self.wfile.flush()
+            # the next read on this connection times out after `idle` seconds,
+            # and the base handler then closes the connection
+            self.connection.settimeout(float(idle) if idle else 8.0)
+            return
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()

@@ -499,6 +499,23 @@ def osw(pgc_cluster):
         r["part started"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
         r["part open"] = _open_uploads(work, r"^pgc-bucket/partfail\.parquet$")
 
+        # #1830 review: the abort DELETE is answered 204 with no Content-Length and the
+        # connection kept open, as Garage answers it (__delete_unframed__); the fixture
+        # closes it after 8 s of quiet, so the export must return well inside that
+        open(s3log, "w").close()
+        (work / "__delete_unframed__").write_text("8\n")
+        (work / "__part_status__").write_text("500 2\n")
+        t0 = time.monotonic()
+        r["ab204"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/abort204.parquet')",
+                              "uploading a part of", " by the part check", setup=[PART])
+        ms = int((time.monotonic() - t0) * 1000)
+        (work / "__part_status__").unlink()
+        (work / "__delete_unframed__").unlink()
+        n = _logn(s3log, r"^DELETE /pgc-bucket/abort204.parquet uploadId=")
+        r["ab204 deletes"] = str(n) if isinstance(n, int) else n
+        r["ab204 prompt"] = "yes" if ms <= 4000 else f"no, after {ms} ms"
+        r["ab204 open"] = _open_uploads(work, r"^pgc-bucket/abort204\.parquet$")
+
         # taxonomy
         r["allow"] = _refusal(dsn, "SELECT pgcolumnar.export_parquet('es_small', 'http://127.0.0.2:1/x.parquet')",
                               "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list")
@@ -518,6 +535,11 @@ def osw(pgc_cluster):
         (work / "__uploads_unframed__").unlink()
         n = _logn(s3log, r"^POST /pgc-bucket/uc.parquet uploads=")
         r["uc creates"] = str(n) if isinstance(n, int) else n
+        # the fixture shuts down only its sending side, so it logs REUSED for a
+        # request the export sends on that connection (#1830 review)
+        reused = [ln for ln in pathlib.Path(s3log).read_text(errors="replace").splitlines()
+                  if ln.startswith("REUSED ")]
+        r["uc reused"] = f"{len(reused)} reused ({reused[0] if reused else 'none'})"
         r["uc back"] = _set_hash(dsn, f"SELECT * FROM pgcolumnar.read_parquet('s3://{BUCKET}/uc.parquet') "
                                       "AS t(id int8, pad text)")
         r["uc gen"] = _set_hash(dsn, GEN_BIG)
@@ -779,6 +801,24 @@ def osw(pgc_cluster):
         r["min 5 MiB"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min5.parquet')",
                                   "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list",
                                   setup=["SET pgcolumnar.objstore_part_size = 5242880"])
+        _restart(cluster, datadir, log, {"AWS_ENDPOINT_URL": "http://s3.cn-north-1.amazonaws.com.cn",
+                                         "AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET,
+                                         "AWS_REGION": "cn-north-1"})
+        r["min cn"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min.parquet')",
+                               "below the 5 MiB minimum", " by the part minimum", setup=[PART])
+        # Cloudflare R2 documents the same 5 MiB minimum (#1830 review)
+        _restart(cluster, datadir, log, {"AWS_ENDPOINT_URL": "http://0123456789abcdef.r2.cloudflarestorage.com",
+                                         "AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET,
+                                         "AWS_REGION": "auto"})
+        r["min r2"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min.parquet')",
+                               "below the 5 MiB minimum", " by the part minimum", setup=[PART])
+        # a host that ends in the letters "amazonaws.com" without the dot is another domain
+        _restart(cluster, datadir, log, {"AWS_ENDPOINT_URL": "http://notamazonaws.com",
+                                         "AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET,
+                                         "AWS_REGION": "us-east-1"})
+        r["min not aws"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 's3://{BUCKET}/min.parquet')",
+                                    "is not in pgcolumnar.objstore_allowed_endpoints", " by the allow-list",
+                                    setup=[PART])
         _restart(cluster, datadir, log, {"AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET})
         r["min gs"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', 'gs://{BUCKET}/min.parquet')",
                                "below the 5 MiB minimum", " by the part minimum", setup=[PART])
@@ -887,6 +927,24 @@ def test_the_part_failure_landed_mid_multipart(osw, expect):
 
 def test_a_refused_part_leaves_no_open_upload(osw, expect):
     expect.text(osw["part open"], "0", "part failure: the server holds no open upload for the key")
+
+
+def test_an_unframed_204_abort_still_fails_the_export(osw, expect):
+    # #1830 review
+    expect.text(osw["ab204"], "58030 by the part check", "unframed 204: a refused part fails the export (58030)")
+
+
+def test_the_unframed_204_export_sent_one_abort(osw, expect):
+    expect.text(osw["ab204 deletes"], "1", "premise: unframed 204: the export sent one abort DELETE")
+
+
+def test_an_abort_answered_204_with_no_length_returns_promptly(osw, expect):
+    expect.text(osw["ab204 prompt"], "yes",
+                "unframed 204: the export returned within 4 s when its abort was answered 204 with no Content-Length")
+
+
+def test_the_unframed_204_abort_leaves_no_open_upload(osw, expect):
+    expect.text(osw["ab204 open"], "0", "unframed 204: the server holds no open upload for the key")
 
 
 def test_an_unlisted_endpoint_is_refused_by_the_allow_list(osw, expect):
@@ -1244,6 +1302,12 @@ def test_the_unframed_reply_export_sent_one_create(osw, expect):
     expect.text(osw["uc creates"], "1", "premise: unframed reply: the export sent CreateMultipartUpload once")
 
 
+def test_no_request_reuses_the_connection_a_close_delimited_reply_ended(osw, expect):
+    # #1830 review
+    expect.text(osw["uc reused"], "0 reused (none)",
+                "unframed reply: no request went on the connection the close-delimited reply ended")
+
+
 def test_the_unframed_reply_object_reads_back_as_the_generator(osw, expect):
     expect.text(osw["uc back"], osw["uc gen"], "unframed reply: the object reads back as the generator")
 
@@ -1268,7 +1332,7 @@ def test_an_export_needing_more_than_10000_parts_is_refused(osw, expect):
 
 
 def test_the_part_limit_export_uploaded_parts_1_to_10000(osw, expect):
-    expect.text(osw["many low"], "10000", "premise: part limit: the export uploaded parts 1 to 10000")
+    expect.text(osw["many low"], "10000", "part limit: the export uploaded parts 1 to 10000")
 
 
 def test_no_part_above_10000_is_sent(osw, expect):
@@ -1296,6 +1360,22 @@ def test_a_one_part_export_to_aws_s3_is_not_refused_by_the_part_minimum(osw, exp
 def test_5_mib_parts_to_aws_s3_are_not_refused_by_the_part_minimum(osw, expect):
     expect.text(osw["min 5 MiB"], "42501 by the allow-list",
                 "part minimum: an export to AWS S3 with 5 MiB parts is not refused by the part minimum")
+
+
+def test_aws_s3_in_china_refuses_parts_below_5_mib(osw, expect):
+    expect.text(osw["min cn"], "22023 by the part minimum",
+                "part minimum: an export to AWS S3 in China (amazonaws.com.cn) with 256 KiB parts is refused (22023)")
+
+
+def test_cloudflare_r2_refuses_parts_below_5_mib(osw, expect):
+    # #1830 review
+    expect.text(osw["min r2"], "22023 by the part minimum",
+                "part minimum: an export to Cloudflare R2 (r2.cloudflarestorage.com) with 256 KiB parts is refused (22023)")
+
+
+def test_a_host_only_ending_in_amazonaws_com_is_not_refused_by_the_part_minimum(osw, expect):
+    expect.text(osw["min not aws"], "42501 by the allow-list",
+                "part minimum: an export to notamazonaws.com with 256 KiB parts is not refused by the part minimum")
 
 
 def test_gcs_refuses_parts_below_5_mib(osw, expect):

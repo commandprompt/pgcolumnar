@@ -1419,4 +1419,9 @@ guard_tests 854
 # (4516 -> 4529), by collection over the cluster files: `4714 tests collected`.
 # cluster_tests 4763 -> 4783 for #1830's, #1857's and #1854's tests: 15 in test_objstore_sink_write.py and
 # 5 from the gs cancel arm of test_objstore_export_open_uploads.py's serial parametrization, by collection
-cluster_tests 4783
+# cluster_tests 4783 -> 4789 for the #1830 review: 4 unframed-204 abort tests and 2 part-minimum host tests
+# (amazonaws.com.cn, notamazonaws.com) in test_objstore_sink_write.py, by collection over the cluster files:
+# `4789 tests collected`.
+# cluster_tests 4789 -> 4791 for the #1830 review's close-delimited reuse test and Cloudflare R2 part-minimum
+# test in test_objstore_sink_write.py, by collection over the cluster files: `4791 tests collected`.
+cluster_tests 4791

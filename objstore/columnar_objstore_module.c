@@ -800,11 +800,6 @@ os_fill(PgColumnarObjHandle *h)
 /* --------------------------------------------------------------- response */
 
 /*
- * Read and parse one response head. Returns false when the connection died
- * before a single status byte arrived (the stale keep-alive case); raises on
- * everything else.
- */
-/*
  * True when the header line [line, eol) contains `token`, in any case. The
  * Connection header's tokens are case-insensitive (RFC 9110 section 7.6.1).
  */
@@ -820,6 +815,11 @@ os_line_has_token(const char *line, const char *eol, const char *token)
 	return false;
 }
 
+/*
+ * Read and parse one response head. Returns false when the connection died
+ * before a single status byte arrived (the stale keep-alive case); raises on
+ * everything else.
+ */
 static bool
 os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 {
@@ -2103,8 +2103,19 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 	 * only the first two, so it dropped a close-delimited UploadId and left
 	 * the body's bytes on the handle for the next request to read as its
 	 * reply. A 1xx, 204 or 304 reply has no body whatever its headers say
-	 * (RFC 9112 section 6.3). A body with a length of 1 MiB or more is an
-	 * error page nobody reads, so it is drained.
+	 * (RFC 9112 section 6.3). Garage answers a DELETE with a 204 that has no
+	 * Content-Length and keeps the connection open, so reading that reply
+	 * until close would wait until Garage drops the idle connection, about
+	 * 60 s. A body with a length of 1 MiB or more is an error page nobody
+	 * reads, so it is drained.
+	 *
+	 * Any other reply with neither a length nor chunked framing ends at
+	 * connection close (RFC 9112 section 6.3). A store that sends such a
+	 * reply and keeps the connection open makes this read wait for the
+	 * quiet-slice timeout. A chunked or close-delimited body over 1 MiB
+	 * raises os_slurp_body's size error, even on a 200 to
+	 * CompleteMultipartUpload, after the store has written the object. A
+	 * real S3 reply is far smaller; docs/sql-reference.md states the limit.
 	 */
 	{
 		char	   *b = NULL;
@@ -2162,9 +2173,9 @@ os_host_in_domain(const char *host, const char *domain)
 }
 
 /*
- * True when the write goes to AWS S3 or Google Cloud Storage, the stores known
- * to refuse a part under 5 MiB. Other stores are not checked: some accept
- * smaller parts, and the test servers rely on that.
+ * True when the write goes to AWS S3, Google Cloud Storage or Cloudflare R2,
+ * the stores known to refuse a part under 5 MiB. Other stores are not checked:
+ * some accept smaller parts, and the test servers rely on that.
  */
 static bool
 os_store_needs_part_minimum(const PgColumnarObjHandle *h)
@@ -2175,7 +2186,8 @@ os_store_needs_part_minimum(const PgColumnarObjHandle *h)
 		return false;
 	return os_host_in_domain(host, "amazonaws.com") ||
 		os_host_in_domain(host, "amazonaws.com.cn") ||
-		os_host_in_domain(host, "storage.googleapis.com");
+		os_host_in_domain(host, "storage.googleapis.com") ||
+		os_host_in_domain(host, "r2.cloudflarestorage.com");
 }
 
 /* Upload the buffered bytes as the next multipart part; record its ETag. */
@@ -2235,8 +2247,10 @@ os_begin_multipart(PgColumnarObjSink *s)
 
 	/*
 	 * A part under 5 MiB that is not the last makes AWS S3 and GCS refuse the
-	 * complete step (#1857). The object needs more than one part when the
-	 * upload starts, so refuse now, before the store holds anything.
+	 * complete step (#1857). The upload starts when the buffer holds a whole
+	 * part, so the object will almost always need more than one part. Refuse
+	 * now, before the store holds anything. An object of exactly one part is
+	 * refused too, although the store would accept it; that edge is rare.
 	 */
 	if (s->partSize < OS_MIN_PART_SIZE && os_store_needs_part_minimum(s->h))
 		ereport(ERROR,
