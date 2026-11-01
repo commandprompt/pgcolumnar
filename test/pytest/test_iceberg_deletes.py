@@ -13,7 +13,10 @@ Asserted: position deletes, sequence ordering and inheritance, per-file scoping,
 ordinal-0 control; equality deletes (the strict boundary, multi-column AND, extra
 columns, null matching, unions, mixed with position deletes, unprojected columns);
 partition-scoped equality deletes; fifteen corrupt or unsupported snapshots refused,
-each by its own guard; and no backend dies on the way.
+each by its own guard; and no backend dies on the way. A second warehouse
+(warehouse_posmany, #1868) has 32 data files and 106 position-delete rows: its arms
+check the survivors against the oracle and read the scan's DEBUG1 lines, which must
+show one index build and, per data file, only the rows naming that file.
 
 HOW A REFUSAL IS READ. Several guards share a SQLSTATE (XX001, 22023), so a refusal
 counts only when its message is that guard's own. A refusal reads as its SQLSTATE,
@@ -48,6 +51,7 @@ from pgc_vacuity import query_error
 DB = "pgc_iceberg_deletes"
 FX = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "iceberg"
 WHD = FX / "warehouse_del"
+PMW = FX / "warehouse_posmany"
 COLS = "AS t(id bigint, region text, amount int)"
 PCOLS = "AS t(id bigint, region text, grp int)"
 EQ_APPLIED = ("eqapply", "eqboundary", "eqmulti", "eqextra", "eqnull", "eqtwo", "eqmixed",
@@ -218,9 +222,47 @@ def _survived(dsn, cluster, before):
     return "1" if up == 1 and now == before else f"no ([{up}], {now - before} backend crashes)"
 
 
+def _pm_probe(dsn, sql):
+    """-> (index, per data file) over the DEBUG1 lines of one run of sql, as the shell's
+    pm_probe: "builds=B rows=R paths=P" summed over the position-delete index lines,
+    and "files=F compared=C visited=V longest=L applied=A" over the per-data-file lines
+    (compared, visited and applied summed, longest the largest visited). query_error() for both when the
+    server could not be asked."""
+    _await_up(dsn)
+    lines = []
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.add_notice_handler(lambda d: lines.append(d.message_primary or ""))
+            conn.execute("SET client_min_messages = debug1")
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        err = query_error(_message(exc))
+        return err, err
+    builds = rows = paths = files = compared = visited = longest = applied = 0
+    for line in lines:
+        f = {}
+        for word in line.split():
+            key, _, val = word.partition("=")
+            if val.isdigit():
+                f[key] = int(val)
+        if "position-delete index:" in line:
+            builds += 1
+            rows += f.get("rows", 0)
+            paths += f.get("paths", 0)
+        elif "iceberg_scan position deletes:" in line:
+            files += 1
+            compared += f.get("compared", 0)
+            visited += f.get("visited", 0)
+            longest = max(longest, f.get("visited", 0))
+            applied += f.get("applied", 0)
+    return (f"builds={builds} rows={rows} paths={paths}",
+            f"files={files} compared={compared} visited={visited} longest={longest} applied={applied}")
+
+
 @pytest.fixture(scope="module")
 def dl(pgc_cluster, server_dir):
-    if not (WHD / "db" / "t" / "metadata" / "apply.metadata.json").is_file():
+    if not ((WHD / "db" / "t" / "metadata" / "apply.metadata.json").is_file()
+            and (PMW / "expected_posmany.json").is_file()):
         yield None
         return
     dest = server_dir / "del"
@@ -353,8 +395,33 @@ def dl(pgc_cluster, server_dir):
                                          f"FROM pgcolumnar.iceberg_scan('{vpath('plower')}/eqapply.metadata.json') {COLS}")
         r["mix_s3a"] = _read(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, E'\\n' ORDER BY id) "
                                   f"FROM pgcolumnar.iceberg_scan('{vpath('mix_s3a')}') {COLS}")
+        r["mix_files3"] = _read(dsn, f"SELECT string_agg(id::text, ',' ORDER BY id) "
+                                     f"FROM pgcolumnar.iceberg_scan('{vpath('mix_files3')}') {COLS}")
         for name in ("bloat_s3", "bloat_s3a"):
             r[name] = _peak(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{vpath(name)}') {COLS}")
+        # #1868: many data files, many position-delete rows, in their own warehouse
+        pmdest = server_dir / "posmany"
+        shutil.copytree(PMW / "db", pmdest / "db")
+        for p in [pmdest, *pmdest.rglob("*")]:
+            p.chmod(0o777 if p.is_dir() else 0o666)
+        pm = json.loads((PMW / "expected_posmany.json").read_text())
+        pmmd = pmdest / "db" / "t" / "metadata" / "posmany.metadata.json"
+        r["pm oracle md5"] = pm["surviving_md5"]
+        r["pm oracle index"] = "builds={builds} rows={rows} paths={paths}".format(**pm["index"])
+        r["pm oracle probe"] = "files={files} compared={compared} visited={visited} longest={longest} applied={applied}".format(
+            **pm["probe"])
+        r["pm data rows"] = _read(dsn, f"SELECT count(*) || ' rows in ' || count(DISTINCT i) || ' files' "
+                                       f"FROM generate_series(0, 31) AS i, LATERAL pgcolumnar.read_parquet("
+                                       f"format('%s/d%s.parquet', '{pmdest / 'db' / 't' / 'data'}', "
+                                       f"lpad(i::text, 2, '0'))) {COLS}")
+        r["pm md5"] = _read(dsn, f"SELECT md5(string_agg(id::text, ',' ORDER BY id)) "
+                                 f"FROM pgcolumnar.iceberg_scan('{pmmd}') {COLS}")
+        r["pm ordinal 0"] = _read(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{pmmd}') {COLS} "
+                                       f"WHERE id % 100 = 0")
+        r["pm s3 row"] = _read(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{pmmd}') {COLS} "
+                                    f"WHERE id = 507")
+        r["pm index"], r["pm probe"] = _pm_probe(
+            dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_scan('{pmmd}') {COLS}")
         yield r
     finally:
         with psycopg.connect(admin, autocommit=True) as a:
@@ -802,6 +869,15 @@ def test_a_position_delete_naming_s3_data_as_s3a_is_applied(dl, expect):
                 "a position delete naming its s3:// data file as s3a:// is applied")
 
 
+def test_a_position_delete_naming_s3_data_as_file_s3_does_not_apply(dl, expect):
+    # mix_s3a's table; the second delete row names file://s3://bb/..., a local path
+    # that merely begins with s3://, so only the first (s3a://, id 2) applies (#1868)
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["mix_files3"]), "1,3,4,5",
+                "a position delete naming its s3:// data file as file://s3:// does not apply, beside one that does (#1868)")
+
+
 def test_a_million_s3_position_delete_rows_apply(dl, expect):
     if _declined(dl, expect):
         return
@@ -826,3 +902,47 @@ def test_s3a_position_deletes_cost_no_more_memory_than_s3(dl, expect):
     expect.text("1" if ok else f"0 (peak rise: s3:// [{s3kb}] kB, s3a:// [{s3akb}] kB; "
                                f"readings [{s3v}] [{s3av}])", "1",
                 "s3a:// position deletes cost no more memory than s3:// ones (within 16 MiB)")
+
+
+# ---- #1868: many data files, many position-delete rows ------------------------------
+
+def test_the_many_file_position_delete_table_has_its_rows(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm data rows"]), "256 rows in 32 files",
+                "premise: the many-file position-delete table holds 256 rows in 32 data files before deletes")
+
+
+def test_position_deletes_over_many_files_match_the_oracle(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm md5"]), dl["pm oracle md5"],
+                "position deletes over 32 data files drop exactly the oracle's rows (survivors == oracle, #1868)")
+
+
+def test_ordinal_zero_in_the_other_spelling_is_dropped_from_every_file(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm ordinal 0"]), "0",
+                "ordinal 0, named in the other path spelling (file:// vs bare), is dropped from all 32 data files (#1868)")
+
+
+def test_an_s3_spelled_delete_row_does_not_apply_to_a_local_file(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm s3 row"]), "1",
+                "a delete row naming a data file under s3:// does not apply to the local file (#1868)")
+
+
+def test_each_data_file_visits_only_its_own_position_deletes(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm probe"]), dl["pm oracle probe"],
+                "each data file visits only the position-delete rows naming it, not every row (#1868)")
+
+
+def test_the_position_delete_index_is_built_once_per_scan(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["pm index"]), dl["pm oracle index"],
+                "the position-delete index is built once per scan, one group per normalized path (#1868)")

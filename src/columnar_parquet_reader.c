@@ -3335,6 +3335,56 @@ pq_remote_glob_match(const char *pattern, const char *key)
 }
 
 /*
+ * Where a remote pattern starts (#1785). Only s3:// can be listed, so only an
+ * s3:// URL can be a pattern, and only in its key: the text after the bucket.
+ * The scheme, the bucket and anything an http(s) URL carries (a bracketed host,
+ * a query string) are never pattern syntax. -> the first `*`, `?` or `[` in the
+ * key, or NULL when the URL is not a pattern.
+ */
+static const char *
+pq_remote_glob_start(const char *url)
+{
+	const char *key;
+
+	if (pg_strncasecmp(url, "s3://", 5) != 0)
+		return NULL;
+	key = strchr(url + 5, '/');
+	return (key != NULL) ? strpbrk(key + 1, "*?[") : NULL;
+}
+
+/*
+ * Does a listed key name exactly the object the user wrote (#1785)? `*`, `?`
+ * and `[` are legal in an S3 key, so a URL holding one may be an exact key, and
+ * an object of that literal name is read rather than the pattern. The scheme is
+ * compared without case, as pq_remote_glob_match does; the rest is compared
+ * byte for byte, as S3 compares keys.
+ */
+static bool
+pq_remote_key_is_literal(const char *url, const char *key)
+{
+	return pg_strncasecmp(url, key, 5) == 0 && strcmp(url + 5, key + 5) == 0;
+}
+
+/*
+ * Refuse a bracketed (IPv6 literal) authority by name (#1785). The object-store
+ * module parses hosts without IPv6 literal support, and before this check a
+ * bracket in the host read as a glob character class and failed as a listing.
+ */
+static void
+pq_remote_refuse_ipv6(const char *url)
+{
+	const char *sep = strstr(url, "://");
+	const char *auth = (sep != NULL) ? sep + 3 : url;
+	size_t		alen = strcspn(auth, "/");
+
+	if (memchr(auth, '[', alen) != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("columnar: IPv6 literal hosts are not supported: \"%s\"", url),
+				 errhint("Name the endpoint by a host name or an IPv4 address.")));
+}
+
+/*
  * Whether a path produced by a directory listing or a glob expansion should be
  * handed to the reader.
  *
@@ -3475,6 +3525,12 @@ pq_walk_dir(const char *path, int depth, List **files, int *skipped)
  * report for a remote path that the byte source exists to eliminate, arriving one
  * layer above the byte source. `*`, `?` and `[` are all legal in an S3 key, so
  * this is an ordinary key, not a crafted one.
+ *
+ * Only the key of an s3:// URL can be a pattern (#1785). Before, the whole URL
+ * was tested, so a query string on an http URL and a bracketed IPv6 host both
+ * failed as a listing, and an exact key holding a metacharacter read other
+ * objects or none. A pattern now reads an object of exactly its name when one
+ * exists, and expands only when none does.
  */
 static List *
 pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
@@ -3484,7 +3540,8 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 
 	if (PgColumnarPathIsRemote(path))
 	{
-		bool		hasGlob = pq_has_glob_meta(path);
+		const char *meta;
+		bool		hasGlob;
 		size_t		plen = strlen(path);
 		bool		isDir = (plen > 0 && path[plen - 1] == '/');
 		const PgColumnarObjStoreApi *api;
@@ -3492,6 +3549,10 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		char	  **keys;
 		int			nkeys;
 		int			i;
+
+		pq_remote_refuse_ipv6(path);
+		meta = pq_remote_glob_start(path);
+		hasGlob = (meta != NULL);
 
 		/*
 		 * An exact key (no pattern, no trailing slash) is read as one object,
@@ -3514,7 +3575,6 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 
 		if (hasGlob)
 		{
-			const char *meta = strpbrk(path, "*?[");
 			const char *seg = meta;
 
 			/* the prefix to list is the literal head up to the last '/' before
@@ -3529,6 +3589,18 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 
 		keys = api->list_objects(listUrl, PgColumnarObjStoreConfigFor(cfg, listUrl),
 								 &nkeys);
+
+		/*
+		 * A pattern that names an existing object exactly reads that object
+		 * alone (#1785), whatever its suffix, as an exact key without a
+		 * metacharacter does. Only when no object has that literal name is it
+		 * matched as a pattern, where a backslash escapes a metacharacter.
+		 */
+		if (hasGlob)
+			for (i = 0; i < nkeys; i++)
+				if (pq_remote_key_is_literal(path, keys[i]))
+					return list_make1(keys[i]);
+
 		for (i = 0; i < nkeys; i++)
 		{
 			if (!pq_has_parquet_ext(keys[i]))

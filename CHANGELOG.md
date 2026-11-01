@@ -271,6 +271,34 @@ true until the next version shipped.
   without the refusal would read them and drop rows with no error. Before, the
   two refusals could be removed with every check still green.
   `gen_delete_fixture.py` writes the two snapshots.
+- `iceberg_scan` finds each data file's position deletes through an index
+  built once per scan (#1868). It used to walk every position-delete row for
+  each data file, so the work grew with data files times delete rows. The rows
+  are now grouped by data file, and each data file reads only its own group.
+  Two paths share a group exactly when the walk's comparison called them the
+  same file: `file://` is dropped, `s3://`, `s3a://` and `s3n://` are one
+  prefix, and `file://s3://b/k` is not `s3://b/k`. On a table of 32 data files
+  and 106 delete rows the scan visits 104 rows, where the walk visited 3392.
+  Two DEBUG1 lines report the index and each lookup. `test/iceberg_deletes.sh`
+  and `test_iceberg_deletes.py` check the counts and the survivors, against a
+  new fixture, `warehouse_posmany`, and a delete file that names its `s3://`
+  data file as `s3a://` and as `file://s3://`.
+- `test/objstore_listing.sh` and `test_objstore_listing.py` now run their listing
+  arms against a real S3 implementation when `PGC_S3_INTEGRATION_ENDPOINT` is set
+  (#1798). The real-S3 block used to be empty, so prefix, glob, paged and
+  hidden-name listing had only met the repo's fixture server. The arms upload a
+  layout under a per-run prefix and compare each remote prefix and glob read with
+  the same layout read from local disk. One prefix holds 1100 objects, which a real
+  server cannot list in one 1000-key page, so its 1100 rows prove the client
+  followed a real continuation token. With `PGC_S3_INTEGRATION_VHOST_ENDPOINT` also
+  set, a virtual-host prefix read must match the path-style one. The arms are
+  opt-in, as the sibling suites' are, and CI does not run them.
+- With `PGC_S3_INTEGRATION_*` set, `test/objstore_sink_write.sh` no longer ends at
+  its restart into the real endpoint when an earlier arm crashed a backend
+  (#1850). A fast stop sent while the server replayed WAL after the crash did not
+  finish in 60 s, and the suite exited before its summary. The restart now waits
+  for recovery first, and a restart that still fails is a named red, so the other
+  arms' reds reach the summary. The listing suite and both twins do the same.
 - The Iceberg REST functions report a missing namespace as SQLSTATE `3F000`, not
   `42P01` (#1820). They do this when the catalog's 404 reply has the type
   `NoSuchNamespaceException`. The message now says "no such namespace". A client
@@ -488,6 +516,52 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote read tests only the key of an `s3://` URL for `*`, `?` and `[`
+  (#1785). The whole URL used to be tested, with three effects. An exact key that
+  holds one of those characters read other objects or none: `b/q?mark.parquet`
+  also returned `b/qXmark.parquet`, and `a/brack[1].parquet` was "no objects
+  match". An `http(s)://` URL with a query string, and any host written as an
+  IPv6 literal such as `http://[::1]:3900/`, failed with "listing a prefix is
+  only supported for s3:// URLs". Now an `s3://` pattern that names an existing
+  object exactly reads that object alone, and expands only when no object has
+  that name; a backslash still escapes a character in the pattern. An
+  `http(s)://` URL is always one object, its query string sent to the server. A
+  bracketed IPv6 host is refused with its own SQLSTATE 0A000 message.
+  `test/objstore_listing.sh`, `test/objstore_http_read.sh` and their twins.
+- `test/vm_clear_on_renumber.sh` and `test_vm_clear_on_renumber.py` no longer
+  fail their VACUUM premises on a busy cluster (#1875). A VACUUM marks a row group
+  all-visible only once the group's catalog row precedes the database's horizon.
+  A private database keeps other databases' sessions out of that horizon, but not
+  a session connected to it, such as an autovacuum worker. That worker's snapshot
+  starts below any xid open elsewhere. Holding an xid open in `postgres` and a
+  snapshot in the suite's database turned seven checks red on both PG 17 and 18,
+  the seven CI reported. Each VACUUM now repeats, up to 100 times, until the
+  blocks the arms read are set. Three new premises report a budget that runs out,
+  with the sessions holding an xmin. Test-only.
+- Three object-store refusals now give advice that fits them (#1796). A 403's
+  hint names where the refused key was configured: the user mapping, the
+  credentials a REST catalog vended (in its flat config or in a
+  `storage-credentials` entry), or the server's `AWS_*` environment. It used to
+  name the environment for every key.
+  The allow-list refusal's hint suggests the `host:port` the message names,
+  added to the current list. It used to suggest the bare host as the whole list,
+  which opened every port on that host and dropped every other entry.
+  A single-PUT export that the store refuses before reading the body now reports
+  the 403 or other status. When the body was larger than the socket buffers, it
+  used to report `failed before a response`. The object-store module ABI is now
+  8, so the module and the extension must come from the same build.
+  `test/objstore_error_advice.sh` and `test_objstore_error_advice.py`.
+- An object-store error no longer names `s3://<bucket>/_`, a key nobody gave
+  (#1869). Three bucket-level requests are resolved from that dummy key: the
+  upload listing an export's cleanup makes, the object listing behind
+  `read_parquet` on a prefix, and the endpoint check `parallel_export_parquet`
+  makes before it starts workers. A refusal in any of them named the dummy
+  key. A refused ListMultipartUploads, or a
+  region or credential refusal in any of the three, now names the URL the caller
+  gave. The export's upload cleanup still never raises, but it now LOGs what it
+  discarded, so the server log says why an export's uploads were left open.
+  `test/objstore_export_open_uploads.sh` and
+  `test_objstore_export_open_uploads.py`.
 - `iceberg_rest_scan` now chooses a vended storage credential for each file it
   reads (#1820). Before, it matched each `storage-credentials` prefix against the
   metadata location only, and that one credential signed every file. So a
