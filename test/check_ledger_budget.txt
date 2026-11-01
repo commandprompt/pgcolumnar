@@ -66,4 +66,4 @@ suites_not_covered 21
 #   carried until then, 7200 lines of it, is in git:
 #
 #       git show 30464796:test/check_ledger_budget.txt
-checks_never_observed_red 4769
+checks_never_observed_red 4770
