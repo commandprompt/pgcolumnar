@@ -208,7 +208,10 @@ pgc_drop_inherited_locks() {
 	for f in /proc/"$BASHPID"/fdinfo/[0-9]*; do
 		n="${f##*/}"
 		[ "$n" -gt 2 ] 2>/dev/null || continue
-		taker="$(sed -nE 's/^lock:.*FLOCK +[A-Z]+ +[A-Z]+ +([0-9]+) .*/\1/p' "$f" 2>/dev/null | head -1)"
+		# The list includes the descriptor the glob itself read the directory
+		# through, which is closed by now, so a read can fail. Under set -e and
+		# pipefail that failure ended the caller's shell (review of #1928).
+		taker="$(sed -nE 's/^lock:.*FLOCK +[A-Z]+ +[A-Z]+ +([0-9]+) .*/\1/p' "$f" 2>/dev/null | head -1)" || taker=""
 		[ -n "$taker" ] && [ "$taker" != "$BASHPID" ] && [ -d "/proc/$taker" ] || continue
 		eval "exec $n>&-"
 	done

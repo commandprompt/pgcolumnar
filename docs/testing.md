@@ -606,24 +606,30 @@ This section is for anyone who runs suites on a machine that others also use.
 It assumes that runs are serialised with a lock file and `flock(1)`. Several
 sessions then build and install into the same `/usr/local/<prefix>/lib`.
 
-Do these three things:
+Do these four things:
 
 1. Build, install and test in one lock hold. Run the suite without
    `PGC_SKIP_BUILD`, or run the whole sequence inside one `flock` command.
-2. Start a server by hand with `flock -o <lock> <command>`. Without `-o`, the
+2. Take the lock with `flock <lock> bash test/smoke.sh`. Do not take it on a
+   descriptor, as in `( flock 9; bash test/smoke.sh ) 9>lock` or
+   `exec 9>lock; flock 9`. In those forms the suite holds the only copy of the
+   descriptor, so the harness cannot close it. Every server the suite starts
+   then holds the lock until the server stops.
+3. Start a server by hand with `flock -o <lock> <command>`. Without `-o`, the
    server inherits the lock's descriptor and holds the lock until it stops.
-3. Stop a throwaway cluster before the lock hold ends.
+4. Stop a throwaway cluster before the lock hold ends.
 
 The harness also protects a run (#1915):
 
-- When a suite loads `test/portlib.sh`, it closes every descriptor that holds a
-  lock a live parent process took. The parent keeps its own descriptor, so runs
-  stay serialised, but no server that the suite starts holds the lock. A lock
-  that the suite's own process took stays held.
+- When a suite loads `test/portlib.sh`, it closes every descriptor whose lock
+  another live process took. Under `flock <lock> bash test/smoke.sh`, that process
+  is `flock` itself. It keeps its own descriptor, so runs stay serialised, but
+  no server that the suite starts holds the lock. A lock that the suite's own
+  process took stays held, and so does a lock taken on a descriptor (step 2).
 - `pgc_setup` refuses a library that this tree did not install (#959).
 - `pgc_summary` fails the run when the installed library changed after
   `pgc_setup`. It prints both digests, for example
-  `FAIL  the installed library changed during this run: 44d276203348 at setup, 8777edbdfec1 now`.
+  `FAIL  the installed library changed during this run: 44d276203348 at setup, 8777edbdfec1 now (/usr/local/pgsql/lib/pgcolumnar.so)`.
 - The pytest corpus starts servers through `subprocess`, which closes inherited
   descriptors. Its session teardown raises when the library changed during the
   session.

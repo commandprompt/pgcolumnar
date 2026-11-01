@@ -86,6 +86,14 @@ check_num "another run takes that lock while the postmaster runs" \
 check_num "a lock the harness's own process took stays held" \
 	"$(bash -c "exec 8>'$PGC_WORKDIR/own.lock'; flock 8; . '$HI_LIB'; flock -n '$PGC_WORKDIR/own.lock' true; echo \$?")" "1"
 
+# smoke.sh, audit.sh and phase2-6.sh set -e before they load lib.sh. Under
+# flock the descriptor list that pgc_drop_inherited_locks walks holds an entry
+# that is gone by the time it is read, and a failing read must not end the
+# shell (review of #1928: rc=2 and no output).
+hi_sete="$(flock "$HI_LOCK" bash -c "set -euo pipefail; . '$HI_LIB'; echo sourced" 2>&1; echo "rc=$?")"
+check_text "a set -e suite under flock still loads lib.sh" \
+	"$(tr '\n' ' ' <<<"$hi_sete")" "sourced rc=0 "
+
 # ---- 2. a library replaced during the run fails the run --------------------
 
 check_text "setup records the digest of the library it verified" \

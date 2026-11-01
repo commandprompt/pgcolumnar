@@ -1669,4 +1669,7 @@ guard_tests 858
 # premise; a lock the harness took itself stays held; the session records its library digest; a
 # replaced library is reported; a run whose library changed fails), by collection: 5206 tests collected
 # for the cluster half, guard_tests 858 unchanged.
-cluster_tests 5206
+# cluster_tests 5206 -> 5207 for #1915's review fix in test_harness_isolation.py (a set -e suite
+# under flock still loads lib.sh), by collection: 5207 tests collected for the cluster half, guard_tests
+# 858 unchanged.
+cluster_tests 5207

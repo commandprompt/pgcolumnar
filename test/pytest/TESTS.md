@@ -13919,7 +13919,7 @@ Every test reads one value from a module fixture that runs the whole scenario on
 
 ## 354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine
 
-The twin of `test/harness_isolation.sh` (#1915), every check by the shell's name. A cluster that this harness starts in a process run under `flock(1)` must not hold the lock after that process exits, and another run must be able to take the lock while the cluster runs. A control shows that a plain child under `flock` does hold it, so the measurement can see a leak. A lock the harness's own process took must stay held. The session must record the library digest it starts with, a copy of the library changed after that must be reported with both digests, and `require_library_unchanged` must raise so the session ends failed. The library change is made on a copy; the shared library is never touched.
+The twin of `test/harness_isolation.sh` (#1915), every check by the shell's name. A cluster that this harness starts in a process run under `flock(1)` must not hold the lock after that process exits, and another run must be able to take the lock while the cluster runs. A control shows that a plain child under `flock` does hold it, so the measurement can see a leak. A lock the harness's own process took must stay held while the harness starts a cluster, and that cluster must not hold it. A shell suite that sets `set -e` before it loads lib.sh must still load it under `flock`; this one check drives lib.sh. The session must record the library digest it starts with, a copy of the library changed after that must be reported with both digests, and `require_library_unchanged` must raise so the session ends failed. The library change is made on a copy; the shared library is never touched.
 
 ### Every test
 
@@ -13930,6 +13930,7 @@ The twin of `test/harness_isolation.sh` (#1915), every check by the shell's name
 | `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | a postmaster started under a held lock holds no descriptor on it |
 | `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | another run takes that lock while the postmaster runs |
 | `test_a_lock_the_harness_took_itself_stays_held` | a lock the harness's own process took stays held |
+| `test_a_set_e_suite_under_flock_still_loads_lib_sh` | a set -e suite under flock still loads lib.sh |
 | `test_the_session_records_the_library_it_runs` | setup records the digest of the library it verified |
 | `test_a_replaced_library_is_reported` | an unchanged library is not reported |
 | `test_a_replaced_library_is_reported` | a library replaced after setup is reported with both digests |

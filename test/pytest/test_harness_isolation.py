@@ -14,7 +14,8 @@ Two hazards from the shared dev container:
    digest changed (`require_library_unchanged`), so the run ends failed. The
    replacement is made on a copy; the shared library is never touched.
 
-The Python harness's own machinery throughout; it does not source lib.sh.
+The Python harness's own machinery throughout, except one check: a set -e shell
+suite must still load lib.sh under flock, and only lib.sh can show that.
 """
 import fcntl
 import os
@@ -106,10 +107,36 @@ def test_a_cluster_started_under_a_held_lock_does_not_hold_it(pgc_cluster, lock,
         shutil.rmtree(root, ignore_errors=True)
 
 
-def test_a_lock_the_harness_took_itself_stays_held(lock, expect):
+def test_a_lock_the_harness_took_itself_stays_held(pgc_cluster, lock, expect):
+    """The test's own process takes the lock, then starts a cluster through the
+    harness. Starting a server must neither release that lock nor pass it on: a
+    harness change that closed or unlocked descriptors in-process, or let the
+    server inherit them, turns this red. Review of #1928: the check used to call
+    no harness code, so no harness change could redden it."""
     with open(lock, "w") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
-        expect.num(_lock_free(lock), 1, "a lock the harness's own process took stays held")
+        cluster, root = pc.make_cluster(pgc_cluster.pg_config, None)
+        try:
+            held, total = _fds_on(_postmaster_pid(cluster.datadir), lock)
+            expect.text(f"lock free={_lock_free(lock)}, postmaster holds {held} of {total}",
+                        # max(): a postmaster this cannot see (0 of 0) is a failure.
+                        f"lock free=1, postmaster holds 0 of {max(total, 1)}",
+                        "a lock the harness's own process took stays held")
+        finally:
+            cluster.stop()
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def test_a_set_e_suite_under_flock_still_loads_lib_sh(lock, expect):
+    """The one check here that drives lib.sh: the defect lives in the shell harness,
+    and the shell suites that set -e before they load it (smoke.sh, audit.sh,
+    phase2-6.sh) have no Python counterpart to stand in for them."""
+    proc = subprocess.run(
+        ["flock", str(lock), "bash", "-c",
+         f"set -euo pipefail; . '{HERE.parent / 'lib.sh'}'; echo sourced"],
+        capture_output=True, text=True)
+    got = " ".join((proc.stdout + proc.stderr).split() + [f"rc={proc.returncode}"])
+    expect.text(got, "sourced rc=0", "a set -e suite under flock still loads lib.sh")
 
 
 def test_the_session_records_the_library_it_runs(pgc_cluster, expect):
