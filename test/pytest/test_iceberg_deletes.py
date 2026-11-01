@@ -12,7 +12,7 @@ recorded root differs from where it lies.
 Asserted: position deletes, sequence ordering and inheritance, per-file scoping, the
 ordinal-0 control; equality deletes (the strict boundary, multi-column AND, extra
 columns, null matching, unions, mixed with position deletes, unprojected columns);
-partition-scoped equality deletes; thirteen corrupt or unsupported snapshots refused,
+partition-scoped equality deletes; fifteen corrupt or unsupported snapshots refused,
 each by its own guard; and no backend dies on the way. A second warehouse
 (warehouse_posmany, #1868) has 32 data files and 106 position-delete rows: its arms
 check the survivors against the oracle and read the scan's DEBUG1 lines, which must
@@ -60,6 +60,7 @@ EQ_APPLIED = ("eqapply", "eqboundary", "eqmulti", "eqextra", "eqnull", "eqtwo", 
 PHRASE = {
     "nullpos": "has a null pos",
     "negpos": "has a negative pos",
+    "posorc": "has format ORC; only PARQUET position deletes are supported",
     "eqnoids": "has no equality_ids",
     "eqpart_datanospec": "carries no partition_spec_id, which a partition-scoped",
     "eqpart_incomparable": "has a partition tuple this reader cannot compare",
@@ -67,6 +68,7 @@ PHRASE = {
     "eqmissing": "no Parquet column has field id",
     "eqescape": "is not under the table location",
     "eqdotdot": "escapes the table location",
+    "eqavro": "has format AVRO; only PARQUET equality deletes are supported",
     "eqbigid": "corrupt Avro manifest entry",
     "eqnospec": "the manifest list carries no partition_spec_id",
     "eqnofields": "has no fields array",
@@ -318,6 +320,9 @@ def dl(pgc_cluster, server_dir):
         r["up after negpos"] = _survived(dsn, pgc_cluster, before)
         r["zeropos"] = _read(dsn, ids("zeropos"))
         before = _crashes(pgc_cluster)
+        r["posorc"] = _refusal(dsn, scan("posorc"), PHRASE["posorc"])
+        r["up after posorc"] = _survived(dsn, pgc_cluster, before)
+        before = _crashes(pgc_cluster)
         for name in EQ_APPLIED:
             r[name] = _read(dsn, ids(name))
             if name == "eqnull":
@@ -344,6 +349,7 @@ def dl(pgc_cluster, server_dir):
         r["eqescape"] = _refusal(dsn, scan("eqescape"), PHRASE["eqescape"])
         r["eqescape names"] = _names(dsn, scan("eqescape"), "table location")
         r["eqdotdot"] = _refusal(dsn, scan("eqdotdot"), PHRASE["eqdotdot"])
+        r["eqavro"] = _refusal(dsn, scan("eqavro"), PHRASE["eqavro"])
         r["up after eq refusals"] = _survived(dsn, pgc_cluster, before)
         before = _crashes(pgc_cluster)
         r["eqbigid"] = _refusal(dsn, scan("eqbigid"), PHRASE["eqbigid"])
@@ -534,6 +540,20 @@ def test_a_position_delete_of_ordinal_zero_deletes_the_first_row(dl, expect):
                 "a position delete of ordinal 0 deletes the first row (id 1 gone, 4 remain)")
 
 
+def test_a_non_parquet_position_delete_file_is_refused(dl, expect):
+    """#1873: the delete is the real posdel.parquet recorded as ORC; without the refusal
+    it is parsed as Parquet and the scan silently returns 3 rows."""
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["posorc"]), "0A000", "a non-Parquet position-delete file is refused (0A000, only PARQUET)")
+
+
+def test_the_backend_survives_the_non_parquet_position_delete_refusal(dl, expect):
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["up after posorc"]), "1", "backend still up after the non-Parquet position-delete refusal")
+
+
 # ---- equality deletes --------------------------------------------------------------
 
 def test_an_equality_delete_drops_matching_rows(dl, expect):
@@ -716,6 +736,14 @@ def test_a_dotdot_escaping_delete_path_is_refused(dl, expect):
     if _declined(dl, expect):
         return
     expect.text(str(dl["eqdotdot"]), "22023", "a dotdot-escaping delete path is refused (22023)")
+
+
+def test_a_non_parquet_equality_delete_file_is_refused(dl, expect):
+    """#1873: the delete is the real eqdel-id.parquet recorded as AVRO; without the
+    refusal it is parsed as Parquet and ids 2 and 4 vanish with no error."""
+    if _declined(dl, expect):
+        return
+    expect.text(str(dl["eqavro"]), "0A000", "a non-Parquet equality-delete file is refused (0A000, only PARQUET)")
 
 
 def test_the_backend_survives_the_equality_refusals(dl, expect):

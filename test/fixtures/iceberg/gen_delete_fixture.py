@@ -175,18 +175,20 @@ schema = {"schema-id": 0, "type": "struct", "fields": [
     {"id": 3, "name": "amount", "required": False, "type": "int"}]}
 
 
-def emit_variant(tag, del_content, del_seq, entry_seq="explicit", del_file=DEL_PATH):
+def emit_variant(tag, del_content, del_seq, entry_seq="explicit", del_file=DEL_PATH,
+                 fmt="PARQUET"):
     """Write a (delete manifest, manifest list, metadata) triple: a delete file
     of the given data_file content (1 position, 2 equality) at data sequence
     number del_seq, over the shared data manifest (content 0, seq 1). entry_seq
     "explicit" writes del_seq on the entry; None leaves it null so the reader must
     inherit del_seq from the manifest_file in the manifest list. del_file is the
-    position-delete Parquet the entry points at."""
+    position-delete Parquet the entry points at, and fmt the file_format the
+    entry records for it."""
     xm_name = f"delete-manifest-{tag}.avro"
     ml_name = f"manifest-list-{tag}.avro"
     eseq = del_seq if entry_seq == "explicit" else None
     open(os.path.join(md, xm_name), "wb").write(
-        ocf(ENTRY_SCHEMA, entry(1, eseq, del_content, del_file, "PARQUET",
+        ocf(ENTRY_SCHEMA, entry(1, eseq, del_content, del_file, fmt,
                                 len(DELETED_POS), 500)))
     xm = f"{LOC}/metadata/{xm_name}"
     sync = b"\x00" * 16
@@ -229,6 +231,11 @@ emit_variant("nullpos", 1, DATA_SEQ, del_file=NULLPOS_PATH)
 emit_variant("negpos",  1, DATA_SEQ, del_file=NEGPOS_PATH)
 # pos == 0 is valid (deletes the first row); proves the guard is `< 0`, not `<= 0`.
 emit_variant("zeropos", 1, DATA_SEQ, del_file=ZEROPOS_PATH)
+# #1873: the apply arm's position delete, recorded as file_format ORC. The file it
+# names is the real posdel.parquet, so a reader that dropped the format refusal
+# would parse it as Parquet and silently delete ids 2 and 4 (3 rows, no error);
+# the refusal (0A000, "only PARQUET position deletes") is the only right answer.
+emit_variant("posorc", 1, DATA_SEQ, fmt="ORC")
 
 # spec violation: an EXISTING (status 0) data entry with a NULL sequence number.
 # The spec inherits a null sequence number only for ADDED (status 1) entries; on
@@ -369,14 +376,15 @@ open(os.path.join(md, "data-manifest-2.avro"), "wb").write(
 
 
 def emit_eq_variant(tag, delete_entries, with_data2=False, del_spec_id=0,
-                    extra_data=()):
+                    fmt="PARQUET", extra_data=()):
     """delete_entries: list of (content, seq, path, eq_ids, nrows). One delete
     manifest holds them all; the manifest list points at the shared data
-    manifest(s) plus that delete manifest (partition_spec_id del_spec_id).
+    manifest(s) plus that delete manifest (partition_spec_id del_spec_id). fmt is
+    the file_format every delete entry records.
     extra_data: further (data manifest path, row count) pairs at DATA_SEQ."""
     xm_name = f"delete-manifest-{tag}.avro"
     ml_name = f"manifest-list-{tag}.avro"
-    recs = [entry_eq(1, seq, content, path, "PARQUET", nrows, 500, eq_ids)
+    recs = [entry_eq(1, seq, content, path, fmt, nrows, 500, eq_ids)
             for (content, seq, path, eq_ids, nrows) in delete_entries]
     open(os.path.join(md, xm_name), "wb").write(ocf_multi(ENTRY_SCHEMA_EQ, recs))
     xm = f"{LOC}/metadata/{xm_name}"
@@ -502,6 +510,10 @@ emit_eq_variant("eqnoids", [(2, EQ_SEQ, EQ_ID, None, 2)])
 #   content=2 with null equality_ids is corrupt metadata (spec: required)
 emit_eq_variant("eqpart", [(2, EQ_SEQ, EQ_ID, [1], 2)], del_spec_id=1)
 #   a partition-scoped equality delete: refused (globalizing it over-deletes)
+emit_eq_variant("eqavro", [(2, EQ_SEQ, EQ_ID, [1], 2)], fmt="AVRO")
+#   #1873: eqapply's delete recorded as file_format AVRO. The file is the real
+#   eqdel-id.parquet, so a reader without the format refusal would parse it as
+#   Parquet and silently drop ids 2 and 4; it must refuse instead (0A000)
 emit_eq_variant("eqtype", [(2, EQ_SEQ, EQ_ID, [8], 2)])
 #   field 8 is a timestamp: no supported mapping, refused before any file opens
 emit_eq_variant("eqmissing", [(2, EQ_SEQ, EQ_NINE, [9], 1)])

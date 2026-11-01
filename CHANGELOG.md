@@ -264,6 +264,13 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` now check that a delete
+  file in a format other than Parquet is refused with SQLSTATE 0A000 (#1873). One
+  snapshot records its position-delete file as ORC and another records its
+  equality-delete file as AVRO. Both files are really Parquet, so a reader
+  without the refusal would read them and drop rows with no error. Before, the
+  two refusals could be removed with every check still green.
+  `gen_delete_fixture.py` writes the two snapshots.
 - `iceberg_scan` finds each data file's position deletes through an index
   built once per scan (#1868). It used to walk every position-delete row for
   each data file, so the work grew with data files times delete rows. The rows
