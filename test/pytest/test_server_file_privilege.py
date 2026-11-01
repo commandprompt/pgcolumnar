@@ -35,7 +35,10 @@ DETACH = "42501: must be owner of table sfp_parent"
 ENDPOINT = '42501: columnar: endpoint "127.0.0.1:1" is not in pgcolumnar.objstore_allowed_endpoints'
 PAST = {"export_parquet": None, "export_arrow": None, "parallel_export_parquet": None,
         "tier_partition": DETACH, "iceberg_rest_table_location": ENDPOINT, "iceberg_rest_scan": ENDPOINT,
-        "iceberg_rest_namespaces": ENDPOINT, "iceberg_rest_tables": ENDPOINT}
+        "iceberg_rest_namespaces": ENDPOINT, "iceberg_rest_tables": ENDPOINT,
+        # the text[] namespace forms and the level listing (#1865)
+        "iceberg_rest_table_location_text_array": ENDPOINT, "iceberg_rest_scan_text_array": ENDPOINT,
+        "iceberg_rest_namespace_levels": ENDPOINT, "iceberg_rest_tables_text_array": ENDPOINT}
 
 ENTRIES = [  # label, the server-file role it must be gated by, the call
     ("import_parquet", "pg_read_server_files", "SELECT pgcolumnar.import_parquet('imp_target'::regclass, '{nope}')"),
@@ -58,6 +61,10 @@ ENTRIES = [  # label, the server-file role it must be gated by, the call
     ("iceberg_rest_scan", "pg_read_server_files", "SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:1', 'db', 't') AS t(id bigint)"),
     ("iceberg_rest_namespaces", "pg_read_server_files", "SELECT * FROM pgcolumnar.iceberg_rest_namespaces('http://127.0.0.1:1')"),
     ("iceberg_rest_tables", "pg_read_server_files", "SELECT * FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:1', 'db')"),
+    ("iceberg_rest_table_location_text_array", "pg_read_server_files", "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:1', ARRAY['db'], 't')"),
+    ("iceberg_rest_scan_text_array", "pg_read_server_files", "SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:1', ARRAY['db'], 't') AS t(id bigint)"),
+    ("iceberg_rest_namespace_levels", "pg_read_server_files", "SELECT * FROM pgcolumnar.iceberg_rest_namespace_levels('http://127.0.0.1:1')"),
+    ("iceberg_rest_tables_text_array", "pg_read_server_files", "SELECT * FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:1', ARRAY['db'])"),
     ("iceberg_fdw_scan", "pg_read_server_files", "SELECT * FROM ift"),
 ]
 REFUSED = [  # name, label: the role with nothing is refused by the gate
@@ -81,6 +88,10 @@ REFUSED = [  # name, label: the role with nothing is refused by the gate
     ("no role is refused by the pg_read_server_files gate: iceberg_rest_scan", "iceberg_rest_scan"),
     ("no role is refused by the pg_read_server_files gate: iceberg_rest_namespaces", "iceberg_rest_namespaces"),
     ("no role is refused by the pg_read_server_files gate: iceberg_rest_tables", "iceberg_rest_tables"),
+    ("no role is refused by the pg_read_server_files gate: iceberg_rest_table_location_text_array", "iceberg_rest_table_location_text_array"),
+    ("no role is refused by the pg_read_server_files gate: iceberg_rest_scan_text_array", "iceberg_rest_scan_text_array"),
+    ("no role is refused by the pg_read_server_files gate: iceberg_rest_namespace_levels", "iceberg_rest_namespace_levels"),
+    ("no role is refused by the pg_read_server_files gate: iceberg_rest_tables_text_array", "iceberg_rest_tables_text_array"),
     ("no role is refused by the pg_read_server_files gate: iceberg_fdw_scan", "iceberg_fdw_scan"),
 ]
 PASSED = [  # name, label: the role holding both server-file roles gets past it
@@ -104,6 +115,10 @@ PASSED = [  # name, label: the role holding both server-file roles gets past it
     ("the pg_read_server_files role gets past the gate: iceberg_rest_scan", "iceberg_rest_scan"),
     ("the pg_read_server_files role gets past the gate: iceberg_rest_namespaces", "iceberg_rest_namespaces"),
     ("the pg_read_server_files role gets past the gate: iceberg_rest_tables", "iceberg_rest_tables"),
+    ("the pg_read_server_files role gets past the gate: iceberg_rest_table_location_text_array", "iceberg_rest_table_location_text_array"),
+    ("the pg_read_server_files role gets past the gate: iceberg_rest_scan_text_array", "iceberg_rest_scan_text_array"),
+    ("the pg_read_server_files role gets past the gate: iceberg_rest_namespace_levels", "iceberg_rest_namespace_levels"),
+    ("the pg_read_server_files role gets past the gate: iceberg_rest_tables_text_array", "iceberg_rest_tables_text_array"),
     ("the pg_read_server_files role gets past the gate: iceberg_fdw_scan", "iceberg_fdw_scan"),
 ]
 COVERED = [  # name, function

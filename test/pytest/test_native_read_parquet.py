@@ -103,6 +103,19 @@ def _refusal(dsn, sql, phrase, label, settings=()):
     return f"no error ({first})"
 
 
+def _error(dsn, sql):
+    """-> the primary message of the error `sql` raised, or "no error (<first row>)"."""
+    _up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        return exc.diag.message_primary or ""
+    return f"no error ({row})"
+
+
 def _crashes(cluster):
     try:
         text = (cluster.datadir / "server.log").read_text(errors="replace")
@@ -157,6 +170,15 @@ def rp(pgc_cluster, server_dir):
                                   "c_ts timestamp)",
                              'physical type is not compatible with target column "c_i4"',
                              " by the physical-type guard")
+        # ---- a type refusal names the function that was called (#1871) ----
+        money_cols = ("c_i2 money, c_i4 int4, c_i8 int8, c_f4 float4, c_f8 float8, c_bool bool, "
+                      "c_text text, c_bytea bytea, c_date date, c_time time, c_ts timestamp")
+        r["money rp"] = _error(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{scalar}') AS t({money_cols})")
+        _run(dsn, f"CREATE TABLE imp_money ({money_cols}) USING pgcolumnar")
+        r["money imp"] = _error(dsn, f"SELECT pgcolumnar.import_parquet('imp_money', '{scalar}')")
+        _run(dsn, "CREATE SERVER rp_pq FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        _run(dsn, f"CREATE FOREIGN TABLE f_money ({money_cols}) SERVER rp_pq OPTIONS (path '{scalar}')")
+        r["money fdw"] = _error(dsn, "SELECT * FROM f_money")
         bad.write_text("not parquet")
         bad.chmod(0o644)
         r["bad"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{bad}') AS t(a int)",
@@ -267,6 +289,22 @@ def test_fewer_declared_columns_than_the_file_is_refused(rp, expect):
 
 def test_an_incompatible_declared_type_is_refused(rp, expect):
     expect.text(rp["type"], "42804 by the physical-type guard", "reject incompatible declared type")
+
+
+def test_read_parquet_type_refusal_names_read_parquet(rp, expect):
+    expect.text(rp["money rp"], 'column "c_i2" has type money, which pgcolumnar.read_parquet does not support',
+                "read_parquet's type refusal names read_parquet")
+
+
+def test_import_parquet_type_refusal_names_import_parquet(rp, expect):
+    expect.text(rp["money imp"], 'column "c_i2" has type money, which pgcolumnar.import_parquet does not support',
+                "import_parquet's type refusal names import_parquet")
+
+
+def test_parquet_foreign_table_type_refusal_names_the_wrapper(rp, expect):
+    expect.text(rp["money fdw"], 'column "c_i2" has type money, which the pgcolumnar_parquet foreign-data wrapper '
+                                 'does not support',
+                "a Parquet foreign table's type refusal names the foreign-data wrapper")
 
 
 def test_a_file_that_is_not_parquet_is_refused(rp, expect):
