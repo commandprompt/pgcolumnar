@@ -339,7 +339,9 @@
 # list judged on the controller only, by collection over NO_CLUSTER.
 # guard_tests 857 -> 858 for #1892's test_the_unrunnable_collector_registers_without_xdist in
 # test_layer.py (review of PR #1905), by collection over NO_CLUSTER.
-guard_tests 858
+# guard_tests 858 -> 860 for #1914's two tests in test_layer.py: a listed test that fails, and one lost to
+# a crashed xdist worker, is not a stale row, by collection over NO_CLUSTER.
+guard_tests 860
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1599,10 +1601,12 @@ guard_tests 858
 # documented filter on a default-separator catalog), by collection: `5787 tests collected`, minus 854.
 # cluster_tests 5092 -> 5104 for #1866's and #1867's twelve tests: eight in test_objstore_http_read.py (the
 # pin turned off, the versioned read, the Content-Range length check) and four in test_objstore_s3_read.py
-# (the signed versioned read), by collection: `4916 tests collected`.
+# (the signed versioned read). Counted on the #1866 branch at e95dfa9f, before merge 2f16839d renumbered
+# this line: the cluster files collected 4916 there (4904 -> 4916, the same twelve). #1919 corrects this.
 # cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
-# premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
-# collection: 5776 tests collected, less guard_tests 854.
+# premise, no version with the pin off, the null and over-long version ids, the 403 fallback). Counted on
+# the #1866 branch at 37b4dcbe, before merge 2f16839d renumbered this line: 5776 tests collected, less
+# guard_tests 854, is 4922 (4916 -> 4922, the same six). #1919 corrects this.
 # cluster_tests 4962 -> 4976 for #1902: nine tests in test_objstore_error_advice.py (the https
 # fixture premise and eight Expect: 100-continue arms) and five in test_objstore_listing.py (a
 # premise and four refusals that name the mismatched object), by collection: `4976 tests collected`.
