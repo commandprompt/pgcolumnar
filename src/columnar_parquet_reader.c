@@ -1938,7 +1938,9 @@ pq_source_open_cfg(const char *path, PqSource *src, PqFile *pf,
 		 */
 		src->winCtx = CurrentMemoryContext;
 		src->api = api;
-		src->priv = (void *) api->open(path, cfg, &src->len);
+		/* the vended credential for THIS object (#1820), or a refusal */
+		src->priv = (void *) api->open(path, PgColumnarObjStoreConfigFor(cfg, path),
+									   &src->len);
 		src->ops = &pq_remote_ops;
 	}
 	else
@@ -3525,7 +3527,8 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		else
 			listUrl = pstrdup(path);
 
-		keys = api->list_objects(listUrl, cfg, &nkeys);
+		keys = api->list_objects(listUrl, PgColumnarObjStoreConfigFor(cfg, listUrl),
+								 &nkeys);
 		for (i = 0; i < nkeys; i++)
 		{
 			if (!pq_has_parquet_ext(keys[i]))
