@@ -3974,6 +3974,10 @@ pq_read_rows(PqFile *pf, PqSource *src,
 
 							if (d == (uint32) l->max_def)
 							{
+								/*
+								 * deleted is always false here: only the field-id readers pass
+								 * skipPos, and they bind scalars only (#1874).
+								 */
 								elems[k] = pq_take_value(l, !deleted);
 								enulls[k] = false;
 							}
@@ -4021,6 +4025,10 @@ pq_read_rows(PqFile *pf, PqSource *src,
 							structNull = true;	/* every field agrees */
 						if (d == (uint32) l->max_def)
 						{
+							/*
+							 * deleted is always false here: only the field-id readers pass
+							 * skipPos, and they bind scalars only (#1874).
+							 */
 							fv[a] = pq_take_value(l, !deleted);
 							fn[a] = false;
 						}
