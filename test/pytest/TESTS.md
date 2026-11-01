@@ -10758,7 +10758,7 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 
 ## 270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must
 
-The twin of `test/iceberg_deletes.sh`. Hand-crafted snapshots exercise position deletes (the <= sequence rule, inheritance, per-file scoping, ordinal 0), equality deletes (the strict < rule, multi-column AND, nulls, unions, mixed with position deletes) and partition-scoped equality deletes, against the generator's oracle; thirteen corrupt or unsupported snapshots are refused, each by its own guard, and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies.
+The twin of `test/iceberg_deletes.sh`. Hand-crafted snapshots exercise position deletes (the <= sequence rule, inheritance, per-file scoping, ordinal 0), equality deletes (the strict < rule, multi-column AND, nulls, unions, mixed with position deletes) and partition-scoped equality deletes, against the generator's oracle; thirteen corrupt or unsupported snapshots are refused, each by its own guard, and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies. A second warehouse, `warehouse_posmany` (#1868), has 32 data files and 106 position-delete rows in mixed `file://` and bare spellings; its arms read the scan's DEBUG1 lines and require one index build, and per data file one group-key comparison and only the rows naming that file.
 
 ### Every test
 
@@ -10815,6 +10815,12 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_the_backend_survives_the_delete_audit_arms` | backend still up after the audit arms |
 | `test_an_existing_entry_with_a_null_sequence_number_is_refused` | an EXISTING entry with a null sequence number is refused (XX001) |
 | `test_the_backend_survives_the_bad_sequence_refusal` | backend still up after the bad-sequence refusal |
+| `test_the_many_file_position_delete_table_has_its_rows` | premise: the many-file position-delete table holds 256 rows in 32 data files before deletes |
+| `test_position_deletes_over_many_files_match_the_oracle` | position deletes over 32 data files drop exactly the oracle's rows (survivors == oracle, #1868) |
+| `test_ordinal_zero_in_the_other_spelling_is_dropped_from_every_file` | ordinal 0, named in the other path spelling (file:// vs bare), is dropped from all 32 data files (#1868) |
+| `test_an_s3_spelled_delete_row_does_not_apply_to_a_local_file` | a delete row naming a data file under s3:// does not apply to the local file (#1868) |
+| `test_each_data_file_visits_only_its_own_position_deletes` | each data file visits only the position-delete rows naming it, not every row (#1868) |
+| `test_the_position_delete_index_is_built_once_per_scan` | the position-delete index is built once per scan, one group per normalized path (#1868) |
 
 ## 271. test_logical_subscriber.py: columnar as a logical replication apply target
 

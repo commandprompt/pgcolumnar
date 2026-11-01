@@ -28,6 +28,7 @@
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
+#include "common/hashfn.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -36,6 +37,7 @@
 #include "utils/builtins.h"
 #include "executor/tuptable.h"
 #include "utils/datum.h"
+#include "utils/hsearch.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -2165,6 +2167,120 @@ typedef struct IcePosDel
 	int64		seq;
 }			IcePosDel;
 
+/*
+ * The position-delete rows grouped by the data file they name (#1868). The scan
+ * builds this once, so each data file looks up its own rows instead of walking
+ * every row: the walk cost data files x position-delete rows.
+ *
+ * A group's key is ice_strip_scheme() of the row's file_path, the same form the
+ * data file's path is reduced to before the lookup, so two paths share a group
+ * exactly when the old strcmp of their ice_strip_scheme() forms called them
+ * equal: file:///a and /a share one, s3:///a and /a do not. The table is keyed
+ * by a 64-bit hash of that key, and a bucket keeps one group per distinct key,
+ * so a collision never merges two data files' rows.
+ */
+typedef struct IcePosGroup
+{
+	const char *key;			/* ice_strip_scheme(file_path) */
+	List	   *rows;			/* IcePosDel *, in read order */
+}			IcePosGroup;
+
+typedef struct IcePosBucket
+{
+	uint64		hash;			/* the key; must be first */
+	List	   *groups;			/* IcePosGroup *, one per distinct key */
+}			IcePosBucket;
+
+static uint64
+ice_posdel_hash(const char *key)
+{
+	return hash_bytes_extended((const unsigned char *) key, (int) strlen(key), 0);
+}
+
+/* index posdels by data-file path, in the current memory context; NULL when
+ * there are no rows */
+static HTAB *
+ice_index_pos_deletes(List *posdels)
+{
+	HASHCTL		ctl;
+	HTAB	   *idx;
+	ListCell   *lc;
+	long		ngroups = 0;
+
+	if (posdels == NIL)
+		return NULL;
+	memset(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(uint64);
+	ctl.entrysize = sizeof(IcePosBucket);
+	ctl.hcxt = CurrentMemoryContext;
+	idx = hash_create("pgcolumnar iceberg_scan position deletes",
+					  list_length(posdels), &ctl,
+					  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	foreach(lc, posdels)
+	{
+		IcePosDel  *pd = (IcePosDel *) lfirst(lc);
+		const char *key = ice_strip_scheme(pd->dpath);
+		uint64		h = ice_posdel_hash(key);
+		IcePosBucket *b;
+		IcePosGroup *g = NULL;
+		bool		found;
+		ListCell   *lc2;
+
+		b = (IcePosBucket *) hash_search(idx, &h, HASH_ENTER, &found);
+		if (!found)
+			b->groups = NIL;
+		foreach(lc2, b->groups)
+		{
+			IcePosGroup *cand = (IcePosGroup *) lfirst(lc2);
+
+			if (strcmp(cand->key, key) == 0)
+			{
+				g = cand;
+				break;
+			}
+		}
+		if (g == NULL)
+		{
+			g = (IcePosGroup *) palloc(sizeof(IcePosGroup));
+			g->key = key;
+			g->rows = NIL;
+			b->groups = lappend(b->groups, g);
+			ngroups++;
+		}
+		g->rows = lappend(g->rows, pd);
+	}
+	/* the index's size, for tests and diagnosis (#1868) */
+	elog(DEBUG1, "pgcolumnar iceberg_scan position-delete index: rows=%d paths=%ld",
+		 list_length(posdels), ngroups);
+	return idx;
+}
+
+/* the position-delete rows naming the data file whose stripped path is dp;
+ * *compared counts the group keys compared on the way, for the DEBUG1 line */
+static List *
+ice_pos_deletes_for(HTAB *idx, const char *dp, int *compared)
+{
+	uint64		h;
+	IcePosBucket *b;
+	ListCell   *lc;
+
+	if (idx == NULL)
+		return NIL;
+	h = ice_posdel_hash(dp);
+	b = (IcePosBucket *) hash_search(idx, &h, HASH_FIND, NULL);
+	if (b == NULL)
+		return NIL;
+	foreach(lc, b->groups)
+	{
+		IcePosGroup *g = (IcePosGroup *) lfirst(lc);
+
+		(*compared)++;
+		if (strcmp(g->key, dp) == 0)
+			return g->rows;
+	}
+	return NIL;
+}
+
 /* iceberg_scan collects the current snapshot's entries first (data and
  * position-delete files), then reads the data files applying the deletes. */
 typedef struct IceScanCtx
@@ -2977,6 +3093,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 	int		   *field_ids;
 	int			nfield;
 	List	   *posdels;
+	HTAB	   *posidx;
 	List	   *dvdels;
 	List	   *eqdels;
 	ListCell   *lc;
@@ -3017,6 +3134,7 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 	 * an unpartitioned spec, mappable column types -- while a delete no data
 	 * file is strictly older than is skipped as having no effect) */
 	posdels = ice_read_pos_deletes(&ctx);
+	posidx = ice_index_pos_deletes(posdels);
 	{
 		int64		fmtver = 0;
 		int64		min_data_seq = PG_INT64_MAX;
@@ -3086,6 +3204,9 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 		 * fold all existing position deletes into it. */
 		{
 			bool		dv_applies = false;
+			int			pd_visited = 0;
+			int			pd_applied = 0;
+			int			pd_compared = 0;
 
 			foreach(lc2, dvdels)
 			{
@@ -3115,15 +3236,17 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 			 * to data written in the same commit or earlier), so the
 			 * comparison is >=, not > -- an equal sequence number (a
 			 * single-commit upsert) still applies. Equality deletes use
-			 * strict < instead. Skipped entirely when a DV applies. */
+			 * strict < instead. Skipped entirely when a DV applies. Only the
+			 * rows naming this file are visited, through the index (#1868). */
 			if (!dv_applies)
-				foreach(lc2, posdels)
+				foreach(lc2, ice_pos_deletes_for(posidx, dp, &pd_compared))
 				{
 					IcePosDel  *pd = (IcePosDel *) lfirst(lc2);
 
-					if (pd->seq >= d->seq &&
-						strcmp(ice_strip_scheme(pd->dpath), dp) == 0)
+					pd_visited++;
+					if (pd->seq >= d->seq)
 					{
+						pd_applied++;
 						if (nskip == cap)
 						{
 							cap = cap ? cap * 2 : 16;
@@ -3134,6 +3257,9 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 						skip[nskip++] = (uint64) pd->pos;
 					}
 				}
+			/* the lookup's cost, for tests and diagnosis (#1868) */
+			elog(DEBUG1, "pgcolumnar iceberg_scan position deletes: compared=%d visited=%d applied=%d",
+				 pd_compared, pd_visited, pd_applied);
 		}
 
 		/* equality deletes: STRICTLY newer than the data file only (spec rule
@@ -3227,6 +3353,8 @@ PgColumnarIcebergScanCore(const char *path, TupleDesc tupdesc,
 		list_free(elig);
 	}
 
+	if (posidx != NULL)
+		hash_destroy(posidx);
 	MemoryContextDelete(ctx.filectx);
 	ExecDropSingleTupleTableSlot(ctx.slot);
 	return pruned;

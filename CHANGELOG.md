@@ -259,6 +259,15 @@ true until the next version shipped.
 
 ### Changed
 
+- `iceberg_scan` finds each data file's position deletes through an index
+  built once per scan (#1868). It used to walk every position-delete row for
+  each data file, so the work grew with data files times delete rows. The rows
+  are now grouped by data-file path, after the same `file://` stripping the old
+  comparison used, and each data file reads only its own group. On a table of 32
+  data files and 106 delete rows the scan visits 104 rows, where the walk
+  visited 3392. Two DEBUG1 lines report the index and each lookup.
+  `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` check the counts and
+  the survivors, against a new fixture, `warehouse_posmany`.
 - The ledger budget, `test/check_ledger_budget.txt`, holds only its header and its
   two numbers (#1431). Every PR that changed the ledger used to append its
   derivation above the census line, so any two such PRs conflicted there. The
