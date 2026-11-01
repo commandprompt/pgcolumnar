@@ -3113,6 +3113,18 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
 			if (pf->leaves[lf].max_rep < 1)
 				IMP_FAIL("target column \"%s\" is an array but the Parquet column is not repeated",
 						 NameStr(att->attname));
+
+			/*
+			 * A leaf under two or more repeated levels (a list of lists, a list
+			 * of maps) has no one-dimensional reading: the decode below builds
+			 * one array per row from the outer level and would drop the inner
+			 * list boundaries, [[1], [2, 3]] reading as {1,2,3} (#1917).
+			 * PostgreSQL does not tell int[] from int[][] in a declared type, and
+			 * this reader builds only one-dimensional arrays, so refuse it.
+			 */
+			if (pf->leaves[lf].max_rep > 1)
+				IMP_FAIL("Parquet column for array \"%s\" is nested %d lists deep, but %s reads one list level into an array",
+						 NameStr(att->attname), pf->leaves[lf].max_rep, caller);
 			if (pf->leaves[lf].sc->phys_type != want)
 				IMP_FAIL("Parquet column for array \"%s\" has incompatible physical type",
 						 NameStr(att->attname));

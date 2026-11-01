@@ -534,6 +534,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `read_parquet` and `import_parquet` now refuse a list of lists read into an
+  array column (#1917). Before, they flattened it without an error: the cell
+  `[[1], [2, 3]]` read as `{1,2,3}`. A list of maps flattened the same way. A
+  Parquet leaf under two or more repeated levels now fails with SQLSTATE 42804,
+  and the message gives its depth. PostgreSQL does not tell `int[]` from
+  `int[][]` in a declared type, and the reader builds only one-dimensional
+  arrays, so no column list reads such a leaf. A Parquet foreign table shares
+  the check. docs/limitations.md and
+  docs/sql-reference.md. `test/native_parquet_schema.sh` and
+  `test_native_parquet_schema.py`.
+
 - Two reads of one remote object in one statement now read the same version
   (#1894). Before, each read pinned the version its own HEAD saw. If another
   client overwrote the object between the two reads, a self-join or a

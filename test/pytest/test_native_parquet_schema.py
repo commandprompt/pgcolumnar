@@ -324,6 +324,57 @@ def test_read_parquet_reads_each_nested_file_with_the_reported_column_list(pgc_c
                 "read_parquet reads each nested file with the column list parquet_schema reports (#1893)")
 
 
+# A leaf under two repeated levels read into a one-dimensional array used to flatten:
+# [[1], [2, 3]] read as {1,2,3}, with no error (#1917). The bind now refuses it with
+# 42804. The reading is the SQLSTATE and message, or the rows that came back instead.
+def _nested_refusal(pgc_conn, sql, params):
+    try:
+        with pgc_conn.cursor() as cur:
+            return "read: " + str(_one(cur, sql, params))
+    except psycopg.Error as exc:
+        return f"{exc.diag.sqlstate} {exc.diag.message_primary}"
+
+
+def test_read_parquet_refuses_a_list_of_lists_as_a_one_dimensional_array(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "read_parquet refuses a list of lists declared as a one-dimensional array (#1917)")
+    if w is None:
+        return
+    expect.text(_nested_refusal(pgc_conn, "SELECT string_agg(t::text, ';') FROM "
+                                          "pgcolumnar.read_parquet(%s) AS t(l bigint[], n int)",
+                                (str(w / "lol.parquet"),)),
+                '42804 Parquet column for array "l" is nested 2 lists deep, '
+                'but pgcolumnar.read_parquet reads one list level into an array',
+                "read_parquet refuses a list of lists declared as a one-dimensional array (#1917)")
+
+
+def test_read_parquet_refuses_a_list_of_maps_as_one_dimensional_arrays(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "read_parquet refuses a list of maps declared as one-dimensional arrays (#1917)")
+    if w is None:
+        return
+    expect.text(_nested_refusal(pgc_conn, "SELECT string_agg(t::text, ';') FROM "
+                                          "pgcolumnar.read_parquet(%s) AS t(k text[], v bigint[], n int)",
+                                (str(w / "lmap.parquet"),)),
+                '42804 Parquet column for array "k" is nested 2 lists deep, '
+                'but pgcolumnar.read_parquet reads one list level into an array',
+                "read_parquet refuses a list of maps declared as one-dimensional arrays (#1917)")
+
+
+def test_import_parquet_refuses_a_list_of_lists_for_a_one_dimensional_array(pgc_conn, server_dir, expect):
+    w = _crafted(server_dir, expect, "import_parquet refuses a list of lists for a one-dimensional array column (#1917)")
+    if w is None:
+        return
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE lol_imp (l bigint[], n int) USING pgcolumnar")
+    got = _nested_refusal(pgc_conn, "SELECT pgcolumnar.import_parquet('lol_imp', %s)",
+                          (str(w / "lol.parquet"),))
+    with pgc_conn.cursor() as cur:
+        rows = _one(cur, "SELECT count(*) FROM lol_imp")
+    expect.text(f"{got}|{rows}",
+                '42804 Parquet column for array "l" is nested 2 lists deep, '
+                'but pgcolumnar.import_parquet reads one list level into an array|0',
+                "import_parquet refuses a list of lists for a one-dimensional array column (#1917)")
+
+
 def test_a_required_list_or_struct_is_not_nullable(pgc_conn, server_dir, expect):
     w = _crafted(server_dir, expect, "parquet_schema reports a REQUIRED list or struct as not nullable, "
                                      "an OPTIONAL list as nullable (#1893)")

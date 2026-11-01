@@ -1128,7 +1128,8 @@ named `s.t.list.element`. Give one of them another name in your list.
 
 `data_type` is NULL for a leaf that no column type reads correctly. A leaf under
 two repeated levels, such as the elements of a list of lists, is one example.
-`read_parquet` reads such a leaf declared as an array by flattening it (#1917).
+`read_parquet` refuses such a leaf declared as an array, with SQLSTATE 42804,
+because a one-dimensional array would lose the inner lists (#1917).
 
 `nullable` for a nested column says whether the column itself can be NULL. A
 NULL list element or struct field does not make it true. On a leaf row it is true

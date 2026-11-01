@@ -996,6 +996,10 @@ hosts.
 They support one-dimensional arrays and composite types built from the scalar
 types below, with nulls at every level. Multi-dimensional arrays and types not
 listed are rejected.
+The Parquet readers also refuse a list of lists, or a list of maps, read into an
+array column. The error has SQLSTATE 42804. Such a leaf has two repeated levels,
+and a one-dimensional array holds only one, so a read would lose the inner lists
+(#1917).
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
 | --- | --- | --- | --- | --- |

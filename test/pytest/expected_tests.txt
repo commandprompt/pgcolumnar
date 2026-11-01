@@ -1664,4 +1664,7 @@ guard_tests 858
 # statement after a DO block in one string; the refusal's DETAIL; a versioned overwrite by a longer
 # object; a weak-ETag overwrite that changes the length), by collection: 5981 tests collected, less
 # guard_tests 854.
-cluster_tests 5200
+# cluster_tests 5200 -> 5203 for #1917's three tests in test_native_parquet_schema.py (read_parquet refuses a
+# list of lists and a list of maps declared as one-dimensional arrays; import_parquet refuses a list of lists),
+# by collection: 5203 tests collected in the cluster half, guard half 858.
+cluster_tests 5203

@@ -247,8 +247,8 @@ check_text "read_parquet reads a nested file with the reported names and types (
 # per leaf, an array where the leaf repeats. parquet_schema lists such a column
 # one row per leaf, named by its path in the file, so its rows are the column
 # list read_parquet needs. A leaf under two repeated levels (a list of lists)
-# has no faithful type: read_parquet flattens it into one array, so it reports
-# NULL. craft_parquet_nested.py writes the files, one writer for both twins.
+# has no faithful type: read_parquet refuses it (#1917), so it reports NULL.
+# craft_parquet_nested.py writes the files, one writer for both twins.
 if python3 -I "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_nested.py" "$PGC_WORKDIR"; then
 	schema_rows() {	# schema_rows FILE -> name:type,... in file order
 		q "SELECT string_agg(column_name || ':' || coalesce(data_type, 'NULL'), ',' ORDER BY ord)
@@ -288,6 +288,31 @@ if python3 -I "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_nested.py" "$PGC_WOR
 	check_text "read_parquet reads each nested file with the column list parquet_schema reports (#1893)" \
 		"${read_rows% }" \
 		'map=("{k,j}","{1,2}",1);({z},{3},2) los=({1},{a},1);("{2,3}","{b,c}",2) lofs=("{1,2}",1);({3},2) shl=("{1,2}",1);({3},2) sos=(1,x,1);(2,y,2) smap=({k},{1},1);({z},{3},2)'
+	# A leaf under two repeated levels read into a one-dimensional array used to
+	# flatten: [[1], [2, 3]] read as {1,2,3}, with no error (#1917). The bind now
+	# refuses it with 42804, as it refuses other mismatches. The reading is the
+	# SQLSTATE and message, or the rows that came back instead.
+	nested_refusal() {	# nested_refusal SQL -> "SQLSTATE message", or "read: ROWS"
+		local out state
+		out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+			-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+		state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)/\1 \2/p' <<<"$out" | head -1)"
+		if [ -n "$state" ]; then echo "$state"; else echo "read: $(tr '\n' ';' <<<"$out")"; fi
+	}
+	check_text "read_parquet refuses a list of lists declared as a one-dimensional array (#1917)" \
+		"$(nested_refusal "SELECT string_agg(t::text, ';') FROM pgcolumnar.read_parquet('$PGC_WORKDIR/lol.parquet') AS t(l bigint[], n int)")" \
+		'42804 Parquet column for array "l" is nested 2 lists deep, but pgcolumnar.read_parquet reads one list level into an array'
+	check_text "read_parquet refuses a list of maps declared as one-dimensional arrays (#1917)" \
+		"$(nested_refusal "SELECT string_agg(t::text, ';') FROM pgcolumnar.read_parquet('$PGC_WORKDIR/lmap.parquet') AS t(k text[], v bigint[], n int)")" \
+		'42804 Parquet column for array "k" is nested 2 lists deep, but pgcolumnar.read_parquet reads one list level into an array'
+	psql_run "CREATE TABLE lol_imp (l bigint[], n int) USING pgcolumnar;"
+	check_text "import_parquet refuses a list of lists for a one-dimensional array column (#1917)" \
+		"$(nested_refusal "SELECT pgcolumnar.import_parquet('lol_imp', '$PGC_WORKDIR/lol.parquet')")|$(q "SELECT count(*) FROM lol_imp;")" \
+		'42804 Parquet column for array "l" is nested 2 lists deep, but pgcolumnar.import_parquet reads one list level into an array|0'
 	# nullable is the column's own OPTIONAL flag: a REQUIRED list of REQUIRED
 	# elements is not nullable, though its leaf has a definition level (the
 	# repeated group's). The leaf rule reported l as nullable.
@@ -328,6 +353,9 @@ else
 		"parquet_schema reports NULL for the leaf of a list of lists, repeated twice (#1893)" \
 		"parquet_schema reports a legacy two-level list by its name as an array (#1893)" \
 		"read_parquet reads each nested file with the column list parquet_schema reports (#1893)" \
+		"read_parquet refuses a list of lists declared as a one-dimensional array (#1917)" \
+		"read_parquet refuses a list of maps declared as one-dimensional arrays (#1917)" \
+		"import_parquet refuses a list of lists for a one-dimensional array column (#1917)" \
 		"parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893)" \
 		"parquet_schema reports a leaf row nullable only when an OPTIONAL element sits above its first repeated level (#1893)" \
 		"parquet_schema quotes a struct field name that needs quotes, so CREATE TYPE takes the composite text (#1893)"; do
