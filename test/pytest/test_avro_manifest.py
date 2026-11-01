@@ -6,6 +6,9 @@ under test/fixtures/iceberg, checked field by field against the JSON oracles wri
 beside them. A hand-built manifest pins an explicit entry sequence number; a role
 without pg_read_server_files is refused; a file with no Avro magic is rejected as
 corrupt; and a deflate zip-bomb is refused by the cumulative decompression cap.
+Both readers refuse an object-storage URL with 0A000, naming themselves and the URL,
+after the pg_read_server_files gate, and still read a local path that holds "s3://"
+past its start (#1913). The refusal covers s3a:// and s3n:// too, in any case (#1918).
 
 A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED. A fresh connection answers
 again after crash recovery, so survival also reads the server log's count of killed
@@ -67,6 +70,34 @@ def _refusal(dsn, sql, phrase, label):
             return query_error(_message(exc))
         return exc.sqlstate + (label if phrase in str(exc) else "")
     return "noerror"
+
+
+def _remote_refusal(dsn, sql):
+    """-> "SQLSTATE message | hint" of the error `sql` raised, or "no error (...)"."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        return f"{exc.sqlstate} {exc.diag.message_primary} | {exc.diag.message_hint or 'no hint'}"
+    return f"no error ({row})"
+
+
+def _want_refusal(fn, url):
+    """The refusal #1913 promises: #1886's, naming the function and the URL."""
+    return (f'0A000 columnar: {fn} does not read "{url}" | '
+            f"{fn} reads local files only. Use a local filesystem path.")
+
+
+REMOTE_S3 = "s3://pgc-test/f1913/m.avro"
+REMOTE_HTTP = "http://127.0.0.1:9/f1913/m.avro"
+REMOTE_OTHER = ("https://127.0.0.1:9/f1913/m.avro", "gs://pgc-test/f1913/m.avro",
+                "az://pgc-test/f1913/m.avro", "S3://pgc-test/f1913/m.avro")
+HADOOP = ("s3a://pgc-test/f1918/m.avro", "s3n://pgc-test/f1918/m.avro")
+HADOOP_CASE = ("S3A://pgc-test/f1918/m.avro", "S3n://pgc-test/f1918/m.avro")
+GATE_REFUSAL = "42501 must be superuser or a member of the pg_read_server_files role to read a server file | no hint"
+READERS = ("read_avro_manifest", "read_manifest_list")
 
 
 def _crashes(cluster):
@@ -206,6 +237,46 @@ def avm(pgc_cluster, server_dir):
         r["bomb"] = _sqlstate(dsn, f"SELECT count(*) FROM pgcolumnar.read_avro_manifest('{bomb}')",
                               ["SET statement_timeout = '60s'"])
         r["after bomb"] = _survived(dsn, pgc_cluster, before)
+
+        # #1913: both readers refuse a remote URL with #1886's 0A000, after the
+        # pg_read_server_files gate; a local path holding "s3://" past its start is
+        # still read. server_dir/"s3:" is a directory, so server_dir/"s3://m0.avro"
+        # is such a path.
+        unpriv = pgc_cluster.dsn(dbname=DB).replace("user=postgres", f"user={ROLE}")
+        for fn in READERS:
+            r[f"{fn} s3"] = _remote_refusal(dsn, f"SELECT count(*) FROM pgcolumnar.{fn}('{REMOTE_S3}')")
+            r[f"{fn} http"] = _remote_refusal(dsn, f"SELECT count(*) FROM pgcolumnar.{fn}('{REMOTE_HTTP}')")
+            r[f"{fn} other"] = " ; ".join(_remote_refusal(dsn, f"SELECT count(*) FROM pgcolumnar.{fn}('{u}')")
+                                          for u in REMOTE_OTHER)
+            r[f"{fn} gate"] = _remote_refusal(unpriv, f"SELECT count(*) FROM pgcolumnar.{fn}('{REMOTE_S3}')")
+        sub = work / "s3:"
+        sub.mkdir(exist_ok=True)
+        sub.chmod(0o777)
+        for name, src in (("m0.avro", m0), ("ml.avro", ml)):
+            (sub / name).write_bytes(src.read_bytes())
+            (sub / name).chmod(0o644)
+        r["read_avro_manifest local"] = _value(
+            dsn, f"SELECT count(*) FROM pgcolumnar.read_avro_manifest('{work}/s3://m0.avro')")
+        r["read_manifest_list local"] = _value(
+            dsn, f"SELECT count(*) FROM pgcolumnar.read_manifest_list('{work}/s3://ml.avro')")
+
+        # #1918: s3a:// and s3n:// are refused too, in any case; a local path
+        # holding "s3a://" past its start is still read.
+        for fn in READERS:
+            r[f"{fn} hadoop"] = " ; ".join(_remote_refusal(dsn, f"SELECT count(*) FROM pgcolumnar.{fn}('{u}')")
+                                           for u in HADOOP)
+            r[f"{fn} hadoop case"] = " ; ".join(
+                _remote_refusal(dsn, f"SELECT count(*) FROM pgcolumnar.{fn}('{u}')") for u in HADOOP_CASE)
+        sub_a = work / "s3a:"
+        sub_a.mkdir(exist_ok=True)
+        sub_a.chmod(0o777)
+        for name, src in (("m0.avro", m0), ("ml.avro", ml)):
+            (sub_a / name).write_bytes(src.read_bytes())
+            (sub_a / name).chmod(0o644)
+        r["read_avro_manifest local s3a"] = _value(
+            dsn, f"SELECT count(*) FROM pgcolumnar.read_avro_manifest('{work}/s3a://m0.avro')")
+        r["read_manifest_list local s3a"] = _value(
+            dsn, f"SELECT count(*) FROM pgcolumnar.read_manifest_list('{work}/s3a://ml.avro')")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -276,6 +347,93 @@ def test_a_deflate_zip_bomb_is_refused_by_the_cap(avm, expect):
 
 def test_the_backend_is_still_up_after_the_zip_bomb(avm, expect):
     expect.text(avm["after bomb"], "1", "backend still up after the zip-bomb")
+
+
+def test_read_avro_manifest_refuses_an_s3_url(avm, expect):
+    expect.text(avm["read_avro_manifest s3"], _want_refusal("read_avro_manifest", REMOTE_S3),
+                "read_avro_manifest refuses an s3:// URL with 0A000, naming itself and the URL (#1913)")
+
+
+def test_read_avro_manifest_refuses_an_http_url(avm, expect):
+    expect.text(avm["read_avro_manifest http"], _want_refusal("read_avro_manifest", REMOTE_HTTP),
+                "read_avro_manifest refuses an http:// URL with 0A000, naming itself and the URL (#1913)")
+
+
+def test_read_avro_manifest_refuses_the_other_remote_schemes(avm, expect):
+    expect.text(avm["read_avro_manifest other"],
+                " ; ".join(_want_refusal("read_avro_manifest", u) for u in REMOTE_OTHER),
+                "read_avro_manifest refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913)")
+
+
+def test_read_manifest_list_refuses_an_s3_url(avm, expect):
+    expect.text(avm["read_manifest_list s3"], _want_refusal("read_manifest_list", REMOTE_S3),
+                "read_manifest_list refuses an s3:// URL with 0A000, naming itself and the URL (#1913)")
+
+
+def test_read_manifest_list_refuses_an_http_url(avm, expect):
+    expect.text(avm["read_manifest_list http"], _want_refusal("read_manifest_list", REMOTE_HTTP),
+                "read_manifest_list refuses an http:// URL with 0A000, naming itself and the URL (#1913)")
+
+
+def test_read_manifest_list_refuses_the_other_remote_schemes(avm, expect):
+    expect.text(avm["read_manifest_list other"],
+                " ; ".join(_want_refusal("read_manifest_list", u) for u in REMOTE_OTHER),
+                "read_manifest_list refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913)")
+
+
+def test_read_avro_manifest_checks_the_gate_before_refusing_a_url(avm, expect):
+    """The role without pg_read_server_files gets the gate's 42501 for a URL, not 0A000."""
+    expect.text(avm["read_avro_manifest gate"], GATE_REFUSAL,
+                "read_avro_manifest checks pg_read_server_files before it refuses a remote URL (#1913)")
+
+
+def test_read_manifest_list_checks_the_gate_before_refusing_a_url(avm, expect):
+    expect.text(avm["read_manifest_list gate"], GATE_REFUSAL,
+                "read_manifest_list checks pg_read_server_files before it refuses a remote URL (#1913)")
+
+
+def test_read_avro_manifest_still_reads_a_local_path_holding_a_scheme(avm, expect):
+    expect.text(str(avm["read_avro_manifest local"]), str(avm["n want"]),
+                "control: read_avro_manifest still reads a local path that holds s3:// past its start (#1913)")
+
+
+def test_read_manifest_list_still_reads_a_local_path_holding_a_scheme(avm, expect):
+    expect.text(str(avm["read_manifest_list local"]), "1",
+                "control: read_manifest_list still reads a local path that holds s3:// past its start (#1913)")
+
+
+def test_read_avro_manifest_refuses_s3a_and_s3n_urls(avm, expect):
+    expect.text(avm["read_avro_manifest hadoop"],
+                " ; ".join(_want_refusal("read_avro_manifest", u) for u in HADOOP),
+                "read_avro_manifest refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)")
+
+
+def test_read_avro_manifest_refuses_s3a_and_s3n_in_any_case(avm, expect):
+    expect.text(avm["read_avro_manifest hadoop case"],
+                " ; ".join(_want_refusal("read_avro_manifest", u) for u in HADOOP_CASE),
+                "read_avro_manifest refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)")
+
+
+def test_read_manifest_list_refuses_s3a_and_s3n_urls(avm, expect):
+    expect.text(avm["read_manifest_list hadoop"],
+                " ; ".join(_want_refusal("read_manifest_list", u) for u in HADOOP),
+                "read_manifest_list refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)")
+
+
+def test_read_manifest_list_refuses_s3a_and_s3n_in_any_case(avm, expect):
+    expect.text(avm["read_manifest_list hadoop case"],
+                " ; ".join(_want_refusal("read_manifest_list", u) for u in HADOOP_CASE),
+                "read_manifest_list refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)")
+
+
+def test_read_avro_manifest_still_reads_a_local_path_holding_s3a(avm, expect):
+    expect.text(str(avm["read_avro_manifest local s3a"]), str(avm["n want"]),
+                "control: read_avro_manifest still reads a local path that holds s3a:// past its start (#1918)")
+
+
+def test_read_manifest_list_still_reads_a_local_path_holding_s3a(avm, expect):
+    expect.text(str(avm["read_manifest_list local s3a"]), "1",
+                "control: read_manifest_list still reads a local path that holds s3a:// past its start (#1918)")
 
 
 def test_the_manifest_fixtures_are_present(expect):

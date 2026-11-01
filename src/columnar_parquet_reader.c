@@ -3758,6 +3758,13 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 	struct stat st;
 	List	   *files = NIL;
 
+	/*
+	 * s3a:// and s3n:// read as s3://, as in the Iceberg reader (#1930). Every
+	 * Parquet read resolves its path here first, so the listing, the glob, the
+	 * open and the module all see s3://, and so do the paths returned.
+	 */
+	path = PgColumnarS3Alias(path);
+
 	if (PgColumnarPathIsRemote(path))
 	{
 		const char *meta;
@@ -4983,10 +4990,17 @@ pqfdw_get_option(Oid foreigntableid, const char *name)
 	return NULL;
 }
 
+/*
+ * The table's path option, with s3a:// and s3n:// rewritten to s3:// (#1930).
+ * pq_resolve_paths rewrites them too, but the scan also keeps this path as the
+ * Hive partition root, which must be spelled as the resolved files are: a root
+ * of s3a://b/t/ would match no s3://b/t/... file, and the components above the
+ * root would then count as partition values.
+ */
 static char *
 pqfdw_get_path(Oid foreigntableid)
 {
-	return pqfdw_get_option(foreigntableid, "path");
+	return (char *) PgColumnarS3Alias(pqfdw_get_option(foreigntableid, "path"));
 }
 
 /*

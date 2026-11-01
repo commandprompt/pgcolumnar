@@ -1617,6 +1617,14 @@ pgcolumnar_read_avro_manifest(PG_FUNCTION_ARGS)
 				i;
 
 	tupstore = av_srf_begin(fcinfo, &tupdesc);
+
+	/*
+	 * A local file only (#1913): refuse a URL after av_srf_begin's
+	 * pg_read_server_files gate, so a caller without it gets 42501 for a URL as
+	 * for a local path, and before the file is opened, where a URL failed as
+	 * ENOENT (58P01), which says the object does not exist.
+	 */
+	PgColumnarRefuseRemotePath("read_avro_manifest", path);
 	buf = av_slurp_file(path, &flen);
 	entries = PgColumnarAvroReadManifest(buf, flen, &n);
 
@@ -1667,6 +1675,9 @@ pgcolumnar_read_manifest_list(PG_FUNCTION_ARGS)
 				i;
 
 	tupstore = av_srf_begin(fcinfo, &tupdesc);
+
+	/* a local file only (#1913), after the gate, as read_avro_manifest does */
+	PgColumnarRefuseRemotePath("read_manifest_list", path);
 	buf = av_slurp_file(path, &flen);
 	files = PgColumnarAvroReadManifestList(buf, flen, &n);
 
