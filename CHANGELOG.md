@@ -545,6 +545,16 @@ true until the next version shipped.
   are refused the same way. A file whose offsets run past its buffers is still
   refused with XX001. docs/sql-reference.md and docs/limitations.md.
   `test/arrow_import.sh` and `test_arrow_import.py`.
+- `tier_partition` now refuses a path that a foreign table reads under another
+  spelling of the same object (#1936). Before this it compared the `path`
+  option as text. A foreign table on `s3a://b/k` or `S3://b/k` did not stop a
+  move to `s3://b/k`, and the move overwrote the object that table reads. The
+  check now matches the scheme in any case, as the Parquet readers do, and
+  reads `s3a://` and `s3n://` as `s3://`, as the readers do since #1930. A
+  `NULL` path still gets SQLSTATE 22004. The check still does not see a
+  directory or glob table, a local path spelled another way, or a host in
+  another case (#1941). docs/how-to.md and docs/sql-reference.md.
+  `test/tier_partition.sh` and its pytest twin.
 - Test harness: when a suite runs as `flock <lock> bash test/smoke.sh`, a
   server that it starts no longer holds the lock, and a run fails when the
   installed library changes during it (#1915). Before, the suite passed the
