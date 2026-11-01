@@ -2331,9 +2331,6 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	relid = PG_GETARG_OID(0);
 	path = text_to_cstring(PG_GETARG_TEXT_PP(1));
 
-	/* a local file only (#1886): refuse a URL before the target is touched */
-	PgColumnarRefuseRemotePath("import_arrow", path);
-
 	/*
 	 * INSERT on the target, before the file is opened (#559). The server-file
 	 * role above governs reading a file; it says nothing about writing this
@@ -2349,6 +2346,13 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 
 	/* RLS after the ACL check, matching core's ordering (#563). */
 	PgColumnarRequireNoRowSecurity(relid);
+
+	/*
+	 * A local file only (#1886): refuse a URL after the INSERT and RLS checks, so
+	 * a caller who may not write the target gets 42501 for a URL as for a local
+	 * path, and before the target's kind is checked or the file is opened.
+	 */
+	PgColumnarRefuseRemotePath("import_arrow", path);
 
 	rel = table_open(relid, RowExclusiveLock);
 	if (!PgColumnarIsColumnarRelation(relid))

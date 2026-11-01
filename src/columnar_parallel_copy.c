@@ -1530,9 +1530,6 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("must be superuser or a member of the pg_read_server_files role to run pgcolumnar.parallel_copy")));
 
-	/* a local file only (#1886): refuse a URL before the target is touched */
-	PgColumnarRefuseRemotePath("parallel_copy", path);
-
 	if (workers < 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1581,6 +1578,15 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		PgColumnarRequireNoRowSecurity(relid);
 
 		}
+
+		/*
+		 * A local file only (#1886): refuse a URL after the INSERT and RLS
+		 * checks, as import_arrow does, so a caller who may not write the target
+		 * gets 42501 for a URL as for a local path. Before both the partitioned
+		 * and the single-table branch, so both are covered, and before a heap
+		 * target is refused.
+		 */
+		PgColumnarRefuseRemotePath("parallel_copy", path);
 
 		if (target->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		{

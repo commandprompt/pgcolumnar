@@ -533,9 +533,12 @@ true until the next version shipped.
   `s3://`, `gs://`, `az://`, `http://` and `https://`, in any case. The message
   names the function and the URL, for example
   `columnar: import_arrow does not read "s3://bucket/m.arrow"`, and the hint says
-  the function reads local files only. The check comes before the target table
-  is looked at. docs/sql-reference.md. `test/arrow_import.sh`,
-  `test/parallel_copy.sh`, `test_arrow_import.py` and `test_parallel_copy.py`.
+  the function reads local files only. `import_arrow` and `parallel_copy` check
+  INSERT on the target first, so a caller without INSERT gets 42501 for a URL as
+  for a local path. They refuse the URL before they check the target's kind, so
+  a heap target gets 0A000, not 42809. docs/sql-reference.md.
+  `test/arrow_import.sh`, `test/parallel_copy.sh`,
+  `test/import_export_privilege.sh` and their pytest twins.
 - A single-PUT export to an `https://` store that refuses it before reading the
   body now reports the 403 and its hint (#1902). It used to report `PUT to "..."
   failed before a response`: after a failed send a TLS session cannot be read,

@@ -546,9 +546,11 @@ check "backend still up after the partitioned-coordinator FIFO refusal" "$(survi
 # file "s3://..."), which says the object does not exist when the real reason is
 # that these functions never read object storage. Each now refuses every scheme
 # PgColumnarPathIsRemote recognises with 0A000, naming itself and the URL, with a
-# hint that it reads local files only. The refusal comes before the target is
-# looked at, so a heap target gets it too. The controls hold the other side: a
-# LOCAL path that carries "s3://" past its first byte is still read.
+# hint that it reads local files only. parallel_copy refuses after the INSERT
+# check (test/import_export_privilege.sh pins that order) and before it checks
+# the target's kind, so a heap target gets the refusal, not 42809. The controls
+# hold the other side: a LOCAL path that carries "s3://" past its first byte is
+# still read.
 remote_refusal() {	# SQL -> "SQLSTATE message | hint" of its error, or "no error (...)"
 	local out msg hint
 	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \

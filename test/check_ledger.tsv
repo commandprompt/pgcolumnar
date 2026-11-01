@@ -3625,10 +3625,12 @@ import_exclusion	import_exclusion	the constraint is an exclusion constraint, not
 import_export_privilege	import_export_privilege	export_arrow refuses SELECT of a table the caller cannot read	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	export_parquet refuses SELECT of a table the caller cannot read	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	get_storage_id refuses a caller who cannot SELECT the relation	15;16;17;18;19	never	-
+import_export_privilege	import_export_privilege	import_arrow checks INSERT before it refuses a remote URL (#1886)	15;16;17;18;19	2026-11-01	columnar_arrow.c: import_arrow refuses a remote URL before its INSERT check on the target (#1886)
 import_export_privilege	import_export_privilege	import_arrow refuses INSERT into a table the caller cannot write	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	import_parquet refuses INSERT into a table the caller cannot write	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	no victim file was written by the export attempts	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	nor by the parallel export	15;16;17;18;19	2026-10-14	parallel_export_parquet without its SELECT check on the target
+import_export_privilege	import_export_privilege	parallel_copy checks INSERT before it refuses a remote URL (#1886)	15;16;17;18;19	2026-11-01	columnar_parallel_copy.c: parallel_copy refuses a remote URL before its INSERT check on the target (#1886)
 import_export_privilege	import_export_privilege	parallel_copy refuses INSERT into a table the caller cannot write	15;16;17;18;19	2026-10-14	parallel_copy without its INSERT check on the target
 import_export_privilege	import_export_privilege	parallel_export_parquet refuses SELECT of a table the caller cannot read	15;16;17;18;19	2026-10-14	parallel_export_parquet without its SELECT check on the target
 import_export_privilege	import_export_privilege	premise: the attacker can execute the functions (so a refusal is the table ACL)	15;16;17;18;19	never	-

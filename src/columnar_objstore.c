@@ -67,8 +67,11 @@ PgColumnarPathIsRemote(const char *path)
  * open(2), so an s3:// or http:// URL used to fail with ENOENT ("could not
  * open file "s3://...""), which says the object does not exist when the real
  * reason is that these functions never read object storage. Each calls this
- * before it touches its target or the file, so the refusal is the same 0A000
- * the readers raise for a scheme they cannot read, and it names the function.
+ * before it opens the file, so the refusal is the same 0A000 the readers raise
+ * for a scheme they cannot read, and it names the function. import_arrow and
+ * parallel_copy call it after their INSERT and RLS checks on the target, so a
+ * caller who may not write the target gets 42501 first, and before they check
+ * the target's kind, so a heap target gets the refusal.
  */
 void
 PgColumnarRefuseRemotePath(const char *funcname, const char *path)

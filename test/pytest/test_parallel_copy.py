@@ -11,7 +11,8 @@ worker back when one fails, and refuse what it cannot load: a text partition key
 unsorted file, a DEFAULT partition, more workers than prepared-transaction slots, a
 missing file, a heap target, and a FIFO, which it must refuse rather than hang on.
 Both functions read local files only, so both refuse an object-storage URL with
-0A000, naming themselves and the URL, before they look at the target (#1886).
+0A000, naming themselves and the URL (#1886). parallel_copy refuses after its INSERT
+check and before it checks the target's kind, so a heap target gets 0A000.
 
 THREE FIXES THE SHELL SHARES. The per-range loads are compared with the generator
 that wrote the file, not with a single columnar COPY of it, which shares every defect

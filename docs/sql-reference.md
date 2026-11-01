@@ -787,7 +787,8 @@ Inserts the rows of an Arrow IPC file at `path` into the existing table
 rows inserted.
 
 `path` is a local file. An object-storage URL is refused with `0A000`; see
-[Object storage](#object-storage).
+[Object storage](#object-storage). The function checks INSERT on `rel` first, so
+a caller without INSERT gets `42501` for a URL too.
 
 The file can be in the IPC stream format, which `export_arrow` writes, or in the
 IPC file format, which starts and ends with `ARROW1`. Feather v2 is the IPC file
@@ -837,7 +838,8 @@ membership in the `pg_read_server_files` role, which superusers hold, and INSERT
 on the target. The file uses COPY text format. Each worker runs core `COPY` over
 a byte range of the file, so parse and write behavior match `COPY FROM` exactly.
 `filename` is a local file. An object-storage URL is refused with `0A000`; see
-[Object storage](#object-storage).
+[Object storage](#object-storage). The function checks INSERT on `target` first,
+so a caller without INSERT gets `42501` for a URL too.
 
 The target may be one of two kinds:
 

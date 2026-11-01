@@ -952,9 +952,11 @@ check "backend still up after the import_arrow FIFO refusal" "$(q 'SELECT 1')" "
 # to open(2) and failed with ENOENT ("could not open file "s3://..."), which says
 # the object does not exist -- even right after export_arrow wrote it there. It
 # now refuses every scheme PgColumnarPathIsRemote recognises with 0A000, naming
-# itself and the URL, with a hint that it reads local files only, before it looks
-# at the target. The control holds the other side: a LOCAL path that carries
-# "s3://" past its first byte is still read.
+# itself and the URL, with a hint that it reads local files only. It refuses
+# after the INSERT check (test/import_export_privilege.sh pins that order) and
+# before it checks the target's kind, so a heap target gets the refusal, not
+# 42809. The control holds the other side: a LOCAL path that carries "s3://"
+# past its first byte is still read.
 echo "-- remote URL refusal"
 remote_refusal() {	# SQL -> "SQLSTATE message | hint" of its error, or "no error (...)"
 	local out msg hint

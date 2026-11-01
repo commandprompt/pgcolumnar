@@ -568,7 +568,8 @@ def test_a_remote_url_is_refused_up_front(pgc_conn, server_dir, expect):
     """#1886: import_arrow reads local files only. An s3:// or http:// URL went to
     open(2) and failed with ENOENT, which says the object does not exist. Every scheme
     PgColumnarPathIsRemote recognises is now refused 0A000, naming the function and the
-    URL, before the target is looked at; a LOCAL path holding "s3://" past its start
+    URL, after the INSERT check and before the target's kind is checked (so a heap
+    target gets 0A000, not 42809); a LOCAL path holding "s3://" past its start
     is still read."""
     conn = pgc_conn
     _run(conn, "CREATE TABLE ia_rem (a int) USING pgcolumnar",
