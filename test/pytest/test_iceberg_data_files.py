@@ -20,9 +20,16 @@ What it refuses:
 No available writer emits the delete shapes, so those tables are crafted Avro.
 
 What it skips: a removed (DELETED, status 2) entry is not live, so it is neither listed
-nor refused (#1791). A crafted entry shows it alone, and a real pyiceberg table after a
+nor refused (#1791). A delete manifest whose entries are all removed holds no live
+delete file, so it is skipped too (#1829). A crafted entry shows it alone, and a real pyiceberg table after a
 copy-on-write delete (test/fixtures/iceberg/warehouse_cow, gen_iceberg_cow.py) shows it
 against pyiceberg's own scan planning.
+
+How it renders partition values (#1816, #1791): a real pyiceberg warehouse with one
+identity-partitioned table per type (test/fixtures/iceberg/warehouse_partvals,
+gen_iceberg_partvals.py) is compared with pyiceberg's plan_files values rendered by the
+documented format: exact decimals, shortest exact floats, binary as hex, strings with
+'%', ',' and '=' percent-encoded, and NULL as the bare field name.
 
 THE PORT OF test/iceberg_data_files.sh, BY NAME (#1341). The two names the shell
 records only when it skips ("iceberg warehouse fixture is missing", "python3 (json,
@@ -50,6 +57,7 @@ from pgc_vacuity import query_error
 FX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "iceberg"
 WH = FX / "warehouse"
 COW = FX / "warehouse_cow"           # copy-on-write deletes, written by pyiceberg (#1791)
+PARTVALS = FX / "warehouse_partvals"  # one partition type per table, by pyiceberg (#1816)
 RECORDED = "/tmp/pgc_ice_wh"
 LOC = f"file://{RECORDED}/db/t"     # the crafted tables' recorded location
 
@@ -265,6 +273,37 @@ def _delete_list_table(root):
     return md / "v1.metadata.json"
 
 
+def _delete_manifest_table(root, status, counts, content=1):
+    """-> the metadata.json of a table with one live data file in a data manifest and
+    a delete manifest holding one position-delete entry with `status` (#1829). With
+    `counts` the manifest list carries added/existing/deleted file counts."""
+    md = root / "db" / "t" / "metadata"
+    md.mkdir(parents=True)
+
+    def ent(st, content, name):
+        return (_zz(st) + (_zz(1) + _zz(1)) + _zz(content)
+                + _s(f"{LOC}/data/{name}".encode()) + _s(b"PARQUET") + _zz(5) + _zz(1000))
+    (md / "dm.avro").write_bytes(_ocf(ENTRY, [ent(1, 0, "f.parquet")]))
+    (md / "dl.avro").write_bytes(_ocf(ENTRY, [ent(status, content, "pos.parquet")]))
+    schema = json.loads(json.dumps(MFILE))
+    if counts:
+        schema["fields"] += [{"name": n, "type": "int"} for n in
+                             ("added_files_count", "existing_files_count",
+                              "deleted_files_count")]
+
+    def mf(path, content, cnts):
+        r = (_s(f"{LOC}/metadata/{path}".encode()) + _zz(1000) + _zz(0) + _zz(content)
+             + (_zz(1) + _zz(1)) + _zz(1) + _zz(1))
+        return r + b"".join(_zz(c) for c in cnts) if counts else r
+    dcounts = (0, 0, 1) if status == 2 else (1, 0, 0)
+    (md / "ml.avro").write_bytes(_ocf(schema, [mf("dm.avro", 0, (1, 0, 0)),
+                                               mf("dl.avro", 1, dcounts)]))
+    meta = _metadata(f"{LOC}/metadata/ml.avro")
+    meta["snapshots"][0]["summary"]["operation"] = "replace"
+    (md / "v1.metadata.json").write_text(json.dumps(meta))
+    return md / "v1.metadata.json"
+
+
 def _open_to_the_server(root):
     """Make `root`, its parents and everything under it readable by the server user."""
     for parent in [root] + list(root.parents):
@@ -296,6 +335,8 @@ def _one(dsn, sql, *params):
             return conn.execute(sql, params or None).fetchone()[0]
     except psycopg.Error as exc:
         return _failed(exc)
+    except UnicodeDecodeError as exc:   # text that is not valid in its encoding (#1816)
+        return query_error(f"UnicodeDecodeError: {exc}")
 
 
 def _sqlstate(dsn, path):
@@ -409,6 +450,9 @@ def ice(pgc_cluster, tmp_path_factory):
     entries = {k: _entry_table(root / f"entry_{k}", st, ct)
                for k, st, ct in (("ctl", 1, 0), ("kept", 0, 0), ("pos", 1, 1),
                                  ("eq", 1, 2), ("gone", 2, 0))}
+    delmf = {k: _delete_manifest_table(root / f"delmf_{k}", st, cn, ct)
+             for k, st, cn, ct in (("gone", 2, True, 1), ("gone_nc", 2, False, 1),
+                                   ("live_nc", 1, False, 1), ("data_nc", 1, False, 0))}
     _open_to_the_server(root)
 
     oracle = sorted("%d|%s|%s" % (r["record_count"], r["region"], r["file_basename"])
@@ -441,6 +485,37 @@ def ice(pgc_cluster, tmp_path_factory):
         got[f"entry {k}"] = _sqlstate(dsn, entries[k])
     got["entry gone"] = _one(dsn, lst.format("count(*)"), str(entries["gone"]))
     got["alive entries"] = _recovered(pgc_cluster, _alive(pgc_cluster))
+
+    # a delete manifest holding only removed entries (#1829)
+    dm_sql = lst.format("string_agg(record_count || '|' || "
+                        "(regexp_match(file_path,'[^/]+$'))[1], ',')")
+    got["delmf gone"] = _one(dsn, dm_sql, str(delmf["gone"]))
+    got["delmf gone_nc"] = _one(dsn, dm_sql, str(delmf["gone_nc"]))
+    got["delmf live_nc"] = _sqlstate(dsn, delmf["live_nc"])
+    got["delmf data_nc"] = _sqlstate(dsn, delmf["data_nc"])
+    got["alive delmf"] = _recovered(pgc_cluster, _alive(pgc_cluster))
+
+    # partition values render exactly, as valid text (#1816, #1791)
+    pv_oracle = json.loads((PARTVALS / "expected_files.json").read_text())["tables"]
+    pv_root = root / "partvals_relocated"
+    shutil.copytree(PARTVALS / "db", pv_root / "db")
+    _open_to_the_server(pv_root)
+    enc = _one(dsn, "SHOW server_encoding")
+    key = "partition" if enc in ("UTF8", "SQL_ASCII") else "partition_non_utf8_db"
+    pv_md = {}
+    for t, o in pv_oracle.items():
+        pv_md[t] = pv_root / "db" / t / "metadata" / o["metadata_basename"]
+        got[f"pv expect {t}"] = " ; ".join(sorted((r[key] for r in o["files"]),
+                                                  key=lambda v: v.encode()))
+        got[f"pv {t}"] = _one(dsn, lst.format(
+            "string_agg(partition, ' ; ' ORDER BY partition COLLATE \"C\")"), str(pv_md[t]))
+    got["pv bin utf8"] = _one(dsn, lst.format(
+        "string_agg(length(convert_from(textsend(partition), 'UTF8'))::text, ',' "
+        "ORDER BY 1)"), str(pv_md["bin"]))
+    bin_m = sorted(pv_md["bin"].parent.glob("*-m0.avro"))[0]
+    got["pv bin manifest"] = _one(
+        dsn, "SELECT string_agg(partition, ' ; ' ORDER BY partition COLLATE \"C\") "
+        "FROM pgcolumnar.read_avro_manifest(%s)", str(bin_m))
 
     # a copy-on-write delete, relocated as the main warehouse is
     cow_oracle = json.loads((COW / "expected_files.json").read_text())["tables"]
@@ -627,6 +702,76 @@ def test_a_copy_on_write_delete_of_every_row_lists_nothing(ice, expect):
     if _need(ice, expect):
         expect.num(ice["cow all"], 0,
                    "after a copy-on-write delete of every row, no data files are listed")
+
+
+# ---- a delete manifest that holds only removed entries (#1829) ----------------------
+
+def test_a_delete_manifest_of_removed_entries_is_skipped(ice, expect):
+    """A rewrite that removes every old delete file leaves a delete manifest whose
+    entries all have status 2. No live delete file remains, so the lister skips it."""
+    if _need(ice, expect):
+        expect.text(ice["delmf gone"], "5|f.parquet",
+                    "a delete manifest whose entries are all removed (status 2) is "
+                    "skipped, not refused (#1829)")
+
+
+def test_a_delete_manifest_without_counts_of_removed_entries_is_skipped(ice, expect):
+    if _need(ice, expect):
+        expect.text(ice["delmf gone_nc"], "5|f.parquet",
+                    "a delete manifest without file counts, holding only removed "
+                    "entries, is skipped (#1829)")
+
+
+def test_a_delete_manifest_without_counts_with_a_live_entry_is_refused(ice, expect):
+    if _need(ice, expect):
+        expect.text(ice["delmf live_nc"], "0A000",
+                    "a delete manifest without file counts, holding a live delete "
+                    "entry, is refused (0A000)")
+
+
+def test_a_live_data_entry_in_a_delete_manifest_is_refused(ice, expect):
+    """A delete manifest holds delete files only; a live data entry in one is corrupt
+    metadata, refused rather than listed."""
+    if _need(ice, expect):
+        expect.text(ice["delmf data_nc"], "XX001",
+                    "a live data entry inside a delete manifest is refused as corrupt (XX001)")
+
+
+def test_the_backend_survives_the_delete_manifest_arms(ice, expect):
+    if _need(ice, expect):
+        expect.num(ice["alive delmf"], 1, "backend still up after the delete-manifest arms")
+
+
+# ---- partition values render exactly, as valid text (#1816, #1791) ------------------
+
+PARTITION_RENDERINGS = [
+    ("a decimal(10,2) partition renders as the exact decimal (#1816)", "dec"),
+    ("a decimal(38,10) partition renders as the exact decimal (#1816)", "dec38"),
+    ("a float partition renders as the shortest exact text (#1816)", "flt"),
+    ("a double partition renders as the shortest exact text (#1816)", "dbl"),
+    ("a binary partition renders as hex (#1816)", "bin"),
+    ("string partitions keep NULL, empty, ',', '=', '%' and non-ASCII apart (#1791)", "str"),
+]
+
+
+@pytest.mark.parametrize("name, table", PARTITION_RENDERINGS)
+def test_a_partition_value_renders_by_the_documented_format(ice, expect, name, table):
+    if _need(ice, expect):
+        expect.text(ice[f"pv {table}"], ice[f"pv expect {table}"], name)
+
+
+def test_every_binary_partition_is_valid_utf8(ice, expect):
+    """convert_from verifies the bytes as UTF-8 whatever the database encoding; the
+    lengths show every byte was kept, none cut at a NUL."""
+    if _need(ice, expect):
+        expect.text(ice["pv bin utf8"], "8,10",
+                    "every binary partition is valid UTF-8 (char lengths) (#1816)")
+
+
+def test_read_avro_manifest_renders_binary_partitions_as_hex(ice, expect):
+    if _need(ice, expect):
+        expect.text(ice["pv bin manifest"], ice["pv expect bin"],
+                    "read_avro_manifest renders the binary partitions as hex too (#1816)")
 
 
 # ---- no current snapshot, and the privilege ------------------------------------------

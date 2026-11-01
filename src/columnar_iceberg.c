@@ -773,8 +773,17 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 					 errmsg("iceberg: manifest \"%s\" has invalid content %d",
 							mfs[mi].manifest_path, mfs[mi].content)));
 
-		/* the lister refuses a delete manifest without even opening it */
-		if (mfs[mi].content != 0 && !collect_deletes)
+		/*
+		 * The lister refuses a delete manifest that the manifest list says
+		 * holds a live delete file (added or existing), without opening it.
+		 * A rewrite or compaction that removed every old delete file leaves a
+		 * delete manifest whose entries are all removed (status 2), with both
+		 * counts 0; and a v1 list may carry no counts at all (read as 0).
+		 * Either way the lister opens the manifest and refuses only a live
+		 * entry, below (#1829).
+		 */
+		if (mfs[mi].content != 0 && !collect_deletes &&
+			(int64) mfs[mi].added_files_count + mfs[mi].existing_files_count > 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("iceberg: snapshot " INT64_FORMAT " has delete files; reading tables with deletes is not supported",
@@ -811,11 +820,12 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 
 			if (!collect_deletes)
 			{
-				/* the lister refuses any delete file. A removed entry (status
-				 * 2, DELETED) is a data file this snapshot took out, such as
-				 * the old file of a copy-on-write delete: it is not live, so
-				 * the lister skips it, as the scan does (#1791) */
-				if (e->content != 0)
+				/* the lister refuses any live delete file. A removed entry
+				 * (status 2, DELETED) is a file this snapshot took out, such
+				 * as the old file of a copy-on-write delete (#1791) or a
+				 * delete file a rewrite removed (#1829): it is not live, so
+				 * the lister skips it, as the scan does */
+				if (e->content != 0 && e->status != 2)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("iceberg: snapshot " INT64_FORMAT " has delete files; reading tables with deletes is not supported",
@@ -824,6 +834,15 @@ ice_walk_data_files(const char *path, JsonbContainer *root,
 									   e->file_path, e->content, e->status)));
 				if (e->status == 2)
 					continue;
+				/* a delete manifest holds delete files only; a live data
+				 * entry in one is corrupt metadata, and listing it would
+				 * trust a manifest the list calls a delete manifest */
+				if (mfs[mi].content != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("iceberg: delete manifest \"%s\" holds a data file entry \"%s\"",
+									mfs[mi].manifest_path,
+									e->file_path ? e->file_path : "(null)")));
 			}
 			else
 			{

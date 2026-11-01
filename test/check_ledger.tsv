@@ -3039,7 +3039,16 @@ iceberg_catalog	iceberg_catalog	the decoy snapshot is not returned	15;16;17;18;1
 iceberg_catalog	iceberg_catalog	the first snapshot has no parent (NULL)	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	a .. traversal manifest-list is refused, not read (22023, not XX001)	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	a DELETED (status 2) data entry is skipped, not listed and not refused	15;16;17;18;19	2026-10-30	columnar_iceberg.c: the lister refuses a DELETED (status 2) data entry again, the #1791 defect (#1791)
+iceberg_data_files	iceberg_data_files	a binary partition renders as hex (#1816)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
+iceberg_data_files	iceberg_data_files	a decimal(10,2) partition renders as the exact decimal (#1816)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
+iceberg_data_files	iceberg_data_files	a decimal(38,10) partition renders as the exact decimal (#1816)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
+iceberg_data_files	iceberg_data_files	a delete manifest whose entries are all removed (status 2) is skipped, not refused (#1829)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
+iceberg_data_files	iceberg_data_files	a delete manifest without file counts, holding a live delete entry, is refused (0A000)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a delete manifest without file counts, holding only removed entries, is skipped (#1829)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
+iceberg_data_files	iceberg_data_files	a double partition renders as the shortest exact text (#1816)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
+iceberg_data_files	iceberg_data_files	a float partition renders as the shortest exact text (#1816)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
 iceberg_data_files	iceberg_data_files	a foreign absolute manifest-list is refused (22023)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	a live data entry inside a delete manifest is refused as corrupt (XX001)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
 iceberg_data_files	iceberg_data_files	a position-delete entry in a data manifest is refused (0A000)	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	a sibling-prefix manifest-list is refused (22023)	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	a snapshot with a delete manifest is refused (feature_not_supported 0A000)	15;16;17;18;19	never	-
@@ -3051,14 +3060,18 @@ iceberg_data_files	iceberg_data_files	an EXISTING (status 0) data entry is liste
 iceberg_data_files	iceberg_data_files	an equality-delete entry in a data manifest is refused (0A000)	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	an unprivileged role is refused (42501)	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	backend still up after the delete refusal	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	backend still up after the delete-manifest arms	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	backend still up after the entry refusals	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	backend still up after the traversal attempts	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	control: a data manifest with one added data entry lists that one file	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	data files == pyiceberg oracle (record_count|region|basename)	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	every binary partition is valid UTF-8 (char lengths) (#1816)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
 iceberg_data_files	iceberg_data_files	every data file is PARQUET	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	no returned path leaks the recorded root	15;16;17;18;19	never	-
 iceberg_data_files	iceberg_data_files	premise: each copy-on-write fixture's current snapshot carries a DELETED (status 2) data entry	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	read_avro_manifest renders the binary partitions as hex too (#1816)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
 iceberg_data_files	iceberg_data_files	returned paths are rebased under the actual location	15;16;17;18;19	never	-
+iceberg_data_files	iceberg_data_files	string partitions keep NULL, empty, ',', '=', '%' and non-ASCII apart (#1791)	15;16;17;18;19	2026-11-01	av_decode_partition and the delete-manifest skip reverted to main 2fef6617 (#1816, #1829)
 iceberg_deletes	iceberg_deletes	...and the boundary refusal names the escape	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_rebase does not hold a recorded path under the recorded table location
 iceberg_deletes	iceberg_deletes	...and the negative-pos refusal names the negative pos	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a negative position-delete pos is not refused
 iceberg_deletes	iceberg_deletes	...and the null-pos refusal names pos	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a position-delete row with a null pos is not refused (the n1 || n2 guard skipped)

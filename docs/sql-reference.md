@@ -1018,8 +1018,9 @@ SELECT * FROM pgcolumnar.parquet_schema('/data/events.parquet');
 ### pgcolumnar.read_avro_manifest(path text) returns table(status int, content int, file_path text, file_format text, record_count bigint, file_size_in_bytes bigint, partition text, sequence_number bigint)
 
 Decodes an Apache Iceberg Avro manifest file and reports its data-file entries.
-Each row is one entry: the file path, format, row count, byte size, the
-partition rendered as `name=value`, and the entry's data sequence number. The
+Each row is one entry: the file path, format, row count, byte size, partition,
+and the entry's data sequence number. The partition is rendered as `name=value`
+(see [How a partition value is shown](#how-a-partition-value-is-shown)). The
 sequence number is NULL when the entry inherits it from the manifest. That is
 the usual case for a freshly written manifest. It is the ordering key for
 reading tables with deletes. A position delete applies to data files with a
@@ -1079,7 +1080,8 @@ SELECT snapshot_id, operation, manifest_list
 Lists the live data files of an Apache Iceberg table at its current snapshot.
 It resolves the current snapshot from `metadata.json`, reads that snapshot's
 manifest list, then each manifest. It returns one row per data-file entry: the
-file path, format, row count, and partition rendered as `name=value`. The
+file path, format, row count, and partition rendered as `name=value` (see
+[How a partition value is shown](#how-a-partition-value-is-shown)). The
 caller needs the `pg_read_server_files` role, which superusers hold. It returns
 no rows when the table has no current snapshot.
 
@@ -1092,10 +1094,35 @@ A data file that the current snapshot removed is not live, so it is skipped. A
 copy-on-write delete or a filtered overwrite records the file it replaced this
 way, as a manifest entry with status 2 (DELETED).
 
-Delete files are refused, not ignored. A snapshot that carries any delete
-manifest or delete file raises an error here. It does not return rows the table
-says are gone. To read a table that uses deletes, use `iceberg_scan`, which
-applies position, equality, and deletion-vector deletes.
+Delete files are refused, not ignored. A snapshot that carries a live delete
+file raises an error here. It does not return rows the table says are gone. To
+read a table that uses deletes, use `iceberg_scan`, which applies position,
+equality, and deletion-vector deletes. A delete file that the current snapshot
+removed is not live, so it is skipped too. A rewrite or compaction that removes
+every old delete file leaves a delete manifest that holds only such entries
+(#1829); that table lists normally. A delete manifest that holds a live
+data-file entry is corrupt, and is refused with SQLSTATE XX001.
+
+#### How a partition value is shown
+
+`iceberg_data_files` and `read_avro_manifest` show the partition as text. Each
+field is `name=value`, and fields are joined by commas. The text is always valid
+in the database encoding, and each value can be read back exactly:
+
+| Partition value | Shown as | Example |
+|---|---|---|
+| integer, long, and the `date`, `time`, `timestamp`, `bucket`, `truncate` and temporal transform results | the stored integer (days, hours or microseconds for the temporal ones) | `id=7`, `ts_day=19783` |
+| boolean | `true` or `false` | `flag=true` |
+| decimal | the exact value, with the column's scale | `price=-0.50` |
+| float, double | the shortest text that reads back as the same value | `x=0.1` |
+| binary, fixed, uuid | `\x` and lowercase hex, as `bytea` prints it | `b=\xfffe` |
+| string | the value, with `%`, `,`, `=`, control characters and DEL written as `%` and two hex digits | `s=a%2Cb%3Dc` |
+| NULL | the field name alone, with no `=` | `s` |
+
+An empty string is `s=`, so it differs from NULL. In a database whose encoding is
+not UTF8 or SQL_ASCII, a non-ASCII string is also percent-encoded, byte by byte
+of its UTF-8 form (`city=caf%C3%A9`). So is a string that is not valid UTF-8.
+Field names follow the string rule.
 
 ```sql
 SELECT file_path, record_count, partition

@@ -1,0 +1,173 @@
+{
+  "recorded_root": "/tmp/pgc_ice_partvals",
+  "tables": {
+    "bin": {
+      "files": [
+        {
+          "partition": "v=\\x610062",
+          "partition_non_utf8_db": "v=\\x610062",
+          "value": "b'a\\x00b'"
+        },
+        {
+          "partition": "v=\\xfffe",
+          "partition_non_utf8_db": "v=\\xfffe",
+          "value": "b'\\xff\\xfe'"
+        }
+      ],
+      "metadata_basename": "00001-928ee5d2-3d0a-483d-97ce-61f5af7edebb.metadata.json",
+      "planned_values": [
+        "b'\\xff\\xfe'",
+        "b'a\\x00b'"
+      ],
+      "type": "binary"
+    },
+    "dbl": {
+      "files": [
+        {
+          "partition": "v=-2.25",
+          "partition_non_utf8_db": "v=-2.25",
+          "value": "-2.25"
+        },
+        {
+          "partition": "v=0.1",
+          "partition_non_utf8_db": "v=0.1",
+          "value": "0.1"
+        },
+        {
+          "partition": "v=1.5",
+          "partition_non_utf8_db": "v=1.5",
+          "value": "1.5"
+        }
+      ],
+      "metadata_basename": "00001-baffad6d-7342-4afd-ab3c-2ba3180c008a.metadata.json",
+      "planned_values": [
+        "-2.25",
+        "0.10000000149011612",
+        "1.5"
+      ],
+      "type": "double"
+    },
+    "dec": {
+      "files": [
+        {
+          "partition": "v=-0.05",
+          "partition_non_utf8_db": "v=-0.05",
+          "value": "Decimal('-0.05')"
+        },
+        {
+          "partition": "v=-0.50",
+          "partition_non_utf8_db": "v=-0.50",
+          "value": "Decimal('-0.50')"
+        },
+        {
+          "partition": "v=0.05",
+          "partition_non_utf8_db": "v=0.05",
+          "value": "Decimal('0.05')"
+        },
+        {
+          "partition": "v=12.25",
+          "partition_non_utf8_db": "v=12.25",
+          "value": "Decimal('12.25')"
+        }
+      ],
+      "metadata_basename": "00001-90f448fa-57b9-49e9-95fc-6b30efe7d00b.metadata.json",
+      "planned_values": [
+        "Decimal('-0.05')",
+        "Decimal('-0.50')",
+        "Decimal('0.05')",
+        "Decimal('12.25')"
+      ],
+      "type": "decimal(10, 2)"
+    },
+    "dec38": {
+      "files": [
+        {
+          "partition": "v=-1234567890123456789012345678.0123456789",
+          "partition_non_utf8_db": "v=-1234567890123456789012345678.0123456789",
+          "value": "Decimal('-1234567890123456789012345678.0123456789')"
+        },
+        {
+          "partition": "v=0.0000000000",
+          "partition_non_utf8_db": "v=0.0000000000",
+          "value": "Decimal('0E-10')"
+        }
+      ],
+      "metadata_basename": "00001-770d357f-59a5-45b4-8164-c5379e02c2c4.metadata.json",
+      "planned_values": [
+        "Decimal('-1234567890123456789012345678.0123456789')",
+        "Decimal('0E-10')"
+      ],
+      "type": "decimal(38, 10)"
+    },
+    "flt": {
+      "files": [
+        {
+          "partition": "v=-2.25",
+          "partition_non_utf8_db": "v=-2.25",
+          "value": "-2.25"
+        },
+        {
+          "partition": "v=0.1",
+          "partition_non_utf8_db": "v=0.1",
+          "value": "0.1"
+        },
+        {
+          "partition": "v=1.5",
+          "partition_non_utf8_db": "v=1.5",
+          "value": "1.5"
+        }
+      ],
+      "metadata_basename": "00001-23e21cfb-1c98-4975-8c5f-1d5efbcc676d.metadata.json",
+      "planned_values": [
+        "-2.25",
+        "0.10000000149011612",
+        "1.5"
+      ],
+      "type": "float"
+    },
+    "str": {
+      "files": [
+        {
+          "partition": "v",
+          "partition_non_utf8_db": "v",
+          "value": "None"
+        },
+        {
+          "partition": "v=",
+          "partition_non_utf8_db": "v=",
+          "value": "''"
+        },
+        {
+          "partition": "v=50%25",
+          "partition_non_utf8_db": "v=50%25",
+          "value": "'50%'"
+        },
+        {
+          "partition": "v=a%2Cb%3Dc",
+          "partition_non_utf8_db": "v=a%2Cb%3Dc",
+          "value": "'a,b=c'"
+        },
+        {
+          "partition": "v=café",
+          "partition_non_utf8_db": "v=caf%C3%A9",
+          "value": "'café'"
+        },
+        {
+          "partition": "v=plain",
+          "partition_non_utf8_db": "v=plain",
+          "value": "'plain'"
+        }
+      ],
+      "metadata_basename": "00001-fe0b0fb6-5915-41e7-bc0b-06b2236486df.metadata.json",
+      "planned_values": [
+        "''",
+        "'50%'",
+        "'a,b=c'",
+        "'café'",
+        "'plain'",
+        "None"
+      ],
+      "type": "string"
+    }
+  }
+}

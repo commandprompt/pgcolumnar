@@ -22,6 +22,13 @@ $1;
 SQLEOF
 }
 
+# like q, but a failed query reads as its ERROR line, so a failing check shows
+# what the server said instead of an empty measurement
+qe() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1 | grep -v '^DETAIL:\|^HINT:\|^CONTEXT:'
+}
+
 FX="$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg"
 WH="$FX/warehouse"
 [ -d "$WH/db/events/metadata" ] || pgc_skip fixture "iceberg warehouse fixture is missing"
@@ -416,6 +423,151 @@ check "after a copy-on-write delete, data files == pyiceberg plan_files (record_
 	      FROM pgcolumnar.iceberg_data_files('$(cow_md cow)') ORDER BY 1")" "$COW_EXPECT"
 check "after a copy-on-write delete of every row, no data files are listed" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_data_files('$(cow_md cow_all)')")" "0"
+
+# ---- a delete manifest that holds only removed entries (#1829) -------------
+# A rewrite or compaction that removes every old delete file leaves a delete
+# manifest (content 1 in the list) whose entries all have status 2 (DELETED).
+# That snapshot has no live delete file, so the lister skips the manifest. A
+# list entry whose added and existing file counts are both above zero is refused
+# unopened (the arm above); otherwise the lister opens the manifest and refuses
+# only a live entry. Each table here has one live data file in a data manifest
+# and one delete manifest holding one position-delete entry.
+delmf_tbl() {  # $1 name, $2 entry status, $3 counts|nocounts, [$4 entry content, default 1]
+	local d="$PGC_WORKDIR/delmf_$1/db/t"
+	mkdir -p "$d/metadata"
+	python3 - "$d" "$2" "$3" "${4:-1}" <<'PY'
+import json, sys, os
+D, STATUS, COUNTS, CONTENT = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "counts", int(sys.argv[4])
+LOC = "file:///tmp/pgc_ice_wh/db/t"
+def zz(n):
+    u = (n << 1) ^ (n >> 63) if n < 0 else (n << 1)
+    out = bytearray()
+    while True:
+        b = u & 0x7f; u >>= 7
+        out.append(b | 0x80 if u else b)
+        if not u: break
+    return bytes(out)
+def s(bs): return zz(len(bs)) + bs
+def ocf(schema, recs):
+    sync = b"\x00" * 16
+    meta = zz(2) + s(b"avro.schema") + s(json.dumps(schema).encode()) + s(b"avro.codec") + s(b"null") + zz(0)
+    out = b"Obj\x01" + meta + sync
+    for r in recs: out += zz(1) + zz(len(r)) + r + sync
+    return out
+entry = {"type": "record", "name": "manifest_entry", "fields": [
+    {"name": "status", "type": "int"},
+    {"name": "sequence_number", "type": ["null", "long"]},
+    {"name": "data_file", "type": {"type": "record", "name": "df", "fields": [
+        {"name": "content", "type": "int"},
+        {"name": "file_path", "type": "string"},
+        {"name": "file_format", "type": "string"},
+        {"name": "record_count", "type": "long"},
+        {"name": "file_size_in_bytes", "type": "long"}]}}]}
+def ent(status, content, name):
+    return zz(status) + (zz(1) + zz(1)) + zz(content) + s(f"{LOC}/data/{name}".encode()) + \
+           s(b"PARQUET") + zz(5) + zz(1000)
+open(os.path.join(D, "metadata", "dm.avro"), "wb").write(ocf(entry, [ent(1, 0, "f.parquet")]))
+open(os.path.join(D, "metadata", "dl.avro"), "wb").write(ocf(entry, [ent(STATUS, CONTENT, "pos.parquet")]))
+fields = [
+    {"name": "manifest_path", "type": "string"},
+    {"name": "manifest_length", "type": "long"},
+    {"name": "partition_spec_id", "type": "int"},
+    {"name": "content", "type": "int"},
+    {"name": "sequence_number", "type": ["null", "long"]},
+    {"name": "min_sequence_number", "type": "long"},
+    {"name": "added_snapshot_id", "type": "long"}]
+if COUNTS:
+    fields += [{"name": n, "type": "int"} for n in
+               ("added_files_count", "existing_files_count", "deleted_files_count")]
+def mf(path, content, counts):
+    r = s(f"{LOC}/metadata/{path}".encode()) + zz(1000) + zz(0) + zz(content) + \
+        (zz(1) + zz(1)) + zz(1) + zz(1)
+    return r + b"".join(zz(c) for c in counts) if COUNTS else r
+dcounts = (0, 0, 1) if STATUS == 2 else (1, 0, 0)
+open(os.path.join(D, "metadata", "ml.avro"), "wb").write(ocf(
+    {"type": "record", "name": "manifest_file", "fields": fields},
+    [mf("dm.avro", 0, (1, 0, 0)), mf("dl.avro", 1, dcounts)]))
+md = {"format-version": 2, "location": LOC, "current-snapshot-id": 1,
+      "current-schema-id": 0,
+      "schemas": [{"schema-id": 0, "type": "struct", "fields": [
+          {"id": 1, "name": "id", "required": False, "type": "long"}]}],
+      "snapshots": [{"snapshot-id": 1, "sequence-number": 1, "timestamp-ms": 0,
+                     "manifest-list": f"{LOC}/metadata/ml.avro",
+                     "summary": {"operation": "replace"}, "schema-id": 0}]}
+open(os.path.join(D, "metadata", "v1.metadata.json"), "w").write(json.dumps(md))
+PY
+	chmod -R a+rX "$PGC_WORKDIR/delmf_$1"
+	echo "$d/metadata/v1.metadata.json"
+}
+dm_list() {  # the listing as "record_count|basename", or the error
+	qe "SELECT string_agg(record_count || '|' || (regexp_match(file_path,'[^/]+\$'))[1], ',')
+	   FROM pgcolumnar.iceberg_data_files('$1')"
+}
+check "a delete manifest whose entries are all removed (status 2) is skipped, not refused (#1829)" \
+	"$(dm_list "$(delmf_tbl gone 2 counts)")" "5|f.parquet"
+check "a delete manifest without file counts, holding only removed entries, is skipped (#1829)" \
+	"$(dm_list "$(delmf_tbl gone_nc 2 nocounts)")" "5|f.parquet"
+check "a delete manifest without file counts, holding a live delete entry, is refused (0A000)" \
+	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(delmf_tbl live_nc 1 nocounts)')")" "0A000"
+# a delete manifest holds delete files only: a live DATA entry in one is corrupt
+# metadata, refused rather than listed as if the list had called it a data manifest
+check "a live data entry inside a delete manifest is refused as corrupt (XX001)" \
+	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_data_files('$(delmf_tbl data_nc 1 nocounts 0)')")" "XX001"
+check "backend still up after the delete-manifest arms" "$(q 'SELECT 1')" "1"
+recovered
+
+# ---- partition values render exactly, as valid text (#1816, #1791) ---------
+# A real pyiceberg warehouse (gen_iceberg_partvals.py, warehouse_partvals): one
+# table per partition type, identity-partitioned, one file per value. The oracle
+# holds pyiceberg's own plan_files partition values and the text each renders as
+# under the documented format. Before #1816 decimal and float values rendered as
+# '?', and binary values were copied raw into text (invalid UTF-8, cut at a NUL).
+PV="$PGC_WORKDIR/partvals_relocated"
+rm -rf "$PV"; mkdir -p "$PV"
+cp -r "$FX/warehouse_partvals/db" "$PV/db"
+chmod -R a+rX "$PV"
+PV_ORACLE="$FX/warehouse_partvals/expected_files.json"
+PV_ENC="$(q "SHOW server_encoding")"
+pv_md() {  # $1 table -> its current metadata.json under the relocated copy
+	python3 - "$PV_ORACLE" "$1" "$PV" <<'PY'
+import json, sys
+o = json.load(open(sys.argv[1]))["tables"][sys.argv[2]]
+print("%s/db/%s/metadata/%s" % (sys.argv[3], sys.argv[2], o["metadata_basename"]))
+PY
+}
+pv_expect() {  # $1 table -> its oracle partitions, ' ; '-joined in byte order
+	python3 - "$PV_ORACLE" "$1" "$PV_ENC" <<'PY'
+import json, sys
+o = json.load(open(sys.argv[1]))["tables"][sys.argv[2]]
+key = "partition" if sys.argv[3] in ("UTF8", "SQL_ASCII") else "partition_non_utf8_db"
+print(" ; ".join(sorted((r[key] for r in o["files"]), key=lambda v: v.encode())))
+PY
+}
+pv_got() {  # $1 table -> its listed partitions, ' ; '-joined in byte order
+	qe "SELECT string_agg(partition, ' ; ' ORDER BY partition COLLATE \"C\")
+	   FROM pgcolumnar.iceberg_data_files('$(pv_md "$1")')"
+}
+check "a decimal(10,2) partition renders as the exact decimal (#1816)" \
+	"$(pv_got dec)" "$(pv_expect dec)"
+check "a decimal(38,10) partition renders as the exact decimal (#1816)" \
+	"$(pv_got dec38)" "$(pv_expect dec38)"
+check "a float partition renders as the shortest exact text (#1816)" \
+	"$(pv_got flt)" "$(pv_expect flt)"
+check "a double partition renders as the shortest exact text (#1816)" \
+	"$(pv_got dbl)" "$(pv_expect dbl)"
+check "a binary partition renders as hex (#1816)" \
+	"$(pv_got bin)" "$(pv_expect bin)"
+# convert_from verifies the bytes as UTF-8 whatever the database encoding, so an
+# invalid byte fails here; the lengths show every byte was kept (no cut at a NUL)
+check "every binary partition is valid UTF-8 (char lengths) (#1816)" \
+	"$(qe "SELECT string_agg(length(convert_from(textsend(partition), 'UTF8'))::text, ',' ORDER BY 1)
+	      FROM pgcolumnar.iceberg_data_files('$(pv_md bin)')")" "8,10"
+check "string partitions keep NULL, empty, ',', '=', '%' and non-ASCII apart (#1791)" \
+	"$(pv_got str)" "$(pv_expect str)"
+PV_BIN_M="$(ls "$(dirname "$(pv_md bin)")"/*-m0.avro | head -1)"
+check "read_avro_manifest renders the binary partitions as hex too (#1816)" \
+	"$(qe "SELECT string_agg(partition, ' ; ' ORDER BY partition COLLATE \"C\")
+	      FROM pgcolumnar.read_avro_manifest('$PV_BIN_M')")" "$(pv_expect bin)"
 
 # ---- no current snapshot: zero rows ----------------------------------------
 NOSNAP="$PGC_WORKDIR/no_current.metadata.json"
