@@ -1599,4 +1599,8 @@ guard_tests 854
 # cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
 # premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
 # collection: 5776 tests collected, less guard_tests 854.
-cluster_tests 5110
+# cluster_tests 5110 -> 5125 for #1886's and #1887's fifteen tests: one in test_arrow_import.py and four in
+# test_parallel_copy.py (a remote URL refused 0A000), one in test_iceberg_objstore.py (iceberg_current_snapshot
+# over s3) and nine in test_parquet_skip_cross_type.py (four cross-type pairs, skips and rows, and the file's
+# premise), by collection: `5979 tests collected`, less guard_tests 854.
+cluster_tests 5125

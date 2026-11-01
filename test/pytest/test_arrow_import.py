@@ -551,8 +551,10 @@ def test_a_remote_url_is_refused(pgc_conn, expect):
     message the server gave."""
     conn = pgc_conn
     _run(conn, "CREATE TABLE ia_remote (a bigint, b float8, c text) USING pgcolumnar")
-    for url, name in (("s3://pgc-bucket/m.arrow", "import_arrow refuses an s3:// URL with 0A000 (#1886)"),
-                      ("http://127.0.0.1:9/pgc-bucket/m.arrow",
-                       "import_arrow refuses an http:// URL with 0A000 (#1886)")):
-        expect.text(_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_remote', '{url}')"),
-                    f'0A000 columnar: import_arrow does not read "{url}"; it reads local files only', name)
+    s3, http = "s3://pgc-bucket/m.arrow", "http://127.0.0.1:9/pgc-bucket/m.arrow"
+    expect.text(_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_remote', '{s3}')"),
+                f'0A000 columnar: import_arrow does not read "{s3}"; it reads local files only',
+                "import_arrow refuses an s3:// URL with 0A000 (#1886)")
+    expect.text(_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_remote', '{http}')"),
+                f'0A000 columnar: import_arrow does not read "{http}"; it reads local files only',
+                "import_arrow refuses an http:// URL with 0A000 (#1886)")
