@@ -1125,6 +1125,22 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
 - A `TIMESTAMP` column with nanosecond precision is advised as `bigint`, which is
   exact; declaring it `timestamp` reads it with the sub-microsecond digits
   truncated.
+- A legacy `INT96` timestamp reads into `timestamp with time zone` or `timestamp`
+  only. Its nanosecond digits are rounded down to whole microseconds. A row group
+  of an `INT96` column is never skipped by its statistics, because the format
+  defines no order for them.
+- The reader takes every `INT96` value as an instant in UTC, as Spark and Hive
+  write it. Impala writes `INT96` as wall time with no time zone by default, so
+  an Impala file reads shifted. Read into `timestamp`, its values move by the
+  session time zone's offset. Read into `timestamp with time zone`, they are taken
+  as UTC instants. With the session time zone set to `UTC`, `timestamp` gets the
+  wall time Impala wrote. No real Impala file has been tested.
+- The reader checks that each column's `repetition_type` is REQUIRED, OPTIONAL or
+  REPEATED, and that the row groups add up to the footer's row count. It also
+  checks each level histogram against the schema, when the file has one. A file
+  without level histograms whose schema marks a column REQUIRED, while its pages
+  carry definition levels, still reads wrong values without an error. pyarrow 23
+  and 26 write the histograms by default.
 - The reader reads a file in parts and does not load the whole file. It holds the
   footer for the length of the scan. It reads the pages one at a time. Peak memory for the
   raw file data is one page, not one file, so file size is not a limit. What does
@@ -1142,12 +1158,26 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   query can return rows from both versions without an error. Garage v2.1.0 sends
   a strong ETag; we tested it. Amazon S3
   documents a strong ETag, but we have not tested against it.
+  The reader still checks the total length in each 206 `Content-Range`. When it
+  differs from the length the HEAD gave, the query fails. The query also fails
+  when a GET for bytes inside that length gets 416, because the object shrank. An overwrite that keeps
+  the length is not caught.
 - The reader treats a changed ETag as a changed object. Some servers send a
   different ETag for the same bytes on different requests. Nodes behind a load
   balancer can do this when each node builds the ETag from its own file time. A read
   from such a server fails with `changed while it was being read`, and running
-  the statement again can fail the same way. No setting turns the pin off yet
-  (#1866).
+  the statement again can fail the same way. Set `pgcolumnar.objstore_pin_reads`
+  to `off` for such a server (#1866). The read is then not pinned. If another
+  client overwrites the object during the read and keeps its length, the query
+  can return rows from both versions without an error. The length check stays on.
+- The reader pins by version id only when the HEAD sends `x-amz-version-id`
+  (#1867). It ignores the id `null`, which S3 gives an object written while
+  versioning was off. A GET that names a version needs the
+  `s3:GetObjectVersion` permission, and `s3:GetObject` alone is not enough. When
+  the store answers such a GET with 403, the reader asks again without the
+  version and keeps `If-Match`. That read is then pinned by ETag alone. We tested
+  the version pin and the 403 fallback against the suite's fixture server only. Garage v2.1.0 sends no `x-amz-version-id`, so a read from Garage
+  is pinned by ETag alone.
 
 ### Row-group skipping
 

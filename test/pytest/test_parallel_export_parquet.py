@@ -8,7 +8,8 @@ table split by row-group ranges and a partitioned one written one file per parti
 across 1, 2 and 4 workers: the rows returned, the read-back, one file per worker or
 partition, and an empty _SUCCESS marker (#394). Then: empty input; an export inside a
 transaction is the committed image (#329); a cancelled export leaves no files and no
-marker, and a retry into the directory succeeds; the destination-length guard (#863)
+marker, and a retry into the directory succeeds; a cancel does not return while a
+worker it held stopped still runs (#1864 review); the destination-length guard (#863)
 at both boundaries and in the window the old probe left open; the two refusals; and
 the backend survives.
 
@@ -28,6 +29,7 @@ most, inside the cluster's default max_worker_processes of 8.
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -213,6 +215,13 @@ def _length_arm(db, base, want, premise):
             "files": _nfiles(path), "success": _success(path), "created": _not_created(path, state)}
 
 
+def _signal_quietly(pid, sig):
+    try:
+        os.kill(pid, sig)
+    except OSError:
+        pass
+
+
 def _cancel_run(dsn, target, out):
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
@@ -315,6 +324,44 @@ def pep(pgc_cluster, server_dir):
         db.one(f"SELECT pgcolumnar.parallel_export_parquet('t_col'::regclass, '{cx}', 2)")
         r["retry"] = "yes" if _nfiles(cx) >= 1 else "no"
         r["retry marker"] = _success(cx)
+
+        # ---- a local cancel waits for the workers before it deletes (#1864 review)
+        lw = w / "cxw"
+        lw_out = []
+        bg = threading.Thread(target=_cancel_run, args=(dsn, lw, lw_out), daemon=True)
+        bg.start()
+        for _ in range(200):
+            if _anyfiles(lw) >= 1:
+                break
+            time.sleep(0.1)
+        worker = db.one("SELECT pid FROM pg_stat_activity "
+                        "WHERE backend_type = 'pgcolumnar parallel_export worker' LIMIT 1")
+        stopped, cont = False, None
+        try:
+            os.kill(int(worker), signal.SIGSTOP)
+            stopped = True
+            cont = threading.Timer(2.0, lambda: _signal_quietly(int(worker), signal.SIGCONT))
+            cont.start()
+        except (TypeError, ValueError, OSError):
+            pass
+        db.one("SELECT count(pg_cancel_backend(pid)) FROM pg_stat_activity "
+               "WHERE query LIKE '%parallel_export_parquet%' AND state = 'active' "
+               "AND pid <> pg_backend_pid()")
+        bg.join(timeout=180)
+        alive = 0
+        if stopped:
+            try:
+                os.kill(int(worker), 0)
+                alive = 1
+            except OSError:
+                pass
+        if cont is not None:
+            cont.join()
+        said = lw_out[0] if lw_out else "the export did not return"
+        r["lw stopped"] = "yes" if stopped else f"no (worker pid [{worker}])"
+        r["lw cancelled"] = ("cancelled" if re.search(r"canceling statement|canceled on user request", said, re.I)
+                             else f"completed ({said})")
+        r["lw alive"] = alive
 
         # ---- the destination-length guard (#863)
         premise = _premise(pgc_cluster)
@@ -492,6 +539,18 @@ def test_pexport_a_retry_into_the_cleaned_directory_succeeds(pep, expect):
 
 def test_pexport_the_retry_writes_a_fresh_marker(pep, expect):
     expect.text(pep["retry marker"], "yes", "the retry writes a fresh _SUCCESS marker")
+
+
+def test_pexport_local_stop_premise_a_worker_was_stopped(pep, expect):
+    expect.text(pep["lw stopped"], "yes", "premise: local stop: a worker was stopped before the cancel")
+
+
+def test_pexport_local_stop_premise_the_export_was_cancelled(pep, expect):
+    expect.text(pep["lw cancelled"], "cancelled", "premise: local stop: the export was cancelled, not completed")
+
+
+def test_pexport_local_stop_no_worker_runs_when_the_cancel_returns(pep, expect):
+    expect.num(pep["lw alive"], 0, "local stop: no worker is still running when the cancel returns")
 
 
 def test_pexport_accepted_boundary_length(pep, expect):

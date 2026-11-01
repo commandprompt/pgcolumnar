@@ -81,14 +81,19 @@ def nested(n):
 # read in a flat loop), then walk_schema descends the chain N-1 deep.
 #   0x29        FileMetaData field 2 (schema), type TC_LIST
 #   0xfc + ulen list header: long-form size, element type TC_STRUCT
-#   0x55 0x02   per element: field 5 (num_children) = zigzag(1), i.e. one child
+#   0x48 0x01 g per element: field 4 (name) = "g", a required field (#1852)
+#   0x15 0x02   then field 5 (num_children) = zigzag(1), i.e. one child
 #   0x00        element STOP
-#   final 0x00  leaf element (num_children defaults to 0), then struct STOP
+#   leaf        0x48 0x01 x 0x00: named "x", num_children defaults to 0
+#   0x16 0x00   FileMetaData field 3 (num_rows) = 0, a required field (#1852)
+#   0x19 0x0c   field 4 (row_groups), an empty list, a required field (#1852)
+#   final 0x00  FileMetaData STOP
 def walk_chain(n):
     m = bytearray(b'\x29\xfc')
     m += uleb(n)
-    m += b'\x55\x02\x00' * (n - 1)
-    m += b'\x00'          # leaf element
+    m += b'\x48\x01g\x15\x02\x00' * (n - 1)
+    m += b'\x48\x01x\x00'  # leaf element
+    m += b'\x16\x00\x19\x0c'  # num_rows 0, no row groups
     m += b'\x00'          # FileMetaData STOP
     return wrap(bytes(m))
 

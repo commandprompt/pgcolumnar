@@ -92,6 +92,7 @@ bool		pgcolumnar_enable_late_materialization = true;
 bool		pgcolumnar_enable_column_projection = true;
 bool		pgcolumnar_enable_bloom_filter = true;
 bool		pgcolumnar_objstore_buffered = true;	/* #393 */
+bool		pgcolumnar_objstore_pin_reads = true;	/* #1866 */
 int			pgcolumnar_objstore_part_size = 0;	/* #394 remote part size */
 char	   *pgcolumnar_objstore_allowed_endpoints = NULL;	/* #393 allow-list */
 char	   *pgcolumnar_objstore_s3_addressing = NULL;	/* #621 path|virtual */
@@ -4339,6 +4340,23 @@ _PG_init(void)
 							 "Coalesce remote Parquet reads to one request per column chunk.",
 							 NULL,
 							 &pgcolumnar_objstore_buffered,
+							 true,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+
+	/*
+	 * Pin each remote read to one version of the object (#1805, #1866). Read
+	 * by the object-store module via GetConfigOption when it opens an object.
+	 * Off sends no If-Match and no versionId, for a server whose ETag changes
+	 * from one request to the next for the same bytes.
+	 */
+	DefineCustomBoolVariable("pgcolumnar.objstore_pin_reads",
+							 "Pin each remote read to the version of the object it opened.",
+							 "On, every ranged GET sends the ETag from the opening HEAD as If-Match, "
+							 "and the version id when the store sends one. Off sends neither, so a "
+							 "read of an object overwritten mid-read can mix the two versions.",
+							 &pgcolumnar_objstore_pin_reads,
 							 true,
 							 PGC_USERSET,
 							 0,

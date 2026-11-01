@@ -382,7 +382,10 @@ Read-only support for Apache Iceberg tables at their current snapshot.
 
 - `pgcolumnar.iceberg_rest_scan(catalog_uri, namespace, table)` reads a table named
   by a catalog rather than a metadata path. `iceberg_rest_table_location`,
-  `iceberg_rest_namespaces`, and `iceberg_rest_tables` resolve and list a catalog.
+  `iceberg_rest_namespaces`, `iceberg_rest_namespace_levels`, and
+  `iceberg_rest_tables` resolve and list a catalog. A namespace is a dotted
+  `text` or a `text[]` of levels; the `text[]` form names a level that contains
+  a dot.
 - A bearer token comes from the `PGCOLUMNAR_ICEBERG_REST_TOKEN` environment
   variable. It can instead come per role from a foreign server and user mapping of
   the `pgcolumnar_iceberg_catalog` wrapper. The mapping holds the token in

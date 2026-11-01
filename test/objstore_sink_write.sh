@@ -443,6 +443,26 @@ check_num "bare bucket: the refused exports sent no PUT" "$(logn '^PUT ')" "0"
 check_num "bare bucket: no part object at the bucket root" \
 	"$(ls -p "$PGC_WORKDIR/$BUCKET/" 2>/dev/null | grep -c '^part-.*\.parquet$')" "0"
 
+# #1832: after the workers finish, the export lists its prefix to delete stale
+# parts, and only an s3:// prefix can be listed. A gs:// export used to upload
+# every part and then fail at that listing. It is now refused before any worker
+# starts, so nothing is uploaded.
+: > "$S3_LOG"
+check "gs:// prefix: a parallel export is refused before any worker starts, with no request sent" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 'gs://$BUCKET/gx', 2)" \
+		"parallel_export_parquet cannot write to" " by the scheme check"), $(logn 'gx/part-') requests" \
+	"0A000 by the scheme check, 0 requests"
+
+# #1849: the upload cleanup lists "<prefix>/". The dispatcher refuses a prefix
+# too long for the longest name it builds under it before any worker starts, so
+# a prefix whose "/" would not fit a MAXPGPATH buffer never reaches the cleanup.
+: > "$S3_LOG"
+LONGP="s3://$BUCKET/$(head -c $((1023 - ${#BUCKET} - 6)) /dev/zero | tr '\0' L)"
+check "long prefix: a 1023-byte s3:// prefix is refused as too long, with no request sent" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, '$LONGP', 2)" \
+		"parallel export destination is too long" " (too long)"), ${#LONGP} bytes, $(logn '^[A-Z]+ /pgc-bucket/LLLL') requests" \
+	"54000 (too long), 1023 bytes, 0 requests"
+
 # #1780: the workers obey the calling session's settings, not only the system's. A
 # background worker starts from postgresql.conf, so before the fix a session that SET
 # the allow-list to '' still had its workers upload part-0000, and the error came only
@@ -565,6 +585,71 @@ check "cancel: no _SUCCESS marker at the prefix" \
 check "cancel: the server holds no open upload under the prefix" \
 	"$(open_uploads '^pgc-bucket/cx/')" "0"
 
+# #1864: a cancel must not leave a part a worker was committing. The fixture
+# holds every single-request PUT for 3 s after its body arrives, and only then
+# writes the object (__put_hold__), as a store that applies a commit late. A
+# terminated worker waits for that answer (#1813). The dispatcher used to delete
+# the part keys at once, before the held PUTs were applied, so the parts appeared
+# afterwards and stayed. It now waits for the workers to exit first.
+: > "$S3_LOG"
+rm -rf "$PGC_WORKDIR/$BUCKET/ch"
+echo 3 > "$PGC_WORKDIR/__put_hold__"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/ch', 4)" \
+	>"$PGC_WORKDIR/ch_bg.out" 2>&1 &
+chpid=$!
+ch_puts=0
+for _ in $(seq 1 300); do
+	ch_puts="$(logn '^PUT /pgc-bucket/ch/part-')"
+	[ "$ch_puts" -ge 4 ] && break
+	sleep 0.1
+done
+q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+   WHERE query LIKE '%parallel_export_parquet%' AND state = 'active'
+     AND pid <> pg_backend_pid()" >/dev/null
+wait "$chpid" 2>/dev/null || true
+# a held PUT lands 3 s after it arrived; read the prefix once every hold is over
+sleep 4
+rm -f "$PGC_WORKDIR/__put_hold__"
+check "premise: commit hold: all four part PUTs reached the store before the cancel" \
+	"$([ "$ch_puts" -ge 4 ] && echo yes || echo "no ($ch_puts part PUTs)")" "yes"
+check "premise: commit hold: the export was cancelled, not completed" \
+	"$(grep -qiE 'canceling statement|canceled on user request' "$PGC_WORKDIR/ch_bg.out" && echo cancelled || echo "completed ($(head -1 "$PGC_WORKDIR/ch_bg.out"))")" "cancelled"
+check_num "commit hold: a cancel leaves no part that a worker was committing" \
+	"$(ls "$PGC_WORKDIR/$BUCKET/ch/" 2>/dev/null | grep -c 'part-.*\.parquet$')" "0"
+
+# #1864 review: the cancel waited for the workers twice, up to 5 s each: once
+# before it deleted the parts, and again before it aborted the open uploads. A
+# store that holds every commit for 12 s keeps each terminated worker alive past
+# both waits, so the cancel took about 10 s. One wait is enough: the cancel must
+# return within 8 s.
+: > "$S3_LOG"
+rm -rf "$PGC_WORKDIR/$BUCKET/cl"
+echo 12 > "$PGC_WORKDIR/__put_hold__"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://$BUCKET/cl', 4)" \
+	>"$PGC_WORKDIR/cl_bg.out" 2>&1 &
+clpid=$!
+cl_puts=0
+for _ in $(seq 1 300); do
+	cl_puts="$(logn '^PUT /pgc-bucket/cl/part-')"
+	[ "$cl_puts" -ge 4 ] && break
+	sleep 0.1
+done
+cl_t0=$(date +%s%N)
+q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+   WHERE query LIKE '%parallel_export_parquet%' AND state = 'active'
+     AND pid <> pg_backend_pid()" >/dev/null
+wait "$clpid" 2>/dev/null || true
+cl_ms=$(( ($(date +%s%N) - cl_t0) / 1000000 ))
+# a held PUT lands 12 s after it arrived; let every hold end before the next arm
+sleep 12
+rm -f "$PGC_WORKDIR/__put_hold__"
+check "premise: long hold: the export was cancelled, not completed" \
+	"$(grep -qiE 'canceling statement|canceled on user request' "$PGC_WORKDIR/cl_bg.out" && echo cancelled || echo "completed ($(head -1 "$PGC_WORKDIR/cl_bg.out"))")" "cancelled"
+check "long hold: a cancel waits for the workers once, not twice" \
+	"$([ "$cl_ms" -le 8000 ] && echo "at most 8000 ms" || echo "$cl_ms ms")" "at most 8000 ms"
+
 # #1727 review: a worker that SIGTERM ends aborts its upload in an exit callback, and a
 # store that stops answering must not hold it there. Each wait slice times out, so the
 # 60 s quiet limit ends the abort; without WL_TIMEOUT the wait never woke and the review
@@ -667,6 +752,13 @@ check "the http:// fault landed mid-multipart (an upload was started)" \
 	"$(pf_s="$(plogn '^POST /pb/fail.parquet uploads=')"; if [ "${pf_s:-0}" -ge 1 ]; then echo yes; else echo "no (starts=${pf_s:-?})"; fi)" "yes"
 check_num "http:// inject: the server holds no open upload for the key" \
 	"$(if [ -f "$PLAIN_DIR/__open_uploads__" ]; then grep -cE '^pb/fail\.parquet$' "$PLAIN_DIR/__open_uploads__" | tr -d ' '; else echo 0; fi)" "0"
+# #1832: an http:// prefix cannot be listed either, so it is refused before
+# any worker starts too.
+: > "$PLAIN_LOG"
+check "http:// prefix: a parallel export is refused before any worker starts, with no request sent" \
+	"$(refusal_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, '$PLAIN/px', 2)" \
+		"parallel_export_parquet cannot write to" " by the scheme check"), $(plogn '/pb/px/') requests" \
+	"0A000 by the scheme check, 0 requests"
 kill "$PLAIN_PID" 2>/dev/null
 PLAIN_PID=""
 
@@ -691,6 +783,12 @@ check "http:// 403: the hint says the request went unsigned, not to check AWS_* 
 check "s3:// 403: a signed request that is refused still hints to check AWS_* credentials" \
 	"$(hint_of "SELECT pgcolumnar.export_parquet('es_small', 's3://$DENIED_BUCKET/denied.parquet')")" \
 	"Check the AWS_* credential environment of the server process."
+# #1831: the refusal of a scheme the export cannot use said a remote prefix
+# cannot be listed. The export lists an s3:// prefix (#619), so the hint now
+# says that only an s3:// prefix can be listed.
+check "unsupported scheme: the parallel export's hint says only an s3:// prefix can be listed" \
+	"$(hint_of "SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 'az://container/out', 2)")" \
+	"The export lists its prefix to delete stale parts that an earlier, larger export left, and only an s3:// prefix can be listed. Use an s3:// prefix or a local directory."
 
 # ---- optional: a real S3 implementation (Garage) ----------------------------
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then

@@ -905,6 +905,12 @@ SELECT * FROM pgcolumnar.iceberg_rest_namespaces('https://catalog.example.com');
 SELECT * FROM pgcolumnar.iceberg_rest_tables('https://catalog.example.com', 'analytics');
 ```
 
+A dotted namespace such as `'analytics.daily'` is split into levels at every
+dot. To name a level that itself contains a dot, give the levels as a `text[]`,
+such as `ARRAY['analytics.v2']`. `iceberg_rest_namespace_levels` lists the
+namespaces in that form. See
+[Name a namespace](sql-reference.md#name-a-namespace).
+
 For per-role credentials, name a foreign server instead of a URI. The server
 holds the catalog URI. The current role's user mapping holds the bearer token,
 kept in `pg_user_mapping` where it is not world-readable. The role needs `USAGE`

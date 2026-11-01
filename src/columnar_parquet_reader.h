@@ -33,7 +33,8 @@ extern int64 PgColumnarReadParquetByFieldId(const char *path, TupleDesc tupdesc,
 											 Tuplestorestate *tupstore,
 											 TupleTableSlot *slot,
 											 const uint64 *skipPos, int nSkipPos,
-											 const PgColumnarObjStoreConfig *cfg);
+											 const PgColumnarObjStoreConfig *cfg,
+											 const char *caller);
 
 /*
  * As above, plus an Iceberg name mapping (schema.name-mapping.default): for a
@@ -50,6 +51,7 @@ extern int64 PgColumnarReadParquetByFieldIdNM(const char *path, TupleDesc tupdes
 											   const uint64 *skipPos,
 											   int nSkipPos,
 											   const bool *needTop,
-											   const PgColumnarObjStoreConfig *cfg);
+											   const PgColumnarObjStoreConfig *cfg,
+											   const char *caller);
 
 #endif							/* COLUMNAR_PARQUET_READER_H */
