@@ -40,8 +40,7 @@
 # A FOOTER THAT DOES NOT MATCH ITS PAGES (#1855, #1852). A column whose footer
 # says REQUIRED, while its pages carry definition levels, used to read the levels
 # as values. So did a repetition_type that is no valid value. Both are refused now,
-# and so is a footer whose row groups do not add up to its num_rows, and a list
-# group marked OPTIONAL whose pages carry repetition levels.
+# and so is a list group marked OPTIONAL whose pages carry repetition levels.
 #
 # INT96 VALUES THAT ARE NOT TIMESTAMPS (#1870). Nanoseconds outside the day, a
 # Julian day before timestamp's range, and a page shorter than its num_values
@@ -274,12 +273,6 @@ check "import_parquet refuses repetition_type REQUIRED over optional pages" \
 	"$(rep_verdict "SELECT pgcolumnar.import_parquet('imp_rep'::regclass, '$W/rep_required.parquet');" "$REP_HIST" XX001)" \
 	"CLEAN REJECT"
 
-# The row groups of rows_short.parquet hold 3000 rows, but its footer says 2000.
-REP_ROWS='The row groups hold 3000 rows, but the file declares num_rows 2000.'
-check "a footer num_rows the row groups do not add up to is refused" \
-	"$(rep_verdict "$REP_SUM('$W/rows_short.parquet') AS t(id bigint, name text);" "$REP_ROWS" XX001)" \
-	"CLEAN REJECT"
-
 # ---- a repetition_type that does not match the repetition levels (#1855) ---
 # lst_optional.parquet is lst_base.parquet, a list<int64> column, with its `list`
 # group marked OPTIONAL instead of REPEATED. The definition levels still fit the
@@ -324,6 +317,115 @@ check "an INT96 page shorter than its num_values is refused" \
 		-c '\set VERBOSITY verbose' -c "$I96_CNT('$W/i96_short.parquet') AS t(t timestamptz);" 2>&1 |
 		grep -E '^(ERROR|DETAIL):|^[0-9]+/[0-9]+$' | tr '\n' ' ')" \
 	"ERROR:  XX001: could not decode Parquet column 0 in row group 0 "
+
+# ---- malformed footer Thrift (#1822) ----------------------------------------
+# The crafter decoded a good 3000-row file's footer and wrote variants of it. A
+# field header with an invalid type nibble was skipped as zero bytes, so the parser
+# lost its place and could lose row_groups or a num_rows: 0 or 2000 rows came back
+# with no error. Each refusal is read as "SQLSTATE: message / detail" with the file
+# path masked, so the reading names the guard that fired. Each read is
+# "count/sum(id)", so a silent wrong answer shows its numbers.
+psql_run "CREATE FUNCTION pgc_err(q text) RETURNS text LANGUAGE plpgsql AS \$\$
+          DECLARE r text; d text;
+          BEGIN EXECUTE q INTO r; RETURN 'NO ERROR: ' || coalesce(r, '<null>');
+          EXCEPTION WHEN OTHERS OR query_canceled THEN
+            GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL;
+            RETURN SQLSTATE || ': ' || regexp_replace(SQLERRM, '\"[^\"]*\"', '\"<file>\"')
+                   || coalesce(' / ' || nullif(d, ''), ''); END \$\$;"
+# footer_read FILE -> "count/sum(id)" of the file, or the refusal
+footer_read() {
+	qw "SELECT pgc_err(\$q\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id bigint, name text)\$q\$);"
+}
+# pgc_timed Q -> pgc_err's reading, then "within 3 s" or "after N ms"
+psql_run "CREATE FUNCTION pgc_timed(q text) RETURNS text LANGUAGE plpgsql AS \$\$
+          DECLARE t0 timestamptz := clock_timestamp(); v text; ms bigint;
+          BEGIN v := pgc_err(q);
+            ms := (extract(epoch FROM clock_timestamp() - t0) * 1000)::bigint;
+            RETURN v || CASE WHEN ms < 3000 THEN ' within 3 s' ELSE ' after ' || ms || ' ms' END; END \$\$;"
+# footer_timed FILE -> footer_read's reading with the time it took
+footer_timed() {
+	qw "SELECT pgc_timed(\$q\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id bigint, name text)\$q\$);"
+}
+# footer_capped FILE -> footer_timed's reading under a 5 s statement_timeout, so a
+# skip that loops billions of times reads as 57014 after about 5000 ms
+footer_capped() {
+	PGOPTIONS='-c statement_timeout=5s' footer_timed "$1"
+}
+FOOTER_BEFORE="$(crashes)"
+UNPARSED='0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
+check "footer: the good file still reads"            "$(footer_read footer_good)"      "NO ERROR: 3000/4498500"
+check "footer: the re-encoded good file still reads" "$(footer_read footer_reencoded)" "NO ERROR: 3000/4498500"
+check "footer: an invalid type nibble on row_groups is refused" "$(footer_read nibble_row_groups)" "$UNPARSED"
+check "footer: an invalid type nibble on a num_rows is refused" "$(footer_read nibble_num_rows)"   "$UNPARSED"
+# Every field header in the footer, each set to type 15 in its own copy. The
+# reading names each copy that read without an error, with its answer.
+NSWEEP="$(cat "$W/nibble_sweep.count" 2>/dev/null)"
+check "footer: every invalid type nibble on a field header is refused" \
+	"$(qw "SELECT count(*) || ' of $NSWEEP read without an error' || coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '')
+	       FROM (SELECT i, pgc_err(format(\$f\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet(%L) AS t(id bigint, name text)\$f\$,
+	                                     '$W/nibble_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v
+	             FROM generate_series(0, ${NSWEEP:-0} - 1) AS i) s
+	      WHERE v LIKE 'NO ERROR%';")" \
+	"0 of $NSWEEP read without an error"
+# The same headers set to type 13 (UUID). The skip steps over 16 bytes, so a copy
+# may read, but only with the good file's answer. The reading names each copy
+# that read a different answer without an error.
+check "footer: no type-13 (UUID) nibble on a field header reads a wrong answer" \
+	"$(qw "SELECT count(*) || ' of $NSWEEP read a wrong answer' || coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '')
+	       FROM (SELECT i, pgc_err(format(\$f\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet(%L) AS t(id bigint, name text)\$f\$,
+	                                     '$W/uuid_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v
+	             FROM generate_series(0, ${NSWEEP:-0} - 1) AS i) s
+	      WHERE v LIKE 'NO ERROR%' AND v <> 'NO ERROR: 3000/4498500';")" \
+	"0 of $NSWEEP read a wrong answer"
+check "footer: no row_groups field is refused" "$(footer_read no_row_groups)" \
+	'XX001: Parquet file "<file>" has a malformed footer / The footer has no row_groups field.'
+check "footer: a row group with no num_rows is refused" "$(footer_read no_rg_num_rows)" \
+	'XX001: Parquet file "<file>" has a malformed row group / Row group 2 has no num_rows field.'
+check "footer: no file num_rows is refused" "$(footer_read no_file_num_rows)" \
+	'XX001: Parquet file "<file>" has a malformed footer / The footer has no num_rows field.'
+check "footer: a file num_rows that differs from its row groups is refused" "$(footer_read file_num_rows_2999)" \
+	'XX001: Parquet file "<file>" has a malformed footer / The footer declares num_rows 2999, but its row groups hold 3000 rows.'
+# The other direction loses rows: row group 3 says 999, the footer says 3000. A
+# num_rows below a column's value count is legal (a repeated column), so the total
+# check is the only guard. Checking only "total > num_rows" read 2999 rows.
+check "footer: a row group num_rows below the footer's total is refused" "$(footer_read rg3_999)" \
+	'XX001: Parquet file "<file>" has a malformed footer / The footer declares num_rows 3000, but its row groups hold 2999 rows.'
+check "footer: a file num_rows above its row groups' total is refused" "$(footer_read file_num_rows_3001)" \
+	'XX001: Parquet file "<file>" has a malformed footer / The footer declares num_rows 3001, but its row groups hold 3000 rows.'
+# A type-0 nibble with a field-id delta is not STOP (only the byte 0x00 is). Read as
+# STOP, the footer ended before row_groups and a later check refused it instead.
+check "footer: a type-0 nibble with a field-id delta is refused as corrupt" "$(footer_read nibble0_row_groups)" "$UNPARSED"
+check "footer: an unknown map field is skipped whole"     "$(footer_read unknown_map_field)"       "NO ERROR: 3000/4498500"
+check "footer: an unknown list of bools is skipped whole" "$(footer_read unknown_bool_list_field)" "NO ERROR: 3000/4498500"
+# Type 13 is UUID: a 16-byte value. parquet.thrift has none, but the skip must
+# step over one whole, as it does any other unknown field.
+check "footer: an unknown UUID field is skipped whole"      "$(footer_read unknown_uuid_field)"      "NO ERROR: 3000/4498500"
+check "footer: an unknown list of UUIDs is skipped whole"   "$(footer_read unknown_uuid_list_field)" "NO ERROR: 3000/4498500"
+# A list element of a type that is not a compact type has no known size. The
+# skip refuses it; skipped as zero bytes, the list vanished and the file read.
+check "footer: a list whose element type is not a compact type is refused" "$(footer_read list_of_type_14)" "$UNPARSED"
+# The same refusal on a list of 4294967295 elements of type 15. Skipped as zero
+# bytes, each element passed and the loop ran until the 5 s timeout.
+check "footer: a huge list whose element type is not a compact type is refused at once" \
+	"$(footer_capped list_elem15_huge)" "$UNPARSED within 3 s"
+# A list of 4294967295 bytes or doubles that runs off the footer's end. The skip
+# refuses the first element that does not fit. Stepping past the end without an
+# error ran every element first: seconds of work from a few bytes of footer.
+check "footer: a list of bytes that runs off the footer is refused at once" \
+	"$(footer_timed byte_list_off_end)" "$UNPARSED within 3 s"
+check "footer: a list of doubles that runs off the footer is refused at once" \
+	"$(footer_timed double_list_off_end)" "$UNPARSED within 3 s"
+# The `id` schema element without its name, a required field. A changed byte that
+# ends the element early leaves the rest of the footer read as something else.
+check "footer: a schema element with no name is refused" "$(footer_read no_schema_name)" "$UNPARSED"
+# The `id` element's repetition_type set to 2^32, and the level histograms dropped.
+# A cast to int read 2^32 as 0 (REQUIRED), and the definition levels then read as
+# values. The file without histograms, and nothing else changed, still reads.
+check "footer: the file without level histograms still reads" "$(footer_read rep_nohist)" "NO ERROR: 3000/4498500"
+check "footer: a repetition_type of 2^32 is refused, not read as REQUIRED" \
+	"$(footer_read rep_wide_nohist)" \
+	'XX001: Parquet file "<file>" has a malformed schema / Schema element "id" has repetition_type 4294967296; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).'
+check "backend survived the malformed footers" "$(survived "$FOOTER_BEFORE")" "1"
 
 # ---- string cells that are not valid in the server encoding (#1821) --------
 # A database created as UTF8 whatever the cluster's encoding (see the header).

@@ -121,7 +121,8 @@ typedef struct PexportSpawn
 PGDLLEXPORT void pgcolumnar_parallel_export_worker(Datum main_arg);
 
 /*
- * The settings the object-store module reads by name (#1780). A background
+ * The caller's settings a worker needs: the ones the object-store module
+ * reads by name (#1780), and the Parquet writer's byte cap (#1811). A background
  * worker gets postgresql.conf, ALTER SYSTEM, and the ALTER ROLE and ALTER
  * DATABASE settings applied when it connects, but never the caller's SET, so
  * without these a worker ignored the caller's SET: it uploaded to an endpoint the session
@@ -133,6 +134,7 @@ static const char *const pexport_session_gucs[] = {
 	"pgcolumnar.objstore_allowed_endpoints",
 	"pgcolumnar.objstore_s3_addressing",
 	"pgcolumnar.objstore_part_size",
+	"pgcolumnar.export_group_bytes",	/* the Parquet writer's byte cap (#1811) */
 };
 #define PEXPORT_NGUCS lengthof(pexport_session_gucs)
 

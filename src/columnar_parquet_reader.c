@@ -68,6 +68,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
+#include "parser/parse_coerce.h"
 #include "storage/fd.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -136,7 +137,8 @@ PG_FUNCTION_INFO_V1(pgcolumnar_parquet_fdw_validator);
 typedef struct PqSchemaCol
 {
 	int			phys_type;		/* PQ_* physical type (-1 for a group) */
-	int			repetition;		/* 0 required, 1 optional, 2 repeated */
+	int64		repetition;		/* 0 required, 1 optional, 2 repeated; as stored, so
+								 * a wide value is not truncated into 0..2 */
 	int			converted_type;	/* -1 if none */
 	int			time_unit;		/* PQ_TU_* for a TIME/TIMESTAMP column */
 	bool		is_timestamp;	/* the unit belongs to TIMESTAMP, not TIME */
@@ -191,6 +193,7 @@ typedef struct PqChunk
 typedef struct PqRowGroup
 {
 	int64		num_rows;
+	bool		has_num_rows;	/* num_rows (required) was present */
 	PqChunk    *chunks;			/* [nchunks]; consumers index by ncols, so a value
 								 * read path must call pq_check_row_groups() first */
 	int			nchunks;		/* column chunks this row group actually carries */
@@ -205,7 +208,9 @@ typedef struct PqFile
 	int			ntop;			/* top-level columns (root's children) */
 	int			nrowgroups;
 	PqRowGroup *rgs;
-	int64		num_rows;		/* FileMetaData field 3: the rows in every row group */
+	bool		has_row_groups; /* row_groups (required) was present */
+	bool		has_num_rows;	/* num_rows (required) was present */
+	int64		num_rows;		/* the footer's own total of rows */
 } PqFile;
 
 /*
@@ -549,7 +554,7 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 				sc->type_length = (int) PgColumnarThriftZigzag(r);
 				break;
 			case 3:				/* repetition_type */
-				sc->repetition = (int) PgColumnarThriftZigzag(r);
+				sc->repetition = PgColumnarThriftZigzag(r);
 				break;
 			case 4:				/* name */
 				{
@@ -670,9 +675,6 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 {
 	TCReader	r = {buf, len, 0, false};
 	int			lastId = 0;
-	bool		haveSchema = false;
-	bool		haveNumRows = false;
-	bool		haveRowGroups = false;
 	int			e;
 
 	pf->ncols = 0;
@@ -682,6 +684,8 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 	pf->ntop = 0;
 	pf->nrowgroups = 0;
 	pf->rgs = NULL;
+	pf->has_row_groups = false;
+	pf->has_num_rows = false;
 	pf->num_rows = 0;
 
 	for (;;)
@@ -704,12 +708,6 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 				parse_schema_element(&r, &tmp[i]);
 			pf->nelems = (int) n;
 			pf->elems = tmp;
-			haveSchema = true;
-		}
-		else if (fid == 3)		/* num_rows */
-		{
-			pf->num_rows = PgColumnarThriftZigzag(&r);
-			haveNumRows = true;
 		}
 		else if (fid == 4 && ft == TC_LIST)		/* row_groups */
 		{
@@ -718,8 +716,8 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 			uint32		i;
 
 			pf->nrowgroups = n;
+			pf->has_row_groups = true;
 			pf->rgs = palloc0(sizeof(PqRowGroup) * Max(n, 1));
-			haveRowGroups = true;
 			for (i = 0; i < n && !r.error; i++)
 			{
 				PqRowGroup *rg = &pf->rgs[i];
@@ -747,11 +745,19 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 							parse_column_chunk(&r, &rg->chunks[ci]);
 					}
 					else if (rfid == 3)		/* num_rows */
+					{
 						rg->num_rows = PgColumnarThriftZigzag(&r);
+						rg->has_num_rows = true;
+					}
 					else
 						PgColumnarThriftSkip(&r, rft);
 				}
 			}
+		}
+		else if (fid == 3 && (ft == TC_I64 || ft == TC_I32 || ft == TC_I16))	/* num_rows */
+		{
+			pf->num_rows = PgColumnarThriftZigzag(&r);
+			pf->has_num_rows = true;
 		}
 		else
 			PgColumnarThriftSkip(&r, ft);
@@ -761,14 +767,12 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 		return false;
 
 	/*
-	 * schema, num_rows and row_groups are required fields of FileMetaData, and
-	 * name is a required field of SchemaElement. A footer that lacks one did not
-	 * parse as the writer wrote it: a single changed byte can end a struct early
-	 * and leave the rest of the footer read as something else. Such a footer
-	 * used to read as a file of zero rows, with no error (#1852).
+	 * name is a required field of SchemaElement. An element that lacks one did
+	 * not parse as the writer wrote it: a single changed byte can end the struct
+	 * early and leave the rest of the footer read as something else (#1852). A
+	 * missing schema leaves nelems at 0 and is refused above; a missing num_rows
+	 * or row_groups is refused by pq_check_row_groups() (#1822).
 	 */
-	if (!haveSchema || !haveNumRows || !haveRowGroups)
-		return false;
 	for (e = 0; e < pf->nelems; e++)
 		if (pf->elems[e].name == NULL)
 			return false;
@@ -836,10 +840,34 @@ pq_check_row_groups(const PqFile *pf, const char *path)
 	int			rg;
 	int64		total = 0;
 
+	/*
+	 * row_groups, each row group's num_rows and the footer's num_rows are all
+	 * required. When one is missing, the reader counted that part as 0 rows and
+	 * returned a short answer with no error (#1822). The footer's total must
+	 * also match the row groups' sum, which catches a corrupt count that still
+	 * parses.
+	 */
+	if (!pf->has_row_groups)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer has no row_groups field.")));
+	if (!pf->has_num_rows)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer has no num_rows field.")));
+
 	for (rg = 0; rg < pf->nrowgroups; rg++)
 	{
 		PqRowGroup *g = &pf->rgs[rg];
 		int			ci;
+
+		if (!g->has_num_rows)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("Parquet file \"%s\" has a malformed row group", path),
+					 errdetail("Row group %d has no num_rows field.", rg)));
 
 		if (g->chunks == NULL || g->nchunks != pf->ncols)
 			ereport(ERROR,
@@ -922,20 +950,22 @@ pq_check_row_groups(const PqFile *pf, const char *path)
 									   rg, ci, nm, (long) ch->rep_hist_len, lf->max_rep)));
 			}
 		}
+
+		/*
+		 * Each num_rows is now 0..MaxAllocSize/sizeof(Datum), so the sum cannot
+		 * overflow. The bound comes from the chunk loop above, which runs for
+		 * every row group: parse_file_metadata() refuses a schema with no leaf
+		 * column, and nchunks equals ncols here.
+		 */
 		total += g->num_rows;
 	}
 
-	/*
-	 * The row groups hold every row of the file, so their num_rows must add up
-	 * to the footer's own num_rows. Each is at most MaxAllocSize / sizeof(Datum)
-	 * by the checks above (num_rows <= num_values), so the sum cannot overflow.
-	 */
 	if (total != pf->num_rows)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("Parquet file \"%s\" has a malformed row group", path),
-				 errdetail("The row groups hold %ld rows, but the file declares num_rows %ld.",
-						   (long) total, (long) pf->num_rows)));
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer declares num_rows %ld, but its row groups hold %ld rows.",
+						   (long) pf->num_rows, (long) total)));
 }
 
 /* -------------------------------------------------------------------------
@@ -1058,6 +1088,9 @@ typedef struct PqColPlan
 	bool		is_decimal;		/* the bytes are a DECIMAL unscaled integer */
 	bool		is_unsigned;	/* the INT32/INT64 bits are an unsigned value */
 	int			ts_shift;		/* PQ_TS_*: a cast between wall time and instant */
+	int32		typmod;			/* declared typmod of the target, or -1 */
+	bool		coerce;			/* apply coerce_fn to each returned value */
+	FmgrInfo	coerce_fn;		/* the type's length coercion function (#1790) */
 	const char *colname;		/* the leaf's Parquet name, for error messages */
 } PqColPlan;
 
@@ -1505,8 +1538,10 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 				/*
 				 * The legacy INT96 timestamp (#1870): 8 bytes of nanoseconds into
 				 * the day, then 4 bytes of Julian day number, both little-endian.
-				 * Spark, Hive and Impala write it for an instant in UTC. The
-				 * nanoseconds are rounded down to whole microseconds; both parts
+				 * Spark and Hive write it for an instant in UTC, and the reader
+				 * takes every INT96 value that way. Impala writes wall time with
+				 * no zone by default, so its values come out shifted; see
+				 * docs/limitations.md. The nanoseconds are rounded down to whole microseconds; both parts
 				 * are non-negative in a valid value, so that is the floor of the
 				 * instant, before 1970 as after it.
 				 */
@@ -2077,7 +2112,9 @@ pq_source_open_cfg(const char *path, PqSource *src, PqFile *pf,
 		 */
 		src->winCtx = CurrentMemoryContext;
 		src->api = api;
-		src->priv = (void *) api->open(path, cfg, &src->len);
+		/* the vended credential for THIS object (#1820), or a refusal */
+		src->priv = (void *) api->open(path, PgColumnarObjStoreConfigFor(cfg, path),
+									   &src->len);
 		src->ops = &pq_remote_ops;
 	}
 	else
@@ -2137,7 +2174,7 @@ pq_source_open_cfg(const char *path, PqSource *src, PqFile *pf,
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("Parquet file \"%s\" has a malformed schema", path),
-					 errdetail("Schema element \"%s\" has repetition_type %d; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).",
+					 errdetail("Schema element \"%s\" has repetition_type " INT64_FORMAT "; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).",
 							   bad->name, bad->repetition)));
 		}
 	}
@@ -2657,9 +2694,52 @@ pq_plan_bind_schema(PqColPlan *plan, const PqSchemaCol *sc)
 		plan->ts_shift = PQ_TS_WALL_TO_INSTANT;
 	else if (sc->is_timestamp && sc->adjusted_utc && plan->typid == TIMESTAMPOID)
 		plan->ts_shift = PQ_TS_INSTANT_TO_WALL;
-	/* an INT96 timestamp is an instant in UTC (#1870), whatever it is annotated */
+	/* an INT96 timestamp is read as an instant in UTC (#1870), whatever it is
+	 * annotated; Impala's wall-time INT96 is the documented exception */
 	else if (sc->phys_type == PQ_INT96 && plan->typid == TIMESTAMPOID)
 		plan->ts_shift = PQ_TS_INSTANT_TO_WALL;
+}
+
+/*
+ * Record the target's declared typmod on a leaf plan (#1790). Called at each bind
+ * site after pq_plan_bind_schema. The executor adds no length coercion above a scan
+ * whose tuple descriptor already carries the typmod, so the reader must apply it
+ * itself, as PostgreSQL's input functions do: numeric(p,s) rounds to scale s and
+ * refuses an overflow, and varchar(n) refuses a longer value unless the excess is
+ * spaces. The type's own length coercion function does exactly that when it is
+ * called as an implicit (not explicit) cast.
+ *
+ * No coercion is set up when it can change no value: a DECIMAL whose scale equals
+ * the declared scale and whose precision fits the declared precision, or a time or
+ * timestamp at full microsecond precision. That keeps the per-value call off the
+ * common path, and keeps row-group skipping, which must decline for a leaf whose
+ * returned values can differ from its stored statistics.
+ */
+static void
+pq_plan_set_typmod(PqColPlan *plan, int32 typmod, const PqSchemaCol *sc)
+{
+	Oid			funcid;
+
+	plan->typmod = typmod;
+	plan->coerce = false;
+	if (typmod < 0)
+		return;
+	if (plan->is_decimal && pq_decimal_bounds_ok(sc) && typmod >= VARHDRSZ)
+	{
+		int32		tm = typmod - VARHDRSZ;
+		int			precision = (tm >> 16) & 0xffff;
+		int			scale = ((tm & 0x7ff) ^ 1024) - 1024;
+
+		if (sc->scale == scale && sc->precision <= precision)
+			return;
+	}
+	if ((plan->typid == TIMESTAMPOID || plan->typid == TIMESTAMPTZOID ||
+		 plan->typid == TIMEOID) && typmod >= MAX_TIMESTAMP_PRECISION)
+		return;
+	if (find_typmod_coercion_function(plan->typid, &funcid) != COERCION_PATH_FUNC)
+		return;
+	fmgr_info(funcid, &plan->coerce_fn);
+	plan->coerce = true;
 }
 
 /*
@@ -2947,6 +3027,24 @@ typedef struct ImpTop
 }			ImpTop;
 
 /*
+ * Take a leaf's next present value, applying the declared typmod when the row will
+ * be returned (#1790). A row that a position or equality delete removes is still
+ * assembled, to consume its values, but is not coerced: a value that breaks the
+ * typmod in a deleted row must not fail the scan, since the row is not part of the
+ * table.
+ */
+static inline Datum
+pq_take_value(ImpLeaf *l, bool coerce)
+{
+	Datum		d = l->vals[l->vi++];
+
+	if (coerce && l->plan.coerce)
+		d = FunctionCall3(&l->plan.coerce_fn, d,
+						  Int32GetDatum(l->plan.typmod), BoolGetDatum(false));
+	return d;
+}
+
+/*
  * Build the target tree from the tuple descriptor and bind each leaf to a
  * Parquet leaf column (validating physical type and Dremel level bounds).
  * Returns the tops array; sets the leaves array and top count via out-params.
@@ -3023,6 +3121,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 			get_typlenbyval(elemtype, &l->plan.typlen, &l->plan.typbyval);
 			l->plan.expect_phys = want;
 			pq_plan_bind_schema(&l->plan, pf->leaves[lf].sc);
+			/* an array column's typmod is its element's */
+			pq_plan_set_typmod(&l->plan, att->atttypmod, pf->leaves[lf].sc);
 			l->max_def = pf->leaves[lf].max_def;
 			l->max_rep = pf->leaves[lf].max_rep;
 			lf++;
@@ -3077,6 +3177,7 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 				get_typlenbyval(fa->atttypid, &l->plan.typlen, &l->plan.typbyval);
 				l->plan.expect_phys = want;
 				pq_plan_bind_schema(&l->plan, pf->leaves[lf].sc);
+				pq_plan_set_typmod(&l->plan, fa->atttypmod, pf->leaves[lf].sc);
 				l->max_def = pf->leaves[lf].max_def;
 				l->max_rep = pf->leaves[lf].max_rep;
 				t->fieldLeaf[a] = lf;
@@ -3108,6 +3209,7 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 			get_typlenbyval(typid, &l->plan.typlen, &l->plan.typbyval);
 			l->plan.expect_phys = want;
 			pq_plan_bind_schema(&l->plan, pf->leaves[lf].sc);
+			pq_plan_set_typmod(&l->plan, att->atttypmod, pf->leaves[lf].sc);
 			l->max_def = pf->leaves[lf].max_def;
 			l->max_rep = pf->leaves[lf].max_rep;
 			lf++;
@@ -3347,6 +3449,7 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 		get_typlenbyval(typid, &l->plan.typlen, &l->plan.typbyval);
 		l->plan.expect_phys = want;
 		pq_plan_bind_schema(&l->plan, pf->leaves[found].sc);
+		pq_plan_set_typmod(&l->plan, att->atttypmod, pf->leaves[found].sc);
 		l->max_def = pf->leaves[found].max_def;
 		l->max_rep = pf->leaves[found].max_rep;
 		nt++;
@@ -3628,7 +3731,8 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		else
 			listUrl = pstrdup(path);
 
-		keys = api->list_objects(listUrl, cfg, &nkeys);
+		keys = api->list_objects(listUrl, PgColumnarObjStoreConfigFor(cfg, listUrl),
+								 &nkeys);
 		for (i = 0; i < nkeys; i++)
 		{
 			if (!pq_has_parquet_ext(keys[i]))
@@ -3896,6 +4000,26 @@ pq_read_rows(PqFile *pf, PqSource *src,
 		for (r = 0; r < n; r++)
 		{
 			MemoryContext rowOld;
+			uint64		ord = (uint64) (grpBase + r);
+			bool		deleted = false;
+
+			/*
+			 * Position deletes (#388 phase 4): the row is dropped if its file
+			 * ordinal is in the sorted skipPos set. Ordinals ascend monotonically,
+			 * so a single moving cursor over the sorted set suffices. Decided
+			 * before the row is assembled, so a deleted row's values are not
+			 * coerced to the declared typmod (#1790).
+			 */
+			if (skipPos != NULL)
+			{
+				while (skipIdx < nSkipPos && skipPos[skipIdx] < ord)
+					skipIdx++;
+				if (skipIdx < nSkipPos && skipPos[skipIdx] == ord)
+				{
+					deleted = true;
+					skipIdx++;
+				}
+			}
 
 			ExecClearTuple(slot);
 			for (i = 0; i < natts; i++)
@@ -3939,7 +4063,7 @@ pq_read_rows(PqFile *pf, PqSource *src,
 					pq_require_entry(l);
 					present = (l->defs[l->ei] == (uint32) l->max_def);
 
-					slot->tts_values[tp->attno] = present ? l->vals[l->vi++] : (Datum) 0;
+					slot->tts_values[tp->attno] = present ? pq_take_value(l, !deleted) : (Datum) 0;
 					slot->tts_isnull[tp->attno] = !present;
 					l->ei++;
 				}
@@ -3982,7 +4106,7 @@ pq_read_rows(PqFile *pf, PqSource *src,
 
 							if (d == (uint32) l->max_def)
 							{
-								elems[k] = l->vals[l->vi++];
+								elems[k] = pq_take_value(l, !deleted);
 								enulls[k] = false;
 							}
 							else
@@ -4029,7 +4153,7 @@ pq_read_rows(PqFile *pf, PqSource *src,
 							structNull = true;	/* every field agrees */
 						if (d == (uint32) l->max_def)
 						{
-							fv[a] = l->vals[l->vi++];
+							fv[a] = pq_take_value(l, !deleted);
 							fn[a] = false;
 						}
 						else
@@ -4055,31 +4179,13 @@ pq_read_rows(PqFile *pf, PqSource *src,
 			ExecStoreVirtualTuple(slot);
 
 			/*
-			 * Position deletes (#388 phase 4): drop the row if its file ordinal
-			 * is in the sorted skipPos set. The row was still fully assembled
-			 * above (which consumes its values from the leaf streams); only the
-			 * sink is withheld. Ordinals ascend monotonically, so a single moving
-			 * cursor over the sorted set suffices.
+			 * A deleted row was still fully assembled above, which consumes its
+			 * values from the leaf streams; only the sink is withheld.
 			 */
+			if (!deleted)
 			{
-				uint64		ord = (uint64) (grpBase + r);
-				bool		deleted = false;
-
-				if (skipPos != NULL)
-				{
-					while (skipIdx < nSkipPos && skipPos[skipIdx] < ord)
-						skipIdx++;
-					if (skipIdx < nSkipPos && skipPos[skipIdx] == ord)
-					{
-						deleted = true;
-						skipIdx++;
-					}
-				}
-				if (!deleted)
-				{
-					sink(slot, sinkarg);
-					total++;
-				}
+				sink(slot, sinkarg);
+				total++;
 			}
 			MemoryContextSwitchTo(rowOld);
 			MemoryContextReset(rowCtx);
@@ -5068,6 +5174,13 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 	 */
 	if (leaf->plan.ts_shift != PQ_TS_NONE)
 		return false;
+	/*
+	 * A declared typmod that can change a value (#1790): numeric(18,1) returns a
+	 * stored 99.99 as 100.0, beyond the stored max, so the statistics need not
+	 * bound the returned rows: never skip.
+	 */
+	if (leaf->plan.coerce)
+		return false;
 
 	tce = lookup_type_cache(leaf->plan.typid, TYPECACHE_CMP_PROC_FINFO);
 	if (!OidIsValid(tce->cmp_proc_finfo.fn_oid))
@@ -5356,8 +5469,17 @@ pqfdw_compute_needed(ForeignScanState *node, ImpTop *tops, int ntops,
 static void
 pqfdw_objstore_config(Oid foreigntableid, PgColumnarObjStoreConfig *cfg)
 {
-	ForeignTable *ft = GetForeignTable(foreigntableid);
-	ForeignServer *server = GetForeignServer(ft->serverid);
+	PgColumnarObjStoreConfigForServer(GetForeignTable(foreigntableid)->serverid, cfg);
+}
+
+/*
+ * The resolution itself, keyed by server, so the writer that tier_partition
+ * uses resolves exactly what a read of the foreign partition will (#1795).
+ */
+void
+PgColumnarObjStoreConfigForServer(Oid serverid, PgColumnarObjStoreConfig *cfg)
+{
+	ForeignServer *server = GetForeignServer(serverid);
 	HeapTuple	tp;
 	List	   *umoptions = NIL;
 	bool		credRequired = true;

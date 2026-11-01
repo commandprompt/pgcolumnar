@@ -166,6 +166,7 @@ WRONG_FIRST=""
 same=0
 agree=0
 unjudged=0
+UNJUDGED_FIRST=""
 LAST_OUT=""
 LAST_KIND=""
 
@@ -307,6 +308,18 @@ run_stmt() {
 	return 0
 }
 
+# mutant_diff SEED MUTANT -> where the mutant differs from its seed: the sizes, the
+# number of bytes that differ, and the first difference as offset and old -> new byte
+mutant_diff() {
+	python3 - "$1" "$2" <<'PY'
+import sys
+a, b = (open(f, "rb").read() for f in sys.argv[1:3])
+d = [i for i in range(min(len(a), len(b))) if a[i] != b[i]]
+first = f"first at byte {d[0]}: 0x{a[d[0]]:02x} -> 0x{b[d[0]]:02x}" if d else "no byte differs in the common length"
+print(f"{len(a)} -> {len(b)} bytes, {len(d)} differ, {first}")
+PY
+}
+
 # judge SEEDIDX MUTSEED STMT LABEL: the result oracle, for a read that raised no
 # error. The answer must equal the seed's, or pgColumnar's answer for pyarrow's
 # rewrite of the mutant. LABEL says where the mutant came from, for the finding.
@@ -334,11 +347,15 @@ judge() {
 				# pyarrow read the mutant as something the seed's column list does
 				# not bind, so there is no second answer to compare with
 				unjudged=$((unjudged + 1))
+				[ -n "$UNJUDGED_FIRST" ] ||
+					UNJUDGED_FIRST="$label: pgColumnar read [$got]; pyarrow's rewrite reads [$rw]"
 				return 0 ;;
 		esac
 		why="pyarrow reads [$rw]"
 	elif [ "$rc" != 2 ]; then
 		unjudged=$((unjudged + 1))
+		[ -n "$UNJUDGED_FIRST" ] ||
+			UNJUDGED_FIRST="$label: pgColumnar read [$got]; the oracle exited $rc: $why"
 		return 0
 	fi
 	wrong=$((wrong + 1))
@@ -369,7 +386,7 @@ for ((i = 0; i < ${ITERS_RUN-$ITERS}; i++)); do
 	run_stmt "SELECT * FROM pgcolumnar.parquet_schema('$MUT');" "$sf" "$ms"
 	stmt="$(answer_sql "$MUT" "$cols")"
 	run_stmt "$stmt" "$sf" "$ms" && [ "$LAST_KIND" = clean ] &&
-		judge "$idx" "$ms" "$stmt" "seed=$ms from $(basename "$sf")"
+		judge "$idx" "$ms" "$stmt" "seed=$ms from $(basename "$sf") ($(mutant_diff "$sf" "$MUT"))"
 
 	# import_parquet writes, so it reaches the insert path as well as the decoder.
 	psql_run "DROP TABLE IF EXISTS fz_target; CREATE TABLE fz_target ($cols) USING pgcolumnar;" \
@@ -432,6 +449,10 @@ check "every mutant was generated and ran its three statements" \
 # The result oracle (#1852): a mutant that reads without an error reads the right rows.
 check "no mutant that reads returned a wrong answer" \
 	"$wrong${WRONG_FIRST:+ (first: $WRONG_FIRST)}" "0"
+# A read the oracle could not judge proves nothing either way: pyarrow's rewrite
+# did not bind the seed's column list, or the oracle timed out or crashed (#1882).
+check "every read that differed from the seed was judged" \
+	"$unjudged${UNJUDGED_FIRST:+ (first: $UNJUDGED_FIRST)}" "0"
 check "every schema-sweep copy ran its read" \
 	"$sweep_ran/$sweep_gen" "$([ "$sweep_gen" -gt 0 ] && echo "$sweep_gen/$sweep_gen" || echo "at least one copy")"
 # An oracle that never compared an answer passes for the wrong reason.

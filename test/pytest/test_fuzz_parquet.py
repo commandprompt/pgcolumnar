@@ -162,6 +162,16 @@ def _answer(dsn, path, cols):
     return "" if row is None or row[0] is None else str(row[0])
 
 
+def _mutant_diff(seed, mut):
+    """-> where the mutant differs from its seed: the sizes, the number of bytes that
+    differ, and the first difference as offset and old -> new byte."""
+    a, b = pathlib.Path(seed).read_bytes(), pathlib.Path(mut).read_bytes()
+    d = [i for i in range(min(len(a), len(b))) if a[i] != b[i]]
+    first = (f"first at byte {d[0]}: 0x{a[d[0]]:02x} -> 0x{b[d[0]]:02x}" if d
+             else "no byte differs in the common length")
+    return f"{len(a)} -> {len(b)} bytes, {len(d)} differ, {first}"
+
+
 def _oracle(mut, rewrite):
     """-> (rc, last line): pyarrow's rewrite of `mut`, as the shell runs it."""
     rewrite.unlink(missing_ok=True)
@@ -228,7 +238,7 @@ def fz(pgc_cluster, server_dir):
                 differ.append(f"{pathlib.Path(path).name}: [{ans}] vs [{rw}]")
         r["seeds agree"] = f"{agree}/{nread}" + (f" (differ: {' '.join(differ)})" if differ else "")
         r["seeds read"] = nread
-        o = dict(same=0, agree=0, wrong=0, unjudged=0, first="")
+        o = dict(same=0, agree=0, wrong=0, unjudged=0, first="", unjudged_first="")
 
         def judge(idx, mut, out, label):
             got, want = out, seedans[idx]
@@ -243,10 +253,14 @@ def fz(pgc_cluster, server_dir):
                     return
                 if rw.startswith(QUERY_ERROR):
                     o["unjudged"] += 1
+                    o["unjudged_first"] = (o["unjudged_first"]
+                                           or f"{label}: pgColumnar read [{got}]; pyarrow's rewrite reads [{rw}]")
                     return
                 why = f"pyarrow reads [{rw}]"
             elif rc != 2:
                 o["unjudged"] += 1
+                o["unjudged_first"] = (o["unjudged_first"]
+                                       or f"{label}: pgColumnar read [{got}]; the oracle exited {rc}: {why}")
                 return
             o["wrong"] += 1
             detail = f"{label}: pgColumnar read [{got}] without an error; seed answer [{want}]; {why}"
@@ -279,7 +293,8 @@ def fz(pgc_cluster, server_dir):
                     print(f"  FINDING [{kind}] seed={ms} from {pathlib.Path(path).name}: {message}")
                 n[kind] += 1
                 if kind == "clean" and "read_parquet" in sql:
-                    judge(i % len(seeds), mut, out, f"seed={ms} from {pathlib.Path(path).name}")
+                    judge(i % len(seeds), mut, out,
+                          f"seed={ms} from {pathlib.Path(path).name} ({_mutant_diff(path, mut)})")
             if gone:
                 print(f"FATAL: cluster unreachable at seed={ms}")
                 break
@@ -386,6 +401,15 @@ def test_no_parquet_mutant_that_reads_returned_a_wrong_answer(request, expect):
     o = fz["oracle"]
     expect.text(f"{o['wrong']}" + (f" (first: {o['first']})" if o["first"] else ""), "0",
                 "no mutant that reads returned a wrong answer")
+
+
+def test_every_read_that_differed_from_the_seed_was_judged(request, expect):
+    if expect.require_module("pyarrow.parquet", name="pyarrow not available; the Parquet fuzzer needs it to build seeds") is None:
+        return
+    fz = request.getfixturevalue("fz")  # after the decline: the seeds need pyarrow
+    o = fz["oracle"]
+    expect.text(f"{o['unjudged']}" + (f" (first: {o['unjudged_first']})" if o["unjudged_first"] else ""), "0",
+                "every read that differed from the seed was judged")
 
 
 def test_every_schema_sweep_copy_ran_its_read(request, expect):

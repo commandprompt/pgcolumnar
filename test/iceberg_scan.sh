@@ -119,6 +119,44 @@ check "a column renamed in the schema still reads by field id (amt2 = amount)" \
 check "an output column not in the schema is refused (42703)" \
 	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_scan('$MD') AS t(nosuch int)")" "42703"
 
+# ---- a declared typmod applies to every value (#1790) -------------------------
+# iceberg_scan returns each value as the declared type, typmod included:
+# varchar(n) refuses a longer value (22001) unless the excess is spaces, which it
+# drops, and timestamp(0) rounds to whole seconds. warehouse_typmod (written by
+# fixtures/iceberg/gen_iceberg_typmod.py) holds 'eu  ' with two trailing spaces
+# and the timestamp 2021-03-01 00:59:59.7.
+# tm_state SQL -> the SQLSTATE SQL raised, or "no error (<first output line>)"
+tm_state() {
+	local out state
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	echo "${state:-no error ($(head -1 <<<"$out"))}"
+}
+check "typmod: iceberg_scan refuses 'eu' as varchar(1) (22001)" \
+	"$(tm_state "SELECT * FROM pgcolumnar.iceberg_scan('$MD') AS t(region varchar(1))")" "22001"
+check "typmod: iceberg_scan reads region as varchar(2) unchanged" \
+	"$(q "SELECT string_agg(region, ',' ORDER BY region)
+	      FROM pgcolumnar.iceberg_scan('$MD') AS t(region varchar(2))")" \
+	"eu,eu,us,us,us"
+TMWH="$PGC_WORKDIR/tmwh"
+rm -rf "$TMWH"; mkdir -p "$TMWH"
+cp -r "$FX/warehouse_typmod/db" "$TMWH/db"
+chmod -R u+rwX "$TMWH"
+MD_PAD="$(ls "$TMWH"/db/byregion_pad/metadata/*.metadata.json | sort | tail -1)"
+MD_FRAC="$(ls "$TMWH"/db/byhour_frac/metadata/*.metadata.json | sort | tail -1)"
+check "typmod: iceberg_scan drops the excess trailing spaces of 'eu  ' as varchar(2)" \
+	"$(q "SELECT string_agg(id || ':' || region || ':' || octet_length(region), ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MD_PAD') AS t(id bigint, region varchar(2))")" \
+	"1:eu:2,2:us:2"
+check "typmod: iceberg_scan rounds 00:59:59.7 to 01:00:00 as timestamp(0)" \
+	"$(q "SELECT string_agg(id || '|' || ts, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MD_FRAC') AS t(id bigint, ts timestamp(0))")" \
+	"1|2021-03-01 01:00:00,2|2021-03-01 05:00:00"
 # ---- a struct, list or map column declared scalar is refused (#1788) -------
 # A copy of the metadata whose current schema also has a struct, a list and a
 # map, added after the data files were written (so the files lack them). Their
@@ -166,6 +204,98 @@ check "a pgcolumnar_iceberg foreign table refuses a struct column declared text 
 	"0A000 (struct)"
 
 # deletes (apply position, refuse equality) are covered by iceberg_deletes.sh
+
+# ---- metadata and manifest shapes other writers produce (#1815, #1825) -----
+# qe SQL -> the rows, or the server's ERROR line, so a failed read shows its cause
+qe() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1 | sed -n '/^ERROR:/{p;q};p'
+}
+# refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
+# message, else "<SQLSTATE>: <message>", or "no error (<first line>)"
+refusal_of() {
+	local out state msg
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	msg="$(sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif grep -qF "$2" <<<"$msg"; then echo "$state$3"
+	else echo "$state: $msg"; fi
+}
+# the variants: gzip copies of the current metadata.json, a gzip bomb, a cut-short gzip
+# stream, a table whose manifest spells file_format "parquet", and a table whose location
+# is s3:// while its recorded paths are s3a://. Written next to the relocated table.
+VARIANTS="$(python3 "$FX/gen_iceberg_variants.py" "$DEST" 2>&1)"
+var() { sed -n "s/^$1=//p" <<<"$VARIANTS"; }
+# the path, or a value no file can have, so a missing variant fails its arm loudly
+vpath() { local p; p="$(var "$1")"; echo "${p:-no variant $1: $VARIANTS}"; }
+SNAPCOLS="snapshot_id || '|' || coalesce(parent_snapshot_id::text, '-') || '|' || sequence_number || '|' || manifest_list"
+PLAIN_SNAP="$(q "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$MD')")"
+ROWS5="$(printf '1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50')"
+check "iceberg_current_snapshot reads a .gz.metadata.json file as it reads the plain file" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_infix)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
+check "iceberg_current_snapshot reads a .metadata.json.gz file as it reads the plain file" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_suffix)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
+check "iceberg_scan reads the rows of a table whose metadata is .gz.metadata.json" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(vpath gz_infix)') AS t(id bigint, region text, amount int)
+	       ORDER BY id")" "$ROWS5"
+check "iceberg_scan reads the rows of a table whose metadata is .metadata.json.gz" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(vpath gz_suffix)') AS t(id bigint, region text, amount int)
+	       ORDER BY id")" "$ROWS5"
+# 64 MiB + 1 byte once inflated, from about 64 KiB on disk: the cap holds on the
+# inflated size, so a small file cannot make the backend allocate without bound
+check "a gzip metadata file that inflates past the 64 MiB cap is refused (54000)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_bomb)')" \
+	   "inflates past" " past the cap")" "54000 past the cap"
+check "a cut-short gzip metadata file is refused as corrupt gzip (XX001)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_trunc)')" \
+	   "gzip" " naming gzip")" "XX001 naming gzip"
+# gzip allows several members back to back (cat a.gz b.gz); the text is all of them
+check "iceberg_current_snapshot reads a gzip metadata file of two members as it reads the plain file" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_multi)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
+# zero bytes after the gzip stream are padding, not a second member
+check "iceberg_current_snapshot reads a gzip metadata file followed by zero padding" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_padded)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
+# about 2 MB once inflated, from a few KiB on disk: the reader grows its first buffer
+# (8 times the file size, at least 64 KiB) several times, and keeps what it inflated
+check "iceberg_current_snapshot reads a gzip metadata file that outgrows the first inflate buffer" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_large)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
+# the metadata between two 1 MB pads, as two members split mid-text: the buffer grows
+# while the second member inflates, so the reader must keep counting from the bytes
+# the first member wrote; counting from 0 again drops the fields between the pads
+check "iceberg_current_snapshot reads a two-member gzip file that grows the buffer in its second member" \
+	"$(qe "SELECT $SNAPCOLS FROM pgcolumnar.iceberg_current_snapshot('$(vpath gz_grow)')")" \
+	"${PLAIN_SNAP:-no snapshot from the plain file}"
+# a data file_format that is not Parquet in any spelling is refused, not read as Parquet
+check "iceberg_scan refuses a data file whose file_format is not Parquet (0A000)" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(vpath notpq)') AS t(id bigint)" \
+	   "only PARQUET is supported" " naming PARQUET")" "0A000 naming PARQUET"
+# az:// counts as remote, but no object-store module reads it. The refusal names the
+# URL as one it cannot read remotely (0A000), not "could not open file" as for a
+# local path. Its wording depends on whether the object-store module is installed.
+check "an az:// metadata path is refused as a remote URL it cannot read (0A000)" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_current_snapshot('az://b/t/metadata/v1.metadata.json')" \
+	   'reading "az://' " remote refusal")" "0A000 remote refusal"
+check "iceberg_scan reads a data file whose file_format is lowercase parquet" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(vpath lower)') AS t(id bigint, region text, amount int)
+	       ORDER BY id")" "$ROWS5"
+check "iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a://" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(vpath mixed)') AS t(id bigint, region text, amount int)
+	       ORDER BY id")" "$ROWS5"
 
 # ---- type promotion (#1789) ------------------------------------------------
 # The spec's legal promotions -- int -> long, float -> double, decimal(P,S) ->

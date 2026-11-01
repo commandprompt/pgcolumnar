@@ -23,9 +23,8 @@ file whose manifest partition value is not valid text.
 
 A FOOTER THAT DOES NOT MATCH ITS PAGES (#1855, #1852). A column the footer marks
 REQUIRED while its pages carry definition levels, a repetition_type that is no valid
-value, a footer num_rows the row groups do not add up to, and a list group marked
-OPTIONAL whose pages carry repetition levels are each refused with XX001 and a DETAIL
-that names the measurement.
+value, and a list group marked OPTIONAL whose pages carry repetition levels are each
+refused with XX001 and a DETAIL that names the measurement.
 
 INT96 VALUES THAT ARE NOT TIMESTAMPS (#1870). Nanoseconds outside the day, a Julian day
 before timestamp's range, and a page shorter than its num_values are each refused.
@@ -95,6 +94,19 @@ def _value(dsn, sql):
     return "" if row is None or row[0] is None else str(row[0])
 
 
+def _value_capped(dsn, sql):
+    """-> _value's reading of sql under a 5 s statement_timeout, as the shell's
+    footer_capped reads it."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("SET statement_timeout = '5s'")
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    return "" if row is None or row[0] is None else str(row[0])
+
+
 def _exec(dsn, sql):
     """Run one setup statement; -> None, or the failure as a query_error()."""
     _wait_up(dsn)
@@ -133,7 +145,6 @@ def _short_verdict(dsn, sql):
 
 REP_HIST = ('Row group 0 column 0 ("id") has a definition level histogram of 2 entries, '
             'but the schema gives it a maximum definition level of 0.')
-REP_ROWS = "The row groups hold 3000 rows, but the file declares num_rows 2000."
 REP_ENUM = ('Schema element "id" has repetition_type 7; a valid one is 0 (REQUIRED), '
             '1 (OPTIONAL) or 2 (REPEATED).')
 
@@ -206,6 +217,17 @@ def _survived(dsn, cluster, before):
     return f"no ([{up if up == '1' else ''}], {now - before} backend crashes)"
 
 
+FOOTER_FILES = ("footer_good", "footer_reencoded", "nibble_row_groups", "nibble_num_rows", "no_row_groups",
+                "no_rg_num_rows", "no_file_num_rows", "file_num_rows_2999", "unknown_map_field",
+                "unknown_bool_list_field", "unknown_uuid_field", "unknown_uuid_list_field", "list_of_type_14",
+                "rg3_999", "file_num_rows_3001", "nibble0_row_groups", "no_schema_name", "rep_nohist",
+                "rep_wide_nohist")
+TIMED_FILES = ("byte_list_off_end", "double_list_off_end")
+CAPPED_FILES = ("list_elem15_huge",)    # read under a 5 s statement_timeout
+UNPARSED = '0A000: could not parse "<file>" (unsupported or corrupt Parquet metadata)'
+GOOD_READ = "NO ERROR: 3000/4498500"
+
+
 def _int(v):
     """-> v as an int when it is one, else v unchanged, so num() names a failed reading."""
     return int(v) if isinstance(v, str) and v.lstrip("-").isdigit() else v
@@ -244,6 +266,19 @@ def pqh(pgc_cluster, server_dir):
             "CREATE TABLE imp_u (u8 int, u16 int, u32 bigint, u64 numeric)",
             "CREATE TABLE imp_u32_i4 (c int4)",
             f"CREATE FOREIGN TABLE f_short (a int4, b int4) SERVER pq OPTIONS (path '{w}/short_chunks.parquet')",
+            # #1822: a refusal as "SQLSTATE: message / detail" with the path masked
+            "CREATE FUNCTION pgc_err(q text) RETURNS text LANGUAGE plpgsql AS $$ "
+            "DECLARE r text; d text; "
+            "BEGIN EXECUTE q INTO r; RETURN 'NO ERROR: ' || coalesce(r, '<null>'); "
+            "EXCEPTION WHEN OTHERS OR query_canceled THEN GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL; "
+            "RETURN SQLSTATE || ': ' || regexp_replace(SQLERRM, '\"[^\"]*\"', '\"<file>\"') "
+            "|| coalesce(' / ' || nullif(d, ''), ''); END $$",
+            # pgc_err's reading, then "within 3 s" or "after N ms"
+            "CREATE FUNCTION pgc_timed(q text) RETURNS text LANGUAGE plpgsql AS $$ "
+            "DECLARE t0 timestamptz := clock_timestamp(); v text; ms bigint; "
+            "BEGIN v := pgc_err(q); "
+            "ms := (extract(epoch FROM clock_timestamp() - t0) * 1000)::bigint; "
+            "RETURN v || CASE WHEN ms < 3000 THEN ' within 3 s' ELSE ' after ' || ms || ' ms' END; END $$",
         ]
         for stmt in setup:
             # a failed setup step surfaces in the readings that depend on it, by name
@@ -295,6 +330,38 @@ def pqh(pgc_cluster, server_dir):
         r["schema"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.parquet_schema('{w}/short_chunks.parquet')")
         r["two"] = _value(dsn, f"SELECT string_agg(a || '|' || b, ' ' ORDER BY a) FROM "
                                f"pgcolumnar.read_parquet('{w}/two.parquet') AS t(a int4, b int4)")
+        # ---- malformed footer Thrift (#1822) ----
+        footer_before = _crashes(pgc_cluster)
+        for name in FOOTER_FILES:
+            r[name] = _value(dsn, f"SELECT pgc_err($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+                                  f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
+        for name in TIMED_FILES:
+            r[name] = _value(dsn, f"SELECT pgc_timed($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+                                  f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
+        for name in CAPPED_FILES:
+            r[name] = _value_capped(dsn, f"SELECT pgc_timed($q$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+                                         f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id bigint, name text)$q$)")
+        try:
+            nsweep = (w / "nibble_sweep.count").read_text().strip()
+        except OSError:
+            nsweep = ""
+        r["nsweep"] = nsweep
+        r["sweep"] = _value(dsn, (
+            f"SELECT count(*) || ' of {nsweep} read without an error' "
+            "|| coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '') "
+            "FROM (SELECT i, pgc_err(format($f$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+            "pgcolumnar.read_parquet(%L) AS t(id bigint, name text)$f$, "
+            f"'{w}/nibble_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v "
+            f"FROM generate_series(0, {nsweep or 0} - 1) AS i) s WHERE v LIKE 'NO ERROR%'"))
+        r["uuid sweep"] = _value(dsn, (
+            f"SELECT count(*) || ' of {nsweep} read a wrong answer' "
+            "|| coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '') "
+            "FROM (SELECT i, pgc_err(format($f$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM "
+            "pgcolumnar.read_parquet(%L) AS t(id bigint, name text)$f$, "
+            f"'{w}/uuid_sweep_' || lpad(i::text, 4, '0') || '.parquet')) AS v "
+            f"FROM generate_series(0, {nsweep or 0} - 1) AS i) s "
+            f"WHERE v LIKE 'NO ERROR%' AND v <> '{GOOD_READ}'"))
+        r["footer survived"] = _survived(dsn, pgc_cluster, footer_before)
 
         # ---- a repetition_type that does not match the pages (#1855) ----
         rep_sum = "SELECT count(*) || '/' || sum(id) FROM pgcolumnar.read_parquet"
@@ -306,8 +373,6 @@ def pqh(pgc_cluster, server_dir):
         _exec(dsn, "CREATE TABLE imp_rep (id bigint, name text)")
         r["rep imp"] = _rep_verdict(dsn, f"SELECT pgcolumnar.import_parquet('imp_rep'::regclass, "
                                          f"'{w}/rep_required.parquet')", REP_HIST, "XX001")
-        r["rows short"] = _rep_verdict(dsn, f"{rep_sum}('{w}/rows_short.parquet') AS t(id bigint, name text)",
-                                       REP_ROWS, "XX001")
 
         # ---- a repetition_type that does not match the repetition levels (#1855) ----
         lst_agg = ("SELECT string_agg(coalesce(l::text, 'null'), ' ' ORDER BY l NULLS LAST) "
@@ -642,13 +707,6 @@ def test_parquet_hardening_import_parquet_refuses_repetition_required_over_optio
     expect.text(r["rep imp"], "CLEAN REJECT", "import_parquet refuses repetition_type REQUIRED over optional pages")
 
 
-def test_parquet_hardening_footer_num_rows_mismatch_is_refused(request, expect):
-    if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
-        return
-    r = request.getfixturevalue("pqh")
-    expect.text(r["rows short"], "CLEAN REJECT", "a footer num_rows the row groups do not add up to is refused")
-
-
 def test_parquet_hardening_unchanged_list_file_reads(request, expect):
     if expect.require_module("pyarrow.parquet", name="pyarrow not available; Parquet hardening suite needs it") is None:
         return
@@ -705,6 +763,220 @@ def test_parquet_hardening_int96_short_page_is_refused(request, expect):
     r = request.getfixturevalue("pqh")
     expect.text(r["i96 short"], "XX001: could not decode Parquet column 0 in row group 0",
                 "an INT96 page shorter than its num_values is refused")
+# ---- malformed footer Thrift (#1822) -----------------------------------------
+# The crafter decoded a good 3000-row file's footer and wrote variants of it. A field
+# header with an invalid type nibble was skipped as zero bytes, so the parser lost its
+# place and could lose row_groups or a num_rows. Each reading is "count/sum(id)" or the
+# refusal as "SQLSTATE: message / detail", so a silent wrong answer shows its numbers.
+
+def _footer(request, expect):
+    """-> the fixture's readings, or None when pyarrow is missing (declined by name)."""
+    if expect.require_module("pyarrow.parquet", name=SKIP) is None:
+        return None
+    return request.getfixturevalue("pqh")
+
+
+def test_parquet_hardening_footer_good_file_still_reads(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["footer_good"], GOOD_READ, "footer: the good file still reads")
+
+
+def test_parquet_hardening_footer_reencoded_good_file_still_reads(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["footer_reencoded"], GOOD_READ, "footer: the re-encoded good file still reads")
+
+
+def test_parquet_hardening_footer_invalid_type_nibble_on_row_groups_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["nibble_row_groups"], UNPARSED,
+                "footer: an invalid type nibble on row_groups is refused")
+
+
+def test_parquet_hardening_footer_invalid_type_nibble_on_num_rows_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["nibble_num_rows"], UNPARSED,
+                "footer: an invalid type nibble on a num_rows is refused")
+
+
+def test_parquet_hardening_footer_every_invalid_type_nibble_is_refused(request, expect):
+    if expect.require_module("pyarrow.parquet", name=SKIP) is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["sweep"], f"0 of {r['nsweep']} read without an error",
+                "footer: every invalid type nibble on a field header is refused")
+
+
+def test_parquet_hardening_footer_no_uuid_nibble_reads_a_wrong_answer(request, expect):
+    if expect.require_module("pyarrow.parquet", name=SKIP) is None:
+        return
+    r = request.getfixturevalue("pqh")
+    expect.text(r["uuid sweep"], f"0 of {r['nsweep']} read a wrong answer",
+                "footer: no type-13 (UUID) nibble on a field header reads a wrong answer")
+
+
+def test_parquet_hardening_footer_without_row_groups_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["no_row_groups"],
+                'XX001: Parquet file "<file>" has a malformed footer / The footer has no row_groups field.',
+                "footer: no row_groups field is refused")
+
+
+def test_parquet_hardening_footer_row_group_without_num_rows_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["no_rg_num_rows"],
+                'XX001: Parquet file "<file>" has a malformed row group / Row group 2 has no num_rows field.',
+                "footer: a row group with no num_rows is refused")
+
+
+def test_parquet_hardening_footer_without_file_num_rows_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["no_file_num_rows"],
+                'XX001: Parquet file "<file>" has a malformed footer / The footer has no num_rows field.',
+                "footer: no file num_rows is refused")
+
+
+def test_parquet_hardening_footer_num_rows_differing_from_row_groups_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["file_num_rows_2999"],
+                'XX001: Parquet file "<file>" has a malformed footer / '
+                'The footer declares num_rows 2999, but its row groups hold 3000 rows.',
+                "footer: a file num_rows that differs from its row groups is refused")
+
+
+def test_parquet_hardening_footer_row_group_num_rows_below_total_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["rg3_999"],
+                'XX001: Parquet file "<file>" has a malformed footer / '
+                'The footer declares num_rows 3000, but its row groups hold 2999 rows.',
+                "footer: a row group num_rows below the footer's total is refused")
+
+
+def test_parquet_hardening_footer_num_rows_above_row_groups_total_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["file_num_rows_3001"],
+                'XX001: Parquet file "<file>" has a malformed footer / '
+                'The footer declares num_rows 3001, but its row groups hold 3000 rows.',
+                "footer: a file num_rows above its row groups' total is refused")
+
+
+def test_parquet_hardening_footer_type_0_nibble_with_delta_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["nibble0_row_groups"], UNPARSED,
+                "footer: a type-0 nibble with a field-id delta is refused as corrupt")
+
+
+def test_parquet_hardening_footer_unknown_map_field_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_map_field"], GOOD_READ, "footer: an unknown map field is skipped whole")
+
+
+def test_parquet_hardening_footer_unknown_bool_list_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_bool_list_field"], GOOD_READ,
+                "footer: an unknown list of bools is skipped whole")
+
+
+def test_parquet_hardening_footer_unknown_uuid_field_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_uuid_field"], GOOD_READ, "footer: an unknown UUID field is skipped whole")
+
+
+def test_parquet_hardening_footer_unknown_uuid_list_is_skipped_whole(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["unknown_uuid_list_field"], GOOD_READ, "footer: an unknown list of UUIDs is skipped whole")
+
+
+def test_parquet_hardening_footer_list_of_non_compact_type_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["list_of_type_14"], UNPARSED,
+                "footer: a list whose element type is not a compact type is refused")
+
+
+def test_parquet_hardening_footer_huge_list_of_non_compact_type_is_refused_at_once(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["list_elem15_huge"], UNPARSED + " within 3 s",
+                "footer: a huge list whose element type is not a compact type is refused at once")
+
+
+def test_parquet_hardening_footer_byte_list_off_the_end_is_refused_at_once(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["byte_list_off_end"], UNPARSED + " within 3 s",
+                "footer: a list of bytes that runs off the footer is refused at once")
+
+
+def test_parquet_hardening_footer_double_list_off_the_end_is_refused_at_once(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["double_list_off_end"], UNPARSED + " within 3 s",
+                "footer: a list of doubles that runs off the footer is refused at once")
+
+
+def test_parquet_hardening_footer_schema_element_with_no_name_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["no_schema_name"], UNPARSED, "footer: a schema element with no name is refused")
+
+
+def test_parquet_hardening_footer_file_without_level_histograms_still_reads(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["rep_nohist"], GOOD_READ, "footer: the file without level histograms still reads")
+
+
+def test_parquet_hardening_footer_repetition_type_of_2_32_is_refused(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["rep_wide_nohist"],
+                'XX001: Parquet file "<file>" has a malformed schema / Schema element "id" has repetition_type '
+                '4294967296; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).',
+                "footer: a repetition_type of 2^32 is refused, not read as REQUIRED")
+
+
+def test_parquet_hardening_backend_survived_the_malformed_footers(request, expect):
+    r = _footer(request, expect)
+    if r is None:
+        return
+    expect.text(r["footer survived"], "1", "backend survived the malformed footers")
 
 
 def test_parquet_hardening_strings_run_in_a_utf8_database(request, expect):

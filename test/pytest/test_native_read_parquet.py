@@ -93,12 +93,14 @@ def _refusal(dsn, sql, phrase, label, settings=()):
         with psycopg.connect(dsn, autocommit=True) as conn:
             for s in settings:
                 conn.execute(s)
-            conn.execute(sql).fetchall()
+            cur = conn.execute(sql)
+            rows = cur.fetchall() if cur.description else []
     except psycopg.Error as exc:
         if not exc.sqlstate:
             return query_error(_message(exc))
         return exc.sqlstate + (label if phrase in str(exc) else "")
-    return "no error"
+    first = "|".join("" if v is None else str(v) for v in rows[0]) if rows else ""
+    return f"no error ({first})"
 
 
 def _error(dsn, sql):
@@ -207,6 +209,44 @@ def rp(pgc_cluster, server_dir):
         r["import"] = _value(dsn, f"SELECT pgcolumnar.import_parquet('imp', '{scalar}')")
         r["import rp"] = _set_hash(dsn, rp_scalar)
         r["import imp"] = _set_hash(dsn, "SELECT * FROM imp")
+
+        # a declared typmod applies to every value (#1790)
+        tm_big, tm_fit = server_dir / "rp_tm_big.parquet", server_dir / "rp_tm_fit.parquet"
+        _run(dsn, "CREATE TABLE tm_big (d numeric(10,3), s text) USING pgcolumnar")
+        _run(dsn, "INSERT INTO tm_big VALUES (12345.678, 'hello'), (1.005, 'ab')")
+        _run(dsn, "CREATE TABLE tm_fit (d numeric(10,3), s text) USING pgcolumnar")
+        _run(dsn, "INSERT INTO tm_fit VALUES (1.005, 'ab'), (2.5, 'abc  ')")
+        _value(dsn, f"SELECT pgcolumnar.export_parquet('tm_big', '{tm_big}')")
+        _value(dsn, f"SELECT pgcolumnar.export_parquet('tm_fit', '{tm_fit}')")
+        too_long = "value too long for type character varying(3)"
+        r["tm holds"] = _value(dsn, "SELECT string_agg(d || '|' || s, ',' ORDER BY d) "
+                                    f"FROM pgcolumnar.read_parquet('{tm_big}') AS x(d numeric(10,3), s varchar(5))")
+        r["tm overflow"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{tm_big}') "
+                                         "AS x(d numeric(5,2), s text)", "numeric field overflow", " (overflow)")
+        r["tm overflow p"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{tm_big}') "
+                                           "AS x(d numeric(5,3), s text)", "numeric field overflow", " (overflow)")
+        r["tm round"] = _value(dsn, "SELECT string_agg(d::text, ',' ORDER BY d) "
+                                    f"FROM pgcolumnar.read_parquet('{tm_fit}') AS x(d numeric(5,2), s text)")
+        r["tm long"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{tm_big}') "
+                                     "AS x(d numeric(10,3), s varchar(3))", too_long, " (too long)")
+        r["tm spaces"] = _value(dsn, "SELECT string_agg(s || ':' || octet_length(s), ',' ORDER BY s) "
+                                     f"FROM pgcolumnar.read_parquet('{tm_fit}') AS x(d numeric(10,3), s varchar(3))")
+        r["tm ctas"] = _refusal(dsn, "CREATE TABLE tm_ctas AS SELECT * FROM "
+                                     f"pgcolumnar.read_parquet('{tm_big}') AS x(d numeric(5,2), s varchar(3))",
+                                "numeric field overflow", " (overflow)")
+        r["tm ctas table"] = _value(dsn, "SELECT coalesce(to_regclass('tm_ctas')::text, 'none')")
+        _run(dsn, "CREATE TABLE tm_heap (d numeric(5,2), s varchar(3))")
+        _run(dsn, f"INSERT INTO tm_heap SELECT * FROM pgcolumnar.read_parquet('{tm_fit}') "
+                  "AS x(d numeric(5,2), s varchar(3))")
+        r["tm heap"] = _value(dsn, "SELECT string_agg(d || '|' || s, ',' ORDER BY d) FROM tm_heap")
+        _run(dsn, "CREATE TABLE tm_imp (d numeric(5,2), s varchar(3)) USING pgcolumnar")
+        _value(dsn, f"SELECT pgcolumnar.import_parquet('tm_imp', '{tm_fit}')")
+        r["tm import"] = _value(dsn, "SELECT string_agg(d || '|' || s, ',' ORDER BY d) FROM tm_imp")
+        r["tm array"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{nested}') "
+                                      "AS t(id int, ia int[], ta varchar(3)[], c rp_npc)", too_long, " (too long)")
+        _run(dsn, "CREATE TYPE rp_npc3 AS (x int, y varchar(3))")
+        r["tm composite"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{nested}') "
+                                          "AS t(id int, ia int[], ta text[], c rp_npc3)", too_long, " (too long)")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -290,3 +330,60 @@ def test_import_parquet_loads_every_row(rp, expect):
 
 def test_read_parquet_agrees_with_import_parquet(rp, expect):
     expect.text(rp["import rp"], rp["import imp"], "read_parquet == import_parquet")
+
+
+def test_a_typmod_that_holds_every_value_reads_them_unchanged(rp, expect):
+    expect.text(rp["tm holds"], "1.005|ab,12345.678|hello",
+                "typmod: a declared typmod that holds every value reads them unchanged")
+
+
+def test_numeric_5_2_refuses_an_overflow(rp, expect):
+    expect.text(rp["tm overflow"], "22003 (overflow)",
+                "typmod: numeric(5,2) refuses 12345.678 with numeric field overflow")
+
+
+def test_numeric_5_3_same_scale_lower_precision_refuses_an_overflow(rp, expect):
+    expect.text(rp["tm overflow p"], "22003 (overflow)",
+                "typmod: numeric(5,3), the file's scale with a lower precision, refuses 12345.678 (22003)")
+
+
+def test_numeric_5_2_rounds_to_the_declared_scale(rp, expect):
+    expect.text(rp["tm round"], "1.01,2.50",
+                "typmod: numeric(5,2) rounds 1.005 and 2.500 to the declared scale")
+
+
+def test_varchar_3_refuses_a_longer_value(rp, expect):
+    expect.text(rp["tm long"], "22001 (too long)", "typmod: varchar(3) refuses 'hello' with value too long")
+
+
+def test_varchar_3_drops_excess_trailing_spaces(rp, expect):
+    expect.text(rp["tm spaces"], "ab:2,abc:3", "typmod: varchar(3) drops the excess trailing spaces of 'abc  '")
+
+
+def test_create_table_as_of_an_overflowing_value_fails(rp, expect):
+    expect.text(rp["tm ctas"], "22003 (overflow)",
+                "typmod: CREATE TABLE AS of an overflowing value fails with numeric field overflow")
+
+
+def test_the_failed_create_table_as_left_no_table(rp, expect):
+    expect.text(rp["tm ctas table"], "none", "typmod: the failed CREATE TABLE AS left no table")
+
+
+def test_insert_select_into_a_heap_table_stores_the_rounded_values(rp, expect):
+    expect.text(rp["tm heap"], "1.01|ab,2.50|abc",
+                "typmod: INSERT ... SELECT into a numeric(5,2) heap table stores the rounded values")
+
+
+def test_import_parquet_into_a_typmod_table_stores_the_rounded_values(rp, expect):
+    expect.text(rp["tm import"], "1.01|ab,2.50|abc",
+                "typmod: import_parquet into a numeric(5,2) table stores the rounded values")
+
+
+def test_an_array_element_typmod_applies(rp, expect):
+    expect.text(rp["tm array"], "22001 (too long)",
+                "typmod: an array element typmod applies, varchar(3)[] refuses 'a1000'")
+
+
+def test_a_composite_field_typmod_applies(rp, expect):
+    expect.text(rp["tm composite"], "22001 (too long)",
+                "typmod: a composite field typmod applies, y varchar(3) refuses 'c1000'")
