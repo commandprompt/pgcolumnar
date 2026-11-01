@@ -173,3 +173,49 @@ def test_pyarrow_reads_an_exported_timestamptz_as_its_instant(pgc_conn, server_d
         return
     expect.text(_tsflag_read(pq, _tsflag_export(pgc_conn, server_dir), "tz", "value"), "2024-06-01 16:00:00+00:00",
                 "pyarrow reads an exported timestamptz back as its instant")
+
+
+# ---- nested columns report by their top-level names (#1893) -------------------------
+# parquet_schema used to list a nested column by its leaf names ("element", "a", "b").
+# Each top-level column now gets one row, with the type read_parquet reads it as. The
+# exporter writes a list and a struct, so only the map arm needs pyarrow.
+
+def _nested_export(cur, server_dir):
+    path = str(server_dir / "nested.parquet")
+    cur.execute("CREATE TYPE nest_s AS (a int8, b text)")
+    cur.execute("CREATE TABLE nest (l int8[], s nest_s, n int4) USING pgcolumnar")
+    cur.execute("INSERT INTO nest VALUES ('{1,2}', ROW(1, 'x'), 1), ('{3}', ROW(2, 'y'), 2)")
+    cur.execute("SELECT pgcolumnar.export_parquet('nest', %s)", (path,))
+    return path
+
+
+def test_nested_columns_report_by_top_level_name(pgc_conn, server_dir, expect):
+    with pgc_conn.cursor() as cur:
+        path = _nested_export(cur, server_dir)
+        expect.text(_one(cur, "SELECT string_agg(column_name, ',' ORDER BY ord) FROM (SELECT column_name, "
+                              "row_number() OVER () AS ord FROM pgcolumnar.parquet_schema(%s)) s", (path,)),
+                    "l,s,n", "parquet_schema lists a nested file by its top-level column names (#1893)")
+        expect.text(_schema(cur, path, "data_type", "l"), "bigint[]",
+                    "parquet_schema reports a list column as an array type (#1893)")
+        expect.text(_schema(cur, path, "data_type", "s"), "composite (a bigint, b text)",
+                    "parquet_schema reports a struct column as a composite with its field types (#1893)")
+        expect.text(_one(cur, "SELECT string_agg(l::text || (s).a || (s).b || n, ';' ORDER BY n) "
+                              "FROM pgcolumnar.read_parquet(%s) AS t(l bigint[], s nest_s, n integer)", (path,)),
+                    "{1,2}1x1;{3}2y2", "read_parquet reads a nested file with the reported names and types (#1893)")
+
+
+def test_a_map_column_reports_by_name_as_not_supported(pgc_conn, server_dir, expect):
+    name = "parquet_schema reports a map column by name as not supported (#1893)"
+    pa = expect.require_module("pyarrow", name=name)
+    if pa is None:
+        return
+    pq = expect.require_module("pyarrow.parquet", name=name)
+    mapf = server_dir / "map.parquet"
+    pq.write_table(pa.table({"m": pa.array([[("k", 1)]], pa.map_(pa.string(), pa.int64())),
+                             "n": pa.array([1], pa.int32())}), str(mapf))
+    mapf.chmod(0o644)
+    with pgc_conn.cursor() as cur:
+        expect.text(_one(cur, "SELECT string_agg(column_name || ':' || coalesce(data_type, 'NULL'), ',') "
+                              "FROM pgcolumnar.parquet_schema(%s)", (str(mapf),)),
+                    "m:map (not supported),n:integer",
+                    "parquet_schema reports a map column by name as not supported (#1893)")

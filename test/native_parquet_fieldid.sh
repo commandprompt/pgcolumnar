@@ -72,9 +72,10 @@ NOID="$PGC_WORKDIR/noid.parquet"         # no field ids at all
 DUP="$PGC_WORKDIR/dup.parquet"           # two columns share id 5
 NEST="$PGC_WORKDIR/nested.parquet"       # id=1, struct st=2, list li=3, map mp=4
 NEST_GROUPS="$PGC_WORKDIR/nested_groups.txt"  # the group ids pyarrow reads back from NEST
-python3 - "$FID" "$NOID" "$DUP" "$NEST" "$NEST_GROUPS" <<'PY'
+NEST_LEAVES="$PGC_WORKDIR/nested_leaves.txt"  # the leaf ids pyarrow reads back from NEST
+python3 - "$FID" "$NOID" "$DUP" "$NEST" "$NEST_GROUPS" "$NEST_LEAVES" <<'PY'
 import re, sys, pyarrow as pa, pyarrow.parquet as pq
-fid, noid, dup, nest, groups = sys.argv[1:6]
+fid, noid, dup, nest, groups, leaves = sys.argv[1:7]
 
 schema = pa.schema([
     pa.field("alpha", pa.int32(),  metadata={b"PARQUET:field_id": b"7"}),
@@ -115,6 +116,9 @@ pq.write_table(pa.Table.from_pylist(
     schema=nschema), nest)
 found = re.findall(r"group field_id=(\d+) (\w+)", str(pq.ParquetFile(nest).schema))
 open(groups, "w").write(" ".join(f"{n}={i}" for i, n in found) + "\n")
+leaf_ids = re.findall(r"^\s*(?:optional|required|repeated) (?!group\b)\w+ field_id=(-?\d+) ",
+                      str(pq.ParquetFile(nest).schema), re.M)
+open(leaves, "w").write(",".join(str(i) for i in sorted(int(x) for x in leaf_ids)) + "\n")
 PY
 chmod 644 "$FID" "$NOID" "$DUP" "$NEST"
 
@@ -172,11 +176,18 @@ check "the duplicate-requested-id error names the id, not the file" \
 # leaf. Declared with a scalar type, the column passed the declared-type guard
 # above, found no LEAF with its id, and was refused as absent from the file,
 # which has it. Iceberg's reader (missing_as_null) read that as null on every row.
+# pyarrow reads the leaf ids back: parquet_schema reports a nested column's
+# own (group) id since #1893, not its leaves' ids.
 check "premise: the nested file's leaves carry ids 1,5,6,7,8,9 and none of 2,3,4" \
-	"$(q "SELECT string_agg(field_id::text, ',' ORDER BY field_id)
-	      FROM pgcolumnar.parquet_schema('$NEST')")" "1,5,6,7,8,9"
+	"$(cat "$NEST_LEAVES" 2>/dev/null)" "1,5,6,7,8,9"
 check "premise: the nested file's groups carry ids st=2 li=3 mp=4" \
 	"$(cat "$NEST_GROUPS" 2>/dev/null)" "st=2 li=3 mp=4"
+# parquet_schema reports one row per top-level column (#1893), so a nested column
+# carries its own id, the group's, which is the id Iceberg names it by.
+check "parquet_schema reports each nested column's own field id, 1,2,3,4 (#1893)" \
+	"$(q "SELECT string_agg(column_name || '=' || coalesce(field_id::text, 'NULL'), ' ' ORDER BY ord)
+	      FROM (SELECT column_name, field_id, row_number() OVER () AS ord
+	            FROM pgcolumnar.parquet_schema('$NEST')) s")" "id=1 st=2 li=3 mp=4"
 check "premise: a scalar beside nested columns still reads by field id" \
 	"$(q "SELECT id FROM pgcolumnar.read_parquet('$NEST', ARRAY[1]) AS t(id int8)")" "1"
 check "a struct field id read as text is refused as nested (0A000)" \

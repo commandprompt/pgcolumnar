@@ -4593,6 +4593,116 @@ pgcolumnar_read_parquet(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Advance *cursor past the schema subtree that starts there (pre-order) and
+ * return how many leaves it holds. walk_schema has already walked this tree at
+ * open, so it is well formed; the stack check guards the recursion all the same.
+ */
+static int
+pq_skip_subtree(const PqFile *pf, int *cursor)
+{
+	int			nchild;
+	int			nleaf = 0;
+	int			c;
+
+	check_stack_depth();
+	if (*cursor >= pf->nelems)
+		return 0;
+	nchild = pf->elems[(*cursor)++].num_children;
+	if (nchild == 0)
+		return 1;
+	for (c = 0; c < nchild; c++)
+		nleaf += pq_skip_subtree(pf, cursor);
+	return nleaf;
+}
+
+/*
+ * The data_type parquet_schema reports for a top-level column (#1893), or NULL
+ * when a scalar leaf has no supported mapping. top is the column's schema
+ * element; its leaves are pf->leaves[first .. first + nleaf - 1]. The text names
+ * the type read_parquet reads the column as, by the shapes its binding accepts:
+ *
+ *   - a scalar leaf: its PostgreSQL type, as before;
+ *   - a list of one scalar leaf: that type's array type, e.g. bigint[];
+ *   - a struct of scalar fields: "composite (a bigint, b text)", the field list
+ *     of the composite type the caller creates to read it;
+ *   - any other nesting (a map, a list of structs, a struct holding a list):
+ *     "map (not supported)", "list (not supported)" or "struct (not supported)".
+ *     read_parquet has no column type for these.
+ */
+static char *
+pq_describe_top(const PqFile *pf, const PqSchemaCol *top, int first, int nleaf)
+{
+	Oid			typid;
+	int32		typmod;
+	int			i;
+	bool		flat = true;
+	const char *kind;
+
+	if (top->num_children == 0)
+	{
+		if (!pq_leaf_to_pgtype(top, &typid, &typmod))
+			return NULL;
+		if (pf->leaves[first].max_rep == 0)
+			return format_type_extended(typid, typmod, FORMAT_TYPE_TYPEMOD_GIVEN);
+		/* a repeated primitive: the legacy two-level list */
+		if (OidIsValid(get_array_type(typid)))
+			return format_type_extended(get_array_type(typid), typmod,
+										FORMAT_TYPE_TYPEMOD_GIVEN);
+		return pstrdup("list (not supported)");
+	}
+
+	if (top->converted_type == PQ_CT_MAP || top->converted_type == PQ_CT_MAP_KEY_VALUE)
+		return pstrdup("map (not supported)");
+
+	/*
+	 * A list of one scalar leaf: the leaf sits in the repeated group right
+	 * under the column (depth 3), or is that group itself (depth 2). A deeper
+	 * single leaf is a list of a one-field struct or a struct holding a list.
+	 */
+	if (nleaf == 1 && top->repetition != 2 && pf->leaves[first].max_rep == 1 &&
+		pf->leaves[first].depth <= 3)
+	{
+		if (pq_leaf_to_pgtype(pf->leaves[first].sc, &typid, &typmod) &&
+			OidIsValid(get_array_type(typid)))
+			return format_type_extended(get_array_type(typid), typmod,
+										FORMAT_TYPE_TYPEMOD_GIVEN);
+		return pstrdup("list (not supported)");
+	}
+
+	/* a struct whose children are all non-repeated scalar leaves */
+	if (top->repetition != 2 && nleaf == top->num_children)
+	{
+		for (i = first; i < first + nleaf; i++)
+			if (pf->leaves[i].max_rep != 0 || pf->leaves[i].depth != 2 ||
+				!pq_leaf_to_pgtype(pf->leaves[i].sc, &typid, &typmod))
+				flat = false;
+	}
+	else
+		flat = false;
+	if (flat)
+	{
+		StringInfoData buf;
+
+		initStringInfo(&buf);
+		appendStringInfoString(&buf, "composite (");
+		for (i = first; i < first + nleaf; i++)
+		{
+			const PqSchemaCol *f = pf->leaves[i].sc;
+
+			(void) pq_leaf_to_pgtype(f, &typid, &typmod);
+			appendStringInfo(&buf, "%s%s %s", i > first ? ", " : "",
+							 quote_identifier(f->name != NULL ? f->name : ""),
+							 format_type_extended(typid, typmod, FORMAT_TYPE_TYPEMOD_GIVEN));
+		}
+		appendStringInfoChar(&buf, ')');
+		return buf.data;
+	}
+
+	kind = top->converted_type == PQ_CT_LIST ? "list" : "struct";
+	return psprintf("%s (not supported)", kind);
+}
+
+/*
  * pgcolumnar.parquet_schema(path text)
  *     -> table(column_name text, data_type text, nullable bool)
  *
@@ -4601,8 +4711,12 @@ pgcolumnar_read_parquet(PG_FUNCTION_ARGS)
  * of the external-Parquet scan core: it shares the file open/parse and type
  * inference the data path will use, and lets a caller inspect a file (and the
  * round-trip test confirm exported types) without importing it. A leaf whose
- * physical type has no supported mapping is reported with data_type NULL. Nested
- * files are reported as their flattened leaf columns.
+ * physical type has no supported mapping is reported with data_type NULL.
+ *
+ * One row per top-level column, by its own name (#1893): a nested column used to
+ * be reported as its leaves ("element", or a struct's field names), which are
+ * not names a read_parquet column list can use. See pq_describe_top for the
+ * data_type a nested column gets.
  */
 Datum
 pgcolumnar_parquet_schema(PG_FUNCTION_ARGS)
@@ -4615,6 +4729,8 @@ pgcolumnar_parquet_schema(PG_FUNCTION_ARGS)
 	Tuplestorestate *tupstore;
 	MemoryContext oldContext;
 	int			i;
+	int			cursor;
+	int			lf;
 
 	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
 		ereport(ERROR,
@@ -4647,22 +4763,38 @@ pgcolumnar_parquet_schema(PG_FUNCTION_ARGS)
 	rsinfo->setDesc = retdesc;
 	MemoryContextSwitchTo(oldContext);
 
-	for (i = 0; i < pf.ncols; i++)
+	/* one row per top-level column: the root's children, in pre-order (#1893) */
+	cursor = 1;
+	lf = 0;
+	for (i = 0; i < pf.ntop && cursor < pf.nelems; i++)
 	{
-		PqSchemaCol *sc = pf.leaves[i].sc;
-		Oid			typid;
-		int32		typmod;
+		PqSchemaCol *sc = &pf.elems[cursor];
+		int			first = lf;
+		int			nleaf = pq_skip_subtree(&pf, &cursor);
+		char	   *type;
 		Datum		values[4];
 		bool		nulls[4] = {false, false, false, false};
 
+		lf += nleaf;
+		if (nleaf == 0 || lf > pf.ncols)
+			break;				/* walk_schema accepted the tree, so unreachable */
+
 		values[0] = CStringGetTextDatum(sc->name != NULL ? sc->name : "");
-		if (pq_leaf_to_pgtype(sc, &typid, &typmod))
-			values[1] = CStringGetTextDatum(
-				format_type_extended(typid, typmod, FORMAT_TYPE_TYPEMOD_GIVEN));
+		type = pq_describe_top(&pf, sc, first, nleaf);
+		if (type != NULL)
+			values[1] = CStringGetTextDatum(type);
 		else
 			nulls[1] = true;
-		/* a column is nullable iff it is OPTIONAL somewhere above the leaf */
-		values[2] = BoolGetDatum(pf.leaves[i].max_def > 0);
+
+		/*
+		 * A scalar is nullable iff it is OPTIONAL somewhere above the leaf. A
+		 * nested column is nullable iff the column itself is OPTIONAL: a null
+		 * list element or struct field does not make the column value null.
+		 */
+		if (sc->num_children == 0)
+			values[2] = BoolGetDatum(pf.leaves[first].max_def > 0);
+		else
+			values[2] = BoolGetDatum(sc->repetition == 1);
 		/* field_id (#388): NULL when the writer emitted none; 0 is a real id */
 		if (sc->field_id >= 0)
 			values[3] = Int32GetDatum(sc->field_id);

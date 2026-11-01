@@ -1599,4 +1599,7 @@ guard_tests 854
 # cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
 # premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
 # collection: 5776 tests collected, less guard_tests 854.
-cluster_tests 5110
+# cluster_tests 5110 -> 5113 for #1893's three tests: two in test_native_parquet_schema.py (nested columns
+# by their top-level names, a map column reported as not supported) and one in test_native_parquet_fieldid.py
+# (a nested column's own field id), by collection: `5967 tests collected`, less guard_tests 854.
+cluster_tests 5113

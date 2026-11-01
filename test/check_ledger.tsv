@@ -4895,6 +4895,7 @@ native_parquet_fieldid	native_parquet_fieldid	backend still up after the refusal
 native_parquet_fieldid	native_parquet_fieldid	field id -1 over the nested file is refused as absent, not as a group without an id (22023)	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: the nested-group field-id match drops its field_id >= 0 test, so ARRAY[-1] names an id-less inner list or map group as nested
 native_parquet_fieldid	native_parquet_fieldid	field-id projection binds and reorders by id (g=gamma, a=alpha)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
 native_parquet_fieldid	native_parquet_fieldid	field-id projection reads a subset (only id 3 = beta)	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: a requested field id binds the column whose id is one more
+native_parquet_fieldid	native_parquet_fieldid	parquet_schema reports each nested column's own field id, 1,2,3,4 (#1893)	15;16;17;18;19	2026-11-01	parquet_schema listing nested columns by their leaves restored (#1893)
 native_parquet_fieldid	native_parquet_fieldid	positional read_parquet is unaffected	15;16;17;18;19	never	-
 native_parquet_fieldid	native_parquet_fieldid	premise: a scalar beside nested columns still reads by field id	15;16;17;18;19	never	-
 native_parquet_fieldid	native_parquet_fieldid	premise: the nested file's groups carry ids st=2 li=3 mp=4	15;16;17;18;19	never	-
@@ -5165,9 +5166,14 @@ native_parquet_schema	native_parquet_schema	nullable of c_time	15;16;17;18;19	ne
 native_parquet_schema	native_parquet_schema	nullable of c_ts	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	nullable of c_uuid	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	parquet_schema column count	15;16;17;18;19	never	-
+native_parquet_schema	native_parquet_schema	parquet_schema lists a nested file by its top-level column names (#1893)	15;16;17;18;19	2026-11-01	parquet_schema listing nested columns by their leaves restored (#1893)
+native_parquet_schema	native_parquet_schema	parquet_schema reports a list column as an array type (#1893)	15;16;17;18;19	2026-11-01	parquet_schema listing nested columns by their leaves restored (#1893)
+native_parquet_schema	native_parquet_schema	parquet_schema reports a map column by name as not supported (#1893)	15;16;17;18;19	2026-11-01	parquet_schema listing nested columns by their leaves restored (#1893)
+native_parquet_schema	native_parquet_schema	parquet_schema reports a struct column as a composite with its field types (#1893)	15;16;17;18;19	2026-11-01	parquet_schema listing nested columns by their leaves restored (#1893)
 native_parquet_schema	native_parquet_schema	premise: pyarrow wrote the field-id file	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	pyarrow reads an exported timestamp back as its wall time	15;16;17;18;19	2026-10-22	columnar_parquet.c: export_parquet writes timestamp as TIMESTAMP_MICROS (adjusted to UTC), as before #1706
 native_parquet_schema	native_parquet_schema	pyarrow reads an exported timestamptz back as its instant	15;16;17;18;19	2026-10-22	columnar_parquet.c: timestamptz exported with isAdjustedToUTC=false and no converted type
+native_parquet_schema	native_parquet_schema	read_parquet reads a nested file with the reported names and types (#1893)	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	read_parquet returns the exported timestamp and timestamptz unchanged	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_bool	15;16;17;18;19	never	-
 native_parquet_schema	native_parquet_schema	type of c_bytea	15;16;17;18;19	never	-

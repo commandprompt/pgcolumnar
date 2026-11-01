@@ -1070,8 +1070,8 @@ SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet', ARRAY[12, 7])
 
 ### pgcolumnar.parquet_schema(path text) returns table(column_name text, data_type text, nullable bool, field_id int)
 
-Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
-without reading the data. Useful for writing the column definition list for
+Reports the top-level columns of a Parquet file and the PostgreSQL type each maps
+to, without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
 file. The type it reports holds every value the column can store. So an unsigned
 `UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
@@ -1092,6 +1092,21 @@ also reads into `timestamp`, which gets the wall time in the session time zone.
 A value whose nanoseconds fall outside the day, or whose Julian day is outside the
 timestamp range, is refused with SQLSTATE 22008. The DETAIL names both the Julian
 day and the nanoseconds the file stores.
+
+A nested column gets one row under its own name. Its `data_type` says how
+`read_parquet` reads it:
+
+- A list of a scalar reports that type's array type, for example `bigint[]`.
+- A struct of scalar fields reports its field list, for example
+  `composite (a bigint, b text)`. Create a composite type with those fields,
+  `CREATE TYPE s_t AS (a bigint, b text)`, and declare the column as `s_t`.
+- Any other nesting reports `map (not supported)`, `list (not supported)` or
+  `struct (not supported)`. A map, a list of structs and a struct that holds a
+  list are examples. `read_parquet` does not support reading these columns.
+
+`nullable` for a nested column says whether the column itself can be NULL. A
+NULL list element or struct field does not make it true. `field_id` for a nested
+column is the column's own id, not the ids of its fields.
 
 When a reader refuses a declared column type, the message names the function or
 foreign-data wrapper you used, for example

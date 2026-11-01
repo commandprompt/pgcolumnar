@@ -525,6 +525,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- `parquet_schema` now reports a nested column under its top-level name (#1893).
+  It used to report the column's leaves instead: a list as `element`, a struct as
+  its field names. Those names do not match the file's columns. A list of a
+  scalar now reports an array type such as `bigint[]`. A struct of scalar fields
+  reports its field list, such as `composite (a bigint, b text)`. A map and other
+  nesting that `read_parquet` cannot read report, for example,
+  `map (not supported)`. A nested column's `field_id` is now its own id, not
+  its leaves' ids. docs/sql-reference.md.
+  `test/native_parquet_schema.sh` and `test_native_parquet_schema.py`.
+  `test/native_parquet_fieldid.sh` and its twin now read the leaf ids of their
+  nested file with pyarrow, and check the nested columns' own ids.
+
 - The docs no longer contradict the code on object storage, credentials and
   row-group skipping (#1797). `import_arrow`, `file_split_offsets` and
   `parallel_copy` read local files only; the docs had said every Arrow and

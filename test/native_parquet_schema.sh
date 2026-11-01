@@ -216,4 +216,45 @@ else
 	done
 fi
 
+# ---- nested columns report by their top-level names (#1893) -----------------
+# parquet_schema used to list a nested column by its leaf names: a list column as
+# "element", a struct's fields as "a" and "b". A user who copied those names into a
+# read_parquet column list got names the file does not have. Each top-level column
+# now gets one row, with the type read_parquet reads it as: an array type for a
+# list of a scalar, and the field list for a struct, which the user declares as a
+# composite type. The exporter writes both shapes, so this arm needs no pyarrow.
+NEST="$PGC_WORKDIR/nested.parquet"
+psql_run "CREATE TYPE nest_s AS (a int8, b text);"
+psql_run "CREATE TABLE nest (l int8[], s nest_s, n int4) USING pgcolumnar;"
+psql_run "INSERT INTO nest VALUES ('{1,2}', ROW(1, 'x'), 1), ('{3}', ROW(2, 'y'), 2);"
+psql_run "SELECT pgcolumnar.export_parquet('nest', '$NEST');"
+check_text "parquet_schema lists a nested file by its top-level column names (#1893)" \
+	"$(q "SELECT string_agg(column_name, ',' ORDER BY ord) FROM (SELECT column_name, row_number() OVER () AS ord FROM pgcolumnar.parquet_schema('$NEST')) s;")" \
+	"l,s,n"
+check_text "parquet_schema reports a list column as an array type (#1893)" \
+	"$(q "SELECT data_type FROM pgcolumnar.parquet_schema('$NEST') WHERE column_name = 'l';")" \
+	"bigint[]"
+check_text "parquet_schema reports a struct column as a composite with its field types (#1893)" \
+	"$(q "SELECT data_type FROM pgcolumnar.parquet_schema('$NEST') WHERE column_name = 's';")" \
+	"composite (a bigint, b text)"
+check_text "read_parquet reads a nested file with the reported names and types (#1893)" \
+	"$(q "SELECT string_agg(l::text || (s).a || (s).b || n, ';' ORDER BY n) FROM pgcolumnar.read_parquet('$NEST') AS t(l bigint[], s nest_s, n integer);")" \
+	"{1,2}1x1;{3}2y2"
+if python3 -c 'import pyarrow.parquet' 2>/dev/null; then
+	# a map has no read_parquet type: it reports by name, marked as not supported
+	MAPF="$PGC_WORKDIR/map.parquet"
+	python3 - "$MAPF" <<'PY'
+import sys, pyarrow as pa, pyarrow.parquet as pq
+pq.write_table(pa.table({"m": pa.array([[("k", 1)]], pa.map_(pa.string(), pa.int64())),
+                         "n": pa.array([1], pa.int32())}), sys.argv[1])
+PY
+	check_text "parquet_schema reports a map column by name as not supported (#1893)" \
+		"$(q "SELECT string_agg(column_name || ':' || coalesce(data_type, 'NULL'), ',') FROM pgcolumnar.parquet_schema('$MAPF');")" \
+		"m:map (not supported),n:integer"
+else
+	check_skip "parquet_schema reports a map column by name as not supported (#1893)" \
+		"SKIP  parquet_schema reports a map column by name as not supported (#1893) (pyarrow not available to write the fixture)" \
+		"pyarrow not available"
+fi
+
 pgc_summary
