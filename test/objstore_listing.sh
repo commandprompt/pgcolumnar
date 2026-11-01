@@ -3,7 +3,8 @@
 # pgColumnar #619: ListObjectsV2 discovery over remote paths. The FDW and
 # read_parquet expand a remote prefix (trailing slash) or a remote glob into the
 # set of objects under it, by a paged ListObjectsV2 call behind the object-store
-# ABI, and Hive partition columns work over a remote prefix.
+# ABI, and Hive partition columns work over a remote prefix. An exact key that
+# holds `*`, `?` or `[` reads that object alone (#1785).
 #
 # The fixture (test/objstore_http_server.py) answers ListObjectsV2 over the
 # objects on disk, paged by --list-page-size, so the client's continuation-token
@@ -102,7 +103,8 @@ mkdir -p "$PGC_WORKDIR/$BUCKET/lst/sub" \
          "$PGC_WORKDIR/$BUCKET/hive/dt=2026-01-02" \
          "$PGC_WORKDIR/$BUCKET/_landing/_temporary" \
          "$PGC_WORKDIR/$BUCKET/.dir" \
-         "$PGC_WORKDIR/$BUCKET/glb"
+         "$PGC_WORKDIR/$BUCKET/glb" \
+         "$PGC_WORKDIR/$BUCKET/lit"
 python3 - "$PGC_WORKDIR/$BUCKET" <<'PYEOF'
 import sys, os
 import pyarrow as pa, pyarrow.parquet as pq
@@ -129,6 +131,15 @@ one(os.path.join(B, ".dir/a.parquet"), [4, 5, 6])
 one(os.path.join(B, "glb/a.parquet"), [1, 2, 3])
 one(os.path.join(B, "glb/_b.parquet"), [10, 11, 12, 13, 14])
 one(os.path.join(B, "glb/.h.parquet"), [100])
+# #1785: keys that hold a glob metacharacter, each beside a key its pattern
+# would also match; raw[1] has no .parquet suffix
+one(os.path.join(B, "lit/q?mark.parquet"), [2])
+one(os.path.join(B, "lit/qXmark.parquet"), [3])
+one(os.path.join(B, "lit/Q?mark.parquet"), [20])
+one(os.path.join(B, "lit/brack[1].parquet"), [1])
+one(os.path.join(B, "lit/star*x.parquet"), [4])
+one(os.path.join(B, "lit/starZZZx.parquet"), [5])
+one(os.path.join(B, "lit/raw[1]"), [8])
 PYEOF
 
 # page size 2 forces the continuation-token loop for the 4-object prefix
@@ -203,6 +214,29 @@ check "an upper-case scheme glob S3://.../_landing/*.parquet matches as s3:// do
 # not a.parquet.
 check "an upper-case scheme glob S3://.../glb/[A_]*.parquet is case-sensitive after the scheme" \
 	"$(rpqu 'glb/[A_]*.parquet')" "5 60"
+
+# ---- #1785: an exact key that holds *, ? or [ reads that object -------------
+# `*`, `?` and `[` are legal in an S3 key. A key that holds one is looked up
+# literally in its prefix's listing first, and is matched as a pattern only when
+# no object has that exact name. Only the key after the bucket is a pattern, so
+# a bracketed authority is refused as an IPv6 literal, never listed.
+check "an exact key with ? (lit/q?mark.parquet) reads that object alone, not qXmark.parquet" \
+	"$(rpq 'lit/q?mark.parquet')" "1 2"
+check "an exact key with [ (lit/brack[1].parquet) reads that object" \
+	"$(rpq 'lit/brack[1].parquet')" "1 1"
+check "an exact key with * (lit/star*x.parquet) reads that object alone, not starZZZx.parquet" \
+	"$(rpq 'lit/star*x.parquet')" "1 4"
+check "an exact key with [ and no .parquet suffix (lit/raw[1]) reads that object" \
+	"$(rpq 'lit/raw[1]')" "1 8"
+check "an upper-case scheme exact key S3://.../lit/q?mark.parquet reads that object alone" \
+	"$(rpqu 'lit/q?mark.parquet')" "1 2"
+check "with no object of that exact name, lit/q?mar?.parquet is a pattern (q?mark and qXmark, not Q?mark)" \
+	"$(rpq 'lit/q?mar?.parquet')" "2 5"
+check "an escaped key, a backslash before the ? of lit/q?mark.parquet, matches only q?mark.parquet" \
+	"$(rpq 'lit/q\?mark.parquet')" "1 2"
+check "an IPv6 literal s3 authority s3://[::1]/... is refused as IPv6, not listed" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('s3://[::1]/lit/q?mark.parquet') AS t(id int8)" \
+		"IPv6 literal hosts are not supported" " by the IPv6 check")" "0A000 by the IPv6 check"
 
 # ---- an exact key is still one GET, no LIST ---------------------------------
 : > "$S3_LOG"

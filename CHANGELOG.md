@@ -466,6 +466,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote read tests only the key of an `s3://` URL for `*`, `?` and `[`
+  (#1785). The whole URL used to be tested, with three effects. An exact key that
+  holds one of those characters read other objects or none: `b/q?mark.parquet`
+  also returned `b/qXmark.parquet`, and `a/brack[1].parquet` was "no objects
+  match". An `http(s)://` URL with a query string, and any host written as an
+  IPv6 literal such as `http://[::1]:3900/`, failed with "listing a prefix is
+  only supported for s3:// URLs". Now an `s3://` pattern that names an existing
+  object exactly reads that object alone, and expands only when no object has
+  that name; a backslash still escapes a character in the pattern. An
+  `http(s)://` URL is always one object, its query string sent to the server. A
+  bracketed IPv6 host is refused with its own SQLSTATE 0A000 message.
+  `test/objstore_listing.sh`, `test/objstore_http_read.sh` and their twins.
 - `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
   URL now write the object instead of crashing the backend (#1779). Every write
   request was signed, and a plain-HTTP target has no region or credentials, so the

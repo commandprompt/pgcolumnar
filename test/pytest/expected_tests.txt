@@ -1417,4 +1417,7 @@ guard_tests 854
 # cluster_tests 4750 -> 4763 at the merge of origin/fix/1782-pexport-trailing-slash (2f9022ed) into
 # fix/1779-http-write-unsigned: that branch's 4701 plus this branch's 13 tests in test_objstore_sink_write.py
 # (4516 -> 4529), by collection over the cluster files: `4714 tests collected`.
-cluster_tests 4763
+# cluster_tests 4763 -> 4774 for #1785: 8 tests in test_objstore_listing.py (seven literal-key parameters and
+# the s3:// IPv6 refusal) and 3 in test_objstore_http_read.py (arm E), 11 checks in 11 tests, by collection
+# over the cluster files: `4774 tests collected`.
+cluster_tests 4774

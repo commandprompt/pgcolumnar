@@ -930,8 +930,8 @@ little-endian hosts. In each function, `path`
 can be one of three things. It can be a single file. It can be a directory, and
 then the function reads all the `*.parquet` files below it at any depth as one
 relation, in sorted order. It can also be a glob pattern. A local `path` can be
-any of these; an object-storage URL must be a single object key. See
-[Object storage](#object-storage).
+any of these. An object-storage URL can be an exact key, and an `s3://` URL can
+also be a prefix or a pattern. See [Object storage](#object-storage).
 
 ### pgcolumnar.read_parquet(path text) returns setof record
 
@@ -1471,7 +1471,8 @@ without it reads and writes local files as before, and a remote URL reports that
 the module is required.
 
 A remote path is read as an exact key, a prefix, or a pattern. An `s3://` URL
-that names an object reads that one object with a single GET, no listing. An
+that names an object reads that one object with a single GET, no listing. A
+key that holds `*`, `?` or `[` is the exception described below. An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a
@@ -1484,6 +1485,18 @@ only when the pattern spells the dot, such as `.*.parquet`. The scheme is
 compared without case, so `S3://` reads as `s3://` does. Hive
 `partition_columns` work over a remote prefix. A pattern or a prefix requires the
 object-store module, since only it can issue the listing.
+
+Only the key of an `s3://` URL, the part after the bucket, can be a pattern. The
+scheme and the bucket never are. An `http://` or `https://` URL is always one
+object, so a `?` in it starts a query string, which is sent to the server. A key
+may itself contain `*`, `?` or `[`, because S3 allows them. When an `s3://` URL
+holds one of these characters, the reader lists the prefix and first looks for
+an object with exactly that key. If one exists, the reader reads that object
+alone, whatever its suffix. Only when none exists is the key matched as a
+pattern. A backslash before a character makes the pattern match that character
+literally, so `s3://bucket/a/q\?.parquet` matches only `a/q?.parquet`. A read
+from a host written as an IPv6 literal in brackets, such as
+`http://[::1]:9000/`, is refused with SQLSTATE 0A000.
 
 On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes one
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`

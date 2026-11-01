@@ -415,10 +415,13 @@ Missing and corrupt cannot be told apart by SQLSTATE. `internal_load_library`
 uses `errcode_for_file_access()` for both the `stat` failure and the `dlopen`
 failure, so both arrive as 58P01. The discriminator is file presence.
 
-Object storage reads **exact object keys**. A glob metacharacter in a remote path
-is refused rather than expanded. Expanding one needs a LIST call, and its paged
-response would be a third parser written here for input an outside party
-controls.
+Object storage reads an exact key with one GET and no LIST. An `s3://` prefix or
+pattern is expanded by a paged ListObjectsV2 call (#619), whose XML response is
+input an outside party controls. Only the key after the bucket is tested for
+`*`, `?` and `[` (#1785). An `http(s)` query string and a bracketed host are
+never pattern syntax. A pattern that names an existing object exactly reads
+that object alone, because those characters are legal in an S3 key. A
+bracketed IPv6 literal host is refused by `pq_resolve_paths` before any request.
 
 ### columnar_iceberg.c and columnar_avro.c
 The Apache Iceberg read path (#388). `columnar_avro.c` reads the Avro manifest and

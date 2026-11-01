@@ -4,6 +4,8 @@
 read_parquet and the FDW expand a remote prefix (trailing slash) or a remote glob into
 the objects under it, through a paged ListObjectsV2 loop behind the object-store ABI;
 Hive partition columns work over a remote prefix; an exact key is one GET and no LIST.
+An exact key holding `*`, `?` or `[` reads that object alone, a pattern naming no object
+of its exact name still expands, and a bracketed authority is refused as IPv6 (#1785).
 The local SigV4 fixture server (test/objstore_http_server.py, the shell's own) answers
 the listing two keys a page, so the continuation-token loop runs.
 
@@ -56,7 +58,19 @@ one(os.path.join(B, ".dir/a.parquet"), [4, 5, 6])
 one(os.path.join(B, "glb/a.parquet"), [1, 2, 3])
 one(os.path.join(B, "glb/_b.parquet"), [10, 11, 12, 13, 14])
 one(os.path.join(B, "glb/.h.parquet"), [100])
+one(os.path.join(B, "lit/q?mark.parquet"), [2])
+one(os.path.join(B, "lit/qXmark.parquet"), [3])
+one(os.path.join(B, "lit/Q?mark.parquet"), [20])
+one(os.path.join(B, "lit/brack[1].parquet"), [1])
+one(os.path.join(B, "lit/star*x.parquet"), [4])
+one(os.path.join(B, "lit/starZZZx.parquet"), [5])
+one(os.path.join(B, "lit/raw[1]"), [8])
 '''
+
+# (scheme, key after the bucket) of each #1785 literal-key reading
+LITERAL_READS = [("s3://", "lit/q?mark.parquet"), ("s3://", "lit/brack[1].parquet"),
+                 ("s3://", "lit/star*x.parquet"), ("s3://", "lit/raw[1]"), ("S3://", "lit/q?mark.parquet"),
+                 ("s3://", "lit/q?mar?.parquet"), ("s3://", "lit/q\\?mark.parquet")]
 
 STUCK = ('<?xml version="1.0"?><ListBucketResult><IsTruncated>true</IsTruncated>'
          '<NextContinuationToken>STUCK</NextContinuationToken>'
@@ -181,7 +195,7 @@ def osl(pgc_cluster):
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-objlist-"))
     os.chmod(work, 0o777)
     bucket = work / BUCKET
-    for d in ("lst/sub", "hive/dt=2026-01-01", "hive/dt=2026-01-02", "_landing/_temporary", ".dir", "glb"):
+    for d in ("lst/sub", "hive/dt=2026-01-01", "hive/dt=2026-01-02", "_landing/_temporary", ".dir", "glb", "lit"):
         (bucket / d).mkdir(parents=True)
     r = {}
     srv = None
@@ -252,6 +266,14 @@ def osl(pgc_cluster):
         for sub in ("_landing/", "_landing/*.parquet", "glb/[A_]*.parquet"):
             r["named S3://" + sub] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
                                                f"'S3://{BUCKET}/{sub}') AS t(id int8)")
+
+        # #1785: an exact key that holds *, ? or [ is looked up literally first
+        for scheme, sub in LITERAL_READS:
+            r[f"literal {scheme}{sub}"] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                                    f"'{scheme}{BUCKET}/{sub}') AS t(id int8)")
+        r["ipv6 s3"] = _refusal(dsn, "SELECT count(*) FROM pgcolumnar.read_parquet("
+                                     "'s3://[::1]/lit/q?mark.parquet') AS t(id int8)",
+                                "IPv6 literal hosts are not supported", " by the IPv6 check")
 
         open(s3log, "w").close()
         with psycopg.connect(dsn, autocommit=True) as c:
@@ -360,6 +382,34 @@ def test_hidden_names_are_judged_below_the_named_prefix_and_globs_match_as_local
     r = _readings(request, expect)
     if r is not None:
         expect.text(r["named " + sub], want, name)
+
+
+@pytest.mark.parametrize("key, want, name", [
+    ("s3://lit/q?mark.parquet", "1 2",
+     "an exact key with ? (lit/q?mark.parquet) reads that object alone, not qXmark.parquet"),
+    ("s3://lit/brack[1].parquet", "1 1", "an exact key with [ (lit/brack[1].parquet) reads that object"),
+    ("s3://lit/star*x.parquet", "1 4",
+     "an exact key with * (lit/star*x.parquet) reads that object alone, not starZZZx.parquet"),
+    ("s3://lit/raw[1]", "1 8", "an exact key with [ and no .parquet suffix (lit/raw[1]) reads that object"),
+    ("S3://lit/q?mark.parquet", "1 2",
+     "an upper-case scheme exact key S3://.../lit/q?mark.parquet reads that object alone"),
+    ("s3://lit/q?mar?.parquet", "2 5",
+     "with no object of that exact name, lit/q?mar?.parquet is a pattern (q?mark and qXmark, not Q?mark)"),
+    ("s3://lit/q\\?mark.parquet", "1 2",
+     "an escaped key, a backslash before the ? of lit/q?mark.parquet, matches only q?mark.parquet"),
+])
+def test_an_exact_key_with_a_glob_metacharacter_reads_that_object(request, expect, key, want, name):
+    """#1785: `*`, `?` and `[` are legal in an S3 key; the literal key is tried first."""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["literal " + key], want, name)
+
+
+def test_an_ipv6_literal_s3_authority_is_refused(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["ipv6 s3"], "0A000 by the IPv6 check",
+                    "an IPv6 literal s3 authority s3://[::1]/... is refused as IPv6, not listed")
 
 
 def test_an_exact_key_read_returns_its_rows(request, expect):
