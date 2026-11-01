@@ -5976,6 +5976,7 @@ objstore_http_read	objstore_http_read	C: with pgcolumnar.objstore_pin_reads off,
 objstore_http_read	objstore_http_read	C: with pgcolumnar.objstore_pin_reads off, no ranged GET of a versioned object names the version	15;16;17;18;19	2026-11-01	pin-off early return still sets versionId (#1866)
 objstore_http_read	objstore_http_read	D: cancel latency bounded (<=10s)	15;16;17;18;19	never	-
 objstore_http_read	objstore_http_read	D: stalled transfer cancelled with query_canceled	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the Range header's end is one past the last byte wanted
+objstore_http_read	objstore_http_read	E: a versioned read of an http URL with a query string adds the version with '&' and reads the version it opened	15;16;17;18;19	2026-11-01	os_request joined versionId to a URL query with a second '?' (#1904)
 objstore_http_read	objstore_http_read	E: an IPv6 literal http host is refused as IPv6, not as a listing	15;16;17;18;19	2026-11-01	columnar_parquet_reader.c: the IPv6 literal host refusal removed
 objstore_http_read	objstore_http_read	E: an http URL with a query string (?raw=true) reads the object, not a listing	15;16;17;18;19	2026-11-01	columnar_parquet_reader.c: the whole remote URL is tested for glob metacharacters, not the s3:// key
 objstore_http_read	objstore_http_read	E: and its HEAD carried the query string to the server	15;16;17;18;19	2026-11-01	columnar_parquet_reader.c: the whole remote URL is tested for glob metacharacters, not the s3:// key
@@ -6098,6 +6099,7 @@ objstore_sink_write	objstore_sink_write	http:// inject: mid-upload failure surfa
 objstore_sink_write	objstore_sink_write	http:// inject: the server holds no open upload for the key	15;16;17;18;19	2026-10-31	the abort DELETE of a failed multipart upload is sent only when the handle signs (mutation, #1779)
 objstore_sink_write	objstore_sink_write	http:// large export succeeds unsigned (no crash)	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
 objstore_sink_write	objstore_sink_write	http:// large round trip: read-back == source	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
+objstore_sink_write	objstore_sink_write	http:// multipart export to a URL with a query string joins each request's parameters with '&'	15;16;17;18;19	2026-11-01	os_write_request joined its multipart query to a URL query with a second '?' (#1904)
 objstore_sink_write	objstore_sink_write	http:// prefix: a parallel export is refused before any worker starts, with no request sent	15;16;17;18;19	2026-11-01	the #1832/#1831/#1864 fix reverted: any handled remote scheme accepted with the old hint, and the part keys deleted without waiting for the terminated workers (#1832, #1831, #1864);the s3:// scheme test removed from pexport_prepare_dir, so any handled remote scheme was accepted (#1832)
 objstore_sink_write	objstore_sink_write	http:// small export succeeds unsigned (no crash)	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
 objstore_sink_write	objstore_sink_write	http:// small object went as ONE plain PUT	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)

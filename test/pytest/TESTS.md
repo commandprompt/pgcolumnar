@@ -12980,6 +12980,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 | `test_the_http_read_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
 | `test_an_http_url_with_a_query_string_reads_the_object` | E: an http URL with a query string (?raw=true) reads the object, not a listing |
 | `test_the_query_string_reached_the_server` | E: and its HEAD carried the query string to the server |
+| `test_a_versioned_read_of_an_http_url_with_a_query_string_adds_the_version_with_an_ampersand` | E: a versioned read of an http URL with a query string adds the version with '&' and reads the version it opened -- #1904: a second '?' hid the versionId, and the overwrite failed the read |
 | `test_an_ipv6_literal_http_host_is_refused` | E: an IPv6 literal http host is refused as IPv6, not as a listing |
 | `test_the_server_survives` | survival: the server answers and no backend crashed |
 
@@ -13092,6 +13093,7 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_large_export_to_http_succeeds_unsigned` | http:// large export succeeds unsigned (no crash) |
 | `test_the_large_http_export_took_the_multipart_protocol` | the http:// large export took the multipart protocol -- started, at least two parts, completed once |
 | `test_the_large_http_object_reads_back_as_the_generator` | http:// large round trip: read-back == source |
+| `test_a_multipart_http_export_to_a_url_with_a_query_string_joins_parameters_with_an_ampersand` | http:// multipart export to a URL with a query string joins each request's parameters with '&' -- #1904: raw=true?uploads= was refused with HTTP 400 |
 | `test_an_injected_failure_on_http_surfaces_as_disk_full` | http:// inject: mid-upload failure surfaces as disk-full (53100) |
 | `test_the_injected_http_fault_landed_mid_multipart` | the http:// fault landed mid-multipart (an upload was started) |
 | `test_the_injected_http_failure_leaves_no_open_upload` | http:// inject: the server holds no open upload for the key -- the unsigned abort reached the server |

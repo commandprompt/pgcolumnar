@@ -525,6 +525,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- An `http://` or `https://` URL with a query string now gets well-formed
+  requests when the reader or the writer adds a parameter of its own (#1904).
+  Since #1785 the URL keeps its query string. The version pin (#1867) then sent
+  `?raw=true?versionId=<id>`, so the server did not see the version and an
+  overwrite during the read failed the query. A multipart export sent
+  `?raw=true?uploads=`, and the server refused it with HTTP 400. Now the second
+  parameter joins the query with `&`. docs/sql-reference.md.
+  `test/objstore_http_read.sh`, `test/objstore_sink_write.sh` and their pytest
+  twins.
+
 - A remote read of a versioned object now finishes on the version it opened
   (#1867). When the HEAD sends `x-amz-version-id`, every ranged GET asks for that
   version with `versionId=`, signed for `s3://` URLs. Before, an overwrite during

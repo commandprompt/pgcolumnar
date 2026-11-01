@@ -528,6 +528,20 @@ def _plain_run(dsn, work, r, procs):
         print(f"-- fh_big: {_message(exc)}")
     r["plain big back"] = _set_hash(dsn, "SELECT * FROM fh_big")
 
+    # #1904: each multipart request joins its parameters to the URL's own query with '&'
+    open(plog, "w").close()
+    rows = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_big', '{url}/bigq.parquet?raw=true')", setup=[PART])
+    try:
+        reqs = [f for f in (l.split() for l in pathlib.Path(plog).read_text(errors="replace").splitlines())
+                if len(f) > 2 and f[1] == "/pb/bigq.parquet"]
+        nots = [f"{f[0]} {f[2]}" for f in reqs
+                if not re.match(r"raw=true&(uploads=|partNumber=|uploadId=)", f[2])]
+        bad = f"{len(nots)} (first: {nots[0]})" if nots else 0
+        r["plain query"] = (f"rows: {rows}; requests not of the form raw=true&...: {bad} of {len(reqs)}",
+                            len(reqs))
+    except OSError as exc:
+        r["plain query"] = (query_error(f"request log unreadable: {exc}"), 0)
+
     open(plog, "w").close()
     r["plain inject"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', '{url}/fail.parquet')",
                                  "export write failed (injected fault)", " by the injected fault",
@@ -1485,6 +1499,13 @@ def test_the_large_http_export_took_the_multipart_protocol(osw, expect):
 
 def test_the_large_http_object_reads_back_as_the_generator(osw, expect):
     expect.text(osw["plain big back"], osw["big gen"], "http:// large round trip: read-back == source")
+
+
+def test_a_multipart_http_export_to_a_url_with_a_query_string_joins_parameters_with_an_ampersand(osw, expect):
+    got, n = osw["plain query"]
+    expect.text(got, f"rows: 400000; requests not of the form raw=true&...: 0 of {n}",
+                "http:// multipart export to a URL with a query string joins each request's parameters "
+                "with '&'")
 
 
 def test_an_injected_failure_on_http_surfaces_as_disk_full(osw, expect):

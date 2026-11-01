@@ -1599,4 +1599,7 @@ guard_tests 854
 # cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
 # premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
 # collection: 5776 tests collected, less guard_tests 854.
-cluster_tests 5110
+# cluster_tests 5110 -> 5112 for #1904's two tests: one in test_objstore_http_read.py (the version pin on an
+# http URL with a query string) and one in test_objstore_sink_write.py (a multipart export to such a URL),
+# by collection: `5966 tests collected`, minus 854.
+cluster_tests 5112

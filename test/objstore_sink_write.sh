@@ -831,6 +831,21 @@ psql_run "CREATE FOREIGN TABLE fh_big (id int8, pad text) SERVER wsrv OPTIONS (p
 check "http:// large round trip: read-back == source" \
 	"$(pgc_set_hash "SELECT * FROM fh_big")" "$(pgc_set_hash "$GEN_BIG")"
 
+# #1904: an http:// URL keeps its query string, so each multipart request joins
+# its own parameters to it with '&'. A second '?' made the start request read as
+# raw=true?uploads=, and the server refused it.
+: > "$PLAIN_LOG"
+wait_up
+pq_rows="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qAt \
+	-c "$PART SELECT pgcolumnar.export_parquet('es_big', '$PLAIN/bigq.parquet?raw=true')" 2>&1 | tr '\n' ' ' | sed 's/ *$//')"
+pq_all="$(awk '$2 == "/pb/bigq.parquet" { print $1, $3 }' "$PLAIN_LOG")"
+pq_n="$(printf '%s' "$pq_all" | grep -c .)"
+pq_bad="$(printf '%s' "$pq_all" | grep -vc ' raw=true&\(uploads=\|partNumber=\|uploadId=\)')"
+[ "$pq_bad" -gt 0 ] && pq_bad="$pq_bad (first: $(printf '%s\n' "$pq_all" | grep -v ' raw=true&\(uploads=\|partNumber=\|uploadId=\)' | head -1))"
+check "http:// multipart export to a URL with a query string joins each request's parameters with '&'" \
+	"rows: ${pq_rows:-none}; requests not of the form raw=true&...: $pq_bad of $pq_n" \
+	"rows: $BIGROWS; requests not of the form raw=true&...: 0 of $pq_n"
+
 : > "$PLAIN_LOG"
 check "http:// inject: mid-upload failure surfaces as disk-full (53100)" \
 	"$(refusal_of "$PART SET pgcolumnar.sink_fail_after = 900000; SELECT pgcolumnar.export_parquet('es_big', '$PLAIN/fail.parquet')" \

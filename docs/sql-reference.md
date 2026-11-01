@@ -1744,7 +1744,9 @@ object-store module, since only it can issue the listing.
 
 Only the key of an `s3://` URL, the part after the bucket, can be a pattern. The
 scheme and the bucket never are. An `http://` or `https://` URL is always one
-object, so a `?` in it starts a query string, which is sent to the server. A key
+object, so a `?` in it starts a query string, which is sent to the server. The
+reader and the writer add their own parameters, such as `versionId=` or
+`uploadId=`, after that query with `&`. A key
 may itself contain `*`, `?` or `[`, because S3 allows them. When an `s3://` URL
 holds one of these characters, the reader lists the prefix and first looks for
 an object with exactly that key. If one exists, the reader reads that object
