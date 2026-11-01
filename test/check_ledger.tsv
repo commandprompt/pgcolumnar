@@ -5775,12 +5775,15 @@ objstore_sink_write	objstore_sink_write	cancel: no completed object remains at t
 objstore_sink_write	objstore_sink_write	cancel: no request named a key with an empty segment (//)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
 objstore_sink_write	objstore_sink_write	cancel: the dispatcher issued DELETE over the known keys	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
 objstore_sink_write	objstore_sink_write	cancel: the server holds no open upload under the prefix	15;16;17;18;19	2026-10-22	the before_shmem_exit registration in PgColumnarSinkOpen dropped (noreg)
+objstore_sink_write	objstore_sink_write	commit hold: a cancel leaves no part that a worker was committing	15;16;17;18;19	2026-11-01	the #1832/#1831/#1864 fix reverted: any handled remote scheme accepted with the old hint, and the part keys deleted without waiting for the terminated workers (#1832, #1831, #1864)
+objstore_sink_write	objstore_sink_write	gs:// prefix: a parallel export is refused before any worker starts, with no request sent	15;16;17;18;19	2026-11-01	the #1832/#1831/#1864 fix reverted: any handled remote scheme accepted with the old hint, and the part keys deleted without waiting for the terminated workers (#1832, #1831, #1864)
 objstore_sink_write	objstore_sink_write	http:// 403: the hint says the request went unsigned, not to check AWS_* credentials	15;16;17;18;19	2026-10-31	os_reject_403 gives an unsigned http(s):// 403 the AWS_* credential hint, as before (#1779);os_write_request signs unconditionally (#1779)
 objstore_sink_write	objstore_sink_write	http:// arrow export round-trips unsigned (no crash)	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
 objstore_sink_write	objstore_sink_write	http:// inject: mid-upload failure surfaces as disk-full (53100)	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
 objstore_sink_write	objstore_sink_write	http:// inject: the server holds no open upload for the key	15;16;17;18;19	2026-10-31	the abort DELETE of a failed multipart upload is sent only when the handle signs (mutation, #1779)
 objstore_sink_write	objstore_sink_write	http:// large export succeeds unsigned (no crash)	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
 objstore_sink_write	objstore_sink_write	http:// large round trip: read-back == source	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
+objstore_sink_write	objstore_sink_write	http:// prefix: a parallel export is refused before any worker starts, with no request sent	15;16;17;18;19	2026-11-01	the #1832/#1831/#1864 fix reverted: any handled remote scheme accepted with the old hint, and the part keys deleted without waiting for the terminated workers (#1832, #1831, #1864)
 objstore_sink_write	objstore_sink_write	http:// small export succeeds unsigned (no crash)	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
 objstore_sink_write	objstore_sink_write	http:// small object went as ONE plain PUT	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
 objstore_sink_write	objstore_sink_write	http:// small round trip: read-back == source	15;16;17;18;19	2026-10-31	os_write_request signs unconditionally (#1779)
@@ -5796,6 +5799,7 @@ objstore_sink_write	objstore_sink_write	lister refused: the export fails with th
 objstore_sink_write	objstore_sink_write	listing error: the refused listing names the prefix it listed, not a dummy key	15;16;17;18;19	2026-10-31	columnar_objstore_module.c: objstore_list_objects leaves the handle's URL as the dummy key s3://<bucket>/_ it resolved from, so a refused listing names it (mutation, #1781)
 objstore_sink_write	objstore_sink_write	listing refused after a larger run: no _SUCCESS marker remains at the prefix	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	listing refused after a larger run: the earlier run's part-0002 and part-0003 remain, and nothing else	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	long prefix: a 1023-byte s3:// prefix is refused as too long, with no request sent	15;16;17;18;19	2026-11-01	the dispatcher's destination length probe disabled, so a 1023-byte s3:// prefix reaches the workers and the cleanup (#1849)
 objstore_sink_write	objstore_sink_write	marker refused: no part object remains at the prefix	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT re-throws without removing the run's parts (mutation, #1781);columnar_parallel_export.c: the cleanup region covers the stale-part listing only, so a refused marker PUT leaves the parts (mutation, #1781)
 objstore_sink_write	objstore_sink_write	marker refused: the export fails with the marker PUT's 28000	15;16;17;18;19	2026-10-31	columnar_parallel_export.c: a failed stale-part listing or marker PUT removes the parts and swallows the error, reporting success (mutation, #1781)
 objstore_sink_write	objstore_sink_write	no slash: a 2-worker re-run to s3://bucket/sl succeeds	15;16;17;18;19	never	-
@@ -5815,6 +5819,8 @@ objstore_sink_write	objstore_sink_write	part failure: the key does not exist	15;
 objstore_sink_write	objstore_sink_write	part failure: the server holds no open upload for the key	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the abort DELETE names an upload that is not this one
 objstore_sink_write	objstore_sink_write	premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: a worker was uploading before the cancel	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: commit hold: all four part PUTs reached the store before the cancel	15;16;17;18;19	never	-
+objstore_sink_write	objstore_sink_write	premise: commit hold: the export was cancelled, not completed	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: lister refused: an earlier complete run left its marker at lf/	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: lister refused: both workers' parts were uploaded before the listing	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	premise: listing refused after a larger run: the 4-worker run left 4 parts and its marker at lt/	15;16;17;18;19	never	-
@@ -5851,6 +5857,7 @@ objstore_sink_write	objstore_sink_write	trailing slash: no request named a key w
 objstore_sink_write	objstore_sink_write	trailing slash: parallel export to an s3:// prefix ending in / succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	trailing slash: the documented glob read-back equals the source	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	trailing slash: the marker went to sl/_SUCCESS (one slash)	15;16;17;18;19	2026-10-30	the trailing-slash strip in pgcolumnar_parallel_export_parquet removed (#1782)
+objstore_sink_write	objstore_sink_write	unsupported scheme: the parallel export's hint says only an s3:// prefix can be listed	15;16;17;18;19	2026-11-01	the #1832/#1831/#1864 fix reverted: any handled remote scheme accepted with the old hint, and the part keys deleted without waiting for the terminated workers (#1832, #1831, #1864)
 objstore_sink_write	objstore_sink_write	uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts	15;16;17;18;19	2026-10-31	the S3:// scheme normalisation in pgcolumnar_parallel_export_parquet removed, as at d0fd4f8a (#1782);the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)
 objstore_sink_write	objstore_sink_write	uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds	15;16;17;18;19	never	-
 objstore_sink_write	objstore_sink_write	uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003	15;16;17;18;19	2026-10-31	the S3:// scheme normalisation in pgcolumnar_parallel_export_parquet removed, as at d0fd4f8a (#1782);the stale-part reconcile prefix built as "%s" instead of "%s/" (#1782)

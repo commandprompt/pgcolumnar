@@ -270,6 +270,51 @@ def _cancel_run(dsn, s3log, bucket, r):
     r["cx open"] = _open_uploads(bucket.parent, r"^pgc-bucket/cx/")
 
 
+def _hold_run(dsn, s3log, bucket, r):
+    """The shell's #1864 arm: the fixture holds every single-request PUT for 3 s after
+    its body arrives and only then writes the object (__put_hold__), as a store that
+    applies a commit late. A 4-worker export is cancelled once all four part PUTs have
+    arrived. The dispatcher must wait for the terminated workers to exit before it
+    deletes the part keys, or the held parts appear after the DELETEs and stay."""
+    out = {}
+
+    def run():
+        try:
+            with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+                conn.execute("SELECT pgcolumnar.parallel_export_parquet("
+                             f"'es_par'::regclass, 's3://{BUCKET}/ch', 4)").fetchall()
+            out["result"] = "completed"
+        except psycopg.Error as exc:
+            out["result"] = str(exc)
+
+    hold = bucket.parent / "__put_hold__"
+    shutil.rmtree(bucket / "ch", ignore_errors=True)
+    open(s3log, "w").close()
+    hold.write_text("3\n")
+    try:
+        bg = threading.Thread(target=run)
+        bg.start()
+        puts = 0
+        for _ in range(300):
+            puts = _logn(s3log, r"^PUT /pgc-bucket/ch/part-")
+            if isinstance(puts, int) and puts >= 4:
+                break
+            time.sleep(0.1)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("SELECT pg_cancel_backend(pid) FROM pg_stat_activity "
+                      "WHERE query LIKE '%parallel_export_parquet%' AND state = 'active' "
+                      "AND pid <> pg_backend_pid()")
+        bg.join(600)
+        time.sleep(4)   # a held PUT lands 3 s after it arrived
+    finally:
+        hold.unlink(missing_ok=True)
+    r["ch puts"] = ("yes" if puts >= 4 else f"no ({puts} part PUTs)") if isinstance(puts, int) else puts
+    res = out.get("result", "still running")
+    r["ch cancelled"] = ("cancelled" if re.search(r"canceling statement|canceled on user request", res, re.I)
+                         else f"completed ({res.splitlines()[0] if res else res})")
+    r["ch parts"] = str(_parts(bucket / "ch"))
+
+
 WORKERS = "backend_type = 'pgcolumnar parallel_export worker'"
 
 
@@ -398,6 +443,13 @@ def _plain_run(dsn, work, r, procs):
     n = _logn(plog, r"^POST /pb/fail.parquet uploads=")
     r["plain inject started"] = ("yes" if n >= 1 else f"no (starts={n})") if isinstance(n, int) else n
     r["plain inject open"] = _open_uploads(pdir, r"^pb/fail\.parquet$")
+
+    # #1832: an http:// prefix cannot be listed either, so it is refused before any
+    # worker starts too
+    open(plog, "w").close()
+    px = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, '{url}/px', 2)",
+                  "parallel_export_parquet cannot write to", " by the scheme check")
+    r["plain px"] = f"{px}, {_logn(plog, r'/pb/px/')} requests"
 
 
 @pytest.fixture(scope="module")
@@ -675,6 +727,21 @@ def osw(pgc_cluster):
         r["bb root parts"] = str(sum(1 for p in bucket.iterdir()
                                      if p.is_file() and re.search(r"^part-.*\.parquet$", p.name)))
 
+        # #1832: only an s3:// prefix can be listed, and the export lists its prefix
+        # after the workers finish. A gs:// export is refused before any worker starts.
+        open(s3log, "w").close()
+        gs = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 'gs://{BUCKET}/gx', 2)",
+                      "parallel_export_parquet cannot write to", " by the scheme check")
+        r["gs refused"] = f"{gs}, {_logn(s3log, r'gx/part-')} requests"
+
+        # #1849: a prefix too long for the longest generated name is refused before any
+        # worker starts, so the upload cleanup never lists a truncated "<prefix>/"
+        open(s3log, "w").close()
+        longp = f"s3://{BUCKET}/" + "L" * (1023 - len(BUCKET) - 6)
+        lp = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, '{longp}', 2)",
+                      "parallel export destination is too long", " (too long)")
+        r["long prefix"] = f"{lp}, {len(longp)} bytes, {_logn(s3log, r'^[A-Z]+ /pgc-bucket/LLLL')} requests"
+
         # #1780: the workers obey the calling session's settings, not only the system's
         open(s3log, "w").close()
         r["sa refused"] = _refusal(
@@ -713,6 +780,7 @@ def osw(pgc_cluster):
             c.execute("INSERT INTO es_parbig SELECT g, md5(g::text)||md5((g+1)::text) "
                       "FROM generate_series(1,3000000) g")
         _cancel_run(dsn, s3log, bucket, r)
+        _hold_run(dsn, s3log, bucket, r)
         _silent_run(dsn, s3log, bucket, srv, r)
         _plain_run(dsn, work, r, plain)
         # A 403 from an http(s):// target cannot be about AWS_* credentials: those
@@ -725,6 +793,10 @@ def osw(pgc_cluster):
         # secret, so this correctly signed export is refused as a wrong secret would be.
         r["signed 403 hint"] = _hint(dsn, "SELECT pgcolumnar.export_parquet('es_small', "
                                           f"'s3://{DENIED_BUCKET}/denied.parquet')")
+        # #1831: the refusal of a scheme the export cannot use says only an s3:// prefix
+        # can be listed, not that a remote prefix cannot be listed at all
+        r["az hint"] = _hint(dsn, "SELECT pgcolumnar.parallel_export_parquet("
+                                  "'es_par'::regclass, 'az://container/out', 2)")
 
         # optional: a real S3 implementation, the shell's last arm. The endpoint's host
         # replaces the fixture's in the allow-list, and the cluster restarts with its
@@ -1107,6 +1179,22 @@ def test_no_upload_stays_open_after_the_cancel(osw, expect):
     expect.text(osw["cx open"], "0", "cancel: the server holds no open upload under the prefix")
 
 
+def test_all_four_part_puts_reached_the_store_before_the_cancel(osw, expect):
+    expect.text(osw["ch puts"], "yes",
+                "premise: commit hold: all four part PUTs reached the store before the cancel")
+
+
+def test_the_commit_hold_export_was_cancelled_not_completed(osw, expect):
+    expect.text(osw["ch cancelled"], "cancelled",
+                "premise: commit hold: the export was cancelled, not completed")
+
+
+def test_a_cancel_leaves_no_part_a_worker_was_committing(osw, expect):
+    # #1864: the dispatcher deleted the part keys before the terminated workers' held
+    # commits were applied, so the parts appeared afterwards and stayed
+    expect.text(osw["ch parts"], "0", "commit hold: a cancel leaves no part that a worker was committing")
+
+
 def test_terminated_workers_exit_while_the_store_is_silent(osw, expect):
     # #1727 review: the exit callback's abort waits in slices that time out, so the 60 s
     # quiet limit ends it; a silent store cannot hold a terminated worker
@@ -1175,6 +1263,32 @@ def test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials(osw, expect
     expect.text(osw["signed 403 hint"],
                 "Check the AWS_* credential environment of the server process.",
                 "s3:// 403: a signed request that is refused still hints to check AWS_* credentials")
+
+
+def test_a_parallel_export_to_gs_is_refused_before_any_worker_starts(osw, expect):
+    # #1832: it uploaded every part and then failed at the s3://-only listing
+    expect.text(osw["gs refused"], "0A000 by the scheme check, 0 requests",
+                "gs:// prefix: a parallel export is refused before any worker starts, with no request sent")
+
+
+def test_a_parallel_export_to_http_is_refused_before_any_worker_starts(osw, expect):
+    # #1832: the same for an http:// prefix
+    expect.text(osw["plain px"], "0A000 by the scheme check, 0 requests",
+                "http:// prefix: a parallel export is refused before any worker starts, with no request sent")
+
+
+def test_a_1023_byte_prefix_is_refused_as_too_long(osw, expect):
+    # #1849: the upload cleanup's "<prefix>/" never meets a prefix this long
+    expect.text(osw["long prefix"], "54000 (too long), 1023 bytes, 0 requests",
+                "long prefix: a 1023-byte s3:// prefix is refused as too long, with no request sent")
+
+
+def test_the_unsupported_scheme_hint_says_only_s3_can_be_listed(osw, expect):
+    # #1831: the hint said a remote prefix cannot be listed at all
+    expect.text(osw["az hint"],
+                "The export lists its prefix to delete stale parts that an earlier, larger export left, "
+                "and only an s3:// prefix can be listed. Use an s3:// prefix or a local directory.",
+                "unsupported scheme: the parallel export's hint says only an s3:// prefix can be listed")
 
 
 _NO_REAL_S3 = ("PGC_S3_INTEGRATION_ENDPOINT names no real S3 implementation, so the shell "

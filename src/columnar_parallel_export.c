@@ -220,7 +220,10 @@ pexport_prepare_dir(const char *dir)
 	 * the checks that must fail once, in the dispatcher, before any worker
 	 * starts, rather than once per worker:
 	 *   - the object-store module is installed;
-	 *   - it handles the scheme;
+	 *   - the scheme is s3://. The module also writes gs:// and http(s)://,
+	 *     but the stale-part reconcile below lists the prefix, and only an
+	 *     s3:// prefix can be listed. Such an export used to upload every part
+	 *     and then fail at the listing (#1832);
 	 *   - this session's pgcolumnar.objstore_allowed_endpoints lists the
 	 *     endpoint (#1780). The module checks the list without a request.
 	 * It does not require the prefix to be empty. A stale part from a larger
@@ -238,13 +241,15 @@ pexport_prepare_dir(const char *dir)
 							dir),
 					 errdetail("Object storage support is a separate library, "
 							   "pgcolumnar_objstore, which is not installed.")));
-		if (!api->handles_url(dir))
+		if (pg_strncasecmp(dir, "s3://", 5) != 0 || !api->handles_url(dir))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("columnar: writing to \"%s\" is not supported", dir),
-					 errhint("A remote prefix must be new or empty; "
-							 "pgcolumnar cannot verify this without a bucket "
-							 "listing.")));
+					 errmsg("columnar: parallel_export_parquet cannot write to \"%s\"",
+							dir),
+					 errhint("The export lists its prefix to delete stale parts "
+							 "that an earlier, larger export left, and only an "
+							 "s3:// prefix can be listed. Use an s3:// prefix or "
+							 "a local directory.")));
 
 		/*
 		 * The workers apply this session's allow-list too (see
@@ -474,6 +479,39 @@ pexport_write_success_marker(const char *dir)
 #define PEXPORT_UPLOAD_CLEANUP_MS	10000
 
 /*
+ * Wait, bounded by PEXPORT_STOP_WAIT_MS, for the terminated workers to stop.
+ * It raises nothing and does not check for interrupts, so it is safe in a
+ * cleanup callback and with interrupts held.
+ */
+static void
+pexport_wait_workers_stopped(BackgroundWorkerHandle **handles, int nhandles)
+{
+	TimestampTz start = GetCurrentTimestamp();
+
+	for (;;)
+	{
+		int			running = 0;
+		int			i;
+
+		for (i = 0; i < nhandles; i++)
+		{
+			pid_t		pid;
+
+			if (handles != NULL && handles[i] != NULL &&
+				GetBackgroundWorkerPid(handles[i], &pid) != BGWH_STOPPED)
+				running++;
+		}
+		if (running == 0 ||
+			TimestampDifferenceExceeds(start, GetCurrentTimestamp(),
+									   PEXPORT_STOP_WAIT_MS))
+			break;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 100L, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+	}
+}
+
+/*
  * pexport_abort_own_uploads
  *		Abort every multipart upload this export left open on a remote prefix
  *		(#1743). A worker learns its upload id only from the answer to
@@ -517,54 +555,44 @@ pexport_abort_own_uploads(const char *dir, int nkeys,
 	cancelHeld = QueryCancelHoldoffCount;
 
 	/* wait, bounded, for the terminated workers to stop */
-	start = GetCurrentTimestamp();
-	for (;;)
-	{
-		int			running = 0;
-		int			i;
-
-		for (i = 0; i < nhandles; i++)
-		{
-			pid_t		pid;
-
-			if (handles != NULL && handles[i] != NULL &&
-				GetBackgroundWorkerPid(handles[i], &pid) != BGWH_STOPPED)
-				running++;
-		}
-		if (running == 0 ||
-			TimestampDifferenceExceeds(start, GetCurrentTimestamp(),
-									   PEXPORT_STOP_WAIT_MS))
-			break;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 100L, PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-	}
+	pexport_wait_workers_stopped(handles, nhandles);
 
 	start = GetCurrentTimestamp();
 	PG_TRY();
 	{
-		char		prefix[MAXPGPATH];
-		char		own[MAXPGPATH];
+		char	   *prefix;
+		size_t		plen;
 		char	  **keys;
 		char	  **ids = NULL;
 		int			n = 0;
 		int			i;
 
-		snprintf(prefix, sizeof(prefix), "%s/", dir);
+		/*
+		 * psprintf, as in the reconcile (#1799), so the prefix always ends in
+		 * '/' and never matches a sibling prefix (#1849). The dispatcher's
+		 * length probe already refuses a dir this long, so this is defence in
+		 * depth, not a reachable truncation.
+		 */
+		prefix = psprintf("%s/", dir);
+		plen = strlen(prefix);
 		keys = api->list_uploads(prefix, NULL, PEXPORT_UPLOAD_CLEANUP_MS,
 								 &ids, &n);
 		for (i = 0; i < n; i++)
 		{
-			const char *base = keys[i] + strlen(prefix);
+			const char *base = keys[i] + plen;
 			int			idx;
 			long		left;
+			char	   *own;
+			bool		mine;
 
 			/* this export's own part name, character for character */
-			if (strncmp(keys[i], prefix, strlen(prefix)) != 0 ||
+			if (strncmp(keys[i], prefix, plen) != 0 ||
 				!pexport_part_index(base, &idx) || idx < 0 || idx >= nkeys)
 				continue;
-			snprintf(own, sizeof(own), "%s/part-%04d.parquet", dir, idx);
-			if (strcmp(keys[i], own) != 0)
+			own = psprintf("%s/part-%04d.parquet", dir, idx);
+			mine = strcmp(keys[i], own) == 0;
+			pfree(own);
+			if (!mine)
 				continue;
 
 			left = PEXPORT_UPLOAD_CLEANUP_MS -
@@ -590,8 +618,18 @@ pexport_abort_own_uploads(const char *dir, int nkeys,
 	RESUME_INTERRUPTS();
 }
 
-/* error-cleanup: stop every worker so a dispatcher FATAL cannot leave them
- * reading after the exported snapshot is gone, and remove any partial output */
+/*
+ * error-cleanup: stop every worker so a dispatcher FATAL cannot leave them
+ * reading after the exported snapshot is gone, and remove any partial output.
+ *
+ * Wait, bounded, for the workers to exit before removing the parts (#1864). A
+ * terminated worker that has sent its commit request (the PUT of a small part,
+ * or CompleteMultipartUpload) waits for the answer before it exits (#1813), and
+ * the store can apply that request after a DELETE of the same key sent
+ * meanwhile. The part would then appear after the DELETE and stay. Once the
+ * worker has exited, its commit has been answered, so the DELETE comes after.
+ * A worker still running when the wait ends can still leave its part.
+ */
 static void
 pexport_cleanup(int code, Datum arg)
 {
@@ -601,6 +639,8 @@ pexport_cleanup(int code, Datum arg)
 	for (i = 0; i < s->n; i++)
 		if (s->handles[i] != NULL)
 			TerminateBackgroundWorker(s->handles[i]);
+	if (PgColumnarPathIsRemote(s->dirpath))
+		pexport_wait_workers_stopped(s->handles, s->n);
 	pexport_remove_outputs(s->dirpath, s->nkeys);
 }
 

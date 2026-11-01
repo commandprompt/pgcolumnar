@@ -859,7 +859,11 @@ its own `part-NNNN.parquet` file, and `pgcolumnar.read_parquet` reads the whole
 directory back as one relation.
 
 The `path` may also be an `s3://` prefix. Each worker writes one
-`part-NNNN.parquet` object under it, exactly as for a local directory. See
+`part-NNNN.parquet` object under it, exactly as for a local directory. No other
+remote scheme is accepted. The export lists its prefix, as the next sentences
+explain, and only an `s3://` prefix can be listed. So a `gs://`, `http://` or
+`https://` prefix is refused with SQLSTATE 0A000 before any worker starts, and
+nothing is uploaded. See
 [Object storage](#object-storage) for the endpoint and credential rules, which
 are the same as for `export_parquet`. One difference applies to a remote prefix.
 The local path is created and checked for emptiness before the export. A remote
@@ -884,7 +888,13 @@ uncommitted rows. There is no coordinator and no shared write state. If any work
 fails, or the statement is cancelled, the dispatcher removes the files it wrote.
 It also removes them when every worker has finished but a later step fails:
 removing stale parts or writing the `_SUCCESS` marker. Over an `s3://` prefix
-the dispatcher deletes the same objects by key. A worker terminated mid-upload
+the dispatcher deletes the same objects by key. On a cancel or a dispatcher
+error, it first waits up to 5 seconds for the stopped workers to exit. A stopped
+worker that was committing its part waits for the store's answer. The store can
+apply that commit after a DELETE sent meanwhile. Waiting puts
+the DELETE after the commit. A worker that is still running after 5 seconds,
+such as one waiting on a store that does not answer, can still leave its part.
+A worker terminated mid-upload
 can leave one incomplete multipart upload that the dispatcher cannot address.
 Set a bucket lifecycle rule that expires incomplete multipart uploads to reclaim
 it, as [Exporting to object storage](#exporting-to-object-storage)
@@ -1485,7 +1495,8 @@ compared without case, so `S3://` reads as `s3://` does. Hive
 `partition_columns` work over a remote prefix. A pattern or a prefix requires the
 object-store module, since only it can issue the listing.
 
-On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes one
+On write, `parallel_export_parquet` treats an `s3://` URL as a prefix, and
+refuses every other remote URL before any worker starts. It writes one
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`
 marker beside them on completion. Trailing slashes on the prefix make no
 difference: `s3://bucket/out/`, `s3://bucket/out//` and `s3://bucket/out` all
