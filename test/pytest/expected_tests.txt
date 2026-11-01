@@ -1664,4 +1664,8 @@ guard_tests 858
 # statement after a DO block in one string; the refusal's DETAIL; a versioned overwrite by a longer
 # object; a weak-ETag overwrite that changes the length), by collection: 5981 tests collected, less
 # guard_tests 854.
-cluster_tests 5200
+# cluster_tests 5200 -> 5206 for #1922's six tests in test_iceberg_rest_scan.py (a namespace whose only
+# level is empty: listed and not walked, refused by iceberg_rest_tables, iceberg_rest_table_location and
+# iceberg_rest_scan, the documented LATERAL filter, no request with an empty path segment), by collection:
+# test_iceberg_rest_scan.py collects 83 tests, 77 on main.
+cluster_tests 5206

@@ -387,11 +387,25 @@ rest_level_for_message(const char *level)
 }
 
 /*
+ * Whether `levels` is the namespace [""]: one level, and it is empty. Its
+ * request path would hold an empty segment, as in /v1/namespaces//tables. The
+ * Apache Iceberg REST catalog answers that path with HTTP 400, a proxy may
+ * collapse "//" to "/", and the REST spec has no other way to write it (#1922).
+ */
+static bool
+rest_only_level_is_empty(List *levels)
+{
+	return list_length(levels) == 1 &&
+		((const char *) linitial(levels))[0] == '\0';
+}
+
+/*
  * Append a namespace, given as a List of level strings, to a resource path. The
  * levels are joined with the catalog's separator (already encoded). Each level
  * is percent-encoded, so a level bearing '/', '.', or a control byte cannot
  * alter the request path. A level that holds the separator is refused: the
- * catalog would read it as a different namespace (#1865).
+ * catalog would read it as a different namespace (#1865). The namespace [""]
+ * is refused too: no request can name it (#1922).
  */
 static void
 rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc)
@@ -399,6 +413,14 @@ rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc)
 	ListCell   *lc;
 	const char *bad = rest_unnameable_level(levels, cc);
 
+	if (rest_only_level_is_empty(levels))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the namespace has one level, and it is empty"),
+				 errdetail("Its request path would hold an empty segment (\"//\"). "
+						   "The Apache Iceberg REST catalog refuses such a path, and a proxy may collapse it."),
+				 errhint("Level 1 of 1 of the namespace is empty. "
+						 "In the text form, '' makes an empty level.")));
 	if (bad != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1425,8 +1447,9 @@ rest_levels_key(List *levels)
  *
  * Each namespace is emitted as its dot-joined levels (text), or with
  * `as_array` as a text[] of its levels, which keeps a level that holds a dot
- * apart from two levels (#1865). A level that holds the catalog's separator
- * is emitted but not walked into: no request can name it.
+ * apart from two levels (#1865). A level that holds the catalog's separator,
+ * and the namespace [""] (#1922), is emitted but not walked into: no request
+ * can name it.
  */
 static void
 rest_walk_namespaces(const char *catalog_uri, const char *token,
@@ -1529,7 +1552,8 @@ rest_walk_namespaces(const char *catalog_uri, const char *token,
 		if (parent == NIL && list_length(levels) > 1)
 			continue;
 		/* a level the catalog cannot be asked about has no children we can list */
-		if (rest_unnameable_level(levels, cc) != NULL)
+		if (rest_unnameable_level(levels, cc) != NULL ||
+			rest_only_level_is_empty(levels))
 			continue;
 		rest_walk_namespaces(catalog_uri, token, cc, levels, topnested, as_array,
 							 ts, td);
@@ -1580,8 +1604,9 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespace_levels);
  * SQL: iceberg_rest_namespace_levels(catalog_uri) RETURNS SETOF text[]. The
  * same namespaces, each as a text[] of its levels (#1865). A row passes back
  * unchanged as the namespace argument of the other REST functions, except a
- * row with a level that holds the catalog's separator: they refuse it (22023).
- * A row with an empty level passes back too (#1891).
+ * row with a level that holds the catalog's separator, or the row {""}: they
+ * refuse it (22023, #1922). Another row with an empty level passes back too
+ * (#1891).
  */
 Datum
 pgcolumnar_iceberg_rest_namespace_levels(PG_FUNCTION_ARGS)

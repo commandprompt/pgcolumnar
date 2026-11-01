@@ -453,6 +453,26 @@ def irs(pgc_cluster):
         # The other 404 (42P01, no such table) carries the same hint.
         r["empty missing table"] = _refusal(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{ecat}', ARRAY['db',''], 'nosuch')",
                                             "Level 2 of 2 of the namespace is empty", " hint level 2")
+        # #1922: a namespace whose only level is empty is refused (22023) before
+        # any request names it. This fixture serves [""] and answers "//".
+        ocat = start_fx("emptyonly", "--namespace-levels", '[""]', "--table", "events")
+        olog = work / "emptyonly.log"
+        listed = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text, ' ') "
+                            f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ocat}') AS ns")
+        r["only listed"] = f"{listed} parent requests={olog.read_text().count('parent=')}"
+        r["only tables"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{ocat}', ARRAY[''])",
+                                    "Level 1 of 1 of the namespace is empty", " hint level 1")
+        r["only location"] = _refusal(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{ocat}', '', 'events')",
+                                      "Level 1 of 1 of the namespace is empty", " hint level 1")
+        r["only scan"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{ocat}', '', 'events') AS t(id bigint)",
+                                  "Level 1 of 1 of the namespace is empty", " hint level 1")
+        r["only filter"] = _rows(dsn, "SELECT coalesce(string_agg(array_to_json(ns)::text || '=' || t, ' '), 'no rows') "
+                                      f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ocat}') AS ns, "
+                                      f"LATERAL pgcolumnar.iceberg_rest_tables('{ocat}', ns) AS t "
+                                      "WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE strpos(level, chr(31)) > 0) "
+                                      "AND ns <> ARRAY['']")
+        r["only empty segment"] = str(sum(1 for ln in olog.read_text().splitlines()
+                                          if re.match(r"GET [^ ?]*//", ln)))
         r["array strict"] = _rows(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_rest_tables('{dcat2}', NULL::text[])")
 
         r["survived"] = _survived(dsn, log, before)
@@ -941,7 +961,7 @@ def test_empty_level_a_missing_trailing_dot_gets_a_hint_naming_level_2(irs, expe
 def test_empty_level_a_missing_empty_text_gets_a_hint_naming_level_1(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty text whole"], "3F000 hint level 1",
+    expect.text(irs["empty text whole"], "22023 hint level 1",
                 "empty level: a missing '' gets a hint naming level 1")
 
 
@@ -955,7 +975,7 @@ def test_empty_level_a_missing_empty_array_element_gets_a_hint_naming_level_2(ir
 def test_empty_level_iceberg_rest_scan_of_a_missing_empty_element_gets_a_hint(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty array scan"], "3F000 hint level 1",
+    expect.text(irs["empty array scan"], "22023 hint level 1",
                 "empty level: iceberg_rest_scan of a missing ARRAY[''] gets a hint naming level 1")
 
 
@@ -1027,3 +1047,45 @@ def test_empty_level_a_missing_table_in_an_empty_level_namespace_gets_a_hint(irs
         return
     expect.text(irs["empty missing table"], "42P01 hint level 2",
                 "empty level: iceberg_rest_table_location of a missing table in ARRAY['db',''] gets a hint naming level 2")
+
+
+def test_empty_only_level_iceberg_rest_namespace_levels_lists_it_and_asks_for_no_children(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["only listed"], '[""] parent requests=0',
+                'empty only level: iceberg_rest_namespace_levels lists [""] and asks for no children')
+
+
+def test_empty_only_level_iceberg_rest_tables_of_the_array_form_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["only tables"], "22023 hint level 1",
+                "empty only level: iceberg_rest_tables of ARRAY[''] is refused naming level 1")
+
+
+def test_empty_only_level_iceberg_rest_table_location_of_the_text_form_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["only location"], "22023 hint level 1",
+                "empty only level: iceberg_rest_table_location of '' is refused naming level 1")
+
+
+def test_empty_only_level_iceberg_rest_scan_of_the_text_form_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["only scan"], "22023 hint level 1",
+                "empty only level: iceberg_rest_scan of '' is refused naming level 1")
+
+
+def test_empty_only_level_the_documented_filter_keeps_the_lateral_example_running(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["only filter"], "no rows",
+                "empty only level: the documented filter keeps the LATERAL example running")
+
+
+def test_empty_only_level_no_request_has_an_empty_path_segment(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["only empty segment"], "0",
+                "empty only level: no request reaches the catalog with an empty path segment")

@@ -534,6 +534,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Iceberg REST functions now refuse a namespace whose only level is empty,
+  `''` or `ARRAY['']`, with SQLSTATE 22023 (#1922). Its request path held an
+  empty segment, as in `/v1/namespaces//tables`. The Apache Iceberg REST
+  catalog answers that path with HTTP 400, and a proxy may collapse `//` to
+  `/` and reach another resource. The REST spec has no other way to write it.
+  The hint names level 1 as empty. `iceberg_rest_namespace_levels` still lists
+  `{""}`, but no longer asks for its children. A namespace with an empty level
+  among other levels, such as `{db,""}`, still works (#1891).
+  docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`.
+
 - Two reads of one remote object in one statement now read the same version
   (#1894). Before, each read pinned the version its own HEAD saw. If another
   client overwrote the object between the two reads, a self-join or a

@@ -1454,11 +1454,12 @@ a hint that names the empty level, such as
 `Level 2 of 3 of the namespace is empty` (#1891). Both 404 errors carry it: "no
 such namespace" (SQLSTATE 3F000) and "no such table" (SQLSTATE 42P01).
 
-A namespace whose only level is empty, `{""}` or `''`, makes a request path
-with an empty segment, such as `/v1/namespaces//tables`. A server or proxy that
-collapses `//` to `/` routes that request elsewhere, so such a namespace may be
-unreachable through it. This case is untested against the Apache Iceberg REST
-catalog.
+A namespace whose only level is empty, `ARRAY['']` or `''`, is refused with
+SQLSTATE 22023 before any request names it (#1922). Its request path would hold
+an empty segment, such as `/v1/namespaces//tables`. The Apache Iceberg REST
+catalog answers that path with HTTP 400, and a proxy may collapse `//` to `/`.
+The REST spec has no other way to write it. The error's hint reads
+`Level 1 of 1 of the namespace is empty`.
 
 A catalog cannot be asked about a level that contains its own namespace
 separator, because the catalog would split that level in two. The function
@@ -1588,12 +1589,16 @@ The dot-joined form is ambiguous: the single level `a.b` and the two levels
 Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
 its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
 levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
-argument of the other REST functions, with one exception, described next. A
+argument of the other REST functions, with two exceptions, described next. A
 row with an empty level, such as `{db,""}`, passes back too (#1891).
 
 A level may contain the catalog's separator. No request can name such a
 namespace, so the function returns it but does not ask for its children.
 Passing that row back fails with SQLSTATE 22023.
+
+A catalog may also hold the namespace whose only level is empty. The function
+returns it as `{""}` but does not ask for its children. Passing that row back
+fails with SQLSTATE 22023 too (#1922).
 
 ```sql
 SELECT ns, t
@@ -1615,6 +1620,9 @@ SELECT ns, t
 
 On a catalog with the default separator, replace `level LIKE '%.%'` with
 `strpos(level, chr(31)) > 0`.
+
+The row `{""}` also makes the whole query fail with SQLSTATE 22023 (#1922). To
+skip it, add `AND ns <> ARRAY['']` to the `WHERE` clause.
 
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
 
