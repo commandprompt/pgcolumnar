@@ -528,9 +528,10 @@ true until the next version shipped.
 - The REST functions now say when a namespace level is empty (#1891). The
   text form `'db..x'`, `'db.'`, `'.db'` or `''`, and a `text[]` element `''`,
   name a namespace with an empty level. The catalog accepts such a namespace,
-  so pgcolumnar still sends it as given and can reach it. When the catalog has
-  no such namespace, its "no such namespace" error now carries a hint, such as
-  `Level 2 of 3 of the namespace is empty`. docs/sql-reference.md.
+  so pgcolumnar still sends it as given and can reach it. When the catalog
+  answers 404 for such a namespace, its "no such namespace" or "no such table"
+  error now carries a hint, such as `Level 2 of 3 of the namespace is empty`.
+  docs/sql-reference.md.
   `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
 - The docs no longer contradict the code on object storage, credentials and
   row-group skipping (#1797). `import_arrow`, `file_split_offsets` and

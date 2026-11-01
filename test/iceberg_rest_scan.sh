@@ -576,6 +576,12 @@ q "CREATE USER MAPPING FOR postgres SERVER irs_empty OPTIONS (token '$TOKEN')" >
 check "empty level: the server form of iceberg_rest_tables reaches ARRAY['db','']" \
 	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('irs_empty', ARRAY['db','']) AS t")" \
 	"events"
+# A missing table in a namespace with an empty level is the other 404
+# (42P01, no such table). It carries the same hint.
+check "empty level: iceberg_rest_table_location of a missing table in ARRAY['db',''] gets a hint naming level 2" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$ECAT', ARRAY['db',''], 'nosuch')" \
+	   "Level 2 of 2 of the namespace is empty" " hint level 2")" \
+	"42P01 hint level 2"
 # The text[] overloads are STRICT: a NULL namespace array gives no rows. It runs last,
 # so a crash here reddens only it and the survival check below.
 check "text[] form: iceberg_rest_tables of a NULL namespace array returns no rows" \

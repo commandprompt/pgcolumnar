@@ -11122,6 +11122,7 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_empty_level_iceberg_rest_scan_returns_the_five_rows` | empty level: iceberg_rest_scan of ARRAY['db',''] returns the five rows |
 | `test_empty_level_a_listed_level_array_with_an_empty_level_passes_back` | empty level: a listed level array with an empty level passes back to iceberg_rest_tables |
 | `test_empty_level_the_server_form_reaches_the_empty_level` | empty level: the server form of iceberg_rest_tables reaches ARRAY['db',''] |
+| `test_empty_level_a_missing_table_in_an_empty_level_namespace_gets_a_hint` | empty level: iceberg_rest_table_location of a missing table in ARRAY['db',''] gets a hint naming level 2 |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 

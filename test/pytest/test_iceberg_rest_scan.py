@@ -450,6 +450,9 @@ def irs(pgc_cluster):
             conn.execute(f"CREATE USER MAPPING FOR postgres SERVER irs_empty OPTIONS (token '{TOKEN}')")
         r["empty server"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
                                        "FROM pgcolumnar.iceberg_rest_tables('irs_empty', ARRAY['db','']) AS t")
+        # The other 404 (42P01, no such table) carries the same hint.
+        r["empty missing table"] = _refusal(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{ecat}', ARRAY['db',''], 'nosuch')",
+                                            "Level 2 of 2 of the namespace is empty", " hint level 2")
         r["array strict"] = _rows(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_rest_tables('{dcat2}', NULL::text[])")
 
         r["survived"] = _survived(dsn, log, before)
@@ -1017,3 +1020,10 @@ def test_empty_level_the_server_form_reaches_the_empty_level(irs, expect):
         return
     expect.text(irs["empty server"], "events",
                 "empty level: the server form of iceberg_rest_tables reaches ARRAY['db','']")
+
+
+def test_empty_level_a_missing_table_in_an_empty_level_namespace_gets_a_hint(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty missing table"], "42P01 hint level 2",
+                "empty level: iceberg_rest_table_location of a missing table in ARRAY['db',''] gets a hint naming level 2")

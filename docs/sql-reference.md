@@ -1404,7 +1404,14 @@ empty level. In the `text` form, a leading, trailing or doubled dot makes one,
 as in `'.db'`, `'db.'` or `'db..x'`, and so does `''`. A stray dot often makes
 one by mistake. So when the catalog answers 404 (not found), the error carries
 a hint that names the empty level, such as
-`Level 2 of 3 of the namespace is empty` (#1891).
+`Level 2 of 3 of the namespace is empty` (#1891). Both 404 errors carry it: "no
+such namespace" (SQLSTATE 3F000) and "no such table" (SQLSTATE 42P01).
+
+A namespace whose only level is empty, `{""}` or `''`, makes a request path
+with an empty segment, such as `/v1/namespaces//tables`. A server or proxy that
+collapses `//` to `/` routes that request elsewhere, so such a namespace may be
+unreachable through it. This case is untested against the Apache Iceberg REST
+catalog.
 
 A catalog cannot be asked about a level that contains its own namespace
 separator, because the catalog would split that level in two. The function
