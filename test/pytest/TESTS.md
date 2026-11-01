@@ -1990,7 +1990,7 @@ fixtures are read off `conftest.py` rather than named in the classifier.
 | test | asserts |
 | --- | --- |
 | `test_the_guard_half_of_the_corpus_runs_without_a_database_driver` | the no-cluster files collect and pass with `import psycopg` shimmed to raise |
-| `test_a_cluster_test_still_needs_the_driver` | **control**: deferring made the IMPORT lazy, not the database optional; its premise checks the `pg_config` it hands the child is executable (#1933) |
+| `test_a_cluster_test_still_needs_the_driver` | **control**: deferring made the IMPORT lazy, not the database optional; its premise checks the `pg_config` it hands the child resolves to an executable, a bare name looked up on `PATH` (#1933) |
 | `test_conftest_imports_no_database_driver_at_module_scope` | the regression named in one line, for whoever edits conftest next |
 | `test_the_declaration_is_exactly_the_database_free_half` | `NO_CLUSTER` equals the property, both ways, so an undeclared database-free file is named |
 | `test_the_declaration_names_each_file_once` | the list's cardinality, which `membership_report`'s set comparison cannot see. Measured: pytest deduplicates the paths, so the cost is the job's own printed file count, not a double run |
@@ -2163,7 +2163,7 @@ cluster fixture then failed at setup, and the driver control reported a missing 
 
 | test | what it asserts |
 | --- | --- |
-| `test_the_default_pg_config_is_one_this_box_has` | the default is executable whenever this box has any `pg_config`; on failure it lists the ones it found |
+| `test_the_default_pg_config_is_one_this_box_has` | `PG_CONFIG_CANDIDATES` holds every prefix in `bench/provision.sh`'s `WANT_PG_MATRIX` and the dev container's five, naming any it lacks; the default is executable whenever a candidate or the `PATH` one is, listing the ones it found |
 | `test_the_default_pg_config_takes_the_first_candidate_that_exists` | the resolver's order over files the test writes: a missing or non-executable candidate is passed over, then `PATH`, then the first candidate stays named |
 
 ## 17. Adding a test

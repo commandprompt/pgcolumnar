@@ -39,16 +39,21 @@ pytest_plugins = ["pytester"]
 
 # Where `--pg-config` looks when neither the option nor PGC_PG_CONFIG names one (#1933).
 # PG18 first, because the corpus was written against it: pg18a is the audit box's
-# assert-enabled build and pgsql is PG18 in the dev container. Then the other
-# source-built majors, newest first, then the pg_config on PATH. A fixed path here
-# was right on one box only: the dev container has no pg18a, so every cluster fixture
+# assert-enabled build and pgsql is PG18 in the dev container. Then the other majors,
+# newest first, each as the audit box names it (bench/provision.sh WANT_PG_MATRIX) and
+# as the dev container names it. Then the pg_config on PATH. A fixed path here was
+# right on one box only: the dev container has no pg18a, so every cluster fixture
 # failed at setup with PGC_PG_CONFIG unset.
 PG_CONFIG_CANDIDATES = (
     "/usr/local/pg18a/bin/pg_config",
     "/usr/local/pgsql/bin/pg_config",
+    "/usr/local/pg19a/bin/pg_config",
     "/usr/local/pg19/bin/pg_config",
+    "/usr/local/pg17a/bin/pg_config",
     "/usr/local/pg17/bin/pg_config",
+    "/usr/local/pg16a/bin/pg_config",
     "/usr/local/pg16/bin/pg_config",
+    "/usr/local/pg15a/bin/pg_config",
     "/usr/local/pg15/bin/pg_config",
 )
 

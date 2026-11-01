@@ -539,10 +539,12 @@ true until the next version shipped.
   every cluster fixture failed at setup, and
   `test_a_cluster_test_still_needs_the_driver` reported a missing shim name.
   conftest now takes the first executable `pg_config` from a list of the
-  documented prefixes, PG18 first, then the one on `PATH`. The control now
-  checks that the `pg_config` it hands its child is executable, and names the
-  path if not. test/pytest/README.md. Two new tests in
-  `test_harness_deps_classifier.py`. Reported by @OffgridwithJD.
+  prefixes the project installs into, PG18 first, then the one on `PATH`. The
+  control now checks that the `pg_config` it hands its child resolves to an
+  executable, and names the value if not. A bare name such as `pg_config` is
+  looked up on `PATH`, as the harness itself does. `test/pytest/README.md`
+  describes the default. Two new tests in `test_harness_deps_classifier.py`.
+  Reported by @OffgridwithJD.
 
 - The five functions that read local files only now also refuse an `s3a://` or
   `s3n://` URL with SQLSTATE 0A000 (#1918): `import_arrow`,

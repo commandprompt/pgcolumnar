@@ -17,8 +17,9 @@ the classifier as a LIBRARY, which does not make it cluster-bound: the propagati
 rule reads string constants naming corpus files, not imports.
 """
 
-import glob
 import os
+import pathlib
+import re
 import shutil
 
 from test_harness_deps import (
@@ -433,23 +434,46 @@ def test_prose_naming_the_driver_is_not_a_driver_dependency(tmp_path, expect):
 # the database-free half, because they read files and run nothing.
 
 
-def _executable_pg_configs():
-    """Every pg_config this box has, read without conftest: the documented /usr/local
-    prefixes and the one on PATH."""
-    found = sorted(glob.glob("/usr/local/*/bin/pg_config"))
+def _executable_pg_configs(candidates):
+    """The pg_configs the resolver can pick on this box: its candidates and the one
+    on PATH, read without calling the resolver. A pg_config at some other prefix is
+    not one the resolver looks at, so it is not counted here either."""
+    found = list(candidates)
     on_path = shutil.which("pg_config")
     if on_path:
         found.append(on_path)
     return [p for p in found if os.access(p, os.X_OK)]
 
 
+# The prefixes the project installs into. The audit box builds bench/provision.sh's
+# WANT_PG_MATRIX; the dev container builds these five (pgsql is PG18 there).
+DEV_CONTAINER_PREFIXES = ("pgsql", "pg15", "pg16", "pg17", "pg19")
+
+
+def _provisioned_prefixes():
+    src = (pathlib.Path(__file__).resolve().parents[2] / "bench" / "provision.sh").read_text()
+    matrix = re.search(r'^WANT_PG_MATRIX="([^"]*)"', src, re.M)
+    return (matrix.group(1).split() if matrix else []) + list(DEV_CONTAINER_PREFIXES)
+
+
 def test_the_default_pg_config_is_one_this_box_has(expect):
     """With PGC_PG_CONFIG unset, the default must name a pg_config that exists,
-    whenever this box has one at all (#1933). On a box with none, the default
-    cannot exist either, and the arm says so rather than skipping."""
+    whenever this box has one the resolver looks for (#1933). On a box with none,
+    the default cannot exist either, and the arm says so rather than skipping."""
     import conftest
+    candidates = conftest.PG_CONFIG_CANDIDATES
+    provisioned = _provisioned_prefixes()
+    # PREMISE: the matrix line was found, or the coverage arm below checks only
+    # the dev container's five.
+    expect.at_least(len(provisioned), len(DEV_CONTAINER_PREFIXES) + 1,
+                    f"premise: bench/provision.sh names a WANT_PG_MATRIX: {provisioned}")
+    missing = [p for p in provisioned
+               if f"/usr/local/{p}/bin/pg_config" not in candidates]
+    expect.num(len(missing), 0,
+               f"every prefix the project installs into is a candidate; "
+               f"missing {missing} from {list(candidates)}")
     default = conftest.DEFAULT_PG_CONFIG
-    present = _executable_pg_configs()
+    present = _executable_pg_configs(candidates)
     expect.text(repr(os.access(default, os.X_OK)), repr(bool(present)),
                 f"the default pg_config {default!r} is executable whenever this box "
                 f"has one; it has {len(present)}: {present}")
