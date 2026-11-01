@@ -535,10 +535,11 @@ true until the next version shipped.
   it fails with `changed while it was being read` when the ETag or length
   differs; with no strong ETag, only the length is compared. The object is
   the endpoint host, port and path, so one `s3://` URL on two servers with
-  different endpoints is two objects. The pin lasts while
-  `statement_timestamp()` stays the same: the statements of one
-  multi-statement query string share it, and a statement sent on its own
-  reads the new version. A statement that writes the object drops its pin.
+  different endpoints is two objects. The pin lasts one top-level statement,
+  also when one query string holds several statements, as `psql -c` sends
+  them: the next statement reads the new version. The queries a function or
+  a `DO` block runs share the pin of the statement that runs them. A
+  statement that writes the object drops its pin.
   docs/limitations.md and docs/sql-reference.md.
   `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
   Reported by @OffgridwithJD.

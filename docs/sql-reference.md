@@ -1740,8 +1740,8 @@ one request to the next: the reader then sends no `If-Match` and no
 one version (#1894). The second read asks for the version the first one
 opened. When the store names no version, the second read fails with `changed
 while it was being read` if the ETag or the length changed in between. With
-no strong ETag, only a change of length is caught. The statements of one
-multi-statement query string share this pin (see
+no strong ETag, only a change of length is caught. The pin lasts one
+top-level statement (see
 [limitations](limitations.md#reading-external-parquet)). An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`

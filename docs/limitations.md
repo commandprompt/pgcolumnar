@@ -1196,12 +1196,11 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
 - "The same object" means the same endpoint host, port and path. One
   `s3://` URL on two foreign servers with different endpoints names two
   objects, and each read gets its own pin.
-- The pin lasts while `statement_timestamp()` stays the same. PostgreSQL sets
-  that time once for each query string a client sends. So the statements of a
-  multi-statement string, such as `psql -c 'SELECT ...; SELECT ...'`, share one
-  pin. A later statement in the string fails if the object changed after an
-  earlier one read it. Statements sent one at a time each get their own pin,
-  also inside one transaction. The end of the transaction drops the pin too.
+- The pin lasts one top-level statement, so the next statement reads the
+  object as it is then. That holds inside one transaction too. It also holds
+  when one query string has several statements, such as
+  `psql -c 'SELECT ...; SELECT ...'`. The queries that a function or a `DO`
+  block runs are part of the statement that runs them, so they share its pin.
   A statement that writes the object drops its pin, so a later read in that
   statement reads the new object. The pin needs `pgcolumnar.objstore_pin_reads`
   on.

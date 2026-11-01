@@ -229,6 +229,20 @@ def _one_message(dsn, sql, phrase):
     return f"no error: {' '.join(out)[:200]}"
 
 
+def _detail(dsn, sql):
+    """The shell's detail_of: -> the DETAIL of `sql`'s error with each quoted ETag
+    masked as "E", "no DETAIL", or what came back instead of an error."""
+    _await_server(dsn)
+    try:
+        with _connect(dsn) as conn:
+            rows = conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        return re.sub(r'"[^"]*"', '"E"', exc.diag.message_detail or "no DETAIL")
+    return f"no error: {' '.join(' '.join(str(v) for v in row) for row in rows)[:200]}"
+
+
 def _requests(log):
     """-> the request log's lines split into fields, or a query_error()."""
     try:
@@ -279,9 +293,14 @@ def ohr(pgc_cluster):
     # over servers A and B, and the object a statement overwrites, as the shell's
     hswaptx, whswap = work / "hswaptx.parquet", work / "whswap.parquet"
     xpair, rw, hswapmsg = work / "xpair.parquet", work / "rw.parquet", work / "hswapmsg.parquet"
+    # #1907 second review: the versioned one-message pair, the DETAIL pair and
+    # the function pair, as the shell's
+    vhswapmsg, hswapdet = work / "vhswapmsg.parquet", work / "hswapdet.parquet"
+    hswapfn, hswapdo, hswapdo2 = work / "hswapfn.parquet", work / "hswapdo.parquet", work / "hswapdo2.parquet"
     subprocess.run([sys.executable, "-c", SWAP_WRITER, str(swap), str(swap79), str(swapoff), str(vswap),
                     str(hswap), str(vhswap), str(hswaptx), str(whswap), str(xpair), str(rw),
-                    str(hswapmsg)],
+                    str(hswapmsg), str(vhswapmsg), str(hswapdet), str(hswapfn),
+                    str(hswapdo), str(hswapdo2)],
                    check=True, capture_output=True, text=True)
     (work / "bkt").mkdir()
     (work / "b" / "bkt").mkdir(parents=True)
@@ -293,7 +312,10 @@ def ohr(pgc_cluster):
         (d / "x.parquet").chmod(0o644)
     swap_sizes = (swap.with_name("swap.parquet.next").stat().st_size, swap.stat().st_size)
     lenswap, lenswapoff = work / "lenswap.parquet", work / "lenswapoff.parquet"
-    subprocess.run([sys.executable, "-c", LENSWAP_WRITER, str(lenswap), str(lenswapoff)],
+    # #1907 second review: length-change pairs for /vhswap/ and /whswap/
+    vhlen, whlen = work / "vhlen.parquet", work / "whlen.parquet"
+    subprocess.run([sys.executable, "-c", LENSWAP_WRITER, str(lenswap), str(lenswapoff),
+                    str(vhlen), str(whlen)],
                    check=True, capture_output=True, text=True)
     lenswap_grew = (lenswap.with_name("lenswap.parquet.next").stat().st_size
                     - lenswap.stat().st_size > 0)
@@ -303,7 +325,7 @@ def ohr(pgc_cluster):
     shrank = (lenshrink.stat().st_size
               - lenshrink.with_name("lenshrink.parquet.next").stat().st_size > 60000)
     for f in (swap, swap79, swapoff, vswap, hswap, vhswap, hswaptx, whswap, xpair, rw, hswapmsg,
-              lenswap, lenswapoff, lenshrink):
+              vhswapmsg, hswapdet, hswapfn, hswapdo, hswapdo2, lenswap, lenswapoff, lenshrink, vhlen, whlen):
         f.chmod(0o644)
         f.with_name(f.name + ".next").chmod(0o644)
 
@@ -382,6 +404,13 @@ def ohr(pgc_cluster):
                                ("fhswaptx", "hswap/hswaptx.parquet"),
                                ("fhswapmsg", "hswap/hswapmsg.parquet"),
                                ("fwhswap", "whswap/whswap.parquet"),
+                               ("fvhswapmsg", "vhswap/vhswapmsg.parquet"),
+                               ("fhswapdet", "hswap/hswapdet.parquet"),
+                               ("fhswapfn", "hswap/hswapfn.parquet"),
+                               ("fhswapdo", "hswap/hswapdo.parquet"),
+                               ("fhswapdo2", "hswap/hswapdo2.parquet"),
+                               ("fvhlen", "vhswap/vhlen.parquet"),
+                               ("fwhlen", "whswap/whlen.parquet"),
                                ("frw", "rw.parquet")):
                 c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.{name} (c0 int8) SERVER ohr_srv "
                           f"OPTIONS (path '{base}/{path}')")
@@ -404,6 +433,11 @@ def ohr(pgc_cluster):
                       f"DECLARE a text; b text; BEGIN {sel % 'a'} "
                       f"PERFORM pgcolumnar.export_parquet('rwneg', '{base}/rw.parquet'); "
                       f"{sel % 'b'} RETURN a || ' | ' || b; END $f$")
+            # pgc_two(), as the shell's: read fhswapfn twice in one call
+            sel2 = sel.replace("FROM frw", "FROM fhswapfn")
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_two() RETURNS text LANGUAGE plpgsql AS $f$ "
+                      f"DECLARE a text; b text; BEGIN {sel2 % 'a'} {sel2 % 'b'} "
+                      "RETURN a || ' | ' || b; END $f$")
         r["crashes0"] = _crashes(plog)
 
         r["A full"] = (_set_hash(dsn, "SELECT * FROM fhttp"), _set_hash(dsn, "SELECT * FROM flocal"))
@@ -521,6 +555,19 @@ def ohr(pgc_cluster):
         r["C msg"] = _one_message(dsn, f"{ONE_READ % 'fhswapmsg'}; {ONE_READ % 'fhswapmsg'}", changed)
         r["C rw"] = _refusal(dsn, "SELECT pgc_rw()", changed)
         r["C whswap"] = _refusal(dsn, TWO_READS % ("fwhswap", "fwhswap"), changed)
+
+        # #1907 second review: the pin ends with the top-level statement, the
+        # DETAIL names the statement's earlier read, and a length change shows
+        r["C vmsg"] = _one_message(dsn, f"{ONE_READ % 'fvhswapmsg'}; {ONE_READ % 'fvhswapmsg'}",
+                                   changed)
+        r["C fn"] = _refusal(dsn, "SELECT pgc_two()", changed)
+        r["C do"] = _refusal(dsn, "DO $$ BEGIN PERFORM count(*) FROM fhswapdo; "
+                                  "PERFORM count(*) FROM fhswapdo; END $$", changed)
+        r["C do next"] = _one_message(dsn, "DO $$ BEGIN PERFORM count(*) FROM fhswapdo2; END $$; "
+                                           f"{ONE_READ % 'fhswapdo2'}", changed)
+        r["C detail"] = (_detail(dsn, TWO_READS % ("fhswapdet", "fhswapdet")), hswapdet.stat().st_size)
+        r["C vhlen"] = _refusal(dsn, TWO_READS % ("fvhlen", "fvhlen"), changed)
+        r["C whlen"] = _refusal(dsn, TWO_READS % ("fwhlen", "fwhlen"), changed)
 
         _await_server(dsn)
         t0 = time.monotonic()
@@ -914,11 +961,69 @@ def test_in_one_transaction_the_next_statement_reads_the_new_object(ohr, expect)
                 "C: in one transaction, the next statement reads the new object")
 
 
-def test_two_statements_sent_in_one_query_string_share_the_pin(ohr, expect):
+def test_two_statements_sent_in_one_query_string_each_read_the_current_object(ohr, expect):
     if _declined(ohr, expect):
         return
-    expect.text(ohr["C msg"], "55000: changed while it was being read",
-                "C: two statements sent in one query string share the pin")
+    n = G * ROWS_PER_GROUP
+    expect.text(ohr["C msg"], f"no error: old={n} new=0 old=0 new={n}",
+                "C: two statements sent in one query string each read the current object")
+
+
+def test_two_statements_sent_in_one_query_string_to_a_versioned_store_each_read_the_current_version(
+        ohr, expect):
+    if _declined(ohr, expect):
+        return
+    n = G * ROWS_PER_GROUP
+    expect.text(ohr["C vmsg"], f"no error: old={n} new=0 old=0 new={n}",
+                "C: two statements sent in one query string to a versioned store each read the "
+                "current version")
+
+
+def test_two_reads_of_one_object_in_one_function_call_are_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C fn"], "55000: changed while it was being read",
+                "C: two reads of one object in one function call, overwritten between them, are refused")
+
+
+def test_two_reads_of_one_object_in_one_do_block_are_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C do"], "55000: changed while it was being read",
+                "C: two reads of one object in one DO block, overwritten between them, are refused")
+
+
+def test_the_statement_after_a_do_block_in_one_query_string_reads_the_new_object(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C do next"], f"no error: old=0 new={G * ROWS_PER_GROUP}",
+                "C: the statement after a DO block in one query string reads the new object")
+
+
+def test_the_refusal_names_the_earlier_read_of_the_statement_in_its_detail(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    got, size = ohr["C detail"]
+    expect.text(got, f'An earlier read of the object in this statement saw ETag "E" and {size} bytes; '
+                f'this read sees ETag "E" and {size} bytes.',
+                "C: the refusal of an overwrite between two reads names the earlier read of the "
+                "statement in its DETAIL")
+
+
+def test_a_versioned_overwrite_by_a_longer_object_reads_the_version_the_first_opened(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C vhlen"], f"no error: old={2 * G * ROWS_PER_GROUP} new=0",
+                "C: two reads of one versioned object in one statement, overwritten between them by a "
+                "longer object, read the version the first opened")
+
+
+def test_with_a_weak_etag_an_overwrite_that_changes_the_length_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C whlen"], "55000: changed while it was being read",
+                "C: with a weak ETag, an overwrite that changes the length between two reads of one "
+                "statement is refused")
 
 
 def test_a_statement_that_overwrites_an_object_and_reads_it_again_reads_the_new_object(ohr, expect):

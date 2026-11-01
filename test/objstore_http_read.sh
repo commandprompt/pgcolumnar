@@ -104,13 +104,20 @@ check "premise: fixture written" "$([ -s "$PGC_WORKDIR/fixture.parquet" ] && ech
 # statements of one transaction and of one query string, and whswap.parquet the pair for /whswap/, which sends a weak
 # ETag. xpair.parquet is split over two servers: server A serves the old file
 # and server B the new one, under one s3 key. rw.parquet is the object a
-# statement overwrites and then reads again (#1907 review).
+# statement overwrites and then reads again (#1907 review). vhswapmsg.parquet
+# is read by two statements of one query string from a versioned store,
+# hswapdet.parquet by the DETAIL check, and hswapfn.parquet by two reads inside
+# one plpgsql call, hswapdo.parquet by two reads in one DO block, and
+# hswapdo2.parquet by a DO block and the statement after it (#1907 second
+# review).
 python3 - "$PGC_WORKDIR/swap.parquet" "$PGC_WORKDIR/swap79.parquet" \
 	"$PGC_WORKDIR/swapoff.parquet" "$PGC_WORKDIR/vswap.parquet" \
 	"$PGC_WORKDIR/hswap.parquet" "$PGC_WORKDIR/vhswap.parquet" \
 	"$PGC_WORKDIR/hswaptx.parquet" "$PGC_WORKDIR/whswap.parquet" \
 	"$PGC_WORKDIR/xpair.parquet" "$PGC_WORKDIR/rw.parquet" \
-	"$PGC_WORKDIR/hswapmsg.parquet" <<PYEOF
+	"$PGC_WORKDIR/hswapmsg.parquet" "$PGC_WORKDIR/vhswapmsg.parquet" \
+	"$PGC_WORKDIR/hswapdet.parquet" "$PGC_WORKDIR/hswapfn.parquet" \
+	"$PGC_WORKDIR/hswapdo.parquet" "$PGC_WORKDIR/hswapdo2.parquet" <<PYEOF
 import os, sys
 import pyarrow as pa, pyarrow.parquet as pq
 G, RPG = $G, $ROWS_PER_GROUP
@@ -128,7 +135,11 @@ check "premise: the overwrite pair has one byte length" \
 # is longer. Its first G groups sit at the same offsets as the first file's, so a
 # read that keeps the old footer gets well-formed rows from the new file. Only
 # the total in each 206 Content-Range shows the change. /lenswap/ sends no ETag.
-python3 - "$PGC_WORKDIR/lenswap.parquet" "$PGC_WORKDIR/lenswapoff.parquet" <<PYEOF
+# vhlen.parquet is served by /vhswap/ and whlen.parquet by /whswap/: the
+# overwrite between two reads of one statement changes the length (#1907
+# second review).
+python3 - "$PGC_WORKDIR/lenswap.parquet" "$PGC_WORKDIR/lenswapoff.parquet" \
+	"$PGC_WORKDIR/vhlen.parquet" "$PGC_WORKDIR/whlen.parquet" <<PYEOF
 import os, sys
 import pyarrow as pa, pyarrow.parquet as pq
 G, RPG = $G, $ROWS_PER_GROUP
@@ -329,6 +340,13 @@ psql_run "CREATE FOREIGN TABLE fvhswap (c0 int8) SERVER osrv OPTIONS (path '$BAS
 psql_run "CREATE FOREIGN TABLE fhswaptx (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswaptx.parquet');"
 psql_run "CREATE FOREIGN TABLE fhswapmsg (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswapmsg.parquet');"
 psql_run "CREATE FOREIGN TABLE fwhswap (c0 int8) SERVER osrv OPTIONS (path '$BASE/whswap/whswap.parquet');"
+psql_run "CREATE FOREIGN TABLE fvhswapmsg (c0 int8) SERVER osrv OPTIONS (path '$BASE/vhswap/vhswapmsg.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswapdet (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswapdet.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswapfn (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswapfn.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswapdo (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswapdo.parquet');"
+psql_run "CREATE FOREIGN TABLE fhswapdo2 (c0 int8) SERVER osrv OPTIONS (path '$BASE/hswap/hswapdo2.parquet');"
+psql_run "CREATE FOREIGN TABLE fvhlen (c0 int8) SERVER osrv OPTIONS (path '$BASE/vhswap/vhlen.parquet');"
+psql_run "CREATE FOREIGN TABLE fwhlen (c0 int8) SERVER osrv OPTIONS (path '$BASE/whswap/whlen.parquet');"
 psql_run "CREATE FOREIGN TABLE frw (c0 int8) SERVER osrv OPTIONS (path '$BASE/rw.parquet');"
 # One s3 key on two endpoints (#1907 review): servers sa and sb name the two
 # fixture servers. The fixture servers do not check signatures, so any key works.
@@ -547,8 +565,10 @@ $(printf "$ONE_READ" fhswaptx);
 COMMIT" "changed while it was being read")" \
 	"no error: old=$((G * ROWS_PER_GROUP)) new=0 old=0 new=$((G * ROWS_PER_GROUP))"
 # Statements a client sends in one query string, as psql -c does, share one
-# statement start time, and so one pin: the second statement of the string
-# sees the overwrite and is refused. docs/limitations.md states this scope.
+# statement start time, but each is its own statement: the pin ends with the
+# top-level statement (#1907 second review). /hswap/ overwrites the object at
+# its 2nd HEAD, between the two statements, so the second reads the new rows,
+# from an unversioned and from a versioned store alike.
 # refusal_of_message SQL PHRASE: refusal_of, with SQL sent as one message (-c).
 refusal_of_message() {
 	local out code err
@@ -566,9 +586,68 @@ refusal_of_message() {
 		echo "$code: ${err#ERROR:  $code: }"
 	fi
 }
-check "C: two statements sent in one query string share the pin" \
+check "C: two statements sent in one query string each read the current object" \
 	"$(refusal_of_message "$(printf "$ONE_READ" fhswapmsg); $(printf "$ONE_READ" fhswapmsg)" \
 		"changed while it was being read")" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=0 old=0 new=$((G * ROWS_PER_GROUP))"
+check "C: two statements sent in one query string to a versioned store each read the current version" \
+	"$(refusal_of_message "$(printf "$ONE_READ" fvhswapmsg); $(printf "$ONE_READ" fvhswapmsg)" \
+		"changed while it was being read")" \
+	"no error: old=$((G * ROWS_PER_GROUP)) new=0 old=0 new=$((G * ROWS_PER_GROUP))"
+
+# The pin lasts the top-level statement, not each statement a function runs
+# inside it (#1907 second review). pgc_two() reads fhswapfn twice in one call;
+# /hswap/ overwrites the object between the two reads, so the second is refused.
+psql_run "CREATE FUNCTION pgc_two() RETURNS text LANGUAGE plpgsql AS \$f\$
+DECLARE a text; b text;
+BEGIN
+	SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) INTO a FROM fhswapfn;
+	SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) INTO b FROM fhswapfn;
+	RETURN a || ' | ' || b;
+END \$f\$;"
+check "C: two reads of one object in one function call, overwritten between them, are refused" \
+	"$(refusal_of "SELECT pgc_two()" "changed while it was being read")" \
+	"55000: changed while it was being read"
+# A DO block is one top-level utility statement: the queries it runs share
+# its pin, and the pin ends when it returns, even with more statements to
+# come in the same query string.
+check "C: two reads of one object in one DO block, overwritten between them, are refused" \
+	"$(refusal_of "DO \$\$ BEGIN PERFORM count(*) FROM fhswapdo; PERFORM count(*) FROM fhswapdo; END \$\$" \
+		"changed while it was being read")" \
+	"55000: changed while it was being read"
+check "C: the statement after a DO block in one query string reads the new object" \
+	"$(refusal_of_message "DO \$\$ BEGIN PERFORM count(*) FROM fhswapdo2; END \$\$; $(printf "$ONE_READ" fhswapdo2)" \
+		"changed while it was being read")" \
+	"no error: old=0 new=$((G * ROWS_PER_GROUP))"
+
+# The refusal's DETAIL names the earlier read and both ETags and lengths
+# (#1907 second review). The reading masks the two ETags, which change per run.
+# detail_of SQL: the first DETAIL line SQL's error gives, or what came instead.
+detail_of() {
+	local out
+	await_server >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA -v VERBOSITY=verbose -c "$1" 2>&1)"
+	out="$(printf '%s\n' "$out" | awk '/^DETAIL:/ && !f { sub(/^DETAIL:  /, ""); print; f = 1 }')"
+	printf '%s\n' "${out:-no DETAIL}" | sed 's/"[^"]*"/"E"/g'
+}
+HSWAPDET_LEN="$(stat -c %s "$PGC_WORKDIR/hswapdet.parquet" 2>&1)"
+check "C: the refusal of an overwrite between two reads names the earlier read of the statement in its DETAIL" \
+	"$(detail_of "$(printf "$TWO_READS" fhswapdet fhswapdet)")" \
+	"An earlier read of the object in this statement saw ETag \"E\" and $HSWAPDET_LEN bytes; this read sees ETag \"E\" and $HSWAPDET_LEN bytes."
+
+# A versioned overwrite that changes the length (#1907 second review): the
+# second read asks for the first read's version, so it must also take that
+# version's length, not the length of the new object its HEAD saw.
+await_server >/dev/null
+check "C: two reads of one versioned object in one statement, overwritten between them by a longer object, read the version the first opened" \
+	"$(refusal_of "$(printf "$TWO_READS" fvhlen fvhlen)" "changed while it was being read")" \
+	"no error: old=$((2 * G * ROWS_PER_GROUP)) new=0"
+# With a weak ETag the length is the only thing the second read can compare
+# (#1907 second review): an overwrite that changes it is refused.
+await_server >/dev/null
+check "C: with a weak ETag, an overwrite that changes the length between two reads of one statement is refused" \
+	"$(refusal_of "$(printf "$TWO_READS" fwhlen fwhlen)" "changed while it was being read")" \
 	"55000: changed while it was being read"
 
 # A statement that writes an object drops its pin, so a later read in the same

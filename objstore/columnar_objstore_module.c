@@ -91,6 +91,7 @@
 PG_MODULE_MAGIC;
 
 PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
+PGDLLEXPORT void pgcolumnar_objstore_statement_end(void);
 
 /* Response head is bounded before it is parsed; a server cannot size us. */
 #define OS_MAX_HEAD		16384
@@ -236,10 +237,14 @@ static bool os_callback_registered = false;
  * request path after os_resolve_s3, not the URL the user wrote. One s3:// URL
  * on two servers with different endpoints names two objects (#1907 review).
  *
- * A pin lasts while statement_timestamp() stays the same, and until the end
- * of the top-level transaction. PostgreSQL sets that time once per message
- * from the client, so the statements of one simple-query string, such as
- * psql -c 'SELECT ..; SELECT ..', share their pins.
+ * A pin lasts one top-level statement. pgColumnar's executor and utility
+ * hooks call pgcolumnar_objstore_statement_end when a top-level statement
+ * ends, which drops every pin (#1907 second review). That matters for the
+ * statements of one simple-query string, such as psql -c 'SELECT ..;
+ * SELECT ..': PostgreSQL gives them one statement_timestamp(), so the time
+ * alone would let the second statement find the first one's pins. A change of
+ * statement_timestamp() and the end of the top-level transaction also drop
+ * the pins; they cover a main library too old to make the call.
  *
  * The pins live in os_stmt_pin_cxt, found through a hash of the key, so a
  * statement over a listing of N objects costs N lookups, not N*N string
@@ -2147,8 +2152,7 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("columnar: \"%s\" changed while it was being read", url),
-					 errdetail("An earlier read of the object in this statement, or "
-							   "in an earlier statement of the same query string, "
+					 errdetail("An earlier read of the object in this statement "
 							   "saw ETag %s and %lld bytes; this read sees ETag %s "
 							   "and %lld bytes.",
 							   p->etag[0] ? p->etag : "(none)", (long long) p->len,
@@ -4055,4 +4059,17 @@ const PgColumnarObjStoreApi *
 pgcolumnar_objstore_init(void)
 {
 	return &objstore_api;
+}
+
+/*
+ * A top-level statement ended (#1907 second review): drop its pins, so the
+ * next statement reads the object as it is now. pgColumnar finds this symbol
+ * by name, outside the API struct, so it does not change the ABI: a main
+ * library that lacks the call leaves the pins to the statement-time and
+ * transaction-end resets. It never raises.
+ */
+void
+pgcolumnar_objstore_statement_end(void)
+{
+	os_stmt_pins_reset();
 }

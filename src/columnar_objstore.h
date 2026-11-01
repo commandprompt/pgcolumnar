@@ -246,6 +246,16 @@ typedef const PgColumnarObjStoreApi *(*PgColumnarObjStoreInitFn) (void);
  */
 extern const PgColumnarObjStoreApi *PgColumnarObjStoreGet(void);
 
+/*
+ * A top-level statement ended. When the module is loaded, this calls its
+ * optional pgcolumnar_objstore_statement_end, which drops the object versions
+ * the module pinned for the statement (#1894, #1907 second review). That entry
+ * point is found by name, not through the API struct above, so it is not part
+ * of the ABI: either side may lack it, and then the module drops its pins when
+ * statement_timestamp() changes or the transaction ends.
+ */
+extern void PgColumnarObjStoreStatementEnd(void);
+
 /* Does `path` look like a remote URL at all? Cheap, no module load. */
 extern bool PgColumnarPathIsRemote(const char *path);
 
