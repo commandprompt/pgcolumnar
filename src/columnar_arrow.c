@@ -2347,6 +2347,9 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	/* RLS after the ACL check, matching core's ordering (#563). */
 	PgColumnarRequireNoRowSecurity(relid);
 
+	/* a URL is not a local file: say so, not ENOENT (#1886) */
+	PgColumnarRefuseRemotePath("import_arrow", path);
+
 	rel = table_open(relid, RowExclusiveLock);
 	if (!PgColumnarIsColumnarRelation(relid))
 	{

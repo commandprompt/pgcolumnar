@@ -807,6 +807,10 @@ A temporal Arrow type the target column cannot hold is refused with `42804`
 rather than read. A `time64` file does not import into a `date` column. A file
 whose type is not temporal is unaffected.
 
+`path` must be a file on the database server. The function refuses an
+object-storage URL, such as `s3://` or `http://`, with SQLSTATE `0A000`. To
+import an object, copy it to the server first.
+
 ### pgcolumnar.import_parquet(rel regclass, path text) returns bigint
 
 Inserts the rows of a Parquet file at `path` into the existing table `rel`. The
@@ -854,6 +858,10 @@ count, because the load prepares one transaction per worker.
 When `workers` is omitted the function derives a value from the target. For a
 partitioned target it lowers `workers` to the partition count when the count is
 smaller.
+
+`filename` must be a file on the database server. The function refuses an
+object-storage URL, such as `s3://` or `http://`, with SQLSTATE `0A000` before
+any worker starts. `file_split_offsets` refuses one the same way.
 
 #### Refusing a load this table has already taken
 
@@ -1679,7 +1687,8 @@ accept an object-storage URL wherever they accept a local path. So do the
 `pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data wrappers. The third
 wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
 `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
-`read_manifest_list` read local files only. These URL schemes are recognized:
+`read_manifest_list` read local files only. The first three refuse a URL with
+SQLSTATE `0A000`. These URL schemes are recognized:
 
 | Scheme | Meaning |
 | --- | --- |

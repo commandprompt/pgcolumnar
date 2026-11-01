@@ -71,6 +71,17 @@ SQLEOF
 	st="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)"
 	if [ -n "$st" ]; then echo "$st"; elif [ "$rc" = 0 ]; then echo ok; else echo noconnect; fi
 }
+# outcome_as <role> <sql> -> the value, or "SQLSTATE message" of the error, so a
+# check shows what the server did either way
+outcome_as() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$2" 2>&1)"
+	case "$out" in
+		*ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p' <<<"$out" | head -1;;
+		*) printf '%s\n' "$out";;
+	esac
+}
 q_as() {  # q_as <role> <sql>
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" \
 		-d "$PGC_DB" -At -c "$2" 2>/dev/null || true
@@ -89,6 +100,11 @@ cols = {("c%d" % i): pa.array([(i + 1) * v for v in range(n)], pa.int64())
 pq.write_table(pa.table(cols), sys.argv[1], row_group_size=RPG,
                data_page_size=4096, compression="NONE", use_dictionary=False)
 PYEOF
+# An Iceberg table for the pgcolumnar_iceberg arms (#1887), served at s3://BUCKET/db/t
+# as test/iceberg_objstore.sh serves it. noapply.metadata.json reads 5 rows.
+FX="$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg"
+cp -r "$FX/warehouse_del/db" "$PGC_WORKDIR/$BUCKET/db"
+chmod -R u+rwX "$PGC_WORKDIR/$BUCKET/db"
 python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
 	--dir "$PGC_WORKDIR" --port "$S3_PORT" --log "$S3_LOG" \
 	--sigv4-key "$AKID" --sigv4-secret "$SECRET" --sigv4-region "$REGION" \
@@ -244,6 +260,28 @@ check_num "ambient: carol (credentials_required=false) now reads via the environ
 psql_run "DROP USER MAPPING FOR cred_carol SERVER csrv;"
 check "ambient: without her mapping, carol is refused despite the environment" \
 	"$(sqlstate_of "SELECT count(*) FROM fs3" cred_carol)" "28000"
+# The pgcolumnar_iceberg wrapper reads with the server environment's credentials
+# (#1887). docs/sql-reference.md says it takes no server or user-mapping options.
+# So carol, refused above on the pgcolumnar_parquet table for want of a mapping,
+# reads through it. The contrast is the point: the same role, no mapping, two
+# wrappers, two answers.
+check "a pgcolumnar_iceberg server refuses an endpoint option (#1887)" \
+	"$(outcome_as postgres "CREATE SERVER isrv_bad FOREIGN DATA WRAPPER pgcolumnar_iceberg OPTIONS (endpoint 'http://127.0.0.1:$S3_PORT')")" \
+	'HV00D invalid option "endpoint" for pgcolumnar_iceberg'
+psql_run "CREATE SERVER isrv FOREIGN DATA WRAPPER pgcolumnar_iceberg;
+          CREATE FOREIGN TABLE fice (id bigint, region text, amount int) SERVER isrv
+            OPTIONS (metadata_path 's3://$BUCKET/db/t/metadata/noapply.metadata.json');
+          GRANT USAGE ON FOREIGN SERVER isrv TO cred_carol; GRANT SELECT ON fice TO cred_carol;"
+check "a pgcolumnar_iceberg user mapping refuses an access_key_id option (#1887)" \
+	"$(outcome_as postgres "CREATE USER MAPPING FOR cred_carol SERVER isrv OPTIONS (access_key_id '$AKID')")" \
+	'HV00D invalid option "access_key_id" for pgcolumnar_iceberg'
+check "premise: carol has no user mapping on either server (#1887)" \
+	"$(q "SELECT count(*) FROM pg_user_mappings WHERE usename = 'cred_carol'")" "0"
+check "ambient: carol, with no mapping, is refused on the pgcolumnar_parquet table: no credentials (#1887)" \
+	"$(outcome_as cred_carol "SELECT count(*) FROM fs3")" \
+	"28000 columnar: no credentials for \"s3://$BUCKET/fixture.parquet\""
+check "ambient: carol, with no mapping, reads 5 rows through the pgcolumnar_iceberg table (#1887)" \
+	"$(outcome_as cred_carol "SELECT count(*) FROM fice")" "5"
 psql_run "DROP USER MAPPING FOR postgres SERVER csrv;"
 check_num "ambient: a superuser with no mapping reads via the environment" \
 	"$(q "SELECT count(*) FROM fs3")" "$((G * ROWS_PER_GROUP))"

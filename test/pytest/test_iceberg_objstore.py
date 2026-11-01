@@ -188,6 +188,9 @@ def iob(pgc_cluster):
         for scheme in ("s3a", "s3n"):    # Hadoop's names for s3:// (#1825)
             alias = MDROOT.replace("s3://", f"{scheme}://", 1)
             r[scheme] = _value(dsn, f"SELECT count(*) FROM {scan.format(alias, 'apply')}")
+        # #1887: iceberg_current_snapshot on an s3:// metadata file
+        r["snapshot"] = _value(dsn, "SELECT snapshot_id || ' ' || operation FROM "
+                                    f"pgcolumnar.iceberg_current_snapshot('{MDROOT}/apply.metadata.json')")
         r["after reads"] = _survived(dsn, log, before)
         for key, meta in (("escape", "eqescape"), ("dotdot", "eqdotdot"),
                           ("pctdot", "eqpctdot"), ("nulpct", "eqnulpct")):
@@ -275,6 +278,24 @@ def test_an_s3n_metadata_path_reads_over_s3_as_s3_does(iob, expect):
     if _declined(iob, expect):
         return
     expect.text(iob["s3n"], "3", "an s3n:// metadata path reads over s3 as s3:// does (3 rows)")
+
+
+def _snapshot_oracle():
+    """-> "<snapshot id> <operation>" of the fixture's current snapshot, read from its
+    JSON by python, not by pgColumnar; or a value no read prints."""
+    try:
+        d = json.loads((FX / "warehouse_del" / "db" / "t" / "metadata" / "apply.metadata.json").read_text())
+        s = [x for x in d["snapshots"] if x["snapshot-id"] == d["current-snapshot-id"]][0]
+        return f"{s['snapshot-id']} {s['summary']['operation']}"
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        return f"no oracle ({exc})"
+
+
+def test_iceberg_current_snapshot_reads_an_s3_metadata_file(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["snapshot"], _snapshot_oracle(),
+                "iceberg_current_snapshot reads an s3:// metadata file: snapshot id and operation (#1887)")
 
 
 def test_the_backend_is_still_up_after_the_s3_reads(iob, expect):

@@ -35,6 +35,8 @@ DB = "pgc_parallel_copy"
 GEN_F = "SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1, {n}) g"
 GEN_BIG = "SELECT g AS id, 'h'||g||'_'||repeat('x', 70000) AS txt FROM generate_series(1, 20) g"
 GEN_NONL = "SELECT g AS id, 'r'||g AS txt FROM generate_series(1,1000) g"
+# #1886: the URLs each reader must refuse, by scheme
+REMOTE = (("s3", "s3://pgc-bucket/data.txt"), ("http", "http://127.0.0.1:9/pgc-bucket/data.txt"))
 LEAK = "SELECT count(*) FROM pg_prepared_xacts WHERE database = current_database()"
 
 # (reading key, the shell's check name)
@@ -139,6 +141,18 @@ class _Db:
             hit = any(p.lower() in said for p in (phrase,) + alternatives)
             return f"refused: {phrase}" if hit else str(exc)
         return "noerror"
+
+    def outcome(self, sql):
+        """ai_outcome's shape: "SQLSTATE message" of the error `sql` raised, or its
+        value as text. Either way the check shows what the server did."""
+        try:
+            with psycopg.connect(self.dsn, autocommit=True) as conn:
+                row = conn.execute(sql).fetchone()
+        except psycopg.Error as exc:
+            if not exc.sqlstate:
+                return query_error(_message(exc))
+            return f"{exc.sqlstate} {exc.diag.message_primary}"
+        return str(row[0]) if row is not None else "no row"
 
     def copy_in(self, table, data):
         try:
@@ -442,6 +456,11 @@ def pcopy(pgc_cluster, server_dir):
         r["fifo part"] = db.sqlstate_or_hang(
             f"SELECT pgcolumnar.parallel_copy('t_fifo_part'::regclass, '{fifo2}', 3)", fifo2)
         r["fifo part up"] = _survived(db, pgc_cluster, before)
+
+        # ---- #1886: a remote URL is refused, not opened as a local path ----------
+        for scheme, url in REMOTE:
+            r[f"split {scheme}"] = db.outcome(f"SELECT pgcolumnar.file_split_offsets('{url}', 2)")
+            r[f"pcopy {scheme}"] = db.outcome(f"SELECT pgcolumnar.parallel_copy('t_fifo'::regclass, '{url}', 2)")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -649,3 +668,20 @@ def test_parallel_copy_fifo_on_a_partitioned_target_is_refused_not_a_hang(pcopy,
 
 def test_parallel_copy_partitioned_fifo_refusal_leaves_the_backend_up(pcopy, expect):
     expect.text(pcopy["fifo part up"], "1", "backend still up after the partitioned-coordinator FIFO refusal")
+
+
+# ---- #1886: file_split_offsets and parallel_copy read local files only ----------------
+
+REMOTE_REFUSALS = (
+    ("split", "s3", "file_split_offsets", "file_split_offsets refuses an s3:// URL with 0A000 (#1886)"),
+    ("split", "http", "file_split_offsets", "file_split_offsets refuses an http:// URL with 0A000 (#1886)"),
+    ("pcopy", "s3", "parallel_copy", "parallel_copy refuses an s3:// URL with 0A000 (#1886)"),
+    ("pcopy", "http", "parallel_copy", "parallel_copy refuses an http:// URL with 0A000 (#1886)"),
+)
+
+
+@pytest.mark.parametrize("key,scheme,func,name", REMOTE_REFUSALS)
+def test_parallel_copy_a_remote_url_is_refused(pcopy, expect, key, scheme, func, name):
+    url = dict(REMOTE)[scheme]
+    expect.text(pcopy[f"{key} {scheme}"],
+                f'0A000 columnar: {func} does not read "{url}"; it reads local files only', name)

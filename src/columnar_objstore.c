@@ -61,6 +61,18 @@ PgColumnarPathIsRemote(const char *path)
 	return false;
 }
 
+void
+PgColumnarRefuseRemotePath(const char *funcname, const char *path)
+{
+	if (!PgColumnarPathIsRemote(path))
+		return;
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("columnar: %s does not read \"%s\"; it reads local files only",
+					funcname, path),
+			 errhint("Copy the object to a file on the database server, and pass that path.")));
+}
+
 /*
  * Choose the config for one object (#1820). The Iceberg REST spec scopes each
  * vended StorageCredential to "a storage location prefix where the credential
