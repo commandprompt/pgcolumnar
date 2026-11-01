@@ -1712,4 +1712,7 @@ guard_tests 860
 # cluster_tests 5281 unchanged for #1915's second review fix in test_harness_isolation.py: the set -e
 # test that sourced lib.sh is gone (shell-only, declared in test_compare_to_bash.py) and a flock -F
 # own-lock test takes its place; by collection: 6065 tests collected, less guard_tests 858.
-cluster_tests 5281
+# cluster_tests 5281 -> 5282 for #1939's test in test_iceberg_rest_scan.py (iceberg_rest_namespace_levels
+# lists the child db, '', x of db, ''), by collection: 5282 tests collected for the cluster half,
+# guard_tests 860 unchanged.
+cluster_tests 5282

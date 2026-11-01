@@ -1602,7 +1602,9 @@ Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
 its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
 levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
 argument of the other REST functions, with two exceptions, described next. A
-row with an empty level, such as `{db,""}`, passes back too (#1891).
+row with an empty level, such as `{db,""}`, passes back too (#1891). The
+function also lists the children of such a namespace, such as `{db,"",x}`
+(#1939).
 
 A level may contain the catalog's separator. No request can name such a
 namespace, so the function returns it but does not ask for its children.
