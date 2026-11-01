@@ -1192,7 +1192,8 @@ table at its current snapshot. It has these limits:
   path. It also rejects a null manifest sequence number, a null or negative
   position-delete position, and a `current-schema-id` that names no schema. It
   also rejects a manifest `content` or `status` value outside the Iceberg spec.
-  A file of unknown kind is never skipped as a delete.
+  It rejects a `default-spec-id` or a snapshot `schema-id` that does not fit a
+  32-bit integer. A file of unknown kind is never skipped as a delete.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet.
 - Only top-level primitive columns can be read. A column that names a struct,

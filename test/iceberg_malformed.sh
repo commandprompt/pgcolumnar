@@ -19,17 +19,19 @@ set -uo pipefail
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 # refusal SQL REGEX LABEL -> "<SQLSTATE> (LABEL)" when SQL raised an error whose message
-# matches REGEX, "<SQLSTATE>: <message>" for any other error, or "no error". Every
+# matches REGEX, "<SQLSTATE>: <message>" for any other error, or "no error, read: ROWS". Every
 # arm here refuses with XX001, and so do later parse steps: a FIFO read as an empty
 # file failed a parse with the same XX001, so the SQLSTATE alone passed with the
-# guard removed. The arm now names the refusal it wants.
+# guard removed. The arm now names the refusal it wants. When SQL raised no error,
+# the reading carries the rows it returned, so a failure shows the value read.
 refusal_of() {	# stdin: psql output -> the refusal reading
 	local re="$1" label="$2" line state msg
 	local out; out="$(cat)"
 	line="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): /\1|/p' <<<"$out" | head -1)"
 	if [ -z "$line" ]; then
 		grep -qE 'server closed the connection|connection to server' <<<"$out" \
-			&& echo "no refusal: the connection was lost" || echo "no error"
+			&& echo "no refusal: the connection was lost" \
+			|| echo "no error${out:+, read: $(tr '\n' ' ' <<<"$out" | sed 's/ *$//')}"
 		return
 	fi
 	state="${line%%|*}"; msg="${line#*|}"
@@ -340,5 +342,64 @@ check "manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not 
 		'manifest ".*/dm\.avro" has invalid content 4294967296$' "invalid manifest content 4294967296")" \
 	"XX001 (invalid manifest content 4294967296)"
 check "backend still up after the enum refusals" "$(survived "$B")" "1"
+
+# =========================================================================
+# #1853  metadata.json ids that must fit int32. A snapshot's schema-id and the
+#     table's default-spec-id were read as 64-bit numbers and cast to int32 with
+#     no range check, so 4294967296 became 0 and -2147483649 became 2147483647.
+#     iceberg_current_snapshot reported the wrong schema_id; the foreign table
+#     scan took the wrong current spec id. Each variant is enum_ctl's metadata
+#     with ONE id changed, and each refusal must name the value.
+# =========================================================================
+IDS="$DEST/enum_ctl/db/t/metadata"
+ids_md() {	# ids_md TAG KEY VALUE -> path of enum_ctl's metadata with KEY set to VALUE
+	python3 - "$IDS/t.metadata.json" "$IDS/ids_$1.metadata.json" "$2" "$3" <<'PY'
+import json, sys
+src, dst, key, val = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+m = json.load(open(src))
+m["partition-specs"] = [{"spec-id": 0, "fields": []}]
+m["default-spec-id"] = 0
+if key == "schema-id":
+    m["snapshots"][0]["schema-id"] = val
+else:
+    m[key] = val
+json.dump(m, open(dst, "w"))
+PY
+	echo "$IDS/ids_$1.metadata.json"
+}
+SID_MAX="$(ids_md sidmax schema-id 2147483647)"
+SID_4G="$(ids_md sid4g schema-id 4294967296)"
+SID_NEG="$(ids_md sidneg schema-id -2147483649)"
+DS_0="$(ids_md ds0 default-spec-id 0)"
+DS_4G="$(ids_md ds4g default-spec-id 4294967296)"
+DS_NEG="$(ids_md dsneg default-spec-id -2147483649)"
+q "CREATE SERVER ice_ids FOREIGN DATA WRAPPER pgcolumnar_iceberg" >/dev/null
+for t in ds0 ds4g dsneg; do
+	q "CREATE FOREIGN TABLE ids_$t (id bigint, region text, amount int)
+	   SERVER ice_ids OPTIONS (metadata_path '$IDS/ids_$t.metadata.json')" >/dev/null
+done
+check "control: a snapshot schema-id of 2147483647 reads as 2147483647" \
+	"$(q "SELECT schema_id FROM pgcolumnar.iceberg_current_snapshot('$SID_MAX')")" \
+	"2147483647"
+B="$(crashes)"
+check "a snapshot schema-id of 4294967296 is refused by iceberg_current_snapshot (XX001), not truncated to 0" \
+	"$(refusal "SELECT schema_id FROM pgcolumnar.iceberg_current_snapshot('$SID_4G')" \
+		'snapshot 4242 in ".*" has a schema-id out of range: 4294967296$' "schema-id 4294967296")" \
+	"XX001 (schema-id 4294967296)"
+check "a snapshot schema-id of -2147483649 is refused by iceberg_current_snapshot (XX001), not truncated to 2147483647" \
+	"$(refusal "SELECT schema_id FROM pgcolumnar.iceberg_current_snapshot('$SID_NEG')" \
+		'snapshot 4242 in ".*" has a schema-id out of range: -2147483649$' "schema-id -2147483649")" \
+	"XX001 (schema-id -2147483649)"
+check "control: a foreign table with default-spec-id 0 scans ten rows" \
+	"$(q "SELECT count(*) FROM ids_ds0")" "10"
+check "a default-spec-id of 4294967296 is refused by the Iceberg foreign table scan (XX001), not truncated to 0" \
+	"$(refusal "SELECT count(*) FROM ids_ds4g" \
+		'".*" has a default-spec-id out of range: 4294967296$' "default-spec-id 4294967296")" \
+	"XX001 (default-spec-id 4294967296)"
+check "a default-spec-id of -2147483649 is refused by the Iceberg foreign table scan (XX001), not truncated to 2147483647" \
+	"$(refusal "SELECT count(*) FROM ids_dsneg" \
+		'".*" has a default-spec-id out of range: -2147483649$' "default-spec-id -2147483649")" \
+	"XX001 (default-spec-id -2147483649)"
+check "backend still up after the int32 id refusals" "$(survived "$B")" "1"
 
 pgc_summary
