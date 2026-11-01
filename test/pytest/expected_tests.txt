@@ -1522,8 +1522,8 @@ guard_tests 854
 # vm_clear_on_renumber.sh: 3 checks in 3 tests, by collection over the cluster files: `4766 tests collected`.
 # cluster_tests 4904 -> 4907 at the merge of origin/main (56a95f5f) into fix/1875-vm-clear-vacuum-flake: main's 4904 plus this branch's 3 premise tests in test_vm_clear_on_renumber.py, by collection: `4907 tests collected`.
 # cluster_tests 4926 -> 4929 at the merge of fix/1796-objstore-error-advice (9f2956b0) into fix/1875-vm-clear-vacuum-flake: that branch's 4926 plus this branch's 3 in test_vm_clear_on_renumber.py, by collection: `4929 tests collected`.
-# cluster_tests 4904 -> 4914 at the merge of origin/main (56a95f5f) into test/1798-real-s3-listing: main's 4904 plus this branch's 10 real-S3 tests in test_objstore_listing.py, by collection: `4914 tests collected`.
-# cluster_tests 4929 -> 4939 at the merge of fix/1875-vm-clear-vacuum-flake (6880ec29) into test/1798-real-s3-listing: that branch's 4929 plus this branch's 10 in test_objstore_listing.py, by collection: `4939 tests collected`.
+# cluster_tests 4904 -> 4914 at the merge of origin/main (56a95f5f) into test/1798-real-s3-listing: main's 4904 plus this branch's 10 real-S3 tests (9 in test_objstore_listing.py and 1 in test_objstore_sink_write.py), by collection: `4914 tests collected`.
+# cluster_tests 4929 -> 4939 at the merge of fix/1875-vm-clear-vacuum-flake (6880ec29) into test/1798-real-s3-listing: that branch's 4929 plus this branch's 10 (9 in test_objstore_listing.py and 1 in test_objstore_sink_write.py), by collection: `4939 tests collected`.
 # cluster_tests 4763 -> 4774 for #1785: 8 tests in test_objstore_listing.py (seven literal-key parameters and
 # the s3:// IPv6 refusal) and 3 in test_objstore_http_read.py (arm E), 11 checks in 11 tests, by collection
 # over the cluster files: `4774 tests collected`.

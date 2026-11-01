@@ -15,7 +15,9 @@
 #   D  a single-PUT export (bigger than the socket buffers, smaller than one
 #      part) that the store refused before reading the body lost the HTTP
 #      status: the body send failed, and the code never read the answer that had
-#      already arrived. The 403 and its hint now survive.
+#      already arrived. The 403 and its hint now survive on an http:// endpoint,
+#      which is what this fixture serves. An https:// store still reports
+#      "failed before a response" (tracked in #1902).
 #
 # Facet A (s3://<bucket>/_ in prefix and glob errors) is #1869's fix and its
 # arms are in test/objstore_export_open_uploads.sh.
