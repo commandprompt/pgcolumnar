@@ -1339,6 +1339,13 @@ class _UnrunnableCollector:
 
     def __init__(self):
         self.items = []
+        # WHAT THE WORKERS COLLECTED, under xdist (#1892). The controller collects
+        # nothing itself, so `session.items` is empty there, and the stale-row
+        # direction below had no collection to intersect with.
+        self.xdist_collected = set()
+
+    def pytest_xdist_node_collection_finished(self, node, ids):
+        self.xdist_collected.update(ids)
 
     def pytest_runtest_logreport(self, report):
         # This hook fires on the CONTROLLER for reports received from xdist
@@ -1686,6 +1693,14 @@ def pytest_sessionfinish(session, exitstatus):
     collector = getattr(session.config, "pgc_unrunnable", None)
     if collector is None:
         return
+    # ONLY THE CONTROLLER JUDGES THE LIST (#1892). A worker collects every test but
+    # runs only its share, so it read each test another worker ran as "listed and
+    # RAN", and named a decline it did run a second time beside the controller.
+    # Measured: `pytest -n 4` on one file printed the stale line three times, and
+    # the run exited 67 with every test passed. The controller receives every
+    # worker's reports, so it alone holds the whole picture.
+    if hasattr(session.config, "workerinput"):
+        return
 
     # AN UNEXPECTEDLY UNRUNNABLE TEST MUST NOT LEAVE THE RUN GREEN (#1163). The
     # rule used to be "any unrunnable test", which is right about the danger and
@@ -1725,7 +1740,11 @@ def pytest_sessionfinish(session, exitstatus):
     #
     # The other direction is untouched: `actual - allowed` is answerable from any
     # run, because a test that declined, declined, whoever else was collected.
-    allowed &= {item.nodeid for item in session.items}
+    #
+    # UNDER XDIST THE WORKERS COLLECT (#1892), so the controller's `session.items`
+    # is empty and the workers' ids arrive through the collector instead.
+    allowed &= ({item.nodeid for item in session.items}
+                | collector.xdist_collected)
     unexpected, ran_anyway = unrunnable_offences(actual, allowed)
     if not unexpected and not ran_anyway:
         return

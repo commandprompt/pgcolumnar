@@ -470,6 +470,86 @@ def test_a_listed_test_the_run_never_collected_is_not_a_stale_row(pytester, expe
                "a listed test the run never collected is not judged")
 
 
+# THE UNRUNNABLE LIST UNDER XDIST (#1892). Each worker collects every test but runs
+# only its share, and the controller collects nothing. So a worker judged tests it
+# never ran, and the controller judged against an empty collection. A one-file run
+# with -n 4 exited 67 while every test passed. A subprocess, because xdist's
+# workers are, and so their stderr reaches the captured output.
+_XDIST_UNRUNNABLE_BODY = """
+def test_xdist_inner_decliner(expect):
+    expect.cannot_run("UNSUPPORTED_MAJOR", "the feature arrived in 18")
+def test_xdist_inner_one(expect): expect.num(1, 1, "one")
+def test_xdist_inner_two(expect): expect.num(1, 1, "two")
+def test_xdist_inner_three(expect): expect.num(1, 1, "three")
+"""
+
+
+def _xdist_unrunnable_run(pytester, monkeypatch, body, rows):
+    import pathlib
+    here = pathlib.Path(__file__).resolve().parent
+    monkeypatch.setenv("PYTHONPATH", f"{pytester.path}:{here}")
+    pytester.makeconftest(_INNER_CONFTEST)
+    pytester.makepyfile(test_xd=body)
+    listing = pytester.path / "expected_unrunnable.txt"
+    listing.write_text(rows)
+    result = pytester.runpytest_subprocess(
+        "-p", "pgc_vacuity", "-p", "no:cacheprovider", "-n", "2",
+        "--pg-config", _stub_pg_config(pytester, "PostgreSQL 17.10"),
+        "--pgc-expected-unrunnable", str(listing))
+    out = result.stdout.str() + result.stderr.str()
+    return result, out
+
+
+def test_a_listed_decliner_under_xdist_leaves_the_run_green(pytester, monkeypatch, expect):
+    """#1892. The listed decline, run with -n 2, exits 0 as the serial run does.
+
+    Before the fix the controller printed `unrunnable on PG17, and not expected to
+    be` for the listed test and exited 67, and the worker that did not run it
+    printed `expected to be unrunnable ... and RAN`.
+    """
+    result, out = _xdist_unrunnable_run(
+        pytester, monkeypatch, _XDIST_UNRUNNABLE_BODY,
+        "17 test_xd.py::test_xdist_inner_decliner\n")
+    expect.num(out.count("and not expected to be"), 0,
+               "under -n 2 a listed decline is not reported as unexpected")
+    expect.num(out.count("so the list is stale"), 0,
+               "under -n 2 no worker reports a listed decline as stale")
+    expect.num(int(result.ret), 0,
+               "under -n 2 a run whose only decline is listed exits 0")
+
+
+def test_a_stale_row_under_xdist_is_still_refused(pytester, monkeypatch, expect):
+    """#1892, the other direction. A listed test that RAN under -n 2 is a stale row.
+
+    The controller must judge it once. Before the fix the controller collected
+    nothing, so it dropped the row, and both workers named it instead. Measured:
+    `got 2 want 1`. A worker's exit status is discarded by xdist, so only the
+    controller's verdict can redden the run.
+    """
+    # The same file, with the listed test running instead of declining.
+    body = _XDIST_UNRUNNABLE_BODY.replace(
+        'expect.cannot_run("UNSUPPORTED_MAJOR", "the feature arrived in 18")',
+        'expect.num(1, 1, "it ran after all")')
+    result, out = _xdist_unrunnable_run(
+        pytester, monkeypatch, body, "17 test_xd.py::test_xdist_inner_decliner\n")
+    expect.num(out.count("so the list is stale"), 1,
+               "under -n 2 the stale row is reported exactly once")
+    expect.num(int(result.ret), 67, "and the -n 2 run with a stale row exits 67")
+
+
+def test_an_unlisted_decliner_under_xdist_is_still_refused(pytester, monkeypatch, expect):
+    """#1892. An unlisted decline under -n 2 still exits 67, and is named once.
+
+    Before the fix the worker that ran it named it too, beside the controller.
+    Measured: `got 2 want 1`.
+    """
+    result, out = _xdist_unrunnable_run(
+        pytester, monkeypatch, _XDIST_UNRUNNABLE_BODY, "")
+    expect.num(out.count("and not expected to be"), 1,
+               "under -n 2 the unlisted decline is reported exactly once")
+    expect.num(int(result.ret), 67, "and the -n 2 run with an unlisted decline exits 67")
+
+
 def test_the_list_is_read_for_the_running_major_only(pytester, expect):
     """A row for another major must not excuse this one.
 

@@ -151,6 +151,10 @@ different one under the same exit. Read the list the layer prints under
 exit is `EXIT_INCOMPLETE`, 67) and check whether your test is one of the names
 in it.
 
+A run with `-n` checks the list once, in the controller, over the tests every
+worker collected. The workers do not check it (#1892). So each name appears once,
+and a one-file `-n` run exits as the serial run does.
+
 ## Warnings
 
 The vacuity layer is loaded through `pytest.ini` and cannot be turned off by a test

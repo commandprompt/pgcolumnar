@@ -525,6 +525,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- A pytest run with `-n` no longer exits 67 when every test passed (#1892). Each
+  xdist worker checked `expected_unrunnable.txt` against tests it never ran, and
+  the controller checked it against an empty collection. So one file run with
+  `-n 4` called the list both stale and incomplete. Now only the controller
+  checks the list, against the tests every worker collected. On PostgreSQL 18,
+  `pytest -n 4 test_objstore_sink_write.py` exited 67 before and exits 0 now.
+  Three new arms in `test/pytest/test_layer.py` hold this.
+  Reported by @OffgridwithJD.
+
 - The docs no longer contradict the code on object storage, credentials and
   row-group skipping (#1797). `import_arrow`, `file_split_offsets` and
   `parallel_copy` read local files only; the docs had said every Arrow and
