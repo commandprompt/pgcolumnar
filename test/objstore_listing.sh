@@ -4,7 +4,8 @@
 # read_parquet expand a remote prefix (trailing slash) or a remote glob into the
 # set of objects under it, by a paged ListObjectsV2 call behind the object-store
 # ABI, and Hive partition columns work over a remote prefix. An exact key that
-# holds `*`, `?` or `[` reads that object alone (#1785).
+# holds `*`, `?` or `[` reads that object alone (#1785). When one object under a
+# prefix or glob does not match the declared columns, the error names it (#1902).
 #
 # The fixture (test/objstore_http_server.py) answers ListObjectsV2 over the
 # objects on disk, paged by --list-page-size, so the client's continuation-token
@@ -110,7 +111,9 @@ mkdir -p "$PGC_WORKDIR/$BUCKET/lst/sub" \
          "$PGC_WORKDIR/$BUCKET/_landing/_temporary" \
          "$PGC_WORKDIR/$BUCKET/.dir" \
          "$PGC_WORKDIR/$BUCKET/glb" \
-         "$PGC_WORKDIR/$BUCKET/lit"
+         "$PGC_WORKDIR/$BUCKET/lit" \
+         "$PGC_WORKDIR/$BUCKET/mix" \
+         "$PGC_WORKDIR/$BUCKET/wide"
 python3 - "$PGC_WORKDIR/$BUCKET" <<'PYEOF'
 import sys, os
 import pyarrow as pa, pyarrow.parquet as pq
@@ -146,6 +149,23 @@ one(os.path.join(B, "lit/brack[1].parquet"), [1])
 one(os.path.join(B, "lit/star*x.parquet"), [4])
 one(os.path.join(B, "lit/starZZZx.parquet"), [5])
 one(os.path.join(B, "lit/raw[1]"), [8])
+# #1902: one object among several does not match the declared columns. In mix/
+# f02 holds a string where the others hold int64, each id field carrying field
+# id 1 (an int32 would not do: the field-id binder widens it to bigint); in
+# wide/ f01 has an extra column.
+def typed(path, ids, typ, **extra):
+    f = [pa.field("id", typ, metadata={b"PARQUET:field_id": b"1"})]
+    cols = [pa.array(ids, typ)]
+    for k, v in extra.items():
+        f.append(pa.field(k, pa.string(), metadata={b"PARQUET:field_id": b"2"}))
+        cols.append(pa.array(v, pa.string()))
+    pq.write_table(pa.Table.from_arrays(cols, schema=pa.schema(f)), path)
+for i in (0, 1, 3):
+    typed(os.path.join(B, "mix/f%02d.parquet" % i), [i], pa.int64())
+typed(os.path.join(B, "mix/f02.parquet"), ["2"], pa.string())
+typed(os.path.join(B, "wide/f00.parquet"), [0], pa.int64())
+typed(os.path.join(B, "wide/f01.parquet"), [1], pa.int64(), x=["extra"])
+typed(os.path.join(B, "wide/f02.parquet"), [2], pa.int64())
 PYEOF
 
 # page size 2 forces the continuation-token loop for the 4-object prefix
@@ -302,6 +322,47 @@ check "a LIST that returns HTTP 500 is refused, not read as an empty prefix" \
 	"$(refusal_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)" \
 		"returned HTTP 500" " by the HTTP status check")" "08006 by the HTTP status check"
 rm -f "$PGC_WORKDIR/__listing_status__"
+
+# ---- #1902: a file that does not match the declared columns is named ---------
+# Each read binds every file against the declared columns and refuses the first
+# that does not match. The refusal names that file in its DETAIL, so a prefix of
+# thousands of objects says which one to look at.
+# refusal_detail SQL -> "SQLSTATE: message | DETAIL: detail" ("| no detail" when
+# it has none), or "no error (first line of output)".
+refusal_detail() {
+	local out st msg det
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	st="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	msg="$(sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' <<<"$out" | head -1)"
+	det="$(sed -n 's/^DETAIL:  //p' <<<"$out" | head -1)"
+	if [ -n "$st" ]; then
+		echo "$st: $msg | ${det:+DETAIL: }${det:-no detail}"
+	else
+		echo "no error ($(head -1 <<<"$out"))"
+	fi
+}
+check "premise: the matching objects of mix/ read" \
+	"$(rpq 'mix/f0[013].parquet')" "3 4"
+MIX_TYPE='42804: Parquet column 0 physical type is not compatible with target column "id" (bigint)'
+check "read_parquet over a prefix names the object whose column type does not match" \
+	"$(refusal_detail "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/mix/') AS t(id int8)")" \
+	"$MIX_TYPE | DETAIL: The mismatched file is \"s3://$BUCKET/mix/f02.parquet\"."
+check "read_parquet over a glob names the object with an extra column" \
+	"$(refusal_detail "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/wide/*.parquet') AS t(id int8)")" \
+	"42804: Parquet file has 2 leaf columns, target table expands to 1 | DETAIL: The mismatched file is \"s3://$BUCKET/wide/f01.parquet\"."
+check "read_parquet by field id over a prefix names the object whose column type does not match" \
+	"$(refusal_detail "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/mix/', ARRAY[1]) AS t(id int8)")" \
+	"42804: Parquet column with field id 1 has a physical type incompatible with output column \"id\" (bigint) | DETAIL: The mismatched file is \"s3://$BUCKET/mix/f02.parquet\"."
+psql_run "CREATE FOREIGN TABLE fmix (id int8) SERVER s3srv OPTIONS (path 's3://$BUCKET/mix/');"
+check "the FDW over a prefix names the object whose column type does not match" \
+	"$(refusal_detail "SELECT count(*) FROM fmix")" \
+	"$MIX_TYPE | DETAIL: The mismatched file is \"s3://$BUCKET/mix/f02.parquet\"."
 
 check "backend still up after the listing refusals" "$(survived "$CRASHES_BEFORE")" "1"
 

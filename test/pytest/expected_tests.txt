@@ -1603,4 +1603,27 @@ guard_tests 858
 # cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
 # premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
 # collection: 5776 tests collected, less guard_tests 854.
-cluster_tests 5110
+# cluster_tests 4962 -> 4976 for #1902: nine tests in test_objstore_error_advice.py (the https
+# fixture premise and eight Expect: 100-continue arms) and five in test_objstore_listing.py (a
+# premise and four refusals that name the mismatched object), by collection: `4976 tests collected`.
+# cluster_tests 4976 -> 4979 for #1903's review: three tests in test_objstore_error_advice.py
+# (a multipart premise, Expect on one part only against a store that ignores it, and a 200
+# before the body still sends the body), by collection: `4979 tests collected`.
+# cluster_tests 5110 -> 5127 at the merge of origin/main (75a57668) into fix/1902-tls-early-403-file-name:
+# main's 5110 plus #1902's and #1903 review's 17 (twelve in test_objstore_error_advice.py: the https fixture
+# premise, eight Expect: 100-continue arms, a multipart premise, Expect on one part only against a store that
+# ignores it, a 200 before the body still sends the body; five in test_objstore_listing.py: a premise and four
+# refusals that name the mismatched object), by collection: `5127 tests collected`.
+# cluster_tests 5127 -> 5128 for the #1903 merge's check in test_objstore_error_advice.py (a single PUT
+# answered 200 with no framing before its body is not taken as written), by collection: `5128 tests collected`.
+# cluster_tests 5110 -> 5120 for #1886: one test in test_arrow_import.py (a remote URL refused up front) and
+# nine in test_parallel_copy.py (file_split_offsets and parallel_copy refuse s3://, http:// and the other
+# remote schemes, the heap target, and the two local controls), by collection: 5120 tests collected.
+# cluster_tests 5128 -> 5138 at the merge of origin/main (48d4f63f) into fix/1886-local-only-remote-refusal:
+# main's 5128 plus #1886's 10 (one test in test_arrow_import.py, a remote URL refused up front, and nine in
+# test_parallel_copy.py: file_split_offsets and parallel_copy refuse s3://, http:// and the other remote
+# schemes, the heap target, and the two local controls), by collection: `5138 tests collected`.
+# cluster_tests 5138 -> 5139 for #1886's check order: one test in test_import_export_privilege.py
+# (import_arrow and parallel_copy check INSERT before they refuse a remote URL), by collection:
+# `5139 tests collected`.
+cluster_tests 5139

@@ -3048,6 +3048,8 @@ pq_take_value(ImpLeaf *l, bool coerce)
  * Build the target tree from the tuple descriptor and bind each leaf to a
  * Parquet leaf column (validating physical type and Dremel level bounds).
  * Returns the tops array; sets the leaves array and top count via out-params.
+ * Every binding error names `path` in its DETAIL, so a read over a prefix or a
+ * glob says which of its files does not match (#1902).
  *
  * Relation-free: on a binding error it just ereports, and any relation the caller
  * holds is released by transaction abort. This lets a caller with no relation (the
@@ -3059,7 +3061,7 @@ pq_take_value(ImpLeaf *l, bool coerce)
  * reader to the wrong place (#1871).
  */
 static ImpTop *
-build_imp_targets(TupleDesc tupdesc, PqFile *pf,
+build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
 				  ImpLeaf **pleaves, int *ntops, const bool *skipAtt,
 				  const char *caller)
 {
@@ -3071,7 +3073,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 	int			i;
 
 #define IMP_FAIL(...) \
-	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__)))
+	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__), \
+					errdetail("The mismatched file is \"%s\".", path)))
 
 	for (i = 0; i < natts; i++)
 	{
@@ -3248,10 +3251,10 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
  * spec's "map field id to columns without field id". This lets a data file
  * written without field ids (an imported dataset) bind by name. A leaf that
  * does carry an id ignores the table. nm_count 0 disables it, preserving the
- * no-ids refusal.
+ * no-ids refusal. Its binding errors name `path` as build_imp_targets' do.
  */
 static ImpTop *
-build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
+build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf, const char *path,
 							  const int *field_ids, int nfield,
 							  const char *const *nm_names, const int *nm_ids,
 							  int nm_count, bool missing_as_null,
@@ -3268,7 +3271,8 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 	int			i;
 
 #define IMP_FAIL(...) \
-	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__)))
+	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__), \
+					errdetail("The mismatched file is \"%s\".", path)))
 
 	/* the effective id of each leaf: its own field id, or -- for an id-less
 	 * TOP-LEVEL leaf and a supplied name mapping -- the id the mapping gives its
@@ -4307,11 +4311,12 @@ pq_read_file_into(const char *path, TupleDesc tupdesc, TupleTableSlot *slot,
 	pq_source_open_cfg(path, &src, &pf, cfg);
 	pq_check_row_groups(&pf, path);
 	if (field_ids != NULL)
-		tops = build_imp_targets_by_field_id(tupdesc, &pf, field_ids, nfield,
+		tops = build_imp_targets_by_field_id(tupdesc, &pf, path, field_ids, nfield,
 											 nm_names, nm_ids, nm_count,
 											 missing_as_null, &leaves, &ntops, caller);
 	else
-		tops = build_imp_targets(tupdesc, &pf, &leaves, &ntops, NULL, caller);
+		tops = build_imp_targets(tupdesc, &pf, path, &leaves, &ntops, NULL,
+								 caller);
 	n = pq_read_rows(&pf, &src, tops, ntops, leaves,
 					 slot, sink, sinkarg, NULL, needTop, NULL, NULL, NULL,
 					 0, pf.nrowgroups, skipPos, nSkipPos);
@@ -5682,7 +5687,7 @@ pqfdw_open_next_file(PqFdwScanState *st)
 		st->filesRead++;
 		pq_source_open_cfg(file, &st->src, &st->pf, &st->oscfg);
 		pq_check_row_groups(&st->pf, file);
-		st->tops = build_imp_targets(st->tupdesc, &st->pf, &st->leaves,
+		st->tops = build_imp_targets(st->tupdesc, &st->pf, file, &st->leaves,
 									 &st->ntops, st->partMask,
 									 "the pgcolumnar_parquet foreign-data wrapper");
 

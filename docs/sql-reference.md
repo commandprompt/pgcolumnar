@@ -786,6 +786,10 @@ Inserts the rows of an Arrow IPC file at `path` into the existing table
 `rel`. The column types of the table define the types that the function accepts. Returns the number of
 rows inserted.
 
+`path` is a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). The function checks INSERT on `rel` first, so
+a caller without INSERT gets `42501` for a URL too.
+
 The file can be in the IPC stream format, which `export_arrow` writes, or in the
 IPC file format, which starts and ends with `ARROW1`. Feather v2 is the IPC file
 format. The function reads the stream inside an IPC file and ignores its footer.
@@ -833,6 +837,9 @@ as one atomic operation. Returns the number of rows loaded. The caller needs
 membership in the `pg_read_server_files` role, which superusers hold, and INSERT
 on the target. The file uses COPY text format. Each worker runs core `COPY` over
 a byte range of the file, so parse and write behavior match `COPY FROM` exactly.
+`filename` is a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). The function checks INSERT on `target` first,
+so a caller without INSERT gets `42501` for a URL too.
 
 The target may be one of two kinds:
 
@@ -1020,7 +1027,9 @@ compatibility as the import functions.
 The list must contain each leaf column in the file. A list with fewer columns is
 an error and not a projection. The read stops and gives a message. The message
 contains the number of leaf columns in the file and the number that the target
-expands to. The same rule applies to a foreign
+expands to. Its DETAIL names the file, so a read of a directory, a prefix or a
+glob says which of its files does not match. Every other error about a file that
+does not match the list has the same DETAIL. The same rule applies to a foreign
 table's column definitions. Projection pushdown selects the declared columns
 that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
@@ -1679,7 +1688,11 @@ accept an object-storage URL wherever they accept a local path. So do the
 `pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data wrappers. The third
 wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
 `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
-`read_manifest_list` read local files only. These URL schemes are recognized:
+`read_manifest_list` read local files only. `import_arrow`, `file_split_offsets`
+and `parallel_copy` refuse a URL in any of the schemes below with SQLSTATE 0A000
+before they read anything, for example
+`columnar: import_arrow does not read "s3://bucket/m.arrow"`. These URL schemes
+are recognized:
 
 | Scheme | Meaning |
 | --- | --- |
@@ -1870,6 +1883,16 @@ upload. It becomes visible at its final name only when the upload completes, so 
 reader never sees a partial object. An export that fails before its last request
 removes what it wrote, including an incomplete multipart upload. The last request
 is different, as the next paragraphs explain.
+
+A request whose body is over 1 MiB, a single request or a part, sends its headers
+first with `Expect: 100-continue`. It waits up to one second for the store to
+answer them before it sends the body. A store can refuse the request from its
+headers alone, with a 403 for example. The export then reports that status and its
+hint, over `https://` as well as `http://`. A store that ignores `Expect` costs
+that second once per object written. After a wait runs out, the later parts of
+that object go without `Expect`. A store that answers `417` gets the request again without
+`Expect`. A `2xx` answer to the headers alone still gets the body, and stands as
+the answer once the body is sent.
 
 This cleanup holds when you cancel or terminate the export while it waits for the
 store to start the upload. The export then has no id for that upload. It lists
