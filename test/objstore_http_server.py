@@ -39,6 +39,16 @@
 #                    client's buffer, which must keep none rather than a cut one.
 #   /fickle/<file>   send a different strong ETag on every request for the same
 #                    bytes, as nodes behind a load balancer can (#1805 review).
+#   /vswap/<file>    a versioned bucket (#1867): HEAD and GET send
+#                    x-amz-version-id, an id with '+' and '/' in it, as AWS ids
+#                    can have. The server keeps the bytes of every version it
+#                    named, and a GET with ?versionId= reads that version, or
+#                    gets 404 NoSuchVersion. After the 4th ranged GET without a
+#                    versionId, or with one, it moves <file>.next over <file>
+#                    once, as /swap/ does.
+#   /lenswap/<file>  send no ETag, and after the 4th ranged GET move <file>.next
+#                    over <file> once: an overwrite with a new length that only
+#                    the Content-Range total can show (#1867).
 #
 # Every HEAD and GET of an object sends ETag: "<md5 of the current bytes>", and a
 # GET whose If-Match names any other ETag is answered 412, as S3 does (#1805).
@@ -209,7 +219,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.unquote(self.path.partition("?")[0])
         mode = "normal"
         for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/",
-                       "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/"):
+                       "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/",
+                       "/vswap/", "/lenswap/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -321,6 +332,13 @@ class Handler(BaseHTTPRequestHandler):
                 return '"%s-%d"' % (md5, self.server.fickle_seq)
         return '"%s"' % md5
 
+    def _version_of(self, local, data):
+        """/vswap/: the version id of these bytes, kept so a GET can ask for it."""
+        vid = "3HL4+kq/" + hashlib.md5(data).hexdigest()[:24]
+        with self.server.uploads_lock:
+            self.server.versions[(local, vid)] = data
+        return vid
+
     def do_HEAD(self):
         self._log_line()
         if not self._sigv4_check():
@@ -339,7 +357,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header("ETag", self._etag(local, mode))
+        if mode != "lenswap":
+            self.send_header("ETag", self._etag(local, mode))
+        if mode == "vswap":
+            with open(local, "rb") as f:
+                self.send_header("x-amz-version-id", self._version_of(local, f.read()))
         self.end_headers()
 
     def _do_list_v2(self, query):
@@ -492,6 +514,28 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "dropka":
             self.close_connection = True
         etag = self._etag(local, mode)
+        # /vswap/: a GET that names a version reads that version's bytes.
+        data, vid = None, None
+        if mode == "vswap":
+            # unquote_plus, as S3 reads a query: a '+' sent unencoded is a space.
+            asked = None
+            for part in self.path.partition("?")[2].split("&"):
+                k, _, v = part.partition("=")
+                if k == "versionId":
+                    asked = urllib.parse.unquote_plus(v)
+            if asked is not None:
+                with self.server.uploads_lock:
+                    data = self.server.versions.get((local, asked))
+                if data is None:
+                    self._deny(404, "NoSuchVersion")
+                    return
+                vid = asked
+            else:
+                with open(local, "rb") as f:
+                    data = f.read()
+                vid = self._version_of(local, data)
+            size = len(data)
+            etag = '"%s"' % hashlib.md5(data).hexdigest()
         want = self.headers.get("If-Match")
         if want is not None and (mode == "weak" or want.strip() != etag):
             self._deny(412, "PreconditionFailed")
@@ -504,8 +548,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Length", str(size))
             self.end_headers()
-            with open(local, "rb") as f:
-                self.wfile.write(f.read())
+            if data is None:
+                with open(local, "rb") as f:
+                    data = f.read()
+            self.wfile.write(data)
             return
 
         if m.group(1) == "":                     # suffix form bytes=-N
@@ -524,13 +570,19 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "short" and hi > lo:
             hi -= 1
         n = hi - lo + 1
-        with open(local, "rb") as f:
-            f.seek(lo)
-            body = f.read(n)
+        if data is not None:
+            body = data[lo:lo + n]
+        else:
+            with open(local, "rb") as f:
+                f.seek(lo)
+                body = f.read(n)
         self.send_response(206)
         self.send_header("Content-Range", "bytes %d-%d/%d" % (lo, hi, size))
         self.send_header("Content-Length", str(n))
-        self.send_header("ETag", etag)
+        if mode != "lenswap":
+            self.send_header("ETag", etag)
+        if vid is not None:
+            self.send_header("x-amz-version-id", vid)
         self.end_headers()
         if mode == "trunc":
             self.wfile.write(body[: n // 2])
@@ -543,7 +595,7 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(300)                      # the suite cancels long before
             return
         self.wfile.write(body)
-        if mode in ("swap", "swap79"):
+        if mode in ("swap", "swap79", "vswap", "lenswap"):
             with self.server.uploads_lock:
                 seen = self.server.swap_gets.get(local, 0) + 1
                 self.server.swap_gets[local] = seen
@@ -753,6 +805,7 @@ def main():
     srv.uploads_lock = threading.Lock()
     srv.swap_gets = {}
     srv.fickle_seq = 0
+    srv.versions = {}
     srv.upload_seq = 0
     for key in args.seed_upload:
         srv.upload_seq += 1

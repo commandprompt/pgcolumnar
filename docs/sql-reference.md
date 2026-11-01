@@ -1582,8 +1582,17 @@ the HEAD returns a strong ETag of at most 79 characters, every GET sends that
 ETag in an `If-Match` header. The 79 includes the ETag's two quote marks. If
 another client then overwrites the object during the read, the server answers 412. The query then fails with `changed while it was
 being read`, instead of returning rows from two versions. Run the statement again
-to read the new version. A server that sends no ETag, a weak one, or a longer
-one cannot pin the read (see [limitations](limitations.md#reading-external-parquet)). An
+to read the new version. When the HEAD also returns `x-amz-version-id`, as a
+versioned S3 bucket does, every GET asks for that version with `versionId=`. An
+overwrite during the read then leaves the read on the version it started on,
+and the query succeeds. The reader also compares the total length in each 206
+`Content-Range` with the length from the HEAD. When they differ, the query fails
+with `changed while it was being read`, whatever the server sends as ETag. A
+server that sends no ETag, a weak one, or a longer one cannot pin the read (see
+[limitations](limitations.md#reading-external-parquet)). Set
+`pgcolumnar.objstore_pin_reads` to `off` for a server whose ETag changes from
+one request to the next: the reader then sends no `If-Match` and no
+`versionId`. An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a

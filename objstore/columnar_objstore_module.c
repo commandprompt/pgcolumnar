@@ -27,7 +27,11 @@
  * - One read sees one version of the object (#1805). Open keeps the HEAD's
  *   strong ETag and every ranged GET sends it as If-Match, so a key that is
  *   overwritten mid-read answers 412 and the read fails, instead of mixing a
- *   footer from one object with chunks from another.
+ *   footer from one object with chunks from another. When the HEAD names a
+ *   version (x-amz-version-id), every ranged GET also asks for that version,
+ *   so the read finishes on it (#1867). pgcolumnar.objstore_pin_reads = off
+ *   sends neither (#1866). Whatever the pin, a 206 whose Content-Range total
+ *   differs from the HEAD's length fails the read (#1867).
  *
  * - Sockets are cleaned up on abort through a resource-release callback over
  *   the open-handle list. The invariant that makes close-all-on-abort correct:
@@ -94,6 +98,13 @@ PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
  */
 #define OS_ETAG_BUF			80
 
+/*
+ * Bytes kept of a response x-amz-version-id, terminator included. S3 version
+ * ids are at most 1024 bytes. A longer one is kept as none: a cut id names
+ * no version, so every GET would fail.
+ */
+#define OS_VERSION_BUF		1025
+
 struct PgColumnarObjHandle
 {
 	char	   *url;			/* full URL, for error messages */
@@ -114,6 +125,13 @@ struct PgColumnarObjHandle
 	 * server sent none, or only a weak one: then reads are not pinned.
 	 */
 	char		pin_etag[OS_ETAG_BUF];
+
+	/*
+	 * "versionId=<id, percent-encoded>" from the HEAD's x-amz-version-id, sent
+	 * as the query of every ranged GET (#1867). NULL when the store named no
+	 * version, or the pin is off.
+	 */
+	char	   *pin_query;
 	uint64		served;			/* requests completed on this connection */
 
 	/*
@@ -176,6 +194,9 @@ typedef struct OsResponse
 	bool		chunked;
 	bool		conn_close;
 	char		etag[OS_ETAG_BUF];	/* response ETag, "" when absent or too long */
+	char		version_id[OS_VERSION_BUF]; /* x-amz-version-id, "" when absent
+											 * or too long */
+	int64		range_total;	/* Content-Range total, -1 when absent or "*" */
 } OsResponse;
 
 static dlist_head os_open_handles = DLIST_STATIC_INIT(os_open_handles);
@@ -243,6 +264,8 @@ os_free_handle(PgColumnarObjHandle *h)
 		pfree(h->token);
 	if (h->region)
 		pfree(h->region);
+	if (h->pin_query)
+		pfree(h->pin_query);
 	pfree(h);
 }
 
@@ -870,6 +893,7 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 
 	memset(resp, 0, sizeof(*resp));
 	resp->content_length = -1;
+	resp->range_total = -1;
 
 	for (;;)
 	{
@@ -951,6 +975,29 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 				/* A cut-down ETag would match nothing: keep none instead. */
 				if (p < eol && *p != '\r' && *p != '\n')
 					resp->etag[0] = '\0';
+			}
+			else if (pg_strncasecmp(line, "x-amz-version-id:", 17) == 0)
+			{
+				const char *p = line + 17;
+				int			i = 0;
+
+				while (p < eol && (*p == ' ' || *p == '\t'))
+					p++;
+				while (p < eol && *p != '\r' && *p != '\n' &&
+					   i < (int) sizeof(resp->version_id) - 1)
+					resp->version_id[i++] = *p++;
+				resp->version_id[i] = '\0';
+				/* A cut-down id would name no version: keep none instead. */
+				if (p < eol && *p != '\r' && *p != '\n')
+					resp->version_id[0] = '\0';
+			}
+			else if (pg_strncasecmp(line, "Content-Range:", 14) == 0)
+			{
+				/* bytes FIRST-LAST/TOTAL; TOTAL may be "*" (unknown) */
+				const char *slash = memchr(line, '/', eol - line);
+
+				if (slash != NULL && slash[1] >= '0' && slash[1] <= '9')
+					resp->range_total = strtoll(slash + 1, NULL, 10);
 			}
 			line = eol + 1;
 		}
@@ -1195,7 +1242,7 @@ os_uriencode_query(const char *s)
  */
 static void
 os_sign_request(PgColumnarObjHandle *h, const char *method,
-				const char *rangeVal, StringInfo headers)
+				const char *query, const char *rangeVal, StringInfo headers)
 {
 	char		amzdate[20];	/* YYYYMMDDTHHMMSSZ */
 	char		datestamp[9];	/* YYYYMMDD */
@@ -1240,7 +1287,8 @@ os_sign_request(PgColumnarObjHandle *h, const char *method,
 
 	/* canonical request */
 	initStringInfo(&creq);
-	appendStringInfo(&creq, "%s\n%s\n\n", method, h->abspath);
+	appendStringInfo(&creq, "%s\n%s\n%s\n", method, h->abspath,
+					 query != NULL ? query : "");
 	appendStringInfo(&creq, "host:%s:%d\n", h->host, h->port);
 	if (rangeVal != NULL)
 		appendStringInfo(&creq, "range:%s\n", rangeVal);
@@ -1287,11 +1335,14 @@ os_request(PgColumnarObjHandle *h, const char *method,
 {
 	StringInfoData req;
 	bool		isGet = (strcmp(method, "GET") == 0);
+	/* A ranged GET asks for the version open saw (#1867); the HEAD never. */
+	const char *query = isGet ? h->pin_query : NULL;
 	int			attempt;
 
 	initStringInfo(&req);
-	appendStringInfo(&req, "%s %s HTTP/1.1\r\nHost: %s:%d\r\n",
-					 method, h->abspath, h->host, h->port);
+	appendStringInfo(&req, "%s %s%s%s HTTP/1.1\r\nHost: %s:%d\r\n",
+					 method, h->abspath, query != NULL ? "?" : "",
+					 query != NULL ? query : "", h->host, h->port);
 	if (isGet)
 		appendStringInfo(&req, "Range: bytes=%lld-%lld\r\n",
 						 (long long) off, (long long) (off + n - 1));
@@ -1305,7 +1356,7 @@ os_request(PgColumnarObjHandle *h, const char *method,
 		if (isGet)
 			snprintf(rangeVal, sizeof(rangeVal), "bytes=%lld-%lld",
 					 (long long) off, (long long) (off + n - 1));
-		os_sign_request(h, method, isGet ? rangeVal : NULL, &req);
+		os_sign_request(h, method, query, isGet ? rangeVal : NULL, &req);
 	}
 	appendStringInfoString(&req, "User-Agent: pgcolumnar-objstore/1\r\n\r\n");
 
@@ -1786,11 +1837,40 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 	*len = h->len;
 
 	/*
+	 * pgcolumnar.objstore_pin_reads = off leaves the read unpinned (#1866),
+	 * for a server whose ETag changes from one request to the next.
+	 */
+	{
+		const char *pin = GetConfigOption("pgcolumnar.objstore_pin_reads",
+										  true, false);
+
+		if (pin != NULL && strcmp(pin, "off") == 0)
+			return h;
+	}
+
+	/*
 	 * If-Match compares strongly (RFC 9110 13.1.1), so a weak ETag would make
 	 * every ranged GET fail. Such a server's reads stay unpinned.
 	 */
 	if (strncmp(resp.etag, "W/", 2) != 0)
 		strlcpy(h->pin_etag, resp.etag, sizeof(h->pin_etag));
+
+	/*
+	 * A versioned store names the version (#1867): ask for it on every ranged
+	 * GET, so an overwrite mid-read leaves this read on the version it
+	 * opened. "null" is the id S3 gives an object written while versioning
+	 * was off; that version is overwritten in place, so it pins nothing that
+	 * If-Match does not.
+	 */
+	if (resp.version_id[0] != '\0' && strcmp(resp.version_id, "null") != 0)
+	{
+		char	   *enc = os_uriencode_query(resp.version_id);
+
+		h->pin_query = MemoryContextAlloc(TopMemoryContext,
+										  strlen(enc) + sizeof("versionId="));
+		sprintf(h->pin_query, "versionId=%s", enc);
+		pfree(enc);
+	}
 	return h;
 }
 
@@ -1840,6 +1920,23 @@ objstore_read(PgColumnarObjHandle *h, int64 off, void *buf, size_t n)
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg("columnar: unexpected HTTP status %d for \"%s\"",
 						resp.status, h->url)));
+
+	/*
+	 * The 206 states the object's whole length (#1867). A length other than
+	 * the HEAD's means another writer replaced the object, even on a server
+	 * with no ETag to pin: refuse the rest of the read.
+	 */
+	if (resp.range_total >= 0 && resp.range_total != h->len)
+	{
+		os_disconnect(h);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("columnar: \"%s\" changed while it was being read", h->url),
+				 errdetail("The object is now %lld bytes long; it was %lld bytes "
+						   "when the read began (HTTP 206 Content-Range).",
+						   (long long) resp.range_total, (long long) h->len),
+				 errhint("Run the statement again to read the new version.")));
+	}
 
 	os_read_body(h, &resp, (uint8 *) buf, (int64) n);
 

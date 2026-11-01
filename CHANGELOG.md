@@ -18,6 +18,15 @@ true until the next version shipped.
 
 ### Added
 
+- `pgcolumnar.objstore_pin_reads`, a new setting, turns off the version pin of a
+  remote read (#1866). It is on by default. Since #1805 a remote read sends the
+  HEAD's ETag as `If-Match`, so a server whose ETag changes on every request for
+  the same bytes failed every read with `changed while it was being read`. Off,
+  the reader sends no `If-Match` and no `versionId`, and such a server reads
+  again. The read can then mix two versions of an object overwritten with the
+  same length. docs/configuration.md and docs/limitations.md.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+
 - `pgcolumnar.export_group_bytes`, a new setting, caps the bytes `export_parquet`,
   `export_arrow` and `parallel_export_parquet` buffer for one Parquet row group or
   Arrow record batch (#1811). It is 256 MiB by default, which is also its maximum,
@@ -480,6 +489,17 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+
+- A remote read of a versioned object now finishes on the version it opened
+  (#1867). When the HEAD sends `x-amz-version-id`, every ranged GET asks for that
+  version with `versionId=`, signed for `s3://` URLs. Before, an overwrite during
+  the read failed the query with `changed while it was being read`. The reader
+  also checks the total in each 206 `Content-Range` against the HEAD's length.
+  Before, an overwrite that changed the length, on a server with no strong ETag,
+  returned rows from both versions without an error. Now the query fails with
+  `changed while it was being read` (SQLSTATE 55000). docs/sql-reference.md and
+  docs/limitations.md. `test/objstore_http_read.sh`, `test/objstore_s3_read.sh`
+  and their pytest twins.
 
 - `iceberg_rest_scan` now chooses a vended storage credential for each file it
   reads (#1820). Before, it matched each `storage-credentials` prefix against the

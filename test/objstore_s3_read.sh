@@ -19,6 +19,9 @@
 #            file name): an encoding disagreement cannot pass the verifier.
 #   B        the M1 request arithmetic holds unchanged under signing
 #            (open = HEAD + 3 GETs, data = one GET per needed chunk).
+#   C        a versioned object (#1867): every ranged GET signs and sends the
+#            versionId the HEAD named, so an overwrite mid-read leaves the read
+#            on the version it opened.
 #   token    the postmaster env carries AWS_SESSION_TOKEN and the server
 #            REQUIRES x-amz-security-token inside the signed set, so the data
 #            arms prove token signing rather than merely tolerating it.
@@ -153,6 +156,24 @@ PYEOF
 check "premise: fixture written" \
 	"$([ -s "$PGC_WORKDIR/$BUCKET/fixture.parquet" ] && echo yes)" "yes"
 
+# The overwrite pair for the versioned read (#1867): one layout and byte length,
+# c0 >= 0 in every row of the first and c0 < 0 in every row of .next. The
+# server's /vswap/ mode names versions and moves .next over the first mid-read.
+python3 - "$PGC_WORKDIR/$BUCKET/vswap.parquet" <<PYEOF
+import os, sys
+import pyarrow as pa, pyarrow.parquet as pq
+G, RPG = $G, $ROWS_PER_GROUP
+first = sys.argv[1]
+for path, sign in ((first, 1), (first + ".next", -1)):
+    c0 = pa.array([sign * v - (sign < 0) for v in range(G * RPG)], pa.int64())
+    pq.write_table(pa.table({"c0": c0}), path, row_group_size=RPG,
+                   compression="NONE", use_dictionary=False, write_statistics=False)
+assert os.path.getsize(first) == os.path.getsize(first + ".next")
+PYEOF
+check "premise: the versioned overwrite pair has one byte length" \
+	"$(stat -c %s "$PGC_WORKDIR/$BUCKET/vswap.parquet.next" 2>&1)" \
+	"$(stat -c %s "$PGC_WORKDIR/$BUCKET/vswap.parquet" 2>&1)"
+
 python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
 	--dir "$PGC_WORKDIR" --port "$S3_PORT" --log "$S3_LOG" \
 	--sigv4-key "$AKID" --sigv4-secret "$SECRET" --sigv4-region "$REGION" \
@@ -175,6 +196,8 @@ psql_run "CREATE FOREIGN TABLE fs3 ($COLDEFS) SERVER s3srv OPTIONS (path 's3://$
 psql_run "CREATE FOREIGN TABLE fs3enc ($COLDEFS) SERVER s3srv OPTIONS (path 's3://$BUCKET/dir with space/f 1.parquet');"
 psql_run "CREATE FOREIGN TABLE fs3tamper ($COLDEFS) SERVER s3srv OPTIONS (path 's3://tamperbkt/fixture.parquet');"
 psql_run "CREATE FOREIGN TABLE fs3miss ($COLDEFS) SERVER s3srv OPTIONS (path 's3://$BUCKET/no_such.parquet');"
+# Bucket "vswap" selects the server's versioned mode; the key is $BUCKET/vswap.parquet.
+psql_run "CREATE FOREIGN TABLE fs3vswap (c0 int8) SERVER s3srv OPTIONS (path 's3://vswap/$BUCKET/vswap.parquet');"
 
 # ---- phase 1: no AWS environment at all ------------------------------------
 CRASHES_BEFORE="$(crashes)"
@@ -212,6 +235,24 @@ FULL_SIGNED="$(reqs)"
 check "premise: signed run logged requests" \
 	"$([ "${FULL_SIGNED:-0}" -gt 0 ] 2>/dev/null && echo yes)" "yes"
 check_num "B: signing left the request arithmetic unchanged" "$FULL_SIGNED" "$K_FULL"
+
+# A versioned store (#1867): the read asks for the version it opened on every
+# ranged GET, signed with versionId in the canonical query. The server checks
+# that signature, so a query the client signs one way and sends another is a
+# 403. The id has '+' and '/', which must go out percent-encoded. An overwrite
+# mid-read then leaves the read on the old version: every row has c0 >= 0.
+wait_up
+: > "$S3_LOG"
+check "C: a signed versioned read overwritten mid-read finishes on the version it opened" \
+	"$(refusal_of "SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || count(*) FILTER (WHERE c0 < 0) FROM fs3vswap" \
+		"changed while it was being read" " changed while it was being read")" \
+	"no error (old=$((G * ROWS_PER_GROUP)) new=0)"
+# log columns: METHOD path query range
+VGETS="$(awk '$1 == "GET" && $2 ~ /vswap/' "$S3_LOG" | wc -l | tr -d ' ')"
+VNOID="$(awk '$1 == "GET" && $2 ~ /vswap/ && $3 !~ /^versionId=3HL4%2Bkq%2F/' "$S3_LOG" | wc -l | tr -d ' ')"
+check "premise: the signed versioned read logged GETs" \
+	"$([ "${VGETS:-0}" -gt 0 ] 2>/dev/null && echo yes || echo "no ($VGETS)")" "yes"
+check_num "C: every signed ranged GET of a versioned read names the version" "$VNOID" "0"
 
 # The refusal must name the HTTP 403, not be another guard's 28000. (The open's HEAD
 # carries no body, so the server's <Code> never reaches the message.)
