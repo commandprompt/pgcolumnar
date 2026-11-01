@@ -265,9 +265,10 @@ flag, holds instants: the Parquet format defines it so. `parquet_schema` advises
 `timestamptz` for every column that holds instants, and `timestamp` for wall
 times.
 
-The `path` may also be an object-storage URL. Every read and export function, and
-both foreign-data wrappers, accept an `s3://`, `http://`, or `https://` URL where
-they accept a local path.
+The `path` may also be an object-storage URL. Every Parquet read and export
+function accepts an `s3://`, `http://`, or `https://` URL where it accepts a
+local path. So do the `pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data
+wrappers.
 
 ```sql
 SELECT count(*) FROM pgcolumnar.read_parquet('s3://bucket/events.parquet')

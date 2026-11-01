@@ -45,6 +45,42 @@ print(pq.ParquetFile(f"{w}/xt.parquet").metadata.num_row_groups,
       pq.ParquetFile(f"{w}/xg.parquet").metadata.num_row_groups)
 '''
 
+# #1887: four more column-and-constant pairs, written as the shell writes them
+WRITER_W = r'''
+import sys, datetime as dt, pyarrow as pa, pyarrow.parquet as pq
+w = sys.argv[1]
+n = 200000
+t0 = dt.datetime(2026, 1, 1)
+pq.write_table(pa.table({"sm": pa.array([i // 10 for i in range(n)], pa.int16()),
+                         "it": pa.array(range(n), pa.int32()),
+                         "r": pa.array([i / n for i in range(n)], pa.float32()),
+                         "ts": pa.array([t0 + dt.timedelta(seconds=i) for i in range(n)], pa.timestamp("us"))}),
+               f"{w}/xw.parquet", row_group_size=50000)
+print(pq.ParquetFile(f"{w}/xw.parquet").metadata.num_row_groups)
+'''
+
+# (key, predicate) of each pair the readings measure
+PAIRS = (
+    ("int4 on int2", "sm < 500"),
+    ("int8 on int4", "it > 5000000000"),
+    ("float8 on float4", "r < 0.1"),
+    ("date on timestamp", "ts < DATE '2026-01-02'"),
+)
+# (key, row groups skipped, the shell's check name)
+PAIR_SKIPS = (
+    ("int4 on int2", 3, "an int4 constant on an int2 column skips 3 of the 4 row groups (#1887)"),
+    ("int8 on int4", 4, "an int8 constant on an int4 column skips all 4 row groups (#1887)"),
+    ("float8 on float4", 3, "a float8 constant on a float4 column skips 3 of the 4 row groups (#1887)"),
+    ("date on timestamp", 2, "a date constant on a timestamp column skips 2 of the 4 row groups (#1887)"),
+)
+# (key, rows the heap copy returns, the shell's check name)
+PAIR_ROWS = (
+    ("int4 on int2", 5000, "an int4 constant on an int2 column returns the heap copy's 5000 rows (#1887)"),
+    ("int8 on int4", 0, "an int8 constant on an int4 column returns the heap copy's 0 rows (#1887)"),
+    ("float8 on float4", 20000, "a float8 constant on a float4 column returns the heap copy's 20000 rows (#1887)"),
+    ("date on timestamp", 86400, "a date constant on a timestamp column returns the heap copy's 86400 rows (#1887)"),
+)
+
 # The gap arms run in New York, as the shell's do (OffgridwithJD's review of #1737).
 ZONE = "-c TimeZone=America/New_York"
 GT = "ts > '2024-03-10 07:15+00'::timestamptz"
@@ -132,6 +168,21 @@ def pxt(pgc_cluster, server_dir):
                     dsn, f"SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM {table} WHERE {pred}",
                     ZONE)
         r["same skip"] = _skipped(dsn, f"SELECT count(*) FROM xg WHERE {SAME}", ZONE)
+        # #1887: the four-type file
+        wrote = subprocess.run([sys.executable, "-c", WRITER_W, str(w)], capture_output=True, text=True)
+        if (w / "xw.parquet").exists():
+            (w / "xw.parquet").chmod(0o644)
+        got = wrote.stdout.strip()
+        r["w groups"] = int(got) if wrote.returncode == 0 and got.isdigit() else query_error(
+            f"the writer failed: {wrote.stderr.strip().splitlines()[-1:]}")
+        for sql in (f"CREATE FOREIGN TABLE xw (sm int2, it int4, r float4, ts timestamp) SERVER pq "
+                    f"OPTIONS (path '{w}/xw.parquet')",
+                    "CREATE TABLE xw_heap AS SELECT * FROM xw"):
+            _run(dsn, sql)
+        for key, pred in PAIRS:
+            r[f"{key} skip"] = _skipped(dsn, f"SELECT count(*) FROM xw WHERE {pred}")
+            r[f"{key} rows"] = (_value(dsn, f"SELECT count(*) FROM xw WHERE {pred}"),
+                                _value(dsn, f"SELECT count(*) FROM xw_heap WHERE {pred}"))
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -250,3 +301,26 @@ def test_pxt_the_timestamp_constant_returns_the_heap_rows(request, expect):
     r = _readings(request, expect)
     if r is not None:
         expect.text(r["xg same"], r["xg_heap same"], "and returns the rows the heap returns")
+
+
+# ---- #1887: four more column-and-constant pairs ----------------------------------------
+
+def test_pxt_the_four_type_file_holds_four_row_groups(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.num(r["w groups"], 4, "premise: the four-type file holds 4 row groups (pyarrow's own count) (#1887)")
+
+
+@pytest.mark.parametrize("key,groups,name", PAIR_SKIPS, ids=[p[0] for p in PAIR_SKIPS])
+def test_pxt_a_cross_type_constant_skips_row_groups(request, expect, key, groups, name):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.num(r[f"{key} skip"], groups, name)
+
+
+@pytest.mark.parametrize("key,rows,name", PAIR_ROWS, ids=[p[0] for p in PAIR_ROWS])
+def test_pxt_a_cross_type_constant_returns_the_heap_rows(request, expect, key, rows, name):
+    r = _readings(request, expect)
+    if r is not None:
+        foreign, heap = r[f"{key} rows"]
+        expect.text(f"{foreign} {heap}", f"{rows} {rows}", name)

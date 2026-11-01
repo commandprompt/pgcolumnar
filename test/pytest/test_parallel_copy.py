@@ -10,6 +10,9 @@ with the rows a single COPY gives, leave no prepared transaction behind, roll ev
 worker back when one fails, and refuse what it cannot load: a text partition key, an
 unsorted file, a DEFAULT partition, more workers than prepared-transaction slots, a
 missing file, a heap target, and a FIFO, which it must refuse rather than hang on.
+Both functions read local files only, so both refuse an object-storage URL with
+0A000, naming themselves and the URL (#1886). parallel_copy refuses after its INSERT
+check and before it checks the target's kind, so a heap target gets 0A000.
 
 THREE FIXES THE SHELL SHARES. The per-range loads are compared with the generator
 that wrote the file, not with a single columnar COPY of it, which shares every defect
@@ -36,6 +39,10 @@ GEN_F = "SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1,
 GEN_BIG = "SELECT g AS id, 'h'||g||'_'||repeat('x', 70000) AS txt FROM generate_series(1, 20) g"
 GEN_NONL = "SELECT g AS id, 'r'||g AS txt FROM generate_series(1,1000) g"
 LEAK = "SELECT count(*) FROM pg_prepared_xacts WHERE database = current_database()"
+REMOTE_S3 = "s3://pgc-test/f1886/data.txt"
+REMOTE_HTTP = "http://127.0.0.1:9/f1886/data.txt"
+REMOTE_OTHER = ("https://127.0.0.1:9/f1886/data.txt", "gs://pgc-test/f1886/data.txt",
+                "az://pgc-test/f1886/data.txt", "S3://pgc-test/f1886/data.txt")
 
 # (reading key, the shell's check name)
 STRUCTURE = (
@@ -97,6 +104,11 @@ def _message(exc):
     return str(exc).splitlines()[0] if str(exc) else type(exc).__name__
 
 
+def _want_refusal(fn, url):
+    """The refusal #1886 promises for `fn` given `url`."""
+    return f'0A000 columnar: {fn} does not read "{url}" | {fn} reads local files only. Use a local filesystem path.'
+
+
 class _Db:
     def __init__(self, dsn):
         self.dsn = dsn
@@ -139,6 +151,17 @@ class _Db:
             hit = any(p.lower() in said for p in (phrase,) + alternatives)
             return f"refused: {phrase}" if hit else str(exc)
         return "noerror"
+
+    def remote_refusal(self, sql):
+        """-> "SQLSTATE message | hint" of the error `sql` raised, or "no error (...)"."""
+        try:
+            with psycopg.connect(self.dsn, autocommit=True) as conn:
+                row = conn.execute(sql).fetchone()
+        except psycopg.Error as exc:
+            if not exc.sqlstate:
+                return query_error(_message(exc))
+            return f"{exc.sqlstate} {exc.diag.message_primary} | {exc.diag.message_hint or 'no hint'}"
+        return f"no error ({row[0] if row else None})"
 
     def copy_in(self, table, data):
         try:
@@ -442,6 +465,36 @@ def pcopy(pgc_cluster, server_dir):
         r["fifo part"] = db.sqlstate_or_hang(
             f"SELECT pgcolumnar.parallel_copy('t_fifo_part'::regclass, '{fifo2}', 3)", fifo2)
         r["fifo part up"] = _survived(db, pgc_cluster, before)
+
+        # ---- #1886: a remote URL is refused up front ------------------------------
+        r["split s3"] = db.remote_refusal(f"SELECT pgcolumnar.file_split_offsets('{REMOTE_S3}', 2)")
+        r["split http"] = db.remote_refusal(f"SELECT pgcolumnar.file_split_offsets('{REMOTE_HTTP}', 2)")
+        r["split other"] = " ; ".join(
+            db.remote_refusal(f"SELECT pgcolumnar.file_split_offsets('{u}', 2)") for u in REMOTE_OTHER)
+        db.run("CREATE TABLE t_rem (id int, txt text) USING pgcolumnar")
+        _mkpart(db, "t_rem_part", 4)
+        r["pcopy s3"] = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '{REMOTE_S3}', 2)")
+        r["pcopy http"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '{REMOTE_HTTP}', 2)")
+        r["pcopy other"] = " ; ".join(
+            db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_rem_part'::regclass, '{u}', 2)")
+            for u in REMOTE_OTHER)
+        r["pcopy heap"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_heaptgt'::regclass, '{REMOTE_S3}', 2)")
+        # d/"s3:" is a directory, so d/"s3://ctl.txt" is a local file whose path holds
+        # "s3://" past its start.
+        sub = d / "s3:"
+        sub.mkdir()
+        os.chmod(sub, 0o777)
+        local = f"{d}/s3://ctl.txt"
+        db.run(f"COPY ({GEN_F.format(n=5000)}) TO '{local}' WITH (FORMAT text)")
+        offs = db.offsets(local, 2)
+        r["split local"] = offs[2] if isinstance(offs, list) and len(offs) == 3 else offs
+        try:
+            r["split local size"] = (sub / "ctl.txt").stat().st_size
+        except OSError as exc:
+            r["split local size"] = query_error(f"cannot stat the control file: {exc}")
+        r["pcopy local"] = db.value(f"SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '{local}', 2)")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -649,3 +702,50 @@ def test_parallel_copy_fifo_on_a_partitioned_target_is_refused_not_a_hang(pcopy,
 
 def test_parallel_copy_partitioned_fifo_refusal_leaves_the_backend_up(pcopy, expect):
     expect.text(pcopy["fifo part up"], "1", "backend still up after the partitioned-coordinator FIFO refusal")
+
+
+# ---- #1886: a remote URL is refused up front, not opened as a local file -------------
+
+def test_parallel_copy_split_refuses_an_s3_url(pcopy, expect):
+    expect.text(pcopy["split s3"], _want_refusal("file_split_offsets", REMOTE_S3),
+                "file_split_offsets refuses an s3:// URL with 0A000, naming itself and the URL (#1886)")
+
+
+def test_parallel_copy_split_refuses_an_http_url(pcopy, expect):
+    expect.text(pcopy["split http"], _want_refusal("file_split_offsets", REMOTE_HTTP),
+                "file_split_offsets refuses an http:// URL with 0A000, naming itself and the URL (#1886)")
+
+
+def test_parallel_copy_split_refuses_the_other_remote_schemes(pcopy, expect):
+    expect.text(pcopy["split other"], " ; ".join(_want_refusal("file_split_offsets", u) for u in REMOTE_OTHER),
+                "file_split_offsets refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1886)")
+
+
+def test_parallel_copy_refuses_an_s3_url(pcopy, expect):
+    expect.text(pcopy["pcopy s3"], _want_refusal("parallel_copy", REMOTE_S3),
+                "parallel_copy refuses an s3:// URL with 0A000, naming itself and the URL (#1886)")
+
+
+def test_parallel_copy_refuses_an_http_url(pcopy, expect):
+    expect.text(pcopy["pcopy http"], _want_refusal("parallel_copy", REMOTE_HTTP),
+                "parallel_copy refuses an http:// URL with 0A000, naming itself and the URL (#1886)")
+
+
+def test_parallel_copy_refuses_the_other_remote_schemes_for_a_partitioned_target(pcopy, expect):
+    expect.text(pcopy["pcopy other"], " ; ".join(_want_refusal("parallel_copy", u) for u in REMOTE_OTHER),
+                "parallel_copy refuses https://, gs://, az:// and S3:// URLs for a partitioned target with 0A000 too (#1886)")
+
+
+def test_parallel_copy_refuses_a_remote_url_before_the_target(pcopy, expect):
+    expect.text(pcopy["pcopy heap"], _want_refusal("parallel_copy", REMOTE_S3),
+                "parallel_copy refuses a remote URL before it looks at the target: a heap target gets 0A000 (#1886)")
+
+
+def test_parallel_copy_split_still_reads_a_local_path_holding_a_scheme(pcopy, expect):
+    expect.num(pcopy["split local"], pcopy["split local size"],
+               "control: file_split_offsets still splits a local path that holds s3:// past its start (#1886)")
+
+
+def test_parallel_copy_still_loads_a_local_path_holding_a_scheme(pcopy, expect):
+    expect.num(pcopy["pcopy local"], 5000,
+               "control: parallel_copy still loads a local path that holds s3:// past its start (#1886)")

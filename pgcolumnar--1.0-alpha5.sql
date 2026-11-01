@@ -1256,7 +1256,7 @@ CREATE FUNCTION pgcolumnar.parquet_schema(path text)
 	AS 'MODULE_PATHNAME', 'pgcolumnar_parquet_schema';
 
 COMMENT ON FUNCTION pgcolumnar.parquet_schema(text)
-	IS 'report the leaf columns of a Parquet file and the PostgreSQL type each maps to; for a directory or glob, of its first file; field_id is the SchemaElement field id Iceberg projects by, NULL when the writer emitted none (Phase G scan core, #388)';
+	IS 'report the columns of a Parquet file, one row per column read_parquet declares, and the PostgreSQL type each maps to: a list or struct under its own name, other nesting one row per leaf (#1893); for a directory or glob, of its first file; field_id is the SchemaElement field id Iceberg projects by, NULL when the writer emitted none (Phase G scan core, #388)';
 
 CREATE FUNCTION pgcolumnar.read_parquet(path text)
 	RETURNS SETOF record

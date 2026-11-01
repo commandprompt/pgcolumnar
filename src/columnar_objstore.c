@@ -62,6 +62,29 @@ PgColumnarPathIsRemote(const char *path)
 }
 
 /*
+ * Refuse a remote URL in a function that reads local files only (#1886).
+ * import_arrow, file_split_offsets and parallel_copy open their path with
+ * open(2), so an s3:// or http:// URL used to fail with ENOENT ("could not
+ * open file "s3://...""), which says the object does not exist when the real
+ * reason is that these functions never read object storage. Each calls this
+ * before it opens the file, so the refusal is the same 0A000 the readers raise
+ * for a scheme they cannot read, and it names the function. import_arrow and
+ * parallel_copy call it after their INSERT and RLS checks on the target, so a
+ * caller who may not write the target gets 42501 first, and before they check
+ * the target's kind, so a heap target gets the refusal.
+ */
+void
+PgColumnarRefuseRemotePath(const char *funcname, const char *path)
+{
+	if (PgColumnarPathIsRemote(path))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("columnar: %s does not read \"%s\"", funcname, path),
+				 errhint("%s reads local files only. Use a local filesystem path.",
+						 funcname)));
+}
+
+/*
  * Choose the config for one object (#1820). The Iceberg REST spec scopes each
  * vended StorageCredential to "a storage location prefix where the credential
  * is relevant", so the choice is made per object URL, not once per table: a
