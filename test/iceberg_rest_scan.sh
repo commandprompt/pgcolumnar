@@ -446,6 +446,33 @@ start_fx dotsep --namespace-levels '["db.x"]' --table events --namespace-separat
 check "text[] form: a listed level that holds the separator is listed, not walked" \
 	"$(rows_of "SELECT string_agg(array_to_json(ns)::text, ' ') FROM pgcolumnar.iceberg_rest_namespace_levels('http://127.0.0.1:$FX_PORT') AS ns")" \
 	'["db.x"]'
+# docs/sql-reference.md cautions that the plain LATERAL example fails there.
+check "text[] form: the unfiltered LATERAL example fails on a dot-separator catalog" \
+	"$(refusal_of "SELECT ns, t FROM pgcolumnar.iceberg_rest_namespace_levels('http://127.0.0.1:$FX_PORT') AS ns,
+	                 LATERAL pgcolumnar.iceberg_rest_tables('http://127.0.0.1:$FX_PORT', ns) AS t" \
+	   'the namespace level "db.x" contains the catalog'"'"'s namespace separator' " on the dotted level")" \
+	"22023 on the dotted level"
+# docs/sql-reference.md: on a "." catalog the LATERAL example skips rows with a
+# dotted level first, so the level db.x does not abort the query.
+check "text[] form: the documented filter keeps the LATERAL example running on a dot-separator catalog" \
+	"$(rows_of "SELECT coalesce(string_agg(array_to_json(ns)::text || '=' || t, ' '), 'no rows')
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('http://127.0.0.1:$FX_PORT') AS ns,
+	                 LATERAL pgcolumnar.iceberg_rest_tables('http://127.0.0.1:$FX_PORT', ns) AS t
+	            WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE level LIKE '%.%')")" \
+	"no rows"
+# The refusal message names the level. A control byte in it (0x1F is the
+# default separator) is shown escaped, not sent raw to the log and client.
+check "separator refusal: a control byte in the refused level is escaped in the message" \
+	"$(rows_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', E'db\\x1fx')" | cat -v |
+	   sed -e 's/.*the namespace level "\(.*\)" contains.*/\1/')" \
+	'db\x1Fx'
+# A catalog whose separator is the one byte 0xC3. That byte starts the UTF-8
+# character "é" (C3 A9), but "é" does not hold the separator: the catalog
+# reads characters, not bytes. The level must reach the catalog.
+start_fx hisep --namespace-levels '["\u00e9"]' --table events --namespace-separator %C3
+check "separator refusal: a separator byte above 0x7F does not match inside a UTF-8 character" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:$FX_PORT', ARRAY[E'\\xc3\\xa9']) AS t")" \
+	"events"
 check "text[] form: an empty namespace array is refused" \
 	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY[]::text[])" \
 	   "a namespace array must hold at least one level" " as empty")" \

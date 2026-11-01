@@ -302,6 +302,44 @@ typedef struct RestCatalogConfig
 /* The REST spec's default namespace separator, the unit separator 0x1F. */
 #define REST_DEFAULT_SEPARATOR	"%1F"
 
+/* The byte length of the UTF-8 character at p, never past the string's end. */
+static int
+rest_utf8_char_len(const char *p)
+{
+	int			len = pg_utf_mblen((const unsigned char *) p);
+	int			n = 0;
+
+	while (n < len && p[n] != '\0')
+		n++;
+	return n;
+}
+
+/*
+ * Whether `level` holds the separator `rawsep`. The catalog reads a path as
+ * UTF-8 characters, so the separator matches only as whole characters: it must
+ * start and end on a character boundary. A one-byte separator at or above 0x80
+ * thus never matches part of a multibyte character (#1865).
+ */
+static bool
+rest_level_holds_separator(const char *level, const char *rawsep)
+{
+	int			seplen = (int) strlen(rawsep);
+	const char *p;
+
+	for (p = level; *p != '\0'; p += rest_utf8_char_len(p))
+	{
+		int			covered = 0;
+
+		if (strncmp(p, rawsep, seplen) != 0)
+			continue;
+		while (covered < seplen)
+			covered += rest_utf8_char_len(p + covered);
+		if (covered == seplen)
+			return true;
+	}
+	return false;
+}
+
 /*
  * The first level in `levels` that holds the catalog's separator, or NULL. The
  * catalog splits a namespace on its separator, so it would read such a level
@@ -314,10 +352,33 @@ rest_unnameable_level(List *levels, const RestCatalogConfig *cc)
 
 	foreach(lc, levels)
 	{
-		if (strstr((const char *) lfirst(lc), cc->rawsep) != NULL)
+		if (rest_level_holds_separator((const char *) lfirst(lc), cc->rawsep))
 			return (const char *) lfirst(lc);
 	}
 	return NULL;
+}
+
+/*
+ * A level as an error message shows it: each control byte (0x1F is the default
+ * separator) becomes \xNN, so it never reaches the log or the client raw.
+ */
+static char *
+rest_level_for_message(const char *level)
+{
+	StringInfoData out;
+	const char *p;
+
+	initStringInfo(&out);
+	for (p = level; *p != '\0'; p++)
+	{
+		unsigned char c = (unsigned char) *p;
+
+		if (c < 0x20 || c == 0x7F)
+			appendStringInfo(&out, "\\x%02X", c);
+		else
+			appendStringInfoChar(&out, (char) c);
+	}
+	return out.data;
 }
 
 /*
@@ -337,7 +398,7 @@ rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("iceberg: the namespace level \"%s\" contains the catalog's namespace separator",
-						bad),
+						rest_level_for_message(bad)),
 				 errdetail("The catalog joins namespace levels with %s, so it would read this level as more than one.",
 						   cc->sep)));
 	foreach(lc, levels)
@@ -1484,7 +1545,8 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespace_levels);
 /*
  * SQL: iceberg_rest_namespace_levels(catalog_uri) RETURNS SETOF text[]. The
  * same namespaces, each as a text[] of its levels (#1865). A row passes back
- * unchanged as the namespace argument of the other REST functions.
+ * unchanged as the namespace argument of the other REST functions, except a
+ * row with a level that holds the catalog's separator: they refuse it (22023).
  */
 Datum
 pgcolumnar_iceberg_rest_namespace_levels(PG_FUNCTION_ARGS)

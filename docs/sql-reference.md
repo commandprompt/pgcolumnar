@@ -1347,9 +1347,13 @@ A catalog cannot be asked about a level that contains its own namespace
 separator, because the catalog would split that level in two. The function
 then fails with SQLSTATE 22023 before it sends any request that names the
 namespace. The Apache Iceberg REST
-catalog uses `.` as its separator, so a level that contains a dot cannot be
-named on it in either form. Such a catalog also stores `ARRAY['a.b']` as the
-two levels `a` and `b`.
+catalog uses `.` as its separator. On it, no form can name a level that
+contains a dot, and pgcolumnar refuses `ARRAY['a.b']`. The check applies to the
+`text` form too. For example, on a catalog with the default separator, a level
+that holds the byte 0x1F is refused.
+
+The error message names the level. It shows a control byte as `\xNN`, such as
+`db\x1Fx`.
 
 Every REST function first reads the catalog configuration (`GET /v1/config`) and
 follows it:
@@ -1466,16 +1470,28 @@ The dot-joined form is ambiguous: the single level `a.b` and the two levels
 
 Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
 its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
-levels `a`, `b` as `{a,b}`. Pass a row back unchanged as the namespace argument
-of the other REST functions.
+levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
+argument of the other REST functions, with one exception, described next.
 
 A level may contain the catalog's separator. No request can name such a
 namespace, so the function returns it but does not ask for its children.
+Passing that row back fails with SQLSTATE 22023.
 
 ```sql
 SELECT ns, t
   FROM pgcolumnar.iceberg_rest_namespace_levels('https://catalog.example.com') AS ns,
        LATERAL pgcolumnar.iceberg_rest_tables('https://catalog.example.com', ns) AS t;
+```
+
+> **Caution:** Some catalogs use `.` as their separator, such as the Apache
+> Iceberg REST catalog. On them, one level that contains a dot makes this whole
+> query fail with SQLSTATE 22023. On such a catalog, skip those rows first:
+
+```sql
+SELECT ns, t
+  FROM pgcolumnar.iceberg_rest_namespace_levels('https://catalog.example.com') AS ns,
+       LATERAL pgcolumnar.iceberg_rest_tables('https://catalog.example.com', ns) AS t
+ WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE level LIKE '%.%');
 ```
 
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text

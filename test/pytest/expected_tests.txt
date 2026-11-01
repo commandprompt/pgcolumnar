@@ -1514,4 +1514,7 @@ guard_tests 854
 # that holds a dot, named by a text[]; the level listing; the refusals) and eight in
 # test_server_file_privilege.py (the gate on the text[] forms and the level listing), by collection:
 # `5779 tests collected`, minus 854.
-cluster_tests 4925
+# cluster_tests 4925 -> 4929 for #1865's review of PR #1884: four tests in test_iceberg_rest_scan.py (the
+# documented LATERAL example with and without its filter, the escaped control byte, a separator byte
+# above 0x7F inside a UTF-8 character), by collection: `5783 tests collected`, minus 854.
+cluster_tests 4929

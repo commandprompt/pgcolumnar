@@ -10997,6 +10997,8 @@ Eleven more fixtures cover the review of PR #1859. Two list nested namespaces at
 
 Two more fixtures cover #1865, a namespace level that holds a dot. One keeps its table in the single level `db.x` and also has the two levels `db`, `x`, with the default separator. A `text[]` namespace reaches the single level, the level listing keeps the two apart, and a listed row passes back; the dotted text still names `db`, `x`. On the nested fixture (separator `%2E`), `ARRAY['db','x']` names the same namespace as `'db.x'`, and a level that holds the separator is refused (22023). The other lists the single level `db.x` with the separator `%2E`, and the walk must list it without asking for its children. An empty, two-dimensional or NULL-holding array is refused.
 
+Four more tests cover the review of PR #1884. On the `%2E` fixture with the level `db.x`, the documented LATERAL example fails with 22023, and the documented filter keeps it running with no rows. The refusal message shows a control byte in the level as `\xNN`. A further fixture advertises the one-byte separator `%C3` and serves the level `é` (bytes C3 A9); the level must reach the catalog, because the separator matches whole UTF-8 characters only.
+
 ### Every test
 
 Every test makes one check under the shell's name. The not-found reads as 42P01, or 3F000 for a namespace, only when the message is the catalog's 404, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer.
@@ -11054,6 +11056,10 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_text_array_form_names_the_same_namespace_as_the_dotted_text` | text[] form: ARRAY['db','x'] names the same namespace as 'db.x' |
 | `test_text_array_form_a_level_holding_the_separator_is_refused` | text[] form: a level that holds the catalog's separator is refused |
 | `test_text_array_form_a_listed_level_holding_the_separator_is_not_walked` | text[] form: a listed level that holds the separator is listed, not walked |
+| `test_text_array_form_the_unfiltered_lateral_example_fails_on_a_dotted_level` | text[] form: the unfiltered LATERAL example fails on a dot-separator catalog |
+| `test_text_array_form_the_documented_filter_keeps_the_lateral_example_running` | text[] form: the documented filter keeps the LATERAL example running on a dot-separator catalog |
+| `test_separator_refusal_escapes_a_control_byte_in_the_level` | separator refusal: a control byte in the refused level is escaped in the message |
+| `test_separator_refusal_does_not_match_inside_a_utf8_character` | separator refusal: a separator byte above 0x7F does not match inside a UTF-8 character |
 | `test_text_array_form_an_empty_namespace_array_is_refused` | text[] form: an empty namespace array is refused |
 | `test_text_array_form_a_null_level_is_refused` | text[] form: a NULL level is refused |
 | `test_text_array_form_a_two_dimensional_namespace_array_is_refused` | text[] form: a two-dimensional namespace array is refused |

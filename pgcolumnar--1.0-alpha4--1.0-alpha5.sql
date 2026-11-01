@@ -2206,7 +2206,7 @@ CREATE FUNCTION pgcolumnar.iceberg_rest_namespace_levels(catalog_uri text)
 	AS 'MODULE_PATHNAME', 'pgcolumnar_iceberg_rest_namespace_levels';
 
 COMMENT ON FUNCTION pgcolumnar.iceberg_rest_namespace_levels(text)
-	IS 'list the namespaces of an Iceberg REST catalog, one per row, each as a text[] of its levels; a row passes back as the namespace argument of the other iceberg_rest_* functions (#1865)';
+	IS 'list the namespaces of an Iceberg REST catalog, one per row, each as a text[] of its levels; a row passes back as the namespace argument of the other iceberg_rest_* functions, except a row with a level that holds the catalog''s namespace separator, which they refuse with 22023 (#1865)';
 
 CREATE FUNCTION pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text[])
 	RETURNS SETOF text
