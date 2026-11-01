@@ -429,14 +429,20 @@ def irs(pgc_cluster):
         ):
             r[key] = _refusal(dsn, sql, phrase, label)
         # This catalog keeps its table in the namespace db, '' (an empty level).
-        # It also serves db, '', x, a child of db, '' (#1939).
+        # It also serves db, '', x, a child of db, '' (#1939), and db, '', x, y
+        # below it, so the walk must name an empty level between two others.
         ecat = start_fx("emptylevel", "--namespace-levels", '["db",""]', "--table", "events",
-                        "--extra-namespace", "db..x")
+                        "--extra-namespace", "db..x.y")
         r["empty listed"] = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text, ' ' "
                                        "ORDER BY array_to_json(ns)::text COLLATE \"C\") "
                                        f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ecat}') AS ns")
         r["empty child"] = _rows(dsn, "SELECT count(*) FILTER (WHERE ns = ARRAY['db','','x']) || ' of ' || count(*) "
                                       f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ecat}') AS ns")
+        r["empty grandchild"] = _rows(dsn, "SELECT count(*) FILTER (WHERE ns = ARRAY['db','','x','y']) "
+                                           "|| ' of ' || count(*) "
+                                           f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ecat}') AS ns")
+        r["empty text listed"] = _rows(dsn, "SELECT string_agg(ns, ',' ORDER BY ns COLLATE \"C\") "
+                                            f"FROM pgcolumnar.iceberg_rest_namespaces('{ecat}') AS ns")
         r["empty tables"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
                                        f"FROM pgcolumnar.iceberg_rest_tables('{ecat}', ARRAY['db','']) AS t")
         r["empty text tables"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
@@ -1033,15 +1039,29 @@ def test_empty_level_a_missing_namespace_with_no_empty_level_gets_no_hint(irs, e
 def test_empty_level_iceberg_rest_namespace_levels_lists_the_empty_level(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty listed"], '["db","","x"] ["db",""] ["db"]',
+    expect.text(irs["empty listed"], '["db","","x","y"] ["db","","x"] ["db",""] ["db"]',
                 "empty level: iceberg_rest_namespace_levels lists the namespace db, ''")
 
 
 def test_empty_level_iceberg_rest_namespace_levels_lists_the_child_of_the_empty_level(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty child"], "1 of 3",
+    expect.text(irs["empty child"], "1 of 4",
                 "empty level: iceberg_rest_namespace_levels lists the child db, '', x of db, ''")
+
+
+def test_empty_level_iceberg_rest_namespace_levels_lists_the_child_of_the_middle_empty_level(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty grandchild"], "1 of 4",
+                "empty level: iceberg_rest_namespace_levels lists the child db, '', x, y of db, '', x")
+
+
+def test_empty_level_iceberg_rest_namespaces_lists_the_text_form_of_each_namespace(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty text listed"], "db,db.,db..x,db..x.y",
+                "empty level: iceberg_rest_namespaces lists db, db., db..x and db..x.y")
 
 
 def test_empty_level_iceberg_rest_tables_of_the_array_form_lists_its_tables(irs, expect):
