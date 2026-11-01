@@ -133,6 +133,16 @@ check "a server of another wrapper is refused" \
 	"42809|nofile"
 check "an existing path is refused, so no file a table reads is overwritten" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/m_jan.parquet');")" "58P02"
+# The readers read s3a:// and s3n:// as s3://, and match the scheme in any case
+# (#1930), so these spellings name the object a tier to s3:// would overwrite
+# (#1936). The refusal comes before the export, so no store is contacted.
+psql_run "CREATE FOREIGN TABLE dup_s3a (x int) SERVER tier_pq OPTIONS (path 's3a://tierb/m_feb_a.parquet');"
+psql_run "CREATE FOREIGN TABLE dup_upper (x int) SERVER tier_pq OPTIONS (path 'S3://tierb/m_feb_u.parquet');"
+check "a path a foreign table reads as s3a:// is refused like the identical s3:// spelling" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/m_feb_a.parquet');")" "58P02"
+check "a path a foreign table reads as S3:// is refused like the identical s3:// spelling" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/m_feb_u.parquet');")" "58P02"
+psql_run "DROP FOREIGN TABLE dup_s3a, dup_upper;"
 check "and the refusals moved nothing" "$(digest m)" "$rb"
 check "the other partition is still local after the refusals" \
 	"$(q "SELECT relkind FROM pg_class WHERE oid = 'm_feb'::regclass;")" "r"

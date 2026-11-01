@@ -769,7 +769,8 @@ commit. Every lock waits at most `lock_wait` (`55P03`).
 
 The function refuses these:
 
-- a `path` that a foreign table in this database reads (`58P02`);
+- a `path` that a foreign table in this database reads (`58P02`), with the
+  scheme matched in any case and `s3a://` or `s3n://` matched as `s3://`;
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);

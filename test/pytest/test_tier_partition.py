@@ -154,6 +154,20 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "42809|nofile", "a server of another wrapper is refused")
     expect.text(_sqlstate(conn, f"SELECT pgcolumnar.tier_partition('s_apr', 'tq', '{path}')"),
                     "58P02", "an existing path is refused, so no file a table reads is overwritten")
+    # The readers read s3a:// as s3:// and match the scheme in any case (#1930),
+    # so these spellings name the object a tier to s3:// would overwrite (#1936).
+    # The refusal comes before the export, so no store is contacted.
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN TABLE s_dup_s3a (x int) SERVER tq"
+                    " OPTIONS (path 's3a://tierb/s_apr_a.parquet')")
+        cur.execute("CREATE FOREIGN TABLE s_dup_upper (x int) SERVER tq"
+                    " OPTIONS (path 'S3://tierb/s_apr_u.parquet')")
+    expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', 's3://tierb/s_apr_a.parquet')"),
+                "58P02", "a path a foreign table reads as s3a:// is refused like the identical s3:// spelling")
+    expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', 's3://tierb/s_apr_u.parquet')"),
+                "58P02", "a path a foreign table reads as S3:// is refused like the identical s3:// spelling")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_s3a, s_dup_upper")
     expect.text(_digest(conn, "s"), rb, "and the refusals moved nothing")
     expect.text(_one(conn, "SELECT relkind::text FROM pg_class WHERE oid = 's_apr'::regclass"), "r",
                 "the other partition is still local after the refusals")
