@@ -271,6 +271,15 @@ true until the next version shipped.
   depends on. A path a foreign table in the database reads is refused; a retry
   over a failed attempt's file is allowed.
 
+- Three object-storage and row-group behaviours that the docs state now have
+  checks (#1887). `iceberg_current_snapshot` reads an `s3://` metadata file
+  (`test/iceberg_objstore.sh`). A role with no user mapping reads through a
+  `pgcolumnar_iceberg` table with the server's credentials, and is refused on a
+  `pgcolumnar_parquet` table (`test/objstore_credentials.sh`). An int4 constant
+  on an int2 column, an int8 constant on an int4 column, a float8 constant on a
+  float4 column and a date constant on a timestamp column each skip row groups
+  (`test/parquet_skip_cross_type.sh`). Each has a pytest twin.
+
 ### Changed
 
 - `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` now check that a delete
@@ -530,16 +539,11 @@ true until the next version shipped.
   opened an `s3://` or `http://` URL as a local path. The error then said the file
   did not exist (58P01), even when `export_arrow` had just written that object.
   The new message names the function and says it reads local files only.
-  docs/sql-reference.md and docs/how-to.md. `test/arrow_import.sh`,
-  `test/parallel_copy.sh` and their pytest twins.
-- Three object-storage and row-group behaviours that the docs state now have
-  checks (#1887). `iceberg_current_snapshot` reads an `s3://` metadata file
-  (`test/iceberg_objstore.sh`). A role with no user mapping reads through a
-  `pgcolumnar_iceberg` table with the server's credentials, and is refused on a
-  `pgcolumnar_parquet` table (`test/objstore_credentials.sh`). An int4 constant
-  on an int2 column, an int8 constant on an int4 column, a float8 constant on a
-  float4 column and a date constant on a timestamp column each skip row groups
-  (`test/parquet_skip_cross_type.sh`). Each has a pytest twin.
+  `parallel_copy`, like `import_arrow`, checks INSERT on the table first, so a
+  caller without it gets 42501 for a URL as for a local path. docs/sql-reference.md
+  and docs/how-to.md describe the refusal. The checks are in `test/arrow_import.sh`,
+  `test/parallel_copy.sh`, `test/import_export_privilege.sh` and their pytest
+  twins.
 - The docs no longer contradict the code on object storage, credentials and
   row-group skipping (#1797). `import_arrow`, `file_split_offsets` and
   `parallel_copy` read local files only; the docs had said every Arrow and

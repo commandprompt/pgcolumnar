@@ -175,8 +175,9 @@ def test_object_store_credentials(pgc_cluster, expect):
     # as the shell serves it. noapply.metadata.json reads 5 rows.
     fx = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "iceberg" / "warehouse_del" / "db"
     shutil.copytree(fx, work / BUCKET / "db")
+    # chmod -R u+rwX, as the shell does: the owner may read, write and enter.
     for p in [work / BUCKET / "db", *(work / BUCKET / "db").rglob("*")]:
-        p.chmod(0o777 if p.is_dir() else 0o666)
+        p.chmod(p.stat().st_mode | (0o700 if p.is_dir() else 0o600))
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _SigV4)
     srv.root, srv.requests = str(work), []
     threading.Thread(target=srv.serve_forever, daemon=True).start()

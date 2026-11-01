@@ -809,7 +809,9 @@ whose type is not temporal is unaffected.
 
 `path` must be a file on the database server. The function refuses an
 object-storage URL, such as `s3://` or `http://`, with SQLSTATE `0A000`. To
-import an object, copy it to the server first.
+import an object, copy it to the server first. The function checks INSERT on
+`rel` before it looks at `path`, so a caller without INSERT gets `42501` for a
+URL too.
 
 ### pgcolumnar.import_parquet(rel regclass, path text) returns bigint
 
@@ -861,7 +863,9 @@ smaller.
 
 `filename` must be a file on the database server. The function refuses an
 object-storage URL, such as `s3://` or `http://`, with SQLSTATE `0A000` before
-any worker starts. `file_split_offsets` refuses one the same way.
+any worker starts. `file_split_offsets` refuses one the same way. Like
+`import_arrow`, `parallel_copy` checks INSERT on `target` before it looks at
+`filename`, so a caller without INSERT gets `42501` for a URL too.
 
 #### Refusing a load this table has already taken
 

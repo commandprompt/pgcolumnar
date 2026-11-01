@@ -1538,12 +1538,6 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		workers = PCOPY_MAX_WORKERS;
 
 	/*
-	 * A URL is not a local file: say so, not ENOENT (#1886). Before the target
-	 * is opened, so both the single-table and the partitioned path are covered.
-	 */
-	PgColumnarRefuseRemotePath("parallel_copy", path);
-
-	/*
 	 * The target is one of two shapes that pgcolumnar can load in parallel AND
 	 * atomically:
 	 *   - a RANGE-partitioned table: each worker loads a distinct partition
@@ -1584,6 +1578,13 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		PgColumnarRequireNoRowSecurity(relid);
 
 		}
+
+		/*
+		 * A URL is not a local file: say so, not ENOENT (#1886). After the
+		 * INSERT and RLS checks, as in import_arrow, and before both the
+		 * partitioned and the single-table branch, so both are covered.
+		 */
+		PgColumnarRefuseRemotePath("parallel_copy", path);
 
 		if (target->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		{
