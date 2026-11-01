@@ -471,6 +471,23 @@ true until the next version shipped.
 
 ### Fixed
 
+- `tier_partition` now writes the Parquet file with the server it names and
+  your user mapping on that server (#1795). Before, it wrote with the endpoint
+  and keys of the server process environment, but the foreign partition reads
+  with the server and the mapping. When the two differed, the move committed and
+  every query on the parent then failed (HTTP 403 or 400). Now a mapping the
+  object store rejects stops the move, and the rows stay in the columnar
+  partition. The write goes through a new form,
+  `export_parquet(rel, path, server)`, which you can also call directly.
+  Before it commits, the move now counts the rows through the new foreign
+  partition, so a key that can write but not read rolls the move back.
+  Three changes can refuse a call that used to succeed. A role that is not a
+  superuser and has no mapping on the server is now refused (`28000`); before,
+  it wrote with the environment's keys. `tier_partition` now needs both
+  `pg_write_server_files` and `pg_read_server_files` (`42501`), because it
+  reads the file back. And a local `path` is refused (`28000`) when your
+  mapping on the server holds only half a credential. `test/tier_partition.sh`
+  and `test_tier_partition.py`.
 - `read_parquet`, `import_parquet`, `iceberg_scan` and both foreign-data wrappers
   now apply the declared type modifier to every value they return (#1790). A
   `numeric(5,2)` column read `12345.678` unchanged and `1.005` as `1.005`, and

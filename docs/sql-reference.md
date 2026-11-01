@@ -641,6 +641,33 @@ rows written. `path` can be a local file or an `s3://` URL. See
 `pgcolumnar.export_group_bytes` of buffered data, 256 MiB by default, unless one row
 alone is larger. See [Export size limits](limitations.md#export-size-limits).
 
+### pgcolumnar.export_parquet(rel regclass, path text, server name) returns bigint
+
+Writes the file as the two-argument form does, but a remote `path` is written
+with the settings of `server`. These are the settings that a foreign table of
+`server` reads with, so a foreign table on `path` can read the file back.
+
+- The endpoint and region come from the server's `endpoint` and `region`
+  options. If the server has no such option, the value comes from
+  `AWS_ENDPOINT_URL` or `AWS_REGION` in the environment, whoever the caller is.
+  A read does the same.
+- The credentials come from your user mapping on the server, or from its
+  `PUBLIC` mapping. The environment's keys are used only where a read may use
+  them: see [Endpoints and credentials](#endpoints-and-credentials). A role that
+  is not a superuser and has no mapping is refused (`28000`).
+
+The function refuses these before it writes anything:
+
+- a null `server` (`22004`);
+- a `server` that does not exist (`42704`);
+- a `server` that does not use the `pgcolumnar_parquet` wrapper (`42809`);
+- a caller without `USAGE` on `server` (`42501`).
+
+A local `path` writes no object and uses no endpoint, region or key. The
+function still makes every check above and still looks up your credentials on
+the server. So a mapping that holds only half a credential refuses a local
+`path` too (`28000`).
+
 ### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
 
 Creates columnar partitions of `parent`, each `width` wide, until they reach now
@@ -719,6 +746,23 @@ attaches the file as a foreign table of `server`, which must use the
 columns (with their collations and generated expressions), owner, bounds,
 grants and comment. Returns the number of rows moved.
 
+The function writes the file with the settings of `server`, as
+`export_parquet(partition, path, server)` does: the server's endpoint and
+region, and your user mapping on the server. A mapping that the object store
+rejects stops the move before anything is detached, and the rows stay in the
+columnar partition.
+
+After the attach, the function counts the rows through the new foreign
+partition, as you, before it commits. If that read fails or counts a different
+number, the move rolls back and the rows stay in the columnar partition. This
+catches a key that can write but not read. The file that the export wrote stays
+in place; a retry with the same `path` overwrites it.
+
+You need both `pg_write_server_files` and `pg_read_server_files`, or superuser:
+the function writes the file and then reads it. Every role that queries the
+parent after the move needs `pg_read_server_files` and a mapping on `server` that
+can read the file.
+
 The function runs as one transaction, at READ COMMITTED only (`25000`
 otherwise). It holds `ACCESS EXCLUSIVE` on the parent from the detach until
 commit. Every lock waits at most `lock_wait` (`55P03`).
@@ -730,6 +774,8 @@ The function refuses these:
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
 - a relation that is not a columnar partition (`42809`).
+- a caller that is not a member of both `pg_write_server_files` and
+  `pg_read_server_files` (`42501`), before anything is written.
 
 See
 [Move cold partitions to Parquet](how-to.md#move-cold-partitions-to-parquet).
@@ -1562,6 +1608,10 @@ credentials come from the environment of the server process:
 | `AWS_SESSION_TOKEN` | A session token, when the credentials are temporary. Optional. |
 | `AWS_REGION` or `AWS_DEFAULT_REGION` | The signing region. |
 
+Two calls take a server instead: `export_parquet(rel, path, server)`, and
+`tier_partition`, which writes through it. They resolve the endpoint and the
+credentials as the foreign-data wrapper does, as described next.
+
 For the foreign-data wrapper the endpoint and credentials come from the catalog,
 which keeps them out of a world-readable place. The non-secret settings go on the
 server and the secret ones go on a user mapping:
@@ -1582,6 +1632,10 @@ The wrapper accepts `endpoint` and `region` only on the server, and
 only on a user mapping. Any other placement is an error at `CREATE` or `ALTER`
 time. `pg_user_mapping` is not world-readable, so a secret placed there is not
 exposed the way a server option is.
+
+A server with no `endpoint` or `region` option takes that value from
+`AWS_ENDPOINT_URL` or `AWS_REGION` (or `AWS_DEFAULT_REGION`) in the environment.
+This applies to every caller, because an endpoint and a region are not secrets.
 
 A read resolves the scanning user's mapping first, then a `PUBLIC` mapping. When a
 mapping supplies no credentials, the server process environment is used only in
